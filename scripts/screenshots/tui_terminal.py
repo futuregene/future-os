@@ -19,6 +19,22 @@ illustration job and had two bugs worth keeping fixed: CJK must advance two
 columns (or every Chinese line shifts and overlaps), and the cell advance must be
 *measured* rather than assumed (`.6em` is wrong for Menlo and made the glyphs look
 stretched).
+
+**Glyphs are placed at their cell, never flowed.** The port dropped that and let
+the browser lay each row out as text, which is only equivalent when every glyph's
+advance equals the cell width. Measured at 14px in headless Chrome with this
+font stack: Latin, box drawing, `▸`, `·`, `…` and `█` advance 8.429px (one cell),
+but a hanzi advances 14.00px where two cells need 16.858, and full-width
+punctuation (`。`) advances 7.175px. So every Chinese row was squeezed and
+dragged its tail left, while the border strokes — being exactly one cell — stayed
+put: the frame looked aligned at its edges and was wrong inside. On one 120×38
+frame that put 28 characters in the wrong cell (including the sidebar's `会话`,
+`用量`, `技能` labels and the digits after a Chinese clause), and the sidebar
+border on a Chinese row sat 1.6 cells left of every other row.
+
+Every cell is therefore emitted as an absolutely positioned box, and
+[`verify_alignment`] re-reads the finished PNG against the grid it came from, so
+a capture refuses to write a frame whose glyphs are not in their cells.
 """
 
 from __future__ import annotations
@@ -224,82 +240,175 @@ def screen_from_stream(text: str, cols: int, rows: int) -> tuple[list[list[Cell]
     return grid, cursor
 
 
+def _cell_style(cell: Cell) -> tuple[str, str | None, bool]:
+    """`(fg, bg, bold)` after reverse-video and dim are folded in."""
+    fg = cell.fg or DEFAULT_FG
+    bg = cell.bg
+    if cell.reverse:
+        fg, bg = (bg or DEFAULT_BG), (fg or DEFAULT_FG)
+    if cell.dim and bg is None:
+        fg = "#8b93a1"
+    if cell.bold and fg == DEFAULT_FG:
+        fg = "#ffffff"
+    return fg, bg, cell.bold
+
+
 def _to_html(grid: list[list[Cell]], cw: float, cols: int, cursor: tuple[int, int] | None = None) -> str:
+    """Lay every cell out at the position the grid gives it.
+
+    **Glyphs are placed, never flowed.** A terminal column is a fixed width, and
+    a browser's text flow only matches it when every glyph happens to advance by
+    exactly that width. In this font stack that is true for Latin, box drawing,
+    `·`, `▸`, `…` and `█` — and false for exactly the characters a Chinese
+    interface is full of: measured at 14px in headless Chrome, a hanzi advances
+    14.00px where two cells need 16.86px, and full-width punctuation (`。`)
+    advances 7.17px. Flowing them therefore squeezed every Chinese line and
+    dragged everything after it left: 16 wide characters on one row put the
+    sidebar border 25px out of place, and a row of Chinese punctuation lost
+    nearly a cell per character. The border strokes themselves (`│`, `─`) are
+    one cell wide, so the frame looked aligned at its edges while the text
+    inside silently was not.
+
+    Absolute placement makes the picture agree with the grid by construction, and
+    a wide cell gets a box two cells wide with its glyph centred (a terminal
+    fills both columns even when the font's glyph is narrower).
+    """
     width = int(cols * cw) + PAD * 2
     height = int(len(grid) * LINE_H) + PAD * 2
     parts = [
         "<!doctype html><meta charset=utf-8>",
         f"<body style='margin:0;background:{DEFAULT_BG}'>",
         f"<div style=\"position:relative;width:{width}px;height:{height}px;background:{DEFAULT_BG}\">",
-        f"<div style=\"position:absolute;left:{PAD}px;top:{PAD}px;font-family:{FONT};"
-        f"font-size:{FONT_SIZE}px;line-height:{LINE_H}px;white-space:pre\">",
     ]
-    for row in grid:
+    for r, row in enumerate(grid):
+        top = PAD + r * LINE_H
         col = 0
-        previous = None
-        for cell in row:
+        while col < cols:
+            cell = row[col]
             if cell.ch == "":
+                # The second half of a wide glyph; its box is the wide cell's.
                 col += 1
                 continue
-            if cell.ch == " " and cell.bg is None and cell.fg is None:
-                if previous is not None:
-                    parts.append("</span>")
-                    previous = None
-                parts.append(" ")
+            span = 2 if cell.wide else 1
+            if col + span > cols:
+                span = cols - col  # a wide glyph in the last column uses one
+            fg, bg, bold = _cell_style(cell)
+            blank = cell.ch == " " and cell.bg is None and cell.fg is None and bg is None
+            if blank and span == 1:
                 col += 1
                 continue
-            fg = cell.fg or DEFAULT_FG
-            bg = cell.bg
-            if cell.reverse:
-                fg, bg = (bg or DEFAULT_BG), (fg or DEFAULT_FG)
-            if cell.dim and bg is None:
-                fg = "#8b93a1"
-            if cell.bold and fg == DEFAULT_FG:
-                fg = "#ffffff"
-            key = (fg, bg, cell.bold)
-            if key != previous:
-                if previous is not None:
-                    parts.append("</span>")
-                style = f"color:{fg};font-weight:{'700' if cell.bold else '400'}"
-                if bg:
-                    style += f";background:{bg}"
-                parts.append(f"<span style=\"{style}\">")
-                previous = key
-            parts.append(html.escape(cell.ch))
-            col += 2 if cell.wide else 1
-        if previous is not None:
-            parts.append("</span>")
-        parts.append("\n")
+            left = PAD + col * cw
+            box = cw * span
+            style = [
+                "position:absolute",
+                f"left:{left:.2f}px",
+                f"top:{top}px",
+                f"width:{box:.2f}px",
+                f"height:{LINE_H}px",
+                f"line-height:{LINE_H}px",
+                f"font-family:{FONT}",
+                f"font-size:{FONT_SIZE}px",
+            ]
+            if bg:
+                style.append(f"background:{bg}")
+            if cell.wide:
+                # A terminal gives a wide glyph the whole two columns: at this
+                # font's metrics a hanzi would otherwise advance 14px in a
+                # 16.86px box and leave a visible gap, and Chinese text would
+                # read as spaced-out. Setting the em to the box width makes the
+                # glyph exactly fill its columns. Full-width punctuation is
+                # narrower than an em in the fallback font, so it simply centres.
+                style.append(f"font-size:{box:.2f}px")
+                style.append("text-align:center")
+            if not blank:
+                style.append(f"color:{fg}")
+                style.append(f"font-weight:{'700' if bold else '400'}")
+                style.append("white-space:pre")
+            parts.append(f"<div style=\"{';'.join(style)}\">{html.escape(cell.ch)}</div>")
+            col += span
     # The caret, where the app left it and only if it asked for it to show. A
     # terminal paints it over the cell; a translucent block keeps whatever it
     # covers readable, which is what the eye sees in a live terminal anyway.
     if cursor is not None:
         crow, ccol = cursor
         parts.append(
-            f"<div style='position:absolute;left:{PAD + int(ccol * cw)}px;top:{PAD + crow * LINE_H}px;"
-            f"width:{int(cw)}px;height:{LINE_H}px;background:{DEFAULT_FG};opacity:0.45'></div>"
+            f"<div style='position:absolute;left:{PAD + ccol * cw:.2f}px;top:{PAD + crow * LINE_H}px;"
+            f"width:{cw:.2f}px;height:{LINE_H}px;background:{DEFAULT_FG};opacity:0.45'></div>"
         )
-    parts += ["</div></div></body>"]
+    parts += ["</div></body>"]
     return "".join(parts)
 
 
 def cell_width(work: Path) -> float:
-    """Measure the glyph advance instead of assuming a fraction of the font size."""
+    """Measure the glyph advance instead of assuming a fraction of the font size.
+
+    `white-space:nowrap` and a wide window matter: 100 glyphs at ~8.4px is wider
+    than the default viewport, so a wrapping probe measures the *line box* and
+    reports a nonsense advance (this is how a CJK probe once reported 7.56px per
+    character instead of 14).
+    """
     probe = work / "_cell.html"
     probe.write_text(
         "<!doctype html><meta charset=utf-8>"
-        f"<body style='margin:0'><span id=a style=\"font-family:{FONT};font-size:{FONT_SIZE}px\">"
+        f"<body style='margin:0'><span id=a style=\"font-family:{FONT};font-size:{FONT_SIZE}px;white-space:nowrap\">"
         + "0" * 100
         + "</span><script>document.title=String(document.getElementById('a').getBoundingClientRect().width/100)</script>",
         encoding="utf-8",
     )
     dom = subprocess.run(
-        [chrome(), "--headless=new", "--disable-gpu", "--virtual-time-budget=2000", "--dump-dom", probe.as_uri()],
+        [chrome(), "--headless=new", "--disable-gpu", "--window-size=4000,800",
+         "--virtual-time-budget=2000", "--dump-dom", probe.as_uri()],
         capture_output=True,
         text=True,
     ).stdout
     match = re.search(r"<title>([0-9.]+)</title>", dom)
     return float(match.group(1)) if match else FONT_SIZE * 0.6
+
+
+def verify_alignment(png: Path, cells: list[list[Cell]], cw: float, scale: float = 2.0) -> list[str]:
+    """Check the finished picture against the grid it came from.
+
+    The invariant is the whole point of a terminal renderer: a character's ink
+    occupies its own cell and nowhere else. When glyph placement went through the
+    browser's text flow instead of absolute positions, characters silently landed
+    in the *previous* cell on every row containing Chinese (a hanzi advanced
+    14px into a 16.9px cell, `。` 7.2px), and nothing noticed — the PNG looked
+    plausible. So every capture now checks its own output: one cell inked where
+    the grid says a character, and no character cell left blank.
+
+    Returns a list of human-readable problems (empty means aligned). Stray ink in
+    a cell the grid calls blank is *not* a failure: block glyphs in the logo
+    overhang their advance box by a pixel or two, which is antialiasing, not a
+    misplaced character.
+    """
+    from PIL import Image
+
+    image = Image.open(png).convert("RGB")
+    px = image.load()
+    W, H = image.size
+    bg = px[5, 5]
+    rows = len(cells)
+    cols = len(cells[0]) if cells else 0
+    problems: list[str] = []
+    for r in range(rows):
+        y0 = int((PAD + r * LINE_H) * scale)
+        y1 = y0 + int(LINE_H * scale)
+        for c in range(cols):
+            cell = cells[r][c]
+            if cell.ch in ("", " ") or (cell.bg is not None or cell.reverse):
+                continue
+            x0 = int((PAD + c * cw) * scale)
+            x1 = int((PAD + (c + 1) * cw) * scale)
+            inked = total = 0
+            for y in range(max(0, y0), min(H, y1)):
+                for x in range(max(0, x0), min(W, x1)):
+                    total += 1
+                    p = px[x, y]
+                    if abs(p[0]-bg[0]) + abs(p[1]-bg[1]) + abs(p[2]-bg[2]) > 24:
+                        inked += 1
+            if total and inked / total < 0.015:
+                problems.append(f"row {r} col {c}: {cell.ch!r} has no ink in its own cell")
+    return problems
 
 
 def render(stream: str, out: Path, cols: int, rows: int, work: Path, scale: float = 2.0) -> tuple[int, int]:
@@ -327,6 +436,16 @@ def render(stream: str, out: Path, cols: int, rows: int, work: Path, scale: floa
     )
     if not out.exists():
         raise SystemExit(f"renderer produced no file at {out}")
+    problems = verify_alignment(out, cells, cw, scale)
+    if problems:
+        out.unlink(missing_ok=True)
+        shown = "\n  ".join(problems[:8])
+        raise SystemExit(
+            f"error: the rendered frame does not match the cell grid ({len(problems)} cell(s)).\n  "
+            + shown
+            + "\nThis is a bug in the renderer, not in the capture: glyphs must be"
+            " placed at their cell position, never flowed by the browser."
+        )
     return width, height
 
 
@@ -388,6 +507,20 @@ def _self_test() -> int:
     check("cursor hidden until shown", cursor, None)
     _, cursor = screen_from_stream("\x1b[?25lab\x1b[?25h\x1b[3;4Hx", 8, 4)
     check("cursor position", cursor, (2, 4))
+
+    # Placement is absolute: a cell's div carries its own left/width, so the
+    # browser never flows one glyph into another's cell. This is the regression
+    # guard for the bug that made every Chinese row shift (see _to_html).
+    grid = [[Cell("A"), Cell("中"), Cell(" ")], [Cell("B"), Cell(" "), Cell(" ")]]
+    grid[0][1].wide = True
+    markup = _to_html(grid, 10.0, 3)
+    check("narrow cell at its column", "left:16.00px" in markup, True)
+    check("second row starts on its own line", "top:34px" in markup, True)
+    check("wide cell at its own column", "left:26.00px" in markup, True)
+    check("wide cell is two cells wide", "width:20.00px" in markup, True)
+    # A wide cell sets its em to the box width, so the glyph fills both columns
+    # instead of sitting narrow in a wide box with a gap after it.
+    check("wide cell fills its box", "font-size:20.00px" in markup, True)
 
     if problems:
         for problem in problems:

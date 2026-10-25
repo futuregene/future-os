@@ -219,11 +219,17 @@ What the flags are for:
 - `--scale` sets the device pixel ratio (default 2).
 - `--session <id>` opens a specific session instead of leaving it to the agent.
 - `--scenario <name>` drives the surface to a screen a reader would reach:
-  `chat` (as it opens), `help` (`?`), `palette` (`/`), and the sidebar panels
-  `todo` / `usage` / `skills` / `sessions`, which are selected by clicking their
-  tab — the workbench switches panels by click and has no key for it. The click
-  is resolved from the frame on screen when the step runs, so it follows the
-  layout instead of a hard-coded column.
+  `chat` (as it opens), `help` (`?`), `palette` (`/`), `palette-filter` (`/`
+  plus a query, without Enter), the sidebar panels `todo` / `usage` / `skills` /
+  `sessions` (selected by clicking their tab — the workbench switches panels by
+  click and has no key for it), the two palette verbs that name a panel
+  (`command-usage`, `command-skills`), `launchpad` (`/new`), `full-panel`
+  (`ctrl+b` on a narrow terminal), `scrolled` (a click, then three wheel-ups),
+  `light` (`/theme`, one row down, Enter — it persists, so it goes last) and
+  `drag` (grab the divider and pull it six columns right). Every coordinate is
+  resolved from the frame on screen when the step runs — the tab click from the
+  painted label, the drag from the painted seam — so they follow the layout
+  instead of a hard-coded column.
 - `--addr <host:port>` attaches to an agent that is already running (a *real*
   session) instead of starting `demo_agent`, and leaves the caller's
   `FUTURE_HOME` alone.
@@ -233,9 +239,15 @@ The repository's own entry point for these frames is
 `--scenario` and the size and names the file after the asset it belongs to:
 
 ```bash
-tui/scripts/shot.sh chat 120x38      # → docs/tui/assets/workbench-120x38.png
-tui/scripts/shot.sh usage 120x38     # → docs/tui/assets/workbench-usage-120x38.png
+tui/scripts/shot.sh chat 120x38 $PWD/docs/tui/assets/workbench-chat.png
+tui/scripts/shot.sh usage 120x38 $PWD/docs/tui/assets/workbench-panel-usage.png
+tui/scripts/shot.sh drag 120x38 $PWD/docs/tui/assets/workbench-drag-fixed.png
 ```
+
+The third argument is the output path; without it the wrapper names the file
+after the scenario and size (`workbench-chat-120x38.png`, `workbench-usage-120x38.png`),
+which is not always the name an existing asset was committed under — pass the
+path when re-shooting one of those.
 
 Two runs produce byte-identical PNGs, which is what makes this usable as
 review evidence: a difference means the UI changed, not that a model answered
@@ -243,6 +255,14 @@ differently. Two limits are worth stating: the glyphs are drawn by Chrome from
 the captured cells rather than by the terminal that produced them, and the data
 is scripted like the other mocks — a screenshot is never evidence about a real
 user's session.
+
+Glyphs are placed at their cell coordinates rather than flowed as text. That is
+not a detail: in this font stack a hanzi advances 14px where two columns need
+16.9px, and `。` advances 7.2px, so laying a row out as text squeezed every
+Chinese line and pulled the rest of the row left — while the one-cell border
+strokes stayed put, so the frame looked aligned at its edges and was wrong
+inside. Each capture therefore re-reads its own PNG and refuses to write it if
+any character's ink is missing from its own cell.
 
 ```bash
 python3 scripts/screenshots/tui_terminal.py --self-test   # the cell model, no browser

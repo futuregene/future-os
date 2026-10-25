@@ -91,6 +91,14 @@ pub enum ChatReasoningFormat {
 pub struct OpenAiChatConfig {
     pub reasoning: ChatReasoningFormat,
     pub supports_reasoning_effort: bool,
+    /// The provider refuses to disable thinking (`compat.thinkingRequired`).
+    ///
+    /// Sending `thinking: {"type": "disabled"}` (or `enable_thinking: false`)
+    /// to such a model is a hard 400 — "this model always thinks; disabling
+    /// thinking is not supported" — so the request says *enabled* whatever the
+    /// product level is, and `off` degrades to "no depth hint" rather than a
+    /// switch the provider will reject.
+    pub thinking_required: bool,
     pub replay_assistant_reasoning: bool,
     pub max_tokens_field: ChatMaxTokensField,
     pub tool_stream: bool,
@@ -847,6 +855,7 @@ fn parse_chat_config(model: &crate::models::Model) -> Result<OpenAiChatConfig> {
     Ok(OpenAiChatConfig {
         reasoning,
         supports_reasoning_effort: boolean("supportsReasoningEffort")?,
+        thinking_required: boolean("thinkingRequired")?,
         replay_assistant_reasoning: boolean("requiresReasoningContentOnAssistantMessages")?,
         max_tokens_field,
         tool_stream: boolean("toolStream")? || model.provider == "zai",

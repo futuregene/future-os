@@ -306,7 +306,10 @@ fn apply_reasoning(
     if !target.capabilities.reasoning.supported || level.is_empty() {
         return;
     }
-    let enabled = level != "off";
+    // A provider that always thinks refuses the "disabled" spellings outright
+    // (volcengine/doubao: "该模型始终思考，不支持关闭思考"). Asking for `off`
+    // there is answered with max depth unset, not with a 400.
+    let enabled = level != "off" || config.thinking_required;
     let mapped = crate::llm::schema::resolve_effort(
         level,
         &target.capabilities.reasoning.levels,
@@ -811,6 +814,63 @@ mod tests {
             apply_reasoning(&mut body, &target, &config);
             assert_eq!(body, expected);
         }
+    }
+
+    /// A provider that always thinks (`compat.thinkingRequired`, volcengine's
+    /// doubao seed 2.x) rejects the disabled spellings with a hard 400.
+    ///
+    /// Observed 2026-10-25 on session `20261025-200944`: the run failed with
+    /// `该模型始终思考，不支持关闭思考；请使用 low、high 或 max。`  Level `off` must
+    /// therefore go out as *enabled* with no depth hint, and a level the model
+    /// does not take (the derivation maps those away) must never be assumed.
+    #[test]
+    fn a_model_that_always_thinks_is_never_asked_to_stop() {
+        let mut target = test_target(
+            ProtocolConfig::OpenAiChat(OpenAiChatConfig::default()),
+            GenerationConfig {
+                thinking_level: "off".into(),
+                ..Default::default()
+            },
+        );
+        target.capabilities.reasoning.supported = true;
+        for (format, expected) in [
+            (
+                ChatReasoningFormat::DeepSeek,
+                json!({"thinking": {"type": "enabled"}}),
+            ),
+            (
+                ChatReasoningFormat::Qwen {
+                    chat_template: false,
+                },
+                json!({"enable_thinking": true}),
+            ),
+            (
+                ChatReasoningFormat::Qwen {
+                    chat_template: true,
+                },
+                json!({"chat_template_kwargs": {"enable_thinking": true, "preserve_thinking": true}}),
+            ),
+            (ChatReasoningFormat::Zai, json!({"enable_thinking": true})),
+        ] {
+            let config = OpenAiChatConfig {
+                reasoning: format,
+                thinking_required: true,
+                ..Default::default()
+            };
+            let mut body = json!({});
+            apply_reasoning(&mut body, &target, &config);
+            assert_eq!(body, expected, "{config:?}");
+        }
+
+        // Without the flag the same level still switches thinking off — the
+        // flag must not quietly change every other provider.
+        let config = OpenAiChatConfig {
+            reasoning: ChatReasoningFormat::DeepSeek,
+            ..Default::default()
+        };
+        let mut body = json!({});
+        apply_reasoning(&mut body, &target, &config);
+        assert_eq!(body, json!({"thinking": {"type": "disabled"}}));
     }
 
     fn test_target(protocol: ProtocolConfig, generation: GenerationConfig) -> ResolvedModelTarget {

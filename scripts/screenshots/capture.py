@@ -1421,6 +1421,25 @@ TUI_SCENARIO_KEYS: dict[str, str] = {
     "chat": "",
     "help": "?",
     "palette": "/",
+    # A palette entry that names a rail panel: `/` opens the palette, the word
+    # filters it down to that one row, Enter runs it. These two used to answer
+    # `Unknown command /usage`; what the frame must show now is the panel and a
+    # hint row with no notice on it.
+    "command-usage": "/usage\r",
+    "command-skills": "/skills\r",
+    # The same palette, typed into but not run: the filtered list is the frame.
+    "palette-filter": "/theme",
+    # `/theme` opens the six-palette picker; one `down` moves off the palette in
+    # force (the first entry) onto `light`, and Enter applies it. The picker
+    # persists what it applies, so this shot runs last (see the record's §7).
+    "light": "/theme\r\x1b[B\r",
+    # `/new` detaches from the session without creating one: the launchpad.
+    "launchpad": "/new\r",
+    # `ctrl+b` on a terminal too narrow for the rail: the panel takes the body.
+    "full-panel": "\x02",
+    # A click that hands the keys back to the conversation, then three wheel-ups:
+    # the frame is the chat scrolled up, with the `↑ 更早` badge.
+    "scrolled": "\x1b[<0;20;20M\x1b[<0;20;20m" + "\x1b[<64;20;20M" * 3,
 }
 TUI_SCENARIO_TABS: dict[str, str] = {
     "todo": "待办",
@@ -1428,6 +1447,10 @@ TUI_SCENARIO_TABS: dict[str, str] = {
     "skills": "技能",
     "sessions": "会话",
 }
+# The divider drag, in columns to the right. A drag is the one pointer gesture a
+# keystroke string cannot express: it needs the seam's own column, so the step
+# reads it from the frame on screen (see `_tui_drag_divider`).
+TUI_SCENARIO_DRAGS: dict[str, int] = {"drag": 6}
 
 
 def _painted_cells(row: list) -> list[tuple[int, str]]:
@@ -1479,6 +1502,44 @@ def _tui_click_tab(word: str, cols: int, rows: int, settle: float):
     return (settle, action)
 
 
+def _tui_drag_divider(dx: int, cols: int, rows: int, settle: float):
+    """A step that grabs the sidebar divider and drags it `dx` columns right.
+
+    The seam is read from the frame that is on screen rather than assumed: the
+    rail's width moves with the terminal, and a hard-coded column would grab
+    whatever happens to be there.
+    """
+
+    def action(text: str) -> bytes | None:
+        import tui_terminal
+
+        cells, _ = tui_terminal.screen_from_stream(text, cols, rows)
+        # The divider is the `│` column painted on the most rows of the body; the
+        # input box and the panel rows have their own verticals, and counting
+        # rows is what tells the full-height one apart.
+        tally: dict[int, int] = {}
+        for row in cells[: max(2, len(cells) - 4)]:
+            for index, ch in _painted_cells(row):
+                if ch == "│":
+                    tally[index] = tally.get(index, 0) + 1
+        if not tally:
+            raise SystemExit(
+                "error: no divider in the frame — the terminal is too narrow for the "
+                f"rail ({cols}x{rows}); the drag needs at least 88 columns."
+            )
+        seam = max(tally, key=lambda index: tally[index])
+        y = max(1, len(cells) // 3)
+        # SGR 1006, 1-based: press on the seam, move with the button held, release.
+        bytes_out = f"\x1b[<0;{seam + 1};{y + 1}M"
+        bytes_out += "".join(
+            f"\x1b[<32;{seam + 1 + step};{y + 1}M" for step in range(1, dx + 1)
+        )
+        bytes_out += f"\x1b[<0;{seam + 1 + dx};{y + 1}m"
+        return bytes_out.encode()
+
+    return (settle, action)
+
+
 def _tui_steps(scenario: str, cols: int, rows: int, settle: float = 2.5):
     """The input script for a scenario, or a clear error for an unknown one."""
     if scenario in TUI_SCENARIO_KEYS:
@@ -1486,7 +1547,11 @@ def _tui_steps(scenario: str, cols: int, rows: int, settle: float = 2.5):
         return [(settle, keys.encode())] if keys else []
     if scenario in TUI_SCENARIO_TABS:
         return [_tui_click_tab(TUI_SCENARIO_TABS[scenario], cols, rows, settle)]
-    known = ", ".join(sorted(list(TUI_SCENARIO_KEYS) + list(TUI_SCENARIO_TABS)))
+    if scenario in TUI_SCENARIO_DRAGS:
+        return [_tui_drag_divider(TUI_SCENARIO_DRAGS[scenario], cols, rows, settle)]
+    known = ", ".join(
+        sorted(list(TUI_SCENARIO_KEYS) + list(TUI_SCENARIO_TABS) + list(TUI_SCENARIO_DRAGS))
+    )
     raise SystemExit(f"error: unknown tui scenario {scenario!r}. Known: {known}")
 
 
@@ -1825,7 +1890,11 @@ def main() -> int:
     tui_parser.add_argument("--addr", default=None,
                             help="attach to an already-running agent instead of starting demo_agent")
     tui_parser.add_argument("--scenario", default="chat",
-                            choices=sorted(list(TUI_SCENARIO_KEYS) + list(TUI_SCENARIO_TABS)),
+                            choices=sorted(
+                                list(TUI_SCENARIO_KEYS)
+                                + list(TUI_SCENARIO_TABS)
+                                + list(TUI_SCENARIO_DRAGS)
+                            ),
                             help="what the surface is showing (default chat)")
     tui_parser.add_argument("--bin", default=None, help="path to the future binary")
     tui_parser.add_argument("--agent-bin", default=None, help="path to the demo_agent example binary")

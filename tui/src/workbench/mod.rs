@@ -27,6 +27,7 @@
 
 pub mod ansi;
 pub mod demo;
+pub mod git;
 pub mod launchpad;
 pub mod layout;
 pub mod live;
@@ -124,6 +125,14 @@ pub enum WbAction {
     SetModel(String),
     /// The reasoning slider moved: apply the level to the agent.
     SetThinking(String),
+    /// The model picker chose a model while no session was attached: stage it
+    /// as the default the next session starts with. There is nothing to set it
+    /// on, so this must not reach the agent — the agent answers
+    /// `set_model` with "session not found" when no session exists.
+    SetPendingModel(String),
+    /// The reasoning slider moved with no session attached, staged like
+    /// [`WbAction::SetPendingModel`].
+    SetPendingThinking(String),
     /// The theme picker committed a palette: adopt it and persist it.
     SetTheme(String),
     /// `/new`: back to the launchpad, with no session attached (the first
@@ -140,6 +149,21 @@ pub enum WbAction {
     Redraw,
 }
 
+/// What became of one `/…` verb.
+///
+/// The split matters for the palette: an entry that names something on screen
+/// is the surface's to carry out, and an entry that needs the agent goes back
+/// to the app. A verb that is neither is a defect — [`COMMANDS`] and the two
+/// handlers behind this enum are kept in step by `every_palette_entry_has_a_handler`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerbOutcome {
+    /// The surface carried it out. `notice` is what belongs on the notice row,
+    /// where `None` clears whatever was there.
+    Done { notice: Option<String> },
+    /// Not the surface's: the app runs it against the agent.
+    Agent,
+}
+
 /// One input event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WbEvent {
@@ -153,10 +177,18 @@ pub enum WbEvent {
     Tick,
 }
 
+/// A divider drag in progress, in frame cells.
+///
+/// Both fields are captured at the press and never change during the drag: the
+/// rail width is always *the width at the press* plus the pointer's own
+/// displacement, so a long drag is one subtraction away from the press instead
+/// of accumulating rounding per motion report.
 #[derive(Debug, Clone, Copy)]
 struct Drag {
-    start_x: u16,
-    start_width: u16,
+    /// The column the pointer went down on (the press cell).
+    grab_x: u16,
+    /// The rail's width when it went down.
+    grab_width: u16,
 }
 
 /// The surface's own state: where the panels and the pointers are.
@@ -664,20 +696,40 @@ impl Workbench {
     }
 
     /// `enter`, and a click on a row: whichever row is highlighted, apply it.
+    ///
+    /// On the launchpad there is no session to apply anything *to*: the agent
+    /// refuses `set_model`/`set_thinking_level` without one ("session not
+    /// found"), so the same two choices are returned as `SetPending*` and the
+    /// app stages them for the session the next message creates. One gesture,
+    /// two roads, decided by whether anything is attached.
     fn apply_picker(&mut self, kind: PickerKind, data: &WorkbenchData) -> Vec<WbAction> {
         let selected = self.picker.selected(data, self.committed_theme());
+        let launchpad = data.on_launchpad();
         self.overlay = None;
         self.picker_restore = None;
         match (kind, selected) {
             // The slider *is* the choice on its own row: `enter` there applies
             // the level and leaves the model alone.
             (PickerKind::Model, Some(PickerRow::Slider { level, .. })) => {
-                vec![WbAction::SetThinking(level)]
+                if launchpad {
+                    vec![WbAction::SetPendingThinking(level)]
+                } else {
+                    vec![WbAction::SetThinking(level)]
+                }
             }
-            (PickerKind::Model, Some(PickerRow::Item { key, .. })) => vec![
-                WbAction::SetModel(key),
-                WbAction::SetThinking(self.picker.level().to_string()),
-            ],
+            (PickerKind::Model, Some(PickerRow::Item { key, .. })) => {
+                // The model and the level it runs at are one choice, so both
+                // are carried on either road.
+                let level = self.picker.level().to_string();
+                if launchpad {
+                    vec![
+                        WbAction::SetPendingModel(key),
+                        WbAction::SetPendingThinking(level),
+                    ]
+                } else {
+                    vec![WbAction::SetModel(key), WbAction::SetThinking(level)]
+                }
+            }
             (PickerKind::Theme, Some(PickerRow::Item { key, .. })) => {
                 self.set_theme(&key);
                 vec![WbAction::SetTheme(key)]
@@ -726,13 +778,21 @@ impl Workbench {
                 self.scroll(delta, data)
             }
             mouse::MouseKind::Press => match self.hit.hit(event.x, event.y).map(str::to_string) {
-                Some(id) => self.click(&id, data),
+                Some(id) => self.click(&id, event, data),
                 None => Vec::new(),
             },
             mouse::MouseKind::Drag => {
                 if let Some(drag) = self.drag {
-                    let delta = event.x as i32 - drag.start_x as i32;
-                    let width = (drag.start_width as i32 + delta)
+                    // The rail hangs off the frame's **right** edge: making it
+                    // wider moves its divider *left*. So the pointer's own
+                    // movement is subtracted from the width, not added to it.
+                    // Adding it — this branch's first version — mirrored every
+                    // drag, measured at 120 columns: press on the divider at
+                    // column 84, drag to column 90, and the divider ended up at
+                    // column 78 with a 42-column rail, i.e. the edge ran away
+                    // from the pointer it was supposed to follow.
+                    let delta = event.x as i32 - drag.grab_x as i32;
+                    let width = (drag.grab_width as i32 - delta)
                         .clamp(layout::SIDEBAR_MIN as i32, layout::SIDEBAR_MAX as i32)
                         as u16;
                     if width != self.sidebar_w {
@@ -795,7 +855,7 @@ impl Workbench {
         }
     }
 
-    fn click(&mut self, id: &str, data: &WorkbenchData) -> Vec<WbAction> {
+    fn click(&mut self, id: &str, event: mouse::MouseEvent, data: &WorkbenchData) -> Vec<WbAction> {
         if id == "input" {
             self.launch_field = LaunchField::Prompt;
             // A click in the conversation half takes the keys back from the
@@ -809,11 +869,15 @@ impl Workbench {
             return vec![WbAction::FocusPane(PaneId::Chat)];
         }
         if id == "divider" {
-            // The drag starts from where the divider *is*, not where the click
-            // landed, so a grab two cells off-centre does not jump the panel.
+            // The drag is measured from the cell the pointer went down on, not
+            // from the divider's own column, so a grab that lands anywhere in
+            // the one-cell seam keeps its offset instead of snapping the rail
+            // to the pointer. Drags only start *on* the divider, which is why
+            // the frame width at the press is the width the drag is relative
+            // to.
             self.drag = Some(Drag {
-                start_x: self.last_frame.0.saturating_sub(self.sidebar_w + 1),
-                start_width: self.sidebar_w,
+                grab_x: event.x,
+                grab_width: self.sidebar_w,
             });
             return Vec::new();
         }
@@ -837,10 +901,12 @@ impl Workbench {
                         vec![WbAction::SwitchSession(session.id.clone())]
                     })
                     .unwrap_or_default(),
-                _ => vec![WbAction::Command(format!(
-                    "panel.{}",
-                    id.trim_start_matches("sidebar.")
-                ))],
+                // A row of a read-only panel (a todo, a skill, a job) is not a
+                // verb yet: it takes the keys and nothing else. It used to
+                // return `panel.row.<n>` as a command, which the app had no
+                // handler for and answered `Unknown command /panel.row.3` — the
+                // same lie as the five dead palette entries, one click away.
+                _ => vec![WbAction::Redraw],
             };
         }
         if let Some(index) = id
@@ -866,6 +932,91 @@ impl Workbench {
     /// somewhere defined instead of against a stale layout.
     pub(crate) fn set_last_frame(&mut self, w: u16, h: u16) {
         self.last_frame = (w, h);
+    }
+
+    /// The frame size the last render was composed for.
+    ///
+    /// The surface answers "is there room for a rail?" from this, so the app's
+    /// first-frame refresh (see `run::event_loop`) is also what settles the
+    /// width-dependent verbs: a `/usage` asked before any frame would otherwise
+    /// decide on a 0-column terminal.
+    pub fn frame_size(&self) -> (u16, u16) {
+        self.last_frame
+    }
+
+    /// Show `panel` and give it the keys.
+    ///
+    /// Two surfaces, one intent: with room for a rail the panel is the rail's
+    /// current tab (and the rail is shown even if the reader had hidden it —
+    /// the verb names a panel, so showing it is the whole request); without
+    /// room the panel takes the body, which is the same full-screen surface
+    /// `ctrl+b` opens there. Focusing a panel a narrow terminal cannot paint
+    /// would be a verb that answers with nothing.
+    fn focus_panel(&mut self, panel: PanelId) {
+        self.panel = panel;
+        self.sidebar_focus = true;
+        if layout::sidebar_fits(self.last_frame.0) {
+            self.sidebar_visible = true;
+        } else {
+            self.overlay = Some(Overlay::PanelFull);
+        }
+    }
+
+    /// Carry out a `/…` verb that belongs to the *surface* rather than to the
+    /// agent: naming a panel, or saying where a workspace comes from.
+    ///
+    /// The palette advertises these ([`COMMANDS`]), so a verb it offers has to
+    /// answer *something*. Five of them used to reach the agent, which has no
+    /// such commands and said so: `/usage`, `/skills`, `/workspace`, `/export`
+    /// and `/transcript` all printed `Unknown command`. The ones that are about
+    /// what is on screen are answered here; `/export` needs the session and
+    /// stays with the app (`VerbOutcome::Agent`).
+    pub fn surface_command(&mut self, command: &str, data: &WorkbenchData) -> VerbOutcome {
+        let name = command.trim_start_matches('/').trim();
+        match name {
+            "usage" => {
+                self.focus_panel(PanelId::Usage);
+                VerbOutcome::Done { notice: None }
+            }
+            "skills" => {
+                self.focus_panel(PanelId::Skills);
+                VerbOutcome::Done { notice: None }
+            }
+            // There is no workspace picker to open, and pretending there is
+            // would be the same lie as `Unknown command`. What is true: the
+            // directory is the session's own, chosen where the session was
+            // started, and the two verbs that move a reader between workspaces
+            // are named.
+            "workspace" => {
+                let cwd = if data.session.cwd.is_empty() {
+                    "未指定".to_string()
+                } else {
+                    data.session.cwd.clone()
+                };
+                VerbOutcome::Done {
+                    notice: Some(format!(
+                        "工作区 {cwd} · 随会话固定 · 换目录：在目标目录启动 future tui，/sessions 换已有会话"
+                    )),
+                }
+            }
+            // `future tui` has no transcript dump of its own: the two real
+            // doors to the whole record are named instead.
+            "transcript" => VerbOutcome::Done {
+                notice: Some(
+                    "完整记录：/export 导出整份会话（HTML） · /reply-detail 在聊天里看完整过程"
+                        .into(),
+                ),
+            },
+            // The same box `?` opens. It used to be a no-op arm in the app, so
+            // the palette's own help entry resolved to nothing visible — a verb
+            // that resolves is not the same as one that does something.
+            "help" => {
+                self.overlay = Some(Overlay::Help);
+                self.overlay_scroll = 0;
+                VerbOutcome::Done { notice: None }
+            }
+            _ => VerbOutcome::Agent,
+        }
     }
 
     // Fields the screen composer fills in while drawing.
@@ -1077,6 +1228,164 @@ mod tests {
         );
     }
 
+    /// Every entry the palette advertises has exactly one handler: a picker, a
+    /// verb the surface carries out, or a verb the app runs against the agent.
+    ///
+    /// A table test is the only way this does not rot: five entries
+    /// (`/usage`, `/skills`, `/workspace`, `/export`, `/transcript`) used to be
+    /// listed, selectable, and then answered `Unknown command` by the agent,
+    /// which has no such commands. Adding a sixth entry without a handler now
+    /// fails here instead of in front of the reader.
+    #[test]
+    fn every_palette_entry_has_a_handler() {
+        let data = demo::chat();
+        let mut workbench = Workbench::new();
+        workbench.render(&data, 120, 38);
+        for (command, description) in COMMANDS {
+            let picker = PickerKind::from_command(command).is_some();
+            let surface = matches!(
+                workbench.surface_command(command, &data),
+                VerbOutcome::Done { .. }
+            );
+            let app = crate::workbench::live::APP_COMMANDS.contains(&command);
+            let handlers = [picker, surface, app]
+                .iter()
+                .filter(|handled| **handled)
+                .count();
+            assert_eq!(
+                handlers, 1,
+                "{command} ({description}) resolves to {handlers} handlers: \
+                 picker={picker} surface={surface} app={app}"
+            );
+        }
+    }
+
+    /// `/usage` and `/skills` are names for two panels. With room for a rail
+    /// they focus it (showing it if the reader had hidden it); on a terminal too
+    /// narrow for a rail they take the body, which is the one surface there is.
+    #[test]
+    fn usage_and_skills_focus_their_panel_and_never_reach_the_agent() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+
+        assert_eq!(
+            workbench.surface_command("/usage", &data),
+            VerbOutcome::Done { notice: None }
+        );
+        assert_eq!(workbench.panel, PanelId::Usage);
+        assert!(workbench.sidebar_focus, "the panel it names takes the keys");
+        assert!(workbench.sidebar_visible);
+        let text = plain(&workbench.render(&data, 120, 38));
+        assert!(
+            text.contains("上下文"),
+            "the usage panel is on screen: {text}"
+        );
+
+        assert_eq!(
+            workbench.surface_command("/skills", &data),
+            VerbOutcome::Done { notice: None }
+        );
+        assert_eq!(workbench.panel, PanelId::Skills);
+        let text = plain(&workbench.render(&data, 120, 38));
+        assert!(
+            text.contains("个技能"),
+            "the skills panel is on screen: {text}"
+        );
+
+        // A hidden rail comes back rather than swallowing the request.
+        workbench.sidebar_visible = false;
+        workbench.sidebar_focus = false;
+        workbench.surface_command("/usage", &data);
+        assert!(workbench.sidebar_visible && workbench.sidebar_focus);
+    }
+
+    /// Below the rail's breakpoint the same verbs open the full-screen panel:
+    /// focusing a rail that cannot be painted would answer with nothing.
+    #[test]
+    fn a_narrow_terminal_gets_the_panel_full_screen() {
+        let data = demo::chat();
+        let (mut workbench, rows) = frame(&data, 60, 20);
+        // No rail at this width: the panel's tab strip is not on screen to
+        // click, and `ctrl+b` is the only way in.
+        assert!(!layout::sidebar_fits(60));
+        assert!(!plain(&rows).contains("用量"));
+
+        assert_eq!(
+            workbench.surface_command("/usage", &data),
+            VerbOutcome::Done { notice: None }
+        );
+        assert_eq!(workbench.overlay, Some(Overlay::PanelFull));
+        let text = plain(&workbench.render(&data, 60, 20));
+        assert!(text.contains("上下文"), "the panel takes the body: {text}");
+        // The rail's own key still leaves it, which is what the hint row already
+        // names at this width (`ctrl+b 侧栏`), so the overlay is not a dead end
+        // even though its title line carries no footer of its own.
+        assert!(text.contains("ctrl+b"));
+    }
+
+    /// The verbs that cannot be carried out here answer with what *is* true
+    /// instead of leaving the reader at a dead end.
+    #[test]
+    fn workspace_and_transcript_explain_themselves() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        match workbench.surface_command("/workspace", &data) {
+            VerbOutcome::Done {
+                notice: Some(notice),
+            } => {
+                assert!(
+                    notice.contains(&data.session.cwd),
+                    "names the workspace: {notice}"
+                );
+                assert!(
+                    notice.contains("/sessions"),
+                    "names a verb that moves: {notice}"
+                );
+            }
+            other => panic!("/workspace must explain itself: {other:?}"),
+        }
+        match workbench.surface_command("/transcript", &data) {
+            VerbOutcome::Done {
+                notice: Some(notice),
+            } => {
+                assert!(notice.contains("/export"), "points at the export: {notice}");
+                assert!(
+                    notice.contains("/reply-detail"),
+                    "and at the detail toggle: {notice}"
+                );
+            }
+            other => panic!("/transcript must explain itself: {other:?}"),
+        }
+        // The ones that need the agent stay the agent's.
+        assert_eq!(
+            workbench.surface_command("/export", &data),
+            VerbOutcome::Agent
+        );
+        assert_eq!(
+            workbench.surface_command("/model", &data),
+            VerbOutcome::Agent
+        );
+    }
+
+    /// `/help` used to be a no-op arm in the app: the palette advertised it and
+    /// selecting it changed nothing at all. It opens the same box `?` does.
+    #[test]
+    fn help_opens_the_key_table() {
+        let data = demo::chat();
+        let (mut workbench, rows) = frame(&data, 120, 38);
+        assert!(!plain(&rows).contains("ctrl+q"));
+        assert_eq!(
+            workbench.surface_command("/help", &data),
+            VerbOutcome::Done { notice: None }
+        );
+        assert_eq!(workbench.overlay, Some(Overlay::Help));
+        let text = plain(&workbench.render(&data, 120, 38));
+        assert!(
+            text.contains("这份帮助"),
+            "the key table is on screen: {text}"
+        );
+    }
+
     #[test]
     fn the_sidebar_tabs_switch_the_panel_by_click() {
         let data = demo::chat();
@@ -1133,6 +1442,125 @@ mod tests {
         assert!(!workbench.sidebar_focus);
     }
 
+    /// Where the divider is painted, resolved from the hit map of the last frame
+    /// — the same coordinate a click arrives in.
+    fn divider_x(workbench: &Workbench) -> u16 {
+        workbench
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "divider")
+            .map(|(rect, _)| rect.x)
+            .expect("the divider is a target")
+    }
+
+    fn mouse_at(kind: mouse::MouseKind, x: u16) -> mouse::MouseEvent {
+        mouse::MouseEvent {
+            kind,
+            x,
+            y: 12,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        }
+    }
+
+    /// The divider follows the pointer: a rightward drag *narrows* the rail (its
+    /// seam sits on the frame's right edge), a leftward drag widens it.
+    ///
+    /// Asserted in **columns**, not widths, because columns are what the reader
+    /// sees. The bug this pins — the first version *added* the pointer's
+    /// movement instead of subtracting it — left a rightward drag with the seam
+    /// six columns to the *left* of where it started: press col 84, drag to col
+    /// 90, divider at col 78, rail 42.
+    #[test]
+    fn a_dragged_divider_lands_under_the_pointer() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let seam = divider_x(&workbench);
+        // 120 columns, the default 36-wide rail: the seam is 0-based column 83,
+        // i.e. the 84th column.
+        assert_eq!((seam, workbench.sidebar_w), (83, 36));
+
+        // Rightward by 6: the rail gives up six columns, and the seam ends on
+        // the pointer's own column (89).
+        assert!(workbench
+            .handle(
+                WbEvent::Mouse(mouse_at(mouse::MouseKind::Press, seam)),
+                &data
+            )
+            .is_empty());
+        assert_eq!(
+            workbench.handle(
+                WbEvent::Mouse(mouse_at(mouse::MouseKind::Drag, seam + 6)),
+                &data
+            ),
+            vec![WbAction::ResizeSidebar(30)]
+        );
+        workbench.handle(
+            WbEvent::Mouse(mouse_at(mouse::MouseKind::Release, seam + 6)),
+            &data,
+        );
+        workbench.render(&data, 120, 38);
+        assert_eq!(divider_x(&workbench), seam + 6);
+
+        // Leftward from there: six columns back, seam back at 83, rail at 36.
+        let seam = divider_x(&workbench);
+        workbench.handle(
+            WbEvent::Mouse(mouse_at(mouse::MouseKind::Press, seam)),
+            &data,
+        );
+        assert_eq!(
+            workbench.handle(
+                WbEvent::Mouse(mouse_at(mouse::MouseKind::Drag, seam - 6)),
+                &data
+            ),
+            vec![WbAction::ResizeSidebar(36)]
+        );
+        workbench.handle(
+            WbEvent::Mouse(mouse_at(mouse::MouseKind::Release, seam - 6)),
+            &data,
+        );
+        workbench.render(&data, 120, 38);
+        assert_eq!(divider_x(&workbench), seam - 6);
+    }
+
+    /// Both ends clamp instead of running off: a rail is never under 30 columns
+    /// or over 48, however far the pointer travels in one drag.
+    #[test]
+    fn the_drag_clamps_and_never_runs_off_the_frame() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let seam = divider_x(&workbench);
+        workbench.handle(
+            WbEvent::Mouse(mouse_at(mouse::MouseKind::Press, seam)),
+            &data,
+        );
+        // Far right, then the last column: 30 is the floor, and once it is
+        // reached a further drag is a no-op instead of a second report.
+        assert_eq!(
+            workbench.handle(WbEvent::Mouse(mouse_at(mouse::MouseKind::Drag, 200)), &data),
+            vec![WbAction::ResizeSidebar(layout::SIDEBAR_MIN)]
+        );
+        assert!(workbench
+            .handle(WbEvent::Mouse(mouse_at(mouse::MouseKind::Drag, 119)), &data)
+            .is_empty());
+        assert_eq!(workbench.sidebar_w, layout::SIDEBAR_MIN);
+        // The floor holds however far past the frame the pointer goes, and a
+        // drag back left still works from there (the delta is measured from the
+        // press, not accumulated per report).
+        assert!(workbench
+            .handle(WbEvent::Mouse(mouse_at(mouse::MouseKind::Drag, 255)), &data)
+            .is_empty());
+        assert_eq!(workbench.sidebar_w, layout::SIDEBAR_MIN);
+        // Far left: 48 is the ceiling, and the drag does not go past it.
+        assert_eq!(
+            workbench.handle(WbEvent::Mouse(mouse_at(mouse::MouseKind::Drag, 0)), &data),
+            vec![WbAction::ResizeSidebar(layout::SIDEBAR_MAX)]
+        );
+        assert_eq!(workbench.sidebar_w, layout::SIDEBAR_MAX);
+    }
+
     #[test]
     fn the_divider_drag_resizes_and_persists() {
         let data = demo::chat();
@@ -1161,8 +1589,10 @@ mod tests {
             alt: false,
             ctrl: false,
         };
+        // Six columns to the right of the seam: six columns off the rail, and
+        // the divider moves to the column the pointer is on.
         let actions = workbench.handle(WbEvent::Mouse(drag), &data);
-        assert_eq!(actions, vec![WbAction::ResizeSidebar(42)]);
+        assert_eq!(actions, vec![WbAction::ResizeSidebar(30)]);
         let release = mouse::MouseEvent {
             kind: mouse::MouseKind::Release,
             x: rect.x + 6,
@@ -1516,6 +1946,71 @@ mod tests {
         assert_eq!(
             workbench.handle(WbEvent::Key("enter".into()), &data),
             vec![WbAction::SetThinking("low".into())]
+        );
+    }
+
+    /// No session, no request. The agent answers `set_model` and
+    /// `set_thinking_level` with "session not found — pass a valid session_id"
+    /// when nothing is attached, so a picker opened on the launchpad has to
+    /// stage its choice for the session the first message creates instead. The
+    /// same two gestures with a session attached keep going over the wire.
+    #[test]
+    fn a_model_picked_before_any_session_is_staged_not_requested() {
+        let data = demo::launchpad();
+        assert!(data.session.id.is_empty(), "the launchpad has no session");
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        // It still opens on the value in force, exactly like a session's.
+        workbench.open_picker(PickerKind::Model, &data);
+        assert_eq!(workbench.picker.index, 1);
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        let actions = workbench.handle(WbEvent::Key("enter".into()), &data);
+        assert_eq!(
+            actions,
+            vec![
+                WbAction::SetPendingModel("Qwen".into()),
+                WbAction::SetPendingThinking("medium".into()),
+            ],
+            "the row and the level it will run at, staged"
+        );
+        assert_eq!(workbench.overlay, None, "applying still closes the box");
+
+        // The slider alone is staged too — that is the row that produced
+        // "Could not set thinking: session not found" before.
+        workbench.open_picker(PickerKind::Model, &data);
+        workbench.handle(WbEvent::Key("up".into()), &data);
+        workbench.handle(WbEvent::Key("left".into()), &data);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::SetPendingThinking("low".into())]
+        );
+
+        // Nothing on either road may reach the agent: no request can be built
+        // from what a launchpad picker returns.
+        workbench.open_picker(PickerKind::Model, &data);
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        let actions = workbench.handle(WbEvent::Key("enter".into()), &data);
+        for action in &actions {
+            assert!(
+                !matches!(
+                    action,
+                    WbAction::SetModel(_) | WbAction::SetThinking(_) | WbAction::Command(_)
+                ),
+                "a launchpad pick must not send anything: {action:?}"
+            );
+        }
+
+        // …and with a session attached the same gestures are the wire calls
+        // they always were.
+        let chat = demo::chat();
+        let (mut workbench, _rows) = frame(&chat, 120, 38);
+        workbench.open_picker(PickerKind::Model, &chat);
+        workbench.handle(WbEvent::Key("down".into()), &chat);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &chat),
+            vec![
+                WbAction::SetModel("Qwen".into()),
+                WbAction::SetThinking("medium".into()),
+            ]
         );
     }
 

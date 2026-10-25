@@ -30,7 +30,7 @@ use crate::rpc::GrpcClient;
 
 use super::state::{
     Activity, ActivityKind, InputView, JobRow, ModelChoice, SessionMeta, SessionRow, SkillRow,
-    TodoItem, UsageData, WorkbenchData,
+    TodoItem, UsageData, WorkbenchData, THINKING_LEVELS,
 };
 use super::WbAction;
 
@@ -59,6 +59,18 @@ struct Paging {
     next_offset: i64,
 }
 
+/// The palette verbs the *app* carries out — through the agent (`/new`, a
+/// `/model` with an argument, `/export`) or in the process (`/quit`).
+///
+/// Declared here, beside the `command()` match that implements them, so
+/// `every_palette_entry_has_a_handler` can fail when a palette entry has no
+/// handler at all: the palette ([`super::COMMANDS`]), the pickers
+/// ([`super::picker::PickerKind::from_command`]), the surface's own verbs
+/// ([`super::Workbench::surface_command`]) and this list have to account for
+/// every entry exactly once. That is the check whose absence let five entries
+/// advertise themselves and then answer `Unknown command`.
+pub const APP_COMMANDS: [&str; 4] = ["/new", "/reply-detail", "/export", "/quit"];
+
 /// One attached session plus everything the surface needs to paint it.
 pub struct Live {
     client: Arc<GrpcClient>,
@@ -82,6 +94,13 @@ pub struct Live {
     /// without creating one, so the header's own state (connection, version)
     /// stays and the first message creates the session the reader wanted.
     launchpad: bool,
+    /// The model and reasoning level chosen while nothing was attached. The
+    /// agent cannot be told `set_model` without a session, so the picker (and
+    /// the launchpad's own chips) stage the choice here instead: the header
+    /// shows it, and the session the next message creates is asked for with it.
+    /// Cleared once that session exists — from then on the agent is the source.
+    pending_model: Option<String>,
+    pending_effort: Option<String>,
     /// When the current run started and how many output tokens it has reported:
     /// tok/s is the two divided. Cleared at `agent_start`, frozen at
     /// `agent_end` so an idle surface still shows the turn it just finished.
@@ -98,6 +117,10 @@ pub struct Live {
     /// one thing that has to re-read the goal store, so the panel follows the
     /// session instead of the process's own directory.
     local_cwd: String,
+    /// The git branch of `local_cwd`, read once per workspace (see
+    /// [`super::git`]): the header names it after the cwd, and a per-frame
+    /// `git` spawn would be a stutter on a large repository.
+    branch: super::git::BranchCache,
     /// The goal store's todos for `local_cwd` (see [`super::local`]).
     todos: Vec<TodoItem>,
     /// Installed skills and scheduled jobs are machine-wide: read once, then
@@ -145,11 +168,14 @@ impl Live {
             detail,
             theme_id: theme.id.to_string(),
             launchpad: false,
+            pending_model: None,
+            pending_effort: None,
             run_started: None,
             run_output_tokens: 0,
             run_tps: 0.0,
             state_refresh_pending: false,
             local_cwd: String::new(),
+            branch: super::git::BranchCache::new(),
             todos: Vec::new(),
             local_skills: None,
             local_jobs: None,
@@ -213,6 +239,10 @@ impl Live {
             };
             self.local_cwd = cwd;
         }
+        // The header's second line names the workspace *and its branch*. The
+        // cache keys on the cwd, so this is a no-op on every refresh that did
+        // not move the session.
+        self.branch.for_cwd(&self.local_cwd);
         if self.local_skills.is_none() {
             self.local_skills = Some(super::local::installed_skills());
         }
@@ -573,14 +603,13 @@ impl Live {
                 },
                 title,
                 cwd: state.cwd.clone().unwrap_or_default(),
-                branch: String::new(),
+                branch: self.branch.for_cwd(&self.local_cwd).to_string(),
             },
-            model: state
-                .model
-                .clone()
+            model: self
+                .shown_model()
                 .filter(|model| !model.trim().is_empty())
                 .unwrap_or_else(|| "no model".to_string()),
-            effort: state.thinking_level.clone(),
+            effort: self.shown_effort(),
             mode: state.sandbox_tier.clone().unwrap_or_else(|| "open".into()),
             permission: state
                 .permission_level
@@ -676,6 +705,9 @@ impl Live {
             WbAction::SwitchSession(id) => self.switch(&id).await,
             WbAction::SetModel(id) => self.set_model(&id).await,
             WbAction::SetThinking(level) => self.set_thinking(&level).await,
+            // No session to apply them to: stage, do not call.
+            WbAction::SetPendingModel(id) => self.set_pending_model(&id),
+            WbAction::SetPendingThinking(level) => self.set_pending_effort(&level),
             WbAction::NewSession => self.to_launchpad(),
             // The surface owns its own palette; the driver persists it (it is
             // the one that knows where `settings.json` is).
@@ -753,15 +785,20 @@ impl Live {
                 self.to_launchpad();
             }
             "sessions" => self.refresh_sessions().await,
+            // A model named in the command line is a choice like any other, so
+            // it takes the launchpad road too when nothing is attached.
+            "model" if !arg.is_empty() && self.detached() => self.set_pending_model(&arg),
             "model" if !arg.is_empty() => match self.client.set_model(&arg).await {
                 Ok(()) => self.refresh_state().await,
                 Err(error) => self.notice = Some(format!("Could not set the model: {error}")),
             },
             "model" => self.cycle_model().await,
             "thinking" | "effort" => self.cycle_thinking().await,
-            // The launchpad's parameter chips. Each floats a wire call rather
-            // than carrying state of its own: the agent stays the single source
-            // of what the next message will run with.
+            // The launchpad's parameter chips. With a session attached each
+            // floats a wire call rather than carrying state of its own: the
+            // agent stays the single source of what the next message runs with.
+            // With none, the model and effort chips stage the choice locally —
+            // the agent has no session to accept either.
             "launchpad.model" => self.cycle_model().await,
             "launchpad.effort" => self.cycle_thinking().await,
             "launchpad.permission" => self.cycle_permission().await,
@@ -777,7 +814,30 @@ impl Live {
                 self.refresh_state().await;
                 self.refresh_sessions().await;
             }
-            "help" => {}
+            // The whole record, through the agent's own exporter (the same one
+            // the desktop uses). The path it wrote is the whole answer, so it
+            // goes on the notice row rather than into the transcript.
+            "export" => match self.client.export_html().await {
+                Ok(value) => {
+                    let path = value
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    self.notice = Some(if path.is_empty() {
+                        "会话已导出".to_string()
+                    } else {
+                        format!("会话已导出 → {path}")
+                    });
+                }
+                Err(error) => self.notice = Some(format!("Could not export: {error}")),
+            },
+            // The verbs the *surface* answers (`run.rs` calls it before this
+            // handler): `/usage`, `/skills`, `/workspace`, `/transcript`,
+            // `/help`. They are named here so a caller that bypasses the
+            // surface is not told a command the palette advertises does not
+            // exist — the notice the whole family used to produce.
+            "usage" | "skills" | "workspace" | "transcript" | "help" => {}
             other => self.notice = Some(format!("Unknown command /{other}")),
         }
         Outcome::Continue
@@ -822,13 +882,73 @@ impl Live {
 
     /// Is the surface on the launchpad (no session attached)?
     pub fn on_launchpad(&self) -> bool {
-        self.launchpad
+        self.detached()
+    }
+
+    /// Nothing is attached — `/new` detached this client, or the agent never had
+    /// a session for it. The agent answers `set_model`/`set_thinking_level` with
+    /// "session not found" in both cases, and the surface paints the launchpad in
+    /// both (`WorkbenchData::on_launchpad` looks at the empty id), so one
+    /// predicate decides both what is painted and where a choice goes.
+    fn detached(&self) -> bool {
+        self.launchpad || self.state.session_id.is_empty()
+    }
+
+    /// The model the surface should name: the staged one while the launchpad
+    /// has no session to read it from, otherwise the agent's own.
+    fn shown_model(&self) -> Option<String> {
+        if self.detached() {
+            return self
+                .pending_model
+                .clone()
+                .or_else(|| self.state.model.clone());
+        }
+        self.state.model.clone()
+    }
+
+    /// The reasoning level the surface should name (see [`Self::shown_model`]).
+    fn shown_effort(&self) -> String {
+        if self.detached() {
+            return self
+                .pending_effort
+                .clone()
+                .unwrap_or_else(|| self.state.thinking_level.clone());
+        }
+        self.state.thinking_level.clone()
+    }
+
+    /// Stage a model chosen while nothing is attached — the picker's row or the
+    /// launchpad's own chip. Nothing is sent: the agent has no session to set a
+    /// model on ("session not found"), and the session the next message creates
+    /// is asked for with this.
+    pub fn set_pending_model(&mut self, model_id: &str) {
+        self.pending_model = Some(model_id.to_string());
+        self.notice = None;
+    }
+
+    /// Stage a reasoning level chosen while nothing is attached.
+    pub fn set_pending_effort(&mut self, level: &str) {
+        self.pending_effort = Some(level.to_string());
+        self.notice = None;
+    }
+
+    /// The staged model, if any — what the driver persists as the terminal UI's
+    /// default (`settings.json` `defaultModel`).
+    pub fn pending_model(&self) -> Option<&str> {
+        self.pending_model.as_deref()
+    }
+
+    /// The staged reasoning level, if any (`defaultThinkingLevel`).
+    pub fn pending_effort(&self) -> Option<&str> {
+        self.pending_effort.as_deref()
     }
 
     async fn new_session(&mut self) {
         let cwd = self.state.cwd.clone().unwrap_or_default();
-        let model = self.state.model.clone().unwrap_or_default();
-        let level = self.state.thinking_level.clone();
+        // What the reader chose on the launchpad is what this session starts
+        // with; with nothing staged this is the state the agent already has.
+        let model = self.shown_model().unwrap_or_default();
+        let level = self.shown_effort();
         match self
             .client
             .new_session(
@@ -840,6 +960,11 @@ impl Live {
         {
             Ok(_) => {
                 self.launchpad = false;
+                // The agent now owns the choice (the session was created with
+                // it), so the staging is spent — keeping it would let a stale
+                // pick override the session's own on the next `/new`.
+                self.pending_model = None;
+                self.pending_effort = None;
                 self.refresh_state().await;
                 self.refresh_sessions().await;
                 self.load_tail().await;
@@ -871,6 +996,11 @@ impl Live {
     }
 
     async fn cycle_model(&mut self) {
+        // The launchpad's chip: same gesture, staged instead of sent.
+        if self.detached() {
+            self.cycle_pending_model();
+            return;
+        }
         match self.client.cycle_model().await {
             Ok(value) => {
                 if let Some(model) = value.get("model").and_then(Value::as_str) {
@@ -882,6 +1012,10 @@ impl Live {
     }
 
     async fn cycle_thinking(&mut self) {
+        if self.detached() {
+            self.cycle_pending_effort();
+            return;
+        }
         match self.client.cycle_thinking_level().await {
             Ok(value) => {
                 if let Some(level) = value.get("level").and_then(Value::as_str) {
@@ -890,6 +1024,48 @@ impl Live {
             }
             Err(error) => self.notice = Some(format!("Could not cycle thinking: {error}")),
         }
+    }
+
+    /// The next model in the agent's own order, staged for the next session.
+    ///
+    /// Matched by id *tail* so a state that names the model with its provider
+    /// (`future/deepseek-flash`) still finds the row the list holds.
+    fn cycle_pending_model(&mut self) {
+        let tail = |name: &str| name.rsplit('/').next().unwrap_or(name).to_lowercase();
+        let current = self
+            .pending_model
+            .clone()
+            .or_else(|| self.state.model.clone());
+        let ids: Vec<String> = self.models.iter().map(|model| model.id.clone()).collect();
+        if ids.is_empty() {
+            // Not loaded yet (`refresh_models` runs after the first state):
+            // say so rather than silently doing nothing.
+            self.notice = Some("No models to choose from yet".into());
+            return;
+        }
+        let here = current.as_deref().map(tail).unwrap_or_default();
+        let index = ids
+            .iter()
+            .position(|id| tail(id) == here)
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        let next = ids[index % ids.len()].clone();
+        self.set_pending_model(&next);
+    }
+
+    /// The next reasoning level, staged for the next session.
+    fn cycle_pending_effort(&mut self) {
+        let current = self
+            .pending_effort
+            .clone()
+            .unwrap_or_else(|| self.state.thinking_level.clone());
+        let index = THINKING_LEVELS
+            .iter()
+            .position(|level| *level == current)
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        let next = THINKING_LEVELS[index % THINKING_LEVELS.len()];
+        self.set_pending_effort(next);
     }
 
     /// all → workspace → none → all: the level `/permission` sets, in the order

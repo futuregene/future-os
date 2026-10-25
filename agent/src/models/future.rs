@@ -543,14 +543,34 @@ pub(super) fn derive_thinking_compat(
         //   DeepSeek → "max"
         //   豆包(火山引擎) → 不认 max/xhigh，退化为 "high"
         //   kimi(moonshot) → 枚举就是 none/minimal/low/medium/high/xhigh
-        let xhigh_value = match tokenizer.map(|t| t.to_ascii_lowercase()).as_deref() {
-            Some("doubao") => "high",
-            Some("kimi") => "xhigh",
-            _ => "max",
-        };
         compat.insert("thinkingFormat".into(), serde_json::json!("deepseek"));
-        tlm.insert("high".into(), serde_json::json!("high"));
-        tlm.insert("xhigh".into(), serde_json::json!(xhigh_value));
+        match tokenizer.map(|t| t.to_ascii_lowercase()).as_deref() {
+            // 豆包 seed 2.x 始终思考：服务端明确拒绝关闭思考，并只接受
+            // low/high/max 三档。产品级的六档若原样发出，medium 会被 400 拒绝
+            // （`该模型始终思考，不支持关闭思考；请使用 low、high 或 max。`），
+            // off 还会发出 `thinking: {"type":"disabled"}` 同样被拒。
+            // 所以这里把每一档都映射进它的取值域，并声明"思考关不掉"。
+            Some("doubao") => {
+                compat.insert("thinkingRequired".into(), serde_json::json!(true));
+                for (level, value) in [
+                    ("minimal", "low"),
+                    ("low", "low"),
+                    ("medium", "high"),
+                    ("high", "high"),
+                    ("xhigh", "high"),
+                ] {
+                    tlm.insert(level.into(), serde_json::json!(value));
+                }
+            }
+            Some("kimi") => {
+                tlm.insert("high".into(), serde_json::json!("high"));
+                tlm.insert("xhigh".into(), serde_json::json!("xhigh"));
+            }
+            _ => {
+                tlm.insert("high".into(), serde_json::json!("high"));
+                tlm.insert("xhigh".into(), serde_json::json!("max"));
+            }
+        }
     }
     // else: no thinking parameters → empty compat (model doesn't support thinking)
 
@@ -1112,6 +1132,36 @@ mod tests {
         let params: Vec<String> = vec!["reasoning".to_string()];
         let (_, tlm) = derive_thinking_compat(&params, Some("doubao"));
         assert_eq!(tlm.get("xhigh").unwrap(), &serde_json::json!("high"));
+    }
+
+    /// 豆包 seed 2.x 只接受 low/high/max 三档，并且拒绝关闭思考。
+    ///
+    /// 实测故障（2026-10-25，会话 `20261025-200944`）：会话档位 `medium`，
+    /// derive 只映射了 high/xhigh，`medium` 于是原样当 `reasoning_effort` 发出，
+    /// 服务端 400：`该模型始终思考，不支持关闭思考；请使用 low、high 或 max。`
+    /// 所以每一档都得落在它认的取值里。
+    #[test]
+    fn doubao_maps_every_level_into_the_values_it_accepts() {
+        let params: Vec<String> = vec!["reasoning".to_string(), "thinking".to_string()];
+        let (compat, tlm) = derive_thinking_compat(&params, Some("doubao"));
+        assert_eq!(
+            compat.get("thinkingRequired").unwrap(),
+            &serde_json::json!(true),
+            "豆包关不掉思考，请求不能发 disabled"
+        );
+        for (level, wire) in [
+            ("minimal", "low"),
+            ("low", "low"),
+            ("medium", "high"),
+            ("high", "high"),
+            ("xhigh", "high"),
+        ] {
+            assert_eq!(
+                tlm.get(level).unwrap(),
+                &serde_json::json!(wire),
+                "{level} must not reach the wire as itself"
+            );
+        }
     }
 
     #[test]

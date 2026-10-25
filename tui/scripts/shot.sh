@@ -27,7 +27,10 @@
 #     FUTURE_HOME=$FUTURE_HOME ./target/debug/future agent --grpc-addr 127.0.0.1:5511 &
 #     export FUTURE_AGENT_GRPC_ADDR=127.0.0.1:5511
 #
-# Scenarios: chat help palette todo usage skills sessions
+# Scenarios: chat help palette todo usage skills sessions launchpad scrolled
+#            palette-filter full-panel drag light command-usage command-skills
+# (the table lives in scripts/screenshots/capture.py; an unknown name is an
+# error rather than a silently different frame)
 # Exit codes: 2 = usage or missing binary, 1 = capture failure.
 set -euo pipefail
 

@@ -220,6 +220,17 @@ model picker commits the model **and** the slider's level together (`SetModel` +
 state (connection dot, version) stays, the transcript goes, and the first
 message creates the session with whatever model/effort the launchpad shows.
 
+With no session attached — the launchpad, or a TUI started against an agent that
+has none — `enter` in a picker **stages** the choice instead of sending it: the
+agent answers `set_model`/`set_thinking_level` with `session not found — pass a
+valid session_id` when nothing is attached, so the pair becomes `SetPending*`.
+The header and the launchpad's chips show the staged value, it is written to
+`settings.json` as `defaultModel`/`defaultThinkingLevel`, and the first message
+asks for the session with it; once that session exists the agent is the only
+source and the staging is cleared. The launchpad's model and effort chips follow
+the same rule; its mode and permission chips are agent-level settings that work
+without a session, so they still go over the wire.
+
 Rows are painted and registered as hit regions from one list and one geometry
 (`screen::picker_box` over `box_geometry`), which is what makes a click land on
 the row under the pointer rather than one beside it.
@@ -350,7 +361,7 @@ nothing here is ever clipped mid-value.
 
 | File | Size | What it proves |
 |---|---|---|
-| `workbench-120x38.png` | 120×38 | the full frame: header (wordmark), sidebar with tabs, divider, framed input box, activity, status, hint |
+| `workbench-chat.png` | 120×38 | the full frame: header (wordmark, plus `cwd · ⎇ branch` on line 2), sidebar with tabs, divider, framed input box, activity, status, hint |
 | `workbench-90x24.png` | 90×24 | still two columns; the header falls back to its text brand; the hairline spans the whole width |
 | `workbench-60x20.png` | 60×20 | `< 88`: no sidebar and no dead rail; `< 24`: one-row header, the input box keeps a frame (top edge + sides), the hint row drops whole entries |
 | `workbench-panel-todo.png` | 120×38 | 待办 lists the repo's real goal todos (`✔/◉/○/✖`, priority, text) |
