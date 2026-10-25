@@ -82,6 +82,11 @@ struct PersistenceInner {
     /// this one exists because a *field* update is the only write that happens
     /// between a committed checkpoint and the event that reports it.
     fail_next_info: std::sync::atomic::AtomicBool,
+    /// Test-only: makes the next run-terminal commit report a cancelled join
+    /// instead of awaiting it. A `spawn_blocking` task only joins with a
+    /// cancellation when its runtime shuts down, which no test can arrange while
+    /// it still has to assert on what the run does next.
+    cancel_next_commit: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     panic_next_commit: std::sync::atomic::AtomicBool,
     #[cfg(test)]
@@ -132,6 +137,7 @@ impl SessionPersistence {
                 fail_next_commit: std::sync::atomic::AtomicBool::new(false),
                 fail_next_close: std::sync::atomic::AtomicBool::new(false),
                 fail_next_info: std::sync::atomic::AtomicBool::new(false),
+                cancel_next_commit: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 panic_next_commit: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
@@ -333,6 +339,18 @@ impl SessionPersistence {
     #[cfg(test)]
     pub(crate) fn panic_next_commit(&self) {
         self.inner.panic_next_commit.store(true, Ordering::Release);
+    }
+
+    /// Test-only: report the next run-terminal commit as cancelled by its
+    /// runtime, without writing it.
+    #[cfg(test)]
+    pub(crate) fn cancel_next_commit(&self) {
+        self.inner.cancel_next_commit.store(true, Ordering::Release);
+    }
+
+    /// Consumes [`Self::cancel_next_commit`]; always false in production.
+    pub(crate) fn take_cancelled_commit(&self) -> bool {
+        self.inner.cancel_next_commit.swap(false, Ordering::AcqRel)
     }
 
     /// Test-only crash injection: ensure a worker exists, then order it to

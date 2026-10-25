@@ -30,6 +30,7 @@ use crate::components::keymap_view::{KeymapAction, KeymapModel, KeymapOverlay, K
 use crate::components::menu::{
     MenuAction, MenuItem, MenuOptions, MenuOverlay, MenuSection, MenuState,
 };
+use crate::components::new_session::{NewSessionAction, NewSessionScreen, WorkspaceEntry};
 use crate::components::pager::{Pager, PagerAction, PagerOverlay};
 use crate::components::provider_dialogs::{
     ProviderForm, ProviderFormAction, ProviderFormOverlay, ProviderListAction, ProviderListOverlay,
@@ -327,6 +328,11 @@ pub enum KeyAction {
     ToggleToolOutput,
     /// `ctrl+d` — fold runs of tool calls and thinking into compact rows.
     ToggleCompactActivity,
+    /// `ctrl+n` — open the new-session screen from anywhere.
+    NewSession,
+    /// `ctrl+e` — switch a settled reply between "final answer only" and the
+    /// full process. The same reading level the desktop and the phone offer.
+    ToggleReplyDetail,
     /// `ctrl+x` — copy the most recent assistant message to the clipboard.
     CopyLastMessage,
 }
@@ -351,6 +357,8 @@ pub enum ModelsPurpose {
     Scoped,
     /// `/models default` — pick the agent-side default model.
     Default,
+    /// The new-session screen's model picker.
+    NewSession,
 }
 
 /// Which new-style popup menu a [`UiCmd::MenuSelected`]/[`UiCmd::MenuCancelled`]
@@ -366,6 +374,17 @@ pub enum MenuPurpose {
     Sessions,
     /// `/tree` — pick a session from the fork/clone hierarchy.
     SessionTree,
+    /// `/workspace` — pick a workspace folder to move this session into.
+    Workspaces,
+}
+
+/// Which box a clipboard paste lands in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipboardTarget {
+    /// The conversation's composer.
+    Input,
+    /// The new-session screen's prompt box.
+    NewSession,
 }
 
 /// Who requested the session list (different overlays are built).
@@ -374,6 +393,10 @@ pub enum SessionsPurpose {
     Autocomplete,
     Browse,
     Tree,
+    /// The new-session screen's workspace list (folders, not conversations).
+    Workspaces,
+    /// `/workspace` — the same list, as a menu to switch this session into.
+    WorkspacePicker,
 }
 
 /// Which `/…` command asked for a [`UiCmd::DiagnosticsLoaded`] payload — the
@@ -514,6 +537,12 @@ pub enum UiCmd {
     NewSessionDone {
         result: Result<Value, String>,
         state: Option<RpcSessionState>,
+        /// The new-session screen's first message, sent once the session
+        /// exists — after the caller has switched onto it, so the bubble and
+        /// its run land in the conversation that is actually on screen.
+        draft: Option<(String, PendingDraft)>,
+        /// The folder the session was started in, for the confirmation line.
+        cwd: Option<String>,
     },
     CloneDone {
         result: Result<Value, String>,
@@ -766,6 +795,11 @@ pub struct TuiSettings {
     /// On by default, like the desktop toggle (PRD v1.6 §3); `/skill-recommend
     /// off` opts out.
     pub skill_recommend: Option<bool>,
+    /// Reading level of a settled reply (`replyDetail`: `default` | `detailed`)
+    /// — the desktop's and the phone's own setting, spelled the same so one
+    /// name means one thing across clients. Absent ⇒ `default`, which keeps a
+    /// finished reply to its final answer plus a count of the work above it.
+    pub reply_detail: Option<String>,
 }
 
 impl TuiSettings {
@@ -830,6 +864,9 @@ impl TuiSettings {
         if let Some(recommend) = self.skill_recommend {
             obj.insert("skillRecommend".into(), Value::Bool(recommend));
         }
+        if let Some(detail) = &self.reply_detail {
+            obj.insert("replyDetail".into(), Value::String(detail.clone()));
+        }
         Value::Object(obj)
     }
 
@@ -865,6 +902,10 @@ impl TuiSettings {
                 .get("notify")
                 .and_then(|value| serde_json::from_value::<NotifyConfig>(value.clone()).ok()),
             skill_recommend: v.get("skillRecommend").and_then(Value::as_bool),
+            reply_detail: v
+                .get("replyDetail")
+                .and_then(Value::as_str)
+                .map(String::from),
         }
     }
 }
@@ -1260,6 +1301,35 @@ fn shorten_cwd(cwd: &str, home: &str) -> String {
         format!("…{tail}")
     } else {
         shown
+    }
+}
+
+/// How long ago `then_ms` was, in the shortest form that is still true:
+/// `now`, `5m`, `3h`, `2d`, `4w`, then a date. A clock that disagrees with the
+/// stored timestamp reads as `now` rather than a negative age.
+fn relative_age(now_ms: i64, then_ms: i64) -> String {
+    let delta = now_ms.saturating_sub(then_ms);
+    if delta < 60_000 {
+        return "now".to_string();
+    }
+    let minutes = delta / 60_000;
+    if minutes < 60 {
+        return format!("{minutes}m");
+    }
+    let hours = minutes / 60;
+    if hours < 24 {
+        return format!("{hours}h");
+    }
+    let days = hours / 24;
+    if days < 7 {
+        return format!("{days}d");
+    }
+    if days < 365 {
+        return format!("{}w", days / 7);
+    }
+    match chrono::DateTime::from_timestamp_millis(then_ms) {
+        Some(at) => at.format("%Y-%m-%d").to_string(),
+        None => format!("{}y", days / 365),
     }
 }
 
@@ -1745,6 +1815,10 @@ pub struct App<T: TerminalIo> {
     /// `get_tools` command, so this is the only source for the menu's initial
     /// state (all built-ins when `None`).
     enabled_tools: Option<Vec<String>>,
+    /// `ctrl+n` — the new-session screen, when it is open. While it is `Some`
+    /// the whole surface is that screen: the conversation, its footer and its
+    /// input are not drawn, and every key belongs to the screen.
+    new_session: Option<NewSessionScreen>,
     /// Set while the input line is capturing a secret for `/provider-key`:
     /// the next submission is sent as that provider's API key instead of a
     /// prompt, and an empty submission clears the stored key.
@@ -1923,6 +1997,7 @@ impl<T: TerminalIo> App<T> {
             clipboard: crate::clipboard::Clipboard::new(),
             clipboard_capture: crate::paste::ClipboardCapture::new(),
             enabled_tools: None,
+            new_session: None,
             pending_secret: None,
             provider_notice: None,
             input_tx: None,
@@ -2177,6 +2252,20 @@ impl<T: TerminalIo> App<T> {
                 takes_session_arg: false,
             },
             SlashCommand {
+                value: "/reply-detail".into(),
+                label: "/reply-detail".into(),
+                description: "final answer only, or the whole process".into(),
+                takes_model_arg: false,
+                takes_session_arg: false,
+            },
+            SlashCommand {
+                value: "/workspace".into(),
+                label: "/workspace".into(),
+                description: "list, create or switch workspace folders".into(),
+                takes_model_arg: false,
+                takes_session_arg: false,
+            },
+            SlashCommand {
                 value: "/tool-output".into(),
                 label: "/tool-output".into(),
                 description: "list tool calls or show one output".into(),
@@ -2339,6 +2428,16 @@ impl<T: TerminalIo> App<T> {
         );
         let tx = self.op_tx.clone();
         self.keybindings.add(
+            Key::CTRL_N,
+            Box::new(move || {
+                let _ = tx.send(UiCmd::KeyAction(KeyAction::NewSession));
+                true
+            }),
+            "New session",
+            None,
+        );
+        let tx = self.op_tx.clone();
+        self.keybindings.add(
             Key::CTRL_T,
             Box::new(move || {
                 let _ = tx.send(UiCmd::KeyAction(KeyAction::CycleThinking));
@@ -2385,6 +2484,16 @@ impl<T: TerminalIo> App<T> {
                 true
             }),
             "Compact view (fold tool runs and thinking)",
+            None,
+        );
+        let tx = self.op_tx.clone();
+        self.keybindings.add(
+            Key::CTRL_E,
+            Box::new(move || {
+                let _ = tx.send(UiCmd::KeyAction(KeyAction::ToggleReplyDetail));
+                true
+            }),
+            "Toggle final-answer view",
             None,
         );
         let tx = self.op_tx.clone();
@@ -2568,9 +2677,24 @@ impl<T: TerminalIo> App<T> {
                             );
                         }
                         ModelsPurpose::Autocomplete => self.query_autocomplete_cached(),
+                        ModelsPurpose::NewSession => {
+                            self.refresh_new_session_models();
+                        }
                     }
                 }
-                Err(err) => self.add_system_message(format!("Failed to load models: {err}")),
+                Err(err) => {
+                    // A background fetch the *screen* started reports on the
+                    // screen: a transcript message would be invisible behind
+                    // it (and would look like a conversation event).
+                    if purpose == ModelsPurpose::NewSession && self.new_session.is_some() {
+                        if let Some(screen) = self.new_session.as_mut() {
+                            screen.set_notice(format!("Could not load models: {err}"));
+                        }
+                        self.request_render(false);
+                    } else {
+                        self.add_system_message(format!("Failed to load models: {err}"));
+                    }
+                }
             },
             UiCmd::SessionsLoaded { result, purpose } => match result {
                 Ok(sessions) => {
@@ -2594,9 +2718,24 @@ impl<T: TerminalIo> App<T> {
                         SessionsPurpose::Browse => self.show_sessions_overlay(sessions),
                         SessionsPurpose::Tree => self.show_tree_overlay(sessions),
                         SessionsPurpose::Autocomplete => self.query_autocomplete_cached(),
+                        SessionsPurpose::Workspaces => self.workspaces_loaded(sessions),
+                        SessionsPurpose::WorkspacePicker => self.show_workspace_menu(&sessions),
                     }
                 }
-                Err(err) => self.add_system_message(format!("Failed to load sessions: {err}")),
+                Err(err) => {
+                    let screen_fetch = matches!(
+                        purpose,
+                        SessionsPurpose::Workspaces | SessionsPurpose::WorkspacePicker
+                    );
+                    if screen_fetch && self.new_session.is_some() {
+                        if let Some(screen) = self.new_session.as_mut() {
+                            screen.set_notice(format!("Could not list workspaces: {err}"));
+                        }
+                        self.request_render(false);
+                    } else {
+                        self.add_system_message(format!("Failed to load sessions: {err}"));
+                    }
+                }
             },
             UiCmd::ForkMessagesLoaded(result) => match result {
                 Ok(value) => self.show_fork_overlay(value),
@@ -2914,7 +3053,12 @@ impl<T: TerminalIo> App<T> {
                 }
                 self.hide_overlay();
             }
-            UiCmd::NewSessionDone { result, state } => match result {
+            UiCmd::NewSessionDone {
+                result,
+                state,
+                draft,
+                cwd,
+            } => match result {
                 Ok(v) => {
                     if v.get("sessionId").and_then(Value::as_str).is_some() {
                         if let Some(s) = state {
@@ -2926,7 +3070,22 @@ impl<T: TerminalIo> App<T> {
                         let session_id = self.state.session_id.clone();
                         self.clear_transcript(&session_id);
                         self.restore_session_input();
-                        self.add_system_message("New session started.".into());
+                        match cwd.filter(|cwd| !cwd.is_empty()) {
+                            Some(cwd) => self.add_system_message(format!(
+                                "New session started in {}.",
+                                shorten_cwd(&cwd, &std::env::var("HOME").unwrap_or_default())
+                            )),
+                            None => self.add_system_message("New session started.".into()),
+                        }
+                        // The screen's first message goes through the ordinary
+                        // submit path, so the user bubble, the image
+                        // attachments and the run binding are the same ones a
+                        // message typed on the conversation screen gets.
+                        if let Some((text, pending)) = draft {
+                            self.input.set_value(&text, None);
+                            self.input.restore_pending(pending);
+                            self.handle_submit(&text);
+                        }
                     }
                 }
                 Err(_) => self.add_system_message("Not connected to agent.".into()),
@@ -3038,6 +3197,16 @@ impl<T: TerminalIo> App<T> {
                 MenuPurpose::SessionTree => {
                     self.hide_overlay();
                     self.switch_to_session(values.first());
+                }
+                MenuPurpose::Workspaces => {
+                    self.hide_overlay();
+                    match values.first() {
+                        Some(path) => {
+                            let path = path.clone();
+                            self.open_workspace(&path, false);
+                        }
+                        None => self.request_render(false),
+                    }
                 }
                 MenuPurpose::Theme => {
                     self.hide_overlay();
@@ -4517,11 +4686,15 @@ impl<T: TerminalIo> App<T> {
 
     /// The post-listener input flow: paste, interrupt, key parse, fallback.
     fn handle_input_continue(&mut self, data: &str) {
-        // Bracketed paste.
+        // Bracketed paste. The new-session screen owns the box while it is
+        // open, so a terminal paste lands in *its* prompt — the conversation's
+        // draft behind it must not grow by text the reader cannot see.
         if data.starts_with("\x1b[200~") {
             if let Some(end_idx) = data.find("\x1b[201~") {
                 let content = &data[6..end_idx];
-                if !self.overlay_stack.is_empty() {
+                if let Some(screen) = self.new_session.as_mut() {
+                    screen.input.insert_text(content);
+                } else if !self.overlay_stack.is_empty() {
                     let top = self.get_top_overlay_index();
                     if let Some(idx) = top {
                         self.overlay_stack[idx].component.handle_input(content);
@@ -4531,6 +4704,14 @@ impl<T: TerminalIo> App<T> {
                 }
                 self.request_render(false);
             }
+            return;
+        }
+
+        // Ctrl+C while the new-session screen is open closes it: the rawer form
+        // of "get me out", for a reader who does not know ctrl+n toggles.
+        if data == "\x03" && self.new_session.is_some() {
+            self.close_new_session();
+            self.request_render(true);
             return;
         }
 
@@ -4598,6 +4779,13 @@ impl<T: TerminalIo> App<T> {
     }
 
     fn handle_key(&mut self, key: &str) {
+        // The new-session screen is modal: it owns every key while it is open,
+        // so nothing from the conversation screen (a scroll, a slash command, a
+        // global binding) can act behind it.
+        if self.new_session.is_some() && self.handle_new_session_key(key) {
+            return;
+        }
+
         // Shift+Ctrl+D — trigger debug callback.
         if key == "shift+ctrl+d" {
             if let Some(cb) = self.on_debug.as_mut() {
@@ -4817,6 +5005,24 @@ impl<T: TerminalIo> App<T> {
                 // Silent on purpose: ctrl+g is a view toggle, and a system
                 // message per press would push the transcript around.
                 self.chat.toggle_tool_output_expanded();
+                self.request_render(false);
+            }
+            KeyAction::NewSession => {
+                // A second press closes the screen it opened (the key the
+                // reader used to get in is the key they reach for to get out).
+                if self.new_session.is_some() {
+                    self.close_new_session();
+                } else {
+                    self.open_new_session();
+                }
+                self.request_render(true);
+            }
+            KeyAction::ToggleReplyDetail => {
+                // Silent like the other view toggles: the transcript's own
+                // shape is the feedback.
+                let level = self.chat.toggle_reply_detail();
+                self.tui_settings.reply_detail = Some(level.as_wire().to_string());
+                self.save_tui_settings();
                 self.request_render(false);
             }
             KeyAction::ToggleCompactActivity => {
@@ -6401,6 +6607,8 @@ impl<T: TerminalIo> App<T> {
                         self.add_system_message(format!("Usage: /autoretry [on|off] (got '{bad}')"))
                     }
                 },
+                "reply-detail" => self.reply_detail_command(&arg),
+                "workspace" => self.workspace_command(&arg),
                 "tool-output" if !arg.trim().is_empty() => self.show_tool_output(arg.trim()),
                 "tool-output" => self.show_tool_calls(),
                 // ── Sandbox, permissions and the skill browser ──────────
@@ -6539,8 +6747,6 @@ impl<T: TerminalIo> App<T> {
     /// which has to leave the TUI on a live session once it removes one.
     fn start_new_session(&mut self) {
         self.save_session_input();
-        let client = self.client.clone();
-        let tx = self.op_tx.clone();
         let cwd = if self.state.cwd.is_empty() {
             None
         } else {
@@ -6556,6 +6762,25 @@ impl<T: TerminalIo> App<T> {
         } else {
             Some(self.state.thinking.clone() as ThinkingLevel)
         };
+        self.spawn_new_session(cwd, model_id, level, None, None);
+    }
+
+    /// Create a session with the given working directory, model and thinking
+    /// level, optionally sending `draft` as its first message and announcing
+    /// the folder it was started in.
+    ///
+    /// The approval defaults a fresh session has to inherit are applied here,
+    /// so `/new` and the `ctrl+n` screen cannot drift apart on them.
+    fn spawn_new_session(
+        &mut self,
+        cwd: Option<String>,
+        model_id: Option<String>,
+        level: Option<String>,
+        draft: Option<(String, PendingDraft)>,
+        announce_cwd: Option<String>,
+    ) {
+        let client = self.client.clone();
+        let tx = self.op_tx.clone();
         let approval_mode = self
             .tui_settings
             .default_approval_mode
@@ -6583,8 +6808,290 @@ impl<T: TerminalIo> App<T> {
                     state = client.get_state().await.ok();
                 }
             }
-            let _ = tx.send(UiCmd::NewSessionDone { result, state });
+            let _ = tx.send(UiCmd::NewSessionDone {
+                result,
+                state,
+                draft,
+                cwd: announce_cwd,
+            });
         });
+    }
+
+    // ─── New-session screen (ctrl+n) ───────────────────────────────────
+
+    /// Open the whole-surface composer. It opens from anywhere — over a running
+    /// turn, over a menu, over a half-typed draft — because starting a new
+    /// conversation is not something the current one should be able to block.
+    fn open_new_session(&mut self) {
+        // Overlays and the autocomplete popup belong to the conversation
+        // screen: leaving them up would draw them over a screen that has
+        // nothing to do with them.
+        self.hide_overlay();
+        self.autocomplete.hide();
+        let cwd = (!self.state.cwd.is_empty()).then(|| self.state.cwd.clone());
+        let model = (!self.state.model.is_empty()).then(|| self.state.model.clone());
+        let thinking = (!self.state.thinking.is_empty()).then(|| self.state.thinking.clone());
+        let mut screen =
+            NewSessionScreen::new(cwd.as_deref(), model.as_deref(), thinking.as_deref());
+        screen.set_theme(self.theme);
+        // The caches already hold a usable list; the fetches below only
+        // refresh it, so the first frame is never a spinner.
+        let cached = self.known_models();
+        if !cached.is_empty() {
+            screen.set_models(cached);
+        }
+        self.new_session = Some(screen);
+        self.load_new_session_choices();
+    }
+
+    /// Leave the screen without creating anything. The conversation's own
+    /// draft is untouched: the screen never took it over.
+    fn close_new_session(&mut self) {
+        self.new_session = None;
+    }
+
+    /// Fill the screen's workspace and model lists (asynchronously — the agent
+    /// owns both).
+    fn load_new_session_choices(&mut self) {
+        let client = self.client.clone();
+        let tx = self.op_tx.clone();
+        tokio::spawn(async move {
+            let _ = tx.send(UiCmd::SessionsLoaded {
+                result: client.list_sessions().await,
+                purpose: SessionsPurpose::Workspaces,
+            });
+        });
+        let client = self.client.clone();
+        let tx = self.op_tx.clone();
+        tokio::spawn(async move {
+            let _ = tx.send(UiCmd::ModelsLoaded {
+                result: client.list_models().await,
+                purpose: ModelsPurpose::NewSession,
+            });
+        });
+    }
+
+    /// `(id, label)` for every model the TUI has already seen, sorted by id —
+    /// the shape both the picker rows and the model menus use.
+    fn known_models(&self) -> Vec<(String, String)> {
+        let mut ids = self.cached_models.clone();
+        if ids.is_empty() {
+            return Vec::new();
+        }
+        ids.sort();
+        ids.into_iter()
+            .map(|id| {
+                let label = self.model_labels.get(&id).cloned().unwrap_or_default();
+                (id, label)
+            })
+            .collect()
+    }
+
+    /// Start the session the screen describes.
+    fn submit_new_session(&mut self) {
+        let Some(mut screen) = self.new_session.take() else {
+            return;
+        };
+        let cwd = screen.current_workspace().map(str::to_string);
+        let model = screen.current_model().map(str::to_string);
+        let level = screen.current_thinking().to_string();
+        let draft = screen.take_prompt();
+        // Saving the outgoing conversation's draft first means switching onto
+        // the new session cannot lose half-typed text.
+        self.save_session_input();
+        self.spawn_new_session(cwd.clone(), model, Some(level), draft, cwd);
+        self.request_render(true);
+    }
+
+    /// Every key while the screen is open, `true` when it was taken.
+    fn handle_new_session_key(&mut self, key: &str) -> bool {
+        if key == Key::ESCAPE || key == Key::CTRL_C || key == Key::CTRL_N {
+            self.close_new_session();
+            self.request_render(true);
+            return true;
+        }
+        if key == Key::CTRL_V || key == "super+v" {
+            self.paste_into(ClipboardTarget::NewSession);
+            return true;
+        }
+        let action = match self.new_session.as_mut() {
+            Some(screen) => screen.handle_key(key),
+            None => return false,
+        };
+        match action {
+            // The screen is modal: a key it did not take is not an invitation
+            // for a conversation shortcut to fire behind it.
+            NewSessionAction::Pass => {}
+            NewSessionAction::Changed => self.request_render(false),
+            NewSessionAction::Cancel => {
+                self.close_new_session();
+                self.request_render(true);
+            }
+            NewSessionAction::Submit => self.submit_new_session(),
+            NewSessionAction::CreateWorkspace { path } => {
+                // A failure is the screen's own to report: its notice row sits
+                // right under the path the reader is fixing.
+                if let Some(screen) = self.new_session.as_mut() {
+                    screen.accept_workspace(&path, true);
+                }
+                self.request_render(true);
+            }
+        }
+        true
+    }
+
+    /// `/workspace [new] [path]` — list or create workspace folders, and move
+    /// this session into one.
+    fn workspace_command(&mut self, arg: &str) {
+        let trimmed = arg.trim();
+        if trimmed.is_empty() {
+            self.show_workspace_picker();
+            return;
+        }
+        let (create, path) = match trimmed.strip_prefix("new ") {
+            Some(rest) => (true, rest.trim()),
+            None => (false, trimmed),
+        };
+        if path.is_empty() {
+            self.add_system_message("Usage: /workspace [new] <path>".into());
+            return;
+        }
+        self.open_workspace(path, create);
+    }
+
+    /// Create (when asked) and switch to a workspace folder.
+    fn open_workspace(&mut self, path: &str, create: bool) {
+        if self.cwd_change_blocked() {
+            return;
+        }
+        let base = if self.state.cwd.is_empty() {
+            None
+        } else {
+            Some(self.state.cwd.as_str())
+        };
+        let resolved = crate::home::expand_path(path, base);
+        if create {
+            if let Err(err) = std::fs::create_dir_all(&resolved) {
+                self.add_system_message(format!(
+                    "Failed to create workspace {}: {err}",
+                    resolved.display()
+                ));
+                return;
+            }
+        } else if !resolved.is_dir() {
+            self.add_system_message(format!(
+                "{} is not a folder. Use /workspace new {} to create it.",
+                resolved.display(),
+                path
+            ));
+            return;
+        }
+        let resolved = normalize_path(&resolved.display().to_string());
+        if resolved == self.state.cwd {
+            self.add_system_message(format!("Already in {resolved}."));
+            return;
+        }
+        self.switch_cwd(resolved);
+    }
+
+    /// `/workspace` — the folders this agent has sessions in.
+    fn show_workspace_picker(&mut self) {
+        let client = self.client.clone();
+        let tx = self.op_tx.clone();
+        tokio::spawn(async move {
+            let _ = tx.send(UiCmd::SessionsLoaded {
+                result: client.list_sessions().await,
+                purpose: SessionsPurpose::WorkspacePicker,
+            });
+        });
+    }
+
+    /// The workspace list a fresh fetch produces: one entry per distinct cwd,
+    /// newest activity first, with the session count as its weight.
+    ///
+    /// The current session's folder is always first when it has no sessions
+    /// yet (a brand-new workspace), and the folder the TUI was started in is
+    /// added when the agent has never seen it — otherwise "where am I" would be
+    /// the one place missing from the list.
+    fn workspace_entries(sessions: &[SessionSummary], current_cwd: &str) -> Vec<WorkspaceEntry> {
+        let mut by_path: Vec<(String, usize, i64)> = Vec::new();
+        for session in sessions {
+            if session.cwd.is_empty() {
+                continue;
+            }
+            match by_path.iter_mut().find(|(path, _, _)| *path == session.cwd) {
+                Some((_, count, last)) => {
+                    *count += 1;
+                    *last = (*last).max(session.updated_at_ms);
+                }
+                None => by_path.push((session.cwd.clone(), 1, session.updated_at_ms)),
+            }
+        }
+        by_path.sort_by_key(|entry| std::cmp::Reverse(entry.2));
+        let process_cwd = std::env::current_dir()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
+        for extra in [current_cwd, process_cwd.as_str()] {
+            if extra.is_empty() || by_path.iter().any(|(path, _, _)| path == extra) {
+                continue;
+            }
+            by_path.push((extra.to_string(), 0, 0));
+        }
+        by_path
+            .into_iter()
+            .map(|(path, count, _)| WorkspaceEntry {
+                label: crate::components::new_session::shorten_path(&path),
+                path,
+                sessions: count,
+            })
+            .collect()
+    }
+
+    /// The new-session screen asked for the workspace list.
+    fn workspaces_loaded(&mut self, sessions: Vec<SessionSummary>) {
+        let entries = Self::workspace_entries(&sessions, &self.state.cwd);
+        if let Some(screen) = self.new_session.as_mut() {
+            screen.set_workspaces(entries);
+        }
+        self.request_render(false);
+    }
+
+    /// The model fetch the screen asked for finished.
+    fn refresh_new_session_models(&mut self) {
+        let models = self.known_models();
+        if let Some(screen) = self.new_session.as_mut() {
+            screen.set_models(models);
+        }
+        self.request_render(false);
+    }
+
+    /// `/workspace` — the menu, built from a fresh session list.
+    fn show_workspace_menu(&mut self, sessions: &[SessionSummary]) {
+        let entries = Self::workspace_entries(sessions, &self.state.cwd);
+        if entries.is_empty() {
+            self.add_system_message("No workspaces yet. /workspace new <path> creates one.".into());
+            return;
+        }
+        let items: Vec<MenuItem> = entries
+            .into_iter()
+            .map(|entry| {
+                let mut item = MenuItem::new(entry.path.clone(), entry.label.clone());
+                item = item.with_description(format!(
+                    "{} session{}",
+                    entry.sessions,
+                    if entry.sessions == 1 { "" } else { "s" }
+                ));
+                if entry.path == self.state.cwd {
+                    item = item.with_badges(["current"]);
+                }
+                item
+            })
+            .collect();
+        let options = MenuOptions::new("Workspaces", vec![MenuSection::flat(items)])
+            .searchable(true)
+            .max_visible(15)
+            .with_footer_hints(Self::select_hints());
+        self.show_purpose_menu(MenuPurpose::Workspaces, MenuState::new(options));
     }
 
     fn show_sessions(&mut self) {
@@ -6603,14 +7110,35 @@ impl<T: TerminalIo> App<T> {
     /// the item value and the cwd the description.
     fn show_sessions_overlay(&mut self, sessions: Vec<SessionSummary>) {
         let home = std::env::var("HOME").unwrap_or_default();
-        let items: Vec<MenuItem> = sessions
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis() as i64)
+            .unwrap_or(0);
+        // Most recently active first: the list is a "what was I doing" picker,
+        // and the agent's own enumeration order is by id. `updated_at_ms` is
+        // the run/journal activity the desktop and the phone sort by, so all
+        // three clients agree on which conversation is on top.
+        let mut ordered = sessions;
+        ordered.sort_by(|a, b| {
+            b.updated_at_ms
+                .cmp(&a.updated_at_ms)
+                // A tie keeps a stable, readable order rather than the
+                // enumeration's incidental one.
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        let items: Vec<MenuItem> = ordered
             .iter()
             .map(|s| {
                 let name = session_display_name(s);
                 let label = sanitize_session_name(&name);
                 let mut item = MenuItem::new(s.id.clone(), label.clone());
+                // Which workspace the conversation is filed under — the
+                // question a bare title cannot answer once one has several.
                 if !s.cwd.is_empty() {
                     item = item.with_description(shorten_cwd(&s.cwd, &home));
+                }
+                if s.updated_at_ms > 0 {
+                    item = item.with_detail(relative_age(now_ms, s.updated_at_ms));
                 }
                 if let Some(true) = s.is_streaming {
                     item = item.with_badges(["streaming"]);
@@ -8445,6 +8973,35 @@ impl<T: TerminalIo> App<T> {
         }
     }
 
+    /// `/reply-detail [default|detailed]` — the reading level of a settled
+    /// reply, the same two values the desktop's and the phone's appearance
+    /// setting offers. `ctrl+e` is the shortcut for the same switch.
+    fn reply_detail_command(&mut self, arg: &str) {
+        use crate::components::chat_area::ReplyDetail;
+        let arg = arg.trim().to_lowercase();
+        let detail = match arg.as_str() {
+            "" => self.chat.toggle_reply_detail(),
+            "default" | "final" | "on" => ReplyDetail::Default,
+            "detailed" | "all" | "off" => ReplyDetail::Detailed,
+            other => {
+                self.add_system_message(format!(
+                    "Usage: /reply-detail [default|detailed] (got '{other}')"
+                ));
+                return;
+            }
+        };
+        self.chat.set_reply_detail(detail);
+        self.tui_settings.reply_detail = Some(detail.as_wire().to_string());
+        self.save_tui_settings();
+        self.add_system_message(match detail {
+            ReplyDetail::Default => {
+                "Replies show their final answer; the work above it is folded (ctrl+e).".to_string()
+            }
+            ReplyDetail::Detailed => "Replies show every step of the process (ctrl+e).".to_string(),
+        });
+        self.request_render(true);
+    }
+
     /// `/delete [--yes]` — delete the current session. Unconfirmed calls only
     /// explain what the confirmation would do.
     fn delete_current_session(&mut self, arg: &str) {
@@ -8574,7 +9131,9 @@ impl<T: TerminalIo> App<T> {
     /// The whole transcript in a searchable pager overlay.
     fn show_transcript(&mut self) {
         let width = (self.terminal.columns() as usize).max(1);
-        let mut lines = self.chat.render_all(width);
+        // `/transcript` is a record, not the reading view: it shows every
+        // slice whatever the reading level and the compact view fold away.
+        let mut lines = self.chat.render_all_detailed(width);
         while lines.last().is_some_and(|line| line.trim().is_empty()) {
             lines.pop();
         }
@@ -8679,14 +9238,19 @@ impl<T: TerminalIo> App<T> {
     /// one, attaching a path that names an image). Only a clipboard with
     /// neither, or a clipboard tool that cannot be started, produces a notice.
     fn paste_clipboard(&mut self) {
-        self.paste_clipboard_for_os(std::env::consts::OS);
+        self.paste_into(ClipboardTarget::Input);
     }
 
-    /// [`Self::paste_clipboard`] against an explicit OS: the parameter lets a
-    /// test pin the platform (and therefore the probe command names) regardless
-    /// of the host it runs on.
-    fn paste_clipboard_for_os(&mut self, os: &str) {
-        // Paste writes into the editor, so it is blocked wherever typing is.
+    /// Paste the clipboard into whichever box is on screen.
+    fn paste_into(&mut self, target: ClipboardTarget) {
+        self.paste_into_for_os(target, std::env::consts::OS);
+    }
+
+    /// [`Self::paste_into`] against an explicit OS: the parameter lets a test
+    /// pin the platform (and therefore the probe command names) regardless of
+    /// the host it runs on.
+    fn paste_into_for_os(&mut self, target: ClipboardTarget, os: &str) {
+        // Paste writes into a box, so it is blocked wherever typing is.
         if self.editor_locked_by_reco() {
             return;
         }
@@ -8697,14 +9261,44 @@ impl<T: TerminalIo> App<T> {
         let outcome = self
             .clipboard_capture
             .capture(os, std::process::id(), now_ms);
-        match outcome {
-            crate::paste::ClipboardPaste::Image { path, .. } => self.input.insert_text(&path),
-            crate::paste::ClipboardPaste::Text(text) => self.input.insert_text(&text),
+        let (insert, failure) = match outcome {
+            crate::paste::ClipboardPaste::Image { path, .. } => (Some(path), None),
+            crate::paste::ClipboardPaste::Text(text) => (Some(text), None),
             crate::paste::ClipboardPaste::Unavailable(reason) => {
-                self.add_system_message(format!("Clipboard paste failed: {reason}"))
+                (None, Some(format!("Clipboard paste failed: {reason}")))
+            }
+        };
+        if let Some(text) = insert {
+            match target {
+                ClipboardTarget::Input => self.input.insert_text(&text),
+                ClipboardTarget::NewSession => {
+                    if let Some(screen) = self.new_session.as_mut() {
+                        screen.input.insert_text(&text);
+                    }
+                }
+            }
+        }
+        if let Some(failure) = failure {
+            match target {
+                ClipboardTarget::Input => self.add_system_message(failure),
+                // The screen's own notice row: a message pushed into the
+                // transcript behind it would be invisible until it closes.
+                ClipboardTarget::NewSession => {
+                    if let Some(screen) = self.new_session.as_mut() {
+                        screen.set_notice(failure);
+                    }
+                }
             }
         }
         self.request_render(false);
+    }
+
+    /// [`Self::paste_clipboard`] against an explicit OS: the parameter lets a
+    /// test pin the platform (and therefore the probe command names) regardless
+    /// of the host it runs on.
+    #[cfg(test)]
+    fn paste_clipboard_for_os(&mut self, os: &str) {
+        self.paste_into_for_os(ClipboardTarget::Input, os);
     }
 
     /// Suspend the terminal, run `$VISUAL`/`$EDITOR` on the current draft, then
@@ -9338,6 +9932,13 @@ impl<T: TerminalIo> App<T> {
         if let Some(ids) = self.tui_settings.enabled_model_ids.clone() {
             self.enabled_model_ids = Some(ids);
         }
+        let detail = crate::components::chat_area::ReplyDetail::from_wire(
+            self.tui_settings
+                .reply_detail
+                .as_deref()
+                .unwrap_or("default"),
+        );
+        self.chat.set_reply_detail(detail);
         self.apply_theme_setting();
     }
 
@@ -9359,6 +9960,9 @@ impl<T: TerminalIo> App<T> {
         self.chat.set_theme(theme);
         self.footer.set_theme(&theme);
         self.input.set_theme(&theme);
+        if let Some(screen) = self.new_session.as_mut() {
+            screen.set_theme(theme);
+        }
         for entry in self.overlay_stack.iter_mut() {
             apply_theme_to_component(entry.component.as_mut(), theme);
             apply_theme_to_new_overlay(entry.component.as_mut(), theme);
@@ -10448,13 +11052,31 @@ impl<T: TerminalIo> App<T> {
         };
         self.footer.set_data(footer_data);
 
-        let footer_rendered = self.footer.render(w);
+        // The new-session screen replaces the whole surface: no transcript, no
+        // footer, no conversation box — its own rows above the prompt, the
+        // prompt itself, and one hint line under it.
+        let screen_open = self.new_session.is_some();
+        let footer_rendered = if screen_open {
+            Vec::new()
+        } else {
+            self.footer.render(w)
+        };
         let footer_lines = footer_rendered.len();
         // The box draws the attachment line from this, so it has to be set
         // before the input renders (same frame, no flicker).
         self.input
             .set_image_support(self.current_model_image_support());
-        let mut editor_lines = self.input.render(w);
+        let mut editor_lines = match self.new_session.as_mut() {
+            Some(screen) => {
+                let mut lines = screen.input.render(w);
+                let hints = screen.hints(w);
+                if !hints.is_empty() {
+                    lines.push(hints);
+                }
+                lines
+            }
+            None => self.input.render(w),
+        };
         // The recommendation prompt sits directly above the input box and is
         // counted as editor height, so the chat viewport shrinks by exactly the
         // row it takes instead of being overdrawn by it (PRD v1.6 §6.1).
@@ -10471,7 +11093,10 @@ impl<T: TerminalIo> App<T> {
         self.chat.set_viewport_height(chat_height.max(1));
 
         // Build render output: chat + editor + footer.
-        let chat_lines = self.chat.render(w);
+        let chat_lines = match self.new_session.as_mut() {
+            Some(screen) => screen.render_above(w, chat_height),
+            None => self.chat.render(w),
+        };
         let mut new_lines: Vec<String> = chat_lines
             .into_iter()
             .chain(editor_lines)
@@ -11564,6 +12189,7 @@ mod tests {
             theme_id: None,
             notify: None,
             skill_recommend: None,
+            reply_detail: None,
         };
         let json = serde_json::to_string(&settings.to_json()).unwrap();
         let parsed: Value = serde_json::from_str(&json).unwrap();
@@ -11589,6 +12215,7 @@ mod tests {
             theme_id: None,
             notify: None,
             skill_recommend: None,
+            reply_detail: None,
         };
         let json = serde_json::to_string_pretty(&settings.to_json()).unwrap();
         let model_pos = json.find("defaultModel").unwrap();
@@ -13478,15 +14105,21 @@ mod tests {
         app.handle_cmd(UiCmd::NewSessionDone {
             result: Ok(json_parse(r#"{"sessionId":"s-new"}"#)),
             state: Some(sample_state()),
+            draft: None,
+            cwd: None,
         });
         assert!(last_system(&app).contains("New session started"));
         app.handle_cmd(UiCmd::NewSessionDone {
             result: Ok(json_parse(r#"{}"#)),
             state: None,
+            draft: None,
+            cwd: None,
         });
         app.handle_cmd(UiCmd::NewSessionDone {
             result: Err("x".into()),
             state: None,
+            draft: None,
+            cwd: None,
         });
         assert!(last_system(&app).contains("Not connected to agent"));
 
@@ -13895,6 +14528,8 @@ mod tests {
         app.handle_cmd(UiCmd::NewSessionDone {
             result: Ok(json_parse(r#"{"sessionId":"fresh"}"#)),
             state: Some(new_state),
+            draft: None,
+            cwd: None,
         });
         assert_eq!(app.state.session_id, "fresh");
 
@@ -22102,7 +22737,9 @@ mod tests {
         app.handle_input("\x1b[6~"); // PageDown
         let paged = top_overlay_text(&mut app, 80);
         assert_ne!(paged, first, "PageDown must scroll the card");
-        assert!(paged.contains("/usage"), "{paged}");
+        // A row from the card's middle: the page moved, it did not just
+        // repaint the same lines.
+        assert!(paged.contains("/model"), "{paged}");
 
         app.handle_input("\x1b[5~"); // PageUp
         assert_eq!(top_overlay_text(&mut app, 80), first, "PageUp pages back");
@@ -22122,17 +22759,15 @@ mod tests {
         app.handle_input("g");
         assert_eq!(top_overlay_text(&mut app, 80), first, "g is the top");
         app.handle_input("G");
-        assert!(
-            top_overlay_text(&mut app, 80).contains("/usage"),
-            "G is the tail"
-        );
+        let tail = top_overlay_text(&mut app, 80);
+        assert!(tail.contains("/workspace"), "G is the tail: {tail}");
+        // `b` and `space` are the pager's page-up/page-down: one of each from
+        // the tail lands back on the tail, whatever the page size works out to.
         app.handle_input("b");
-        assert_eq!(top_overlay_text(&mut app, 80), first, "b pages up");
+        let paged_up = top_overlay_text(&mut app, 80);
+        assert_ne!(paged_up, tail, "b pages up: {paged_up}");
         app.handle_input(" ");
-        assert!(
-            top_overlay_text(&mut app, 80).contains("/usage"),
-            "space pages down"
-        );
+        assert_eq!(top_overlay_text(&mut app, 80), tail, "space pages down");
     }
 
     // ─── /sandbox and /permission ──────────────────────────────────────
@@ -25012,7 +25647,11 @@ mod tests {
             .collect();
         catalogued.sort();
         assert_eq!(registered, catalogued);
-        assert_eq!(registered.len(), 13, "14 entries, two of them one action");
+        assert_eq!(
+            registered.len(),
+            15,
+            "16 entries, two pairs share an action"
+        );
     }
 
     /// No keybindings file, no change: the built-in map is exactly what
@@ -25043,10 +25682,10 @@ mod tests {
             map.get("pageDown").map(Vec::as_slice),
             Some(&["Scroll chat down".to_string()][..])
         );
-        // 14 registrations: 13 actions, one of which ("Cycle thinking") answers
-        // on two keys, so 14 keys with exactly one action each.
+        // 16 registrations: 15 actions, one of which ("Cycle thinking") answers
+        // on two keys, so 16 keys with exactly one action each.
         let owners = app.keybindings.key_owners();
-        assert_eq!(owners.len(), 14);
+        assert_eq!(owners.len(), 16);
         assert!(owners.iter().all(|(_, actions)| actions.len() == 1));
         // …and nothing was created on disk by the read.
         assert_eq!(keybindings_file(dir.path()), "<missing>");
@@ -27198,6 +27837,509 @@ mod tests {
             started.elapsed() >= Duration::from_secs(19),
             "the deadline must have been walked, not skipped: {:?}",
             started.elapsed()
+        );
+    }
+    // ─── New-session screen (ctrl+n) ──────────────────────────────────
+
+    /// The screen replaces the whole surface: no transcript, no footer — just
+    /// the title, the three choices, the prompt box and one hint line.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ctrl_n_draws_the_whole_new_session_surface() {
+        let (mut app, _rx) = running_app(100, 30);
+        app.state.cwd = "/tmp/ws".into();
+        app.state.model = "future/deepseek-flash".into();
+        app.state.thinking = "high".into();
+        app.chat.add_message(ChatMessage::new(
+            "a1".into(),
+            ChatRole::Assistant,
+            "old transcript",
+        ));
+
+        app.handle_key_action(KeyAction::NewSession);
+        app.do_render();
+
+        let frame: String = app
+            .previous_lines
+            .iter()
+            .map(|line| strip_ansi_codes(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(frame.contains("New session"), "{frame}");
+        assert!(frame.contains("Workspace"), "{frame}");
+        assert!(frame.contains("/tmp/ws"), "{frame}");
+        assert!(frame.contains("future/deepseek-flash"), "{frame}");
+        assert!(frame.contains("high"), "{frame}");
+        assert!(
+            frame.contains("@ files"),
+            "the symbol hints are on screen: {frame}"
+        );
+        // The conversation is not drawn behind it — not one of its rows.
+        assert!(!frame.contains("old transcript"), "{frame}");
+        // …and neither is the conversation footer.
+        assert!(!frame.contains("ctrl+c interrupt"), "{frame}");
+    }
+
+    /// `ctrl+n` is a toggle and `escape` a cancel: both leave the conversation
+    /// exactly as it was, draft included.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn leaving_the_screen_keeps_the_conversation_draft() {
+        let (mut app, _rx) = running_app(100, 30);
+        app.input.set_value("half typed prompt", None);
+        app.handle_key_action(KeyAction::NewSession);
+        assert!(app.new_session.is_some());
+
+        app.handle_key(Key::CTRL_N);
+        assert!(app.new_session.is_none());
+        assert_eq!(app.input.get_value(), "half typed prompt");
+
+        app.handle_key_action(KeyAction::NewSession);
+        app.handle_key(Key::ESCAPE);
+        assert!(app.new_session.is_none());
+        assert_eq!(app.input.get_value(), "half typed prompt");
+    }
+
+    /// A terminal paste (and ctrl+c) reach the screen, not the conversation
+    /// behind it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_terminal_paste_lands_in_the_screen_prompt() {
+        let (mut app, _rx) = running_app(100, 30);
+        app.input.set_value("conversation draft", None);
+        app.handle_key_action(KeyAction::NewSession);
+
+        app.handle_input("\x1b[200~pasted into the first message\x1b[201~");
+        assert_eq!(
+            app.new_session.as_ref().unwrap().input.get_value(),
+            "pasted into the first message"
+        );
+        assert_eq!(
+            app.input.get_value(),
+            "conversation draft",
+            "the conversation draft is untouched"
+        );
+
+        // Raw ctrl+c closes the screen instead of interrupting a run.
+        app.handle_input("\x03");
+        assert!(app.new_session.is_none());
+        assert_eq!(app.input.get_value(), "conversation draft");
+    }
+
+    /// The screen is modal: a key it does not use must not reach the
+    /// conversation behind it (no scrolling, no `/` autocomplete, no global
+    /// binding).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_screen_swallows_keys_it_does_not_use() {
+        let (mut app, mut rx) = running_app(100, 60);
+        for i in 0..40 {
+            app.chat.add_message(ChatMessage::new(
+                format!("m{i}"),
+                ChatRole::User,
+                &format!("row {i}"),
+            ));
+        }
+        app.do_render();
+        let messages = app.chat.plain_messages();
+        app.handle_key_action(KeyAction::NewSession);
+
+        app.handle_key("pageUp");
+        app.handle_key("pageDown");
+        app.handle_key("ctrl+r");
+        pump(&mut app, &mut rx).await;
+        // No overlay was requested behind the screen, the transcript did not
+        // move, and the screen is still the surface.
+        assert!(app.overlay_stack.is_empty());
+        assert_eq!(app.chat.plain_messages(), messages);
+        let screen = app.new_session.as_ref().expect("still on the screen");
+        assert_eq!(
+            screen.focus(),
+            crate::components::new_session::NewSessionFocus::Prompt
+        );
+        assert!(app.new_session.is_some());
+    }
+
+    /// Tab cycles the focus and the arrows change the value under it; enter
+    /// starts the session with exactly those choices.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tab_and_arrows_choose_the_session_options() {
+        let (mut app, _rx) = running_app(100, 30);
+        app.state.thinking = "medium".into();
+        app.handle_key_action(KeyAction::NewSession);
+        let screen = app.new_session.as_ref().expect("screen open");
+        assert_eq!(
+            screen.focus(),
+            crate::components::new_session::NewSessionFocus::Prompt
+        );
+
+        app.handle_key("tab");
+        assert_eq!(
+            app.new_session.as_ref().unwrap().focus(),
+            crate::components::new_session::NewSessionFocus::Workspace
+        );
+
+        // Two workspace choices, then a wrap: the selection moves with `right`.
+        app.new_session.as_mut().unwrap().set_workspaces(vec![
+            WorkspaceEntry {
+                path: "/a".into(),
+                label: "/a".into(),
+                sessions: 1,
+            },
+            WorkspaceEntry {
+                path: "/b".into(),
+                label: "/b".into(),
+                sessions: 2,
+            },
+        ]);
+        app.handle_key("right");
+        assert_eq!(
+            app.new_session.as_ref().unwrap().current_workspace(),
+            Some("/b")
+        );
+        app.handle_key("right");
+        assert_eq!(
+            app.new_session.as_ref().unwrap().current_workspace(),
+            Some("/a")
+        );
+        app.handle_key("left");
+        assert_eq!(
+            app.new_session.as_ref().unwrap().current_workspace(),
+            Some("/b")
+        );
+
+        // Thinking: one step past `medium`.
+        for _ in 0..2 {
+            app.handle_key("tab");
+        }
+        assert_eq!(
+            app.new_session.as_ref().unwrap().focus(),
+            crate::components::new_session::NewSessionFocus::Thinking
+        );
+        assert_eq!(
+            app.new_session.as_ref().unwrap().current_thinking(),
+            "medium"
+        );
+        app.handle_key("right");
+        assert_eq!(app.new_session.as_ref().unwrap().current_thinking(), "high");
+    }
+
+    /// Editing goes to the prompt box, and the `@`/`#`/`/` symbols are typed
+    /// as text — they are sent to the agent, never eaten as local shortcuts.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn typing_in_the_screen_builds_the_first_prompt() {
+        let (mut app, _rx) = running_app(100, 30);
+        app.handle_key_action(KeyAction::NewSession);
+        for key in ["s", "e", "e", "space", "@", "a", ".", "r", "s"] {
+            app.handle_key(key);
+        }
+        let screen = app.new_session.as_ref().unwrap();
+        assert_eq!(screen.input.get_value(), "see @a.rs");
+        // The conversation box was never touched.
+        assert!(app.input.get_value().is_empty());
+    }
+
+    /// `enter` creates the session with the chosen workspace, model and
+    /// thinking level, then sends the typed prompt through the ordinary submit
+    /// path — so the conversation it lands on is the new one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn enter_starts_the_session_and_sends_the_first_message() {
+        let mock = AppMockAgent {
+            overrides: std::collections::HashMap::from([(
+                "prompt".to_string(),
+                r#"{"run_id":"r1","run_epoch":1,"accepted_state":"running"}"#.to_string(),
+            )]),
+            ..Default::default()
+        };
+        let requests = mock.requests.clone();
+        let (addr, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
+        app.state.cwd = "/tmp/ws".into();
+        app.state.model = "m/one".into();
+        app.state.thinking = "low".into();
+        app.handle_key_action(KeyAction::NewSession);
+        // The screen follows the session it was opened from.
+        assert_eq!(
+            app.new_session.as_ref().unwrap().current_workspace(),
+            Some("/tmp/ws")
+        );
+
+        for key in ["h", "i"] {
+            app.handle_key(key);
+        }
+        app.handle_key("enter");
+        pump(&mut app, &mut rx).await;
+
+        let sent = requests.lock().unwrap().clone();
+        let new_session = sent
+            .iter()
+            .find(|cmd| cmd.r#type == "new_session")
+            .expect("new_session was requested");
+        assert_eq!(new_session.cwd, "/tmp/ws");
+        assert_eq!(new_session.model_id, "m/one");
+        assert_eq!(new_session.level, "low");
+        // The first message went to the agent after the session existed, and
+        // with the same text the screen's box showed.
+        let prompts: Vec<&RpcCommand> = sent.iter().filter(|cmd| cmd.r#type == "prompt").collect();
+        assert_eq!(prompts.len(), 1, "one first message");
+        assert_eq!(prompts[0].message, "hi");
+        // …and the selection moved onto the new session: its transcript holds
+        // the bubble, and the confirmation names the workspace.
+        assert!(
+            !app.chat.plain_messages().is_empty(),
+            "the first message is on the new transcript"
+        );
+        assert!(
+            last_system(&app).contains("New session started in /tmp/ws"),
+            "{}",
+            last_system(&app)
+        );
+        assert!(app.new_session.is_none(), "the screen closes on submit");
+    }
+
+    /// A missing workspace folder is created from the path editor, and the new
+    /// folder becomes the selection.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_workspace_editor_creates_a_folder() {
+        let (mut app, _rx) = running_app(100, 30);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("brand-new");
+        app.handle_key_action(KeyAction::NewSession);
+        app.handle_key("tab"); // focus: workspace
+        app.handle_key("n"); // open the path editor
+        assert_eq!(
+            app.new_session.as_ref().unwrap().focus(),
+            crate::components::new_session::NewSessionFocus::NewWorkspace
+        );
+        // Replace the seeded path with the one to create.
+        app.new_session.as_mut().unwrap().handle_key("escape"); // back to the workspace row
+        app.handle_key("n");
+        for ch in target.to_string_lossy().chars() {
+            app.handle_key(&ch.to_string());
+        }
+        app.handle_key("enter");
+
+        assert!(target.is_dir(), "the folder was created");
+        let screen = app.new_session.as_ref().unwrap();
+        assert_eq!(
+            screen.current_workspace(),
+            Some(target.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            screen.focus(),
+            crate::components::new_session::NewSessionFocus::Workspace
+        );
+    }
+
+    /// A folder that cannot be created keeps the editor open and says why.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_workspace_path_is_explained_on_the_screen() {
+        let (mut app, _rx) = running_app(100, 30);
+        // A path below a regular file can never be created: `create_dir_all`
+        // fails on its parent on every platform (ENOTDIR on POSIX,
+        // ERROR_PATH_NOT_FOUND / ERROR_ALREADY_EXISTS on Windows). A fixed
+        // path such as `/proc/nope` only refuses on POSIX — on Windows it
+        // becomes `<drive>:\proc\nope`, which an elevated runner can write.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let blocker = dir.path().join("not-a-folder");
+        std::fs::write(&blocker, b"a file, not a folder").expect("write the blocker file");
+        let target = blocker.join("child");
+        let target = target.to_string_lossy().into_owned();
+        assert!(!std::path::Path::new(&target).exists(), "nothing there yet");
+
+        app.handle_key_action(KeyAction::NewSession);
+        let screen = app.new_session.as_mut().unwrap();
+        assert!(
+            !screen.accept_workspace(&target, true),
+            "a path below a file is refused"
+        );
+        let notice = screen.notice().expect("the reason is on the screen");
+        assert!(notice.contains("Could not create"), "{notice}");
+        assert!(
+            !std::path::Path::new(&target).exists(),
+            "nothing was created"
+        );
+    }
+
+    // ─── Sessions list: recency and workspace ─────────────────────────
+
+    /// `ctrl+r` lists conversations newest first, each naming the workspace it
+    /// is filed under.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_session_list_is_ordered_by_recency_and_names_the_workspace() {
+        let (mut app, _rx) = make_app(100, 30);
+        let session = |id: &str, cwd: &str, updated: i64| SessionSummary {
+            id: id.into(),
+            cwd: cwd.into(),
+            updated_at_ms: updated,
+            model: "m".into(),
+            session_name: Some(id.into()),
+            parent_session_id: None,
+            is_streaming: None,
+            first_message: None,
+        };
+        app.handle_cmd(UiCmd::SessionsLoaded {
+            result: Ok(vec![
+                session("old", "/tmp/alpha", 1_000),
+                session("newest", "/tmp/beta", 3_000),
+                session("middle", "/tmp/alpha", 2_000),
+            ]),
+            purpose: SessionsPurpose::Browse,
+        });
+        let idx = app.get_top_overlay_index().expect("the picker is open");
+        let rows = app.overlay_stack[idx].component.render(80);
+        let plain: Vec<String> = rows.iter().map(|row| strip_ansi_codes(row)).collect();
+        let positions: Vec<usize> = ["newest", "middle", "old"]
+            .iter()
+            .map(|name| {
+                plain
+                    .iter()
+                    .position(|row| row.contains(name))
+                    .unwrap_or_else(|| panic!("{name} missing from {plain:?}"))
+            })
+            .collect();
+        assert!(
+            positions[0] < positions[1] && positions[1] < positions[2],
+            "newest first: {plain:?}"
+        );
+        assert!(
+            plain[positions[0]].contains("/tmp/beta"),
+            "the workspace is named on the row: {plain:?}"
+        );
+        assert!(
+            plain[positions[1]].contains("/tmp/alpha"),
+            "and the other workspace too: {plain:?}"
+        );
+    }
+
+    /// `/workspace` lists the folders the agent has sessions in, and picking
+    /// one moves this session into it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_workspace_menu_lists_folders_and_switches_into_one() {
+        let mock = AppMockAgent::default();
+        let requests = mock.requests.clone();
+        let (addr, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
+        let dir = tempfile::tempdir().expect("tempdir");
+        let other = dir.path().join("other-ws");
+        std::fs::create_dir_all(&other).unwrap();
+        let cwd = dir.path().join("home-ws");
+        std::fs::create_dir_all(&cwd).unwrap();
+        app.state.cwd = cwd.display().to_string();
+
+        app.handle_submit("/workspace");
+        pump(&mut app, &mut rx).await;
+
+        let idx = app
+            .get_top_overlay_index()
+            .expect("the workspace menu is open");
+        let rows = app.overlay_stack[idx].component.render(80);
+        let text: String = rows
+            .iter()
+            .map(|row| strip_ansi_codes(row))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("current"),
+            "the session's folder is marked: {text}"
+        );
+
+        // Selecting the other folder moves the session into it.
+        let other = other.display().to_string();
+        app.handle_cmd(UiCmd::MenuSelected {
+            purpose: MenuPurpose::Workspaces,
+            values: vec![other.clone()],
+        });
+        pump(&mut app, &mut rx).await;
+        assert_eq!(app.state.cwd, other);
+        let cwds: Vec<String> = requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|cmd| cmd.r#type == "set_cwd")
+            .map(|cmd| cmd.cwd.clone())
+            .collect();
+        assert_eq!(cwds, vec![other]);
+    }
+
+    // ─── Reply detail (ctrl+e / /reply-detail) ────────────────────────
+
+    /// The reading level survives a restart: `ctrl+e` writes it to the TUI
+    /// settings, and the next app reads it back.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_reading_level_is_persisted_and_restored() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        let (mut app, _rx) = make_app(100, 30);
+        app.tui_settings_path = path.clone();
+        assert_eq!(
+            app.chat.reply_detail(),
+            crate::components::chat_area::ReplyDetail::Default
+        );
+
+        app.handle_key_action(KeyAction::ToggleReplyDetail);
+        assert_eq!(
+            app.chat.reply_detail(),
+            crate::components::chat_area::ReplyDetail::Detailed
+        );
+        let saved = std::fs::read_to_string(&path).expect("settings written");
+        assert!(saved.contains("\"replyDetail\": \"detailed\""), "{saved}");
+
+        // A fresh app on the same file starts at the level it stored.
+        let (mut next, _rx) = make_app(100, 30);
+        next.tui_settings_path = path;
+        next.load_tui_settings();
+        assert_eq!(
+            next.chat.reply_detail(),
+            crate::components::chat_area::ReplyDetail::Detailed
+        );
+
+        // The command reads and writes the same level.
+        next.handle_submit("/reply-detail default");
+        assert_eq!(
+            next.chat.reply_detail(),
+            crate::components::chat_area::ReplyDetail::Default
+        );
+        assert!(last_system(&next).contains("final answer"));
+    }
+
+    // ─── /workspace ───────────────────────────────────────────────────
+
+    /// `/workspace new <path>` creates the folder and moves the session into it;
+    /// a folder it cannot create is reported instead of silently ignored.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn workspace_new_creates_and_switches() {
+        let mock = AppMockAgent::default();
+        let requests = mock.requests.clone();
+        let (addr, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
+        app.state.cwd = "/tmp/here".into();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("made-by-the-tui").display().to_string();
+
+        app.handle_submit(&format!("/workspace new {target}"));
+        assert!(std::path::Path::new(&target).is_dir());
+        pump(&mut app, &mut rx).await;
+        assert_eq!(app.state.cwd, target, "the session followed the folder");
+
+        // A relative path is resolved against the session's cwd (the folder it
+        // just moved into), not the process's.
+        app.handle_submit("/workspace new sibling");
+        let sibling = std::path::Path::new(&target).join("sibling");
+        assert!(sibling.is_dir(), "created inside {}", target);
+        pump(&mut app, &mut rx).await;
+        assert_eq!(app.state.cwd, sibling.display().to_string());
+        let cwds: Vec<String> = requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|cmd| cmd.r#type == "set_cwd")
+            .map(|cmd| cmd.cwd.clone())
+            .collect();
+        assert_eq!(cwds, vec![target.clone(), sibling.display().to_string()]);
+
+        // `/workspace <path>` refuses a folder that does not exist.
+        app.handle_submit("/workspace /nope/not/here");
+        assert!(
+            last_system(&app).contains("is not a folder"),
+            "{}",
+            last_system(&app)
         );
     }
 }

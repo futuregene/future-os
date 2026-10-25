@@ -85,8 +85,10 @@ model as an ordinary prompt.
 | `/mode [manual\|sandbox\|auto\|off]` | Show the approval mode, or apply one directly (it persists) |
 | `/sandbox` | Approval mode card: the four modes and backend availability |
 | `/theme [id]` | Pick a theme, or set one directly by id |
-| `/sessions` | Browse and switch sessions |
+| `/sessions` | Browse and switch sessions (newest activity first, each row naming its workspace) |
 | `/new` | Start a new session |
+| `/workspace [new] [path]` | List the workspace folders, create one (`new <path>`) and move this session into it |
+| `/reply-detail [default\|detailed]` | How much of a finished reply to keep: the final answer only, or every step |
 | `/clone` | Clone the current session (continue in a new branch) |
 | `/fork` | Fork from a chosen message |
 | `/tree` | Session tree with fork/clone hierarchy |
@@ -242,8 +244,10 @@ pager (e.g. `No history matches for 'needle'.`).
 | `ctrl+o` | Expand / collapse thinking |
 | `ctrl+g` | Expand / collapse tool output |
 | `ctrl+d` | Compact view: fold runs of tool calls and thinking |
+| `ctrl+e` | Toggle the final-answer view (see below) |
 | `ctrl+x` | Copy the last assistant message |
 | `ctrl+r` | Browse sessions |
+| `ctrl+n` | New-session screen: workspace, model, thinking level, first message |
 | `ctrl+c` | Interrupt / exit |
 | `ctrl+l` | Clear screen / redraw |
 | `tab` | Autocomplete |
@@ -272,6 +276,73 @@ collapsed bursts — file tools count distinct files, shell commands count every
 call. `ctrl+g` (expand every tool body) turns folding off, since asking for the
 bodies and hiding the calls cannot both win; `ctrl+o` still hides thinking
 entirely, marker included.
+
+### Final-answer view (`ctrl+e`)
+
+A finished reply is mostly work: reasoning, calls, notes between them. By
+default the TUI keeps what the reply actually says and folds the rest into one
+summary row above it:
+
+```
+▸ 4 tool calls · 2 thoughts
+**Fixed** the off-by-one in the parser.
+```
+
+The counts are the same two numbers the desktop's process fold and the phone's
+step summary use (calls first, then reasoning), so one conversation reads the
+same on every client. `ctrl+e` (or `/reply-detail detailed`) shows every slice
+in place instead; the setting persists in `~/.future/tui/settings.json` as
+`replyDetail`, the same two values the GUI apps store.
+
+What folding never does:
+
+- It never folds a reply that is still streaming — you are watching the work
+  happen. Older, settled replies stay folded while the newest one streams.
+- It never folds a reply with no prose of its own (a run that so far only
+  reasoned, or one whose answer the compaction replaced): there is no answer to
+  isolate, so everything stays on screen.
+- It is a *reading* choice, not a body request: a tool call is still one row and
+  its output still waits for `ctrl+g`, at either level. The summary row counts
+  the calls; it does not inline them.
+
+`ctrl+d` (compact view) still works on whatever the reading level left
+standing, so the two compose.
+
+### New-session screen (`ctrl+n`)
+
+`ctrl+n` opens the composer a first message is written in, from anywhere — over
+a running turn, over an open menu, over a half-typed draft. The whole surface is
+that screen: the conversation, its footer and its input are not drawn, and every
+key belongs to it until it closes.
+
+```
+New session
+Ctrl+N opens this from anywhere.  Enter starts the session.
+
+  Workspace ‹ ~/future-os › (12 sessions)
+  Model     ‹ DeepSeek Flash (future/deepseek-flash) ›
+  Thinking  ‹ medium ›
+> write the first message
+@ files · # sessions · / commands · Tab for workspace, model, thinking · Enter to start
+```
+
+| Key | Action |
+|---|---|
+| typing | Write the first message (the same box as the conversation's: paste folding, image attachments, undo) |
+| `tab` / `shift+tab` | Move between the prompt, workspace, model and thinking rows |
+| `←` `→`, `space` | Change the value under the focused row (the prompt keeps the arrows for its cursor) |
+| `n` on the workspace row | Name a new folder: type a path, `enter` creates it and selects it (`escape` leaves the field) |
+| `enter` | Create the session with these choices, send the draft as its first message, and switch onto it |
+| `ctrl+v` / `cmd+v` | Paste into the prompt (an image becomes an attachment) |
+| `escape`, `ctrl+n`, `ctrl+c` | Leave the screen without creating anything |
+
+The workspace list is every folder this agent already has sessions in, newest
+activity first, plus the current session's folder; the model list is the
+agent's catalog; the thinking row cycles the six levels the agent accepts. A
+folder that cannot be created says why on the screen and leaves the field open.
+The conversation's own draft is never touched: leaving the screen returns you to
+it exactly as you left it. `/workspace new <path>` does the same folder creation
+from the conversation screen, and `/workspace` lists the folders as a menu.
 
 ### History is paged
 

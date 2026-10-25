@@ -1,4 +1,5 @@
 import type { ConnectionPresentation } from "./connectionPresentation";
+import type { PairedDesktop, Presence } from "./types";
 
 /**
  * How one paired machine stands, as the desktop picker and the connection
@@ -79,6 +80,68 @@ export function activeMachineStatus(
   if (presentation.level === "connecting")
     return presentation.customerState === "devicePreparing" ? "preparing" : "connecting";
   return "offline";
+}
+
+/**
+ * Every paired machine as one list, in the order the phone holds them.
+ *
+ * The machine the phone reads is judged from the connection the screens render
+ * from (never from a second probe), and the others from their own runtimes —
+ * which is what `catalogs.machines` already carries. Both surfaces that ask
+ * "how do my machines stand" read this, so the picker's rows, the badge and the
+ * paired list cannot disagree about a machine.
+ */
+export function pairedMachines({
+  desktops,
+  activeDesktopId,
+  presence,
+  presentation,
+  others,
+}: {
+  desktops: readonly PairedDesktop[];
+  activeDesktopId: string | null;
+  /** The open machine's own presence report, which is where `control` lives. */
+  presence: Pick<Presence, "control" | "holder"> | null;
+  /** The connection this app renders from, i.e. the open machine's. */
+  presentation: ConnectionPresentation;
+  /** The other paired machines, from `RemoteControls["catalogs"]`. */
+  others: readonly MachineSummary[];
+}): MachineSummary[] {
+  // The catalogue lists the machines other than the open one; filtering is a
+  // guard on that invariant rather than a correction, so a machine can never
+  // appear twice under two different states.
+  const rest = others.filter(machine => machine.desktopId !== activeDesktopId);
+  if (!activeDesktopId) return [...rest];
+  const paired = desktops.find(desktop => desktop.desktopId === activeDesktopId);
+  return [
+    {
+      desktopId: activeDesktopId,
+      label: paired?.name || activeDesktopId,
+      ...(paired?.icon ? { icon: paired.icon } : {}),
+      active: true,
+      status: activeMachineStatus(presentation),
+      ...(presence?.control ? { control: presence.control } : {}),
+      ...(presence?.holder ? { holder: presence.holder } : {}),
+    },
+    ...rest,
+  ];
+}
+
+/**
+ * Whether a machine answers the settings its own page reads and writes.
+ *
+ * Two facts, not one: a machine that is not answering (`offline`, `connecting`,
+ * still `preparing`) has nothing behind those rows, and one that answers while
+ * another device holds it refuses every read and write of theirs. Both leave
+ * the page a notice, so the control that opens it is offered in neither case —
+ * a disabled control with the reason beside it instead.
+ *
+ * A machine this list knows nothing about (no runtime has reported yet) is not
+ * treated as unreachable: missing data is not evidence of a fault.
+ */
+export function machineConfigurable(machine: MachineSummary | undefined): boolean {
+  if (!machine) return true;
+  return machine.status === "connected" && machine.control !== "standby";
 }
 
 /**

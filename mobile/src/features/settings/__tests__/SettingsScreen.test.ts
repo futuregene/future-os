@@ -15,33 +15,17 @@ let stored: DesktopSettings;
 let installed: InstalledSkill[];
 /** UI language the mocked `useTranslation` reports; flipped by language tests. */
 let mockLanguage = "en";
-/** The paired desktops the mocked context reports, in their stored order. */
+/**
+ * The paired desktops the mocked context reports, in their stored order.
+ */
 const pairedDesktops = (): PairedDesktop[] => [
   { pairId: "other", desktopId: "other-desktop", name: "Other computer" },
   { pairId: "pair", desktopId: "desktop", name: "Work computer" },
 ];
-/**
- * Apply a label the way the real store does: the name and the icon are
- * independent, and an empty value clears its field rather than storing "".
- */
-function relabel(desktopId: string, patch: { name?: string; icon?: string }): void {
-  mockRemote.desktops = mockRemote.desktops.map((item) => {
-    if (item.desktopId !== desktopId) return item;
-    const name = patch.name === undefined ? item.name : patch.name;
-    const icon = patch.icon === undefined ? item.icon : patch.icon;
-    return {
-      desktopId: item.desktopId,
-      pairId: item.pairId,
-      ...(name ? { name } : {}),
-      ...(icon ? { icon } : {}),
-    };
-  });
-}
 const mockRemote = {
   credentials: { pairId: "pair", expectedDesktopId: "desktop" },
-  // Typed as the real thing: a desktop row carries the label the user gave it
-  // (name, icon), and an untyped literal here silently loses the right to set
-  // them — which a test that writes an icon cannot do without.
+  // Typed as the real thing: a device page's banner names the machine and draws
+  // its mark, so an untyped literal here silently loses the right to set them.
   desktops: pairedDesktops(),
   desktopOnline: true,
   // The provider's own rule: reads need the machine to be online *and* to be
@@ -61,8 +45,6 @@ const mockRemote = {
   updateDesktopSettings: jest.fn(async (patch: Partial<DesktopSettings>) => { stored = { ...stored, ...patch }; return stored; }),
   setApprovalTier: jest.fn(async () => {}),
   switchDesktop: jest.fn(async () => {}),
-  renameDesktop: jest.fn(async (desktopId: string, name: string) => relabel(desktopId, { name })),
-  labelDesktop: jest.fn(async (desktopId: string, patch: { name?: string; icon?: string }) => relabel(desktopId, patch)),
   listSettingsModels: jest.fn(async () => [{ id: "same", provider: "one" }, { id: "same", provider: "two" }]),
   listProviders: jest.fn(async () => providers),
   listInstalledSkills: jest.fn(async () => [...installed]),
@@ -191,12 +173,8 @@ test("a taken-over desktop offers no way into its settings", async () => {
   for (const page of ["preferences", "models", "providers", "skills", "tasks"])
     expect(labels).not.toContain(`desktopSettings.${page}`);
 
-  // The machine's name is this phone's own record of it, not the machine's, so
-  // renaming keeps working while somebody else has the desktop.
-  await act(async () => nameField().props.onChangeText("Renamed"));
-  await act(async () => nameField().props.onSubmitEditing());
-  expect(mockRemote.renameDesktop).toHaveBeenCalledWith("other-desktop", "Renamed");
-
+  // The machine's settings are not offered while somebody else is driving it,
+  // and the one action that changes that state is the banner's.
   await act(async () => button("connection.takeControl").props.onPress());
   expect(mockRemote.takeControl).toHaveBeenCalledTimes(1);
 });
@@ -221,10 +199,9 @@ test("a settings page gives way to the banner when the machine is taken over", a
 test("the device page configures the desktop, and keeps the phone's own rows out", async () => {
   expect(tree.root.findAllByType(ScrollView).length).toBeGreaterThan(0);
   const keys = () => tree.root.findAllByType(Text).map(node => node.props.children);
-  // What this device is called here, and what it does, are two sections of one
-  // page: the first is the phone's own label, the second is read from the
-  // machine.
-  expect(keys()).toContain("desktops.identity");
+  // This page is one subject: what the machine answers. Its name and icon are
+  // this phone's own record and are edited from the paired list's row instead.
+  expect(keys()).not.toContain("desktops.identity");
   expect(keys()).toContain("desktops.deviceSettings");
   // The phone's own settings are a different screen now: device settings must
   // not smuggle in rows that write locally.
@@ -877,73 +854,11 @@ test("task management is unavailable while the desktop is offline", async () => 
   expect(link("desktopSettings.tasks").props.disabled).toBe(true);
 });
 
-/** The device page's identity field. */
-const nameField = () => tree.root.findAllByType(TextInput).find(node => node.props.accessibilityLabel === "desktops.name")!;
-/** The identity grid's option for one icon. */
-const iconOption = (label: string) => tree.root.findAll(node =>
-  node.props.accessibilityLabel === label && node.props.accessibilityRole === "radio")[0]!;
-/** Re-render the way the provider re-renders its consumers after a label write:
- * in the app, `labelDesktop` refreshes the desktop list in context state, and
- * the page reads the device back. The mocked context holds no state of its own,
- * so the refresh is spelled out here. */
-async function refresh() {
-  await act(async () => { tree.update(createElement(SettingsScreen, deviceProps)); });
-}
 /** Fresh mount of one paired device's page. */
 async function mountDevice(deviceId: string) {
   act(() => tree.unmount());
   await act(async () => { tree = create(createElement(SettingsScreen, { ...props, deviceId })); });
 }
-
-test("the device page writes the name the user types, on the done key and on leaving the field", async () => {
-  await act(async () => nameField().props.onChangeText("Studio"));
-  await act(async () => nameField().props.onSubmitEditing());
-  expect(mockRemote.renameDesktop).toHaveBeenCalledWith("desktop", "Studio");
-  // One write for one edit: the done key dismisses the keyboard, which blurs the
-  // field as well.
-  expect(mockRemote.renameDesktop).toHaveBeenCalledTimes(1);
-  await act(async () => nameField().props.onBlur());
-  expect(mockRemote.renameDesktop).toHaveBeenCalledTimes(1);
-});
-
-test("an unchanged name writes nothing and a blank one clears the label", async () => {
-  await act(async () => nameField().props.onChangeText("Work computer"));
-  await act(async () => nameField().props.onBlur());
-  expect(mockRemote.renameDesktop).not.toHaveBeenCalled();
-  // Blank means "no name": the device goes back to being listed by its id.
-  await act(async () => nameField().props.onChangeText("   "));
-  await act(async () => nameField().props.onBlur());
-  expect(mockRemote.renameDesktop).toHaveBeenCalledWith("desktop", "");
-  expect(mockRemote.desktops[1]!.name).toBeUndefined();
-});
-
-test("a refused name write is reported, and the field goes back to the stored name", async () => {
-  mockRemote.renameDesktop.mockRejectedValueOnce(new Error("storage full"));
-  await act(async () => nameField().props.onChangeText("Studio"));
-  await act(async () => nameField().props.onSubmitEditing());
-  expect(texts()).toContain("desktops.actionFailed");
-  // The field must never show a name the store does not have.
-  expect(nameField().props.value).toBe("Work computer");
-});
-
-test("the icon is picked on the device page, and picking it again clears it", async () => {
-  await act(async () => iconOption("desktops.icons.rocket").props.onPress());
-  expect(mockRemote.labelDesktop).toHaveBeenCalledWith("desktop", { icon: "rocket" });
-  await refresh();
-  expect(iconOption("desktops.icons.rocket").props.accessibilityState.checked).toBe(true);
-  // Toggle: there is no "none" entry in the grid, so the way back to the
-  // default is picking the icon the device is already wearing.
-  await act(async () => iconOption("desktops.icons.rocket").props.onPress());
-  expect(mockRemote.labelDesktop).toHaveBeenLastCalledWith("desktop", { icon: "" });
-  await refresh();
-  expect(iconOption("desktops.icons.rocket").props.accessibilityState.checked).toBe(false);
-});
-
-test("a refused icon write is reported", async () => {
-  mockRemote.labelDesktop.mockRejectedValueOnce(new Error("storage full"));
-  await act(async () => iconOption("desktops.icons.rocket").props.onPress());
-  expect(texts()).toContain("desktops.actionFailed");
-});
 
 /**
  * A machine's settings are read and written over that machine's own connection,

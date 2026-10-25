@@ -9,6 +9,7 @@ pub mod input;
 pub mod keymap_view;
 pub mod markdown;
 pub mod menu;
+pub mod new_session;
 pub mod pager;
 pub mod provider_dialogs;
 pub mod sandbox_view;

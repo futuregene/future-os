@@ -128,12 +128,13 @@ pub const ACTION_GROUPS: [ActionGroup; 5] = [
             "Expand/collapse thinking",
             "Expand/collapse tool output",
             "Compact view (fold tool runs and thinking)",
+            "Toggle final-answer view",
             "Clear screen / redraw",
         ],
     },
     ActionGroup {
         title: "Session",
-        descriptions: &["Browse sessions", "Interrupt / exit"],
+        descriptions: &["Browse sessions", "New session", "Interrupt / exit"],
     },
 ];
 

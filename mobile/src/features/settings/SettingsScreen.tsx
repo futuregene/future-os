@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useImperativeHandle, useRef, useState, useSyncExternalStore, type Ref } from "react";
-import { Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { ArrowLeft } from "lucide-react-native";
@@ -8,8 +8,6 @@ import { LanguageSettings } from "../../i18n/LanguageSettings";
 import { getTaskFinishedReminders, initializeTaskFinishedReminders, setTaskFinishedReminders, subscribeTaskFinishedReminders } from "../../notifications/preferences";
 import { AppearanceSettings } from "../../theme/AppearanceSettings";
 import { PeerIconChip } from "../../remote/PeerIconChip";
-import { PeerIconGlyph } from "../../remote/PeerIconGlyph";
-import { PEER_ICONS } from "../../remote/peerIcons";
 import { useRemoteControls } from "../../remote/RemoteContext";
 import type { DesktopSettings, RemoteBuiltinProvider, RemoteCustomProvider } from "../../remote/types";
 import { VERSION } from "../../version.generated";
@@ -23,13 +21,11 @@ import { ProvidersSettingsPage } from "./ProvidersSettingsPage";
 import { SkillsSettingsPage } from "./SkillsSettingsPage";
 import { TasksSettingsPage } from "./TasksSettingsPage";
 import type { SettingsPageBack } from "./pageBack";
-import { ResourceStatus, SettingsField, SettingsLink, SettingsSection, SettingsSwitch, createSettingsStyles, useSettingsStyles } from "./SettingsPrimitives";
+import { ResourceStatus, SettingsLink, SettingsSection, SettingsSwitch, createSettingsStyles, useSettingsStyles } from "./SettingsPrimitives";
 import { useDesktopResource } from "./useDesktopResource";
 import { useKeyboardHeight } from "../../lib/useKeyboardHeight";
 
 export type SettingsScreenHandle = { goBack(): void };
-
-const MAX_NAME_LENGTH = 40;
 
 /**
  * Every settings level whose header names itself through `desktopSettings.<name>`.
@@ -84,10 +80,16 @@ function useTaskFinishedReminders(): boolean {
  *
  * Two entry points, one implementation. With no `deviceId` it is this phone's
  * own settings (reached from the session list header); with one it is that
- * paired desktop's page (reached from the paired list), which owns the
- * machine's identity *and* every setting that is read from or written to it.
- * A machine's settings are not offered anywhere else: the phone's own screen
- * must not silently edit whichever desktop happens to be connected.
+ * paired desktop's page (reached from the paired list), which owns every
+ * setting that is read from or written to that machine. A machine's settings
+ * are not offered anywhere else: the phone's own screen must not silently edit
+ * whichever desktop happens to be connected.
+ *
+ * What is *not* on the device page is the phone's own label for the machine —
+ * its name and icon. Those live in the local credential book, so they are
+ * edited from the row of the paired list that draws them (`DesktopLabelDialog`)
+ * and stay reachable while the machine is switched off, which is what this page
+ * cannot do.
  *
  * The device page reads the machine it names. Everything under it is scoped to
  * that desktop (`DesktopScope`, which its caller wraps it in), so the settings,
@@ -138,13 +140,6 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
   const device = deviceId ? remote.desktops.find(item => item.desktopId === deviceId) : undefined;
   const deviceName = device ? device.name || device.desktopId : t("desktops.title");
-  // The name is the phone's own label for the device: typed into a field, kept
-  // here while the user edits it, and written when they leave the field.
-  const [nameDraft, setNameDraft] = useState(device?.name ?? "");
-  // The name this field last wrote. Dismissing the keyboard submits and then
-  // blurs the field, and the second step must not write the same name again
-  // while the list the field reads is still coming back.
-  const writtenName = useRef<string | null>(null);
   // Which of the two surfaces this stack is: this phone's own settings, or one
   // paired desktop's.
   const deviceMode = deviceId !== undefined;
@@ -219,46 +214,6 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
     try { await remote.setApprovalTier(tier); }
     catch { if (active.current) setFailed("desktopSettings.saveFailed"); }
     finally { writing.current = false; if (active.current) setSaving(false); }
-  };
-
-  /**
-   * Write the typed name through the phone's own label store.
-   *
-   * A blank name clears the label, which is how a device goes back to being
-   * listed by its id — the same rule the icon follows. A refused write puts the
-   * stored name back in the field: the field must never show a name the store
-   * does not have.
-   */
-  const saveName = async () => {
-    if (!device) return;
-    const next = nameDraft.trim();
-    const stored = device.name ?? "";
-    if (next === stored || next === writtenName.current) return;
-    writtenName.current = next;
-    try {
-      await remote.renameDesktop(device.desktopId, next);
-    } catch {
-      if (active.current) {
-        writtenName.current = null;
-        setNameDraft(stored);
-        setFailed("desktops.actionFailed");
-      }
-    }
-  };
-
-  /**
-   * Pick this device's icon; picking the one it is already wearing clears it,
-   * so the default is reachable without a separate "none" entry.
-   */
-  const chooseIcon = async (icon: string) => {
-    if (!device) return;
-    const next = device.icon === icon ? "" : icon;
-    setFailed(null);
-    try {
-      await remote.labelDesktop(device.desktopId, { icon: next });
-    } catch {
-      if (active.current) setFailed("desktops.actionFailed");
-    }
   };
 
   /**
@@ -403,71 +358,22 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
   }
 
   /**
-   * One paired desktop: what it is called here, and what it does.
+   * One paired desktop: everything that is read from or written to it.
    *
-   * The identity is local to this phone (name, icon) while everything below it
-   * is read from the machine, so the two are one page but not one section.
+   * Its name and icon are the phone's own record of the machine, not the
+   * machine's settings, so they are not here: they are edited from the row of
+   * the paired list that draws them (see `DesktopLabelDialog`). That split is
+   * what keeps this page to one subject — what the machine answers — and keeps
+   * a label editable while the machine is switched off.
    */
   function renderDeviceHome() {
     const capable = supported && skillsSupported && providersSupported && tasksSupported;
     return <ScrollView contentContainerStyle={settingsStyles.content} keyboardShouldPersistTaps="handled">
-      <SettingsSection title={t("desktops.identity")}>
-        <SettingsField hint={t("desktops.nameHint")} label={t("desktops.name")}>
-          <TextInput
-            accessibilityLabel={t("desktops.name")}
-            autoCapitalize="none"
-            autoCorrect={false}
-            maxLength={MAX_NAME_LENGTH}
-            onBlur={() => void saveName()}
-            onChangeText={setNameDraft}
-            onSubmitEditing={() => {
-              Keyboard.dismiss();
-              void saveName();
-            }}
-            placeholder={device?.desktopId}
-            placeholderTextColor={colors.inkMuted}
-            returnKeyType="done"
-            selectTextOnFocus
-            style={settingsStyles.input}
-            value={nameDraft}
-          />
-        </SettingsField>
-        {/* The icon replaces the name in the session list, so it is a sibling of
-            it rather than part of it, and the two are cleared separately. */}
-        <SettingsField hint={t("desktops.iconHint")} label={t("desktops.iconLabel")}>
-          {/* Each tile draws its icon in that icon's own colour — the same
-              palette the desktop picker uses — and the chosen one is marked by
-              its frame. Recolouring the glyph would hide the colour the choice
-              is about. */}
-          <View accessibilityRole="radiogroup" style={styles.iconGrid}>
-            {PEER_ICONS.map(icon => {
-              const selected = device?.icon === icon.id;
-              return (
-                <Pressable
-                  accessibilityLabel={t(`desktops.icons.${icon.labelKey}`)}
-                  accessibilityRole="radio"
-                  accessibilityState={{ checked: selected }}
-                  key={icon.id}
-                  onPress={() => void chooseIcon(icon.id)}
-                  style={({ pressed }) => [
-                    styles.iconOption,
-                    selected && styles.iconOptionSelected,
-                    pressed && settingsStyles.pressed,
-                  ]}
-                >
-                  <PeerIconGlyph id={icon.id} size={20} />
-                </Pressable>
-              );
-            })}
-          </View>
-        </SettingsField>
-      </SettingsSection>
       {/* A machine somebody else drives has no settings to show here: every row
           below it opens a page the desktop would refuse to answer, which is how
           this phone used to offer a stack of dead ends. The banner above names
           the holder and carries the takeover, so the page keeps the one action
-          that changes the state instead of a list that pretends otherwise. The
-          machine's own name and icon stay: those live on this phone. */}
+          that changes the state instead of a list that pretends otherwise. */}
       {standby
         ? null
         : (
@@ -589,18 +495,4 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   standbyTitle: { color: theme.colors.inkStrong, fontSize: theme.font(14), fontWeight: "600" },
   approval: { minHeight: layout.touchTarget, justifyContent: "center", padding: spacing.sm, borderWidth: 1, borderColor: theme.colors.line, borderRadius: radius.md, backgroundColor: theme.colors.surface },
   approvalSelected: { borderColor: theme.colors.accent, backgroundColor: theme.colors.accentSoft },
-  // One row of icons per device, wrapping for the narrowest phone: the same set
-  // the desktop app offers, so a device looks the same in both clients.
-  iconGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
-  iconOption: {
-    width: layout.touchTarget,
-    height: layout.touchTarget,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: theme.colors.line,
-    borderRadius: radius.md,
-    backgroundColor: theme.colors.surface,
-  },
-  iconOptionSelected: { borderColor: theme.colors.accent, backgroundColor: theme.colors.accentSoft },
 }));

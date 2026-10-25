@@ -62,6 +62,12 @@
 - [Windows 安装/更新](internals/desktop-windows.md)
 - [Provider 协议测试](internals/provider-protocol.md)
 
+## TUI 设计（`tui/`）
+
+| 文档 | 内容 |
+|---|---|
+| [Workbench TUI 规格](tui/workbench-spec.zh-CN.md)（[English](tui/workbench-spec.md)） | **尚未实现**的全屏工作台冻结契约：布局常量、鼠标与键盘约定、类型名与验收命令。它是设计提案，TUI 目前实际交付的能力见 [TUI 指南](guide/tui.zh-CN.md) |
+
 ## Wiki（面向用户的应用指南）
 
 - 中文: [首页](wiki/zh/Home.md), [安装](wiki/zh/Installation.md),
