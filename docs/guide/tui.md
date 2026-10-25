@@ -40,7 +40,7 @@ window and its `↓ N more` row).
  conversation (bottom-anchored, ↑ 更早)     │ sidebar: 待办 任务 会话
                                             │          用量 技能
  ──────────────────────────────────────────┴──────────────────────
- input box (❯ draft)
+ input box (❯ multiline draft, grows to 8 visual rows)
  activity: ⠋ 思考 … · 3s · 2 工具                   42 tok/s · 缓存 96%
  status:   model · effort · permission   ░░ ctx 6.9k/1.0M 0.7% · ≈¥0.01
  hint:     Esc 回到聊天 · ctrl+b 侧栏 · / 命令 · ? 帮助
@@ -105,8 +105,14 @@ defaults, and Escape cancels capture.
 |---|---|
 | `tab` / `shift+tab` | Launchpad: move between the prompt and the parameter chips. Conversation: move focus to / from the sidebar |
 | `←` `→` | Move the draft cursor |
-| `↑` `↓` | Scroll the conversation (or the focused panel's list) |
-| `pageUp` / `pageDown` | Scroll the conversation a page |
+| `↑` `↓` | Move through draft lines / submission history; scroll a focused sidebar |
+| `shift+enter` / `alt+enter` | Insert a newline (`ctrl+j` is the terminal fallback; Shift+Enter requires an enhanced keyboard protocol) |
+| `ctrl+w`, `alt+d`, `ctrl+u`, `ctrl+k`, `ctrl+y` | Delete a word, kill to line start/end, yank |
+| `ctrl+z` / `ctrl+shift+z` (or `alt+y`) | Undo / redo draft edits |
+| `pageUp` / `pageDown` or `ctrl+↑` / `ctrl+↓` | Scroll the conversation; `esc` returns to the latest output |
+| `ctrl+g` or `/queue` | List queued prompts; `x` cancels, `r` / `enter` cancels and recalls into the draft (`ctrl+x` stops the active run, not the queue) |
+| `F6` or `/copy` | Copy the last assistant answer as clean content, without terminal chrome |
+| `F7` or `/mouse` | Toggle mouse capture off/on for native terminal selection |
 | `ctrl+b` | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal |
 | `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run |
 | `ctrl+r` | Session picker |
@@ -125,8 +131,11 @@ defaults, and Escape cancels capture.
 | Wheel over the conversation | Scroll; at the top it asks for an older page |
 | Wheel over the sidebar | Scroll the panel |
 
-Mouse reporting is SGR 1006 and is enabled by this program only; the inline TUI
-never turns it on.
+Mouse reporting is SGR 1006 and starts enabled. `/mouse` releases and restores it at runtime; the terminal is always restored on exit. Draft text, cursor, folded pastes and image attachments are kept per session across overlays, launchpad visits and session switches (for the lifetime of this TUI process, not persisted to disk).
+
+The conversation follows new output by default. Scrolling up detaches from the tail; further output leaves the reading position unchanged and shows a new-output badge. Scroll back to the bottom or press `esc` to follow again.
+
+The driver only repaints dirty frames: there is no idle 120ms repaint timer. Streaming and spinner updates coalesce at 80ms, input and resize repaint immediately, and transcript rendering is cached by width/content revision.
 
 ## What is wired to the agent
 
@@ -141,10 +150,12 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | Session attach, `--session`, `--continue` | `get_state` + `switch_session` |
 | History with paging | The newest page on attach, older pages when the top is reached (`get_session_entries`, a bounded backward cursor) |
 | Prompting and streaming | `prompt` with the coalescing policy; `text_chunk`, `thinking_*`, `tool_*` and `agent_end` drive the transcript |
+| Queue management | `/queue` reads `get_state.queuedRuns`; cancel and recall use the existing `cancel_queued_run`, with no second client-side queue |
+| Draft attachments | Reuses `components/input.rs` folded-paste and image-marker machinery; attachments travel with the prompt |
 | Approvals | A parked request shows on the activity row; `y` / `n` answer it. `get_state`'s `pendingApprovals` brings it back after a restart, and `approval_decision` clears it whichever client answered |
 | Sessions panel | `list_sessions`, newest first, click to switch |
 | Usage / context / cost | `get_state`'s usage block, refreshed on the same events |
-| `ctrl+n` / `/new`, `ctrl+x` stop, `ctrl+k` refresh | |
+| `ctrl+n` / `/new`, `ctrl+x` stop, `F5` refresh | |
 | Launchpad chips | Click 模型 / 强度 / 权限 / 模式 to cycle them on the agent; the first message from the launchpad creates the session |
 | Theme, reading level | Persisted in `~/.future/tui/settings.json` (`tui/src/settings.rs`) |
 
@@ -155,9 +166,7 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
   inventing rows.
 - **Skills panel** lists the session's loaded skills by name only (no browser,
   no install).
-- **Image attachments and `@` file mentions** — the prompt path has no
-  attachment support yet; `tui/src/paste.rs` (folded pastes, clipboard capture)
-  is the machinery to build it on.
+- **`@` file mentions** — not implemented; pasted image paths and folded pastes use `tui/src/paste.rs`.
 - **The command palette** lists the commands the adapter implements. The panels
   the inline TUI had for providers, tools, sandbox, skills and worktrees have no
   equivalent yet; the underlying settings are per-session agent state, so the
@@ -169,7 +178,10 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 
 | File | Responsibility |
 |---|---|
-| `tui/src/workbench/run.rs` | The driver `future tui` runs: terminal, event loop, keys that need the agent first (approvals, stop) |
+| `tui/src/workbench/run.rs` | The driver: terminal, dirty/coalesced event loop, clipboard and mouse capture |
+| `tui/src/workbench/editor.rs` | Byte-indexed adapter over the shared multiline editor; complete per-session draft state |
+| `tui/src/workbench/scroll.rs` | Follow-tail, unread-output and return-to-latest semantics |
+| `tui/src/clipboard.rs` | Plain assistant-content clipboard output |
 | `tui/src/workbench/live.rs` | The agent adapter: `WorkbenchData` in, `WbAction`s applied |
 | `tui/src/index.rs` | Arguments, `--help`, print mode, `--list-models`; interactive goes to the driver |
 | `tui/src/workbench/mod.rs` | `Workbench` (view state), `WbEvent` / `WbAction`, key and mouse dispatch |

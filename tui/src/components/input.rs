@@ -219,9 +219,10 @@ pub struct Input {
     // "no": the attachment line only warns when the answer is known.
     image_support: Option<bool>,
 
-    // Undo stack — (value, cursor, attachments) snapshots taken before each
-    // edit. Cleared on submit; bounded at MAX_UNDO_STACK entries.
+    // Undo/redo stacks — (value, cursor, attachments) snapshots taken around
+    // each edit. Submit starts a fresh edit session; both stacks are bounded.
     undo_stack: Vec<(String, usize, Vec<Attachment>)>,
+    redo_stack: Vec<(String, usize, Vec<Attachment>)>,
     // Kill ring — text deleted by ctrl+u / ctrl+k / ctrl+w / alt+d,
     // restored by ctrl+y (yank).
     kill_text: String,
@@ -247,6 +248,30 @@ impl Default for Input {
     }
 }
 
+impl Clone for Input {
+    fn clone(&self) -> Self {
+        let mut input = Self::new();
+        input.value = self.value.clone();
+        input.cursor = self.cursor;
+        input.history = self.history.clone();
+        input.history_index = self.history_index;
+        input.history_draft = self.history_draft.clone();
+        input.focused = self.focused;
+        input.pastes = self.pastes.clone();
+        input.attachments = self.attachments.clone();
+        input.image_support = self.image_support;
+        input.undo_stack = self.undo_stack.clone();
+        input.redo_stack = self.redo_stack.clone();
+        input.kill_text = self.kill_text.clone();
+        input.cached_visual_width = self.cached_visual_width;
+        input.cached_visual_lines = self.cached_visual_lines.clone();
+        input.cached_line_map = self.cached_line_map.clone();
+        input.cached_value_for_layout = self.cached_value_for_layout.clone();
+        input.theme = self.theme;
+        input
+    }
+}
+
 impl Input {
     pub fn new() -> Self {
         Self {
@@ -266,6 +291,7 @@ impl Input {
             attachments: Vec::new(),
             image_support: None,
             undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
             kill_text: String::new(),
             cached_visual_width: -1,
             cached_visual_lines: Vec::new(),
@@ -370,6 +396,22 @@ impl Input {
     pub fn restore_pending(&mut self, pending: PendingDraft) {
         self.pastes = pending.pastes;
         self.attachments = pending.attachments;
+    }
+
+    /// Clone paste/image state without taking it out of the live draft.
+    pub fn clone_pending(&self) -> PendingDraft {
+        PendingDraft {
+            pastes: self.pastes.clone(),
+            attachments: self.attachments.clone(),
+        }
+    }
+
+    /// Cursor cell in a visual layout whose text area is `width` columns.
+    /// Unlike `Component::render`, this does not include a two-column prompt.
+    pub fn visual_cursor(&mut self, width: usize) -> (usize, usize) {
+        let _ = self.build_visual_layout(width.max(1));
+        let info = self.get_cursor_visual_info();
+        (info.visual_line, info.col_in_wrapped)
     }
 
     /// Tell the input whether the active model accepts image input, so the
@@ -489,6 +531,7 @@ impl Input {
             self.history_draft.clear();
             // A submitted line starts a fresh edit session.
             self.undo_stack.clear();
+            self.redo_stack.clear();
             if let Some(on_submit) = self.onSubmit.as_mut() {
                 on_submit(&v);
             }
@@ -568,6 +611,10 @@ impl Input {
         }
         if key == "ctrl+-" || key == "ctrl+/" || key == "ctrl+_" || key == "ctrl+z" {
             self.undo();
+            return true;
+        }
+        if key == "ctrl+shift+z" || key == "ctrl+r" || key == "alt+y" {
+            self.redo();
             return true;
         }
 
@@ -926,6 +973,7 @@ impl Input {
     /// undone. The attachments travel with the text: undoing the deletion of an
     /// `[Image #N]` marker has to bring the image back, not just the marker.
     fn push_undo(&mut self) {
+        self.redo_stack.clear();
         if self.undo_stack.len() >= MAX_UNDO_STACK {
             self.undo_stack.remove(0);
         }
@@ -939,6 +987,24 @@ impl Input {
         let Some((value, cursor, attachments)) = self.undo_stack.pop() else {
             return false;
         };
+        if self.redo_stack.len() >= MAX_UNDO_STACK {
+            self.redo_stack.remove(0);
+        }
+        self.redo_stack
+            .push((self.value.clone(), self.cursor, self.attachments.clone()));
+        self.value = value;
+        self.cursor = cursor;
+        self.attachments = attachments;
+        self.commit_edit();
+        true
+    }
+
+    fn redo(&mut self) -> bool {
+        let Some((value, cursor, attachments)) = self.redo_stack.pop() else {
+            return false;
+        };
+        self.undo_stack
+            .push((self.value.clone(), self.cursor, self.attachments.clone()));
         self.value = value;
         self.cursor = cursor;
         self.attachments = attachments;

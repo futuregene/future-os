@@ -53,6 +53,19 @@ pub(crate) fn compose(
         header(&palette, data, &frame, columns, workbench.density),
     );
 
+    workbench.composer_width = frame.input.w.saturating_sub(6).max(1) as usize;
+    let composer_extra = if data.on_launchpad() || frame.compact {
+        0
+    } else {
+        let (_, cursor_row, _) = data
+            .input
+            .editor
+            .clone()
+            .rows(frame.input.w.saturating_sub(6) as usize);
+        cursor_row
+            .min(7)
+            .min(frame.body.h.saturating_sub(4) as usize) as u16
+    };
     if data.on_launchpad() {
         let lang = workbench.lang;
         let (lines, cursor) =
@@ -60,8 +73,27 @@ pub(crate) fn compose(
         paint(&mut rows, frame.body, lines);
         workbench.set_cursor(cursor);
     } else {
-        let lines = conversation(workbench, data, &palette, frame.body);
-        paint(&mut rows, frame.body, lines);
+        let lines = conversation(
+            workbench,
+            data,
+            &palette,
+            Rect::new(
+                frame.body.x,
+                frame.body.y,
+                frame.body.w,
+                frame.body.h.saturating_sub(composer_extra),
+            ),
+        );
+        paint(
+            &mut rows,
+            Rect::new(
+                frame.body.x,
+                frame.body.y,
+                frame.body.w,
+                frame.body.h.saturating_sub(composer_extra),
+            ),
+            lines,
+        );
         workbench.hit_map().push(frame.body, "chat");
     }
 
@@ -86,14 +118,27 @@ pub(crate) fn compose(
             true,
             frame.compact,
         );
+        let input_lines = input_lines
+            .into_iter()
+            .take(frame.input.h.saturating_add(composer_extra) as usize)
+            .collect::<Vec<_>>();
         // The whole box is a focus target: the border is as much "the input"
         // to a reader aiming a pointer at it as the prompt row is.
-        workbench.hit_map().push(frame.input, "input");
-        paint(&mut rows, frame.input, input_lines);
+        let input_rect = Rect::new(
+            frame.input.x,
+            frame.input.y.saturating_sub(composer_extra),
+            frame.input.w,
+            frame.input.h.saturating_add(composer_extra),
+        );
+        workbench.hit_map().push(input_rect, "input");
+        paint(&mut rows, input_rect, input_lines);
         if workbench.overlay.is_none() {
             let column =
                 (cursor_column as usize).min(frame.input.w.saturating_sub(1) as usize) as u16;
-            workbench.set_cursor(Some((column, frame.prompt_row)));
+            workbench.set_cursor(Some((
+                column,
+                frame.prompt_row.saturating_sub(composer_extra),
+            )));
         }
     }
 
@@ -130,6 +175,11 @@ pub(crate) fn compose(
         }
         Some(Overlay::PanelFull) => {
             let lines = panel_box(workbench, data, &palette, w, h);
+            paint_overlay(&mut rows, &palette, lines, columns);
+            workbench.set_cursor(None);
+        }
+        Some(Overlay::Queue) => {
+            let lines = queue_box(workbench, data, &palette, w, h);
             paint_overlay(&mut rows, &palette, lines, columns);
             workbench.set_cursor(None);
         }
@@ -428,7 +478,72 @@ fn conversation(
     let mut out = vec![fit("", columns); rows.saturating_sub(lines.len())];
     out.extend(lines);
     out.truncate(rows);
+    if workbench.has_new_output() && !out.is_empty() {
+        let badge = palette.strong(palette.accent, t(workbench.lang, Key::ChatNewOutput));
+        let pad = columns.saturating_sub(width(&badge) + 1);
+        let last = out.len() - 1;
+        out[last] = fit(&format!("{}{}{}", " ".repeat(pad), badge, " "), columns);
+        workbench.hit_map().push(
+            Rect::new(area.x, area.bottom().saturating_sub(1), area.w, 1),
+            "chat.latest",
+        );
+    }
     out
+}
+
+fn queue_box(
+    workbench: &mut Workbench,
+    data: &WorkbenchData,
+    palette: &Palette,
+    w: u16,
+    h: u16,
+) -> Vec<String> {
+    let columns = (w as usize).min(76);
+    let mut rows = vec![widgets::box_top(
+        palette,
+        columns,
+        t(workbench.lang, Key::QueueTitle),
+    )];
+    rows.push(widgets::box_row(
+        palette,
+        t(workbench.lang, Key::QueueHint),
+        columns,
+    ));
+    if data.queue.is_empty() {
+        rows.push(widgets::box_row(
+            palette,
+            t(workbench.lang, Key::QueueEmpty),
+            columns,
+        ));
+    }
+    let room = (h as usize).saturating_sub(3).min(12);
+    let first = workbench.queue_index.saturating_add(1).saturating_sub(room);
+    for (index, item) in data.queue.iter().skip(first).take(room).enumerate() {
+        let index = first + index;
+        let marker = if index == workbench.queue_index {
+            "› "
+        } else {
+            "  "
+        };
+        let text = item.text.replace('\n', " ↵ ");
+        rows.push(widgets::box_row(
+            palette,
+            &fit(
+                &format!("{marker}{}. {text}", index + 1),
+                columns.saturating_sub(2),
+            ),
+            columns,
+        ));
+        workbench.hit_map().push(
+            Rect::new(0, index.saturating_sub(first) as u16 + 2, columns as u16, 1),
+            format!("queue.row.{index}"),
+        );
+    }
+    rows.push(widgets::box_bottom(palette, columns));
+    while rows.len() < h as usize {
+        rows.push(fit("", columns));
+    }
+    rows
 }
 
 // ─── sidebar ───────────────────────────────────────────────────────────────

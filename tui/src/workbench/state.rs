@@ -154,14 +154,32 @@ pub struct JobRow {
     pub state: String,
 }
 
-/// What the input box holds. The cursor is a byte offset into `text`, the same
-/// unit the agent's request takes.
+/// What the input box holds. The editor itself lives in `Live`; this snapshot
+/// keeps all renderers free of editing and I/O.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InputView {
     pub text: String,
     pub cursor: usize,
     /// Shown while `text` is empty.
     pub placeholder: String,
+    #[doc(hidden)]
+    pub editor: super::editor::EditorState,
+}
+
+impl InputView {
+    pub fn from_editor(editor: super::editor::EditorState, placeholder: String) -> Self {
+        Self {
+            text: editor.text().to_string(),
+            cursor: editor.cursor(),
+            placeholder,
+            editor,
+        }
+    }
+    /// Keyboard navigation uses the last rendered width; this fallback is only
+    /// for input arriving before the first frame.
+    pub fn editor_width(&self, frame_width: u16) -> usize {
+        (frame_width as usize).saturating_sub(44).clamp(8, 76)
+    }
 }
 
 impl InputView {
@@ -352,6 +370,19 @@ pub struct WorkbenchData {
     /// something succeeds. Distinct from the transcript: it is about the
     /// surface's own last action, not part of the conversation.
     pub notice: Option<String>,
+    /// The agent's authoritative queued runs, in its queue order.
+    pub queue: Vec<QueuedPrompt>,
+    /// Increases when transcript content changes; lets the view preserve a
+    /// reader's position without guessing from activity labels.
+    pub revision: u64,
+    /// Mouse capture can be released for native selection/copy.
+    pub mouse_capture: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct QueuedPrompt {
+    pub run_id: String,
+    pub text: String,
 }
 
 impl WorkbenchData {
@@ -370,6 +401,7 @@ mod tests {
             text: text.into(),
             cursor,
             placeholder: String::new(),
+            editor: Default::default(),
         }
     }
 

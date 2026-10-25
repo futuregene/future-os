@@ -27,6 +27,7 @@
 
 pub mod ansi;
 pub mod demo;
+pub mod editor;
 pub mod git;
 pub mod i18n;
 pub mod launchpad;
@@ -39,6 +40,7 @@ pub mod picker;
 pub mod preferences;
 pub mod run;
 pub mod screen;
+pub mod scroll;
 pub mod state;
 pub mod theme;
 pub mod widgets;
@@ -94,6 +96,7 @@ pub enum Overlay {
     PanelFull,
     /// `/model`, `/theme` or `/sessions`: the list picker.
     Picker(PickerKind),
+    Queue,
     /// Layout, density and the entry to the shortcut editor.
     Preferences,
     Keybindings,
@@ -116,6 +119,14 @@ pub enum WbAction {
         text: String,
         cursor: usize,
     },
+    /// Apply the complete editor state, retaining undo/history/paste/attachment
+    /// stacks that a text-only snapshot cannot represent.
+    EditEditor(Box<editor::EditorState>),
+    CopyLast,
+    ToggleMouse,
+    OpenQueue,
+    CancelQueued(String),
+    RecallQueued(String),
     /// `enter` on a non-empty draft.
     Submit(String),
     /// A command entry points at the agent: `/new`, `/sessions`, `reply-detail`…
@@ -257,6 +268,11 @@ pub struct Workbench {
     picker_restore: Option<&'static str>,
     pub launch_field: LaunchField,
     pub chat_scroll: usize,
+    pub scroll: scroll::ScrollState,
+    pub queue_index: usize,
+    session_key: String,
+    pub mouse_capture: bool,
+    pub(crate) composer_width: usize,
     pub tick: usize,
     /// The frame size of the last render; mouse coordinates are resolved
     /// against it.
@@ -307,6 +323,11 @@ impl Workbench {
             picker_restore: None,
             launch_field: LaunchField::Prompt,
             chat_scroll: 0,
+            scroll: scroll::ScrollState::default(),
+            queue_index: 0,
+            session_key: String::new(),
+            mouse_capture: true,
+            composer_width: 76,
             tick: 0,
             last_frame: (0, 0),
             hit: layout::HitMap::new(),
@@ -364,6 +385,12 @@ impl Workbench {
 
     /// Render one frame: exactly `h` rows, each exactly `w` display columns.
     pub fn render(&mut self, data: &WorkbenchData, w: u16, h: u16) -> Vec<String> {
+        if self.session_key != data.session.id {
+            self.session_key = data.session.id.clone();
+            self.scroll.reset();
+        }
+        self.scroll.observe(data.revision);
+        self.mouse_capture = data.mouse_capture;
         let rows = screen::compose(self, data, w, h);
         debug_assert_eq!(
             rows.len(),
@@ -436,12 +463,9 @@ impl Workbench {
             }
             WbEvent::Resize(_, _) => vec![WbAction::Redraw],
             WbEvent::Paste(text) => {
-                let mut view = data.input.clone();
-                view.insert(&text);
-                vec![WbAction::EditInput {
-                    text: view.text,
-                    cursor: view.cursor,
-                }]
+                let mut view = data.input.editor.clone();
+                view.paste(&text);
+                vec![WbAction::EditEditor(Box::new(view))]
             }
             WbEvent::Mouse(event) => self.handle_mouse(event, data),
             WbEvent::Key(key) => self.handle_key(&key, data),
@@ -477,6 +501,9 @@ impl Workbench {
         }
         match key {
             "ctrl+q" => vec![WbAction::Quit],
+            "f6" => vec![WbAction::CopyLast],
+            "f7" => vec![WbAction::ToggleMouse],
+            "ctrl+g" => vec![WbAction::OpenQueue],
             "ctrl+b" => {
                 // Hidden → shown and focused → shown and unfocused → hidden.
                 // Whether the sidebar *can* show is the terminal's width, not
@@ -557,82 +584,35 @@ impl Workbench {
                 }
                 vec![WbAction::Submit(text)]
             }
-            "backspace" => {
-                let mut view = data.input.clone();
-                view.backspace();
-                vec![WbAction::EditInput {
-                    text: view.text,
-                    cursor: view.cursor,
-                }]
+            "up" if self.sidebar_focus => self.scroll(-1, data),
+            "down" if self.sidebar_focus => self.scroll(1, data),
+            "ctrl+up" | "pageUp" => self.scroll(-10, data),
+            "ctrl+down" | "pageDown" => self.scroll(10, data),
+            "end" if self.scroll.following() && data.input.text.is_empty() => self.scroll(1, data),
+            "escape" if !self.scroll.following() => {
+                self.scroll.latest();
+                self.chat_scroll = 0;
+                vec![WbAction::Redraw]
             }
-            "home" | "ctrl+a" => vec![WbAction::EditInput {
-                text: data.input.text.clone(),
-                cursor: 0,
-            }],
-            "end" | "ctrl+f" => vec![WbAction::EditInput {
-                text: data.input.text.clone(),
-                cursor: data.input.text.len(),
-            }],
-            "ctrl+left" | "alt+left" => {
-                let before = &data.input.text[..data.input.cursor.min(data.input.text.len())];
-                let cursor = before
-                    .trim_end()
-                    .rfind(char::is_whitespace)
-                    .map(|i| i + 1)
-                    .unwrap_or(0);
-                vec![WbAction::EditInput {
-                    text: data.input.text.clone(),
-                    cursor,
-                }]
+            // The shared editor owns every editing chord, including multiline
+            // movement/history and undo/redo. Cloning snapshots, not rebuilding
+            // an InputView, is what preserves undo and attachment state.
+            "backspace" | "delete" | "home" | "end" | "left" | "right" | "up" | "down"
+            | "ctrl+a" | "ctrl+e" | "ctrl+f" | "ctrl+u" | "ctrl+k" | "ctrl+w" | "ctrl+y"
+            | "ctrl+z" | "ctrl+-" | "ctrl+/" | "ctrl+_" | "ctrl+shift+z" | "alt+y"
+            | "alt+backspace" | "alt+d" | "alt+delete" | "ctrl+left" | "ctrl+right"
+            | "alt+left" | "alt+right" | "shift+enter" | "alt+enter" | "ctrl+enter" | "ctrl+j" => {
+                let mut view = data.input.editor.clone();
+                view.resize(self.composer_width);
+                view.key(key);
+                vec![WbAction::EditEditor(Box::new(view))]
             }
-            "ctrl+right" | "alt+right" => {
-                let after = &data.input.text[data.input.cursor.min(data.input.text.len())..];
-                let offset = after
-                    .find(char::is_whitespace)
-                    .map(|i| {
-                        i + after[i..]
-                            .find(|c: char| !c.is_whitespace())
-                            .unwrap_or(after.len() - i)
-                    })
-                    .unwrap_or(after.len());
-                vec![WbAction::EditInput {
-                    text: data.input.text.clone(),
-                    cursor: data.input.cursor + offset,
-                }]
-            }
-            "left" => {
-                let mut view = data.input.clone();
-                view.move_left();
-                vec![WbAction::EditInput {
-                    text: view.text,
-                    cursor: view.cursor,
-                }]
-            }
-            "right" => {
-                let mut view = data.input.clone();
-                view.move_right();
-                vec![WbAction::EditInput {
-                    text: view.text,
-                    cursor: view.cursor,
-                }]
-            }
-            "ctrl+u" => vec![WbAction::EditInput {
-                text: String::new(),
-                cursor: 0,
-            }],
-            "up" | "ctrl+up" => self.scroll(-1, data),
-            "down" | "ctrl+down" => self.scroll(1, data),
-            "pageUp" => self.scroll(-10, data),
-            "pageDown" => self.scroll(10, data),
             // Space is a character in the draft, not the "select" key the
             // menus use: the prompt has to be able to contain words.
             "space" => {
-                let mut view = data.input.clone();
-                view.insert(" ");
-                vec![WbAction::EditInput {
-                    text: view.text,
-                    cursor: view.cursor,
-                }]
+                let mut view = data.input.editor.clone();
+                view.paste(" ");
+                vec![WbAction::EditEditor(Box::new(view))]
             }
             "escape" => {
                 self.chat_scroll = 0;
@@ -646,12 +626,9 @@ impl Workbench {
                     && !other.starts_with("ctrl+")
                     && !other.starts_with("alt+")
                 {
-                    let mut view = data.input.clone();
-                    view.insert(other);
-                    vec![WbAction::EditInput {
-                        text: view.text,
-                        cursor: view.cursor,
-                    }]
+                    let mut view = data.input.editor.clone();
+                    view.paste(other);
+                    vec![WbAction::EditEditor(Box::new(view))]
                 } else {
                     Vec::new()
                 }
@@ -683,8 +660,8 @@ impl Workbench {
         // row, and the ceiling is "everything loaded is above the viewport".
         let ceiling = total.saturating_sub(1);
         let at_top = self.chat_scroll >= ceiling && total > 0;
-        let next = (self.chat_scroll as i32 - up).clamp(0, ceiling as i32);
-        self.chat_scroll = next as usize;
+        self.scroll.scroll(up, ceiling);
+        self.chat_scroll = self.scroll.offset;
         if up < 0 && at_top {
             // Nothing older is loaded: the app may fetch one more page.
             return vec![WbAction::LoadOlder];
@@ -699,6 +676,34 @@ impl Workbench {
         data: &WorkbenchData,
     ) -> Vec<WbAction> {
         match overlay {
+            Overlay::Queue => match key {
+                "escape" | "q" => {
+                    self.overlay = None;
+                    vec![WbAction::Redraw]
+                }
+                "up" => {
+                    self.queue_index = self.queue_index.saturating_sub(1);
+                    vec![WbAction::Redraw]
+                }
+                "down" => {
+                    self.queue_index =
+                        (self.queue_index + 1).min(data.queue.len().saturating_sub(1));
+                    vec![WbAction::Redraw]
+                }
+                "x" | "d" | "delete" => data
+                    .queue
+                    .get(self.queue_index)
+                    .map(|row| vec![WbAction::CancelQueued(row.run_id.clone())])
+                    .unwrap_or_default(),
+                "r" | "enter" => {
+                    self.overlay = None;
+                    data.queue
+                        .get(self.queue_index)
+                        .map(|row| vec![WbAction::RecallQueued(row.run_id.clone())])
+                        .unwrap_or_default()
+                }
+                _ => Vec::new(),
+            },
             Overlay::Preferences => match key {
                 "escape" | "q" => {
                     self.overlay = None;
@@ -1126,6 +1131,22 @@ impl Workbench {
     }
 
     fn click(&mut self, id: &str, event: mouse::MouseEvent, data: &WorkbenchData) -> Vec<WbAction> {
+        if id == "chat.latest" {
+            self.scroll.latest();
+            self.chat_scroll = 0;
+            return vec![WbAction::Redraw];
+        }
+        if let Some(index) = id
+            .strip_prefix("queue.row.")
+            .and_then(|v| v.parse::<usize>().ok())
+        {
+            self.queue_index = index;
+            return data
+                .queue
+                .get(index)
+                .map(|row| vec![WbAction::RecallQueued(row.run_id.clone())])
+                .unwrap_or_default();
+        }
         if id == "input" {
             self.launch_field = LaunchField::Prompt;
             // A click in the conversation half takes the keys back from the
@@ -1244,6 +1265,11 @@ impl Workbench {
     pub fn surface_command(&mut self, command: &str, data: &WorkbenchData) -> VerbOutcome {
         let name = command.trim_start_matches('/').trim();
         match name {
+            "queue" => {
+                self.overlay = Some(Overlay::Queue);
+                self.queue_index = self.queue_index.min(data.queue.len().saturating_sub(1));
+                VerbOutcome::Done { notice: None }
+            }
             "usage" => {
                 self.focus_panel(PanelId::Usage);
                 VerbOutcome::Done { notice: None }
@@ -1307,10 +1333,18 @@ impl Workbench {
 
     pub(crate) fn set_chat_scroll(&mut self, scroll: usize) {
         self.chat_scroll = scroll;
+        self.scroll.offset = scroll;
     }
 
     pub(crate) fn chat_scroll_offset(&self) -> usize {
         self.chat_scroll
+    }
+
+    pub fn following_latest(&self) -> bool {
+        self.scroll.following()
+    }
+    pub fn has_new_output(&self) -> bool {
+        self.scroll.unread()
     }
 
     pub(crate) fn set_overlay_scroll(&mut self, scroll: usize) {
@@ -1325,8 +1359,11 @@ impl Workbench {
 /// The command palette's entries: `(command, description)`. Kept here rather
 /// than in the app so the palette, the help overlay and the tests share one
 /// list.
-pub const COMMANDS: [(&str, Key); 14] = [
+pub const COMMANDS: [(&str, Key); 17] = [
     ("/new", Key::CmdNew),
+    ("/queue", Key::CmdQueue),
+    ("/copy", Key::CmdCopy),
+    ("/mouse", Key::CmdMouse),
     ("/sessions", Key::CmdSessions),
     ("/model", Key::CmdModel),
     ("/lang", Key::CmdLanguage),
@@ -1439,6 +1476,67 @@ mod tests {
             ctrl: false,
         };
         workbench.handle(WbEvent::Mouse(press), data)
+    }
+
+    #[test]
+    fn multiline_editing_and_queue_actions_use_shared_state() {
+        let mut data = demo::chat();
+        data.input.editor.paste("one");
+        data.input.text = "one".into();
+        let mut wb = workbench();
+        let actions = wb.handle(WbEvent::Key("alt+enter".into()), &data);
+        let [WbAction::EditEditor(editor)] = actions.as_slice() else {
+            panic!("{actions:?}")
+        };
+        data.input.editor = editor.as_ref().clone();
+        data.input.text = editor.text().into();
+        assert_eq!(data.input.text, "one\n");
+        let actions = wb.handle(WbEvent::Paste("two".into()), &data);
+        let [WbAction::EditEditor(editor)] = actions.as_slice() else {
+            panic!("{actions:?}")
+        };
+        data.input.editor = editor.as_ref().clone();
+        data.input.text = editor.text().into();
+        assert_eq!(data.input.text, "one\ntwo");
+        let rows = wb.render(&data, 90, 24);
+        assert!(plain(&rows).contains("one"));
+        assert!(plain(&rows).contains("two"));
+
+        data.queue = vec![state::QueuedPrompt {
+            run_id: "q1".into(),
+            text: "later".into(),
+        }];
+        assert!(matches!(
+            wb.surface_command("/queue", &data),
+            VerbOutcome::Done { .. }
+        ));
+        assert_eq!(
+            wb.handle(WbEvent::Key("x".into()), &data),
+            vec![WbAction::CancelQueued("q1".into())]
+        );
+        assert_eq!(
+            wb.handle(WbEvent::Key("r".into()), &data),
+            vec![WbAction::RecallQueued("q1".into())]
+        );
+    }
+
+    #[test]
+    fn new_output_never_steals_a_manual_scroll_position() {
+        let mut data = demo::chat();
+        data.messages = (0..100).map(|n| format!("line {n}")).collect();
+        let mut wb = workbench();
+        wb.render(&data, 120, 38);
+        wb.handle(WbEvent::Key("pageUp".into()), &data);
+        let offset = wb.chat_scroll_offset();
+        assert!(offset > 0 && !wb.following_latest());
+        data.revision += 1;
+        let text = plain(&wb.render(&data, 120, 38));
+        assert_eq!(wb.chat_scroll_offset(), offset);
+        assert!(wb.has_new_output());
+        assert!(text.contains("新输出"));
+        wb.handle(WbEvent::Key("escape".into()), &data);
+        assert!(wb.following_latest() && !wb.has_new_output());
+        assert_eq!(wb.chat_scroll_offset(), 0);
     }
 
     #[test]
@@ -1961,14 +2059,10 @@ mod tests {
         let (mut workbench, _rows) = frame(&data, 120, 38);
         for key in ["h", "i"] {
             let actions = workbench.handle(WbEvent::Key(key.into()), &data);
-            assert_eq!(
-                actions,
-                vec![WbAction::EditInput {
-                    text: key.to_string(),
-                    cursor: 1
-                }],
-                "{key}"
-            );
+            let [WbAction::EditEditor(editor)] = actions.as_slice() else {
+                panic!("{key}: {actions:?}")
+            };
+            assert_eq!((editor.text(), editor.cursor()), (key, 1), "{key}");
         }
         // The app applies the edit; the next frame sees it. Emulate that.
         let mut data = data;
@@ -2567,13 +2661,12 @@ mod tests {
     fn a_paste_is_an_edit_and_never_a_key() {
         let data = demo::launchpad();
         let (mut workbench, _rows) = frame(&data, 120, 38);
-        assert_eq!(
-            workbench.handle(WbEvent::Paste("粘贴的文本".into()), &data),
-            vec![WbAction::EditInput {
-                text: "粘贴的文本".into(),
-                cursor: "粘贴的文本".len()
-            }]
-        );
+        let actions = workbench.handle(WbEvent::Paste("粘贴的文本".into()), &data);
+        let [WbAction::EditEditor(editor)] = actions.as_slice() else {
+            panic!("{actions:?}")
+        };
+        assert_eq!(editor.text(), "粘贴的文本");
+        assert_eq!(editor.cursor(), "粘贴的文本".len());
     }
 
     #[test]
