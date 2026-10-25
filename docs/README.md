@@ -73,6 +73,12 @@ test harness conventions.
 - [Windows installer/update](internals/desktop-windows.md)
 - [Provider protocol tests](internals/provider-protocol.md)
 
+## TUI design (`tui/`)
+
+| Doc | What it covers |
+|---|---|
+| [Workbench TUI spec](tui/workbench-spec.md) ([中文](tui/workbench-spec.zh-CN.md)) | A frozen contract for a *planned* full-screen workbench: layout constants, the mouse and keyboard contract, type names and acceptance commands. Design proposal for work not yet built — what the TUI actually ships today is in the [TUI guide](guide/tui.md) |
+
 ## Wiki (user-facing app guide)
 
 - English: [Home](wiki/en/Home.md), [Installation](wiki/en/Installation.md),
