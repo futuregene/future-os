@@ -177,6 +177,13 @@ Logo：9x4 像素鲸（用 `█ ▀ ▄` 三档方块），运行时按 8fps 轻
 `/new` 回到启动台，而不是立刻建会话：头部自己的状态（连接点、版本）留着，对话清空，
 第一条消息才按启动台上显示的模型/强度建会话。
 
+还没有会话时（启动台，或 TUI 起来时 agent 手上没有会话），选择器里的 `enter` **只暂存**，
+不发请求：agent 在没有会话时对 `set_model`/`set_thinking_level` 一律回
+`session not found — pass a valid session_id`，所以这一对选择变成 `SetPending*`——头部与启动台
+参数段显示的就是它，同时写进 `settings.json` 的 `defaultModel`/`defaultThinkingLevel`，
+第一条消息用它们建会话；会话建好后 agent 就是唯一来源，暂存值清空。启动台上点参数段同理：
+模型与强度这两颗芯片走暂存，模式与权限是 agent 级设置、没有会话也能设，仍然走线上。
+
 行的绘制与命中区域来自同一份列表和同一份几何（`screen::picker_box` 用 `box_geometry`），
 所以点击一定落在指针下面那一行，而不是旁边一行。
 

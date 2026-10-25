@@ -291,8 +291,39 @@ async fn quit(
             Outcome::Quit => return Ok(true),
             Outcome::Continue => {}
         }
+        // A model or level chosen with no session attached is nothing the agent
+        // can hold: `live.apply` staged it on the adapter, which asks for it
+        // when the session is created, and `persist_pending` remembers it as
+        // this terminal UI's default. One rule, so the picker's row and the
+        // launchpad's own chips land in the same place.
+        persist_pending(live, settings, settings_path);
     }
     Ok(false)
+}
+
+/// Write the launchpad's staged model and level into `settings.json`, which is
+/// where the terminal UI keeps its defaults.
+///
+/// Called after every applied action and writes only on a change — a staging
+/// action is rare, and a launchpad chip that cycles through the list would
+/// otherwise rewrite the file on each step.
+fn persist_pending(live: &Live, settings: &mut TuiSettings, path: &Path) {
+    let mut changed = false;
+    if let Some(model) = live.pending_model() {
+        if settings.default_model.as_deref() != Some(model) {
+            settings.default_model = Some(model.to_string());
+            changed = true;
+        }
+    }
+    if let Some(effort) = live.pending_effort() {
+        if settings.default_thinking_level.as_deref() != Some(effort) {
+            settings.default_thinking_level = Some(effort.to_string());
+            changed = true;
+        }
+    }
+    if changed {
+        save_settings(path, settings);
+    }
 }
 
 /// Split one chunk of terminal input into workbench events.
