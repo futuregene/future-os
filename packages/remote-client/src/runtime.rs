@@ -671,6 +671,11 @@ impl ChunkOwner {
 /// chunk. Its *presence* — not a flag this client set — is what says the reply is
 /// a fragment, which is also what makes an older host's un-paged reply pass
 /// through untouched.
+///
+/// It says nothing about the *carrier*: the address is identical whether the
+/// chunk's bytes arrive base64 inside this object (`send`'s shape) or beside it
+/// as the tail of a frame (`send_binary`'s). Which one happened is decided when
+/// the reply is decoded (`session::Reply`), and both reach this same address.
 fn read_chunk_of(reply: &Value) -> Option<&Value> {
     reply.get("readChunk").filter(|chunk| chunk.is_object())
 }
@@ -691,7 +696,51 @@ const PAGE_CHUNK_BYTES: usize = 192 * 1024;
 /// opening a burst the host has to buffer.
 const PAGE_CHUNK_CONCURRENCY: usize = 4;
 
-/// Copy a chunk's decoded bytes into the page, checking it is the chunk it claims.
+/// One chunk of a page, whichever carrier it arrived on.
+///
+/// The two carriers differ in exactly one place — where the bytes are — so they
+/// are folded into one shape here and every check below is written once. Keeping
+/// two decoders would mean two places for "is this the chunk I asked for" to
+/// drift, and a page assembled from wrong offsets is silently valid JSON.
+struct PageChunk {
+    id: String,
+    offset: usize,
+    next: usize,
+    total: usize,
+    bytes: Vec<u8>,
+}
+
+impl PageChunk {
+    /// Read one chunk's address and bytes.
+    ///
+    /// `carried` is the frame's tail for a negotiated binary page, and `None`
+    /// for the base64 carrier, where the bytes are `data` inside `meta`.
+    fn new(meta: &Value, carried: Option<Vec<u8>>) -> Result<Self, crate::Error> {
+        let id = chunk_string(meta, "id")?;
+        let total = chunk_u64(meta, "totalBytes")?;
+        if total > MAX_PAGE_BYTES {
+            return Err(crate::Error::Message("remote_read_too_large".into()));
+        }
+        let total = usize::try_from(total).map_err(|_| page_shape_error())?;
+        let offset = usize::try_from(chunk_u64(meta, "offset")?).map_err(|_| page_shape_error())?;
+        let bytes = match carried {
+            Some(bytes) => bytes,
+            None => URL_SAFE_NO_PAD
+                .decode(chunk_string(meta, "data")?.as_bytes())
+                .map_err(|_| page_shape_error())?,
+        };
+        Ok(Self {
+            id,
+            offset,
+            next: usize::try_from(chunk_u64(meta, "nextOffset")?)
+                .map_err(|_| page_shape_error())?,
+            total,
+            bytes,
+        })
+    }
+}
+
+/// Copy a chunk's bytes into the page, checking it is the chunk it claims.
 ///
 /// Every field is verified against the snapshot the first reply pinned: a chunk
 /// from another snapshot (a re-read that raced this one), one at another offset,
@@ -701,34 +750,32 @@ const PAGE_CHUNK_CONCURRENCY: usize = 4;
 /// can retry.
 fn store_chunk(
     bytes: &mut [u8],
-    chunk: &Value,
-    id: &str,
-    total: usize,
+    chunk: &PageChunk,
+    page_id: &str,
     expected_offset: usize,
 ) -> Result<(), crate::Error> {
-    if chunk_string(chunk, "id")? != id
-        || chunk_u64(chunk, "totalBytes")? as usize != total
-        || chunk_u64(chunk, "offset")? as usize != expected_offset
+    let part = &chunk.bytes;
+    // A chunk from another snapshot (a re-read that raced this one) is refused
+    // by its id as well as by its offsets: two snapshots can overlap exactly.
+    if chunk.id != page_id
+        || chunk.offset != expected_offset
+        || part.is_empty()
+        || part.len() > PAGE_CHUNK_BYTES
+        || chunk.next != expected_offset + part.len()
+        || chunk.next > chunk.total
+        // A short chunk with more page to come would leave a hole.
+        || (chunk.next < chunk.total && part.len() != PAGE_CHUNK_BYTES)
     {
         return Err(page_shape_error());
     }
-    let part = URL_SAFE_NO_PAD
-        .decode(chunk_string(chunk, "data")?.as_bytes())
-        .map_err(|_| page_shape_error())?;
-    let next = chunk_u64(chunk, "nextOffset")? as usize;
-    if part.is_empty()
-        || part.len() > PAGE_CHUNK_BYTES
-        || next != expected_offset + part.len()
-        || next > total
-        // A short chunk with more page to come would leave a hole.
-        || (next < total && part.len() != PAGE_CHUNK_BYTES)
-    {
+    let total = chunk.total;
+    if bytes.len() != total {
         return Err(page_shape_error());
     }
     bytes
-        .get_mut(expected_offset..next)
+        .get_mut(expected_offset..chunk.next)
         .ok_or_else(page_shape_error)?
-        .copy_from_slice(&part);
+        .copy_from_slice(part);
     Ok(())
 }
 
@@ -2558,14 +2605,24 @@ impl Client {
         let reply = self
             .send_request_bound(desktop_id, command, lane, expected)
             .await?;
-        match read_chunk_of(&reply) {
-            // A chunked reply: put the page back together before returning it, so no
-            // caller has to know a page can arrive in pieces.
-            Some(chunk) => {
-                self.reassemble(desktop_id, lane, chunk, &owner, expected)
+        // A chunked reply: put the page back together before returning it, so no
+        // caller has to know a page can arrive in pieces. The chunk's bytes come
+        // from whichever carrier this connection negotiated — inside `data` as
+        // base64, or behind the JSON as part of the frame — and `PageChunk` is
+        // where those two become one shape.
+        let (data, body) = reply.into_page();
+        match read_chunk_of(&data) {
+            Some(meta) => {
+                let first = PageChunk::new(meta, body)?;
+                self.reassemble(desktop_id, lane, first, &owner, expected)
                     .await
             }
-            None => Ok(reply),
+            // A frame that carries no page address is a host bug, not a document
+            // with a body attached: the bytes would have nowhere to go, and
+            // returning `data` alone would answer with a fragment the caller
+            // cannot see is a fragment.
+            None if body.is_some() => Err(page_shape_error()),
+            None => Ok(data),
         }
     }
     /// One round trip: the command and its reply, unreassembled.
@@ -2579,7 +2636,7 @@ impl Client {
         mut command: Value,
         lane: &str,
         expected: Option<u64>,
-    ) -> Result<Value, crate::Error> {
+    ) -> Result<session::Reply, crate::Error> {
         if expected.is_none() {
             self.ensure_connected(desktop_id).await?;
         }
@@ -2635,23 +2692,24 @@ impl Client {
         result
     }
     /// Fetch the rest of a page's chunks and decode it.
+    ///
+    /// The first chunk is already in hand (it is the reply that announced the
+    /// page), so it is placed here and the rest are pulled in bounded batches.
     async fn reassemble(
         &self,
         desktop_id: &str,
         lane: &str,
-        first: &Value,
+        first: PageChunk,
         owner: &ChunkOwner,
         expected: Option<u64>,
     ) -> Result<Value, crate::Error> {
-        let id = chunk_string(first, "id")?;
-        let total = chunk_u64(first, "totalBytes")?;
-        if total > MAX_PAGE_BYTES {
-            return Err(crate::Error::Message("remote_read_too_large".into()));
-        }
-        let total = usize::try_from(total).map_err(|_| page_shape_error())?;
+        let id = first.id.clone();
+        // `PageChunk::new` already refused anything past `MAX_PAGE_BYTES`, which
+        // is what makes this allocation bounded.
+        let total = first.total;
         let mut bytes = vec![0u8; total];
-        store_chunk(&mut bytes, first, &id, total, 0)?;
-        let mut next = chunk_u64(first, "nextOffset")? as usize;
+        store_chunk(&mut bytes, &first, &id, 0)?;
+        let mut next = first.next;
         while next < total {
             let offsets: Vec<usize> = (0..PAGE_CHUNK_CONCURRENCY)
                 .map(|index| next + index * PAGE_CHUNK_BYTES)
@@ -2669,8 +2727,9 @@ impl Client {
             }))
             .await?;
             for (offset, reply) in fetched {
-                let chunk = read_chunk_of(&reply).ok_or_else(page_shape_error)?;
-                store_chunk(&mut bytes, chunk, &id, total, offset)?;
+                let (data, body) = reply.into_page();
+                let meta = read_chunk_of(&data).ok_or_else(page_shape_error)?;
+                store_chunk(&mut bytes, &PageChunk::new(meta, body)?, &id, offset)?;
                 next = (offset + PAGE_CHUNK_BYTES).min(total);
             }
         }
@@ -2685,7 +2744,7 @@ impl Client {
         offset: usize,
         owner: &ChunkOwner,
         expected: Option<u64>,
-    ) -> Result<Value, crate::Error> {
+    ) -> Result<session::Reply, crate::Error> {
         let mut command = json!({"type": "get_read_chunk", "replyId": id, "offset": offset});
         if let Some(session) = &owner.session {
             command["sessionId"] = json!(session);
@@ -2977,7 +3036,10 @@ impl Client {
                 self.on_transport_failure(&mut live, desktop_id, error);
             }
         }
-        result
+        // This lane carries no pages: a transfer chunk pull's answer is a small
+        // JSON acknowledgement, so a frame here would mean a host answering the
+        // wrong command — and its `data` is still the honest report of that.
+        result.map(session::Reply::into_data)
     }
     /// Stamp a catalogue snapshot with the host and the *live* pairing it came
     /// from.

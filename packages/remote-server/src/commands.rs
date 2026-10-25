@@ -107,6 +107,14 @@ pub struct HandshakeState {
     /// so a process-wide flag would trim one device's replies to another
     /// device's declaration.
     pub lean_events: Arc<AtomicBool>,
+    /// Whether this connection may receive a read page's chunk bytes as a
+    /// binary frame instead of base64 inside the JSON reply.
+    ///
+    /// Per connection for the same reason as the two above: the carrier is
+    /// whatever *this* client declared, and the reply it is sent is the one the
+    /// declared shape describes. An undeclared client keeps the base64 page it
+    /// has always received.
+    pub binary_pages: Arc<AtomicBool>,
 }
 
 /// Capability a client declares on `secure_ready` to accept gzip-compressed
@@ -179,6 +187,14 @@ pub fn apply_declared_features(handshake: &HandshakeState, pair_id: &str, featur
         features.iter().any(|feature| feature == REPLY_GZIP_FEATURE),
         Ordering::Release,
     );
+    // A read page's chunk bytes may travel outside the JSON reply, but only to
+    // a client that asked: everything else keeps the base64 carrier it decodes.
+    handshake.binary_pages.store(
+        features
+            .iter()
+            .any(|feature| feature == future_remote_protocol::READ_BINARY_FEATURE),
+        Ordering::Release,
+    );
     // The promise that makes silence mean something. A client that declares it
     // will keep beating while it is there, so a lapsed beat is a departure; a
     // client that does not is only ever retired by its own goodbye.
@@ -219,6 +235,7 @@ impl HandshakeState {
             pending: Arc::new(Mutex::new(HashMap::new())),
             gzip_replies: Arc::new(AtomicBool::new(false)),
             lean_events: Arc::new(AtomicBool::new(false)),
+            binary_pages: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -562,12 +579,8 @@ async fn handle_command_singleflight(
     let runtime = handshake.runtime.clone();
     let reply_ttl = handshake.reply_ttl;
     let capture = Arc::new(Mutex::new(None));
-    let gzip_replies = handshake.gzip_replies.load(Ordering::Acquire);
     REPLY_CAPTURE
-        .scope(
-            capture.clone(),
-            REPLY_GZIP.scope(gzip_replies, handle_command(client, msg, handshake)),
-        )
+        .scope(capture.clone(), handle_command(client, msg, handshake))
         .await;
     *cached = capture.lock().unwrap().clone();
     // The delivery that executes the uncached command owns its expiry. The
@@ -603,7 +616,19 @@ async fn handle_command(
     // to trim a reply to the lean feed. That is this command's connection's
     // declaration — not the machine's, which now has several.
     let lean = handshake.lean_events.load(Ordering::Acquire);
-    crate::lean::in_request(lean, handle_command_inner(client, msg, handshake)).await;
+    // The reply *encoding* is this connection's declaration too, and it is
+    // installed here rather than in the single-flight wrapper because two
+    // command paths reach this function without that wrapper (`get_read_chunk`,
+    // which must not retain a copy of every chunk, and a command with no id).
+    // Scoping it only in the wrapper silently served those replies uncompressed:
+    // measured on a 4 MiB page, one chunk of twenty-two was gzipped and the
+    // other twenty-one went out at 262 KB of base64 each instead of ~90 KB.
+    let gzip = handshake.gzip_replies.load(Ordering::Acquire);
+    crate::lean::in_request(
+        lean,
+        REPLY_GZIP.scope(gzip, handle_command_inner(client, msg, handshake)),
+    )
+    .await;
 }
 
 async fn handle_command_inner(
@@ -825,7 +850,14 @@ async fn handle_command_inner(
         _ => {
             handshake
                 .host
-                .execute(cmd, &NatsReply { client, msg: &msg })
+                .execute(
+                    cmd,
+                    &NatsReply {
+                        client,
+                        msg: &msg,
+                        binary_pages: handshake.binary_pages.load(Ordering::Acquire),
+                    },
+                )
                 .await;
         }
     }
@@ -1076,7 +1108,7 @@ async fn handle_pair_handshake_confirm(
             "bridgeInstanceId": state.bridge_instance_id,
             "deviceId": cmd.device_id,
             "desktopNonce": cmd.desktop_nonce,
-            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1", "selective_events_v1", "workspace_pinning_v1", "workspace_create_v1", "desktop_settings_v1", "skill_management_v1", "compaction_v1", "provider_management_v1", "fork_v1", "tasks_v1", "task_deps_v1"],
+            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1", "selective_events_v1", "workspace_pinning_v1", "workspace_create_v1", "desktop_settings_v1", "skill_management_v1", "compaction_v1", "provider_management_v1", "fork_v1", "tasks_v1", "task_deps_v1", future_remote_protocol::READ_BINARY_FEATURE],
             // A device that is not in control gets its own liveness and nothing
             // else: the conversation list belongs to the machine, and this reply
             // is also what a replayed handshake receives. `control` and `holder`
@@ -1140,10 +1172,43 @@ async fn reply(
     // in, only large replies that actually shrink are gzip-compressed; mobile
     // recognizes standard gzip magic bytes without a negotiation round.
     let payload = encode_reply_payload(&body);
+    deliver_reply_payload(client, msg, payload).await;
+}
+
+/// Record one encoded reply for the single-flight cache and put it on the wire.
+///
+/// The capture is what makes a re-sent command id replay the *same bytes*
+/// rather than running the command again, so it is written here for every
+/// carrier — a binary page cached through the JSON path would be replayed to a
+/// client that had declared the frame, and it would refuse it.
+async fn deliver_reply_payload(
+    client: &async_nats::Client,
+    msg: &async_nats::Message,
+    payload: Vec<u8>,
+) {
     let _ = REPLY_CAPTURE.try_with(|capture| {
         *capture.lock().unwrap() = Some(payload.clone());
     });
     publish_reply_payload(client, msg, payload).await;
+}
+
+/// The reply body for a chunked read page that carries its bytes outside the
+/// JSON.
+///
+/// The header is the same `RpcResponse` envelope `reply` builds, with the
+/// chunk's metadata in `data` and no `data` string inside it: what moved is the
+/// *carrier*, so a reader still validates `id`, `offset`, `nextOffset` and
+/// `totalBytes` exactly as before, and only takes the bytes from the frame's
+/// tail instead of base64-decoding a JSON string.
+fn encode_page_frame(header: &Value, body: &[u8]) -> Option<Vec<u8>> {
+    let document = json!({
+        "type": "response",
+        "success": true,
+        "data": header,
+        "error": Value::Null,
+    });
+    let document = serde_json::to_vec(&document).ok()?;
+    future_remote_protocol::json::encode_binary_frame(&document, body).ok()
 }
 
 fn encode_reply_payload(body: &Value) -> Vec<u8> {
@@ -1184,6 +1249,8 @@ async fn publish_reply_payload(
 struct NatsReply<'a> {
     client: &'a async_nats::Client,
     msg: &'a async_nats::Message,
+    /// Whether this connection declared `read_binary_v1`.
+    binary_pages: bool,
 }
 impl ReplySink for NatsReply<'_> {
     fn send<'a>(
@@ -1193,6 +1260,33 @@ impl ReplySink for NatsReply<'_> {
         error: Option<String>,
     ) -> futures::future::BoxFuture<'a, ()> {
         Box::pin(async move { reply(self.client, self.msg, success, data, error.as_deref()).await })
+    }
+    fn send_binary<'a>(
+        &'a self,
+        header: Value,
+        body: Vec<u8>,
+    ) -> futures::future::BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if !self.binary_pages || self.msg.reply.is_none() {
+                // Undeclared (or a pump with nowhere to answer): the legacy
+                // base64 page, through the trait's own default carrier.
+                let data = crate::reply::with_base64_page(header, &body);
+                self.send(true, data, None).await;
+                return;
+            }
+            let Some(frame) = encode_page_frame(&header, &body) else {
+                // A frame the client would refuse to read is worse than none:
+                // answer with the carrier every client can decode.
+                let data = crate::reply::with_base64_page(header, &body);
+                self.send(true, data, None).await;
+                return;
+            };
+            let payload = crate::reply::encode_binary_reply_payload_with_gzip(
+                frame,
+                remote_json_gzip_enabled(),
+            );
+            deliver_reply_payload(self.client, self.msg, payload).await;
+        })
     }
 }
 

@@ -99,6 +99,84 @@ pub fn decode_reply<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, P
     serde_json::from_slice(&plain).map_err(|error| PeerDecodeError::Invalid(error.to_string()))
 }
 
+/// The magic that marks a reply whose payload travels outside its JSON.
+///
+/// Four ASCII bytes rather than a gzip-shaped prefix, and deliberately **not**
+/// a JSON token: the reader decides between the two carriers by looking at
+/// these, so a body that is neither is refused instead of parsed as the wrong
+/// one. `F`/`B`/`R`/`1` cannot begin a JSON document (`{`, `[`, `"`, digits,
+/// `t`, `f`, `n`), and they are not the gzip magic either — which matters
+/// because this check runs *after* inflating, when the gzip header is gone.
+pub const BINARY_FRAME_MAGIC: [u8; 4] = *b"FBR1";
+
+/// Magic plus the big-endian `u32` header length.
+pub const BINARY_FRAME_PREFIX: usize = BINARY_FRAME_MAGIC.len() + 4;
+
+/// A reply body split into the JSON that describes it and the bytes it carries.
+///
+/// The header is a complete reply envelope
+/// (`{"type":"response","success":…,"data":…,"error":…}`); the only thing the
+/// binary carrier changes is *where* a page chunk's bytes live, so every field
+/// a reader validates about the page (`id`, `offset`, `nextOffset`,
+/// `totalBytes`) is still JSON in that header.
+#[derive(Debug, PartialEq, Eq)]
+pub struct BinaryFrame<'a> {
+    pub header: &'a [u8],
+    pub body: &'a [u8],
+}
+
+/// Build the frame a host sends for a negotiated binary page.
+///
+/// Bounded here rather than at the call site: the reader caps the *whole*
+/// plaintext at [`MAX_REMOTE_JSON_BYTES`], and a frame that cannot be read is
+/// worse than the base64 page it replaced — the client would fail on a reply the
+/// host believed it had sent.
+pub fn encode_binary_frame(header: &[u8], body: &[u8]) -> Result<Vec<u8>, PeerDecodeError> {
+    let length = u32::try_from(header.len()).map_err(|_| PeerDecodeError::TooLarge)?;
+    let total = BINARY_FRAME_PREFIX
+        .checked_add(header.len())
+        .and_then(|size| size.checked_add(body.len()))
+        .ok_or(PeerDecodeError::TooLarge)?;
+    if total > MAX_REMOTE_JSON_BYTES {
+        return Err(PeerDecodeError::TooLarge);
+    }
+    let mut frame = Vec::with_capacity(total);
+    frame.extend_from_slice(&BINARY_FRAME_MAGIC);
+    frame.extend_from_slice(&length.to_be_bytes());
+    frame.extend_from_slice(header);
+    frame.extend_from_slice(body);
+    Ok(frame)
+}
+
+/// Whether a reply body is a binary frame rather than a JSON document.
+pub fn looks_like_binary_frame(bytes: &[u8]) -> bool {
+    bytes.starts_with(&BINARY_FRAME_MAGIC)
+}
+
+/// Split a reply body into header and carried bytes, or `None` when the body is
+/// an ordinary JSON reply.
+///
+/// `None` is the answer for everything that is not a frame, including the
+/// base64 pages an older host still sends: the two carriers are told apart by
+/// the magic, so a client never has to know which one the host chose.
+pub fn split_binary_frame(plain: &[u8]) -> Result<Option<BinaryFrame<'_>>, PeerDecodeError> {
+    if !looks_like_binary_frame(plain) {
+        return Ok(None);
+    }
+    if plain.len() < BINARY_FRAME_PREFIX {
+        return Err(PeerDecodeError::Invalid("binary frame truncated".into()));
+    }
+    let length = u32::from_be_bytes([plain[4], plain[5], plain[6], plain[7]]) as usize;
+    let header_end = BINARY_FRAME_PREFIX
+        .checked_add(length)
+        .filter(|end| *end <= plain.len())
+        .ok_or_else(|| PeerDecodeError::Invalid("binary frame header overruns its body".into()))?;
+    Ok(Some(BinaryFrame {
+        header: &plain[BINARY_FRAME_PREFIX..header_end],
+        body: &plain[header_end..],
+    }))
+}
+
 #[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
@@ -230,5 +308,61 @@ mod tests {
         let mut truncated = gzip(&plain);
         truncated.truncate(truncated.len() - 8);
         assert!(plain_json_bytes(&truncated).is_err());
+    }
+
+    /// The frame round-trips its header and its bytes unchanged, and the bytes
+    /// are the *only* place the payload appears: a reader that got `body` right
+    /// and a header it can parse has the whole chunk.
+    #[test]
+    fn a_binary_frame_round_trips_its_header_and_bytes() {
+        let header = br#"{"type":"response","success":true,"data":{"readChunk":{"id":"read_a","offset":0,"nextOffset":4,"totalBytes":9}}}"#;
+        let body = [0x00, 0xff, 0x7b, b'{'];
+        let frame = encode_binary_frame(header, &body).expect("frame encodes");
+        assert!(looks_like_binary_frame(&frame));
+        // Not gzip and not JSON: the two carriers are told apart by the magic.
+        assert!(!looks_like_gzip(&frame));
+        let split = split_binary_frame(&frame).unwrap().expect("a frame");
+        assert_eq!(split.header, header);
+        assert_eq!(split.body, &body);
+    }
+
+    /// An ordinary JSON reply is *not* a frame, and the base64 page an older
+    /// host still sends is answered with `None` rather than an error: a client
+    /// decodes whatever the host chose without having to know which.
+    #[test]
+    fn json_replies_and_base64_pages_are_not_frames() {
+        let json = br#"{"success":true,"data":{"readChunk":{"id":"read_a","data":"AAAA"}}}"#;
+        assert!(split_binary_frame(json).unwrap().is_none());
+        // A gzipped body is not sniffed here: the caller inflates first, and
+        // after that step a legacy page is a JSON document again.
+        assert!(split_binary_frame(&gzip(json)).unwrap().is_none());
+    }
+
+    /// A frame cut short of its header, or one whose length prefix overruns the
+    /// body, is refused: a partial header must never be parsed as a document.
+    #[test]
+    fn malformed_frames_are_refused_not_guessed_at() {
+        assert!(split_binary_frame(&BINARY_FRAME_MAGIC).is_err());
+        let mut overrun = BINARY_FRAME_MAGIC.to_vec();
+        overrun.extend_from_slice(&64u32.to_be_bytes());
+        overrun.extend_from_slice(b"{}");
+        assert!(split_binary_frame(&overrun).is_err());
+        // A header of exactly the remaining bytes leaves an empty body instead
+        // of indexing past the end.
+        let frame = encode_binary_frame(b"{}", b"").unwrap();
+        let split = split_binary_frame(&frame).unwrap().unwrap();
+        assert_eq!(split.header, b"{}");
+        assert!(split.body.is_empty());
+    }
+
+    /// A frame larger than the reader's ceiling is refused at the writer, so a
+    /// host cannot send a page its own client would reject.
+    #[test]
+    fn a_frame_over_the_reader_cap_is_refused_at_build_time() {
+        let body = vec![0u8; MAX_REMOTE_JSON_BYTES];
+        assert_eq!(
+            encode_binary_frame(b"{}", &body).err(),
+            Some(PeerDecodeError::TooLarge)
+        );
     }
 }

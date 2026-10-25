@@ -189,3 +189,75 @@ test("a lane that goes stale never starts, or continues, a chunked read", async 
   // asking for its remaining offsets.
   expect(lateRequests).toHaveBeenCalledTimes(1);
 });
+
+// A negotiated binary page (`read_binary_v1`): the same `readChunk` address, but
+// the chunk's bytes ride beside the reply instead of base64 inside `data`. The
+// two carriers must assemble to the same document, and every snapshot check has
+// to survive the change of carrier.
+function binaryParts(value: unknown) {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  return Array.from({ length: Math.ceil(bytes.length / SIZE) }, (_, index) => {
+    const offset = index * SIZE;
+    const nextOffset = Math.min(bytes.length, offset + SIZE);
+    return {
+      success: true,
+      data: { readChunk: { id: "read_snapshot", offset, nextOffset, totalBytes: bytes.length } },
+      body: bytes.slice(offset, nextOffset),
+    };
+  });
+}
+function binaryClientFor(pages: ReturnType<typeof binaryParts>) {
+  const requestRetry = jest.fn();
+  for (const page of pages) {
+    requestRetry.mockResolvedValueOnce({
+      success: page.success, data: page.data, chunkBytes: page.body,
+    });
+  }
+  return { client: { requestRetry } as unknown as RemoteClient, requestRetry };
+}
+
+test("a binary page reassembles to the same document as its base64 twin", async () => {
+  const data = { events: [], projection: { cursor: 7, events: [{ data: "中文🙂".repeat(SIZE) }] } };
+  const text = binaryParts(data);
+  const { client, requestRetry } = binaryClientFor(text);
+  const result = await requestReadPage(client, { type: "get_events_since", runId: "r" }, "s");
+  expect((result.data as typeof data).projection).toEqual(data.projection);
+  expect((result.data as typeof data).projection.events[0]!.data.length).toBe(data.projection.events[0]!.data.length);
+  expect(requestRetry).toHaveBeenCalledTimes(text.length);
+  // The frame carries no `data`, so the chunk fetch is byte-identical to the
+  // legacy one: the capability changes the reply, never the request.
+  expect(requestRetry.mock.calls[1][0]).toEqual({
+    type: "get_read_chunk", sessionId: "s", runId: "r", replyId: "read_snapshot", offset: SIZE,
+  });
+});
+
+test("a binary chunk with an address that disagrees with its bytes is refused", async () => {
+  // A short chunk while the page continues: the frame's length is what proves
+  // the hole, so the check has to move with the carrier rather than be dropped.
+  const pages = binaryParts({ text: "x".repeat(SIZE * 2) });
+  pages[1]!.data.readChunk.nextOffset -= 1;
+  const { client } = binaryClientFor(pages);
+  await expect(requestReadPage(client, { type: "get_session_entries" }, "s"))
+    .rejects.toThrow("remote_read_invalid_chunk");
+});
+
+test("a binary chunk from another snapshot is refused", async () => {
+  const pages = binaryParts({ text: "x".repeat(SIZE * 2) });
+  pages[1]!.data.readChunk.id = "another_snapshot";
+  const { client } = binaryClientFor(pages);
+  await expect(requestReadPage(client, { type: "get_session_entries" }, "s"))
+    .rejects.toThrow("remote_read_chunk_changed");
+});
+
+test("an oversized or empty binary chunk is refused before assembly", async () => {
+  for (const chunkBytes of [new Uint8Array(0), new Uint8Array(SIZE + 1)]) {
+    const requestRetry = jest.fn().mockResolvedValue({
+      success: true,
+      data: { readChunk: { id: "read_snapshot", offset: 0, nextOffset: chunkBytes.length, totalBytes: 8 } },
+      chunkBytes,
+    });
+    await expect(requestReadPage({ requestRetry } as unknown as RemoteClient, { type: "get_session_entries" }, "s"))
+      .rejects.toThrow("remote_read_invalid_chunk");
+    expect(requestRetry).toHaveBeenCalledTimes(1);
+  }
+});

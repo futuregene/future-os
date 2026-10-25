@@ -655,7 +655,10 @@ mod bridge_tests {
                 "provider_management_v1",
                 "fork_v1",
                 "tasks_v1",
-                "task_deps_v1"
+                "task_deps_v1",
+                // Advertised, not merely honoured: a client only declares the
+                // frame carrier after finding it here.
+                "read_binary_v1"
             ])
         );
         assert!(bridge.handshake.active_flag().load(Ordering::Acquire));
@@ -1389,6 +1392,216 @@ mod bridge_tests {
         assert_eq!(restored["entries"].as_array().unwrap().len(), 13);
         assert_eq!(restored["entries"][0]["id"], "u");
         assert_eq!(restored["entries"][12]["id"], "a11");
+        bridge.stop().await;
+    }
+
+    /// One paged reply, decoded from whichever carrier it used.
+    ///
+    /// Inflates first (a `reply_gzip_v1` client would receive gzip) and then asks
+    /// the shared frame reader, so the test decides nothing about the wire that
+    /// production code does not.
+    fn decode_page_reply(raw: &[u8]) -> (Value, Option<Vec<u8>>) {
+        let plain = future_remote_protocol::json::plain_json_bytes(raw).expect("reply inflates");
+        match future_remote_protocol::json::split_binary_frame(&plain).expect("frame shape") {
+            Some(frame) => (
+                serde_json::from_slice(frame.header).expect("frame header is JSON"),
+                Some(frame.body.to_vec()),
+            ),
+            None => (serde_json::from_slice(&plain).expect("reply is JSON"), None),
+        }
+    }
+
+    /// Drain one page, whichever carrier its replies use, and say whether any of
+    /// them was a frame.
+    async fn collect_page(bridge: &Bridge, session: &str, mut raw: Vec<u8>) -> (Vec<u8>, bool) {
+        let mut bytes = Vec::new();
+        let mut framed = false;
+        loop {
+            let (envelope, carried) = decode_page_reply(&raw);
+            assert_eq!(envelope["success"], json!(true), "{envelope}");
+            let chunk = envelope["data"]["readChunk"].clone();
+            match carried {
+                Some(body) => {
+                    // The frame's carrier leaves no base64 field behind: the
+                    // bytes exist once on the wire, not twice.
+                    assert!(chunk.get("data").is_none(), "a frame carries no base64");
+                    framed = true;
+                    bytes.extend_from_slice(&body);
+                }
+                None => bytes.extend(
+                    URL_SAFE_NO_PAD
+                        .decode(chunk["data"].as_str().unwrap())
+                        .unwrap(),
+                ),
+            }
+            if chunk["nextOffset"] == chunk["totalBytes"] {
+                return (bytes, framed);
+            }
+            raw = bridge
+                .call_raw(json!({
+                    "id": unique("cmd"), "type": "get_read_chunk", "sessionId": session,
+                    "runId": "r", "replyId": chunk["id"], "offset": chunk["nextOffset"]
+                }))
+                .await;
+        }
+    }
+
+    /// The page *carrier* is decided by this connection's declaration and by
+    /// nothing else: the same host, the same snapshot and the same command answer
+    /// base64 before the declaration and a frame after it, and the two
+    /// reassemble to identical bytes.
+    ///
+    /// What must not change with the carrier is the page itself, which is why the
+    /// assertion is byte equality between the two runs rather than a field-by-
+    /// field check: a frame that dropped, reordered or re-sliced a chunk would
+    /// still parse.
+    #[tokio::test]
+    async fn paged_reads_switch_carrier_only_for_a_connection_that_declared_it() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("page-carrier").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        let session = unique("sess");
+        let large = "中文".repeat(200_000);
+        let payload = json!({
+            "runId": "r", "events": [], "truncated": true,
+            "projection": {"runId": "r", "cursor": 20, "events": [{"type": "text_chunk", "idx": 20, "data": large}]}
+        });
+        async fn first(bridge: &Bridge, session: &str) -> Vec<u8> {
+            bridge
+                .call_raw(json!({
+                    "id": unique("cmd"), "type": "get_events_since", "sessionId": session,
+                    "runId": "r", "sinceIdx": -1, "chunkedRead": true
+                }))
+                .await
+        }
+
+        agent.script_typed_for("get_events_since", &session, payload.clone());
+        let legacy_raw = first(&bridge, &session).await;
+        let (legacy_bytes, legacy_framed) =
+            collect_page(&bridge, &session, legacy_raw.clone()).await;
+        assert!(
+            !legacy_framed,
+            "an undeclared connection keeps the base64 page"
+        );
+        assert!(legacy_raw.starts_with(b"{"));
+
+        // The client now declares the carrier on secure_ready.
+        apply_declared_features(
+            &bridge.handshake,
+            &bridge.pair_id,
+            &[future_remote_protocol::READ_BINARY_FEATURE.to_string()],
+        );
+
+        agent.script_typed_for("get_events_since", &session, payload.clone());
+        let framed_raw = first(&bridge, &session).await;
+        assert!(
+            framed_raw.starts_with(&future_remote_protocol::json::BINARY_FRAME_MAGIC),
+            "a declared connection receives the frame: {:?}",
+            &framed_raw[..4.min(framed_raw.len())]
+        );
+        assert!(
+            framed_raw.len() < legacy_raw.len(),
+            "the frame must be smaller than the base64 page it replaces: {} vs {}",
+            framed_raw.len(),
+            legacy_raw.len()
+        );
+        let (framed_bytes, framed) = collect_page(&bridge, &session, framed_raw).await;
+        assert!(framed, "every chunk of the page uses the declared carrier");
+        assert_eq!(
+            framed_bytes, legacy_bytes,
+            "the carrier must not change the page"
+        );
+
+        let restored: Value = serde_json::from_slice(&framed_bytes).unwrap();
+        assert_eq!(restored["projection"]["cursor"], json!(20));
+        assert_eq!(restored["projection"]["events"][0]["data"], json!(large));
+
+        // A later declaration that does not name the carrier must not inherit it.
+        apply_declared_features(
+            &bridge.handshake,
+            &bridge.pair_id,
+            &["event_coalescing_v1".to_string()],
+        );
+        agent.script_typed_for("get_events_since", &session, payload);
+        let again = first(&bridge, &session).await;
+        assert!(
+            again.starts_with(b"{"),
+            "withdrawing the declaration restores base64"
+        );
+        let (again_bytes, again_framed) = collect_page(&bridge, &session, again).await;
+        assert!(!again_framed);
+        assert_eq!(again_bytes, legacy_bytes);
+        bridge.stop().await;
+    }
+
+    /// A page chunk is a reply like any other: a connection that declared
+    /// `reply_gzip_v1` receives it compressed.
+    ///
+    /// `get_read_chunk` deliberately skips the single-flight reply cache — it must
+    /// not retain a second copy of every chunk — and the negotiated gzip flag used
+    /// to be installed by that wrapper. So the first chunk of a page was
+    /// compressed and every chunk after it was not: 262 KB of base64 per chunk
+    /// instead of ~90 KB, for every client that had declared gzip. This pins the
+    /// flag to the command path, which is what every path reaches.
+    #[tokio::test]
+    async fn a_declared_connection_receives_gzipped_page_chunks() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("page-chunk-gzip").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        let session = unique("sess");
+        let large = "中文".repeat(200_000);
+        agent.script_typed_for(
+            "get_events_since",
+            &session,
+            json!({
+                "runId": "r", "events": [], "truncated": true,
+                "projection": {"runId": "r", "cursor": 20, "events": [{"type": "text_chunk", "idx": 20, "data": large}]}
+            }),
+        );
+        // Only gzip: the carrier stays base64, so the chunk's size is the one the
+        // compressor is supposed to shrink.
+        apply_declared_features(
+            &bridge.handshake,
+            &bridge.pair_id,
+            &[REPLY_GZIP_FEATURE.to_string()],
+        );
+
+        let first = bridge
+            .call_raw(json!({
+                "id": unique("cmd"), "type": "get_events_since", "sessionId": session,
+                "runId": "r", "sinceIdx": -1, "chunkedRead": true
+            }))
+            .await;
+        assert_eq!(
+            first.first().copied(),
+            Some(0x1f),
+            "the first chunk of a page must be compressed: {} bytes",
+            first.len()
+        );
+        let (envelope, _) = decode_page_reply(&first);
+        let chunk = envelope["data"]["readChunk"].clone();
+        assert_ne!(
+            chunk["nextOffset"], chunk["totalBytes"],
+            "the page must continue"
+        );
+
+        let next = bridge
+            .call_raw(json!({
+                "id": unique("cmd"), "type": "get_read_chunk", "sessionId": session,
+                "runId": "r", "replyId": chunk["id"], "offset": chunk["nextOffset"]
+            }))
+            .await;
+        assert_eq!(
+            next.first().copied(),
+            Some(0x1f),
+            "a chunk fetched by offset must be compressed too: {} bytes",
+            next.len()
+        );
+        let (envelope, carried) = decode_page_reply(&next);
+        assert_eq!(envelope["success"], json!(true));
+        assert!(carried.is_none(), "the carrier is still base64 here");
         bridge.stop().await;
     }
 

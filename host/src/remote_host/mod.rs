@@ -21,7 +21,7 @@ impl BusinessHost for DesktopHost {
         Box::pin(async move {
             if command.cmd_type == "get_read_chunk" {
                 match read_pages::read(&command) {
-                    Ok(data) => reply.send(true, data, None).await,
+                    Ok(page) => reply.send_binary(page.header, page.body).await,
                     Err(error) => reply.send(false, Value::Null, Some(error)).await,
                 }
                 return;
