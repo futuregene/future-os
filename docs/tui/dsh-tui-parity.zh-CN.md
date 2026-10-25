@@ -241,31 +241,32 @@ alt screen、鼠标模式与帧时钟 `[F:tui/src/workbench/run.rs:92]`；旧内
 
 | 子系统 | 现在有什么 | 证据 |
 |---|---|---|
-| 帧 | 恰好 `h` 行的一整帧：页眉（+细线）、主体、输入带、activity、状态、提示；浮层整张覆盖 | `[F:tui/src/workbench/screen.rs:29]`、`[S:workbench-120x38.png]` |
+| 帧 | 恰好 `h` 行的一整帧：页眉（+细线）、主体、输入带、activity、状态、提示；浮层整张覆盖 | `[F:tui/src/workbench/screen.rs:29]`、`[S:workbench-chat.png]` |
 | 终端会话 | alt screen、括号粘贴、Kitty 键盘、鼠标模式随 alt screen 一起写入并在 stop/崩溃时写回 | `[F:tui/src/terminal.rs:233]`、`[F:tui/src/workbench/run.rs:92]`、`[V]`（运行中 `mouse_any_flag=1`，退出后 `0`） |
 | 帧字节 | 每行都用绝对定位（`CSI row;1H`），帧从不让光标前进；底行换行会把 alt screen 顶上去一行、所有点击整体错一格 | `[F:tui/src/workbench/run.rs:368]` |
-| 鼠标 | SGR 1006 解析（`Press/Release/Drag/Move/WheelUp/WheelDown`），绘制与命中共用一张 hit map；可点输入框/聊天/分隔条/页签/行/选择器行；聊天与聚焦面板可滚轮；分隔条可拖（**方向是反的** —— P0-1）；选择器点行即应用；只开 `?1000h?1002h?1006h`（不开 hover） | `[F:tui/src/workbench/mouse.rs:56]`、`[F:tui/src/workbench/mod.rs:534]`、`[V]`（点 `用量` 切了面板）、`[S:workbench-panel-usage.png]`、`[S:workbench-drag-inverted.png]` |
+| 鼠标 | SGR 1006 解析（`Press/Release/Drag/Move/WheelUp/WheelDown`），绘制与命中共用一张 hit map；可点输入框/聊天/分隔条/页签/行/选择器行；聊天与聚焦面板可滚轮；分隔条可拖（边缘跟着指针走，`30..48` 钳住）；选择器点行即应用；只开 `?1000h?1002h?1006h`（不开 hover） | `[F:tui/src/workbench/mouse.rs:56]`、`[F:tui/src/workbench/mod.rs:534]`、`[V]`（点 `用量` 切了面板）、`[S:workbench-panel-usage.png]`、`[S:workbench-drag-fixed.png]` |
 | 布局 | `NARROW_WIDTH = 88`、`SMALL_HEIGHT = 24`、`SIDEBAR_DEFAULT/MIN/MAX = 36/30/48`、聊天左右各 2 格内边距；绘制与命中用同一份 `Metrics` | `[F:tui/src/workbench/layout.rs:65]` |
 | 侧栏 | 五个页签 `待办 任务 会话 用量 技能`，≥88 列常驻，以下 `ctrl+b` 开全屏面板；分隔条拖 30..48 并在松手后持久化 | `[F:tui/src/workbench/panels.rs:18]`、`[S:workbench-panel-full-60x20.png]` |
 | 面板数据 | 待办读 `events.jsonl`（✔/◉/○/✖ + 优先级）、技能读 `get_state` + 两个技能目录、任务读只读 `tasks.db`、会话读 `list_sessions`、用量读 `get_state` | `[F:tui/src/workbench/local.rs:92]`、`[F:tui/src/workbench/live.rs:201]`、`[S:workbench-panel-todo.png]`、`[S:workbench-panel-skills.png]` |
 | 启动台 | 鲸鱼 + 方块字标 + 主张句、带框输入框、参数 chip（模型/强度/模式/权限）、提示行、最近会话 | `[F:tui/src/workbench/launchpad.rs]`、`[S:workbench-launchpad.png]` |
-| 状态 / activity | `模型 · 强度 · 权限 | 进度条 + ctx 用量/总量 + % · ≈¥`；activity 为 `转轮 + 动词 + 用时 + 工具数 + tok/s`，另有 `缓存 N%` | `[F:tui/src/workbench/screen.rs:468]`、`[F:tui/src/workbench/screen.rs:430]`、`[S:workbench-120x38.png]` |
+| 状态 / activity | `模型 · 强度 · 权限 | 进度条 + ctx 用量/总量 + % · ≈¥`；activity 为 `转轮 + 动词 + 用时 + 工具数 + tok/s`，另有 `缓存 N%` | `[F:tui/src/workbench/screen.rs:468]`、`[F:tui/src/workbench/screen.rs:430]`、`[S:workbench-chat.png]` |
 | 主题 | 六套 256 色调色板（`dark`、`light`、`one-dark`、`one-light`、`high-contrast`、`dracula`），沿用内联目录的 id，因为 `themeId` 是两个界面共用的一把键；`/theme` 打开选择器，高亮移动即预览，`esc` 恢复，只有 `enter` 持久化 | `[F:tui/src/workbench/theme.rs:54]`、`[F:tui/src/workbench/picker.rs:312]`、`[S:workbench-picker-theme.png]`、`[S:workbench-light-120x38.png]` |
 | 选择器 | `/model`、`/theme`、`/sessions` 共用同一张浮层：搜索行、分组标题、当前值上的 `✓`、模型选择器的强度滑杆，点击行会**同时**移动高亮并应用 | `[F:tui/src/workbench/picker.rs]`、`[F:tui/src/workbench/screen.rs:721]`、`[S:workbench-picker-model.png]`、`[S:workbench-picker-sessions.png]` |
 | 命令面板 / 帮助 | `/` 过滤 12 条带描述的命令；`/model`、`/theme`、`/sessions` 打开各自的选择器，另有五条仍无处理函数；`?` 键位表；两者都整张覆盖帧 | `[F:tui/src/workbench/mod.rs:904]`、`[F:tui/src/workbench/run.rs:249]`、`[S:workbench-palette.png]`、`[S:workbench-help.png]` |
 | 审批 | 挂起的审批接管 `y`/`n`；activity 行写出工具名与摘要 | `[F:tui/src/workbench/run.rs:189]`、`[F:tui/src/workbench/live.rs:586]` |
-| Transcript | 复用现有 markdown/工具卡/diff 组件的渲染行；滚到顶部触发分页 `LoadOlder` | `[F:tui/src/workbench/live.rs:266]`、`[S:workbench-120x38.png]` |
+| Transcript | 复用现有 markdown/工具卡/diff 组件的渲染行；滚到顶部触发分页 `LoadOlder` | `[F:tui/src/workbench/live.rs:266]`、`[S:workbench-chat.png]` |
 | 打印模式 | `future tui -p` 不变（非交互） | `[F:tui/src/index.rs:617]` |
 
 **工作台没有继承下来的东西。** 删内联 UI 时，一些屏幕的替代品并不是面板：
 `/sandbox`、`/worktree`、`/keymap`、`/copy`、外部编辑器，在工作台里
 **根本到不了** `[F:tui/src/workbench/live.rs:694]`（`command()` 只认
-`quit/new/sessions/model/thinking/reply-detail/refresh/help` 加启动台 chip；三个
-列表动词在更早的 `run.rs:249` 被截走，变成选择器）。另有五条面板命令 ——
-`/workspace`、`/usage`、`/skills`、`/export`、`/transcript` —— 写在面板里，按下去
-却回 `Unknown command` `[V]`（`[S:workbench-dead-usage.png]`、
-`[S:workbench-dead-skills.png]`）。这是相对内联 UI 的**回退**，也是改造清单里的
-P0-3。
+`quit/new/sessions/model/thinking/reply-detail/refresh/help/export` 加启动台 chip；
+三个列表动词在更早的 `run.rs:249` 被截走，变成选择器；指界面上东西的动词由 surface
+自己答）。另有五条面板命令 —— `/workspace`、`/usage`、`/skills`、`/export`、
+`/transcript` —— 以前写在面板里、按下去却回 `Unknown command` `[V]`；现在五条都能
+落地（`[S:workbench-usage-panel.png]`、`[S:workbench-skills-panel.png]`），
+`every_palette_entry_has_a_handler` 挡住下一条走上老路。那曾是相对内联 UI 的
+**回退**，也是改造清单里的 P0-3。
 
 ## 6. 差距矩阵
 
@@ -275,7 +276,7 @@ P0-3。
 
 | # | 能力 | dsh-TUI 0.17 | `future-tui` 现在 | now | was | 级别 |
 |---|---|---|---|---|---|---|
-| 1 | 分层全屏帧 | 有 `[S:dsh_chat]` | 页眉/主体/侧栏/输入/activity/状态/提示 `[S:workbench-120x38.png]` | equivalent | missing | — |
+| 1 | 分层全屏帧 | 有 `[S:dsh_chat]` | 页眉/主体/侧栏/输入/activity/状态/提示 `[S:workbench-chat.png]` | equivalent | missing | — |
 | 2 | 鼠标点击 / 滚轮 / 拖拽改宽 | SGR 1006，处处命中区 `[R]` | 点击+滚轮+拖拽都通了；**拖拽方向反了**，无悬停 `[V]` | partial | missing | P0 |
 | 3 | 悬停提示与 tooltip | 悬停显示面板名与目标文本 `[R]` | `Move` 解析后被丢弃，从不写 `?1003h` | missing | missing | P1 |
 | 4 | 带真实输入框的启动台 | 有 `[S:dsh_launchpad]` | `[S:workbench-launchpad.png]` | equivalent | missing | — |

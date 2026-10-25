@@ -575,7 +575,15 @@ impl Terminal {
         self.kitty_active.load(Ordering::SeqCst)
     }
 
-    fn refresh_size(&self) {
+    /// Re-read the terminal's own size (`TIOCGWINSZ` / the Windows console
+    /// buffer) and cache it, keeping the previous value when the backend
+    /// reports nothing usable.
+    ///
+    /// `pub` for the workbench's first frame: the size is read once at
+    /// construction and again when the reader thread sees a resize, and the
+    /// frame drawn in between would otherwise be composed for whichever size
+    /// happened to be current when the process started.
+    pub fn refresh_size(&self) {
         let (cols, rows) = self.backend.size();
         if cols > 0 && rows > 0 {
             *self.size.lock() = (cols, rows);
@@ -1218,6 +1226,62 @@ mod tests {
         assert_eq!(t.rows(), 33);
         restore_env("COLUMNS", old_c);
         restore_env("LINES", old_l);
+    }
+
+    /// A resize the process has not observed yet is exactly the window the
+    /// workbench's first frame falls into: the cached size dates from
+    /// construction (or from the last notification), so a frame composed from it
+    /// is the *previous* terminal's frame. `refresh_size` is what closes that
+    /// window — `run::event_loop` calls it once before its first draw, so the
+    /// first frame and the hit map are built from the size the terminal has now.
+    #[cfg(unix)]
+    #[test]
+    fn refresh_size_sees_a_pane_resized_after_construction() {
+        let _guard = crate::test_env::lock();
+        unsafe {
+            let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+            assert!(master >= 0);
+            assert_eq!(libc::grantpt(master), 0);
+            assert_eq!(libc::unlockpt(master), 0);
+            let slave = libc::open(libc::ptsname(master), libc::O_RDWR | libc::O_NOCTTY);
+            assert!(slave >= 0);
+            let mut ws: libc::winsize = std::mem::zeroed();
+            ws.ws_col = 80;
+            ws.ws_row = 40;
+            assert_eq!(libc::ioctl(slave, libc::TIOCSWINSZ, &mut ws), 0);
+            let saved1 = libc::dup(1);
+            assert_ne!(libc::dup2(slave, 1), -1);
+            let drain_stop = Arc::new(AtomicBool::new(false));
+            let drainer = drain_pty_master(master, Arc::clone(&drain_stop));
+
+            // Constructed at 80×40: that is what the first frame would use.
+            let t = Terminal::new().unwrap();
+            assert_eq!((t.columns(), t.rows()), (80, 40));
+
+            // The multiplexer resizes the pane. No SIGWINCH has been delivered
+            // to this process yet, so the cache still says 80×40 — the stale
+            // size the defect was composed from.
+            ws.ws_col = 120;
+            ws.ws_row = 37;
+            assert_eq!(libc::ioctl(slave, libc::TIOCSWINSZ, &mut ws), 0);
+            assert_eq!(
+                (t.columns(), t.rows()),
+                (80, 40),
+                "nothing has told the process about the resize yet"
+            );
+
+            // The pre-loop refresh is the whole fix: one query, one frame later
+            // the surface is composed for the terminal that exists.
+            t.refresh_size();
+            assert_eq!((t.columns(), t.rows()), (120, 37));
+
+            libc::dup2(saved1, 1);
+            drain_stop.store(true, Ordering::SeqCst);
+            drainer.join().unwrap();
+            libc::close(saved1);
+            libc::close(slave);
+            libc::close(master);
+        }
     }
 
     /// `Terminal::default()` is the `impl Default` the app's own construction

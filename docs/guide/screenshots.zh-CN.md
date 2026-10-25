@@ -149,9 +149,13 @@ python3 scripts/screenshots/capture.py tui tui-chat.png
 - `--scale` 设置设备像素比（默认 2）。
 - `--session <id>` 指定会话，而不是交给 agent 决定。
 - `--scenario <name>` 把界面驱动到读者实际会到达的那一屏：`chat`（打开时的样子）、
-  `help`（`?`）、`palette`（`/`），以及侧栏面板 `todo` / `usage` / `skills` /
-  `sessions`——面板靠点击页签切换，没有对应按键。点击位置在步骤执行时从当时屏幕上的帧
-  算出来，所以它跟着布局走，而不是写死列号。
+  `help`（`?`）、`palette`（`/`）、`palette-filter`（按下 `/` 再输入查询、不回车）、
+  侧栏面板 `todo` / `usage` / `skills` / `sessions`（靠点击页签切换，没有对应按键）、
+  两条指面板的命令 `command-usage` / `command-skills`、`launchpad`（`/new`）、
+  `full-panel`（窄终端上的 `ctrl+b`）、`scrolled`（点一下聊天再滚轮上滚三次）、
+  `light`（`/theme` 后下移一行回车；它会持久化，所以放在最后）以及 `drag`
+  （抓住分隔条往右拖六列）。所有坐标都在步骤执行时从当时屏幕上的帧算出来——点页签按
+  画出来的标签，拖拽按画出来的分隔条——所以跟着布局走，而不是写死列号。
 - `--addr <host:port>` 接到已在运行的 agent（也就是**真会话**），而不是启 `demo_agent`；
   并且不动调用方的 `FUTURE_HOME`。
 
@@ -160,7 +164,8 @@ python3 scripts/screenshots/capture.py tui tui-chat.png
 
 ```bash
 tui/scripts/shot.sh chat 120x38      # → docs/tui/assets/workbench-120x38.png
-tui/scripts/shot.sh usage 120x38     # → docs/tui/assets/workbench-usage-120x38.png
+tui/scripts/shot.sh usage 120x38     # → docs/tui/assets/workbench-panel-usage-120x38.png
+tui/scripts/shot.sh drag 120x38 $PWD/docs/tui/assets/workbench-drag-fixed.png
 ```
 
 两次运行产出的 PNG 是逐字节相同的，这才让它能当评审证据用：有差异说明界面变了，而不是模型这次回答得不一样。两点限制照实说：字形是 Chrome 依据抓到的单元格画的，不是产生这些字节的那个终端画的；数据是脚本化的（和其他 mock 一样）——截图永远不是"真实用户会话"的证据。

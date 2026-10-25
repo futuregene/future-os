@@ -94,13 +94,16 @@ SGR 1006 解析（`tui/src/workbench/mouse.rs:56`）、与渲染共享的命中�
 `quit/new/reply-detail/refresh/help` 加启动台 chip
 （`tui/src/workbench/live.rs:694`）。于是 `/workspace`、`/usage`、`/skills`、
 `/export`、`/transcript` 仍然回 `Unknown command` —— 已实测其中两条
-（`[S:workbench-dead-usage.png]`、`[S:workbench-dead-skills.png]`）。P0-3。
+`[V]`（实测；这几条落地后缺陷帧已删除，改法与证据见 `verification.zh-CN.md` §6.1）。P0-3。
 
 **F6 —— 删内联 UI 删掉的是「屏幕」，不只是像素。** `/sandbox`、`/worktree`、
 `/keymap`、`/copy`、外部编辑器、全屏会话管理器，在工作台里都没有落点。其中两项
 （parity 文档 §6 第 34、36 行）是 FutureOS 原本**领先**的地方。P1-3。
 
 ## 2. P0 —— 壳里面的缺陷（按序）
+
+**状态：四条都已实现并验收。** 下面是当初按缺陷写下的改造清单；每条最终落地的改法、
+测试与帧，见 [verification.zh-CN.md](verification.zh-CN.md) §6.1。
 
 每一条：症状与证据、落点、钉住它的测试、验收命令。
 
@@ -144,8 +147,8 @@ SGR 1006 解析（`tui/src/workbench/mouse.rs:56`）、与渲染共享的命中�
 ### P0-3 五条命令写在面板里，按下去什么也不做
 
 - **现在**：`/workspace`、`/usage`、`/skills`、`/export`、`/transcript` →
-  `Unknown command`（已实测 `/usage` 与 `/skills`：`[S:workbench-dead-usage.png]`、
-  `[S:workbench-dead-skills.png]`）。`/model`、`/theme`、`/sessions` **不在**这个
+  `Unknown command`（已实测 `/usage` 与 `/skills` `[V]`；缺陷帧已删除，
+  改法见 `verification.zh-CN.md` §6.1）。`/model`、`/theme`、`/sessions` **不在**这个
   名单里：`run.rs:249` 在 `command()` 看到它们之前就把它们变成了选择器。
 - **修法**：在 `live.rs::command()` 里逐条二选一：
   - `/usage` → `SetPanel(Usage)`；`/skills` → `SetPanel(Skills)`；`/workspace` →
@@ -313,7 +316,7 @@ cargo run -q -p future-tui --example workbench_demo -- --self-test   # 输出 `s
 ```bash
 # 真机会话：先 export FUTURE_AGENT_GRPC_ADDR 与 SESSION_ID（§7 步骤 3），
 # 然后任意场景/尺寸（本文的帧）
-tui/scripts/shot.sh chat 120x38     # docs/tui/assets/workbench-120x38.png
+tui/scripts/shot.sh chat 120x38     # docs/tui/assets/workbench-chat.png
 tui/scripts/shot.sh usage 120x38
 tui/scripts/shot.sh chat 90x24
 tui/scripts/shot.sh chat 60x20

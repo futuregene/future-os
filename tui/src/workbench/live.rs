@@ -59,6 +59,18 @@ struct Paging {
     next_offset: i64,
 }
 
+/// The palette verbs the *app* carries out — through the agent (`/new`, a
+/// `/model` with an argument, `/export`) or in the process (`/quit`).
+///
+/// Declared here, beside the `command()` match that implements them, so
+/// `every_palette_entry_has_a_handler` can fail when a palette entry has no
+/// handler at all: the palette ([`super::COMMANDS`]), the pickers
+/// ([`super::picker::PickerKind::from_command`]), the surface's own verbs
+/// ([`super::Workbench::surface_command`]) and this list have to account for
+/// every entry exactly once. That is the check whose absence let five entries
+/// advertise themselves and then answer `Unknown command`.
+pub const APP_COMMANDS: [&str; 4] = ["/new", "/reply-detail", "/export", "/quit"];
+
 /// One attached session plus everything the surface needs to paint it.
 pub struct Live {
     client: Arc<GrpcClient>,
@@ -98,6 +110,10 @@ pub struct Live {
     /// one thing that has to re-read the goal store, so the panel follows the
     /// session instead of the process's own directory.
     local_cwd: String,
+    /// The git branch of `local_cwd`, read once per workspace (see
+    /// [`super::git`]): the header names it after the cwd, and a per-frame
+    /// `git` spawn would be a stutter on a large repository.
+    branch: super::git::BranchCache,
     /// The goal store's todos for `local_cwd` (see [`super::local`]).
     todos: Vec<TodoItem>,
     /// Installed skills and scheduled jobs are machine-wide: read once, then
@@ -150,6 +166,7 @@ impl Live {
             run_tps: 0.0,
             state_refresh_pending: false,
             local_cwd: String::new(),
+            branch: super::git::BranchCache::new(),
             todos: Vec::new(),
             local_skills: None,
             local_jobs: None,
@@ -213,6 +230,10 @@ impl Live {
             };
             self.local_cwd = cwd;
         }
+        // The header's second line names the workspace *and its branch*. The
+        // cache keys on the cwd, so this is a no-op on every refresh that did
+        // not move the session.
+        self.branch.for_cwd(&self.local_cwd);
         if self.local_skills.is_none() {
             self.local_skills = Some(super::local::installed_skills());
         }
@@ -573,7 +594,7 @@ impl Live {
                 },
                 title,
                 cwd: state.cwd.clone().unwrap_or_default(),
-                branch: String::new(),
+                branch: self.branch.for_cwd(&self.local_cwd).to_string(),
             },
             model: state
                 .model
@@ -777,7 +798,30 @@ impl Live {
                 self.refresh_state().await;
                 self.refresh_sessions().await;
             }
-            "help" => {}
+            // The whole record, through the agent's own exporter (the same one
+            // the desktop uses). The path it wrote is the whole answer, so it
+            // goes on the notice row rather than into the transcript.
+            "export" => match self.client.export_html().await {
+                Ok(value) => {
+                    let path = value
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    self.notice = Some(if path.is_empty() {
+                        "会话已导出".to_string()
+                    } else {
+                        format!("会话已导出 → {path}")
+                    });
+                }
+                Err(error) => self.notice = Some(format!("Could not export: {error}")),
+            },
+            // The verbs the *surface* answers (`run.rs` calls it before this
+            // handler): `/usage`, `/skills`, `/workspace`, `/transcript`,
+            // `/help`. They are named here so a caller that bypasses the
+            // surface is not told a command the palette advertises does not
+            // exist — the notice the whole family used to produce.
+            "usage" | "skills" | "workspace" | "transcript" | "help" => {}
             other => self.notice = Some(format!("Unknown command /{other}")),
         }
         Outcome::Continue

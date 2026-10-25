@@ -248,12 +248,15 @@ fn header(palette: &Palette, data: &WorkbenchData, frame: &Layout, columns: usiz
     // Four identity lines beside the logo, then the hairline.
     let detail = [
         format!(" · {title}"),
+        // The workspace, then the branch it is on. `⎇` names *what* the second
+        // word is: `dev-x` alone beside a path reads as one more path segment,
+        // and a detached HEAD named `@sha` needs it even more.
         if data.session.cwd.is_empty() {
             "no workspace yet".to_string()
         } else if data.session.branch.is_empty() {
             data.session.cwd.clone()
         } else {
-            format!("{} · {}", data.session.cwd, data.session.branch)
+            format!("{} · ⎇ {}", data.session.cwd, data.session.branch)
         },
         format!("{} · {} · {}", data.model, data.effort, data.mode),
         String::new(),

@@ -110,7 +110,8 @@ palette and from a typed command alike), and `command()` handles
 `quit/new/reply-detail/refresh/help` plus the launchpad chips
 (`tui/src/workbench/live.rs:694`). So `/workspace`, `/usage`, `/skills`,
 `/export`, `/transcript` still answer `Unknown command` — measured on two of
-them (`[S:workbench-dead-usage.png]`, `[S:workbench-dead-skills.png]`). P0-3.
+them `[V]` (measured live; the defect frames were deleted once the entries
+landed — `verification.md` §6.1 has the fix). P0-3.
 
 **F6 — deleting the inline UI removed screens, not just pixels.** `/sandbox`,
 `/worktree`, `/keymap`, `/copy`, the external editor and the full-screen session
@@ -118,6 +119,10 @@ manager have no workbench surface. Two of them are things FutureOS was *ahead*
 on (parity doc §6 rows 34, 36). P1-3.
 
 ## 2. P0 — defects inside the shell (ordered)
+
+**Status: all four are implemented and verified.** The text below is the change
+list as it was written from the defects; the fix that landed for each, with its
+test and its frame, is §6.1 of [verification.md](verification.md).
 
 Each item: symptom with evidence, landing point, the test that pins it, the
 command that accepts it.
@@ -171,8 +176,9 @@ command that accepts it.
 ### P0-3 Five commands are advertised and do nothing
 
 - **Now**: `/workspace`, `/usage`, `/skills`, `/export`, `/transcript` →
-  `Unknown command` (measured on `/usage` and `/skills`: `[S:workbench-dead-usage.png]`,
-  `[S:workbench-dead-skills.png]`). `/model`, `/theme` and `/sessions` are *not*
+  `Unknown command` (measured on `/usage` and `/skills` `[V]`; the defect frames
+  are gone, `verification.md` §6.1 has the fix). `/model`, `/theme` and
+  `/sessions` are *not*
   in this list: `run.rs:249` turns them into pickers before `command()` sees
   them.
 - **Fix**: one of two, per command, in `live.rs::command()`:
@@ -372,7 +378,7 @@ Screens (only when a band changes; recipe in `verification.md` §7):
 ```bash
 # a real session: export FUTURE_AGENT_GRPC_ADDR and SESSION_ID first (§7 step 3),
 # then any scenario/size (this document's frames)
-tui/scripts/shot.sh chat 120x38     # docs/tui/assets/workbench-120x38.png
+tui/scripts/shot.sh chat 120x38     # docs/tui/assets/workbench-chat.png
 tui/scripts/shot.sh usage 120x38
 tui/scripts/shot.sh chat 90x24
 tui/scripts/shot.sh chat 60x20

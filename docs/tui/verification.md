@@ -4,10 +4,14 @@ What was checked, what the screens show, and what is still wrong. Every row of
 §2 names its figure, and every frame in `docs/tui/assets/` was captured from a
 **live** `future-tui` against an isolated agent — no mock, no demo data.
 
-- **Build**: `dev-huichen` at `ba916d63e`, `FUTURE_VERSION=0.0.2-9f0a8b76c+local
+- **Build**: `dev-huichen` plus this round's `fix/workbench-defects` (the four
+  P0 defects of §6 are fixed there), `FUTURE_VERSION=0.0.2-9f0a8b76c+local
   cargo build -q -p future-tui`.
-- **Code under test**: `tui/src/workbench` — 15 modules, 9,076 lines, 119
-  `#[test]`s (picker overlay and the six palettes included).
+- **Code under test**: `tui/src/workbench` — 16 modules, 9,737 lines, 129
+  `#[test]`s (picker overlay and the six palettes included). All 16 live frames
+  below were re-shot from this build in one pass, through `tui/scripts/shot.sh`
+  and `scripts/screenshots/capture.py tui`: same header, same fixes, same
+  session, one renderer.
 - **Session**: `20261021-005514-e1ee4ba485bc44c5b2d2ea602cd5cd82`
   (`全屏多会话视图设计方案`, 2,360 entries, cwd `/Users/geilige/future-os`).
 - **Instance**: `FUTURE_HOME=/tmp/dvhome` — copies of `settings.json`,
@@ -25,7 +29,7 @@ What was checked, what the screens show, and what is still wrong. Every row of
 | 图 | File | Size | Source | What it shows |
 |---|---|---|---|---|
 | 图 1 | `workbench-launchpad.png` | 120×38 | live | the launchpad: whale + block wordmark + tagline, framed composer, parameter chips, recent sessions, empty 待办 |
-| 图 2 | `workbench-120x38.png` | 120×38 | live | the full frame: header, chat with a real transcript, rail with the 待办 panel, activity, status, hint |
+| 图 2 | `workbench-chat.png` | 120×38 | live | the full frame: header (`⎇ dev-huichen` on line 2), chat with a real transcript, rail with the 待办 panel, activity, status, hint |
 | 图 3 | `workbench-panel-todo.png` | 120×38 | live | 待办 focused (caret in the tab strip), real goal todos with `✔/○/✖` and priority |
 | 图 4 | `workbench-panel-usage.png` | 120×38 | live | 用量: `上下文 128.9k/200.0k 64.4%`, gauge, `成本 ≈¥18.84`, `缓存命中 50%` |
 | 图 5 | `workbench-panel-skills.png` | 120×38 | live | 技能: 22 skills with descriptions from both skill roots |
@@ -40,9 +44,9 @@ What was checked, what the screens show, and what is still wrong. Every row of
 | 图 14 | `workbench-90x24.png` | 90×24 | live | 90 columns still two-column; the header falls back to the text brand; all six hints |
 | 图 15 | `workbench-60x20.png` | 60×20 | live | `< 88`: no rail and no dead column; `< 24`: one-row header, framed two-row input, three hints, no activity row |
 | 图 16 | `workbench-panel-full-60x20.png` | 60×20 | live | `ctrl+b` on a narrow terminal: the panel full-screen |
-| 图 17 | `workbench-drag-inverted.png` | 120×38 | live | **a defect**: a rightward divider drag left the rail at 42 columns |
-| 图 18 | `workbench-dead-usage.png` | 120×38 | live | **a defect**: the palette's `/usage` answers `Unknown command /usage` |
-| 图 19 | `workbench-dead-skills.png` | 120×38 | live | **a defect**: the palette's `/skills` answers `Unknown command /skills` |
+| 图 17 | `workbench-drag-fixed.png` | 120×38 | live | the divider dragged from column 84 to column 90: the seam lands **on 90** and the rail gives up six columns (36 → 30) — the edge follows the pointer |
+| 图 18 | `workbench-usage-panel.png` | 120×38 | live | the palette's `/usage` ran: the rail shows 用量 (`上下文 128.9k/200.0k 64.4%`), the caret marks the focused strip, and the hint row carries **no** `Unknown command` |
+| 图 19 | `workbench-skills-panel.png` | 120×38 | live | the palette's `/skills` ran: 技能 panel (`22 个技能`), again with no notice |
 
 Figures 10–12 are the repository's own deterministic capture
 (`python3 scripts/screenshots/capture.py tui` over `future tui --offline` with a
@@ -62,7 +66,7 @@ tool are byte-identical, which is the stronger artifact.
 | L4 | 60×20 degrades: no rail, no empty column, one-row header, framed two-row input, three whole hints, no activity row | 图 15 | header `FUTURE OS · … ● future-tui`, no divider, `╭─ 输入…╮` + `│❯ …│` (sides only), status row, hint `ctrl+b 侧栏 · / 命令 · ? 帮助` | pass |
 | L5 | The model label may clip, the numbers do not | 图 15 | `future/deepse… ██████░░░░ ctx 128.9k/200.0k 64.4% · ≈¥18.84` — gauge and all numbers whole | pass (deliberate, §5.4) |
 | L6 | A terminal too narrow for a rail still reaches every panel | 图 16 | `ctrl+b` at 60×20 draws 待办 full-screen in a box, with `↓ 2 more` | pass |
-| L7 | The first frame at a known size matches the steady-state frame | 图 2 | on this instance: hairline 5 / spacer 6 / tabs 7 at 3 s, 6 s and 9 s. **One earlier instance of the same build painted its first frame one row high** and repaired it on the next redraw — see §6 | pass with a caveat |
+| L7 | The first frame at a known size matches the steady-state frame | 图 2 | the driver refreshes the terminal's size once before the loop's first `draw` (`run.rs`, `event_loop`), so the first compose — layout *and* hit map — is built from the size the terminal has now, not the one cached at construction. Measured: nine captures from 300 ms to 3 s at 120×38; the first painted frame (≈1.35 s) already reads hairline 5 / spacer 6 / tabs 7 / activity 36 / status 37 / hint 38, and three runs that resized the pane 120×37 → 120×38 mid-startup each painted the settled frame. The stale window itself is pinned by `refresh_size_sees_a_pane_resized_after_construction` | pass (P0-2, §6) |
 
 ### 2.2 Mouse
 
@@ -72,7 +76,7 @@ tool are byte-identical, which is the stronger artifact.
 | M2 | A click on a row switches the session / applies the picker row | 图 5 | clicking `技能` (col=115 row=7) switched the panel; a click on the `Light` row of the `/theme` picker (col 27 row 13) applied it and closed the box | pass |
 | M3 | The wheel scrolls the chat three rows per event, and reaching the top asks for older history | 图 6 | three wheel-up reports at (20,20): the body changed from `栏高与标签中线…` to `Chrome.test.ts +2…` and `↑ 更早 · page up` appeared | pass |
 | M4 | The wheel over the rail scrolls the panel, not the chat | 图 3 | with the rail focused, the same three reports moved the 待办 list and left the chat still | pass |
-| M5 | Dragging the divider resizes the rail 30..48 and the edge follows the pointer | 图 17 | press at col 84, drag to col 90, release: the divider **moved to column 78** and the rail became **42** — the edge moved away from the pointer | **fail** (P0-1) |
+| M5 | Dragging the divider resizes the rail 30..48 and the edge follows the pointer | 图 17 | press at column 84 of 120, drag to column 90, release: the divider **lands on column 90** and the rail goes 36 → 30 — the seam ends under the pointer. Read back from the captured frame (`frame-probe`): `divider = 89 (0-based) → column 90, rail 30`. A leftward drag mirrors it (unit test: 90 → 84, rail back to 36), and past either end the width clamps at 48/30 instead of running off (`the drag clamps and never runs off the frame`) | pass (P0-1, §6) |
 | M6 | The terminal owns mouse reporting only while the workbench runs | 图 2 | `tmux display -p '#{mouse_any_flag}'` → `1` while the session runs, `0` after `ctrl+q` exits | pass |
 | M7 | A click in the chat returns the keys from the rail | 图 6 | the caret in the tab strip disappears after the click and the wheel then scrolls the chat | pass |
 | M8 | Hover | — | `MOUSE_ON` is `?1000h?1002h?1006h`; `MouseKind::Move` is parsed and dropped (`mod.rs:584`) | n/a — no hover yet (P1-1) |
@@ -97,7 +101,7 @@ tool are byte-identical, which is the stronger artifact.
 | A3 | Session cost | 图 2 | `· ≈¥18.84` | pass |
 | A4 | Cache-hit rate | 图 2 | activity row's right end: `缓存 50%` | pass |
 | A5 | Activity is still at rest | 图 2 | `· idle`, no spinner frames across three captures 1.5 s apart | pass |
-| A6 | Git branch in the header | 图 2 | header line 2 reads `/Users/geilige/future-os` and nothing else; `SessionMeta::branch` is hard-coded empty | **fail** (P0-4) |
+| A6 | Git branch in the header | 图 2 | header line 2 reads `/Users/geilige/future-os · ⎇ dev-huichen` — the session's own cwd, then the branch read there (`workbench/git.rs`: `git -C <cwd> rev-parse --abbrev-ref HEAD`, 600 ms deadline, cached per cwd, empty in a non-repository so the line degrades to the bare path) | pass (P0-4, §6) |
 | A7 | Session title in the header | 图 2 | line 1 `· 全屏多会话视图设计方案` | pass |
 | A8 | The right corner degrades by whole pieces | 图 15 vs 图 2 | `● future-tui v0.0.2-9f0a8b76c+local` at 120 → `● future-tui` at 60; never a half Hanzi | pass |
 
@@ -109,7 +113,8 @@ tool are byte-identical, which is the stronger artifact.
 | C2 | Typing filters the list live | 图 9 | query `theme` leaves `/theme` selected | pass |
 | C3 | Three entries open a typed picker | 图 10, 图 11, 图 12 | `/theme` → six palettes with `✓`, `/model` → provider groups plus a reasoning slider, `/sessions` → searchable session rows; all three open from the palette (`run.rs:249`) and from a typed command | pass |
 | C4 | The theme picker previews and can be cancelled | 图 13 | moving the highlight to `Light` repaints the frame (`48;5;235` → `48;5;252`); `esc` restores `48;5;235`; `enter` persists | pass |
-| C5 | Every palette entry resolves | 图 18, 图 19 | `/usage` → `Unknown command /usage`, `/skills` → `Unknown command /skills`; same for `/workspace`, `/export`, `/transcript` (`live.rs:694`) | **fail** (P0-3) |
+| C5 | Every palette entry resolves | 图 18, 图 19 | `/usage` and `/skills` focus their rail panel (and open it full-screen below 88 columns) — 图 18/19 show the panel with **no** notice on the hint row, and both frames are byte-identical to the frames a click on the same tab produces (图 4/图 5); `/workspace` answers `工作区 /Users/geilige/future-os · 随会话固定 · 换目录：在目标目录启动 future tui，/sessions 换已有会话`; `/transcript` answers `完整记录：/export 导出整份会话（HTML） · /reply-detail 在聊天里看完整过程`; `/export` runs the agent's HTML exporter and puts the path it wrote on the notice row; `/help` opens the same key table `?` does (it used to resolve to a do-nothing arm — resolving is not the same as doing). `every_palette_entry_has_a_handler` fails when a palette entry is not exactly one of {picker, surface verb, app verb} | pass (P0-3, §6) |
+| C7 | A click inside a panel never invents a command | 图 3 | a row of a read-only panel (a todo, a skill, a job) now just takes the keys. It used to return `panel.row.<n>` as a command, which the app had no arm for and answered `Unknown command /panel.row.3` — the same lie as C5, one mouse click away | pass (fixed with P0-3) |
 | C6 | `?` opens the key table, `esc` closes one layer | 图 7 | two sections: the keys (including the two mouse rows) and the command list with descriptions; `esc` returned to the chat and the draft was untouched | pass |
 
 ### 2.6 Themes
@@ -192,15 +197,29 @@ deciding it first.
 
 ## 6. Defects found while verifying
 
+### 6.1 Fixed in this round (the four P0s)
+
+Every row below has a code change, a test that fails without it, and a frame from
+a live session at 120×38. The figures named here are the **new** ones: the three
+defect frames this record used to show (`workbench-drag-inverted.png`,
+`workbench-dead-usage.png`, `workbench-dead-skills.png`) are deleted, because a
+picture of a bug that no longer exists is a picture of nothing.
+
+| Defect | What was wrong | Fix | Evidence |
+|---|---|---|---|
+| The divider drag was inverted (P0-1) | the drag **added** the pointer's displacement to the rail's width, so a rightward drag widened the rail and pushed the seam left: press col 84 → drag col 90 → seam at col 78, rail 42 | the displacement is subtracted (`mod.rs` `handle_mouse`, `Drag`), the grab is measured from the press cell, and the width clamps to 30..48 | 图 17: seam lands on col 90, rail 30. `a_dragged_divider_lands_under_the_pointer` (columns, both directions) and `the_drag_clamps_and_never_runs_off_the_frame` |
+| Five palette entries answered `Unknown command` (P0-3) | the palette advertised `/usage`, `/skills`, `/workspace`, `/export`, `/transcript` and the app forwarded all five to the agent, which has no such commands | a verb that names something on screen is answered by the surface (`Workbench::surface_command` → `VerbOutcome`): the two panel verbs focus the rail (full-screen below 88 columns), `/workspace` and `/transcript` say what is actually true, `/export` runs the agent's exporter, `/help` opens the key table; a read-only panel row no longer invents `panel.row.<n>` either | 图 18, 图 19 — and both are **byte-identical** to the click-driven frames 图 4/图 5, i.e. the two routes land in the same state. `every_palette_entry_has_a_handler`, `usage_and_skills_focus_their_panel_and_never_reach_the_agent`, `a_narrow_terminal_gets_the_panel_full_screen`, `workspace_and_transcript_explain_themselves`, `help_opens_the_key_table` |
+| The git branch never reached the header (P0-4) | `SessionMeta::branch` was hard-coded `String::new()` (`live.rs`), so the header's second line could only ever show the cwd | `workbench/git.rs` reads `rev-parse --abbrev-ref HEAD` in the session's own cwd (600 ms deadline, `-C`, detached HEAD named `@sha`), cached per cwd and re-read when the workspace moves; the header draws `cwd · ⎇ branch` and degrades to the bare cwd outside a repository | 图 2: `/Users/geilige/future-os · ⎇ dev-huichen`. `the_branch_is_read_once_per_cwd`, `a_failed_read_is_an_empty_branch_not_a_stale_one`, `a_real_repository_names_its_branch` |
+| The first frame could be composed for a stale height (P0-2) | the cached terminal size dates from construction and from the last resize notification, so a pane that changed in between produced one frame at the old height that the next redraw repaired | the driver refreshes the size once **before** the loop's first `draw`, so the first compose — layout and hit map together — uses the size the terminal has now | nine captures from 300 ms to 3 s at 120×38: the first painted frame is already the settled one (hairline 5 / spacer 6 / tabs 7); three 120×37 → 120×38 mid-startup runs each painted the settled frame; `refresh_size_sees_a_pane_resized_after_construction` pins the mechanism. Caveat kept on purpose: **not reproduced** on this build in those runs — what changed is that the mechanism that can produce it is gone, not that a frame was caught and repaired |
+
+### 6.2 Still open
+
 | Defect | Evidence | Owner |
 |---|---|---|
-| The divider drag is inverted | 图 17: press col 84 → drag to col 90 → divider ends at col 78, rail 42 (measured twice, both directions) | P0-1 in [workbench-redesign.md](workbench-redesign.md) |
-| Five palette entries answer `Unknown command` | 图 18 (`/usage`), 图 19 (`/skills`); same handler gap for `/workspace`, `/export`, `/transcript` | P0-3 |
-| The git branch never reaches the header | 图 2: `SessionMeta::branch` is `String::new()` (`live.rs:553`) | P0-4 |
-| The first frame can be composed for a stale height | one instance at 120×38 (this build) painted its first frame one row high — hairline 5, tabs 6, no spacer — and the next redraw repaired it; another instance was correct at 3/6/9 s | P0-2 |
 | Screens deleted with the inline UI | `/sandbox`, `/worktree`, `/keymap`, `/copy`, external editor — no workbench surface | P1-3 |
 | No hover | `MOUSE_ON` omits `?1003h`; `Move` is dropped | P1-1 |
 | No image handling in the compositor | no `is_image_line` equivalent, no Kitty/iTerm2 row preservation; not measured live (the session has no image) | P1-11 |
+| The full-screen panel names no way out | 图 16, and the same box `/usage` opens below 88 columns: the title line is `╭─ 待办 ╮` with no `esc`/`ctrl+b` footer. The keys work and the hint row names `ctrl+b`, so it is not a dead end, but the box should say so itself | P2 (new) |
 | A hidden rail stays hidden when the terminal widens | observed; `ctrl+b` restores it (hidden → shown+focused). Deliberate: visibility is the reader's choice | by design, recorded here |
 
 ## 7. Reproducing this record
@@ -220,23 +239,49 @@ sqlite3 ~/.future/tasks/tasks.db ".backup $FUTURE_HOME/tasks/tasks.db"
 FUTURE_VERSION=0.0.2-9f0a8b76c+local cargo build -q -p future-tui -p future-cli
 FUTURE_HOME=$FUTURE_HOME ./target/debug/future agent --grpc-addr 127.0.0.1:5511 &
 
-# 4. the frames
+# 4. the frames: one scenario each, all sixteen, from one build
 export FUTURE_AGENT_GRPC_ADDR=127.0.0.1:5511
 export SESSION_ID=20261021-005514-e1ee4ba485bc44c5b2d2ea602cd5cd82
-tui/scripts/shot.sh chat 120x38
-tui/scripts/shot.sh usage 120x38
-tui/scripts/shot.sh chat 60x20
+A=$PWD/docs/tui/assets
+tui/scripts/shot.sh launchpad      120x38 $A/workbench-launchpad.png
+tui/scripts/shot.sh chat           120x38 $A/workbench-chat.png
+tui/scripts/shot.sh todo           120x38 $A/workbench-panel-todo.png
+tui/scripts/shot.sh usage          120x38 $A/workbench-panel-usage.png
+tui/scripts/shot.sh skills         120x38 $A/workbench-panel-skills.png
+tui/scripts/shot.sh scrolled       120x38 $A/workbench-chat-scrolled.png
+tui/scripts/shot.sh help           120x38 $A/workbench-help.png
+tui/scripts/shot.sh palette        120x38 $A/workbench-palette.png
+tui/scripts/shot.sh palette-filter 120x38 $A/workbench-palette-filter.png
+tui/scripts/shot.sh chat           90x24  $A/workbench-90x24.png
+tui/scripts/shot.sh chat           60x20  $A/workbench-60x20.png
+tui/scripts/shot.sh full-panel     60x20  $A/workbench-panel-full-60x20.png
+tui/scripts/shot.sh drag           120x38 $A/workbench-drag-fixed.png
+tui/scripts/shot.sh command-usage  120x38 $A/workbench-usage-panel.png
+tui/scripts/shot.sh command-skills 120x38 $A/workbench-skills-panel.png
+tui/scripts/shot.sh light          120x38 $A/workbench-light-120x38.png  # persists the palette: last
 
 # 5. the picker frame, deterministically and without an agent (→ .screenshots/tui.png)
 python3 scripts/screenshots/capture.py tui --scenario palette
 ```
 
+Every scenario name above is a key of the table in `scripts/screenshots/capture.py`
+(`TUI_SCENARIO_KEYS`, `TUI_SCENARIO_TABS`, `TUI_SCENARIO_DRAGS`); an unknown name
+is an error, not a silently different frame. The two panel scenarios (`usage`,
+`skills`) click the tab — the workbench has no key for it — and the two
+`command-*` ones run the palette entry, which is the path §2.5/C5 is about. `A`
+is absolute on purpose: `shot.sh` resolves a relative output under its own
+`--out` directory, which would nest `docs/tui/assets/` inside itself.
+
 Rules that make the captures trustworthy:
 
 - a **fresh port** and a **private `FUTURE_HOME`** — never the agent a running
   `future tui` uses;
-- a scenario that leaves a **sticky notice** (`/usage`, `/skills`) runs last, or
-  in its own instance;
+- a scenario that leaves a **sticky notice** runs last, or in its own instance —
+  no palette entry leaves one now, so a notice in a frame means something went
+  wrong;
+- the `light` scenario runs **last** and its palette is reset afterwards
+  (`rm -f "$FUTURE_HOME/tui/settings.json"`): applying a palette persists
+  `themeId`, and every later shot would inherit it;
 - the pty **is** the size (`shot.sh` opens it before the app starts reading it),
   so `120x38` in the command is the frame — there is no resize step;
 - every shot is its **own process**, which is why the sticky-notice rule is about
