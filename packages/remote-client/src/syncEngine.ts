@@ -642,27 +642,40 @@ export class SyncEngine {
           base = durableReply ? base : replay.timeline;
           lane.cursor = replay.cursor;
         }
-        // An idle state must not inherit a cached generating flag. Queued live
-        // events still run afterwards, so a newly started run is not suppressed.
-        lane.timeline = activeRunId ? base : {
-          ...base,
-          streaming: false,
-          items: base.items.map(item =>
-            item.kind === "message" && item.streaming ? { ...item, streaming: false } : item,
-          ),
-        };
+        // A read from the run's start that came back without its terminal is
+        // the log itself saying the run has not finished — the second source
+        // `runInFlight` needs, and the one that survives the host's snapshot
+        // having been taken before the run was. `base.streaming` is that
+        // verdict: the replay settles it to false on an `agent_end` and leaves
+        // it true when the events carry no terminal.
+        const logUnfinished = since === -1 && !durableReply && base.streaming === true;
+        // A session with nothing running must not inherit a cached generating
+        // flag — but "get_state named no active run" is one answer about
+        // liveness, not the only one (see `runInFlight`). The reply settles only
+        // when both sources agree that it has.
+        lane.timeline = runInFlight({
+          runId: targetRunId,
+          activeRunId,
+          interruptedRunId: interruptedRunId(state),
+          logUnfinished,
+          items: base.items,
+        })
+          ? base
+          : settledTimeline(base);
         this.commit(lane);
       } else {
         enterStage("replay");
         await this.tailReconcile(lane, targetRunId);
-        if (!activeRunId && lane.timeline?.streaming) {
-          lane.timeline = {
-            ...lane.timeline,
-            streaming: false,
-            items: lane.timeline.items.map(item =>
-              item.kind === "message" && item.streaming ? { ...item, streaming: false } : item,
-            ),
-          };
+        if (lane.timeline?.streaming && !runInFlight({
+          runId: targetRunId,
+          activeRunId,
+          interruptedRunId: interruptedRunId(state),
+          // A tail read proves a suffix, never the run's end: it cannot keep a
+          // flag alive here, so silence settles as it always has.
+          logUnfinished: false,
+          items: lane.timeline.items,
+        })) {
+          lane.timeline = settledTimeline(lane.timeline);
           this.commit(lane);
         }
       }
@@ -1037,6 +1050,82 @@ function isRunStampedCompaction(event: StreamEvent): boolean {
  */
 function carryMutations(previous: SessionLane | undefined): Op[] {
   return (previous?.ops ?? []).filter((op) => op.kind === "mutate");
+}
+
+/**
+ * Whether the run a reconcile is about is still being written.
+ *
+ * `get_state`'s `activeRun` is the host's in-memory run registry, and the lane
+ * used to read "no active run" as "nothing is running" — one source, assumed to
+ * be the only one. That is not enough: the state is a snapshot taken for one
+ * request, so it can answer about a moment the run had not reached yet (a run
+ * that registers just after the snapshot was taken, or whose registry entry a
+ * restart took with it). Settling on that silence published a reply whose own
+ * log had no terminal in it. Measured on a phone (2026-10-25): a reply with a
+ * shell call still running and 36,640 tokens was drawn with a finished footer,
+ * and its answer was folded away into "show process".
+ *
+ * So two independent sources decide, and they fail in different ways — which is
+ * exactly why neither is dropped:
+ *
+ *   1. the host's registry — `activeRun` names the run being worked on, and
+ *      `interruptedRun` names the journal's unterminated run that nobody is
+ *      working on any more (the agent crashed or restarted mid-run);
+ *   2. the run's own log, as this pass just read it: a read from the run's
+ *      *start* that came back without an `agent_end` says the run has not
+ *      finished. Only a whole-run read counts — a tail read proves a suffix and
+ *      says nothing about the rest, so it never keeps a flag alive here, which
+ *      is what still lets a lost terminal settle instead of locking the composer
+ *      forever.
+ *
+ * A reply row carrying its own terminal (duration, failed, stopped) settles
+ * regardless: that is the run's end as recorded in its own log, and no liveness
+ * guess outranks it.
+ *
+ * What must not decide alone is the log's silence. An agent that died mid-run
+ * leaves exactly that shape and nothing would ever settle it — which is what
+ * `interruptedRun`, the host's own reconciliation of journal against liveness,
+ * is for. Both directions are pinned in the engine tests: a run being written
+ * must not read as finished, and an idle session must not read as running.
+ */
+function runInFlight(args: {
+  /** The run this reconcile is about (nothing to judge when empty). */
+  runId: string;
+  /** `get_state.activeRun`, empty when the host named no run. */
+  activeRunId: string;
+  /** `get_state.interruptedRun`, empty when the host named none. */
+  interruptedRunId: string;
+  /** This pass read the run from its start and the log carried no terminal. */
+  logUnfinished: boolean;
+  items: TimelineState["items"];
+}): boolean {
+  const { runId, activeRunId, interruptedRunId, logUnfinished, items } = args;
+  if (!runId) return false;
+  const replies = items.filter(item =>
+    item.kind === "message" && item.role === "assistant" && item.runId === runId);
+  // The run's own terminal, wherever the row came from.
+  if (replies.some(reply =>
+    reply.kind === "message" && (reply.durationMs != null || reply.failed || reply.stopped)))
+    return false;
+  if (activeRunId === runId) return true;
+  if (interruptedRunId === runId) return false;
+  return logUnfinished;
+}
+
+/** The host's report of a run that ended without a terminal. */
+function interruptedRunId(state: RemoteSessionState): string {
+  return state.interruptedRun?.runId ?? "";
+}
+
+/** A timeline with nothing in flight: what a session with no live run shows. */
+function settledTimeline(timeline: TimelineState): TimelineState {
+  return {
+    ...timeline,
+    streaming: false,
+    items: timeline.items.map(item =>
+      item.kind === "message" && item.streaming ? { ...item, streaming: false } : item,
+    ),
+  };
 }
 
 function freshRunBase(base: TimelineState, runId: string): TimelineState {

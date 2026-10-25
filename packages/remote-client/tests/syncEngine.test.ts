@@ -53,6 +53,9 @@ class Journal {
 class Harness {
   journal = new Journal();
   activeRunId = "";
+  /** The journal's unterminated run on a session with no live run (a crashed or
+   * restarted agent), as `get_state.interruptedRun` reports it. */
+  interruptedRunId = "";
   isCompacting = false;
   history: ReturnType<typeof emptyTimeline> = emptyTimeline();
   /** Optional folded projection; when set, fetchReplay returns it instead. */
@@ -96,8 +99,13 @@ class Harness {
       requestGetState: async () => {
         this.stateCalls += 1;
         if (this.stateBlocked) await this.stateBlocked;
-        const state: { activeRun?: { runId: string }; isCompacting: boolean } = { isCompacting: this.isCompacting };
+        const state: {
+          activeRun?: { runId: string };
+          interruptedRun?: { runId: string };
+          isCompacting: boolean;
+        } = { isCompacting: this.isCompacting };
         if (this.activeRunId) state.activeRun = { runId: this.activeRunId };
+        if (this.interruptedRunId) state.interruptedRun = { runId: this.interruptedRunId };
         return state;
       },
       requestHistory: async () => this.history,
@@ -364,6 +372,69 @@ describe("SyncEngine", () => {
       expect(h.engine.streamingFor("s")).toBe(false);
       expect(h.timelineOf("s").items.filter(item => item.kind === "message" && item.role === "assistant"))
         .toEqual([expect.objectContaining({ text: "full reply", durationMs: 4200, outputTokens: 32 })]);
+      expect(h.timelineOf("s").items.some(item => item.kind === "message" && item.streaming)).toBe(false);
+    } finally { h.engine.clear(); }
+  });
+
+  test.each(["open", "reconnect"] as const)("%s keeps a run the host's snapshot lost while its log has no terminal", async reason => {
+    // The phone watched this run stream (text, then a shell call that has not
+    // finished). The host's `get_state` no longer names it — a snapshot taken
+    // before the run registered, or one whose registry entry outlived a
+    // restart. "No active run" is one answer about liveness, not the only one:
+    // the run's own log, just replayed, has no `agent_end` in it, so the reply
+    // is still being written. Settling it drew a live run with a finished
+    // footer and folded its answer away (measured on a phone 2026-10-25).
+    const h = new Harness("r");
+    h.journal.add(agentStart("r"));
+    h.journal.add(textChunk("r", 1, "working on it"));
+    h.journal.add(evt("tool_start", "r", 2, JSON.stringify({
+      tool_name: "shell",
+      tool_call_id: "t1",
+      tool_args: { command: "sleep 300" },
+    })));
+    try {
+      await h.engine.open("s");
+      await h.settle();
+      expect(h.engine.streamingFor("s")).toBe(true);
+      // The reply so far is *also* durable by the time the phone reopens: the
+      // history page carries the run's partial row and no terminal, which is
+      // the row the reader actually sees.
+      h.history = timelineFromEntries([
+        { id: "u", kind: "user", role: "user", createdAtMs: 1, runId: "r", blocks: [{ kind: "text", text: "question" }] },
+        { id: "a", kind: "assistant", role: "assistant", createdAtMs: 2, runId: "r", blocks: [{ kind: "text", text: "working on it" }] },
+      ]);
+      h.active("");
+      h.engine.restart("s", reason);
+      await h.settle();
+      expect(h.engine.streamingFor("s")).toBe(true);
+      const replies = h.timelineOf("s").items.filter(item => item.kind === "message" && item.role === "assistant");
+      expect(replies).toHaveLength(1);
+      expect(replies[0]).toMatchObject({ runId: "r", streaming: true });
+      // Nothing about the run's end has been recorded, so the row has no
+      // terminal for the footer to print.
+      expect(replies[0]).not.toHaveProperty("durationMs");
+    } finally { h.engine.clear(); }
+  });
+
+  test("a run the host reports as interrupted is settled, not drawn as still running", async () => {
+    // The reverse of the case above, and the reason the log's silence cannot
+    // decide on its own: an agent that died mid-run leaves a reply whose log
+    // has no terminal, and nothing is working on it. The host says so
+    // (`interruptedRun` — the journal's unterminated run on a session with no
+    // live run); drawing that as a running reply would show a spinner that
+    // never stops.
+    const h = new Harness("r");
+    h.journal.add(agentStart("r"));
+    h.journal.add(textChunk("r", 1, "working on it"));
+    try {
+      await h.engine.open("s");
+      await h.settle();
+      expect(h.engine.streamingFor("s")).toBe(true);
+      h.active("");
+      h.interruptedRunId = "r";
+      h.engine.restart("s", "reconnect");
+      await h.settle();
+      expect(h.engine.streamingFor("s")).toBe(false);
       expect(h.timelineOf("s").items.some(item => item.kind === "message" && item.streaming)).toBe(false);
     } finally { h.engine.clear(); }
   });
