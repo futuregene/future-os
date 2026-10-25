@@ -323,25 +323,30 @@ fn draw(terminal: &mut Terminal, workbench: &mut Workbench, live: &mut Live) -> 
     Ok(())
 }
 
-/// The bytes one frame becomes: cursor hidden, home, the rows separated by a
-/// line break, and the cursor placed where the prompt is.
+/// The bytes one frame becomes: cursor hidden, each row placed at its own
+/// absolute line, and the cursor put where the prompt is.
 ///
-/// The last row carries **no** trailing newline, and that is load-bearing. A
-/// line feed on the bottom row scrolls the whole alternate screen up by one:
-/// the header's first row disappears and every painted row sits one cell above
-/// the coordinate the layout assigned it — which is exactly the row an SGR
-/// mouse report names, so every click landed on the row *above* the thing the
-/// reader aimed at (measured in tmux at 120x38: clicking a sidebar tab did
-/// nothing at all, while a click on the input box hit the conversation).
+/// **Every row is addressed, never advanced to with a line feed.** A full-screen
+/// surface may not assume its idea of the height matches the terminal's: the
+/// pty's size reaches the process through SIGWINCH, so between a resize and the
+/// next frame — or on any terminal that reported a size the program has not yet
+/// observed — a frame written with `\r\n` runs past the last row and the
+/// terminal scrolls. The result is not a clipped frame but a *shifted* one: the
+/// header leaves the screen, every band sits some cells above the row the layout
+/// assigned it, and an SGR mouse report (which names a fixed cell) then lands on
+/// the wrong thing. Measured in a ttyd-rendered terminal at 1000x700: two frames
+/// after start, only the last seven rows were still visible.
+///
+/// Absolute addressing makes a size mismatch harmless: rows beyond the terminal
+/// are simply not drawn (`CUP` to a row past the end leaves the cursor at the
+/// last row and writes nothing else), and no write ever scrolls the screen.
 fn frame_bytes(rows: &[String], cursor: Option<(u16, u16)>) -> String {
     let mut frame = String::with_capacity(rows.len() * 64);
-    // Hide the cursor while the frame is written (it would otherwise run down
-    // the screen), then put it where the prompt is.
-    frame.push_str("\x1b[?25l\x1b[H");
+    frame.push_str("\x1b[?25l");
     for (index, row) in rows.iter().enumerate() {
-        if index > 0 {
-            frame.push_str("\x1b[0m\r\n");
-        }
+        // `CSI row;1H` — absolute, 1-based. The reset first so a row's styling
+        // cannot bleed into the positioning sequence.
+        frame.push_str(&format!("\x1b[0m\x1b[{};1H", index + 1));
         frame.push_str(row);
     }
     frame.push_str("\x1b[0m");
@@ -368,6 +373,44 @@ pub(crate) fn save_settings(path: &Path, settings: &TuiSettings) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A frame must never advance with a line feed: on a terminal shorter than
+    /// the frame (or one whose resize has not reached the process yet) that
+    /// scrolls the alternate screen and every row lands above its coordinate.
+    #[test]
+    fn a_frame_addresses_every_row_and_never_scrolls() {
+        let rows = vec![
+            "first".to_string(),
+            "second".to_string(),
+            "third".to_string(),
+        ];
+        let frame = frame_bytes(&rows, Some((4, 1)));
+        assert!(
+            !frame.contains('\n'),
+            "no line feed in a full-screen frame: {frame:?}"
+        );
+        assert!(
+            !frame.contains("\r"),
+            "no carriage return either: {frame:?}"
+        );
+        // Each row is placed at its own 1-based line.
+        for index in 0..rows.len() {
+            assert!(
+                frame.contains(&format!("\x1b[{};1H", index + 1)),
+                "row {} is not addressed: {frame:?}",
+                index + 1
+            );
+        }
+        assert!(
+            frame.contains("\x1b[2;5H"),
+            "the cursor sits at its cell: {frame:?}"
+        );
+        // The rows appear in order, each after its own positioning sequence.
+        let first = frame.find("first").unwrap();
+        let second = frame.find("second").unwrap();
+        let third = frame.find("third").unwrap();
+        assert!(first < second && second < third, "{frame:?}");
+    }
 
     #[test]
     fn a_plain_key_becomes_one_key_event() {
@@ -414,29 +457,27 @@ mod tests {
         assert_eq!(events_of("中"), vec![WbEvent::Paste("中".into())]);
     }
 
-    /// The bottom row must not end in a line feed: it scrolls the alternate
-    /// screen up one row, which hides the header's first row and puts every
-    /// painted row one cell above the coordinate the layout (and therefore the
-    /// hit map, and therefore the mouse) believes it occupies.
+    /// The old shape wrote rows with `\r\n` and only kept the *last* one free
+    /// of a line feed. That is not enough: a frame taller than the terminal
+    /// scrolls anyway, and a scrolled frame puts every painted row above the
+    /// coordinate the hit map (and therefore the mouse) believes it occupies.
+    /// The frame now never emits a line feed at all — pinned above.
     #[test]
-    fn a_frame_never_ends_in_a_line_feed() {
+    fn a_frame_ends_with_a_reset_and_no_advance() {
         let rows: Vec<String> = (0..38).map(|row| format!("row {row}")).collect();
         let frame = frame_bytes(&rows, Some((4, 31)));
-        // Exactly rows-1 line feeds: one between each pair, none after.
-        assert_eq!(frame.matches("\r\n").count(), rows.len() - 1);
-        // Every row is there, in order, with no separator after the last.
-        assert!(frame.contains("row 0\x1b[0m\r\nrow 1"));
-        assert!(frame.ends_with("row 37\x1b[0m\x1b[32;5H\x1b[?25h"));
+        assert!(!frame.contains("\r\n"));
+        assert!(frame.contains("row 37"));
+        assert!(frame.ends_with("\x1b[0m\x1b[32;5H\x1b[?25h"), "{frame:?}");
     }
 
-    /// Without a cursor position the frame still ends with the reset, never a
-    /// line feed.
+    /// Without a cursor position the frame still ends with the reset.
     #[test]
     fn a_frame_without_a_cursor_ends_with_the_reset() {
         let rows = vec!["a".to_string(), "b".to_string()];
         assert_eq!(
             frame_bytes(&rows, None),
-            "\x1b[?25l\x1b[Ha\x1b[0m\r\nb\x1b[0m"
+            "\x1b[?25l\x1b[0m\x1b[1;1Ha\x1b[0m\x1b[2;1Hb\x1b[0m"
         );
     }
 }
