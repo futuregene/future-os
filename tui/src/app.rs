@@ -28131,10 +28131,30 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_refused_workspace_path_is_explained_on_the_screen() {
         let (mut app, _rx) = running_app(100, 30);
+        // A path below a regular file can never be created: `create_dir_all`
+        // fails on its parent on every platform (ENOTDIR on POSIX,
+        // ERROR_PATH_NOT_FOUND / ERROR_ALREADY_EXISTS on Windows). A fixed
+        // path such as `/proc/nope` only refuses on POSIX — on Windows it
+        // becomes `<drive>:\proc\nope`, which an elevated runner can write.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let blocker = dir.path().join("not-a-folder");
+        std::fs::write(&blocker, b"a file, not a folder").expect("write the blocker file");
+        let target = blocker.join("child");
+        let target = target.to_string_lossy().into_owned();
+        assert!(!std::path::Path::new(&target).exists(), "nothing there yet");
+
         app.handle_key_action(KeyAction::NewSession);
         let screen = app.new_session.as_mut().unwrap();
-        assert!(!screen.accept_workspace("/proc/nope/cannot", true));
-        assert!(screen.notice().is_some(), "the reason is on the screen");
+        assert!(
+            !screen.accept_workspace(&target, true),
+            "a path below a file is refused"
+        );
+        let notice = screen.notice().expect("the reason is on the screen");
+        assert!(notice.contains("Could not create"), "{notice}");
+        assert!(
+            !std::path::Path::new(&target).exists(),
+            "nothing was created"
+        );
     }
 
     // ─── Sessions list: recency and workspace ─────────────────────────
