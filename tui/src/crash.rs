@@ -26,11 +26,21 @@ use std::sync::Mutex;
 /// The panic-hook type `std::panic` hands out and takes back.
 type Hook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync + 'static>;
 
-/// Escape teardown mirroring `Terminal::stop()`: bracketed paste off, Kitty
-/// keyboard pop, modifyOtherKeys off, leave alt screen, show cursor. Written
-/// directly to fd 2 — the shared `write_lock` may be held by the panicking
-/// thread, so going through `Terminal::write` could deadlock.
-const RESTORE_SEQUENCES: &str = "\x1b[?2004l\x1b[<u\x1b[>4;0m\x1b[?1049l\x1b[?25h";
+/// Escape teardown mirroring `Terminal::stop()`: mouse reporting off, bracketed
+/// paste off, Kitty keyboard pop, modifyOtherKeys off, leave alt screen, show
+/// cursor. Written directly to fd 2 — the shared `write_lock` may be held by the
+/// panicking thread, so going through `Terminal::write` could deadlock.
+///
+/// The mouse reset comes first and is unconditional: a panic inside the
+/// workbench leaves `?1000h`/`?1002h`/`?1006h` armed, and a shell that inherits
+/// them eats every drag and prints escape chatter per click. `stop()` is not
+/// reached on this path, so this is the only teardown a crash gets.
+fn restore_sequences() -> String {
+    format!(
+        "{}\x1b[?2004l\x1b[<u\x1b[>4;0m\x1b[?1049l\x1b[?25h",
+        crate::workbench::mouse::MOUSE_OFF
+    )
+}
 
 /// The hook that was in place when the crash hook was first installed, and how
 /// many live scopes want the crash hook installed.
@@ -199,7 +209,7 @@ fn report(message: &str) {
     // teardown sequences and the note below have to reach the real terminal,
     // so hand stderr back first.
     let _ = crate::stderr_log::restore();
-    raw_write_stderr(RESTORE_SEQUENCES.as_bytes());
+    raw_write_stderr(restore_sequences().as_bytes());
     #[cfg(unix)]
     crate::terminal::panic_restore_raw();
 
@@ -310,6 +320,35 @@ fn raw_write_stderr(bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The hook's teardown has to undo the mouse modes as well as the screen
+    /// modes: it is the only teardown a crash gets, and a shell that inherits
+    /// `?1006h` swallows every drag and prints an escape per click.
+    #[test]
+    fn the_crash_teardown_turns_mouse_reporting_off_first() {
+        let teardown = restore_sequences();
+        assert!(
+            teardown.starts_with(crate::workbench::mouse::MOUSE_OFF),
+            "the mouse reset comes first, before the screen is left: {teardown:?}"
+        );
+        for mode in ["?1000l", "?1002l", "?1003l", "?1006l"] {
+            assert!(
+                teardown.contains(mode),
+                "{mode} has to be reset by the crash path: {teardown:?}"
+            );
+        }
+        // The rest of the teardown is unchanged: it still leaves the alternate
+        // screen, pops the kitty keyboard mode and shows the cursor.
+        for sequence in [
+            "\x1b[?2004l",
+            "\x1b[<u",
+            "\x1b[>4;0m",
+            "\x1b[?1049l",
+            "\x1b[?25h",
+        ] {
+            assert!(teardown.contains(sequence), "{sequence:?} went missing");
+        }
+    }
 
     /// Save/restore an env var (None = absent).
     fn restore_env(key: &str, old: Option<std::ffi::OsString>) {

@@ -63,6 +63,16 @@ impl Rect {
 /// Below this width the sidebar is dropped (and `ctrl+b` opens a full-screen
 /// panel instead).
 pub const NARROW_WIDTH: u16 = 88;
+
+/// Whether a terminal `w` columns wide can hold the sidebar at all.
+///
+/// One predicate for the compositor, the key handler and the tests: a width
+/// that "hides" the sidebar while the key handler still believes it can be
+/// shown is how `ctrl+b` ended up opening a full-screen overlay on a 120-column
+/// terminal once the sidebar had been toggled off.
+pub fn sidebar_fits(w: u16) -> bool {
+    w >= NARROW_WIDTH
+}
 /// Below this height the header loses its wordmark block and the input box
 /// loses its bottom rule.
 pub const SMALL_HEIGHT: u16 = 24;
@@ -100,10 +110,13 @@ pub struct Layout {
 /// empty rectangles rather than an underflow.
 pub fn layout(w: u16, h: u16, sidebar_w: u16) -> Layout {
     let compact = h < SMALL_HEIGHT;
-    let sidebar_w = if w >= NARROW_WIDTH {
-        sidebar_w.clamp(SIDEBAR_MIN, SIDEBAR_MAX)
-    } else {
+    // `0` is not a width to clamp — it is "no sidebar": `ctrl+b` closes the
+    // rail by asking for none, and clamping that up to `SIDEBAR_MIN` is how a
+    // closed sidebar kept 30 columns of screen while claiming to be hidden.
+    let sidebar_w = if sidebar_w == 0 || !sidebar_fits(w) {
         0
+    } else {
+        sidebar_w.clamp(SIDEBAR_MIN, SIDEBAR_MAX)
     };
     // A sidebar that would leave the conversation under 20 columns is not worth
     // its width: fall back to the full-width body.
@@ -221,6 +234,9 @@ mod tests {
 
     #[test]
     fn the_two_breakpoints_move_what_the_contract_says() {
+        // One predicate for the compositor, the key handler and the tests.
+        assert!(!sidebar_fits(87));
+        assert!(sidebar_fits(88));
         let tall = layout(120, 38, SIDEBAR_DEFAULT);
         assert!(!tall.compact);
         assert_eq!(tall.sidebar.map(|rect| rect.w), Some(SIDEBAR_DEFAULT));
@@ -234,6 +250,12 @@ mod tests {
         assert!(narrow.sidebar.is_none());
         assert!(narrow.divider.is_none());
         assert_eq!(narrow.body.w, 80);
+
+        // `0` asks for no rail at all on a terminal that could hold one.
+        let closed = layout(120, 38, 0);
+        assert_eq!(closed.sidebar_w, 0);
+        assert!(closed.sidebar.is_none());
+        assert_eq!(closed.body.w, 120);
 
         // Short: one-row header, two-row input, no activity.
         let short = layout(120, 20, SIDEBAR_DEFAULT);

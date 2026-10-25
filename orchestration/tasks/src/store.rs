@@ -302,6 +302,30 @@ impl Store {
         Ok(store)
     }
 
+    /// Open an existing store **read-only**; `None` when there is no database.
+    ///
+    /// For readers that only list (the TUI's jobs panel): `open` creates the
+    /// file, applies the schema and runs migrations, which is a writer's job
+    /// and must not happen because someone opened a sidebar. Nothing is
+    /// created here, and a store whose schema is too new to read is a `None`
+    /// rather than an error — the panel then simply has fewer rows.
+    pub fn open_existing_read_only(home: &Path) -> Result<Option<Self>> {
+        let path = store_path(home);
+        if !path.is_file() {
+            return Ok(None);
+        }
+        let conn = Connection::open_with_flags(
+            &path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .with_context(|| format!("open {} read-only", path.display()))?;
+        let store = Self { conn };
+        if store.list_tasks(false).is_err() {
+            return Ok(None);
+        }
+        Ok(Some(store))
+    }
+
     fn apply_schema(&self) -> Result<()> {
         self.conn.execute_batch(SCHEMA_SQL)?;
         for step in MIGRATIONS {
@@ -840,6 +864,28 @@ mod tests {
             updated_at: 1,
             deleted_at: None,
         }
+    }
+
+    #[test]
+    fn a_reader_opens_the_store_without_creating_or_migrating_it() {
+        let (dir, s) = store();
+        s.insert_task(&task("listed")).unwrap();
+        let reader = Store::open_existing_read_only(dir.path())
+            .unwrap()
+            .expect("an existing store opens read-only");
+        let listed = reader.list_tasks(false).unwrap();
+        let names: Vec<&str> = listed.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["listed"]);
+        // Reading does not need a writer, and a write through a reader is the
+        // failure SQLite is supposed to give us — not a silent mutation.
+        assert!(reader.conn.execute("DELETE FROM tasks", []).is_err());
+
+        // No database yet: a reader never creates one.
+        let empty = TempDir::new().unwrap();
+        assert!(Store::open_existing_read_only(empty.path())
+            .unwrap()
+            .is_none());
+        assert!(!store_path(empty.path()).exists());
     }
 
     #[test]

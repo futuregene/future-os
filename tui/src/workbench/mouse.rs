@@ -7,8 +7,9 @@
 //! * SGR 1006 is a small, fully specified grammar, and it is testable as such —
 //!   no pty needed, no timing. `?1006h` makes the terminal report `\x1b[<b;x;yM`
 //!   (press/motion) and `…m` (release), with 1-based coordinates.
-//! * Only the workbench enables it. The inline TUI never asks for mouse
-//!   reporting, so nothing here runs for it.
+//! * Only the workbench enables it: the mode is written by the terminal that
+//!   was asked for it (`Terminal::set_mouse_mode`), so a caller with no mouse
+//!   targets never sees one of these reports.
 
 /// What the pointer did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,7 +47,10 @@ impl MouseEvent {
 /// off again. `1000` reports presses and releases, `1002` adds drags (needed
 /// for the sidebar divider), `1006` is the SGR encoding above.
 pub const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
-pub const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1002l\x1b[?1000l";
+/// Everything [`MOUSE_ON`] turned on, turned off — plus hover tracking
+/// (`?1003`), which the workbench never asks for but a previous program in the
+/// same terminal may have: a mode left on outlives the program that set it.
+pub const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 
 /// Parse one SGR 1006 report. `None` for anything else — including an
 /// unterminated fragment, which the terminal's input buffer will complete on a

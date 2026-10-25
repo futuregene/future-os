@@ -33,6 +33,9 @@ future-rpc = { path = "../packages/rpc" }
 # Only `install_rustls_provider` (the TUI's update check). The Agent is not
 # hosted here: the TUI attaches to whoever runs it (see `agent_attach`).
 future-host = { path = "../host" }
+# The sidebar's jobs panel lists the scheduled tasks. Only the store's
+# read-only listing is used — the tick loop belongs to the host.
+future-tasks = { path = "../orchestration/tasks" }
 chrono = { workspace = true, features = ["clock"] }
 
 # Windows terminal backend (terminal_windows.rs): console API for raw mode,

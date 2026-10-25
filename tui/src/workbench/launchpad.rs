@@ -113,12 +113,15 @@ pub fn render(
     };
 
     // ── logo + wordmark ───────────────────────────────────────────────
-    let wide = width(&widgets::wordmark_rows(palette)[0]);
-    let room_for_wordmark = columns >= 96 && rows >= 18;
+    let mark_width = width(&widgets::wordmark_rows(palette)[0]);
+    let block_width = 9 + 3 + mark_width;
+    // The hero needs the *block* to fit beside the whale: the chat column is
+    // 83 cells at 120×38 (the sidebar takes the rest), so a fixed "wide screen"
+    // threshold drew the whale alone on the screen that has the most room.
+    let room_for_wordmark = columns >= block_width + 4 && rows >= 18;
     if room_for_wordmark {
         let logo = widgets::logo_rows(palette);
         let mark = widgets::wordmark_rows(palette);
-        let block_width = 9 + 3 + wide;
         let block_left = (columns - block_width) / 2;
         for (index, mark_row) in mark.iter().enumerate() {
             let logo_row = logo.get(index).cloned().unwrap_or_else(|| " ".repeat(9));
@@ -133,10 +136,10 @@ pub fn render(
     }
 
     if rows >= 12 {
-        push(
-            &mut lines,
-            palette.strong(palette.fg, &center("FUTURE OS", content_width)),
-        );
+        // The name is drawn once on this screen: the hero (whale + block
+        // wordmark) owns it, and the header keeps only its text brand. A
+        // second `FUTURE OS` line here is what made the launchpad read as two
+        // brands stacked on top of each other.
         push(
             &mut lines,
             palette.dim(&center(
@@ -310,7 +313,11 @@ mod tests {
         let mut hit = HitMap::new();
         let (lines, cursor) = render(&data, &P, Rect::new(0, 0, 120, 38), &mut hit);
         let text = text_of(&lines);
-        assert!(text.contains("FUTURE OS"), "{text}");
+        // The hero carries the name as block art; there is no second text
+        // `FUTURE OS` line under it (that was the duplicate brand).
+        assert!(!text.contains("FUTURE OS"), "{text}");
+        assert!(lines.iter().any(|line| line.contains('█')), "{text}");
+        assert!(text.contains("一个 AI agent"), "{text}");
         assert!(text.contains("新会话"), "{text}");
         assert!(text.contains("模型"), "{text}");
         assert!(text.contains("强度"), "{text}");
@@ -319,11 +326,7 @@ mod tests {
         assert!(text.contains("最近会话"), "{text}");
         // The cursor sits on the prompt row, inside the box.
         let (_, row) = cursor.expect("the prompt owns the cursor");
-        assert_eq!(
-            row,
-            1 + 5 + 2 + 1,
-            "logo(5) + title rows(2) + blank + box top"
-        );
+        assert_eq!(row, 5 + 1 + 1 + 1, "hero(5) + tagline + blank + box top");
     }
 
     #[test]

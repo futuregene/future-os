@@ -9,7 +9,7 @@
 //! `compose` never pads — a band that returns a short row is a bug this module
 //! catches in `debug_assert` rather than papering over with spaces.
 
-use crate::workbench::ansi::{self, clip, fit, width};
+use crate::workbench::ansi::{self, fit, width};
 use crate::workbench::layout::{self, Layout, Rect};
 use crate::workbench::state::{ActivityKind, PanelId, WorkbenchData};
 use crate::workbench::theme::Palette;
@@ -68,20 +68,21 @@ pub(crate) fn compose(
     // The input band. On the launchpad there is no band: the composer *is* the
     // body, and repeating a prompt box under it would be the same box twice.
     if !data.on_launchpad() {
-        let (input_lines, _cursor_column, _) = widgets::input_lines(
+        let (input_lines, cursor_column, _) = widgets::input_box(
             &palette,
             frame.input.w as usize,
             &data.input,
             "输入 · enter 发送 · / 命令 · ? 帮助",
             true,
+            frame.compact,
         );
         // The whole box is a focus target: the border is as much "the input"
         // to a reader aiming a pointer at it as the prompt row is.
         workbench.hit_map().push(frame.input, "input");
         paint(&mut rows, frame.input, input_lines);
         if workbench.overlay.is_none() {
-            let before = &data.input.text[..data.input.cursor.min(data.input.text.len())];
-            let column = (2 + width(before)).min(frame.input.w.saturating_sub(1) as usize) as u16;
+            let column =
+                (cursor_column as usize).min(frame.input.w.saturating_sub(1) as usize) as u16;
             workbench.set_cursor(Some((column, frame.prompt_row)));
         }
     }
@@ -185,17 +186,16 @@ fn paint_overlay(rows: &mut [String], palette: &Palette, lines: Vec<String>, col
 // ─── header ────────────────────────────────────────────────────────────────
 
 fn header(palette: &Palette, data: &WorkbenchData, frame: &Layout, columns: usize) -> Vec<String> {
-    let right = format!(
-        " {} {} v{}",
-        widgets::status_dot(palette, data.connected),
-        data.app_name,
-        data.version
-    );
-    // Clipped, not padded: this is composed with a left part beside it, and a
-    // padded right block would push the row past the frame.
-    let right = clip(&right, columns / 2);
-    let right_width = width(&right);
     let compact = frame.compact;
+    // The right corner is a *composition*, never a cut string: each candidate is
+    // whole (dot, app, version), and the widest one that fits is drawn. Cutting
+    // a joined `● already-connected` is what once left a lone `●已` behind — a
+    // Hanzi is two cells, so even a cell-accurate cut can strand half a word.
+    // Everything in the corner is ASCII for the same reason: it degrades to its
+    // dot cleanly, and the Chinese label lives in the status bar.
+    let right_avail = (columns / 2).min((columns.saturating_sub(40)).max(columns / 3));
+    let right = header_right(palette, data, right_avail);
+    let right_width = width(&right);
 
     let mut lines: Vec<String> = Vec::new();
     if compact {
@@ -209,7 +209,10 @@ fn header(palette: &Palette, data: &WorkbenchData, frame: &Layout, columns: usiz
             palette.strong(palette.accent, "FUTURE OS"),
             palette.dim(&format!("· {title}"))
         );
-        let left = fit(&left, columns.saturating_sub(right_width + 1));
+        let left = fit(
+            &left,
+            columns.saturating_sub(right_width + usize::from(right_width > 0)),
+        );
         let pad = columns.saturating_sub(width(&left) + right_width);
         lines.push(fit(&format!("{left}{}{right}", " ".repeat(pad)), columns));
         return lines;
@@ -217,7 +220,15 @@ fn header(palette: &Palette, data: &WorkbenchData, frame: &Layout, columns: usiz
 
     let logo = widgets::logo_rows(palette);
     let wordmark = widgets::wordmark_rows(palette);
-    let show_wordmark = columns >= 96;
+    let title = if data.session.title.is_empty() {
+        "workbench".to_string()
+    } else {
+        data.session.title.clone()
+    };
+    // The launchpad hero owns the block wordmark (its whale plus the big name),
+    // so the header falls back to its text brand there. One screen, one
+    // wordmark.
+    let show_wordmark = columns >= 96 && !data.on_launchpad();
     let mut identity: Vec<String> = Vec::new();
     if show_wordmark {
         identity.extend(wordmark);
@@ -228,11 +239,6 @@ fn header(palette: &Palette, data: &WorkbenchData, frame: &Layout, columns: usiz
         identity.push(String::new());
         identity.push(String::new());
     }
-    let title = if data.session.title.is_empty() {
-        "workbench".to_string()
-    } else {
-        data.session.title.clone()
-    };
     // Four identity lines beside the logo, then the hairline.
     let detail = [
         format!(" · {title}"),
@@ -246,7 +252,6 @@ fn header(palette: &Palette, data: &WorkbenchData, frame: &Layout, columns: usiz
         format!("{} · {} · {}", data.model, data.effort, data.mode),
         String::new(),
     ];
-
     for index in 0..4 {
         let mut row = String::new();
         row.push_str(logo.get(index).map(String::as_str).unwrap_or("         "));
@@ -268,14 +273,49 @@ fn header(palette: &Palette, data: &WorkbenchData, frame: &Layout, columns: usiz
             }
         }
         if index == 0 {
-            let row_width = width(&row);
-            let pad = columns.saturating_sub(row_width + right_width);
-            row = format!("{row}{}{right}", " ".repeat(pad));
+            // The corner is reserved first, then the rest of the row is clipped
+            // to what is left: a long title loses its tail, the corner never
+            // loses half a word.
+            let left = fit(
+                &row,
+                columns.saturating_sub(right_width + usize::from(right_width > 0)),
+            );
+            let pad = columns.saturating_sub(width(&left) + right_width);
+            row = format!("{left}{}{right}", " ".repeat(pad));
         }
         lines.push(fit(&row, columns));
     }
     lines.push(widgets::rule(palette, columns));
     lines
+}
+
+/// The header's right corner: the widest whole composition that fits `avail`.
+///
+/// ```text
+/// v1.2.3 ● future-tui  →  ● future-tui  →  v1.2.3 ●  →  ●
+/// ```
+fn header_right(palette: &Palette, data: &WorkbenchData, avail: usize) -> String {
+    let point = widgets::status_dot(palette, data.connected);
+    let app = palette.dim(&data.app_name);
+    let version = if data.version.is_empty() {
+        None
+    } else {
+        Some(palette.dim(&format!("v{}", data.version)))
+    };
+    let mut candidates: Vec<String> = Vec::new();
+    match &version {
+        Some(version) => {
+            candidates.push(format!("{point} {app} {version}"));
+            candidates.push(format!("{point} {app}"));
+            candidates.push(format!("{point} {version}"));
+        }
+        None => candidates.push(format!("{point} {app}")),
+    }
+    candidates.push(point.clone());
+    candidates
+        .into_iter()
+        .find(|candidate| width(candidate) <= avail)
+        .unwrap_or_default()
 }
 
 // ─── conversation ──────────────────────────────────────────────────────────
@@ -465,13 +505,41 @@ fn status_row(data: &WorkbenchData, palette: &Palette, columns: usize) -> Vec<St
     vec![fit(&format!("{left}{}{right}", " ".repeat(pad)), columns)]
 }
 
+/// The one-line key hints, dropped **whole** from the tail when the terminal is
+/// narrow.
+///
+/// A hinted key is a word, not a character stream: `ctrl+b 侧栏 · ctrl+n` (a cut
+/// on the right) tells the reader nothing, and `· ctrl+` is not a hint at all.
 fn hint_row(palette: &Palette, columns: usize, compact: bool) -> Vec<String> {
-    let hint = if compact {
-        " ctrl+b 侧栏 · / 命令 · ? 帮助"
-    } else {
-        " Esc 回到聊天 · ctrl+b 侧栏 · tab 焦点 · / 命令 · ? 帮助 · ctrl+n 新会话"
-    };
-    vec![fit(&palette.dim(hint), columns)]
+    const WIDE: [(&str, &str); 6] = [
+        ("Esc", "回到聊天"),
+        ("ctrl+b", "侧栏"),
+        ("tab", "焦点"),
+        ("/", "命令"),
+        ("?", "帮助"),
+        ("ctrl+n", "新会话"),
+    ];
+    const SHORT: [(&str, &str); 3] = [("ctrl+b", "侧栏"), ("/", "命令"), ("?", "帮助")];
+    let parts: &[(&str, &str)] = if compact { &SHORT } else { &WIDE };
+    let items: Vec<String> = parts
+        .iter()
+        .map(|(key, action)| {
+            format!(
+                "{} {}",
+                palette.text(palette.iris, key),
+                palette.dim(action)
+            )
+        })
+        .collect();
+    let separator = palette.dim(" · ");
+    let mut keep = items.len();
+    loop {
+        let row = format!(" {}", items[..keep].join(&separator));
+        if width(&row) <= columns || keep == 0 {
+            return vec![fit(&row, columns)];
+        }
+        keep -= 1;
+    }
 }
 
 // ─── overlays ──────────────────────────────────────────────────────────────
@@ -632,3 +700,106 @@ pub fn status_summary(data: &WorkbenchData) -> String {
 /// The `↑ 更早` marker's text, exposed so the paging test can look for it
 /// without parsing ANSI.
 pub const OLDER_MARKER: &str = "↑ 更早";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::strip_ansi_codes;
+    use crate::workbench::state::WorkbenchData;
+    use crate::workbench::theme::FUTURE_DARK;
+
+    fn plain(text: &str) -> String {
+        strip_ansi_codes(text)
+    }
+
+    fn data(version: &str) -> WorkbenchData {
+        WorkbenchData {
+            app_name: "future-tui".into(),
+            version: version.into(),
+            connected: true,
+            ..WorkbenchData::default()
+        }
+    }
+
+    #[test]
+    fn the_header_corner_degrades_piece_by_piece_and_never_cuts_a_word() {
+        let data = data("0.0.2-9f0a8b76c+local");
+        // Every width lands on one of the whole candidates, never on its
+        // prefix: `● future-tui v0.0.2-9f0a8…` in the corner is exactly what
+        // the piecewise ladder exists to prevent.
+        let full = plain(&header_right(&FUTURE_DARK, &data, 60));
+        assert!(full.contains("future-tui"));
+        assert!(full.contains("v0.0.2-9f0a8b76c+local"));
+
+        let app_only = plain(&header_right(&FUTURE_DARK, &data, 20));
+        assert!(app_only.contains("future-tui"), "{app_only:?}");
+        assert!(!app_only.contains("0.0.2"), "{app_only:?}");
+
+        let dot = plain(&header_right(&FUTURE_DARK, &data, 3));
+        assert_eq!(dot, "●");
+
+        for avail in 0..80usize {
+            let corner = plain(&header_right(&FUTURE_DARK, &data, avail));
+            assert!(
+                !corner.contains('…'),
+                "avail {avail}: the corner was cut: {corner:?}"
+            );
+            assert!(width(&corner) <= avail, "avail {avail}: {corner:?}");
+        }
+        // The whole header keeps the corner at the seam too.
+        let mut workbench = Workbench::new();
+        let rows = workbench.render(&data, 90, 24);
+        let row = plain(&rows[0]);
+        assert!(
+            row.trim_end().ends_with("v0.0.2-9f0a8b76c+local"),
+            "{row:?}"
+        );
+        assert!(!row.contains("已"), "{row:?}");
+    }
+
+    #[test]
+    fn the_hint_row_drops_whole_hints_and_never_ends_in_a_separator() {
+        for columns in [120usize, 60, 40, 24, 12, 1] {
+            let rows = hint_row(&FUTURE_DARK, columns, true);
+            assert_eq!(width(&rows[0]), columns, "{columns}");
+            let text = plain(&rows[0]);
+            assert!(!text.trim_end().ends_with('·'), "{columns}: {text:?}");
+            assert!(!text.contains("…"), "{columns}: {text:?}");
+        }
+        // Wide keeps every entry; narrow drops from the right, never from the
+        // middle of a key.
+        let wide = plain(&hint_row(&FUTURE_DARK, 120, false)[0]);
+        assert!(wide.trim_end().ends_with("新会话"), "{wide:?}");
+        let narrow = plain(&hint_row(&FUTURE_DARK, 40, true)[0]);
+        assert!(narrow.trim_end().ends_with("帮助"), "{narrow:?}");
+        assert!(narrow.contains("ctrl+b"), "{narrow:?}");
+    }
+
+    #[test]
+    fn the_launchpad_header_keeps_the_text_brand_so_the_hero_owns_the_block_one() {
+        let mut workbench = Workbench::new();
+        let launchpad = crate::workbench::demo::launchpad();
+        let rows = workbench.render(&launchpad, 120, 38);
+        let header_rows: Vec<String> = rows[..5].iter().map(|row| plain(row)).collect();
+        for (index, row) in header_rows.iter().enumerate() {
+            // The whale's block art lives in the first ten cells; the name
+            // beside it is text, not the block wordmark (the hero draws that).
+            let tail: String = row.chars().skip(10).collect();
+            assert!(
+                !tail.contains('█'),
+                "header row {index} still carries the block wordmark: {row:?}"
+            );
+        }
+        assert!(header_rows[0].contains("FUTURE OS"), "{:?}", header_rows[0]);
+        let body: String = rows[5..]
+            .iter()
+            .map(|row| plain(row))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(body.contains('█'), "the hero's wordmark is missing");
+        assert!(
+            !body.contains("FUTURE OS"),
+            "the name is drawn once, as block art: the hero still spells it"
+        );
+    }
+}

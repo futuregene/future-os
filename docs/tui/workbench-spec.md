@@ -142,6 +142,26 @@ single-line text.
 
 ### Mouse (SGR 1006; enable `?1000h ?1002h ?1006h`, optionally `?1003h` for hover)
 
+**The terminal owns the mode, not the workbench.** `Terminal::set_mouse_mode(true)`
+is set *before* `start()`, which writes `MOUSE_ON` together with the alternate
+screen and bracketed paste; `stop()` writes `MOUSE_OFF` before leaving the
+screen, and both the exit failsafe (`restore_terminal_for_exit`) and the panic
+hook (`crash.rs`) write it unconditionally — those are the paths that can hand a
+mouse-captured terminal back to the shell. It stays off unless a surface asks
+for it, so a caller with no mouse targets never takes the reader's selection.
+
+Machine check (tmux): `tmux display-message -p -t <pane> '#{mouse_any_flag}'`
+reads `1` while the workbench holds the mode and `0` after it quits.
+
+**A frame must not end in a line feed.** `run::frame_bytes` joins the rows with
+`\r\n` and stops: a line feed on the bottom row scrolls the alternate screen up
+by one, which hides the header's first row and puts every painted row one cell
+above the coordinate the layout assigned it — and the SGR report names the row
+the reader *sees*, so every click then lands on the row above its target
+(measured at 120x38: clicking a sidebar tab did nothing; clicking the input box
+hit the conversation). `workbench::run::tests::a_frame_never_ends_in_a_line_feed`
+pins it.
+
 | Target | Behaviour |
 |---|---|
 | Chat area wheel | 3 rows up/down; reaching the top fires `LoadOlder` |
@@ -248,3 +268,41 @@ skills (local directory).
 2. 80% of operations are reachable without moving a hand off the mouse: switch
    panel, switch session, scroll chat, open commands, click a tool card.
 3. Neither 120x38 nor 90x24 breaks the layout; CJK text never shifts columns.
+
+---
+
+## 9. Where the side panels read from
+
+Three of the five panels are filled from files this machine owns, not from gRPC
+(`tui/src/workbench/local.rs`). Each reader is best-effort: a missing store, a
+half-written line or an unreadable file yields fewer rows, never a panic and
+never a notice.
+
+| Panel | Source | Rule |
+|---|---|---|
+| 待办 | `<goal root>/goals/<id>/events.jsonl` | `FUTURE_GOAL_ROOT`, else the nearest ancestor with `.future/goal/goals`, else the git toplevel's — so a session in `.worktrees/<name>` reads the checkout it was cut from. The goal is the most recently active one that has not reached a terminal state. `✔` done · `◉` claimed · `○` open · `✖` blocked/superseded, then `P0`…`P3`, then the text. |
+| 技能 | `~/.future/agent/skills`, `~/.agents/skills` | The agent's `get_state` names them; the local read adds the `description:` line (and is the fallback when an agent reports none). |
+| 任务 | `<home>/tasks/tasks.db` | Opened `SQLITE_OPEN_READ_ONLY`; a missing database is `no scheduled jobs`, never a newly created store. |
+
+The usage panel composes each row from whole pieces and drops a value that does
+not fit (`上下文 18.8k/1.0M 1.9%` → `上下文 18.8k/1.0M` → `上下文 18.8k` → the
+label alone). A `…` in the middle of a number reads as a different number, so
+nothing here is ever clipped mid-value.
+
+## 10. Screenshots
+
+`docs/tui/assets/`, all rendered from the real compositor:
+
+| File | Size | What it proves |
+|---|---|---|
+| `workbench-120x38.png` | 120×38 | the full frame: header (wordmark), sidebar with tabs, divider, framed input box, activity, status, hint |
+| `workbench-90x24.png` | 90×24 | still two columns; the header falls back to its text brand; the hairline spans the whole width |
+| `workbench-60x20.png` | 60×20 | `< 88`: no sidebar and no dead rail; `< 24`: one-row header, the input box keeps a frame (top edge + sides), the hint row drops whole entries |
+| `workbench-panel-todo.png` | 120×38 | 待办 lists the repo's real goal todos (`✔/◉/○/✖`, priority, text) |
+| `workbench-panel-skills.png` | 120×38 | 技能 lists the 22 installed skills |
+| `workbench-panel-usage.png` | 120×38 | 用量: `上下文` and the numbers are separate pieces, no trailing `…` |
+
+The panel shots come from a live tmux session against an isolated agent
+(`FUTURE_HOME` with a copy of the installed skills and the tasks database),
+clicked with `tools/click.py`; `tmux display -p '#{mouse_any_flag}'` reads `1`
+while it runs and `0` after it quits.

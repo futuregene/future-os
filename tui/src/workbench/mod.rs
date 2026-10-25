@@ -30,6 +30,7 @@ pub mod demo;
 pub mod launchpad;
 pub mod layout;
 pub mod live;
+pub mod local;
 pub mod mouse;
 pub mod panels;
 pub mod run;
@@ -292,19 +293,14 @@ impl Workbench {
             "ctrl+c" | "ctrl+q" => vec![WbAction::Quit],
             "ctrl+b" => {
                 // Hidden → shown and focused → shown and unfocused → hidden.
-                // On a terminal too narrow for a sidebar the same key opens the
-                // panel full-screen instead, which is the only way to reach it
-                // there.
-                let frame = layout::layout(
-                    self.last_frame.0,
-                    self.last_frame.1,
-                    if self.sidebar_visible {
-                        self.sidebar_w
-                    } else {
-                        0
-                    },
-                );
-                if frame.sidebar.is_none() {
+                // Whether the sidebar *can* show is the terminal's width, not
+                // its current visibility: asking `layout` with a hidden sidebar
+                // reports "no sidebar", which used to open the full-screen
+                // overlay on a wide terminal right after the reader hid the
+                // rail. On a terminal too narrow for a rail the same key opens
+                // the panel full-screen instead, which is the only way to
+                // reach it there.
+                if !layout::sidebar_fits(self.last_frame.0) {
                     self.overlay = match self.overlay {
                         Some(Overlay::PanelFull) => None,
                         _ => Some(Overlay::PanelFull),
@@ -334,7 +330,9 @@ impl Workbench {
             "tab" => {
                 if data.on_launchpad() {
                     self.launch_field = self.launch_field.next();
-                } else {
+                } else if self.sidebar_visible && layout::sidebar_fits(self.last_frame.0) {
+                    // A hidden rail cannot take the keys: focusing it would
+                    // swallow up/down with nothing on screen to show for it.
                     self.sidebar_focus = !self.sidebar_focus;
                 }
                 vec![WbAction::Redraw]
@@ -590,9 +588,14 @@ impl Workbench {
     fn click(&mut self, id: &str, data: &WorkbenchData) -> Vec<WbAction> {
         if id == "input" {
             self.launch_field = LaunchField::Prompt;
+            // A click in the conversation half takes the keys back from the
+            // sidebar: the caret in the tab strip is the only thing that says
+            // which half answers `up`/`down`, so it has to follow the pointer.
+            self.sidebar_focus = false;
             return vec![WbAction::FocusPane(PaneId::Input)];
         }
         if id == "chat" {
+            self.sidebar_focus = false;
             return vec![WbAction::FocusPane(PaneId::Chat)];
         }
         if id == "divider" {
@@ -606,12 +609,16 @@ impl Workbench {
         }
         if let Some(panel) = id.strip_prefix("sidebar.tab.").and_then(PanelId::parse) {
             self.panel = panel;
+            // Clicking the sidebar means working in it; the same click that
+            // switches the panel therefore takes the keys.
+            self.sidebar_focus = true;
             return vec![WbAction::SwitchPanel(panel)];
         }
         if let Some(index) = id
             .strip_prefix("sidebar.row.")
             .and_then(|rest| rest.parse::<usize>().ok())
         {
+            self.sidebar_focus = true;
             return match self.panel {
                 PanelId::Sessions => data
                     .sessions
@@ -826,9 +833,34 @@ mod tests {
         };
         let actions = workbench.handle(WbEvent::Mouse(press), &data);
         assert_eq!(actions, vec![WbAction::SwitchPanel(PanelId::Sessions)]);
+        // Clicking the sidebar is working *in* the sidebar: one click both
+        // switches the panel and takes the keys, so `up`/`down` and the wheel
+        // act on what the reader just chose.
+        assert!(workbench.sidebar_focus);
         // The panel repaints with the sessions it now shows.
         let text = plain(&workbench.render(&data, 120, 38));
         assert!(text.contains("2m"), "a session's age: {text}");
+        // …and a click back in the conversation hands the keys over again.
+        let (chat, _) = workbench
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "chat")
+            .cloned()
+            .expect("the conversation is a target");
+        let back = mouse::MouseEvent {
+            kind: mouse::MouseKind::Press,
+            x: chat.x + 2,
+            y: chat.y + 2,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        assert_eq!(
+            workbench.handle(WbEvent::Mouse(back), &data),
+            vec![WbAction::FocusPane(PaneId::Chat)]
+        );
+        assert!(!workbench.sidebar_focus);
     }
 
     #[test]
@@ -952,6 +984,54 @@ mod tests {
         assert!(workbench.overlay_scroll_offset() > 0);
         workbench.handle(WbEvent::Key("escape".into()), &data);
         assert_eq!(workbench.overlay, None);
+    }
+
+    #[test]
+    fn ctrl_b_cycles_open_focus_closed_on_a_wide_terminal() {
+        let data = demo::chat();
+        let (mut workbench, rows) = frame(&data, 120, 38);
+        assert!(workbench.sidebar_visible && !workbench.sidebar_focus);
+        assert!(plain(&rows).contains("待办"));
+
+        // open → focus
+        workbench.handle(WbEvent::Key("ctrl+b".into()), &data);
+        assert!(workbench.sidebar_visible && workbench.sidebar_focus);
+
+        // focus → closed
+        workbench.handle(WbEvent::Key("ctrl+b".into()), &data);
+        assert!(!workbench.sidebar_visible && !workbench.sidebar_focus);
+        let rows = workbench.render(&data, 120, 38);
+        assert!(
+            !plain(&rows).contains("待办"),
+            "the rail is gone: {}",
+            plain(&rows)
+        );
+        assert!(workbench
+            .hits()
+            .regions()
+            .iter()
+            .all(|(_, id)| !id.starts_with("sidebar.")));
+        assert!(
+            workbench.overlay.is_none(),
+            "hiding the rail is not the full-screen panel"
+        );
+
+        // closed → open (and focused). The width decides whether a rail can
+        // exist — asking the *layout* with a hidden rail would answer "none" and
+        // open the overlay on a 120-column terminal.
+        workbench.handle(WbEvent::Key("ctrl+b".into()), &data);
+        assert!(workbench.sidebar_visible && workbench.sidebar_focus);
+        assert!(
+            workbench.overlay.is_none(),
+            "a hidden sidebar on a wide terminal is not a narrow one"
+        );
+
+        // A hidden rail cannot take the keys: focusing it would swallow
+        // up/down with nothing on screen to show for it.
+        workbench.handle(WbEvent::Key("ctrl+b".into()), &data); // hide
+        assert!(!workbench.sidebar_visible);
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        assert!(!workbench.sidebar_focus);
     }
 
     #[test]

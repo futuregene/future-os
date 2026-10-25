@@ -125,6 +125,15 @@ pub struct Terminal {
     /// thread in place of the default restore-and-re-raise).
     #[allow(clippy::type_complexity)]
     exit_signal_cb: Arc<Mutex<Option<Box<dyn FnMut() + Send + 'static>>>>,
+    /// Does this instance own mouse reporting?
+    ///
+    /// Off by default: grabbing the mouse breaks the user's own terminal
+    /// selection, and only the workbench has targets for it. The workbench turns
+    /// it on with [`Terminal::set_mouse_mode`] before [`Terminal::start`], so
+    /// the mode is written *with* the alternate screen and taken back *with* it
+    /// — a `?1006h` left behind makes the shell swallow every drag and print an
+    /// escape per click.
+    mouse: bool,
 }
 
 impl Default for Terminal {
@@ -201,6 +210,7 @@ impl Terminal {
             backend,
             stderr_log,
             exit_signal_cb: Arc::new(Mutex::new(None)),
+            mouse: false,
         })
     }
 
@@ -211,6 +221,22 @@ impl Terminal {
     /// callback must arrange for `stop()` (or the exit path) to do so.
     pub fn set_exit_signal_callback(&mut self, cb: Option<Box<dyn FnMut() + Send + 'static>>) {
         *self.exit_signal_cb.lock() = cb;
+    }
+
+    /// Turn mouse reporting on (or off) for this instance.
+    ///
+    /// Call before [`Terminal::start`]: `start` writes the mode in with the
+    /// alternate screen and `stop` takes it back out before leaving it, so no
+    /// exit path can hand a mouse-captured terminal back to the shell. It stays
+    /// off unless someone asks, which is what keeps the user's own selection and
+    /// click-to-copy working for a caller with no mouse targets.
+    pub fn set_mouse_mode(&mut self, on: bool) {
+        self.mouse = on;
+    }
+
+    /// Is mouse reporting enabled for this instance?
+    pub fn mouse_enabled(&self) -> bool {
+        self.mouse
     }
 
     /// Point stderr at `path` while the alternate screen is up. Production uses
@@ -258,6 +284,9 @@ impl Terminal {
         write_str(&self.write_lock, "\x1b[H");
         write_str(&self.write_lock, "\x1b[?2004h");
         write_str(&self.write_lock, "\x1b[?1004h");
+        if self.mouse {
+            write_str(&self.write_lock, crate::workbench::mouse::MOUSE_ON);
+        }
         self.refresh_size();
 
         // The screen is ours now: take stderr with it. Anything printed from
@@ -483,6 +512,13 @@ impl Terminal {
         // Disable bracketed paste mode and focus reporting.
         write_str(&self.write_lock, "\x1b[?2004l");
         write_str(&self.write_lock, "\x1b[?1004l");
+        // Mouse reporting off *before* the alternate screen goes away: a shell
+        // that inherits `?1006h` swallows the user's selection and prints
+        // escape chatter on every click.
+        if self.mouse {
+            write_str(&self.write_lock, crate::workbench::mouse::MOUSE_OFF);
+            self.mouse = false;
+        }
 
         // Disable Kitty keyboard protocol.
         if self.kitty_active.load(Ordering::SeqCst) {
@@ -821,6 +857,10 @@ fn restore_terminal_for_exit(
     write_str(write_lock, "\x1b[?25h");
     write_str(write_lock, "\x1b[?2004l");
     write_str(write_lock, "\x1b[?1004l");
+    // Mouse reporting, unconditionally: the workbench turns it on and this
+    // failsafe path may be the only teardown a crash ever gets, so it cannot
+    // depend on knowing whether it was enabled.
+    write_str(write_lock, crate::workbench::mouse::MOUSE_OFF);
     if kitty_active.load(Ordering::SeqCst) {
         write_str(write_lock, "\x1b[<u");
         kitty_active.store(false, Ordering::SeqCst);
@@ -1371,6 +1411,88 @@ mod tests {
         // Fresh input resets the idle window (max_ms caps the wait).
         *t.last_data_time.lock() = Instant::now();
         t.drain_input(10, 60_000); // max_ms wins over idle
+    }
+
+    /// Mouse reporting belongs to the terminal instance, not to a caller that
+    /// pokes escape sequences at it: `start` writes it with the alternate
+    /// screen, `stop` takes it back before leaving — and a `Terminal` that was
+    /// never asked for it writes neither.
+    #[cfg(unix)]
+    #[test]
+    fn mouse_reporting_is_written_with_the_alternate_screen_and_taken_back() {
+        let _g = terminal_test_lock();
+        // fd 0 (raw mode needs a tty) and fd 1 (where the sequences go) both on
+        // one pty, whose master the reader below drains.
+        let pty = PtyStdin::install();
+        struct StdoutOnPty {
+            saved: i32,
+        }
+        impl Drop for StdoutOnPty {
+            fn drop(&mut self) {
+                unsafe {
+                    libc::dup2(self.saved, 1);
+                    libc::close(self.saved);
+                }
+            }
+        }
+        let saved1 = unsafe { libc::dup(1) };
+        assert!(saved1 >= 0);
+        assert_ne!(unsafe { libc::dup2(pty.slave, 1) }, -1);
+        let _restore = StdoutOnPty { saved: saved1 };
+        let master = pty.master.load(Ordering::Relaxed);
+        unsafe {
+            let flags = libc::fcntl(master, libc::F_GETFL);
+            libc::fcntl(master, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+        let drain = || {
+            let mut out = Vec::new();
+            let mut sink = [0u8; 8192];
+            loop {
+                let n = unsafe {
+                    libc::read(master, sink.as_mut_ptr() as *mut libc::c_void, sink.len())
+                };
+                if n <= 0 {
+                    break;
+                }
+                out.extend_from_slice(&sink[..n as usize]);
+            }
+            String::from_utf8_lossy(&out).to_string()
+        };
+
+        // Asked for: the mode goes in with the screen, and comes out with it.
+        let mut mouse = Terminal::new().unwrap();
+        assert!(!mouse.mouse_enabled(), "off unless someone asks for it");
+        mouse.set_mouse_mode(true);
+        assert!(mouse.mouse_enabled());
+        mouse.start(noop_input_cb(), noop_resize_cb()).unwrap();
+        let started = drain();
+        assert!(
+            started.contains(crate::workbench::mouse::MOUSE_ON),
+            "start must turn mouse reporting on: {started:?}"
+        );
+        assert!(
+            !started.contains(crate::workbench::mouse::MOUSE_OFF),
+            "nothing turns it off while the screen is held: {started:?}"
+        );
+        mouse.stop();
+        let stopped = drain();
+        assert!(
+            stopped.contains(crate::workbench::mouse::MOUSE_OFF),
+            "stop must turn it off before leaving the alternate screen: {stopped:?}"
+        );
+        assert!(!mouse.mouse_enabled(), "and forget that it owned it");
+
+        // Never asked for (the inline UI): no mouse modes at all, so the reader's
+        // own selection and click-to-copy keep working.
+        let mut plain = Terminal::new().unwrap();
+        plain.start(noop_input_cb(), noop_resize_cb()).unwrap();
+        let plain_started = drain();
+        assert!(
+            !plain_started.contains("\x1b[?1000h") && !plain_started.contains("\x1b[?1006h"),
+            "a terminal that was not asked must not grab the mouse: {plain_started:?}"
+        );
+        plain.stop();
+        let _ = drain();
     }
 
     #[cfg(unix)]
