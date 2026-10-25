@@ -27,6 +27,7 @@
 
 pub mod ansi;
 pub mod demo;
+pub mod diff_review;
 pub mod editor;
 pub mod git;
 pub mod i18n;
@@ -44,6 +45,7 @@ pub mod scroll;
 pub mod state;
 pub mod theme;
 pub mod widgets;
+pub mod workflows;
 
 use picker::{Picker, PickerKind, PickerRow};
 use state::{PanelId, WorkbenchData};
@@ -97,6 +99,12 @@ pub enum Overlay {
     /// `/model`, `/theme` or `/sessions`: the list picker.
     Picker(PickerKind),
     Queue,
+    Approval,
+    Diff,
+    History,
+    Tree,
+    Fork,
+    Worktree,
     /// Layout, density and the entry to the shortcut editor.
     Preferences,
     Keybindings,
@@ -125,6 +133,23 @@ pub enum WbAction {
     CopyLast,
     ToggleMouse,
     OpenQueue,
+    OpenApproval,
+    OpenDiff,
+    OpenHistory,
+    OpenTree,
+    OpenFork,
+    OpenWorktree,
+    ApprovalDecision {
+        approved: bool,
+        rule: bool,
+    },
+    SelectDiff(usize),
+    SelectWorktree(String),
+    ForkAt(String),
+    Compact(String),
+    SetPermission(String),
+    CycleSandbox,
+    SetTools(Vec<String>),
     CancelQueued(String),
     RecallQueued(String),
     /// `enter` on a non-empty draft.
@@ -270,6 +295,8 @@ pub struct Workbench {
     pub chat_scroll: usize,
     pub scroll: scroll::ScrollState,
     pub queue_index: usize,
+    pub workflow_index: usize,
+    pub history_query: String,
     session_key: String,
     pub mouse_capture: bool,
     pub(crate) composer_width: usize,
@@ -325,6 +352,8 @@ impl Workbench {
             chat_scroll: 0,
             scroll: scroll::ScrollState::default(),
             queue_index: 0,
+            workflow_index: 0,
+            history_query: String::new(),
             session_key: String::new(),
             mouse_capture: true,
             composer_width: 76,
@@ -675,6 +704,17 @@ impl Workbench {
         key: &str,
         data: &WorkbenchData,
     ) -> Vec<WbAction> {
+        if matches!(
+            overlay,
+            Overlay::Approval
+                | Overlay::Diff
+                | Overlay::History
+                | Overlay::Tree
+                | Overlay::Fork
+                | Overlay::Worktree
+        ) {
+            return self.handle_workflow_key(overlay, key, data);
+        }
         match overlay {
             Overlay::Queue => match key {
                 "escape" | "q" => {
@@ -869,6 +909,12 @@ impl Workbench {
                 }
                 _ => Vec::new(),
             },
+            Overlay::Approval
+            | Overlay::Diff
+            | Overlay::History
+            | Overlay::Tree
+            | Overlay::Fork
+            | Overlay::Worktree => Vec::new(),
             Overlay::Picker(kind) => match key {
                 "escape" => self.dismiss_picker(kind),
                 "enter" => self.apply_picker(kind, data),
@@ -912,6 +958,140 @@ impl Workbench {
                 _ => Vec::new(),
             },
         }
+    }
+
+    fn handle_workflow_key(
+        &mut self,
+        overlay: Overlay,
+        key: &str,
+        data: &WorkbenchData,
+    ) -> Vec<WbAction> {
+        if matches!(key, "escape" | "q") && !(overlay == Overlay::History && key == "q") {
+            self.overlay = None;
+            return vec![WbAction::Redraw];
+        }
+        let count = match overlay {
+            Overlay::History => {
+                workflows::filtered_sessions(&data.sessions, &self.history_query).len()
+            }
+            Overlay::Tree => data.sessions.len(),
+            Overlay::Fork => data.fork_points.len(),
+            Overlay::Worktree => data.worktrees.len(),
+            Overlay::Diff => data.diff.as_ref().map_or(0, |diff| diff.files.len()),
+            Overlay::Approval => 0,
+            _ => 0,
+        };
+        let detail = matches!(overlay, Overlay::Approval | Overlay::Diff);
+        match key {
+            "up" | "k" if key == "up" || overlay != Overlay::History => {
+                if detail {
+                    self.overlay_scroll = self.overlay_scroll.saturating_sub(1);
+                } else {
+                    self.workflow_index = self.workflow_index.saturating_sub(1);
+                }
+            }
+            "down" | "j" if key == "down" || overlay != Overlay::History => {
+                if detail {
+                    self.overlay_scroll += 1;
+                } else {
+                    self.workflow_index = (self.workflow_index + 1).min(count.saturating_sub(1));
+                }
+            }
+            "left" if overlay == Overlay::Diff => {
+                self.workflow_index = self.workflow_index.saturating_sub(1);
+            }
+            "right" if overlay == Overlay::Diff => {
+                self.workflow_index = (self.workflow_index + 1).min(count.saturating_sub(1));
+            }
+            "pageUp" => self.overlay_scroll = self.overlay_scroll.saturating_sub(10),
+            "pageDown" | "space" if overlay != Overlay::History => self.overlay_scroll += 10,
+            "backspace" if overlay == Overlay::History => {
+                self.history_query.pop();
+                self.workflow_index = 0;
+                self.overlay_scroll = 0;
+            }
+            "y" | "Y" if overlay == Overlay::Approval => {
+                self.overlay = None;
+                return vec![WbAction::ApprovalDecision {
+                    approved: true,
+                    rule: false,
+                }];
+            }
+            "n" | "N" if overlay == Overlay::Approval => {
+                self.overlay = None;
+                return vec![WbAction::ApprovalDecision {
+                    approved: false,
+                    rule: false,
+                }];
+            }
+            "a" | "A" if overlay == Overlay::Approval => {
+                self.overlay = None;
+                return vec![WbAction::ApprovalDecision {
+                    approved: true,
+                    rule: true,
+                }];
+            }
+            "r" if matches!(overlay, Overlay::Diff | Overlay::Worktree) => {
+                return vec![WbAction::Command(match overlay {
+                    Overlay::Diff => "/diff".into(),
+                    _ => "/worktree".into(),
+                })];
+            }
+            "enter" => {
+                if overlay != Overlay::Diff {
+                    self.overlay = None;
+                }
+                self.overlay_scroll = 0;
+                return match overlay {
+                    Overlay::Diff => data
+                        .diff
+                        .as_ref()
+                        .and_then(|diff| diff.files.get(self.workflow_index))
+                        .map(|_| vec![WbAction::SelectDiff(self.workflow_index)])
+                        .unwrap_or_default(),
+                    Overlay::History => {
+                        workflows::filtered_sessions(&data.sessions, &self.history_query)
+                            .get(self.workflow_index)
+                            .map(|row| vec![WbAction::SwitchSession(row.id.clone())])
+                            .unwrap_or_default()
+                    }
+                    Overlay::Tree => workflows::tree_sessions(&data.sessions)
+                        .get(self.workflow_index)
+                        .map(|(row, _)| vec![WbAction::SwitchSession(row.id.clone())])
+                        .unwrap_or_default(),
+                    Overlay::Fork => data
+                        .fork_points
+                        .get(self.workflow_index)
+                        .map(|point| vec![WbAction::ForkAt(point.id.clone())])
+                        .unwrap_or_default(),
+                    Overlay::Worktree => data
+                        .worktrees
+                        .get(self.workflow_index)
+                        .map(|row| vec![WbAction::SelectWorktree(row.path.clone())])
+                        .unwrap_or_default(),
+                    _ => vec![WbAction::Redraw],
+                };
+            }
+            other
+                if overlay == Overlay::History
+                    && other.chars().count() == 1
+                    && !other.starts_with("ctrl+") =>
+            {
+                self.history_query.push_str(other);
+                self.workflow_index = 0;
+                self.overlay_scroll = 0;
+            }
+            _ => {}
+        }
+        if overlay == Overlay::Diff && matches!(key, "left" | "right") {
+            return data
+                .diff
+                .as_ref()
+                .and_then(|diff| diff.files.get(self.workflow_index))
+                .map(|_| vec![WbAction::SelectDiff(self.workflow_index)])
+                .unwrap_or_default();
+        }
+        vec![WbAction::Redraw]
     }
 
     /// The palette the app considers *committed*.
@@ -1265,6 +1445,7 @@ impl Workbench {
     pub fn surface_command(&mut self, command: &str, data: &WorkbenchData) -> VerbOutcome {
         let name = command.trim_start_matches('/').trim();
         match name {
+            "approval" | "diff" | "history" | "tree" | "fork" | "worktree" => VerbOutcome::Agent,
             "queue" => {
                 self.overlay = Some(Overlay::Queue);
                 self.queue_index = self.queue_index.min(data.queue.len().saturating_sub(1));
@@ -1359,11 +1540,22 @@ impl Workbench {
 /// The command palette's entries: `(command, description)`. Kept here rather
 /// than in the app so the palette, the help overlay and the tests share one
 /// list.
-pub const COMMANDS: [(&str, Key); 17] = [
+pub const COMMANDS: [(&str, Key); 28] = [
     ("/new", Key::CmdNew),
     ("/queue", Key::CmdQueue),
     ("/copy", Key::CmdCopy),
     ("/mouse", Key::CmdMouse),
+    ("/diff", Key::CmdDiff),
+    ("/approval", Key::CmdApproval),
+    ("/history", Key::CmdHistory),
+    ("/tree", Key::CmdTree),
+    ("/fork", Key::CmdFork),
+    ("/worktree", Key::CmdWorktree),
+    ("/sandbox", Key::CmdSandbox),
+    ("/permission", Key::CmdPermission),
+    ("/compact", Key::CmdCompact),
+    ("/tools", Key::CmdTools),
+    ("/providers", Key::CmdProviders),
     ("/sessions", Key::CmdSessions),
     ("/model", Key::CmdModel),
     ("/lang", Key::CmdLanguage),
@@ -1476,6 +1668,65 @@ mod tests {
             ctrl: false,
         };
         workbench.handle(WbEvent::Mouse(press), data)
+    }
+
+    #[test]
+    fn workflow_keys_search_history_choose_forks_and_never_deny_on_escape() {
+        let mut data = demo::chat();
+        data.fork_points = vec![state::ForkPoint {
+            id: "entry-1".into(),
+            text: "start".into(),
+        }];
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::History);
+        wb.handle(WbEvent::Key("q".into()), &data);
+        assert_eq!(wb.history_query, "q");
+        assert_eq!(wb.overlay, Some(Overlay::History));
+        wb.handle(WbEvent::Key("backspace".into()), &data);
+        wb.handle(WbEvent::Key("down".into()), &data);
+        assert_eq!(wb.workflow_index, 1);
+        wb.handle(WbEvent::Key("escape".into()), &data);
+        assert_eq!(wb.overlay, None);
+
+        wb.overlay = Some(Overlay::Fork);
+        wb.workflow_index = 0;
+        assert_eq!(
+            wb.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::ForkAt("entry-1".into())]
+        );
+        wb.overlay = Some(Overlay::Approval);
+        assert_eq!(
+            wb.handle(WbEvent::Key("escape".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(wb.overlay, None);
+    }
+
+    #[test]
+    fn diff_file_navigation_is_separate_from_patch_scrolling() {
+        let mut data = demo::chat();
+        data.diff = Some(state::DiffView {
+            files: vec![
+                diff_review::DiffFile {
+                    path: "a".into(),
+                    status: "M".into(),
+                },
+                diff_review::DiffFile {
+                    path: "b".into(),
+                    status: "M".into(),
+                },
+            ],
+            ..state::DiffView::default()
+        });
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Diff);
+        wb.handle(WbEvent::Key("down".into()), &data);
+        assert_eq!(wb.overlay_scroll, 1);
+        assert_eq!(wb.workflow_index, 0);
+        assert_eq!(
+            wb.handle(WbEvent::Key("right".into()), &data),
+            vec![WbAction::SelectDiff(1)]
+        );
     }
 
     #[test]
@@ -2258,6 +2509,7 @@ mod tests {
             workspace: "~/x".into(),
             age: "4d".into(),
             current: false,
+            parent_id: None,
         });
         let (mut workbench, _rows) = frame(&data, 120, 38);
         workbench.panel = PanelId::Sessions;

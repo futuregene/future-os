@@ -493,9 +493,47 @@ impl GrpcClient {
         Ok(result)
     }
 
-    /// `getForkMessages()` — `{messages: [...]}`.
+    /// `getForkMessages()` for an explicit session — `{messages: [...]}`.
     pub async fn get_fork_messages(&self) -> Result<Value, String> {
         self.call("get_fork_messages", RpcCommand::default()).await
+    }
+
+    pub async fn fork_messages_for(&self, session_id: &str) -> Result<Value, String> {
+        self.call(
+            "get_fork_messages",
+            RpcCommand {
+                session_id: session_id.to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    pub async fn fork_from(&self, session_id: &str, entry_id: &str) -> Result<Value, String> {
+        self.call(
+            "fork",
+            RpcCommand {
+                session_id: session_id.to_string(),
+                entry_id: entry_id.to_string(),
+                created_by: "tui".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    /// Same-run path rule; not a persistent workspace rule.
+    pub async fn add_session_rule(&self, path: &str, access: &str) -> Result<(), String> {
+        self.call(
+            "add_session_rule",
+            RpcCommand {
+                message: path.to_string(),
+                mode: access.to_string(),
+                ..Default::default()
+            },
+        )
+        .await?;
+        Ok(())
     }
 
     /// `setSessionName(name)`.
