@@ -733,6 +733,12 @@ impl Live {
             // hands the bundle back here and persists it.
             WbAction::SetLanguage(_) => {}
             WbAction::SwitchPanel(_) | WbAction::ResizeSidebar(_) | WbAction::PersistSidebar => {}
+            // Surface-only state: the driver owns persistence, the agent does
+            // not need a round trip for a rectangle or a local shortcut.
+            WbAction::SetPreferences | WbAction::SetKeybindings => {}
+            // The driver displays local notices; a demo adapter has no notice
+            // dispatch of its own to perform.
+            WbAction::Notice(_) => {}
             WbAction::FocusPane(_) => {}
             WbAction::Redraw => {}
         }

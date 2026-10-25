@@ -44,6 +44,12 @@ pub struct TuiSettings {
     /// Interface language (`language`: `system` | `zh` | `en`). Absent ⇒
     /// `system`, the same default the desktop and the phone use.
     pub language: Option<String>,
+    /// Conversation density (`focused` | `comfortable`).
+    pub density: Option<String>,
+    /// Sidebar position (`left` | `right`) and width in terminal columns.
+    pub sidebar_position: Option<String>,
+    pub sidebar_width: Option<u16>,
+    pub sidebar_visible: Option<bool>,
 }
 
 impl TuiSettings {
@@ -81,6 +87,18 @@ impl TuiSettings {
         if let Some(language) = &self.language {
             obj.insert("language".into(), Value::String(language.clone()));
         }
+        if let Some(density) = &self.density {
+            obj.insert("density".into(), Value::String(density.clone()));
+        }
+        if let Some(position) = &self.sidebar_position {
+            obj.insert("sidebarPosition".into(), Value::String(position.clone()));
+        }
+        if let Some(width) = self.sidebar_width {
+            obj.insert("sidebarWidth".into(), Value::from(width.clamp(30, 48)));
+        }
+        if let Some(visible) = self.sidebar_visible {
+            obj.insert("sidebarVisible".into(), Value::Bool(visible));
+        }
         Value::Object(obj)
     }
 
@@ -103,6 +121,14 @@ impl TuiSettings {
             theme_id: string("themeId"),
             reply_detail: string("replyDetail"),
             language: string("language"),
+            density: string("density"),
+            sidebar_position: string("sidebarPosition"),
+            sidebar_width: value
+                .get("sidebarWidth")
+                .and_then(Value::as_u64)
+                .and_then(|width| u16::try_from(width).ok())
+                .map(|width| width.clamp(30, 48)),
+            sidebar_visible: value.get("sidebarVisible").and_then(Value::as_bool),
         }
     }
 }
@@ -123,6 +149,10 @@ mod tests {
             theme_id: Some("future-light".into()),
             reply_detail: Some("detailed".into()),
             language: Some("system".into()),
+            density: Some("focused".into()),
+            sidebar_position: Some("left".into()),
+            sidebar_width: Some(42),
+            sidebar_visible: Some(false),
         };
         let back = TuiSettings::from_json(&settings.to_json());
         assert_eq!(back.default_model.as_deref(), Some("future/deepseek-flash"));
@@ -133,6 +163,10 @@ mod tests {
         assert_eq!(back.theme_id.as_deref(), Some("future-light"));
         assert_eq!(back.reply_detail.as_deref(), Some("detailed"));
         assert_eq!(back.language.as_deref(), Some("system"));
+        assert_eq!(back.density.as_deref(), Some("focused"));
+        assert_eq!(back.sidebar_position.as_deref(), Some("left"));
+        assert_eq!(back.sidebar_width, Some(42));
+        assert_eq!(back.sidebar_visible, Some(false));
     }
 
     #[test]

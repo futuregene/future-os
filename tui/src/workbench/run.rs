@@ -65,6 +65,23 @@ pub async fn run(options: Options) -> Result<(), String> {
     let mut workbench = Workbench::new();
     workbench.set_theme(&live.theme_id);
     workbench.set_language(live::persisted_language(&settings));
+    workbench.set_preferences(super::preferences::LayoutPreferences {
+        density: settings
+            .density
+            .as_deref()
+            .map(super::preferences::Density::from_wire)
+            .unwrap_or_default(),
+        sidebar_position: settings
+            .sidebar_position
+            .as_deref()
+            .map(super::preferences::SidebarPosition::from_wire)
+            .unwrap_or_default(),
+        sidebar_width: settings.sidebar_width.unwrap_or(layout::SIDEBAR_DEFAULT),
+        sidebar_visible: settings.sidebar_visible.unwrap_or(true),
+    });
+    workbench.keys = super::preferences::Keybindings::load(&super::preferences::keybindings_path(
+        &options.settings_path,
+    ));
 
     if options.continue_recent && options.session.is_none() {
         live.attach_most_recent().await;
@@ -138,7 +155,10 @@ pub async fn run(options: Options) -> Result<(), String> {
     if settings.reply_detail.as_deref() != Some(detail.as_str()) {
         settings.reply_detail = Some(detail);
     }
-    save_settings(&options.settings_path, &settings);
+    persist_preferences(&workbench, &mut settings, &options.settings_path);
+    let _ = workbench.keys.save(&super::preferences::keybindings_path(
+        &options.settings_path,
+    ));
 
     outcome
 }
@@ -226,37 +246,43 @@ async fn quit(
                 return Ok(false);
             }
         }
-        match key.as_str() {
-            "ctrl+x" => {
-                live.abort().await;
-                return Ok(false);
-            }
-            "ctrl+e" => {
-                let next = match live.detail() {
-                    ReplyDetail::Default => ReplyDetail::Detailed,
-                    ReplyDetail::Detailed => ReplyDetail::Default,
-                };
-                live.set_detail(next);
-                return Ok(false);
-            }
-            "ctrl+n" => {
-                // A new conversation: the surface's launchpad is not involved
-                // here (the session is created straight away), so the reader
-                // lands in an empty transcript, which is the same thing.
-                return match live.apply(WbAction::Command("/new".into())).await {
-                    Outcome::Quit => Ok(true),
-                    Outcome::Continue => Ok(false),
-                };
-            }
-            "ctrl+k" => {
-                live.refresh_sessions().await;
-                live.refresh_state().await;
-                return Ok(false);
-            }
-            _ => {}
-        }
+        // Configurable global actions are handled below, after the approval
+        // gate. Keeping them out of this literal-chord fast path makes the
+        // displayed keybinding and the one that actually fires agree.
     }
 
+    // Global actions that need the adapter use the same configurable map as
+    // the surface. Overlay keys still belong to the overlay.
+    if let WbEvent::Key(key) = &event {
+        if workbench.overlay.is_none() {
+            match workbench.keys.action(key) {
+                Some(super::preferences::Action::Stop) => {
+                    live.abort().await;
+                    return Ok(false);
+                }
+                Some(super::preferences::Action::ReplyDetail) => {
+                    let next = match live.detail() {
+                        ReplyDetail::Default => ReplyDetail::Detailed,
+                        ReplyDetail::Detailed => ReplyDetail::Default,
+                    };
+                    live.set_detail(next);
+                    return Ok(false);
+                }
+                Some(super::preferences::Action::NewSession) => {
+                    return match live.apply(WbAction::Command("/new".into())).await {
+                        Outcome::Quit => Ok(true),
+                        Outcome::Continue => Ok(false),
+                    };
+                }
+                Some(super::preferences::Action::Refresh) => {
+                    live.refresh_sessions().await;
+                    live.refresh_state().await;
+                    return Ok(false);
+                }
+                _ => {}
+            }
+        }
+    }
     let actions = workbench.handle(event, &live.data(1));
     for action in actions {
         // The three list menus belong to the surface: the app owns the agent,
@@ -294,6 +320,21 @@ async fn quit(
             live.set_language(preference);
             settings.language = Some(preference.as_wire().to_string());
             save_settings(settings_path, settings);
+            continue;
+        }
+        if matches!(
+            action,
+            WbAction::SetPreferences | WbAction::ResizeSidebar(_) | WbAction::PersistSidebar
+        ) {
+            persist_preferences(workbench, settings, settings_path);
+        }
+        if matches!(action, WbAction::SetKeybindings) {
+            let _ = workbench
+                .keys
+                .save(&super::preferences::keybindings_path(settings_path));
+        }
+        if let WbAction::Notice(notice) = &action {
+            live.notice = Some(notice.clone());
             continue;
         }
         if matches!(action, WbAction::Submit(_)) {
@@ -393,7 +434,7 @@ fn key_events(data: &str) -> Vec<WbEvent> {
 fn draw(terminal: &mut Terminal, workbench: &mut Workbench, live: &mut Live) -> Result<(), String> {
     let width = terminal.columns().max(1);
     let height = terminal.rows().max(1);
-    let frame_layout = layout::layout(
+    let frame_layout = layout::layout_with_preferences(
         width,
         height,
         if workbench.sidebar_visible {
@@ -401,6 +442,8 @@ fn draw(terminal: &mut Terminal, workbench: &mut Workbench, live: &mut Live) -> 
         } else {
             0
         },
+        workbench.density,
+        workbench.sidebar_position,
     );
     let inner = frame_layout
         .body
@@ -444,6 +487,15 @@ fn frame_bytes(rows: &[String], cursor: Option<(u16, u16)>) -> String {
         frame.push_str(&format!("\x1b[{};{}H\x1b[?25h", y + 1, x + 1));
     }
     frame
+}
+
+fn persist_preferences(workbench: &Workbench, settings: &mut TuiSettings, path: &Path) {
+    let preferences = workbench.preferences();
+    settings.density = Some(preferences.density.as_wire().into());
+    settings.sidebar_position = Some(preferences.sidebar_position.as_wire().into());
+    settings.sidebar_width = Some(preferences.sidebar_width);
+    settings.sidebar_visible = Some(preferences.sidebar_visible);
+    save_settings(path, settings);
 }
 
 pub(crate) fn load_settings(path: &Path) -> TuiSettings {
