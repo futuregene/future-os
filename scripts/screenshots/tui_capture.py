@@ -28,6 +28,48 @@ import termios
 import time
 
 
+#: What a terminal answers when a TUI interrogates it.
+#:
+#: A real terminal is not a dumb pipe: programs ask it for its background colour
+#: (OSC 11), its device attributes (DA1/DA2), its name (XTVERSION), and whether
+#: it supports synchronized output (DECRQM `?2026$p`), then draw a different —
+#: often reduced or uncentred — first screen depending on the answers. A pty that
+#: says nothing leaves the program waiting or degrading: measured on dsh-tui
+#: 0.17.0, silence produced a torn, left-aligned splash in the first frame, while
+#: the same app under tmux (which answers) drew a clean centred wordmark.
+QUERY_ANSWERS: list[tuple[bytes, bytes]] = [
+    # DA1: "VT100 with advanced video option" — what most emulators claim.
+    (b"\x1b[c", b"\x1b[?1;2c"),
+    (b"\x1b[0c", b"\x1b[?1;2c"),
+    # DA2: secondary attributes.
+    (b"\x1b[>c", b"\x1b[>0;276;0c"),
+    (b"\x1b[>0c", b"\x1b[>0;276;0c"),
+    # XTVERSION (`CSI > 0 q`): a DCS reply, as xterm sends.
+    (b"\x1b[>0q", b"\x1bP>|xterm(370)\x1b\\"),
+    # Background and foreground colour queries, in xterm's rgb: form. These are
+    # the renderer's own palette, so an app that adopts the background agrees
+    # with the picture it ends up in.
+    (b"\x1b]11;?\x07", b"\x1b]11;rgb:1b1b/1d1d/2323\x1b\\"),
+    (b"\x1b]11;?\x1b\\", b"\x1b]11;rgb:1b1b/1d1d/2323\x1b\\"),
+    (b"\x1b]10;?\x07", b"\x1b]10;rgb:d8d8/dede/e9e9\x1b\\"),
+    (b"\x1b]10;?\x1b\\", b"\x1b]10;rgb:d8d8/dede/e9e9\x1b\\"),
+    # DECRQM for synchronized output: "supported".
+    (b"\x1b[?2026$p", b"\x1b[?2026;1$y"),
+    # Primary device status: "no malfunction".
+    (b"\x1b[5n", b"\x1b[0n"),
+]
+
+
+def answer_queries(since: bytes) -> bytes:
+    """Answers for the interrogations in the newest output, if any.
+
+    Only the tail is searched: a query is answered once, and the caller passes the
+    chunk it just read (queries are not split across reads in practice, and a
+    split one is answered on the next chunk).
+    """
+    return b"".join(reply for query, reply in QUERY_ANSWERS if query in since)
+
+
 def run(
     argv: list[str],
     cols: int,
@@ -108,6 +150,12 @@ def run(
             if not data:
                 break
             chunks.append(data)
+            replies = answer_queries(data)
+            if replies:
+                try:
+                    os.write(master, replies)
+                except OSError:
+                    break
             # A step may have come due while we were blocked; keep it exact by
             # re-checking against `next_step` rather than resetting the clock.
             last = time.time()
