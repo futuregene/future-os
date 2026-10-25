@@ -301,6 +301,19 @@ test("session titles use a compact single line without reducing touch targets", 
   expect(StyleSheet.flatten(body.props.style)).toMatchObject({ minHeight: 44, paddingVertical: 8 });
 });
 
+test("the list holds the reader's row in place when the rows above it change", () => {
+  // The page re-ranks itself while the reader is on it and while a conversation
+  // covers it: a message appended anywhere moves that row to the top, a run
+  // that ends leaves "Active", a peer machine's list is re-read after an action
+  // on it. Keeping the pixel offset over changed rows is what the reader
+  // reports as "it was not where I left it", and the native anchor is the
+  // remedy — a FlatList rendered without it silently loses their place.
+  expect(tree.root.findByType(FlatList).props.maintainVisibleContentPosition).toEqual({
+    minIndexForVisible: 0,
+    autoscrollToTopThreshold: 0,
+  });
+});
+
 test("explicit row action opens rename/pin/delete menu; offline management is disabled", () => {
   act(() => button("sessions.actions:First").props.onPress());
   expect(onMenu).toHaveBeenCalledWith(mockRemote.sessions[0], null);
