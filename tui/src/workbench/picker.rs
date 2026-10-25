@@ -18,6 +18,7 @@
 //!   same rows it painted, so a click cannot land on a row that is not there.
 
 use crate::workbench::ansi::{fit, width};
+use crate::workbench::i18n::{t, Key, Language, LanguagePreference};
 use crate::workbench::state::{thinking_index, ModelChoice, WorkbenchData, THINKING_LEVELS};
 use crate::workbench::theme::{self, Palette};
 
@@ -28,18 +29,28 @@ pub enum PickerKind {
     Model,
     Theme,
     Sessions,
+    Language,
 }
 
 impl PickerKind {
-    pub const ALL: [PickerKind; 3] = [PickerKind::Model, PickerKind::Theme, PickerKind::Sessions];
+    pub const ALL: [PickerKind; 4] = [
+        PickerKind::Model,
+        PickerKind::Theme,
+        PickerKind::Sessions,
+        PickerKind::Language,
+    ];
 
     /// The box's title.
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::Model => "模型",
-            Self::Theme => "主题",
-            Self::Sessions => "会话",
-        }
+    pub fn title(self, lang: Language) -> &'static str {
+        t(
+            lang,
+            match self {
+                Self::Model => Key::PickerTitleModel,
+                Self::Theme => Key::PickerTitleTheme,
+                Self::Sessions => Key::PickerTitleSessions,
+                Self::Language => Key::PickerTitleLanguage,
+            },
+        )
     }
 
     /// The command that opens it — one spelling for the palette, the draft and
@@ -49,6 +60,7 @@ impl PickerKind {
             Self::Model => "/model",
             Self::Theme => "/theme",
             Self::Sessions => "/sessions",
+            Self::Language => "/lang",
         }
     }
 
@@ -64,21 +76,29 @@ impl PickerKind {
     }
 
     /// The footer: what the keys do *here*.
-    pub fn hint(self) -> &'static str {
-        match self {
-            Self::Model => "↑↓ 选择 · ←→ 推理强度 · ⏎ 应用模型与强度 · esc 取消",
-            Self::Theme => "↑↓ 移动即预览 · ⏎ 保存 · esc 恢复进入前的主题",
-            Self::Sessions => "↑↓ 选择 · ⏎ 切换会话 · esc 取消",
-        }
+    pub fn hint(self, lang: Language) -> &'static str {
+        t(
+            lang,
+            match self {
+                Self::Model => Key::PickerHintModel,
+                Self::Theme => Key::PickerHintTheme,
+                Self::Sessions => Key::PickerHintSessions,
+                Self::Language => Key::PickerHintLanguage,
+            },
+        )
     }
 
     /// The line under the search box while the list is empty.
-    pub fn empty(self) -> &'static str {
-        match self {
-            Self::Model => "没有匹配的模型",
-            Self::Theme => "没有匹配的主题",
-            Self::Sessions => "没有匹配的会话",
-        }
+    pub fn empty(self, lang: Language) -> &'static str {
+        t(
+            lang,
+            match self {
+                Self::Model => Key::PickerEmptyModel,
+                Self::Theme => Key::PickerEmptyTheme,
+                Self::Sessions => Key::PickerEmptySessions,
+                Self::Language => Key::PickerEmptyLanguage,
+            },
+        )
     }
 }
 
@@ -144,17 +164,30 @@ pub struct Picker {
     pub index: usize,
     /// Slider position, as an index into [`THINKING_LEVELS`].
     pub effort: usize,
+    /// The language this box's own chrome is read in, and which language is in
+    /// force. Both are captured when the box opens, like `effort`, so the list a
+    /// key moves through and the list that is painted agree on what is current.
+    pub lang: Language,
+    pub language: LanguagePreference,
 }
 
 impl Picker {
     /// Open on the row that is already in force, so `esc` after `enter`-less
     /// reading changes nothing and the reader lands where they were.
-    pub fn new(kind: PickerKind, data: &WorkbenchData, theme_id: &str) -> Self {
+    pub fn new(
+        kind: PickerKind,
+        data: &WorkbenchData,
+        theme_id: &str,
+        lang: Language,
+        language: LanguagePreference,
+    ) -> Self {
         let mut picker = Self {
             kind,
             query: String::new(),
             index: 0,
             effort: thinking_index(&data.effort),
+            lang,
+            language,
         };
         let view = picker.view(data, theme_id);
         picker.index = picker.current_ordinal(&view).unwrap_or(0);
@@ -174,7 +207,15 @@ impl Picker {
     /// showing — the `✓` in the theme picker names it, not the app's idea of it
     /// (moving the highlight previews, so they differ while the picker is open).
     pub fn view(&self, data: &WorkbenchData, theme_id: &str) -> PickerView {
-        rows(self.kind, data, &self.query, self.effort, theme_id)
+        rows(
+            self.kind,
+            data,
+            &self.query,
+            self.effort,
+            theme_id,
+            self.lang,
+            self.language,
+        )
     }
 
     /// The highlighted row, if the list has one.
@@ -236,6 +277,8 @@ pub fn rows(
     query: &str,
     effort: usize,
     theme_id: &str,
+    lang: Language,
+    language: LanguagePreference,
 ) -> PickerView {
     let needle = query.trim().to_lowercase();
     let matches = |haystacks: &[&str]| {
@@ -286,7 +329,7 @@ pub fn rows(
                 }
                 rows.push(PickerRow::Group {
                     label: if provider.is_empty() {
-                        "未分组".to_string()
+                        t(lang, Key::PickerUngrouped).to_string()
                     } else {
                         provider.to_string()
                     },
@@ -315,9 +358,9 @@ pub fn rows(
                 // The value on the right is the canvas, not "current": the `✓`
                 // at the row's end already says which one is in force.
                 let detail = if is_light(&palette) {
-                    "浅色画布".to_string()
+                    t(lang, Key::PickerCanvasLight).to_string()
                 } else {
-                    "深色画布".to_string()
+                    t(lang, Key::PickerCanvasDark).to_string()
                 };
                 if !matches(&[&name, palette.id]) {
                     continue;
@@ -340,6 +383,29 @@ pub fn rows(
                     label: session.title.clone(),
                     detail: format!("{} · {}", session.workspace, session.age),
                     current: session.current,
+                });
+            }
+        }
+        // Three rows, always: the languages are ours, not the agent's, so there
+        // is nothing to fetch and nothing to filter out. A reader who picked one
+        // can come back here to follow the system again.
+        PickerKind::Language => {
+            for preference in LanguagePreference::ALL {
+                let label = preference.label(lang);
+                if !matches(&[label, preference.as_wire()]) {
+                    continue;
+                }
+                rows.push(PickerRow::Item {
+                    key: preference.as_wire().to_string(),
+                    label: label.to_string(),
+                    // What picking it means right now: the row that defers to
+                    // the locale names the bundle it currently resolves to.
+                    detail: if preference == LanguagePreference::System {
+                        preference.resolve().code().to_string()
+                    } else {
+                        String::new()
+                    },
+                    current: preference == language,
                 });
             }
         }
@@ -428,7 +494,13 @@ fn is_light(palette: &Palette) -> bool {
 ///
 /// `selected` is the highlight; the `✓` marks the value in force, which may be a
 /// row the reader has stepped away from.
-pub fn row_line(palette: &Palette, row: &PickerRow, selected: bool, inner: usize) -> String {
+pub fn row_line(
+    palette: &Palette,
+    row: &PickerRow,
+    selected: bool,
+    inner: usize,
+    lang: Language,
+) -> String {
     match row {
         PickerRow::Group { label, count } => {
             let line = format!(
@@ -447,7 +519,7 @@ pub fn row_line(palette: &Palette, row: &PickerRow, selected: bool, inner: usize
                 " {marker} {}  {}",
                 palette.strong(
                     if selected { palette.accent } else { palette.fg },
-                    "推理强度"
+                    t(lang, Key::PickerEffort)
                 ),
                 palette.text(palette.amber, &level)
             );
@@ -495,6 +567,11 @@ pub fn row_line(palette: &Palette, row: &PickerRow, selected: bool, inner: usize
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tests below read the copy, so they pin the language: the surface's
+    /// own default is English, and a case that asserted Chinese would otherwise
+    /// be asserting the machine's locale.
+    const LANG: Language = Language::Zh;
     use crate::workbench::state::{ModelChoice, SessionRow};
     use crate::workbench::theme::FUTURE_DARK;
 
@@ -548,7 +625,15 @@ mod tests {
 
     #[test]
     fn the_model_list_groups_by_provider_under_a_slider() {
-        let view = rows(PickerKind::Model, &data(), "", 1, "");
+        let view = rows(
+            PickerKind::Model,
+            &data(),
+            "",
+            1,
+            "",
+            LANG,
+            LanguagePreference::System,
+        );
         // The slider is first and selectable, so `esc`-and-`↑` never hides it
         // behind twenty models.
         assert!(matches!(view.rows[0], PickerRow::Slider { .. }));
@@ -591,7 +676,13 @@ mod tests {
     #[test]
     fn a_picker_opens_on_the_value_in_force() {
         let data = data();
-        let picker = Picker::new(PickerKind::Model, &data, "dark");
+        let picker = Picker::new(
+            PickerKind::Model,
+            &data,
+            "dark",
+            LANG,
+            LanguagePreference::System,
+        );
         assert_eq!(
             picker.selected(&data, ""),
             Some(PickerRow::Item {
@@ -605,7 +696,13 @@ mod tests {
         assert_eq!(picker.effort, 3);
         assert_eq!(picker.level(), "medium");
 
-        let theme = Picker::new(PickerKind::Theme, &data, "dark");
+        let theme = Picker::new(
+            PickerKind::Theme,
+            &data,
+            "dark",
+            LANG,
+            LanguagePreference::System,
+        );
         assert_eq!(
             theme.selected(&data, "dark").map(|row| match row {
                 PickerRow::Item { key, .. } => key,
@@ -613,7 +710,13 @@ mod tests {
             }),
             Some("dark".to_string())
         );
-        let sessions = Picker::new(PickerKind::Sessions, &data, "dark");
+        let sessions = Picker::new(
+            PickerKind::Sessions,
+            &data,
+            "dark",
+            LANG,
+            LanguagePreference::System,
+        );
         assert_eq!(
             sessions.selected(&data, ""),
             Some(PickerRow::Item {
@@ -659,19 +762,53 @@ mod tests {
     fn a_provider_prefixed_model_name_still_ticks_its_row() {
         let mut data = data();
         data.model = "westlakehpc/deepseek-flash".into();
-        let picker = Picker::new(PickerKind::Model, &data, "dark");
+        let picker = Picker::new(
+            PickerKind::Model,
+            &data,
+            "dark",
+            LANG,
+            LanguagePreference::System,
+        );
         assert_eq!(picker.index, 1, "the tick row, not the slider");
         data.model = "future/deepseek-flash".into();
-        assert_eq!(Picker::new(PickerKind::Model, &data, "dark").index, 1);
+        assert_eq!(
+            Picker::new(
+                PickerKind::Model,
+                &data,
+                "dark",
+                LANG,
+                LanguagePreference::System
+            )
+            .index,
+            1
+        );
         // A model nothing matches opens on the first row rather than nowhere.
         data.model = "nope".into();
-        assert_eq!(Picker::new(PickerKind::Model, &data, "dark").index, 0);
+        assert_eq!(
+            Picker::new(
+                PickerKind::Model,
+                &data,
+                "dark",
+                LANG,
+                LanguagePreference::System
+            )
+            .index,
+            0
+        );
     }
 
     #[test]
     fn the_search_filters_rows_and_drops_an_empty_group_with_its_heading() {
         let data = data();
-        let view = rows(PickerKind::Model, &data, "gpt", 1, "");
+        let view = rows(
+            PickerKind::Model,
+            &data,
+            "gpt",
+            1,
+            "",
+            LANG,
+            LanguagePreference::System,
+        );
         // Slider, then azure alone: westlakehpc has no match and its heading
         // goes with it.
         assert_eq!(view.rows.len(), 3, "{:?}", view.rows);
@@ -685,16 +822,43 @@ mod tests {
             .collect();
         assert_eq!(groups, vec!["azure"]);
         // Matching is case-insensitive and sees the label too.
-        let by_label = rows(PickerKind::Model, &data, "QWEN 3.8", 1, "");
+        let by_label = rows(
+            PickerKind::Model,
+            &data,
+            "QWEN 3.8",
+            1,
+            "",
+            LANG,
+            LanguagePreference::System,
+        );
         assert_eq!(by_label.selectable, 2, "slider + Qwen");
         // Nothing matches: the box says so instead of painting an empty frame.
-        assert!(rows(PickerKind::Model, &data, "zzz", 1, "").rows.len() == 1);
+        assert!(
+            rows(
+                PickerKind::Model,
+                &data,
+                "zzz",
+                1,
+                "",
+                LANG,
+                LanguagePreference::System
+            )
+            .rows
+            .len()
+                == 1
+        );
     }
 
     #[test]
     fn the_highlight_steps_over_headings_and_stops_at_the_ends() {
         let data = data();
-        let mut picker = Picker::new(PickerKind::Model, &data, "dark");
+        let mut picker = Picker::new(
+            PickerKind::Model,
+            &data,
+            "dark",
+            LANG,
+            LanguagePreference::System,
+        );
         picker.index = 0;
         // 0 → 1 is the slider to the first model: one step, no heading pause.
         picker.move_by(1, &data);
@@ -728,7 +892,13 @@ mod tests {
     #[test]
     fn the_slider_walks_six_levels_and_never_wraps() {
         let data = data();
-        let mut picker = Picker::new(PickerKind::Model, &data, "dark");
+        let mut picker = Picker::new(
+            PickerKind::Model,
+            &data,
+            "dark",
+            LANG,
+            LanguagePreference::System,
+        );
         picker.slide(1);
         assert_eq!(picker.level(), "high");
         picker.slide(10);
@@ -751,7 +921,13 @@ mod tests {
     #[test]
     fn typing_narrows_the_list_and_backspace_widens_it_again() {
         let data = data();
-        let mut picker = Picker::new(PickerKind::Sessions, &data, "dark");
+        let mut picker = Picker::new(
+            PickerKind::Sessions,
+            &data,
+            "dark",
+            LANG,
+            LanguagePreference::System,
+        );
         for ch in "文档".chars() {
             picker.push(ch);
         }
@@ -774,11 +950,19 @@ mod tests {
     #[test]
     fn a_row_is_exactly_the_width_it_was_given() {
         let data = data();
-        let view = rows(PickerKind::Model, &data, "", 3, "");
+        let view = rows(
+            PickerKind::Model,
+            &data,
+            "",
+            3,
+            "",
+            LANG,
+            LanguagePreference::System,
+        );
         for inner in [1usize, 4, 12, 30, 48, 68] {
             for (index, row) in view.rows.iter().enumerate() {
                 for selected in [false, true] {
-                    let line = row_line(&FUTURE_DARK, row, selected, inner);
+                    let line = row_line(&FUTURE_DARK, row, selected, inner, LANG);
                     assert_eq!(
                         crate::workbench::ansi::width(&line),
                         inner,
@@ -789,10 +973,10 @@ mod tests {
         }
         // And the same for the other two kinds.
         for kind in [PickerKind::Theme, PickerKind::Sessions] {
-            let view = rows(kind, &data, "", 0, "dark");
+            let view = rows(kind, &data, "", 0, "dark", LANG, LanguagePreference::System);
             for row in &view.rows {
                 assert_eq!(
-                    crate::workbench::ansi::width(&row_line(&FUTURE_DARK, row, true, 40)),
+                    crate::workbench::ansi::width(&row_line(&FUTURE_DARK, row, true, 40, LANG)),
                     40
                 );
             }

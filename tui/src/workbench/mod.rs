@@ -28,6 +28,7 @@
 pub mod ansi;
 pub mod demo;
 pub mod git;
+pub mod i18n;
 pub mod launchpad;
 pub mod layout;
 pub mod live;
@@ -44,6 +45,8 @@ pub mod widgets;
 use picker::{Picker, PickerKind, PickerRow};
 use state::{PanelId, WorkbenchData};
 use theme::Palette;
+
+use i18n::{t, Key, Language, LanguagePreference};
 
 /// Which input row takes keys on the launchpad. `Prompt` is the default; the
 /// others are the parameter chips, reachable with `tab`.
@@ -135,6 +138,10 @@ pub enum WbAction {
     SetPendingThinking(String),
     /// The theme picker committed a palette: adopt it and persist it.
     SetTheme(String),
+    /// The language picker committed a preference: adopt it and persist it. The
+    /// driver owns the resolution (a `system` choice re-reads the locale) and
+    /// the settings file; the surface only knows the two bundles.
+    SetLanguage(LanguagePreference),
     /// `/new`: back to the launchpad, with no session attached (the first
     /// message creates one).
     NewSession,
@@ -199,6 +206,13 @@ struct Drag {
 /// a real session without either side knowing the other's shape.
 pub struct Workbench {
     pub palette: Palette,
+    /// The language the chrome is drawn in. A stored preference resolves to one
+    /// of the two bundles before it lands here, so every renderer can read it
+    /// without asking the environment again.
+    pub lang: Language,
+    /// What the reader picked (`system` until they pick), which is the row the
+    /// language picker marks as current.
+    pub language_pref: LanguagePreference,
     pub panel: PanelId,
     pub sidebar_focus: bool,
     /// Is the sidebar allowed to show? `ctrl+b` toggles it; the width still
@@ -238,6 +252,12 @@ impl Workbench {
     pub fn new() -> Self {
         Self {
             palette: theme::FUTURE_DARK,
+            // English, on an unset preference: the driver resolves the stored
+            // preference (and with it the locale) before the first frame. A
+            // constructor that read the environment would make every test's
+            // text depend on the machine running it.
+            lang: Language::default(),
+            language_pref: LanguagePreference::default(),
             panel: PanelId::Todo,
             sidebar_focus: false,
             sidebar_visible: true,
@@ -251,6 +271,8 @@ impl Workbench {
                 PickerKind::Model,
                 &WorkbenchData::default(),
                 theme::FUTURE_DARK.id,
+                Language::default(),
+                LanguagePreference::default(),
             ),
             picker_restore: None,
             launch_field: LaunchField::Prompt,
@@ -276,6 +298,14 @@ impl Workbench {
         // reporting "unknown" for a palette that was in fact applied is the
         // kind of lie that made the settings file drift.
         theme::is_known(id)
+    }
+
+    /// Adopt a language preference: `system` resolves against the locale now.
+    /// Repainting is the caller's business — this changes the text of the next
+    /// frame, not the frame that is up.
+    pub fn set_language(&mut self, preference: LanguagePreference) {
+        self.language_pref = preference;
+        self.lang = preference.resolve();
     }
 
     /// Render one frame: exactly `h` rows, each exactly `w` display columns.
@@ -306,10 +336,11 @@ impl Workbench {
         COMMANDS
             .iter()
             .copied()
+            .map(|(command, key)| (command, t(self.lang, key)))
             .filter(|(command, description)| {
                 needle.is_empty()
                     || command.to_lowercase().contains(&needle)
-                    || description.contains(&needle)
+                    || description.to_lowercase().contains(&needle)
             })
             .collect()
     }
@@ -662,7 +693,7 @@ impl Workbench {
 
     /// Open one of the pickers on the value in force.
     pub fn open_picker(&mut self, kind: PickerKind, data: &WorkbenchData) -> Vec<WbAction> {
-        self.picker = Picker::new(kind, data, self.palette.id);
+        self.picker = Picker::new(kind, data, self.palette.id, self.lang, self.language_pref);
         self.picker_restore = (kind == PickerKind::Theme).then_some(self.palette.id);
         self.overlay = Some(Overlay::Picker(kind));
         self.overlay_scroll = 0;
@@ -736,6 +767,11 @@ impl Workbench {
             }
             (PickerKind::Sessions, Some(PickerRow::Item { key, .. })) => {
                 vec![WbAction::SwitchSession(key)]
+            }
+            // The row's key is the wire spelling, which is what the driver
+            // persists and what `LanguagePreference` reads back.
+            (PickerKind::Language, Some(PickerRow::Item { key, .. })) => {
+                vec![WbAction::SetLanguage(LanguagePreference::from_wire(&key))]
             }
             _ => vec![WbAction::Redraw],
         }
@@ -989,24 +1025,23 @@ impl Workbench {
             // are named.
             "workspace" => {
                 let cwd = if data.session.cwd.is_empty() {
-                    "未指定".to_string()
+                    t(self.lang, Key::Unspecified).to_string()
                 } else {
                     data.session.cwd.clone()
                 };
                 VerbOutcome::Done {
-                    notice: Some(format!(
-                        "工作区 {cwd} · 随会话固定 · 换目录：在目标目录启动 future tui，/sessions 换已有会话"
-                    )),
+                    notice: Some(i18n::render(self.lang, Key::NoticeWorkspace, &[&cwd])),
                 }
             }
             // `future tui` has no transcript dump of its own: the two real
             // doors to the whole record are named instead.
             "transcript" => VerbOutcome::Done {
-                notice: Some(
-                    "完整记录：/export 导出整份会话（HTML） · /reply-detail 在聊天里看完整过程"
-                        .into(),
-                ),
+                notice: Some(t(self.lang, Key::NoticeTranscript).into()),
             },
+            // `/lang` never lands here: the driver opens the picker for it
+            // (`PickerKind::from_command`), the same way `/model` and `/theme`
+            // work, so the rows, the filter and the hit regions are one
+            // implementation.
             // The same box `?` opens. It used to be a no-op arm in the app, so
             // the palette's own help entry resolved to nothing visible — a verb
             // that resolves is not the same as one that does something.
@@ -1052,19 +1087,20 @@ impl Workbench {
 /// The command palette's entries: `(command, description)`. Kept here rather
 /// than in the app so the palette, the help overlay and the tests share one
 /// list.
-pub const COMMANDS: [(&str, &str); 12] = [
-    ("/new", "新建会话"),
-    ("/sessions", "浏览并切换会话"),
-    ("/model", "选择模型"),
-    ("/reply-detail", "最终输出 / 完整过程"),
-    ("/workspace", "workspace 目录"),
-    ("/theme", "切换主题"),
-    ("/usage", "用量与成本"),
-    ("/skills", "技能列表"),
-    ("/export", "导出会话"),
-    ("/transcript", "完整记录"),
-    ("/help", "帮助与快捷键"),
-    ("/quit", "退出 workbench"),
+pub const COMMANDS: [(&str, Key); 13] = [
+    ("/new", Key::CmdNew),
+    ("/sessions", Key::CmdSessions),
+    ("/model", Key::CmdModel),
+    ("/lang", Key::CmdLanguage),
+    ("/reply-detail", Key::CmdReplyDetail),
+    ("/workspace", Key::CmdWorkspace),
+    ("/theme", Key::CmdTheme),
+    ("/usage", Key::CmdUsage),
+    ("/skills", Key::CmdSkills),
+    ("/export", Key::CmdExport),
+    ("/transcript", Key::CmdTranscript),
+    ("/help", Key::CmdHelp),
+    ("/quit", Key::CmdQuit),
 ];
 
 /// A typed draft that names one of the surface's own verbs.
@@ -1100,19 +1136,19 @@ fn known_command(text: &str) -> Option<TypedCommand> {
 }
 
 /// The help overlay's key table.
-pub const HELP_KEYS: [(&str, &str); 12] = [
-    ("ctrl+n", "新会话（任意位置）"),
-    ("ctrl+b", "侧栏：打开 / 聚焦 / 收起"),
-    ("tab", "在输入框与侧栏之间移动"),
-    ("↑↓", "滚动聊天，或侧栏列表"),
-    ("pageUp / pageDown", "整页滚动聊天"),
-    ("/", "命令面板"),
-    ("?", "这份帮助"),
-    ("ctrl+e", "最终输出 / 完整过程"),
-    ("/reply-detail", "同上，直接设置"),
-    ("鼠标点击", "切页签、点行、点参数"),
-    ("鼠标拖动", "侧栏分隔条调宽"),
-    ("ctrl+c", "退出"),
+pub const HELP_KEYS: [(&str, Key); 12] = [
+    ("ctrl+n", Key::HelpKeyNew),
+    ("ctrl+b", Key::HelpKeySidebar),
+    ("tab", Key::HelpKeyFocus),
+    ("↑↓", Key::HelpKeyScroll),
+    ("pageUp / pageDown", Key::HelpKeyPage),
+    ("/", Key::HelpKeyPalette),
+    ("?", Key::HelpKeyHelp),
+    ("ctrl+e", Key::HelpKeyReplyDetail),
+    ("/reply-detail", Key::HelpKeyReplyDetailSet),
+    ("click", Key::HelpKeyClick),
+    ("drag", Key::HelpKeyDrag),
+    ("ctrl+c", Key::HelpKeyQuit),
 ];
 
 #[cfg(test)]
@@ -1128,8 +1164,16 @@ mod tests {
             .join("\n")
     }
 
-    fn frame(data: &WorkbenchData, w: u16, h: u16) -> (Workbench, Vec<String>) {
+    /// A surface pinned to Chinese, which is the language every assertion about
+    /// the copy below is written in. The English spellings have their own cases.
+    fn workbench() -> Workbench {
         let mut workbench = Workbench::new();
+        workbench.set_language(LanguagePreference::Zh);
+        workbench
+    }
+
+    fn frame(data: &WorkbenchData, w: u16, h: u16) -> (Workbench, Vec<String>) {
+        let mut workbench = workbench();
         let rows = workbench.render(data, w, h);
         (workbench, rows)
     }
@@ -1239,9 +1283,10 @@ mod tests {
     #[test]
     fn every_palette_entry_has_a_handler() {
         let data = demo::chat();
-        let mut workbench = Workbench::new();
+        let mut workbench = workbench();
         workbench.render(&data, 120, 38);
-        for (command, description) in COMMANDS {
+        for (command, key) in COMMANDS {
+            let description = t(workbench.lang, key);
             let picker = PickerKind::from_command(command).is_some();
             let surface = matches!(
                 workbench.surface_command(command, &data),
@@ -2197,7 +2242,7 @@ mod tests {
 
     #[test]
     fn the_theme_cycles_through_the_whole_catalogue() {
-        let mut workbench = Workbench::new();
+        let mut workbench = workbench();
         assert_eq!(workbench.palette.id, FUTURE_DARK.id);
         // Every built-in in turn, wrapping back to the default.
         let mut seen = vec![workbench.palette.id];
@@ -2244,5 +2289,106 @@ mod tests {
         assert!(workbench
             .handle(WbEvent::Key("ctrl+c".into()), &data)
             .is_empty());
+    }
+
+    // ─── language ──────────────────────────────────────────────────────────
+
+    /// The whole surface is the promise: the same data, the same size, one
+    /// language and then the other. What must not change is under the chrome —
+    /// the conversation, the ids, the numbers.
+    #[test]
+    fn the_chrome_switches_language_and_the_content_does_not() {
+        let data = demo::chat();
+        let mut workbench = Workbench::new();
+        workbench.set_language(LanguagePreference::Zh);
+        let zh = plain(&workbench.render(&data, 120, 38));
+        assert!(zh.contains("待办"), "{zh}");
+        assert!(zh.contains("新会话"), "{zh}");
+
+        workbench.set_language(LanguagePreference::En);
+        let en = plain(&workbench.render(&data, 120, 38));
+        assert!(en.contains("To-do"), "{en}");
+        assert!(en.contains("New Chat"), "{en}");
+        assert!(!en.contains("待办"), "no Chinese tab left: {en}");
+
+        // The demo's own session title is content, not chrome: it stays.
+        assert!(zh.contains("修复 parser 的 off-by-one"));
+        assert!(en.contains("修复 parser 的 off-by-one"));
+    }
+
+    /// `LanguagePreference::System` is not a third bundle: it resolves to one of
+    /// the two, so the frame shows a language rather than a placeholder.
+    #[test]
+    fn the_system_preference_resolves_to_a_bundle() {
+        let mut workbench = Workbench::new();
+        workbench.set_language(LanguagePreference::System);
+        assert_eq!(workbench.lang, LanguagePreference::System.resolve());
+        assert_eq!(workbench.lang.code(), workbench.lang.code());
+        // …and an explicit choice overrides whatever the locale said.
+        workbench.set_language(LanguagePreference::En);
+        assert_eq!(workbench.lang, Language::En);
+    }
+
+    /// `/lang` opens a picker whose rows are the wire values, and picking one
+    /// hands the driver a `SetLanguage` to resolve and persist.
+    #[test]
+    fn the_language_picker_applies_a_preference() {
+        let data = demo::chat();
+        let mut workbench = Workbench::new();
+        // Pinned, so the box's own words are the ones asserted below rather than
+        // whatever this machine's locale resolves `system` to.
+        workbench.set_language(LanguagePreference::Zh);
+
+        // The palette advertises it, and a typed `/lang` opens the same box the
+        // palette does.
+        assert!(COMMANDS.iter().any(|(command, _)| *command == "/lang"));
+        let actions = workbench.handle(WbEvent::Key("/".into()), &data);
+        assert_eq!(actions, vec![WbAction::Redraw]);
+        for ch in "lang".chars() {
+            workbench.handle(WbEvent::Key(ch.to_string()), &data);
+        }
+        assert!(workbench
+            .palette_selection()
+            .is_some_and(|(command, _)| command == "/lang"));
+
+        workbench.open_picker(PickerKind::Language, &data);
+        let text = plain(&workbench.render(&data, 120, 38));
+        assert!(text.contains("语言"), "the title is in the box: {text}");
+        assert!(text.contains("跟随系统"), "{text}");
+        assert!(text.contains("中文") && text.contains("English"), "{text}");
+
+        // It opens on the row in force (中文, the second row); step to English
+        // and apply it.
+        assert_eq!(workbench.picker.index, 1);
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::SetLanguage(LanguagePreference::En)]
+        );
+        assert_eq!(workbench.overlay, None, "applying closes the box");
+    }
+
+    /// The picker marks the preference in force, not the bundle it resolved to:
+    /// a reader on `system` must not be told they chose Chinese.
+    #[test]
+    fn the_language_picker_ticks_the_preference_not_the_bundle() {
+        let data = demo::chat();
+        let mut workbench = Workbench::new();
+        workbench.set_language(LanguagePreference::Zh);
+        workbench.open_picker(PickerKind::Language, &data);
+        let view = workbench.picker.view(&data, workbench.committed_theme());
+        let current: Vec<&str> = view
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                PickerRow::Item {
+                    key, current: true, ..
+                } => Some(key.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(current, vec!["zh"]);
+        // …and it opens on that row rather than on the first one.
+        assert_eq!(workbench.picker.index, 1);
     }
 }

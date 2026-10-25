@@ -9,6 +9,7 @@
 //! it.
 
 use crate::workbench::ansi::{align_right, fit, width};
+use crate::workbench::i18n::{self, Key, Language};
 use crate::workbench::theme::Palette;
 
 /// A horizontal rule across `columns`.
@@ -177,13 +178,13 @@ pub fn wordmark_width() -> usize {
 
 /// `◐ 42 tok/s · 缓存 96%` — the activity row's tail, so the numbers live in
 /// one place instead of being re-spelled at each call site.
-pub fn rate(palette: &Palette, tps: f64, cache_pct: u8) -> String {
+pub fn rate(palette: &Palette, tps: f64, cache_pct: u8, lang: Language) -> String {
     let mut parts = Vec::new();
     if tps > 0.0 {
         parts.push(format!("{tps:.0} tok/s"));
     }
     if cache_pct > 0 {
-        parts.push(format!("缓存 {cache_pct}%"));
+        parts.push(i18n::render(lang, Key::CacheLabel, &[&cache_pct]));
     }
     palette.dim(&parts.join(" · "))
 }

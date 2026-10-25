@@ -2,10 +2,12 @@
 //! layout, and for the mouse self-test the contract asks every worker to run.
 //!
 //! `cargo run -p future-tui --example workbench_demo -- --scenario chat --width 120 --height 38 --plain`
+//! `cargo run -p future-tui --example workbench_demo -- --scenario chat --lang en`
 //! `cargo run -p future-tui --example workbench_demo -- --self-test`
 
 use future_tui::utils::strip_ansi_codes;
 use future_tui::workbench::demo;
+use future_tui::workbench::i18n::{t, Key, LanguagePreference};
 use future_tui::workbench::layout::{self, Rect};
 use future_tui::workbench::mouse::{MouseEvent, MouseKind};
 use future_tui::workbench::picker::PickerKind;
@@ -19,6 +21,8 @@ fn main() {
     let mut plain = false;
     let mut self_test = false;
     let mut picker: Option<PickerKind> = None;
+    // What the chrome is drawn in; `system` is what `future tui` itself does.
+    let mut language = LanguagePreference::System;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -43,6 +47,13 @@ fn main() {
                     std::process::exit(2);
                 }
             },
+            "--lang" | "-l" => match args.next().as_deref() {
+                Some(value) => language = LanguagePreference::from_wire(value),
+                None => {
+                    eprintln!("expected system | zh | en");
+                    std::process::exit(2);
+                }
+            },
             "--self-test" => self_test = true,
             other => {
                 eprintln!("unknown argument {other}");
@@ -64,8 +75,12 @@ fn main() {
         return;
     }
 
-    let data = demo::data(scenario);
+    let mut data = demo::data(scenario);
     let mut workbench = Workbench::new();
+    workbench.set_language(language);
+    // The demo's own input hint is chrome, not content: it follows the language
+    // the frame is drawn in, or an English screenshot argues with itself.
+    data.input.placeholder = t(workbench.lang, Key::InputHintLaunchpad).to_string();
     workbench.render(&data, width.max(1), height.max(1));
     if let Some(kind) = picker {
         workbench.open_picker(kind, &data);

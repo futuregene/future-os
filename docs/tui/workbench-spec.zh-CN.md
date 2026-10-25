@@ -71,6 +71,9 @@ live 接入只允许改：`tui/src/workbench/live.rs`、`tui/src/workbench/state
 
 ---
 
+图里的文案是中文那一套；界面中英各有一套，按读者的语言绘制（`i18n.rs`、`/lang`）。
+内容——对话、会话标题、路径——不翻译。
+
 ## 3. 布局（单位：终端单元格）
 
 ```

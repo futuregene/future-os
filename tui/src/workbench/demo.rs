@@ -10,6 +10,7 @@
 //! Nothing here talks to the agent, and nothing reads the clock.
 
 use crate::workbench::ansi::style;
+use crate::workbench::i18n::{t, Key};
 use crate::workbench::state::{
     Activity, ActivityKind, InputView, JobRow, ModelChoice, SessionMeta, SessionRow, SkillRow,
     TodoItem, TodoState, UsageData, WorkbenchData,
@@ -149,7 +150,11 @@ fn base() -> WorkbenchData {
         ],
         messages: Vec::new(),
         input: InputView {
-            placeholder: "描述你要做的事 · @ 文件 · # 会话 · / 命令".into(),
+            placeholder: t(
+                crate::workbench::i18n::Language::Zh,
+                Key::InputHintLaunchpad,
+            )
+            .into(),
             ..InputView::default()
         },
         activity: Activity::default(),
@@ -267,9 +272,11 @@ pub fn todo() -> WorkbenchData {
     data
 }
 
+/// The fifth panel's name for the demo todos' text: the sample data names the
+/// panels it lives beside, and reads them from the one place that spells them.
 fn panel_for(index: usize) -> &'static str {
-    const NAMES: [&str; 5] = ["待办", "任务", "会话", "用量", "技能"];
-    NAMES[index % NAMES.len()]
+    use crate::workbench::i18n::Language;
+    crate::workbench::state::PanelId::ALL[index % 5].label(Language::Zh)
 }
 
 #[cfg(test)]
