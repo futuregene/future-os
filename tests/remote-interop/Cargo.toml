@@ -39,3 +39,8 @@ required-features = ["network-tests"]
 name = "rust_client_server"
 path = "tests/rust_client_server.rs"
 required-features = ["network-tests"]
+
+[[test]]
+name = "page_encoding"
+path = "tests/page_encoding.rs"
+required-features = ["network-tests"]

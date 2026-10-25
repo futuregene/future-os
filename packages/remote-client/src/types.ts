@@ -1,7 +1,21 @@
 // Client-owned credentials and projection data; wire DTOs come from Protocol.
-import type { HistoryAttachment, ApprovalPayload } from "@future-os/remote-protocol";
+import type { HistoryAttachment, ApprovalPayload, RpcResponse } from "@future-os/remote-protocol";
 import type { ShellResult } from "@future-os/thread-projection";
 export * from "@future-os/remote-protocol";
+
+/**
+ * A command reply as this client hands it out: the wire response, plus the bytes
+ * a negotiated page carried *outside* its JSON.
+ *
+ * `chunkBytes` is local and never on the wire (see `remoteJson.ts`, which
+ * attaches it non-enumerably). It exists because the two carriers put the same
+ * `readChunk` address in `data` and differ only in where the chunk's bytes are;
+ * a caller that only looks at `data` — every caller except the pager — never
+ * sees it.
+ */
+export interface ClientRpcResponse<T = unknown> extends RpcResponse<T> {
+  chunkBytes?: Uint8Array;
+}
 
 export interface RemoteCredentials {
   /** JSON-encoded v2 identity bundle, stored only in the OS credential store. */

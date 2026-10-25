@@ -390,7 +390,8 @@
           "provider_management_v1",
           "fork_v1",
           "tasks_v1",
-          "task_deps_v1"
+          "task_deps_v1",
+          "read_binary_v1"
         ],
         "presence": {
           "online": true,

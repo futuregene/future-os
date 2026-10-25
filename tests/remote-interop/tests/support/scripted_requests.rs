@@ -201,7 +201,8 @@ async fn a_lost_reply_is_retried_under_the_same_command_identity() {
             Duration::from_millis(300),
         )
         .await
-        .expect("the retry must hide a reply that was lost once");
+        .expect("the retry must hide a reply that was lost once")
+        .into_data();
     assert_eq!(data["sessions"], json!([]));
 
     let requests = host.requests();

@@ -8,7 +8,7 @@ pub mod contract;
 mod server_host;
 pub use broker::Broker;
 pub use client_host::MemoryClientHost;
-pub use server_host::MemoryServerHost;
+pub use server_host::{MemoryServerHost, PageEncoding};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use future_remote_client::credentials::{PeerCreds, PeerIdentity};

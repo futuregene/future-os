@@ -11,8 +11,9 @@ import type { ClientHost } from "./host";
 import { ensureFreshCredentials } from "./pairing";
 import { jwtExpiry, encodeBase64Url, decodeBase64Url } from "./codec";
 import { backoffDelayMs, classifyError, transition, type ConnectionState } from "./connectionState";
-import { decodeRemoteJson, decodeRemoteJsonAsync } from "./remoteJson";
+import { decodeRemoteJson, decodeRemoteReplyAsync } from "./remoteJson";
 import type {
+  ClientRpcResponse,
   SnapshotVersion,
   Presence,
   PresenceSession,
@@ -1359,7 +1360,7 @@ export class RemoteClient {
     command: RemoteCommand,
     sessionId = command.sessionId ?? "list",
     timeoutMs = 10_000,
-  ): Promise<RpcResponse<T>> {
+  ): Promise<ClientRpcResponse<T>> {
     this.assertBusinessReady();
     const connection = this.connection;
     if (!connection) throw new Error("not_connected");
@@ -1385,7 +1386,7 @@ export class RemoteClient {
   async requestRetry<T>(
     command: RemoteCommand,
     sessionId = command.sessionId ?? "list",
-  ): Promise<RpcResponse<T>> {
+  ): Promise<ClientRpcResponse<T>> {
     return this.requestRetryUsing<T>(command, sessionId,
       (command, sessionId) => this.request<T>(command, sessionId),
       error => this.recoverAfterTransientRequest(error));
@@ -1394,18 +1395,18 @@ export class RemoteClient {
   private requestRetryUsing<T>(
     command: RemoteCommand,
     sessionId: string,
-    send: (command: RemoteCommand, sessionId: string) => Promise<RpcResponse<T>>,
+    send: (command: RemoteCommand, sessionId: string) => Promise<ClientRpcResponse<T>>,
     recover: (error: unknown) => Promise<boolean>,
-  ): Promise<RpcResponse<T>> {
+  ): Promise<ClientRpcResponse<T>> {
     return this.tasks.run("request-retry", () => this.runRequestRetry<T>(command, sessionId, send, recover));
   }
 
   private async runRequestRetry<T>(
     command: RemoteCommand,
     sessionId: string,
-    send: (command: RemoteCommand, sessionId: string) => Promise<RpcResponse<T>>,
+    send: (command: RemoteCommand, sessionId: string) => Promise<ClientRpcResponse<T>>,
     recover: (error: unknown) => Promise<boolean>,
-  ): Promise<RpcResponse<T>> {
+  ): Promise<ClientRpcResponse<T>> {
     const stableCommand = {
       bridgeInstanceId: this.confirmedBridgeInstanceId || undefined,
       ...command,
@@ -1515,7 +1516,7 @@ export class RemoteClient {
     command: RemoteCommand,
     sessionId = command.sessionId ?? "list",
     timeoutMs = 10_000,
-  ): Promise<RpcResponse<T>> {
+  ): Promise<ClientRpcResponse<T>> {
     return this.tasks.run("command-request", () => this.runRequestWithConnection<T>(connection, command, sessionId, timeoutMs));
   }
 
@@ -1524,7 +1525,7 @@ export class RemoteClient {
     command: RemoteCommand,
     sessionId = command.sessionId ?? "list",
     timeoutMs = 10_000,
-  ): Promise<RpcResponse<T>> {
+  ): Promise<ClientRpcResponse<T>> {
     const payload = {
       bridgeInstanceId: this.confirmedBridgeInstanceId || undefined,
       ...command,
@@ -1535,7 +1536,10 @@ export class RemoteClient {
     // A valid reply already received on the previous serving socket remains
     // a valid command acknowledgement during a candidate handoff. Callers own
     // session/epoch fencing; do not recast a successful command as a failure.
-    const response = await decodeRemoteJsonAsync<RpcResponse<T>>(message.data, () => !this.stopped);
+    //
+    // The decoder keeps a negotiated page's chunk bytes (`read_binary_v1`):
+    // dropping them here would turn every paged read into an empty chunk.
+    const response = await decodeRemoteReplyAsync<ClientRpcResponse<T>>(message.data, () => !this.stopped);
     if (!response.success) {
       const error = new RemoteResponseError(response.error ?? "command_failed");
       throw error;
@@ -1662,6 +1666,12 @@ export class RemoteClient {
       // capability presumes it gone when the beats lapse; one too old to know
       // it ignores the command and keeps reading presence the old way.
       "client_presence_v1",
+      // Only when the desktop's own confirmation advertised it: the flag changes
+      // how a paged read's chunk is *encoded*, and this client's decoder handles
+      // whichever carrier arrives only because it can tell them apart by magic.
+      // Asking a host that never offered the frame would be asking it to guess
+      // at the reader, so the declaration itself waits for the offer.
+      ...(this.negotiatedFeatures.has("read_binary_v1") ? ["read_binary_v1"] : []),
     ];
   }
 
