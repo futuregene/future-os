@@ -163,10 +163,14 @@ python3 scripts/screenshots/capture.py tui tui-chat.png
 `capture.py tui` 的一层包装：补上 `--scenario` 与尺寸，并按对应资产命名文件。
 
 ```bash
-tui/scripts/shot.sh chat 120x38      # → docs/tui/assets/workbench-120x38.png
-tui/scripts/shot.sh usage 120x38     # → docs/tui/assets/workbench-panel-usage-120x38.png
+tui/scripts/shot.sh chat 120x38 $PWD/docs/tui/assets/workbench-chat.png
+tui/scripts/shot.sh usage 120x38 $PWD/docs/tui/assets/workbench-panel-usage.png
 tui/scripts/shot.sh drag 120x38 $PWD/docs/tui/assets/workbench-drag-fixed.png
 ```
+
+第三个参数是输出路径；不传时脚本按「场景 + 尺寸」自动命名
+（`workbench-chat-120x38.png`、`workbench-usage-120x38.png`），
+而仓库里已有的资产不一定叫这个名字——重拍这些图时请显式传路径。
 
 两次运行产出的 PNG 是逐字节相同的，这才让它能当评审证据用：有差异说明界面变了，而不是模型这次回答得不一样。两点限制照实说：字形是 Chrome 依据抓到的单元格画的，不是产生这些字节的那个终端画的；数据是脚本化的（和其他 mock 一样）——截图永远不是"真实用户会话"的证据。
 

@@ -239,10 +239,15 @@ The repository's own entry point for these frames is
 `--scenario` and the size and names the file after the asset it belongs to:
 
 ```bash
-tui/scripts/shot.sh chat 120x38      # → docs/tui/assets/workbench-120x38.png
-tui/scripts/shot.sh usage 120x38     # → docs/tui/assets/workbench-panel-usage-120x38.png
+tui/scripts/shot.sh chat 120x38 $PWD/docs/tui/assets/workbench-chat.png
+tui/scripts/shot.sh usage 120x38 $PWD/docs/tui/assets/workbench-panel-usage.png
 tui/scripts/shot.sh drag 120x38 $PWD/docs/tui/assets/workbench-drag-fixed.png
 ```
+
+The third argument is the output path; without it the wrapper names the file
+after the scenario and size (`workbench-chat-120x38.png`, `workbench-usage-120x38.png`),
+which is not always the name an existing asset was committed under — pass the
+path when re-shooting one of those.
 
 Two runs produce byte-identical PNGs, which is what makes this usable as
 review evidence: a difference means the UI changed, not that a model answered
