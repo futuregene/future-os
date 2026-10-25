@@ -61,23 +61,6 @@ impl StreamTruncation {
     }
 }
 
-/// Why a run is continuing an interrupted one, and what to tell the model about
-/// it.
-///
-/// Present only on the Agent's own restart recovery. A client can never set it:
-/// the instruction is appended to the first request only, never to the durable
-/// conversation, so the transcript shows one turn that was interrupted and
-/// carried on, not a fabricated user submission.
-#[derive(Clone, Debug)]
-pub struct ResumeContext {
-    /// The interrupted run this continues, recorded as `auto_resume_of` on the
-    /// run's `run_started` marker so clients can render "continued
-    /// automatically" and the history stays readable across restarts.
-    pub interrupted_run_id: String,
-    /// Request-only instruction appended to the first turn. Not persisted.
-    pub instruction: String,
-}
-
 /// Per-session state passed into `run_streaming_with_messages`.  Callbacks
 /// are session-specific (they capture session_id, messages_arc, broadcaster)
 /// and must NOT be stored on the shared Loop — otherwise concurrent sessions
@@ -93,8 +76,6 @@ pub struct StreamContext {
     /// journal entry was fsync'd and a committed event may be emitted.
     pub on_checkpoint: Option<CheckpointCallback>,
     pub compaction_journal: Option<crate::compaction::CompactionJournal>,
-    /// Set by the Agent's restart recovery, never by a client.
-    pub resume: Option<ResumeContext>,
 }
 
 pub struct Loop {

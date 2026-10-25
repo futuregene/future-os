@@ -17,11 +17,6 @@ pub const ENTRY_TYPE_SESSION_INFO: &str = "session_info";
 pub const ENTRY_TYPE_THINKING_LEVEL_CHANGE: &str = "thinking_level_change";
 pub const ENTRY_TYPE_CUSTOM: &str = "custom";
 pub const ENTRY_TYPE_CUSTOM_MESSAGE: &str = "custom_message";
-/// `name` of the `custom` entry that records an explicit release of the
-/// restart-recovery fence (`acknowledge_recovery` / `future session unblock`).
-/// A `custom` entry keeps every projection, fork/clone and export path working
-/// unchanged: unknown entry types are already skipped in the model transcript.
-pub const ENTRY_NAME_RECOVERY_ACKNOWLEDGED: &str = "recovery_acknowledged";
 /// Run lifecycle markers. These bound a run in the append-only journal:
 /// `run_started` is written durably with the accepted user message, and
 /// `run_terminal` is written at the run's commit boundary. A `run_started`
@@ -133,38 +128,6 @@ impl SessionEntry {
         }
     }
 
-    /// Journal record of an explicit release of the restart-recovery fence.
-    ///
-    /// `calls` carries the `[{run_id, call_id, tool}]` list the user released.
-    /// This is append-only history: it never rewrites the interrupted calls
-    /// themselves, and it does not record that anything was verified — only
-    /// that a person accepted the risk of an unknown side effect.
-    pub fn recovery_acknowledged(
-        name: &str,
-        calls: serde_json::Value,
-        by: &str,
-        reason: &str,
-    ) -> Self {
-        Self {
-            id: generate_entry_id(),
-            entry_type: ENTRY_TYPE_CUSTOM.to_string(),
-            role: String::new(),
-            content: Some(serde_json::json!({
-                "calls": calls,
-                "acknowledged_at": Local::now().to_rfc3339(),
-                "by": by,
-                "reason": reason,
-            })),
-            tool_calls: vec![],
-            timestamp: Local::now(),
-            tool_call_id: String::new(),
-            name: name.to_string(),
-            tool_args: String::new(),
-            thinking: String::new(),
-            meta: None,
-        }
-    }
-
     pub fn new_assistant(content: serde_json::Value, tool_calls: Vec<ToolCall>) -> Self {
         Self {
             id: generate_entry_id(),
@@ -244,26 +207,6 @@ impl SessionEntry {
             thinking: String::new(),
             meta: None,
         }
-    }
-
-    /// The `run_started` marker for a run the Agent itself continued.
-    ///
-    /// A continuation run has no user entry to pair this with, so
-    /// `auto_resume_of` is what tells a client — and the history rewrite — that
-    /// this run exists because another one was interrupted, not because someone
-    /// typed something. It names the interrupted run, not the conversation, so a
-    /// chain of restarts stays readable.
-    pub fn run_started_continuation(
-        run_id: &str,
-        epoch: u64,
-        run_sequence: Option<u64>,
-        auto_resume_of: &str,
-    ) -> Self {
-        let mut entry = Self::run_started_with_sequence(run_id, epoch, run_sequence);
-        if let Some(content) = entry.content.as_mut() {
-            content["auto_resume_of"] = serde_json::json!(auto_resume_of);
-        }
-        entry
     }
 
     /// Marker written at a run's commit boundary. `content` carries
