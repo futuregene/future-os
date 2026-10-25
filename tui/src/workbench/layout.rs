@@ -84,6 +84,70 @@ pub const SIDEBAR_MAX: u16 = 48;
 /// Columns of padding inside the chat area, left and right.
 pub const CHAT_PADDING: u16 = 2;
 
+/// Columns of padding each side of the conversation band `columns` wide.
+///
+/// A band narrower than eight columns cannot afford [`CHAT_PADDING`] twice and
+/// still hold text, so the padding shrinks with it rather than eating the whole
+/// band.
+pub fn chat_padding(columns: u16) -> usize {
+    (CHAT_PADDING as usize).min(columns as usize / 4)
+}
+
+/// The text width inside a conversation band `columns` wide.
+///
+/// The single definition of "how wide is the conversation": the compositor pads
+/// by [`chat_padding`] and the transcript is wrapped to exactly what is left.
+/// Two places deriving it independently is how rows get wrapped at one width
+/// and drawn at another — and a *probe* width (the driver loop used to ask for
+/// a whole frame at width `1` just to read one field) is how the transcript
+/// loses its per-width cache on every event.
+pub fn chat_inner(columns: u16) -> usize {
+    (columns as usize)
+        .saturating_sub(chat_padding(columns) * 2)
+        .max(1)
+}
+
+/// What painted what where: the geometry one frame is composed for.
+///
+/// Passed whole rather than as loose numbers because the two consumers must
+/// agree: the transcript caches its rendered rows per *width*, so a caller that
+/// hands it a width other than [`Self::inner`] throws those rows away and
+/// re-wraps every message. The type is what makes that mistake unrepresentable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Frame {
+    pub width: u16,
+    pub height: u16,
+    /// The conversation band's text width — see [`chat_inner`].
+    pub inner: usize,
+    /// The band rectangles this frame's `(width, height)` produce.
+    pub layout: Layout,
+}
+
+impl Frame {
+    /// The frame a `width` × `height` terminal gets with a sidebar of
+    /// `sidebar_w` columns (0 for none), laid out with the reader's density and
+    /// rail position. Both sizes are clamped up to 1, so a report of `0` from a
+    /// terminal that has not answered `TIOCGWINSZ` yet cannot produce a
+    /// zero-width frame.
+    pub fn new(
+        width: u16,
+        height: u16,
+        sidebar_w: u16,
+        density: super::preferences::Density,
+        position: super::preferences::SidebarPosition,
+    ) -> Self {
+        let width = width.max(1);
+        let height = height.max(1);
+        let layout = layout_with_preferences(width, height, sidebar_w, density, position);
+        Self {
+            width,
+            height,
+            inner: chat_inner(layout.body.w),
+            layout,
+        }
+    }
+}
+
 /// The seven bands of a workbench frame, in rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Layout {
@@ -271,6 +335,7 @@ impl HitMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workbench::preferences::{Density, SidebarPosition};
 
     #[test]
     fn the_two_breakpoints_move_what_the_contract_says() {
@@ -429,5 +494,59 @@ mod tests {
         assert_eq!(inner, Rect::new(7, 3, 5, 2));
         // An inset larger than the rect collapses instead of wrapping.
         assert!(rect.inset(20, 20, 20, 20).is_empty());
+    }
+
+    /// The conversation's text width is one definition, and a frame carries it:
+    /// the compositor pads, the renderer wraps, and both read `chat_inner`.
+    #[test]
+    fn a_frame_carries_the_width_the_conversation_is_drawn_at() {
+        for (w, h, sidebar) in [
+            (120u16, 38u16, SIDEBAR_DEFAULT),
+            (120, 38, 0),
+            (90, 24, SIDEBAR_DEFAULT),
+            (60, 20, 0),
+            (24, 10, 0),
+            (8, 4, 0),
+            (7, 4, 0),
+            (1, 1, 0),
+            (0, 0, 0),
+        ] {
+            let frame = Frame::new(w, h, sidebar, Density::Focused, SidebarPosition::Right);
+            assert_eq!(
+                frame.inner,
+                chat_inner(frame.layout.body.w),
+                "the frame must name the width its own band is drawn at: {w}x{h}"
+            );
+            assert!(frame.inner >= 1, "never a zero-width conversation");
+            assert_eq!(frame.width, w.max(1));
+            assert_eq!(frame.height, h.max(1));
+        }
+    }
+
+    /// The width the driver wraps the transcript at is the width the compositor
+    /// has room for — for every ordinary terminal that is exactly "band minus
+    /// the two padding columns", i.e. what the driver used to compute by hand.
+    #[test]
+    fn chat_inner_is_the_band_minus_its_padding() {
+        for columns in [200u16, 120, 97, 88, 80, 40, 20, 8] {
+            assert_eq!(
+                chat_inner(columns),
+                columns as usize - CHAT_PADDING as usize * 2,
+                "{columns} columns"
+            );
+            assert_eq!(chat_padding(columns), CHAT_PADDING as usize);
+        }
+    }
+
+    #[test]
+    fn chat_inner_takes_no_more_padding_than_a_narrow_band_can_afford() {
+        // Under 8 columns the padding shrinks rather than eating the band.
+        assert_eq!(chat_inner(7), 5);
+        assert_eq!(chat_padding(7), 1);
+        assert_eq!(chat_inner(4), 2);
+        assert_eq!(chat_inner(3), 3);
+        // A degenerate band still yields a width the renderer can use.
+        assert_eq!(chat_inner(1), 1);
+        assert_eq!(chat_inner(0), 1);
     }
 }
