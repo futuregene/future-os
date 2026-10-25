@@ -555,6 +555,9 @@ pub struct ChatArea {
     dirty: bool,
     pending_rerender: BTreeSet<usize>,
     flushing: bool,
+    /// How many times the whole transcript has been rebuilt from scratch (see
+    /// [`Self::full_renders`]).
+    full_renders: u64,
     stream_caches: std::collections::HashMap<String, StreamRenderCache>,
 
     md: MarkdownRenderer,
@@ -609,6 +612,7 @@ impl ChatArea {
             dirty: false,
             pending_rerender: BTreeSet::new(),
             flushing: false,
+            full_renders: 0,
             stream_caches: std::collections::HashMap::new(),
             md,
             md_thinking,
@@ -1286,6 +1290,21 @@ impl ChatArea {
             .collect()
     }
 
+    /// How many times this area has rebuilt the whole transcript — the count
+    /// [`Self::rerender`] pays when the width changes or a message is
+    /// re-rendered wholesale, and the meter the driver loop's contract is
+    /// measured with.
+    ///
+    /// That contract: a frame is composed at one width, and asking for another
+    /// (the loop used to build a whole frame at width `1` just to read the
+    /// activity kind) misses the per-width cache and re-wraps *every* message,
+    /// which is what made a long session slow under a streamed reply. A caller
+    /// that keeps one width sees this climb once per real change, not once per
+    /// frame.
+    pub fn full_renders(&self) -> u64 {
+        self.full_renders
+    }
+
     pub fn render(&mut self, width: usize) -> Vec<String> {
         if width as i64 != self.last_render_width || self.dirty {
             self.last_render_width = width as i64;
@@ -1550,6 +1569,7 @@ impl ChatArea {
             return;
         }
         self.dirty = false;
+        self.full_renders = self.full_renders.saturating_add(1);
 
         let (heads, folds) = self.layout();
         self.compact_layout = heads;
@@ -3358,6 +3378,77 @@ mod tests {
         // Content mutated, but rendered lines stay stale until the next render.
         assert_ne!(chat.render_all(W), before);
         assert_eq!(chat.render_all(W), eager_lines("hello **world**", true, W));
+    }
+
+    /// The cost the driver loop must not pay: a second width within one
+    /// keystroke or one streamed token throws away the rendered rows and
+    /// re-wraps (and re-parses) every message. `full_renders` is the meter.
+    #[test]
+    fn a_probe_width_is_a_full_rebuild_and_the_frame_width_is_free() {
+        let mut chat = new_chat();
+        for i in 0..8 {
+            chat.add_message(ChatMessage::new(
+                format!("u{i}"),
+                ChatRole::User,
+                "question",
+            ));
+            chat.add_message(ChatMessage::new(
+                format!("a{i}"),
+                ChatRole::Assistant,
+                "an answer with **markup** and a `code` span",
+            ));
+        }
+
+        // The session's first frame renders once.
+        chat.render_all(W);
+        let first = chat.full_renders();
+
+        // Steady state: the same width is a cache hit, every time.
+        for _ in 0..20 {
+            chat.render_all(W);
+        }
+        assert_eq!(
+            chat.full_renders(),
+            first,
+            "a frame at the last frame's width must not rebuild the transcript"
+        );
+
+        // A frame at any other width rebuilds — which is why a caller must not
+        // probe one. The driver used to do this twice per event.
+        chat.render_all(1);
+        assert_eq!(chat.full_renders(), first + 1);
+    }
+
+    /// Streaming at the frame width stays incremental: the growing message is
+    /// re-rendered, the rest of the transcript is not.
+    #[test]
+    fn a_streamed_delta_at_one_width_does_not_rebuild_the_transcript() {
+        let mut chat = new_chat();
+        for i in 0..8 {
+            chat.add_message(ChatMessage::new(
+                format!("u{i}"),
+                ChatRole::User,
+                "question",
+            ));
+            chat.add_message(ChatMessage::new(
+                format!("a{i}"),
+                ChatRole::Assistant,
+                "an answer with **markup** and a `code` span",
+            ));
+        }
+        chat.render_all(W);
+        chat.add_message(ChatMessage::new("live".into(), ChatRole::Assistant, ""));
+        let before = chat.full_renders();
+
+        for _ in 0..40 {
+            chat.append_to_last_message("streamed ");
+            chat.render_all(W);
+        }
+        assert_eq!(
+            chat.full_renders(),
+            before,
+            "a delta must splice the streaming message, not rebuild everything"
+        );
     }
 
     #[test]

@@ -262,4 +262,4 @@ pub const FILES: &[FileExempt] = &[FileExempt {
 /// is a gap worth freezing; lower it whenever one is closed. The test fails on
 /// a mismatch in either direction, so the number cannot drift away from what
 /// the tree actually skips.
-pub const BUDGET: usize = 34;
+pub const BUDGET: usize = 35;

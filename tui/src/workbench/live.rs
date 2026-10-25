@@ -29,6 +29,7 @@ use crate::rpc::types::{
 use crate::rpc::GrpcClient;
 
 use super::i18n::{self, t, Key, Language, LanguagePreference};
+use super::layout::Frame;
 use super::state::{
     Activity, ActivityKind, InputView, JobRow, ModelChoice, SessionMeta, SessionRow, SkillRow,
     TodoItem, UsageData, WorkbenchData, THINKING_LEVELS,
@@ -545,12 +546,37 @@ impl Live {
 
     // ─── painting ─────────────────────────────────────────────────────
 
-    /// Everything the surface paints. `inner_width` is the conversation band's
-    /// text width: the renderer needs it, and passing the real one keeps a
-    /// markdown reply wrapped the way the terminal draws it.
-    pub fn data(&mut self, inner_width: usize) -> WorkbenchData {
+    /// What the activity row is showing, without building a frame.
+    ///
+    /// The driver loop only needs this *one field* to notice that a turn
+    /// started or ended (which is when the session list has to be re-read) and
+    /// whether the row is animating (which is when the spinner owes a frame).
+    /// Asking for a whole [`WorkbenchData`] to get it used to cost a transcript
+    /// render per agent event — see [`Self::data`].
+    pub fn activity_kind(&self) -> ActivityKind {
+        self.activity_snapshot().kind
+    }
+
+    /// Is anything on the activity row moving with time — a run in flight, or
+    /// the elapsed/tool counter the row keeps showing? That is the whole of the
+    /// frame's animation (see `run::TickClock`); the only other clock in a frame
+    /// is the sidebar's session ages, which read in minutes.
+    pub fn activity_animating(&self) -> bool {
+        let activity = self.activity_snapshot();
+        activity.is_busy() || activity.tools > 0
+    }
+
+    /// Everything the surface paints, composed for one [`Frame`].
+    ///
+    /// The frame — not a loose width — is the argument because the transcript
+    /// caches its rendered rows per width ([`ChatArea::render_all`]): a call at
+    /// a width the last frame did not use re-wraps and re-parses every message.
+    /// The driver used to ask for a whole frame at width `1` just to read the
+    /// activity kind, on every key and every streamed token, so nothing within
+    /// a keystroke ever hit that cache.
+    pub fn data(&mut self, frame: &Frame) -> WorkbenchData {
         let state = self.state.clone();
-        let messages = self.chat.render_all(inner_width.max(1));
+        let messages = self.chat.render_all(frame.inner);
         let activity = self.activity_snapshot();
         let input = self.draft.clone();
         let sessions = self.sessions.clone();
@@ -733,6 +759,12 @@ impl Live {
             // hands the bundle back here and persists it.
             WbAction::SetLanguage(_) => {}
             WbAction::SwitchPanel(_) | WbAction::ResizeSidebar(_) | WbAction::PersistSidebar => {}
+            // Surface-only state: the driver owns persistence, the agent does
+            // not need a round trip for a rectangle or a local shortcut.
+            WbAction::SetPreferences | WbAction::SetKeybindings => {}
+            // The driver displays local notices; a demo adapter has no notice
+            // dispatch of its own to perform.
+            WbAction::Notice(_) => {}
             WbAction::FocusPane(_) => {}
             WbAction::Redraw => {}
         }

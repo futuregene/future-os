@@ -84,6 +84,70 @@ pub const SIDEBAR_MAX: u16 = 48;
 /// Columns of padding inside the chat area, left and right.
 pub const CHAT_PADDING: u16 = 2;
 
+/// Columns of padding each side of the conversation band `columns` wide.
+///
+/// A band narrower than eight columns cannot afford [`CHAT_PADDING`] twice and
+/// still hold text, so the padding shrinks with it rather than eating the whole
+/// band.
+pub fn chat_padding(columns: u16) -> usize {
+    (CHAT_PADDING as usize).min(columns as usize / 4)
+}
+
+/// The text width inside a conversation band `columns` wide.
+///
+/// The single definition of "how wide is the conversation": the compositor pads
+/// by [`chat_padding`] and the transcript is wrapped to exactly what is left.
+/// Two places deriving it independently is how rows get wrapped at one width
+/// and drawn at another — and a *probe* width (the driver loop used to ask for
+/// a whole frame at width `1` just to read one field) is how the transcript
+/// loses its per-width cache on every event.
+pub fn chat_inner(columns: u16) -> usize {
+    (columns as usize)
+        .saturating_sub(chat_padding(columns) * 2)
+        .max(1)
+}
+
+/// What painted what where: the geometry one frame is composed for.
+///
+/// Passed whole rather than as loose numbers because the two consumers must
+/// agree: the transcript caches its rendered rows per *width*, so a caller that
+/// hands it a width other than [`Self::inner`] throws those rows away and
+/// re-wraps every message. The type is what makes that mistake unrepresentable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Frame {
+    pub width: u16,
+    pub height: u16,
+    /// The conversation band's text width — see [`chat_inner`].
+    pub inner: usize,
+    /// The band rectangles this frame's `(width, height)` produce.
+    pub layout: Layout,
+}
+
+impl Frame {
+    /// The frame a `width` × `height` terminal gets with a sidebar of
+    /// `sidebar_w` columns (0 for none), laid out with the reader's density and
+    /// rail position. Both sizes are clamped up to 1, so a report of `0` from a
+    /// terminal that has not answered `TIOCGWINSZ` yet cannot produce a
+    /// zero-width frame.
+    pub fn new(
+        width: u16,
+        height: u16,
+        sidebar_w: u16,
+        density: super::preferences::Density,
+        position: super::preferences::SidebarPosition,
+    ) -> Self {
+        let width = width.max(1);
+        let height = height.max(1);
+        let layout = layout_with_preferences(width, height, sidebar_w, density, position);
+        Self {
+            width,
+            height,
+            inner: chat_inner(layout.body.w),
+            layout,
+        }
+    }
+}
+
 /// The seven bands of a workbench frame, in rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Layout {
@@ -109,6 +173,24 @@ pub struct Layout {
 /// Lay out a `w` × `h` terminal. Everything is clamped: a 1×1 terminal gets
 /// empty rectangles rather than an underflow.
 pub fn layout(w: u16, h: u16, sidebar_w: u16) -> Layout {
+    layout_with_preferences(
+        w,
+        h,
+        sidebar_w,
+        super::preferences::Density::Focused,
+        super::preferences::SidebarPosition::Right,
+    )
+}
+
+/// Lay out with the reader's density and rail position. The conversation always
+/// gets the reclaimed space: density changes the chrome, never the text width.
+pub fn layout_with_preferences(
+    w: u16,
+    h: u16,
+    sidebar_w: u16,
+    density: super::preferences::Density,
+    position: super::preferences::SidebarPosition,
+) -> Layout {
     let compact = h < SMALL_HEIGHT;
     // `0` is not a width to clamp — it is "no sidebar": `ctrl+b` closes the
     // rail by asking for none, and clamping that up to `SIDEBAR_MIN` is how a
@@ -127,10 +209,21 @@ pub fn layout(w: u16, h: u16, sidebar_w: u16) -> Layout {
     };
 
     let chat_w = w.saturating_sub(sidebar_w + if sidebar_w > 0 { 1 } else { 0 });
+    let left = position == super::preferences::SidebarPosition::Left;
+    let chat_x = if left && sidebar_w > 0 {
+        sidebar_w + 1
+    } else {
+        0
+    };
     let (divider, sidebar, chat_w) = if sidebar_w > 0 {
         (
-            Some(Rect::new(chat_w, 0, 1, h)),
-            Some(Rect::new(chat_w + 1, 0, sidebar_w, h)),
+            Some(Rect::new(if left { sidebar_w } else { chat_w }, 0, 1, h)),
+            Some(Rect::new(
+                if left { 0 } else { chat_w + 1 },
+                0,
+                sidebar_w,
+                h,
+            )),
             chat_w,
         )
     } else {
@@ -141,13 +234,13 @@ pub fn layout(w: u16, h: u16, sidebar_w: u16) -> Layout {
         let header = Rect::new(0, 0, w, 1);
         let input_y = h.saturating_sub(4);
         let body_h = input_y.saturating_sub(1);
-        let body = Rect::new(0, 1, chat_w, body_h);
-        let input = Rect::new(0, input_y, chat_w, 2.min(h.saturating_sub(input_y)));
+        let body = Rect::new(chat_x, 1, chat_w, body_h);
+        let input = Rect::new(chat_x, input_y, chat_w, 2.min(h.saturating_sub(input_y)));
         return Layout {
             compact,
             header,
             body,
-            divider: divider.map(|_| Rect::new(chat_w, 1, 1, body_h)),
+            divider: divider.map(|rect| Rect::new(rect.x, 1, 1, body_h)),
             sidebar: sidebar.map(|rect| Rect::new(rect.x, 1, rect.w, body_h)),
             input,
             prompt_row: input_y.saturating_add(1),
@@ -166,17 +259,22 @@ pub fn layout(w: u16, h: u16, sidebar_w: u16) -> Layout {
     // of every letter — the bottom stroke of F, U, E and S was cut off, which
     // reads as clipped art rather than as a frame. The launchpad hero already
     // drew all five, so the two screens disagreed about the same wordmark.
-    let header = Rect::new(0, 0, w, 6);
-    let body_y = 7u16;
-    let body_h = h.saturating_sub(14);
+    let header_h = if density == super::preferences::Density::Comfortable {
+        6
+    } else {
+        2
+    };
+    let header = Rect::new(0, 0, w, header_h);
+    let body_y = header_h + 1;
     let input_y = h.saturating_sub(7);
+    let body_h = input_y.saturating_sub(body_y);
     Layout {
         compact,
         header,
-        body: Rect::new(0, body_y, chat_w, body_h),
-        divider: divider.map(|_| Rect::new(chat_w, body_y, 1, body_h)),
+        body: Rect::new(chat_x, body_y, chat_w, body_h),
+        divider: divider.map(|rect| Rect::new(rect.x, body_y, 1, body_h)),
         sidebar: sidebar.map(|rect| Rect::new(rect.x, body_y, rect.w, body_h)),
-        input: Rect::new(0, input_y, chat_w, 4.min(h.saturating_sub(input_y))),
+        input: Rect::new(chat_x, input_y, chat_w, 4.min(h.saturating_sub(input_y))),
         prompt_row: input_y.saturating_add(1),
         activity: Some(Rect::new(0, h.saturating_sub(3), w, 1)),
         status: Rect::new(0, h.saturating_sub(2), w, 1),
@@ -237,6 +335,7 @@ impl HitMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workbench::preferences::{Density, SidebarPosition};
 
     #[test]
     fn the_two_breakpoints_move_what_the_contract_says() {
@@ -247,7 +346,7 @@ mod tests {
         assert!(!tall.compact);
         assert_eq!(tall.sidebar.map(|rect| rect.w), Some(SIDEBAR_DEFAULT));
         assert!(tall.activity.is_some());
-        assert_eq!(tall.header.h, 6);
+        assert_eq!(tall.header.h, 2);
         assert_eq!(tall.input.h, 4);
 
         // Narrow: the sidebar goes, the chat takes the whole width.
@@ -338,6 +437,33 @@ mod tests {
     }
 
     #[test]
+    fn preferences_reclaim_space_and_move_the_whole_rail() {
+        let focused = layout(120, 38, SIDEBAR_DEFAULT);
+        let comfortable = layout_with_preferences(
+            120,
+            38,
+            SIDEBAR_DEFAULT,
+            super::super::preferences::Density::Comfortable,
+            super::super::preferences::SidebarPosition::Right,
+        );
+        assert_eq!(focused.header.h, 2);
+        assert_eq!(focused.body.h, comfortable.body.h + 4);
+        assert_eq!(focused.body.w, comfortable.body.w);
+        let left = layout_with_preferences(
+            120,
+            38,
+            SIDEBAR_DEFAULT,
+            super::super::preferences::Density::Focused,
+            super::super::preferences::SidebarPosition::Left,
+        );
+        assert_eq!(left.sidebar.unwrap().x, 0);
+        assert_eq!(left.divider.unwrap().x, SIDEBAR_DEFAULT);
+        assert_eq!(left.body.x, SIDEBAR_DEFAULT + 1);
+        assert_eq!(left.input.x, left.body.x);
+        assert_eq!(left.body.right(), 120);
+    }
+
+    #[test]
     fn a_tiny_terminal_yields_empty_rectangles_rather_than_underflow() {
         for (w, h) in [(1u16, 1u16), (2, 2), (10, 3), (4, 5)] {
             let l = layout(w, h, SIDEBAR_DEFAULT);
@@ -368,5 +494,59 @@ mod tests {
         assert_eq!(inner, Rect::new(7, 3, 5, 2));
         // An inset larger than the rect collapses instead of wrapping.
         assert!(rect.inset(20, 20, 20, 20).is_empty());
+    }
+
+    /// The conversation's text width is one definition, and a frame carries it:
+    /// the compositor pads, the renderer wraps, and both read `chat_inner`.
+    #[test]
+    fn a_frame_carries_the_width_the_conversation_is_drawn_at() {
+        for (w, h, sidebar) in [
+            (120u16, 38u16, SIDEBAR_DEFAULT),
+            (120, 38, 0),
+            (90, 24, SIDEBAR_DEFAULT),
+            (60, 20, 0),
+            (24, 10, 0),
+            (8, 4, 0),
+            (7, 4, 0),
+            (1, 1, 0),
+            (0, 0, 0),
+        ] {
+            let frame = Frame::new(w, h, sidebar, Density::Focused, SidebarPosition::Right);
+            assert_eq!(
+                frame.inner,
+                chat_inner(frame.layout.body.w),
+                "the frame must name the width its own band is drawn at: {w}x{h}"
+            );
+            assert!(frame.inner >= 1, "never a zero-width conversation");
+            assert_eq!(frame.width, w.max(1));
+            assert_eq!(frame.height, h.max(1));
+        }
+    }
+
+    /// The width the driver wraps the transcript at is the width the compositor
+    /// has room for — for every ordinary terminal that is exactly "band minus
+    /// the two padding columns", i.e. what the driver used to compute by hand.
+    #[test]
+    fn chat_inner_is_the_band_minus_its_padding() {
+        for columns in [200u16, 120, 97, 88, 80, 40, 20, 8] {
+            assert_eq!(
+                chat_inner(columns),
+                columns as usize - CHAT_PADDING as usize * 2,
+                "{columns} columns"
+            );
+            assert_eq!(chat_padding(columns), CHAT_PADDING as usize);
+        }
+    }
+
+    #[test]
+    fn chat_inner_takes_no_more_padding_than_a_narrow_band_can_afford() {
+        // Under 8 columns the padding shrinks rather than eating the band.
+        assert_eq!(chat_inner(7), 5);
+        assert_eq!(chat_padding(7), 1);
+        assert_eq!(chat_inner(4), 2);
+        assert_eq!(chat_inner(3), 3);
+        // A degenerate band still yields a width the renderer can use.
+        assert_eq!(chat_inner(1), 1);
+        assert_eq!(chat_inner(0), 1);
     }
 }

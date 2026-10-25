@@ -2657,14 +2657,17 @@ impl Client {
                 .map(|index| next + index * PAGE_CHUNK_BYTES)
                 .filter(|offset| *offset < total)
                 .collect();
-            let mut fetched = Vec::with_capacity(offsets.len());
-            for offset in offsets {
-                fetched.push((
-                    offset,
-                    self.fetch_chunk(desktop_id, lane, &id, offset, owner, expected)
-                        .await?,
-                ));
-            }
+            let fetched = futures::future::try_join_all(offsets.into_iter().map(|offset| {
+                let id = &id;
+                async move {
+                    Ok::<_, crate::Error>((
+                        offset,
+                        self.fetch_chunk(desktop_id, lane, id, offset, owner, expected)
+                            .await?,
+                    ))
+                }
+            }))
+            .await?;
             for (offset, reply) in fetched {
                 let chunk = read_chunk_of(&reply).ok_or_else(page_shape_error)?;
                 store_chunk(&mut bytes, chunk, &id, total, offset)?;

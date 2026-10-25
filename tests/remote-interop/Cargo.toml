@@ -31,6 +31,11 @@ path = "src/bin/host.rs"
 required-features = ["network-tests"]
 
 [[test]]
+name = "transfer_benchmark"
+path = "tests/transfer_benchmark.rs"
+required-features = ["network-tests"]
+
+[[test]]
 name = "rust_client_server"
 path = "tests/rust_client_server.rs"
 required-features = ["network-tests"]

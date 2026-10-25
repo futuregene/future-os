@@ -382,10 +382,10 @@ impl<'a> Transfer<'a> {
         let mut start = 0u64;
         while start < chunks {
             let wave_end = (start + CHUNK_CONCURRENCY as u64).min(chunks);
-            let mut wave = Vec::with_capacity(usize::try_from(wave_end - start).unwrap_or(0));
-            for index in start..wave_end {
-                wave.push(self.pull_chunk(&info.transfer_id, index).await?);
-            }
+            let wave = futures::future::try_join_all(
+                (start..wave_end).map(|index| self.pull_chunk(&info.transfer_id, index)),
+            )
+            .await?;
             // Appended in index order, after the whole wave has arrived: writing as
             // each chunk lands would interleave them.
             for bytes in wave {

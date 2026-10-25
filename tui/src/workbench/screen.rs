@@ -39,12 +39,18 @@ pub(crate) fn compose(
     } else {
         0
     };
-    let frame: Layout = layout::layout(w, h, sidebar_w);
+    let frame: Layout = layout::layout_with_preferences(
+        w,
+        h,
+        sidebar_w,
+        workbench.density,
+        workbench.sidebar_position,
+    );
 
     paint(
         &mut rows,
         frame.header,
-        header(&palette, data, &frame, columns),
+        header(&palette, data, &frame, columns, workbench.density),
     );
 
     if data.on_launchpad() {
@@ -105,7 +111,7 @@ pub(crate) fn compose(
                 &palette.text(palette.red, &format!(" {notice}")),
                 columns,
             )],
-            None => hint_row(&palette, columns, frame.compact, workbench.lang),
+            None => hint_row(workbench, &palette, columns, frame.compact),
         };
         paint(&mut rows, hint, row);
     }
@@ -129,6 +135,16 @@ pub(crate) fn compose(
         }
         Some(Overlay::Picker(kind)) => {
             let lines = picker_box(workbench, data, &palette, w, h, kind);
+            paint_overlay(&mut rows, &palette, lines, columns);
+            workbench.set_cursor(None);
+        }
+        Some(Overlay::Preferences) => {
+            let lines = preferences_box(workbench, &palette, w, h);
+            paint_overlay(&mut rows, &palette, lines, columns);
+            workbench.set_cursor(None);
+        }
+        Some(Overlay::Keybindings) => {
+            let lines = keybindings_box(workbench, &palette, w, h);
             paint_overlay(&mut rows, &palette, lines, columns);
             workbench.set_cursor(None);
         }
@@ -194,7 +210,13 @@ fn paint_overlay(rows: &mut [String], palette: &Palette, lines: Vec<String>, col
 
 // ─── header ────────────────────────────────────────────────────────────────
 
-fn header(palette: &Palette, data: &WorkbenchData, frame: &Layout, columns: usize) -> Vec<String> {
+fn header(
+    palette: &Palette,
+    data: &WorkbenchData,
+    frame: &Layout,
+    columns: usize,
+    density: super::preferences::Density,
+) -> Vec<String> {
     let compact = frame.compact;
     // The right corner is a *composition*, never a cut string: each candidate is
     // whole (dot, app, version), and the widest one that fits is drawn. Cutting
@@ -227,6 +249,32 @@ fn header(palette: &Palette, data: &WorkbenchData, frame: &Layout, columns: usiz
         return lines;
     }
 
+    if density == super::preferences::Density::Focused {
+        let title = if data.session.title.is_empty() {
+            "workbench"
+        } else {
+            &data.session.title
+        };
+        let workspace = if data.session.branch.is_empty() {
+            data.session.cwd.clone()
+        } else {
+            format!("{} · ⎇ {}", data.session.cwd, data.session.branch)
+        };
+        let left = format!(
+            " {} {}",
+            palette.strong(palette.accent, "FUTURE OS"),
+            palette.dim(&format!("· {title} · {workspace}"))
+        );
+        let left = fit(
+            &left,
+            columns.saturating_sub(right_width + usize::from(right_width > 0)),
+        );
+        let pad = columns.saturating_sub(width(&left) + right_width);
+        return vec![
+            fit(&format!("{left}{}{right}", " ".repeat(pad)), columns),
+            widgets::rule(palette, columns),
+        ];
+    }
     let logo = widgets::logo_rows(palette);
     let wordmark = widgets::wordmark_rows(palette);
     let title = if data.session.title.is_empty() {
@@ -347,8 +395,10 @@ fn conversation(
     if rows == 0 || columns == 0 {
         return Vec::new();
     }
-    let padding = (layout::CHAT_PADDING as usize).min(columns / 4);
-    let inner = columns.saturating_sub(padding * 2).max(1);
+    // One definition of the conversation's text width, shared with the driver
+    // that wraps the transcript — see `layout::chat_inner`.
+    let padding = layout::chat_padding(area.w);
+    let inner = layout::chat_inner(area.w);
     let messages = &data.messages;
     let total = messages.len();
     // `chat_scroll` counts rows up from the tail; it is clamped so a stale
@@ -460,7 +510,7 @@ fn activity_row(
     let spinner = if activity.is_busy() {
         palette.text(
             palette.amber,
-            &format!("{} ", widgets::spinner(workbench.tick / 4)),
+            &format!("{} ", widgets::spinner(workbench.spinner_frame())),
         )
     } else {
         palette.dim("· ")
@@ -543,28 +593,30 @@ fn status_row(data: &WorkbenchData, palette: &Palette, columns: usize) -> Vec<St
 ///
 /// A hinted key is a word, not a character stream: `ctrl+b 侧栏 · ctrl+n` (a cut
 /// on the right) tells the reader nothing, and `· ctrl+` is not a hint at all.
-fn hint_row(palette: &Palette, columns: usize, compact: bool, lang: Language) -> Vec<String> {
-    const WIDE: [(&str, Key); 6] = [
+fn hint_row(
+    workbench: &Workbench,
+    palette: &Palette,
+    columns: usize,
+    compact: bool,
+) -> Vec<String> {
+    use super::preferences::Action;
+    let wide = [
         ("Esc", Key::HintBackToChat),
-        ("ctrl+b", Key::HintSidebar),
+        (workbench.keys.key(Action::Sidebar), Key::HintSidebar),
         ("tab", Key::HintFocus),
-        ("/", Key::HintCommands),
-        ("?", Key::HintHelp),
-        ("ctrl+n", Key::HintNewChat),
+        (workbench.keys.key(Action::Palette), Key::HintCommands),
+        (workbench.keys.key(Action::Help), Key::HintHelp),
+        (workbench.keys.key(Action::NewSession), Key::HintNewChat),
+        (workbench.keys.key(Action::Preferences), Key::HintSettings),
     ];
-    const SHORT: [(&str, Key); 3] = [
-        ("ctrl+b", Key::HintSidebar),
-        ("/", Key::HintCommands),
-        ("?", Key::HintHelp),
-    ];
-    let parts: &[(&str, Key)] = if compact { &SHORT } else { &WIDE };
+    let parts: &[(&str, Key)] = if compact { &wide[1..4] } else { &wide };
     let items: Vec<String> = parts
         .iter()
         .map(|(key, action)| {
             format!(
                 "{} {}",
                 palette.text(palette.iris, key),
-                palette.dim(t(lang, *action))
+                palette.dim(t(workbench.lang, *action))
             )
         })
         .collect();
@@ -680,6 +732,14 @@ fn help_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec
     let mut content: Vec<String> = Vec::new();
     content.push(palette.dim(t(lang, Key::HelpFooter)));
     content.push(String::new());
+    for action in super::preferences::ACTIONS {
+        content.push(format!(
+            " {}  {}",
+            palette.text(palette.accent, &fit(workbench.keys.key(action), 18)),
+            palette.body(t(lang, action.description()))
+        ));
+    }
+    content.push(String::new());
     for (key, description) in HELP_KEYS {
         content.push(format!(
             " {}  {}",
@@ -704,6 +764,92 @@ fn help_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec
     workbench.set_overlay_scroll(scroll);
     let content = content.into_iter().skip(scroll).collect();
     framed(palette, t(lang, Key::HelpTitle), content, w, h, 72)
+}
+
+fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec<String> {
+    use super::preferences::{self, PreferenceRow};
+    let lang = workbench.lang;
+    let mut content = Vec::new();
+    for (index, row) in preferences::PREFERENCE_ROWS.iter().enumerate() {
+        let selected = index == workbench.preferences_index;
+        let label = preferences::preference_label(*row, lang);
+        let value = match row {
+            PreferenceRow::Density => t(
+                lang,
+                if workbench.density == preferences::Density::Focused {
+                    Key::PrefFocused
+                } else {
+                    Key::PrefComfortable
+                },
+            ),
+            PreferenceRow::Position => t(
+                lang,
+                if workbench.sidebar_position == preferences::SidebarPosition::Left {
+                    Key::PrefLeft
+                } else {
+                    Key::PrefRight
+                },
+            ),
+            PreferenceRow::Width => "",
+            PreferenceRow::Shortcuts => "›",
+            PreferenceRow::Reset => "↺",
+        };
+        let value = if *row == PreferenceRow::Width {
+            format!("‹ {:>2} ›", workbench.sidebar_w)
+        } else if matches!(row, PreferenceRow::Density | PreferenceRow::Position) {
+            format!("‹ {value} ›")
+        } else {
+            value.to_string()
+        };
+        let marker = if selected { "›" } else { " " };
+        let line = format!(
+            " {marker} {}  {}",
+            palette.text(palette.accent, &fit(label, 20)),
+            palette.dim(&value)
+        );
+        content.push(if selected {
+            palette.strong(palette.fg, &line)
+        } else {
+            line
+        });
+    }
+    content.push(String::new());
+    content.push(palette.dim(t(lang, Key::PreferencesHint)));
+    framed(palette, t(lang, Key::PreferencesTitle), content, w, h, 72)
+}
+
+fn keybindings_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec<String> {
+    use super::preferences;
+    let lang = workbench.lang;
+    let mut content = Vec::new();
+    for (index, action) in preferences::ACTIONS.iter().enumerate() {
+        let selected = index == workbench.keybinding_index;
+        let marker = if selected { "›" } else { " " };
+        let waiting = selected && workbench.awaiting_keybinding;
+        let key = if waiting {
+            "…"
+        } else {
+            workbench.keys.key(*action)
+        };
+        let customized = if workbench.keys.is_default(*action) {
+            ""
+        } else {
+            " *"
+        };
+        let line = format!(
+            " {marker} {}  {}{customized}",
+            palette.text(palette.iris, &fit(key, 18)),
+            palette.body(t(lang, action.description()))
+        );
+        content.push(if selected {
+            palette.strong(palette.fg, &line)
+        } else {
+            line
+        });
+    }
+    content.push(String::new());
+    content.push(palette.dim(t(lang, Key::KeybindingsHint)));
+    framed(palette, t(lang, Key::KeybindingsTitle), content, w, h, 76)
 }
 
 fn palette_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec<String> {
@@ -887,6 +1033,7 @@ mod tests {
     use super::*;
 
     /// The cases below read the copy, so they pin the language.
+    #[allow(dead_code)]
     const LANG: Language = Language::Zh;
     use crate::utils::strip_ansi_codes;
     use crate::workbench::state::WorkbenchData;
@@ -944,7 +1091,7 @@ mod tests {
     #[test]
     fn the_hint_row_drops_whole_hints_and_never_ends_in_a_separator() {
         for columns in [120usize, 60, 40, 24, 12, 1] {
-            let rows = hint_row(&FUTURE_DARK, columns, true, LANG);
+            let rows = hint_row(&Workbench::new(), &FUTURE_DARK, columns, true);
             assert_eq!(width(&rows[0]), columns, "{columns}");
             let text = plain(&rows[0]);
             assert!(!text.trim_end().ends_with('·'), "{columns}: {text:?}");
@@ -952,11 +1099,17 @@ mod tests {
         }
         // Wide keeps every entry; narrow drops from the right, never from the
         // middle of a key.
-        let wide = plain(&hint_row(&FUTURE_DARK, 120, false, LANG)[0]);
-        assert!(wide.trim_end().ends_with("新会话"), "{wide:?}");
-        let narrow = plain(&hint_row(&FUTURE_DARK, 40, true, LANG)[0]);
-        assert!(narrow.trim_end().ends_with("帮助"), "{narrow:?}");
+        let wide = plain(&hint_row(&Workbench::new(), &FUTURE_DARK, 200, false)[0]);
+        assert!(wide.contains("ctrl+o"));
+        assert!(wide
+            .trim_end()
+            .chars()
+            .last()
+            .is_some_and(|c| c.is_ascii_alphabetic()));
+        let narrow = plain(&hint_row(&Workbench::new(), &FUTURE_DARK, 40, true)[0]);
         assert!(narrow.contains("ctrl+b"), "{narrow:?}");
+        assert!(narrow.contains("tab"), "{narrow:?}");
+        assert!(!narrow.contains("ctrl+p"), "whole hints are dropped");
     }
 
     #[test]
@@ -968,6 +1121,7 @@ mod tests {
         // reads as a broken renderer, not as a deliberate crop, and the
         // launchpad hero drew all five, so the two screens disagreed.
         let mut workbench = Workbench::new();
+        workbench.density = super::super::preferences::Density::Comfortable;
         let data = crate::workbench::demo::chat();
         let rows = workbench.render(&data, 120, 38);
         let mark = widgets::wordmark_rows(&FUTURE_DARK);
@@ -991,6 +1145,7 @@ mod tests {
     #[test]
     fn the_launchpad_header_keeps_the_text_brand_so_the_hero_owns_the_block_one() {
         let mut workbench = Workbench::new();
+        workbench.density = super::super::preferences::Density::Comfortable;
         let launchpad = crate::workbench::demo::launchpad();
         let rows = workbench.render(&launchpad, 120, 38);
         let header_rows: Vec<String> = rows[..5].iter().map(|row| plain(row)).collect();

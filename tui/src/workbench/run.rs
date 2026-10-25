@@ -13,7 +13,7 @@
 //! are intercepted here, because the draft must not swallow them.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
@@ -22,10 +22,11 @@ use crate::rpc::types::AgentEvent;
 use crate::settings::TuiSettings;
 use crate::terminal::Terminal;
 
-use super::layout;
+use super::layout::{self, Frame};
 use super::live::{self, Live, Outcome};
 use super::mouse;
 use super::picker::PickerKind;
+use super::state::PanelId;
 use super::{VerbOutcome, WbAction, WbEvent, Workbench};
 
 /// What a run of the workbench needs to know before it starts.
@@ -65,6 +66,23 @@ pub async fn run(options: Options) -> Result<(), String> {
     let mut workbench = Workbench::new();
     workbench.set_theme(&live.theme_id);
     workbench.set_language(live::persisted_language(&settings));
+    workbench.set_preferences(super::preferences::LayoutPreferences {
+        density: settings
+            .density
+            .as_deref()
+            .map(super::preferences::Density::from_wire)
+            .unwrap_or_default(),
+        sidebar_position: settings
+            .sidebar_position
+            .as_deref()
+            .map(super::preferences::SidebarPosition::from_wire)
+            .unwrap_or_default(),
+        sidebar_width: settings.sidebar_width.unwrap_or(layout::SIDEBAR_DEFAULT),
+        sidebar_visible: settings.sidebar_visible.unwrap_or(true),
+    });
+    workbench.keys = super::preferences::Keybindings::load(&super::preferences::keybindings_path(
+        &options.settings_path,
+    ));
 
     if options.continue_recent && options.session.is_none() {
         live.attach_most_recent().await;
@@ -138,7 +156,10 @@ pub async fn run(options: Options) -> Result<(), String> {
     if settings.reply_detail.as_deref() != Some(detail.as_str()) {
         settings.reply_detail = Some(detail);
     }
-    save_settings(&options.settings_path, &settings);
+    persist_preferences(&workbench, &mut settings, &options.settings_path);
+    let _ = workbench.keys.save(&super::preferences::keybindings_path(
+        &options.settings_path,
+    ));
 
     outcome
 }
@@ -164,14 +185,32 @@ async fn event_loop(
     // screen from the first paint.
     terminal.refresh_size();
 
-    let mut ticker = tokio::time::interval(Duration::from_millis(120));
+    let mut ticker = tokio::time::interval(TICK);
     // The first tick fires immediately; consume it so the loop's first draw is
     // not followed by a burst.
     ticker.tick().await;
+    let mut clock = TickClock::new(workbench.spinner_frame(), Instant::now());
+    // Something is on screen to paint from the first iteration — and after
+    // that only when an event or the clock changed what the frame shows. A
+    // ticker that repaints an unchanged frame is not free: composing it means
+    // rebuilding `WorkbenchData`, which asks the transcript for every row it
+    // has rendered (see `Live::data`).
+    let mut paint = true;
 
     loop {
-        draw(terminal, workbench, live)?;
+        // The frame's own metrics, computed once: the surface composes for
+        // them, and the event path below hands the transcript the *same*
+        // width. A second, different width (the old loop used `1` to read one
+        // field) makes `ChatArea` discard its rendered rows and re-wrap the
+        // whole transcript on every event.
+        let frame = frame_of(terminal, workbench);
+        if paint {
+            draw(terminal, workbench, live, &frame)?;
+            clock.painted(workbench.spinner_frame(), Instant::now());
+        }
 
+        // `paint` belongs to the *next* frame: every arm below assigns it — an
+        // input or agent event paints, and the ticker asks the clock.
         tokio::select! {
             Some(input) = input_rx.recv() => {
                 let events = match &input {
@@ -179,14 +218,20 @@ async fn event_loop(
                     TerminalEvent::Data(data) => events_of(data),
                 };
                 for event in events {
-                    if quit(workbench, live, event, settings, settings_path).await? {
+                    if quit(workbench, live, event, &frame, settings, settings_path).await? {
                         return Ok(());
                     }
                 }
+                paint = true;
             }
             Some(event) = agent_events.recv() => {
-                let was = live.data(1).activity.kind;
+                let was = live.activity_kind();
                 live.handle_event(event);
+                // What arrived while this event was being applied is applied
+                // now, before the frame: a streaming turn emits deltas at tens
+                // per second and a frame per token is work no one can see (the
+                // screen only ever shows the last one).
+                drain(agent_events, |event| live.handle_event(event));
                 // A `usage` or `agent_end` event means the agent knows more
                 // about what the turn spent than the deltas do: ask it, so the
                 // footer's ctx/cost/cache move at the end of a turn instead of
@@ -196,12 +241,141 @@ async fn event_loop(
                 }
                 // A run that started or stopped changes what the lists show
                 // (a session's age, a title from its first message).
-                if live.data(1).activity.kind != was {
+                if live.activity_kind() != was {
                     live.refresh_sessions().await;
                 }
+                paint = true;
             }
-            _ = ticker.tick() => {}
+            _ = ticker.tick() => {
+                // The spinner is the only animation a tick owns; it advances
+                // with the ticker and owes a frame when its drawn frame
+                // changes. Nothing else in the frame is finer than a minute.
+                // A short terminal lays out no activity row at all
+                // (`compact`), so there is nothing on screen to animate.
+                let animating = live.activity_animating() && frame.layout.activity.is_some();
+                if animating {
+                    workbench.advance_tick();
+                }
+                paint = clock.tick(
+                    animating,
+                    workbench.spinner_frame(),
+                    ages_on_screen(workbench, &frame),
+                    Instant::now(),
+                );
+            }
         }
+    }
+}
+
+/// How often the loop wakes up. The ticker is a clock, not a paint: what it
+/// animates is the activity row's spinner (`SPINNER_TICKS` ticks a frame).
+const TICK: Duration = Duration::from_millis(120);
+
+/// How long an idle frame may go unpainted while the only thing on screen that
+/// changes with time is the sidebar's session ages ("now", "5m", "3h"…) — one
+/// minute, the finest step that column has. An idle loop that repainted on the
+/// tick instead would re-compose a frame eight times a second to draw the same
+/// bytes.
+const IDLE_REFRESH: Duration = Duration::from_secs(60);
+
+/// How many already-queued agent events one iteration applies before painting.
+///
+/// The limit exists so a producer that outruns the surface for a long time
+/// cannot keep the loop away from the keyboard and from painting; it is far
+/// above a normal burst's length (a streamed token run between two frames is
+/// hundreds of deltas at most, not thousands), so in practice a whole run is
+/// coalesced into one frame and the cap is only ever reached when something has
+/// gone wrong upstream.
+const COALESCE_LIMIT: usize = 4096;
+
+/// Apply every agent event that is already queued, stopping at
+/// [`COALESCE_LIMIT`] so the loop always gets back to painting and reading the
+/// keyboard. The events are applied in order, so the transcript the next frame
+/// paints is the same one a frame per event would have produced.
+///
+/// Returns how many it applied — the count is what pins the bound in the test
+/// below; the loop itself does not need it.
+fn drain(
+    agent_events: &mut mpsc::UnboundedReceiver<AgentEvent>,
+    mut apply: impl FnMut(AgentEvent),
+) -> usize {
+    let mut applied = 0;
+    while applied < COALESCE_LIMIT {
+        match agent_events.try_recv() {
+            Ok(event) => {
+                apply(event);
+                applied += 1;
+            }
+            Err(_) => break,
+        }
+    }
+    applied
+}
+
+/// Whether the sidebar is showing the one panel that reads the clock: the
+/// session list's ages. Any other panel is static while nothing happens.
+fn ages_on_screen(workbench: &Workbench, frame: &Frame) -> bool {
+    // The frame's own layout says whether a rail was drawn (a hidden or
+    // too-narrow sidebar has none), so this asks what is on screen rather than
+    // what the reader would like to be.
+    frame.layout.sidebar.is_some() && workbench.panel == PanelId::Sessions
+}
+
+/// Whether a 120 ms tick owes the screen a frame.
+///
+/// Two clocks reach the frame and neither is worth a repaint of the whole
+/// surface: the activity row's spinner and elapsed counter (sub-second, only
+/// while a run is in flight) and the sidebar's session ages (minute
+/// granularity, only while that panel is on screen). Everything else in a frame
+/// changes only when an event changes it, and an event paints anyway.
+///
+/// Split out from the loop so the "an idle tick paints nothing" contract is a
+/// unit test rather than something to believe about a `select!` arm.
+struct TickClock {
+    /// The spinner frame the last paint drew.
+    spinner: usize,
+    /// When the frame was last painted, by any cause.
+    painted_at: Instant,
+}
+
+impl TickClock {
+    fn new(spinner: usize, now: Instant) -> Self {
+        Self {
+            spinner,
+            painted_at: now,
+        }
+    }
+
+    /// A frame was painted for another reason (an event, the first frame).
+    fn painted(&mut self, spinner: usize, now: Instant) {
+        self.spinner = spinner;
+        self.painted_at = now;
+    }
+
+    /// The ticker fired with nothing else to report: is a frame owed?
+    ///
+    /// `animating` — the activity row is drawing the spinner or the elapsed
+    /// counter; `spinner` — the frame that counter is on now; `ages` — the
+    /// session list is on screen, so its minute-granularity ages are too.
+    fn tick(&mut self, animating: bool, spinner: usize, ages: bool, now: Instant) -> bool {
+        if animating {
+            // The spinner's own step bounds how fast an animating row can
+            // change (the elapsed counter is coarser), so it is exactly when a
+            // frame is due — two a second instead of eight.
+            if spinner == self.spinner {
+                return false;
+            }
+            self.painted(spinner, now);
+            return true;
+        }
+        if !ages {
+            return false;
+        }
+        if now.duration_since(self.painted_at) < IDLE_REFRESH {
+            return false;
+        }
+        self.painted(spinner, now);
+        true
     }
 }
 
@@ -210,6 +384,7 @@ async fn quit(
     workbench: &mut Workbench,
     live: &mut Live,
     event: WbEvent,
+    frame: &Frame,
     settings: &mut TuiSettings,
     settings_path: &Path,
 ) -> Result<bool, String> {
@@ -226,45 +401,52 @@ async fn quit(
                 return Ok(false);
             }
         }
-        match key.as_str() {
-            "ctrl+x" => {
-                live.abort().await;
-                return Ok(false);
-            }
-            "ctrl+e" => {
-                let next = match live.detail() {
-                    ReplyDetail::Default => ReplyDetail::Detailed,
-                    ReplyDetail::Detailed => ReplyDetail::Default,
-                };
-                live.set_detail(next);
-                return Ok(false);
-            }
-            "ctrl+n" => {
-                // A new conversation: the surface's launchpad is not involved
-                // here (the session is created straight away), so the reader
-                // lands in an empty transcript, which is the same thing.
-                return match live.apply(WbAction::Command("/new".into())).await {
-                    Outcome::Quit => Ok(true),
-                    Outcome::Continue => Ok(false),
-                };
-            }
-            "ctrl+k" => {
-                live.refresh_sessions().await;
-                live.refresh_state().await;
-                return Ok(false);
-            }
-            _ => {}
-        }
+        // Configurable global actions are handled below, after the approval
+        // gate. Keeping them out of this literal-chord fast path makes the
+        // displayed keybinding and the one that actually fires agree.
     }
 
-    let actions = workbench.handle(event, &live.data(1));
+    // Global actions that need the adapter use the same configurable map as
+    // the surface. Overlay keys still belong to the overlay.
+    if let WbEvent::Key(key) = &event {
+        if workbench.overlay.is_none() {
+            match workbench.keys.action(key) {
+                Some(super::preferences::Action::Stop) => {
+                    live.abort().await;
+                    return Ok(false);
+                }
+                Some(super::preferences::Action::ReplyDetail) => {
+                    let next = match live.detail() {
+                        ReplyDetail::Default => ReplyDetail::Detailed,
+                        ReplyDetail::Detailed => ReplyDetail::Default,
+                    };
+                    live.set_detail(next);
+                    return Ok(false);
+                }
+                Some(super::preferences::Action::NewSession) => {
+                    return match live.apply(WbAction::Command("/new".into())).await {
+                        Outcome::Quit => Ok(true),
+                        Outcome::Continue => Ok(false),
+                    };
+                }
+                Some(super::preferences::Action::Refresh) => {
+                    live.refresh_sessions().await;
+                    live.refresh_state().await;
+                    return Ok(false);
+                }
+                _ => {}
+            }
+        }
+    }
+    // The frame's own width, not a probe: see `Frame` and `Live::data`.
+    let actions = workbench.handle(event, &live.data(frame));
     for action in actions {
         // The three list menus belong to the surface: the app owns the agent,
         // not the picker. Opening it here (rather than in `live.command`) is
         // what lets the palette and the draft both reach it.
         if let WbAction::Command(command) = &action {
             if let Some(kind) = PickerKind::from_command(command) {
-                let data = live.data(1);
+                let data = live.data(frame);
                 workbench.open_picker(kind, &data);
                 continue;
             }
@@ -272,7 +454,8 @@ async fn quit(
             // (a panel to show, a workspace to explain). The palette advertises
             // these, so they must not reach the agent: it has no such commands
             // and answered `Unknown command` for all five.
-            if let VerbOutcome::Done { notice } = workbench.surface_command(command, &live.data(1))
+            if let VerbOutcome::Done { notice } =
+                workbench.surface_command(command, &live.data(frame))
             {
                 live.notice = notice;
                 continue;
@@ -294,6 +477,21 @@ async fn quit(
             live.set_language(preference);
             settings.language = Some(preference.as_wire().to_string());
             save_settings(settings_path, settings);
+            continue;
+        }
+        if matches!(
+            action,
+            WbAction::SetPreferences | WbAction::ResizeSidebar(_) | WbAction::PersistSidebar
+        ) {
+            persist_preferences(workbench, settings, settings_path);
+        }
+        if matches!(action, WbAction::SetKeybindings) {
+            let _ = workbench
+                .keys
+                .save(&super::preferences::keybindings_path(settings_path));
+        }
+        if let WbAction::Notice(notice) = &action {
+            live.notice = Some(notice.clone());
             continue;
         }
         if matches!(action, WbAction::Submit(_)) {
@@ -390,25 +588,31 @@ fn key_events(data: &str) -> Vec<WbEvent> {
     vec![WbEvent::Paste(data.to_string())]
 }
 
-fn draw(terminal: &mut Terminal, workbench: &mut Workbench, live: &mut Live) -> Result<(), String> {
-    let width = terminal.columns().max(1);
-    let height = terminal.rows().max(1);
-    let frame_layout = layout::layout(
-        width,
-        height,
+/// The frame the surface is composed for right now, computed once per loop
+/// iteration and handed to both halves of it — the composer and the event path
+/// — so the width the transcript wraps to is the width it is drawn at.
+fn frame_of(terminal: &Terminal, workbench: &Workbench) -> Frame {
+    Frame::new(
+        terminal.columns(),
+        terminal.rows(),
         if workbench.sidebar_visible {
             workbench.sidebar_w
         } else {
             0
         },
-    );
-    let inner = frame_layout
-        .body
-        .w
-        .saturating_sub(layout::CHAT_PADDING * 2)
-        .max(1) as usize;
-    let data = live.data(inner);
-    let rows = workbench.render(&data, width, height);
+        workbench.density,
+        workbench.sidebar_position,
+    )
+}
+
+fn draw(
+    terminal: &mut Terminal,
+    workbench: &mut Workbench,
+    live: &mut Live,
+    frame: &Frame,
+) -> Result<(), String> {
+    let data = live.data(frame);
+    let rows = workbench.render(&data, frame.width, frame.height);
     terminal.write(&frame_bytes(&rows, workbench.cursor()));
     Ok(())
 }
@@ -446,6 +650,15 @@ fn frame_bytes(rows: &[String], cursor: Option<(u16, u16)>) -> String {
     frame
 }
 
+fn persist_preferences(workbench: &Workbench, settings: &mut TuiSettings, path: &Path) {
+    let preferences = workbench.preferences();
+    settings.density = Some(preferences.density.as_wire().into());
+    settings.sidebar_position = Some(preferences.sidebar_position.as_wire().into());
+    settings.sidebar_width = Some(preferences.sidebar_width);
+    settings.sidebar_visible = Some(preferences.sidebar_visible);
+    save_settings(path, settings);
+}
+
 pub(crate) fn load_settings(path: &Path) -> TuiSettings {
     let text = std::fs::read_to_string(path).unwrap_or_default();
     let value: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
@@ -463,6 +676,114 @@ pub(crate) fn save_settings(path: &Path, settings: &TuiSettings) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workbench::SPINNER_TICKS;
+
+    /// The ticker is a clock, not a paint. With nothing on screen that reads it
+    /// — no run in flight, no session list — a minute of ticks (500 of them at
+    /// the 120 ms cadence) owes the screen exactly nothing, which is the whole
+    /// difference between an idle `future tui` and one that re-composes its
+    /// transcript eight times a second.
+    #[test]
+    fn an_idle_tick_with_no_clock_on_screen_paints_nothing() {
+        let start = Instant::now();
+        let mut clock = TickClock::new(0, start);
+        for tick in 1..=500u32 {
+            let now = start + TICK * tick;
+            assert!(!clock.tick(false, 0, false, now), "tick {tick} painted");
+        }
+    }
+
+    /// With the session list on screen the only thing that changes is that
+    /// column's ages, which read in whole minutes: one frame a minute, not 500.
+    #[test]
+    fn an_idle_tick_paints_the_session_ages_once_a_minute() {
+        let start = Instant::now();
+        let mut clock = TickClock::new(0, start);
+        let mut painted = Vec::new();
+        for tick in 1..=1000u32 {
+            // Two minutes of ticks.
+            let now = start + TICK * tick;
+            assert!(now - start <= Duration::from_secs(120));
+            if clock.tick(false, 0, true, now) {
+                painted.push(now - start);
+            }
+        }
+        assert_eq!(
+            painted,
+            vec![Duration::from_secs(60), Duration::from_secs(120)],
+            "an idle frame is at most one minute stale, and never fresher"
+        );
+    }
+
+    /// A run in flight animates the spinner, and the spinner holds a frame for
+    /// [`SPINNER_TICKS`] ticks: two frames a second rather than one per tick.
+    #[test]
+    fn a_run_in_flight_paints_once_per_spinner_frame() {
+        let start = Instant::now();
+        let mut clock = TickClock::new(0, start);
+        let mut painted = 0;
+        for tick in 1..=40usize {
+            let now = start + TICK * tick as u32;
+            // What the loop does with the same tick: step, then ask.
+            let spinner = tick / SPINNER_TICKS;
+            if clock.tick(true, spinner, false, now) {
+                painted += 1;
+            }
+        }
+        // Four ticks make a spinner frame, so 40 ticks are ten frames — and the
+        // spinner frame, not the tick, is what bounds an animating repaint.
+        assert_eq!(painted, 40 / SPINNER_TICKS);
+    }
+
+    /// A paint for any other reason restarts the idle clock: the frame on
+    /// screen is fresh, so the minute is counted from it.
+    #[test]
+    fn a_paint_for_another_reason_restarts_the_idle_clock() {
+        let start = Instant::now();
+        let mut clock = TickClock::new(0, start);
+        // Half a minute, then an event paints.
+        assert!(!clock.tick(false, 0, true, start + TICK * 250));
+        let event_at = start + TICK * 250;
+        clock.painted(0, event_at);
+        // The minute is counted from the event, not from the last tick.
+        assert!(!clock.tick(false, 0, true, event_at + Duration::from_secs(59)));
+        assert!(clock.tick(false, 0, true, event_at + Duration::from_secs(60)));
+    }
+
+    /// A queued burst is applied in the order it arrived, and one iteration
+    /// never swallows more than [`COALESCE_LIMIT`] of it — the cap is what keeps
+    /// a producer that outruns the surface from starving the keyboard.
+    #[test]
+    fn a_queued_burst_is_applied_in_order_and_bounded() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        for i in 0..5 {
+            tx.send(AgentEvent {
+                r#type: format!("t{i}"),
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        let mut seen = Vec::new();
+        assert_eq!(drain(&mut rx, |event| seen.push(event.r#type)), 5);
+        assert_eq!(seen, ["t0", "t1", "t2", "t3", "t4"]);
+        // An empty queue is not a wait: it returns at once, with nothing done.
+        assert_eq!(drain(&mut rx, |_| unreachable!()), 0);
+
+        // The cap holds even when more is queued than one iteration allows.
+        for i in 0..COALESCE_LIMIT + 7 {
+            tx.send(AgentEvent {
+                r#type: format!("q{i}"),
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        let mut count = 0;
+        assert_eq!(drain(&mut rx, |_| count += 1), COALESCE_LIMIT);
+        assert_eq!(count, COALESCE_LIMIT);
+        // …and the rest is still there for the next iteration, not dropped.
+        assert_eq!(drain(&mut rx, |_| count += 1), 7);
+        assert_eq!(count, COALESCE_LIMIT + 7);
+    }
 
     /// A frame must never advance with a line feed: on a terminal shorter than
     /// the frame (or one whose resize has not reached the process yet) that
