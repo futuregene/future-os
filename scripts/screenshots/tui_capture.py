@@ -122,7 +122,71 @@ def run(
     except OSError:
         pass
     os.close(master)
-    return b"".join(chunks)
+    return trim_incomplete_tail(b"".join(chunks))
+
+
+def trim_incomplete_tail(data: bytes) -> bytes:
+    """Drop a character that was cut in half when the child was killed.
+
+    The capture ends by killing the process, which can land in the middle of a
+    frame — and in the middle of a multi-byte character. Decoding that tail with
+    `errors="replace"` turns the stump into U+FFFD, which the renderer then
+    happily draws as a cell, so a screenshot can show a `�` that the app never
+    emitted (measured: the wordmark's bottom row ended in one).
+
+    Only the incomplete *character* is dropped, not the partial frame: the
+    newest written cells are still the newest content, and the cells it did not
+    reach hold the previous frame, which for a repaint is the same picture.
+    """
+    # Walk back over continuation bytes (a UTF-8 sequence is at most 4 bytes) to
+    # find the lead byte of the sequence that ends the stream.
+    end = len(data) - 1
+    start = end
+    while start >= 0 and (data[start] & 0xC0) == 0x80 and end - start < 3:
+        start -= 1
+    if start < 0:
+        return data
+    lead = data[start]
+    if lead & 0x80 == 0:
+        return data  # ASCII: the stream ended on a character boundary
+    if lead & 0xE0 == 0xC0:
+        need = 2
+    elif lead & 0xF0 == 0xE0:
+        need = 3
+    elif lead & 0xF8 == 0xF0:
+        need = 4
+    else:
+        return data  # not a valid lead byte: the app emitted it, keep it visible
+    if any(byte & 0xC0 != 0x80 for byte in data[start + 1 :]):
+        return data  # corrupt continuation, not a plain truncation
+    have = len(data) - start
+    return data[:start] if have < need else data
+
+
+def _self_test() -> int:
+    """The tail trimmer, against the case that shipped a `\ufffd` into a frame."""
+    problems = []
+
+    def check(name, got, want):
+        if got != want:
+            problems.append(f"{name}: got {got!r}, want {want!r}")
+
+    check("plain ascii untouched", trim_incomplete_tail(b"hello"), b"hello")
+    check("complete cjk untouched", trim_incomplete_tail("中文".encode()), "中文".encode())
+    check("complete block untouched", trim_incomplete_tail("██".encode()), "██".encode())
+    # The captured tail that produced the stray U+FFFD: a `█` cut after 2 bytes.
+    check("cut block trimmed", trim_incomplete_tail(b"ok" + "█".encode()[:2]), b"ok")
+    check("cut hanzi trimmed", trim_incomplete_tail(b"ok" + "音".encode()[:1]), b"ok")
+    check("cut emoji trimmed", trim_incomplete_tail(b"ok" + "🎯".encode()[:3]), b"ok")
+    # A byte that is invalid on its own is the app's output, not a truncation.
+    check("stray lead kept", trim_incomplete_tail(b"\xffok"), b"\xffok")
+
+    if problems:
+        for problem in problems:
+            print(f"FAIL {problem}")
+        return 1
+    print("tui_capture self-test: ok")
+    return 0
 
 
 def main() -> int:
@@ -138,4 +202,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--self-test"]:
+        raise SystemExit(_self_test())
     sys.exit(main())

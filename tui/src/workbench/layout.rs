@@ -158,11 +158,17 @@ pub fn layout(w: u16, h: u16, sidebar_w: u16) -> Layout {
         };
     }
 
-    // Tall layout: header 5 rows (its last row is the hairline), a blank row,
-    // the body, then the input block, activity, status and hint.
-    let header = Rect::new(0, 0, w, 5);
-    let body_y = 6u16;
-    let body_h = h.saturating_sub(13);
+    // Tall layout: header 6 rows (five identity rows, then the hairline), a blank
+    // row, the body, then the input block, activity, status and hint.
+    //
+    // Six, not five: the header's identity block is the 5-row `FUTURE OS` block
+    // font beside the 4-row whale, so a 5-row header drew only the top four rows
+    // of every letter — the bottom stroke of F, U, E and S was cut off, which
+    // reads as clipped art rather than as a frame. The launchpad hero already
+    // drew all five, so the two screens disagreed about the same wordmark.
+    let header = Rect::new(0, 0, w, 6);
+    let body_y = 7u16;
+    let body_h = h.saturating_sub(14);
     let input_y = h.saturating_sub(7);
     Layout {
         compact,
@@ -241,7 +247,7 @@ mod tests {
         assert!(!tall.compact);
         assert_eq!(tall.sidebar.map(|rect| rect.w), Some(SIDEBAR_DEFAULT));
         assert!(tall.activity.is_some());
-        assert_eq!(tall.header.h, 5);
+        assert_eq!(tall.header.h, 6);
         assert_eq!(tall.input.h, 4);
 
         // Narrow: the sidebar goes, the chat takes the whole width.
