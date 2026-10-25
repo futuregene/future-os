@@ -142,6 +142,26 @@ single-line text.
 
 ### Mouse (SGR 1006; enable `?1000h ?1002h ?1006h`, optionally `?1003h` for hover)
 
+**The terminal owns the mode, not the workbench.** `Terminal::set_mouse_mode(true)`
+is set *before* `start()`, which writes `MOUSE_ON` together with the alternate
+screen and bracketed paste; `stop()` writes `MOUSE_OFF` before leaving the
+screen, and both the exit failsafe (`restore_terminal_for_exit`) and the panic
+hook (`crash.rs`) write it unconditionally — those are the paths that can hand a
+mouse-captured terminal back to the shell. It stays off unless a surface asks
+for it, so a caller with no mouse targets never takes the reader's selection.
+
+Machine check (tmux): `tmux display-message -p -t <pane> '#{mouse_any_flag}'`
+reads `1` while the workbench holds the mode and `0` after it quits.
+
+**A frame must not end in a line feed.** `run::frame_bytes` joins the rows with
+`\r\n` and stops: a line feed on the bottom row scrolls the alternate screen up
+by one, which hides the header's first row and puts every painted row one cell
+above the coordinate the layout assigned it — and the SGR report names the row
+the reader *sees*, so every click then lands on the row above its target
+(measured at 120x38: clicking a sidebar tab did nothing; clicking the input box
+hit the conversation). `workbench::run::tests::a_frame_never_ends_in_a_line_feed`
+pins it.
+
 | Target | Behaviour |
 |---|---|
 | Chat area wheel | 3 rows up/down; reaching the top fires `LoadOlder` |

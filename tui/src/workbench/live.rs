@@ -77,6 +77,18 @@ pub struct Live {
     detail: ReplyDetail,
     /// Palette id, so a `/theme` cycle does not need the surface's own state.
     pub theme_id: String,
+    /// When the current run started and how many output tokens it has reported:
+    /// tok/s is the two divided. Cleared at `agent_start`, frozen at
+    /// `agent_end` so an idle surface still shows the turn it just finished.
+    run_started: Option<Instant>,
+    run_output_tokens: u64,
+    run_tps: f64,
+    /// A `usage`/`agent_end` event asked for the agent's cumulative usage and
+    /// the driver has not fetched it yet. The surface is synchronous and the
+    /// fetch is not, so the event sets the flag and the driver loop drains it
+    /// (`take_state_refresh`) — that is what makes the footer move after a turn
+    /// instead of only when someone presses ctrl+k.
+    state_refresh_pending: bool,
 }
 
 impl Live {
@@ -117,6 +129,10 @@ impl Live {
             },
             detail,
             theme_id: theme.id.to_string(),
+            run_started: None,
+            run_output_tokens: 0,
+            run_tps: 0.0,
+            state_refresh_pending: false,
         };
 
         if let Some(id) = session.filter(|id| !id.is_empty()) {
@@ -144,6 +160,18 @@ impl Live {
             if let Some(pending) = state.pending_approvals.first() {
                 self.approval = Some(prompt_of(pending));
             }
+        }
+        // The client's stream manager subscribes to *its* current session and
+        // refuses to subscribe at all while that is empty (an empty id would
+        // leak every session's events). Attaching to a session that already
+        // exists — which is the normal `future tui` start — therefore has to
+        // publish the id, not just paint it: without this line the transcript
+        // loads from history and then never moves again, because no run's
+        // `text_chunk` was ever subscribed to (measured against the mock agent:
+        // the reply never arrived and the activity row sat on 思考 forever).
+        if !state.session_id.is_empty() && self.client.get_current_session_id() != state.session_id
+        {
+            self.client.set_current_session_id(&state.session_id);
         }
         self.state = state;
     }
@@ -233,6 +261,12 @@ impl Live {
             }
         }
         let text = event.text().to_string();
+        // The turn's spend is the agent's to total up, and these are the two
+        // events that say a number moved: a model step's `usage`, and the end of
+        // the run. The driver loop turns the flag into one `get_state`.
+        if wants_state_refresh(&event.r#type) {
+            self.state_refresh_pending = true;
+        }
         match event.r#type.as_str() {
             "text_chunk" => {
                 self.mark(ActivityKind::Streaming);
@@ -240,6 +274,9 @@ impl Live {
             }
             "agent_start" => {
                 self.open_tools = 0;
+                self.run_started = Some(Instant::now());
+                self.run_output_tokens = 0;
+                self.run_tps = 0.0;
                 self.mark(ActivityKind::Thinking);
                 self.chat.add_message(ChatMessage::new(
                     crate::session_rows::random_id(),
@@ -289,9 +326,16 @@ impl Live {
                 self.chat.mark_last_message_complete();
                 self.approval = None;
                 self.activity = Activity::default();
+                // The end of a run states its own totals, which is what the
+                // rate is measured over when the provider reported no per-step
+                // `usage` events at all.
+                self.finish_run_usage(event.data.get("usage"));
+                self.run_tps = self.live_tps();
+                self.run_started = None;
                 self.activity_start = None;
                 self.open_tools = 0;
             }
+            "usage" => self.apply_usage(event.data.get("usage")),
             "approval_request" => {
                 self.approval = Some(ApprovalPrompt {
                     request_id: str_field(&event.data, "approval_request_id"),
@@ -332,6 +376,57 @@ impl Live {
             self.activity_start = Some(Instant::now());
         }
         self.activity.kind = kind;
+    }
+
+    /// Fold one `usage` event's numbers into the state the footer paints.
+    ///
+    /// The event carries the *step's* tokens (`prompt_tokens`,
+    /// `completion_tokens`, the two cache counts), the same shape the inline TUI
+    /// reads; a run emits one per model call, so the totals are sums and the
+    /// context is the last step's prompt plus its completion — the next request
+    /// is exactly that plus the new turns.
+    /// Fold the *run's* own usage — the one `agent_end` carries.
+    ///
+    /// These are totals the per-step `usage` events already added up (a real
+    /// run emits one of those per model call), so this may only drive the
+    /// context gauge and the rate: adding them again would double the session's
+    /// token and cost bookkeeping.
+    fn finish_run_usage(&mut self, usage: Option<&Value>) {
+        let Some(usage) = usage else { return };
+        let prompt = token_field(usage, "prompt_tokens");
+        let completion = token_field(usage, "completion_tokens");
+        if prompt + completion > 0 {
+            self.state.context_tokens = Some(prompt + completion);
+        }
+        if completion > 0 {
+            self.run_output_tokens = completion as u64;
+        }
+    }
+
+    fn apply_usage(&mut self, usage: Option<&Value>) {
+        let Some((completion, ctx)) = fold_usage(&mut self.state, usage) else {
+            return;
+        };
+        self.state.context_tokens = Some(ctx);
+        self.run_output_tokens += completion;
+        self.run_tps = self.live_tps();
+    }
+
+    /// tok/s for the run in flight (0 before enough of it has happened to mean
+    /// anything, and the frozen rate once it is over).
+    fn live_tps(&self) -> f64 {
+        let Some(start) = self.run_started else {
+            return self.run_tps;
+        };
+        rate_per_second(self.run_output_tokens, start.elapsed().as_secs_f64())
+            .filter(|rate| *rate > 0.0)
+            .unwrap_or(self.run_tps)
+    }
+
+    /// Drain the "go ask the agent for its totals" flag. The driver loop calls
+    /// this after every agent event and performs the fetch when it is set.
+    pub fn take_state_refresh(&mut self) -> bool {
+        std::mem::take(&mut self.state_refresh_pending)
     }
 
     /// Is the agent parked on an approval right now?
@@ -414,7 +509,7 @@ impl Live {
                 ctx_total: state.context_window.unwrap_or(0).max(0) as u64,
                 cost: state.usage.cost_cny,
                 cache_pct: cache_percent(&state),
-                tps: 0.0,
+                tps: self.live_tps(),
             },
             todos: Vec::new(),
             sessions: rows,
@@ -736,6 +831,59 @@ fn str_field(data: &Value, key: &str) -> String {
         .to_string()
 }
 
+/// Does this event type mean the agent's cumulative usage changed?
+fn wants_state_refresh(event_type: &str) -> bool {
+    matches!(event_type, "usage" | "agent_end")
+}
+
+/// Fold one `usage` event into `state`: the two token totals add up, the context
+/// gauge takes this step's prompt-plus-completion (the next request is exactly
+/// that), and the cache counts add up so the footer's hit rate follows the run.
+///
+/// Returns `(completion_tokens, context_tokens)` for the caller's own tok/s
+/// bookkeeping, or `None` when the payload carried no numbers at all.
+fn fold_usage(state: &mut RpcSessionState, usage: Option<&Value>) -> Option<(u64, i64)> {
+    let usage = usage?;
+    let prompt = token_field(usage, "prompt_tokens");
+    let completion = token_field(usage, "completion_tokens");
+    let cache_read = token_field(usage, "cache_read_tokens");
+    let cache_write = token_field(usage, "cache_write_tokens");
+    if prompt == 0 && completion == 0 && cache_read == 0 && cache_write == 0 {
+        return None;
+    }
+    state.usage.input_tokens += prompt;
+    state.usage.output_tokens += completion;
+    state.usage.cache_read_tokens += cache_read;
+    state.usage.cache_write_tokens += cache_write;
+    Some((completion.max(0) as u64, prompt + completion))
+}
+
+/// tok/s, or `None` while the sample is too short to mean anything (a rate
+/// divided by a few milliseconds reads as a million tokens a second).
+fn rate_per_second(tokens: u64, secs: f64) -> Option<f64> {
+    if tokens == 0 || secs < 0.5 {
+        return None;
+    }
+    Some(tokens as f64 / secs)
+}
+
+/// One numeric field of a `usage` payload, tolerating the camelCase spelling a
+/// typed payload may use.
+fn token_field(usage: &Value, key: &str) -> i64 {
+    let camel = {
+        let mut chars = key.chars();
+        match chars.next() {
+            Some(first) => first.to_string() + &chars.as_str().replace('_', ""),
+            None => String::new(),
+        }
+    };
+    usage
+        .get(key)
+        .or_else(|| usage.get(camel.as_str()))
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+}
+
 fn cache_percent(state: &RpcSessionState) -> u8 {
     let read = state.usage.cache_read_tokens.max(0) as u64;
     let input = state.usage.input_tokens.max(0) as u64;
@@ -872,5 +1020,67 @@ mod tests {
         state.usage.cache_read_tokens = 96;
         state.usage.input_tokens = 4;
         assert_eq!(cache_percent(&state), 96);
+    }
+
+    /// A `usage` event is the only thing that moves the footer's ctx gauge
+    /// mid-turn, so folding it wrong means the whole footer is wrong.
+    #[test]
+    fn a_usage_event_folds_into_the_gauges_it_feeds() {
+        let mut state = RpcSessionState::default();
+        let usage = serde_json::json!({
+            "prompt_tokens": 900,
+            "completion_tokens": 100,
+            "cache_read_tokens": 800,
+            "cache_write_tokens": 20
+        });
+        let (completion, ctx) = fold_usage(&mut state, Some(&usage)).expect("numbers fold");
+        assert_eq!(completion, 100);
+        // The next request is this prompt plus this completion.
+        assert_eq!(ctx, 1000);
+        assert_eq!(state.usage.input_tokens, 900);
+        assert_eq!(state.usage.output_tokens, 100);
+        assert_eq!(state.usage.cache_read_tokens, 800);
+        assert_eq!(state.usage.cache_write_tokens, 20);
+        // Cache hit rate follows the same accounting the crate already uses:
+        // `cache_percent` divides the reads by the prompt *plus* the reads, so
+        // it reads `inputTokens` as the uncached part (800 / 1700 = 47).
+        assert_eq!(cache_percent(&state), 47);
+
+        // A second step adds to the totals and replaces the context.
+        let step = serde_json::json!({"prompt_tokens": 1100, "completion_tokens": 50});
+        let (completion, ctx) = fold_usage(&mut state, Some(&step)).expect("numbers fold");
+        assert_eq!((completion, ctx), (50, 1150));
+        assert_eq!(state.usage.input_tokens, 2000);
+        assert_eq!(state.usage.output_tokens, 150);
+
+        // A payload with no numbers is not a step (and must not zero the gauge
+        // or reset the cache counts to a division by zero).
+        let before = state.usage.cache_read_tokens;
+        assert_eq!(fold_usage(&mut state, Some(&serde_json::json!({}))), None);
+        assert_eq!(fold_usage(&mut state, None), None);
+        assert_eq!(state.usage.cache_read_tokens, before);
+    }
+
+    /// A rate over too short a window is noise, and a rate with no tokens is
+    /// not a rate.
+    #[test]
+    fn a_rate_needs_a_meaningful_sample() {
+        assert_eq!(rate_per_second(0, 5.0), None);
+        assert_eq!(rate_per_second(100, 0.2), None);
+        assert_eq!(rate_per_second(100, 2.0), Some(50.0));
+    }
+
+    /// The two events that mean the agent knows more about the turn's spend than
+    /// the deltas do: they are what makes the driver fetch `get_state`.
+    #[test]
+    fn only_usage_and_the_end_of_a_run_ask_for_a_state_refresh() {
+        assert!(wants_state_refresh("usage"));
+        assert!(wants_state_refresh("agent_end"));
+        for quiet in ["text_chunk", "thinking_delta", "tool_start", "tool_end"] {
+            assert!(
+                !wants_state_refresh(quiet),
+                "{quiet} must not add an RPC per token"
+            );
+        }
     }
 }

@@ -590,9 +590,14 @@ impl Workbench {
     fn click(&mut self, id: &str, data: &WorkbenchData) -> Vec<WbAction> {
         if id == "input" {
             self.launch_field = LaunchField::Prompt;
+            // A click in the conversation half takes the keys back from the
+            // sidebar: the caret in the tab strip is the only thing that says
+            // which half answers `up`/`down`, so it has to follow the pointer.
+            self.sidebar_focus = false;
             return vec![WbAction::FocusPane(PaneId::Input)];
         }
         if id == "chat" {
+            self.sidebar_focus = false;
             return vec![WbAction::FocusPane(PaneId::Chat)];
         }
         if id == "divider" {
@@ -606,12 +611,16 @@ impl Workbench {
         }
         if let Some(panel) = id.strip_prefix("sidebar.tab.").and_then(PanelId::parse) {
             self.panel = panel;
+            // Clicking the sidebar means working in it; the same click that
+            // switches the panel therefore takes the keys.
+            self.sidebar_focus = true;
             return vec![WbAction::SwitchPanel(panel)];
         }
         if let Some(index) = id
             .strip_prefix("sidebar.row.")
             .and_then(|rest| rest.parse::<usize>().ok())
         {
+            self.sidebar_focus = true;
             return match self.panel {
                 PanelId::Sessions => data
                     .sessions
@@ -826,9 +835,34 @@ mod tests {
         };
         let actions = workbench.handle(WbEvent::Mouse(press), &data);
         assert_eq!(actions, vec![WbAction::SwitchPanel(PanelId::Sessions)]);
+        // Clicking the sidebar is working *in* the sidebar: one click both
+        // switches the panel and takes the keys, so `up`/`down` and the wheel
+        // act on what the reader just chose.
+        assert!(workbench.sidebar_focus);
         // The panel repaints with the sessions it now shows.
         let text = plain(&workbench.render(&data, 120, 38));
         assert!(text.contains("2m"), "a session's age: {text}");
+        // …and a click back in the conversation hands the keys over again.
+        let (chat, _) = workbench
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "chat")
+            .cloned()
+            .expect("the conversation is a target");
+        let back = mouse::MouseEvent {
+            kind: mouse::MouseKind::Press,
+            x: chat.x + 2,
+            y: chat.y + 2,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        assert_eq!(
+            workbench.handle(WbEvent::Mouse(back), &data),
+            vec![WbAction::FocusPane(PaneId::Chat)]
+        );
+        assert!(!workbench.sidebar_focus);
     }
 
     #[test]

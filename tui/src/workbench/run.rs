@@ -85,6 +85,11 @@ pub async fn run(options: Options) -> Result<(), String> {
     }
 
     let mut terminal = Terminal::new().map_err(|error| format!("terminal: {error}"))?;
+    // The workbench is clickable, so it owns mouse reporting for as long as the
+    // alternate screen is up: `start` writes the mode in, `stop` takes it out —
+    // and both failures' paths (the exit failsafe and the crash hook) reset it
+    // too, so the shell never inherits a captured mouse.
+    terminal.set_mouse_mode(true);
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<TerminalEvent>();
     let data_tx = input_tx.clone();
     let resize_tx = input_tx.clone();
@@ -106,8 +111,6 @@ pub async fn run(options: Options) -> Result<(), String> {
             let _ = signal_tx.send(TerminalEvent::Data("\u{3}".into()));
         })));
     }
-    terminal.write(mouse::MOUSE_ON);
-
     let outcome = event_loop(
         &mut terminal,
         &mut workbench,
@@ -118,7 +121,6 @@ pub async fn run(options: Options) -> Result<(), String> {
     .await;
 
     // Leave the terminal exactly as it was found, whatever happened above.
-    terminal.write(mouse::MOUSE_OFF);
     terminal.stop();
 
     // Persist what the reader chose, through the same file the inline TUI uses.
@@ -151,9 +153,9 @@ async fn event_loop(
 
         tokio::select! {
             Some(input) = input_rx.recv() => {
-                let events = match input {
+                let events = match &input {
                     TerminalEvent::Resize => vec![WbEvent::Resize(terminal.columns(), terminal.rows())],
-                    TerminalEvent::Data(data) => events_of(&data),
+                    TerminalEvent::Data(data) => events_of(data),
                 };
                 for event in events {
                     if quit(workbench, live, event).await? {
@@ -164,6 +166,13 @@ async fn event_loop(
             Some(event) = agent_events.recv() => {
                 let was = live.data(1).activity.kind;
                 live.handle_event(event);
+                // A `usage` or `agent_end` event means the agent knows more
+                // about what the turn spent than the deltas do: ask it, so the
+                // footer's ctx/cost/cache move at the end of a turn instead of
+                // only when someone presses ctrl+k.
+                if live.take_state_refresh() {
+                    live.refresh_state().await;
+                }
                 // A run that started or stopped changes what the lists show
                 // (a session's age, a title from its first message).
                 if live.data(1).activity.kind != was {
@@ -310,20 +319,36 @@ fn draw(terminal: &mut Terminal, workbench: &mut Workbench, live: &mut Live) -> 
         .max(1) as usize;
     let data = live.data(inner);
     let rows = workbench.render(&data, width, height);
+    terminal.write(&frame_bytes(&rows, workbench.cursor()));
+    Ok(())
+}
 
-    let mut frame = String::with_capacity(rows.len() * (width as usize + 8));
+/// The bytes one frame becomes: cursor hidden, home, the rows separated by a
+/// line break, and the cursor placed where the prompt is.
+///
+/// The last row carries **no** trailing newline, and that is load-bearing. A
+/// line feed on the bottom row scrolls the whole alternate screen up by one:
+/// the header's first row disappears and every painted row sits one cell above
+/// the coordinate the layout assigned it — which is exactly the row an SGR
+/// mouse report names, so every click landed on the row *above* the thing the
+/// reader aimed at (measured in tmux at 120x38: clicking a sidebar tab did
+/// nothing at all, while a click on the input box hit the conversation).
+fn frame_bytes(rows: &[String], cursor: Option<(u16, u16)>) -> String {
+    let mut frame = String::with_capacity(rows.len() * 64);
     // Hide the cursor while the frame is written (it would otherwise run down
     // the screen), then put it where the prompt is.
     frame.push_str("\x1b[?25l\x1b[H");
-    for row in &rows {
+    for (index, row) in rows.iter().enumerate() {
+        if index > 0 {
+            frame.push_str("\x1b[0m\r\n");
+        }
         frame.push_str(row);
-        frame.push_str("\x1b[0m\r\n");
     }
-    if let Some((x, y)) = workbench.cursor() {
+    frame.push_str("\x1b[0m");
+    if let Some((x, y)) = cursor {
         frame.push_str(&format!("\x1b[{};{}H\x1b[?25h", y + 1, x + 1));
     }
-    terminal.write(&frame);
-    Ok(())
+    frame
 }
 
 pub(crate) fn load_settings(path: &Path) -> TuiSettings {
@@ -387,5 +412,31 @@ mod tests {
     #[test]
     fn a_multibyte_character_is_text() {
         assert_eq!(events_of("中"), vec![WbEvent::Paste("中".into())]);
+    }
+
+    /// The bottom row must not end in a line feed: it scrolls the alternate
+    /// screen up one row, which hides the header's first row and puts every
+    /// painted row one cell above the coordinate the layout (and therefore the
+    /// hit map, and therefore the mouse) believes it occupies.
+    #[test]
+    fn a_frame_never_ends_in_a_line_feed() {
+        let rows: Vec<String> = (0..38).map(|row| format!("row {row}")).collect();
+        let frame = frame_bytes(&rows, Some((4, 31)));
+        // Exactly rows-1 line feeds: one between each pair, none after.
+        assert_eq!(frame.matches("\r\n").count(), rows.len() - 1);
+        // Every row is there, in order, with no separator after the last.
+        assert!(frame.contains("row 0\x1b[0m\r\nrow 1"));
+        assert!(frame.ends_with("row 37\x1b[0m\x1b[32;5H\x1b[?25h"));
+    }
+
+    /// Without a cursor position the frame still ends with the reset, never a
+    /// line feed.
+    #[test]
+    fn a_frame_without_a_cursor_ends_with_the_reset() {
+        let rows = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(
+            frame_bytes(&rows, None),
+            "\x1b[?25l\x1b[Ha\x1b[0m\r\nb\x1b[0m"
+        );
     }
 }
