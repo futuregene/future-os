@@ -935,52 +935,6 @@ impl Drop for PtyStdin {
     }
 }
 
-/// The master side of the PTY [`with_pty_stdin`] installed: write to it to type
-/// into the terminal under test.
-#[cfg(all(test, unix))]
-pub(crate) struct TestPty {
-    stdin: PtyStdin,
-}
-
-#[cfg(all(test, unix))]
-impl TestPty {
-    /// Type `data` into the terminal under test.
-    pub(crate) fn write(&self, data: &str) {
-        self.stdin.write(data);
-    }
-
-    /// Resize the PTY's window and deliver the `SIGWINCH` a terminal emulator
-    /// sends with it, so the reader under test refreshes its cached size and
-    /// fires the resize callback it was started with.
-    pub(crate) fn resize(&self, cols: u16, rows: u16) {
-        unsafe {
-            let mut winsize: libc::winsize = std::mem::zeroed();
-            winsize.ws_col = cols;
-            winsize.ws_row = rows;
-            assert_eq!(
-                libc::ioctl(
-                    self.stdin.master.load(Ordering::Relaxed),
-                    libc::TIOCSWINSZ,
-                    &mut winsize,
-                ),
-                0
-            );
-            libc::raise(libc::SIGWINCH);
-        }
-    }
-}
-
-/// Run `body` with fd 0 pointed at a fresh PTY (the master is handed over), so
-/// the body may call `Terminal::start` and friends for real.
-///
-/// The redirection is process-global: the caller must hold
-/// `crate::test_env::lock()`.
-#[cfg(all(test, unix))]
-pub(crate) fn with_pty_stdin<R>(body: impl FnOnce(&TestPty) -> R) -> R {
-    let stdin = PtyStdin::install();
-    body(&TestPty { stdin })
-}
-
 // ─── Tests (shared logic; POSIX primitives live in terminal_posix.rs) ─────
 
 #[cfg(test)]

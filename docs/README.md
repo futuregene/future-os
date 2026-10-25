@@ -17,8 +17,7 @@
 |---|---|
 | [Build & Install](guide/build-and-install.md) ([中文](guide/build-and-install.zh-CN.md)) | Prerequisites, per-platform toolchains (macOS / Linux / Windows), `make` targets, GUI packaging, `future-goal` install, skills install |
 | [Continuous integration](guide/ci.md) ([中文](guide/ci.zh-CN.md)) | Affected-project selection, dependency graph, shared runners, merge gate and manual specialty suites |
-| [TUI](guide/tui.md) ([中文](guide/tui.zh-CN.md)) | The inline terminal UI (`future-tui`): slash commands, keyboard shortcuts, settings |
-| [Workbench](guide/workbench.md) ([中文](guide/workbench.zh-CN.md)) | The second, full-screen TUI (`future-workbench`): its own entry point, layout and breakpoints, keys and mouse, what is wired to an agent and what is not yet |
+| [TUI](guide/tui.md) ([中文](guide/tui.zh-CN.md)) | The terminal UI (`future tui`): the full-screen layout, keys and mouse, the commands the palette runs, and what is wired to the agent |
 | [Channels configuration](guide/channels-config.md) ([中文](guide/channels-config.zh-CN.md)) | Unified reference for `~/.future/channels/config.json` (agent / providers / Feishu / DingTalk blocks, defaults) |
 | [Channel providers](guide/channels-providers.md) ([中文](guide/channels-providers.zh-CN.md)) | Shared-bridge channels: capability matrix, per-channel config, maturity, diagnostics, proactive send |
 | [Channel provider contract](guide/channels-provider-contract.md) ([中文](guide/channels-provider-contract.zh-CN.md)) | Adding a channel: the provider traits, the inbound/outbound boundary, config, errors, tests and coverage |
@@ -66,7 +65,6 @@ test harness conventions.
 - [desktop/](internals/desktop/PRODUCT.md) — product semantics, data model (`ER.md`), colors, sandbox (macOS/Windows/Linux), connection & remote, embedded terminal, compaction (see `desktop/CLAUDE.md` for the document map)
 - [compaction/](internals/compaction/compaction.md) — runtime context compaction: the two strategies and their parameters, the production request shape, the developer map (`compaction-development.md`), retrieval interfaces, and the two experiments — closed book (`compaction-closed-book-experiment.md`) and open book (`compaction-open-book-experiment.md`)
 - [mobile/](internals/mobile/README.md) — mobile build/TestFlight, iOS platform parity, streaming-sync design and measurements, HarmonyOS compatibility (the dated audits and measurement reports are in `archives/verification/`)
-- [tui/](internals/tui/tests.md) — TUI test harness conventions
 - [skill_reco/](internals/skill_reco/harness.md) — skill recommendation: the Jev recommender's [evaluation](internals/skill_reco/evaluation.md), its [harness](internals/skill_reco/harness.md) and the [integration plan](internals/skill_reco/integration-plan.md) (a historical design record)
 - [agent/](internals/agent/README.md) — module map of the gRPC backend (`agent/`): the turn loop, tools, LLM layer, sessions, sandbox, and what to read before changing each one
 - [host](internals/host.md) — module map of `future-host`, the GUI-free shared backend (store, agent bridge, tasks, remote, identity)
@@ -78,7 +76,7 @@ test harness conventions.
 
 | Doc | What it covers |
 |---|---|
-| [Workbench TUI spec](tui/workbench-spec.md) ([中文](tui/workbench-spec.zh-CN.md)) | The frozen contract behind the [workbench](guide/workbench.md): layout constants, mouse and keyboard contract, type names and acceptance commands. The surface it describes is built; the agent adapter and P1 items are not |
+| [Workbench TUI spec](tui/workbench-spec.md) ([中文](tui/workbench-spec.zh-CN.md)) | The frozen contract behind the [terminal UI](guide/tui.md): layout constants, mouse and keyboard contract, type names and acceptance commands. The surface it describes is built; the agent adapter and P1 items are not |
 
 ## Wiki (user-facing app guide)
 

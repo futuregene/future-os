@@ -1,10 +1,9 @@
 //! The workbench's driver: terminal, event loop, and the keys that are not the
 //! surface's own.
 //!
-//! `future tui` and `future-workbench` both end up here. The loop is async (the
-//! agent, the terminal input and the animation tick are all wake-ups), and it
-//! draws a frame *before* waiting: the screen is never stale while it waits for
-//! something to happen.
+//! `future tui` ends up here. The loop is async (the agent, the terminal input
+//! and the animation tick are all wake-ups), and it draws a frame *before*
+//! waiting: the screen is never stale while it waits for something to happen.
 //!
 //! The split of responsibility is the same one the whole module tree follows:
 //! [`Workbench`] decides what a key or a click *means* for the surface and
@@ -18,9 +17,9 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 
-use crate::app::TuiSettings;
 use crate::components::chat_area::ReplyDetail;
 use crate::rpc::types::AgentEvent;
+use crate::settings::TuiSettings;
 use crate::terminal::Terminal;
 
 use super::layout;
@@ -39,6 +38,8 @@ pub struct Options {
     pub initial_prompt: Option<String>,
     /// `--continue`: attach to the most recently active session.
     pub continue_recent: bool,
+    /// `--offline`: skip the startup update check.
+    pub offline: bool,
     /// `~/.future/tui/settings.json` — the file the inline TUI also writes, so
     /// theme and reading level carry over between the two.
     pub settings_path: PathBuf,
@@ -72,6 +73,15 @@ pub async fn run(options: Options) -> Result<(), String> {
         .filter(|text| !text.trim().is_empty())
     {
         live.apply(WbAction::Submit(prompt)).await;
+    }
+
+    // The startup update notice: best effort, never blocks the surface, and
+    // skipped with `--offline`. It lands on the notice row, which is where a
+    // reader looks for "something the surface wants to tell you".
+    if !options.offline {
+        if let Some(notice) = crate::update::check(crate::version::VERSION).await {
+            live.notice = Some(notice);
+        }
     }
 
     let mut terminal = Terminal::new().map_err(|error| format!("terminal: {error}"))?;
@@ -314,14 +324,6 @@ fn draw(terminal: &mut Terminal, workbench: &mut Workbench, live: &mut Live) -> 
     }
     terminal.write(&frame);
     Ok(())
-}
-
-/// The inline TUI's settings file, read the same way it reads it (so a theme
-/// chosen in one surface is the theme of the other).
-pub fn settings_path() -> PathBuf {
-    crate::home::future_state_dir()
-        .join("tui")
-        .join("settings.json")
 }
 
 pub(crate) fn load_settings(path: &Path) -> TuiSettings {

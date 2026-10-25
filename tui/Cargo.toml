@@ -2,18 +2,12 @@
 name = "future-tui"
 version = "0.0.0"
 edition = "2021"
-description = "Rust port of the TypeScript future-tui — 1:1 behavior (UI rendering, key handling, interaction, args, help text) with a self-implemented terminal backend"
+description = "The FutureOS terminal UI: a full-screen workbench (layout, mouse, sidebar panels) over a self-implemented terminal backend, plus print mode and the models listing"
 license = "MIT"
 
 [[bin]]
 name = "future-tui"
 path = "src/main.rs"
-
-# The workbench: a second, full-screen TUI (see `src/workbench/mod.rs`). It has
-# its own entry point on purpose — it is not a layout mode of `future-tui`.
-[[bin]]
-name = "future-workbench"
-path = "src/bin/workbench.rs"
 
 [lib]
 name = "future_tui"

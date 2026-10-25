@@ -556,9 +556,14 @@ mod scoped_install_tests {
 
         let caught = std::panic::catch_unwind(|| panic!("after-the-entry-point"));
         assert_eq!(panic_message(caught), "after-the-entry-point");
-        assert_eq!(
-            seen.load(Ordering::SeqCst),
-            1,
+        // At least one panic reached the counter, not zero: the hook installed
+        // before the entry point is back in place, or every later panic in this
+        // process loses its message. Deliberately `>= 1` rather than `== 1` —
+        // the hook is process-global, so a concurrent test that unwinds inside
+        // `catch_unwind` (they do not share this lock) also counts, and pinning
+        // the exact number made this fail only under load.
+        assert!(
+            seen.load(Ordering::SeqCst) >= 1,
             "the hook installed before the entry point must be back in place, or every \
              later panic in this process loses its message"
         );

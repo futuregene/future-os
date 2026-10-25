@@ -1,20 +1,25 @@
-//! Help text — verbatim port of `printHelp()` in `tui/src/index.ts`.
+//! `--help` text.
 //!
-//! `console.log` of the template literal below emits exactly this string plus
-//! one trailing newline. `help_text()` returns the string; the caller prints it
-//! with a newline so the bytes match the TS output.
+//! Rewritten when the workbench replaced the inline UI: the previous text was a
+//! verbatim port of the TypeScript CLI's `printHelp()` — complete with
+//! `node dist/index.js` in every example — which no longer described anything
+//! that runs. The options themselves are unchanged; the commands and the
+//! interactive keys are now the workbench's.
 
 pub fn help_text() -> &'static str {
-    "future-tui TUI
+    "future-tui — the FutureOS terminal UI
 
-Usage: node dist/index.js [options] [@files...] [messages...]
+Usage: future tui [options] [@files...] [messages...]
+       future-tui [options] [@files...] [messages...]
+
+With no mode flag the terminal UI opens (the full-screen workbench). A bare
+message starts a session with it as the first prompt.
 
 Options:
   --grpc-addr <addr>    Explicit TCP gRPC address (default: auto — per-user local IPC)
-  --session <id>        Connect to specific session
-  --continue, -c        Continue most recent session
-  --resume, -r          Resume a session (show picker)
-  --fork <id>           Fork from a session
+  --session <id>        Connect to a specific session
+  --continue, -c        Continue the most recently active session
+  --fork <id>           Fork from a session (print mode)
   --print, -p           Non-interactive mode: process prompt and exit
   --model <model>       Model to use (supports model:thinking format)
   --models <patterns>   Model patterns for Ctrl+P cycling (comma-separated, supports globs)
@@ -36,34 +41,38 @@ Options:
   --verbose             Show detailed startup information
   --skill <path>        Load a skill file or directory
   --no-skills, -ns      Disable skills discovery
-  --legacy              Run the previous inline UI instead of the workbench
   --version, -v         Show version number
   --help, -h            Show this help
 
+Keys (interactive):
+  enter                 Send the prompt
+  tab / shift+tab       Move between the prompt and the launchpad's chips
+  ctrl+b                Sidebar: focus / show / hide (full-screen when narrow)
+  ctrl+n                New session
+  ctrl+e                Final answer only, or the whole process
+  ctrl+x                Stop the running turn
+  ctrl+k                Refresh sessions and usage
+  /                     Command palette
+  ?                     Keys and commands
+  ctrl+c                Quit
+
+  Mouse: click a tab or a row, drag the divider, wheel to scroll.
+
 Examples:
-  # Interactive mode
-  node dist/index.js
+  # Interactive session
+  future tui
 
-  # With specific model
-  node dist/index.js --model deepseek-flash
+  # Continue where you left off
+  future tui --continue
 
-  # Model with thinking level (model:thinking format)
-  node dist/index.js --model sonnet:high
+  # One question, non-interactive
+  future tui -p --model deepseek-flash \"what does this error mean?\"
+
+  # Review a file with the message
+  future tui -p @src/main.rs \"find the bug\"
 
   # List models
-  node dist/index.js --list-models
-
-  # List models with search
-  node dist/index.js --list-models deepseek
-
-  # Non-interactive with thinking level
-  node dist/index.js -p --thinking high \"Solve this problem\"
-
-  # Enable only read and bash tools
-  node dist/index.js --tools read,shell -p \"Review this code\"
-
-  # JSON output mode
-  node dist/index.js --mode json -p \"What is 2+2?\"
+  future tui --list-models
 "
 }
 
@@ -77,18 +86,23 @@ mod tests {
         assert!(h.contains("--grpc-addr"));
         assert!(h.contains("--list-models [search]"));
         assert!(h.contains("--no-skills, -ns"));
-        assert!(h.contains("node dist/index.js --mode json"));
+        assert!(h.contains("future tui --list-models"));
     }
 
+    /// The help must describe what runs. Two regressions this pins: the old
+    /// text's `node dist/index.js` examples (nothing in this repository runs
+    /// Node), and an option this build no longer has.
     #[test]
-    fn help_matches_ts_length_contract() {
-        // The TS help is a single console.log of a template literal; this
-        // guards against accidental drift (e.g. a dropped line). Exact
-        // byte-identity with the TS output is verified by the diff harness
-        // (P4), which prints help_text() + "\n" and compares.
+    fn help_describes_this_build() {
         let h = help_text();
-        assert!(h.starts_with("future-tui TUI\n"));
-        assert!(h.ends_with("What is 2+2?\"\n"));
-        assert_eq!(h.lines().count(), 59);
+        assert!(!h.contains("node dist/index.js"), "{h}");
+        for gone in ["--legacy", "--classic", "--resume"] {
+            assert!(!h.contains(gone), "{gone} is not a flag any more");
+        }
+        // The interactive keys are the workbench's.
+        for key in ["ctrl+b", "ctrl+n", "ctrl+e", "ctrl+x", "ctrl+k"] {
+            assert!(h.contains(key), "{key} missing from the key table");
+        }
+        assert!(h.starts_with("future-tui"));
     }
 }

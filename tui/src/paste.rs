@@ -921,14 +921,14 @@ fn decode_base64(text: &str) -> Option<Vec<u8>> {
 /// hands the child the TUI's raw-mode stdin. A second copy of that machinery is
 /// how its defects would come back.
 fn spawn_capture(program: &str, args: &[String]) -> Result<(i32, String, String), String> {
-    crate::skills_cli::spawn_with_timeout(Path::new(program), args, CAPTURE_TIMEOUT)
+    crate::subprocess::spawn_with_timeout(Path::new(program), args, CAPTURE_TIMEOUT)
         .map_err(humanize_capture_error)
 }
 
 /// Re-word the shared spawner's timeout marker, which names the skill CLI: a
 /// `ctrl+v` that gave up must not read as "future skills: timed out".
 fn humanize_capture_error(error: String) -> String {
-    match error.strip_prefix(crate::skills_cli::TIMEOUT_MARKER) {
+    match error.strip_prefix(crate::subprocess::TIMEOUT_MARKER) {
         Some(rest) => format!("the clipboard tool timed out{rest}"),
         None => error,
     }
@@ -2032,7 +2032,7 @@ mod tests {
     #[test]
     fn the_timeout_marker_is_reworded_for_the_clipboard() {
         let error =
-            humanize_capture_error(format!("{} after 10s", crate::skills_cli::TIMEOUT_MARKER));
+            humanize_capture_error(format!("{} after 10s", crate::subprocess::TIMEOUT_MARKER));
         assert_eq!(error, "the clipboard tool timed out after 10s");
         assert!(!error.contains("skills"), "{error}");
         // Anything that is not the marker is passed through untouched.
