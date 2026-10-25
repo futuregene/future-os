@@ -47,6 +47,16 @@ pub struct RemoteStatus {
     pub reason: Option<RemoteFailureReason>,
     pub recovery: Option<RecoveryProgress>,
     pub nats_url: String,
+    /// Unix-seconds expiry of the relay grant the bridge is authorized by.
+    ///
+    /// The credential renews a few minutes before this (`REFRESH_LEAD`), so a
+    /// value in the past means the bridge is already unauthorized and can only
+    /// come back through a new mint. Reported so a reader — a person on
+    /// `future remote status`, or a UI that wants to show the countdown — can tell
+    /// "renews at HH:MM" from "lapsed", instead of guessing from a phase that is
+    /// only right after the fact. Null when nothing is running, the runtime never
+    /// held a grant, or the answering build predates the field.
+    pub credential_expires_at: Option<i64>,
     pub pair_id: String,
     /// One-shot pairing code (base64url) returned only by a successful start, for the UI to display/copy.
     pub pairing_code: Option<String>,
@@ -203,6 +213,7 @@ pub fn empty(agent_available: bool) -> RemoteStatus {
         reason: None,
         recovery: None,
         nats_url: String::new(),
+        credential_expires_at: None,
         pair_id: String::new(),
         pairing_code: None,
         pairing_code_expires_at: None,

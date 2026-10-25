@@ -428,6 +428,10 @@ self-hosted relay).
   warningCode                a non-fatal local problem (e.g. the web listener)
   invitationExpiresAt        when an unscanned invitation lapses; the code itself
                              is never printed by this command
+  credentialExpiresAt        when the relay grant behind the bridge lapses; the
+                             credential renews a few minutes earlier, so a value
+                             in the past means the bridge is unauthorized and
+                             can only come back through a new one
   build                      the build the ANSWERING Desktop is running:
                              gitCommit, gitCommitShort, gitDirty, buildTarget,
                              buildProfile. null when that Desktop predates the

@@ -1218,6 +1218,10 @@ impl Observed {
             "signedIn": self.signed_in,
             "agentAvailable": self.reported_value("agentAvailable"),
             "transport": self.reported_value("transport"),
+            // When the relay grant behind the bridge lapses. It renews a few
+            // minutes before this; a value already in the past says the bridge is
+            // unauthorized and can only come back through a new mint.
+            "credentialExpiresAt": self.reported_value("credentialExpiresAt"),
             "active": active,
             "devicesTotal": devices.len(),
             "devices": devices,
@@ -1278,6 +1282,19 @@ impl Observed {
                 lines.push(String::new());
                 lines.push(format!(
                     "An invitation is printed on the Remote page and lapses at {when}."
+                ));
+            }
+        }
+        // The deadline the bridge actually lives under. Worth a line of its own:
+        // a bridge reports `ready` until the moment its grant is refused, so this
+        // is what tells "between rotations" from "lapsed while nobody renewed
+        // it" — the failure that used to be visible only in a socket log.
+        if let Some(expiry) = self.reported_value("credentialExpiresAt").as_i64() {
+            if let Some(when) = local_wall_clock(expiry) {
+                lines.push(String::new());
+                lines.push(format!(
+                    "Relay credential: renews before {when}; the bridge serves nothing past that \
+                     without a new one."
                 ));
             }
         }
@@ -5386,6 +5403,9 @@ mod tests {
             "active": "pair_BBBB",
             "warningCode": null,
             "invitationExpiresAt": null,
+            // The deadline the bridge lives under; the fixture keeps it in the
+            // future so the prose has something to say and the JSON a value.
+            "credentialExpiresAt": 4_102_444_800_i64,
             "build": {
                 "gitCommit": "0123456789abcdef0123456789abcdef01234567",
                 "gitCommitShort": "0123456",
@@ -5564,6 +5584,8 @@ mod tests {
         assert_eq!(value["transport"], "tls://relay.example:4222");
         assert_eq!(value["active"], "pair_BBBB");
         assert_eq!(value["devicesTotal"], 2);
+        // The bridge's own deadline, read straight from the Desktop's status.
+        assert_eq!(value["credentialExpiresAt"], 4_102_444_800_i64);
         // Endpoints come from the book, live state from the Desktop.
         assert_eq!(value["devices"][0]["endpoint"], "platform");
         assert_eq!(value["devices"][0]["control"], "standby");

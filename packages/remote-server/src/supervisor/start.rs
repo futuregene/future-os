@@ -643,6 +643,7 @@ impl Supervisor {
                     client,
                     nats_health,
                     nats_url: creds.nats_url,
+                    credential_expires_at: creds.jwt_expires_at,
                     pair_id: pair_id.clone(),
                     desktop_id: creds.desktop_id,
                     desktop_public_key,
@@ -738,7 +739,7 @@ impl Supervisor {
         });
     }
 
-    pub fn spawn_runtime_reconnect(self: &Arc<Self>, pair_id: String) {
+    pub fn spawn_runtime_reconnect(self: &Arc<Self>, pair_id: String, generation_id: u64) {
         if !self.executor.options().automatic_recovery {
             return;
         }
@@ -769,15 +770,53 @@ impl Supervisor {
                     // retry worker, exactly as a failed `start_once` does. Its own
                     // attempt is what records the episode and backs off.
                     Ok(status) if retryable_start_status(&status) => server.spawn_start_retry(),
-                    Ok(_) => {}
+                    Ok(_) => server.rearm_generation_watch(&pair_id, generation_id),
                     Err(error) => {
                         eprintln!("remote: automatic bridge reconnect failed [RT001]: {error}");
                         *server.last_error_code.lock().unwrap() =
                             Some("reconnect_required".to_string());
+                        server.rearm_generation_watch(&pair_id, generation_id);
                     }
                 }
             }
         });
+    }
+
+    /// Hand a generation whose rebuild failed back to the watch that owns the
+    /// attempt budget.
+    ///
+    /// `spawn_runtime_reconnect` spends exactly one attempt, and the watch that
+    /// asked for it has already returned by the time the rebuild finishes. So
+    /// before this every failed rebuild was the last thing that ever ran for
+    /// that device: one `[RT001]` line — or nothing at all when the rebuild
+    /// answered a status that is not retryable, which is what a refused
+    /// credential does — and then silence while the grant it was holding lapsed
+    /// and every reconnect presented it again. The machine only came back if
+    /// someone restarted the process.
+    ///
+    /// Re-arming returns the decision to [`Supervisor::watch_generation`], where
+    /// the attempt budget and the ten-minute cool-down already live: a relay
+    /// whose authorization cache is still catching up recovers within seconds,
+    /// and a machine whose credentials are permanently refused spends a bounded
+    /// few mints and then reports `service_authorization` between attempts
+    /// rather than pretending to serve.
+    fn rearm_generation_watch(self: &Arc<Self>, pair_id: &str, generation_id: u64) {
+        if self.executor.is_stopping() {
+            return;
+        }
+        // Only while the generation that failed is still the installed one: a
+        // rebuild that did install a replacement must not resurrect a watch over
+        // a generation that is already gone — the replacement spawned its own.
+        let installed = self
+            .state
+            .lock()
+            .unwrap()
+            .get(pair_id)
+            .is_some_and(|state| state.generation_id == generation_id);
+        if !installed {
+            return;
+        }
+        self.spawn_runtime_supervisor(pair_id.to_string(), generation_id);
     }
 
     async fn restart_slot(self: &Arc<Self>, pair_id: &str) -> Result<RemoteStatus, crate::Error> {
@@ -961,10 +1000,16 @@ impl Supervisor {
                 else {
                     return;
                 };
-                if state.nats_health.is_terminal() {
-                    return;
-                }
-                state.nats_health.needs_reconnect()
+                // A credential the relay refused is a verdict on *this
+                // generation*, not on the machine, and the replacement is built
+                // by `recovery_plan` — which re-mints through `host.refresh`
+                // instead of presenting the refused grant again. Reading it as
+                // "stop watching" is what left a live bridge dead with nobody
+                // left to mint: the socket reported `User Authentication
+                // Expired`, the watch returned, and the device stayed offline
+                // until the process was restarted.
+                state.nats_health.is_terminal()
+                    || state.nats_health.needs_reconnect()
                     || state.cmd_task.is_finished()
                     || state.transfer_task.is_finished()
                     || state.event_task.is_finished()
@@ -993,7 +1038,7 @@ impl Supervisor {
                     continue;
                 }
             }
-            self.spawn_runtime_reconnect(pair_id.clone());
+            self.spawn_runtime_reconnect(pair_id.clone(), generation_id);
             return;
         }
     }

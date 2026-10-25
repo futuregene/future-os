@@ -1130,6 +1130,7 @@ mod tests {
             recovery: None,
             agent_available: true,
             nats_url: String::new(),
+            credential_expires_at: None,
             pair_id: "pair_AAAA".into(),
             pairing_code: link.map(str::to_string),
             pairing_code_expires_at: Some(i64::MAX),

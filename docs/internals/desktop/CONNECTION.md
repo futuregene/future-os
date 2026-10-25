@@ -1208,11 +1208,11 @@ conflated with the immediacy of the Desktop's local entry close.
 
 | Scenario | Status and boundaries |
 | --- | --- |
-| Desktop briefly loses NATS | SDK reconnect, bridge supervision, and credential refresh exist; no auto-recovery after entering a terminal state |
+| Desktop briefly loses NATS | SDK reconnect, bridge supervision, and credential refresh exist; a refused grant ends its generation and is replaced from a new mint inside the same budget, while a revocation stays terminal |
 | Phone offline, network-type switch | network listeners, reconnect, and replay exist, but with the handoff window above; a same-kind network path change may not trigger immediate recovery |
 | Phone background/foreground switch | proactively pauses the background connection and rebuilds/verifies in the foreground; native pickers have extra grace; real-device timing to be verified |
 | Desktop sleep/wake | power events integrated on macOS/Windows/Linux; recovery depends on the startup, credential, and sync chains |
-| NATS restart, long unreachable | retries exist; authorization-config faults and over-budget critical-task faults stop auto-recovery |
+| NATS restart, long unreachable | retries exist; authorization-config faults are retried as generation rebuilds and cool down once over budget, as do critical-task faults |
 | Platform HTTP fault, NATS still normal | existing chains may keep serving while credentials are valid; startup/renewal affected, phone requests lack bounded cancellation |
 | Desktop normal exit, process rebuild | remote disconnects; the owned sidecar exits, conversations end. Reopening can only recover the entry per the user's connection policy; old *remote* tasks are not auto-resumed, while a local conversation the exit interrupted continues on the next launch per [ER](ER.md) (the `autoResumeInterrupted` setting turns that off) |
 | Agent unavailable, Desktop heartbeat normal | may show connected while business fails; needs separately published Agent availability |
@@ -1540,7 +1540,7 @@ connection-readiness threshold.
 | Network, DNS, timeout, or credential-endpoint network failures after a successful phone connection | auto-recover while remote is allowed; backoff bases 1, 2, 4, 8, 16, 30 seconds with ±20% jitter, single attempt at most 30 seconds, total recovery window at most 3 minutes |
 | Invitation creation or pairing claim result uncertain | end the attempt and let the user regenerate the QR code and re-scan; no automatic re-consuming of the invitation |
 | Credential expiry | only one refresh at a time; network failures follow the backoff policy |
-| Newly issued and still-valid credentials rejected by NATS | terminal `service_authorization`; no automatic loop of issuing and connecting |
+| Newly issued and still-valid credentials rejected by NATS | the generation ends and the replacement is built from another mint, bounded by the three-per-ten-minutes generation budget; the status names `service_authorization` while that holds, and there is no unbounded loop of issuing and connecting |
 | Pairing revoked, credentials invalid or corrupt | terminal `revoked`/pairing invalid; stop all connections and retries, clear mirrored business state, and **delete that Desktop's local registration** (the desktop unpaired this device, or the platform refused to renew its credentials: neither is recoverable, and keeping the registration only leaves a "Reconnect" page that can never succeed), telling the user once which machine needs a new pairing code. Only a connection failure without revocation evidence keeps the registration and offers a reconnect |
 | Protocol errors or key subscription/task failures after readiness | at most three full-generation recoveries in ten minutes; beyond that enter `generation_unhealthy`; 60 continuous healthy seconds or a user manual reconnect resets the budget |
 | Build failures before readiness | attributed to this connection attempt; cleaning candidate subscriptions must not re-consume the critical-task recovery budget |

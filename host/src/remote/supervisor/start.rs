@@ -32,6 +32,6 @@ pub(in crate::remote) fn start_failure(error: crate::Error) -> Result<RemoteStat
 }
 
 #[cfg(test)]
-pub(in crate::remote) fn spawn_runtime_reconnect(pair: String) {
-    SUPERVISOR.spawn_runtime_reconnect(pair);
+pub(in crate::remote) fn spawn_runtime_reconnect(pair: String, generation_id: u64) {
+    SUPERVISOR.spawn_runtime_reconnect(pair, generation_id);
 }

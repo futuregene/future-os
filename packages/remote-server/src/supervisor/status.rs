@@ -282,6 +282,11 @@ impl Supervisor {
             nats_url: runtime
                 .map(|state| state.nats_url.clone())
                 .unwrap_or_default(),
+            credential_expires_at: runtime.and_then(|state| {
+                // A runtime that never held a grant (a fixture, an invitation
+                // minted without one) stays silent rather than naming the epoch.
+                (state.credential_expires_at > 0).then_some(state.credential_expires_at)
+            }),
             pair_id: focus.pair_id.clone(),
             pairing_code: focus.pairing_code.clone(),
             pairing_code_expires_at: focus.pairing_code_expires_at,

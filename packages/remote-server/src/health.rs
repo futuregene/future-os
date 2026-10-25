@@ -28,6 +28,23 @@ impl NatsHealth {
                     eprintln!("{line}");
                 }
             }
+            // The server is retiring this connection: a relay rolling restart,
+            // or a node scaled down behind the same address. `async-nats` can
+            // migrate to another address in the pool, but this client holds one
+            // and its reconnect budget is a single attempt, so in practice a
+            // drain is followed by the socket going away.
+            //
+            // Acting here rather than waiting for the close is what keeps a
+            // drain from costing a whole credential lifetime: the drain usually
+            // arrives just after a rotation, so the grant already in hand is the
+            // one the retiring node stopped honouring, and the replacement — a
+            // new mint — is exactly what a rebuild produces. Silence here was
+            // measured: two drains in one `desktop.log`, each followed fifteen
+            // minutes later by `User Authentication Expired` with nobody left
+            // watching to mint a replacement.
+            Event::Draining | Event::LameDuckMode => {
+                self.reconnect_required.store(true, Ordering::Release);
+            }
             Event::Disconnected => {
                 // Routine and self-healing: async-nats reconnects automatically,
                 // so a drop is expected noise. A real outage still surfaces via
@@ -80,7 +97,6 @@ impl NatsHealth {
                     eprintln!("{line}");
                 }
             }
-            _ => {}
         }
     }
 
@@ -92,11 +108,20 @@ impl NatsHealth {
         self.service_config_error.load(Ordering::Acquire)
     }
 
+    /// A credential this generation presented was refused.
+    ///
+    /// Both shapes end the *generation* — the supervisor rebuilds it from a
+    /// fresh mint (`recovery_plan` → `Refresh`) instead of presenting the same
+    /// grant again. What they separate is the reason shown while that happens:
+    /// a refusal of a credential that was already renewed and still has life
+    /// left (`AU001`) is a machine whose credentials the relay will not honour,
+    /// so the status names `service_authorization`; everything else (`AU002`) is
+    /// an expired or superseded grant, which the next mint replaces.
+    ///
+    /// Neither verdict may be read as "stop trying": the reconnect loop can
+    /// deliver the same error indefinitely, so one state transition is enough
+    /// per generation, but the generation itself is disposable by design.
     pub fn mark_authorization_rejected(&self) {
-        // The reconnect loop can deliver the same error indefinitely. One
-        // state transition is enough to make the supervisor refresh the JWT;
-        // suppress the duplicate events so a sleeping laptop cannot flood its
-        // console while that handoff is in progress.
         if self.credential_was_refreshed.load(Ordering::Acquire)
             && self.credential_expires_at.load(Ordering::Acquire) > unix_timestamp()
         {
@@ -106,7 +131,7 @@ impl NatsHealth {
                 .swap(true, Ordering::AcqRel)
             {
                 eprintln!(
-                    "remote: freshly refreshed NATS credential was rejected [AU001]; entering service_authorization"
+                    "remote: freshly refreshed NATS credential was rejected [AU001]; rebuilding the generation with a new mint"
                 );
             }
             return;
@@ -116,7 +141,9 @@ impl NatsHealth {
             .authorization_rejection_logged
             .swap(true, Ordering::AcqRel)
         {
-            eprintln!("remote: NATS authorization rejected [AU002]; refreshing bridge credentials");
+            eprintln!(
+                "remote: NATS authorization rejected [AU002]; rebuilding the generation with a renewed credential"
+            );
         }
     }
 }
@@ -159,9 +186,22 @@ mod tests {
             async_nats::ServerError::Other("permissions".to_string()),
         ));
 
-        // Remaining event shapes fall through the wildcard arm harmlessly.
-        health.handle_event(&async_nats::Event::LameDuckMode);
-        health.handle_event(&async_nats::Event::Draining);
+        // Both shapes of "this server is retiring the connection" end the
+        // generation: a drain means the node that issued (or was honouring)
+        // this grant is going away, so the bridge asks to be rebuilt on a fresh
+        // mint instead of waiting for a close that may be fifteen minutes away.
+        for event in [async_nats::Event::LameDuckMode, async_nats::Event::Draining] {
+            let health = NatsHealth::default();
+            health.handle_event(&event);
+            assert!(
+                health.needs_reconnect(),
+                "{event:?} must ask for a replacement generation"
+            );
+            // A migration that does succeed (another address in the pool)
+            // withdraws the request rather than spending a rebuild on it.
+            health.handle_event(&async_nats::Event::Connected);
+            assert!(!health.needs_reconnect(), "{event:?} migration recovers");
+        }
     }
     #[test]
     fn nats_health_classifies_recoverable_and_terminal_events() {
