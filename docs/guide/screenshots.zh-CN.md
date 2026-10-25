@@ -170,6 +170,8 @@ tui/scripts/shot.sh drag 120x38 $PWD/docs/tui/assets/workbench-drag-fixed.png
 
 两次运行产出的 PNG 是逐字节相同的，这才让它能当评审证据用：有差异说明界面变了，而不是模型这次回答得不一样。两点限制照实说：字形是 Chrome 依据抓到的单元格画的，不是产生这些字节的那个终端画的；数据是脚本化的（和其他 mock 一样）——截图永远不是"真实用户会话"的证据。
 
+每个字符是按自己的格子绝对定位的，不是交给浏览器排文本流。这不是细节：在这套字体栈里，一个汉字实测前进 14px，而两列需要 16.9px；`。` 只有 7.2px。让浏览器排版，中文行就被压窄、整行后面的内容被拖左，而占满一格的边框笔画（`│`、`─`）不会动——于是画面**边缘看起来对齐，里面是歪的**。所以每次截图都会重新读自己的 PNG，只要有任何字符的墨迹不在自己的格子里，就拒绝写出这张图。
+
 ```bash
 python3 scripts/screenshots/tui_terminal.py --self-test   # 只验单元模型，不开浏览器
 python3 scripts/screenshots/capture.py --self-test        # 只验场景步骤，不开浏览器

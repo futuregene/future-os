@@ -251,6 +251,14 @@ the captured cells rather than by the terminal that produced them, and the data
 is scripted like the other mocks — a screenshot is never evidence about a real
 user's session.
 
+Glyphs are placed at their cell coordinates rather than flowed as text. That is
+not a detail: in this font stack a hanzi advances 14px where two columns need
+16.9px, and `。` advances 7.2px, so laying a row out as text squeezed every
+Chinese line and pulled the rest of the row left — while the one-cell border
+strokes stayed put, so the frame looked aligned at its edges and was wrong
+inside. Each capture therefore re-reads its own PNG and refuses to write it if
+any character's ink is missing from its own cell.
+
 ```bash
 python3 scripts/screenshots/tui_terminal.py --self-test   # the cell model, no browser
 python3 scripts/screenshots/capture.py --self-test        # the scenario steps, no browser
