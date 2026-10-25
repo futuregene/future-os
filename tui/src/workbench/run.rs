@@ -26,7 +26,7 @@ use super::layout;
 use super::live::{Live, Outcome};
 use super::mouse;
 use super::picker::PickerKind;
-use super::{WbAction, WbEvent, Workbench};
+use super::{VerbOutcome, WbAction, WbEvent, Workbench};
 
 /// What a run of the workbench needs to know before it starts.
 #[derive(Debug, Clone)]
@@ -148,6 +148,18 @@ async fn event_loop(
     settings: &mut TuiSettings,
     settings_path: &Path,
 ) -> Result<(), String> {
+    // The first frame is composed for the size the terminal has *now*. The
+    // cached size dates from `Terminal::new()`/`start()`, and a pane a terminal
+    // multiplexer resized while the agent was attaching is still stale there
+    // until a resize notification reaches the reader thread — which is how one
+    // instance painted a first frame a row short and repaired it on the next
+    // redraw. One refresh here, before the loop's first `draw`, is what makes
+    // the first frame the steady-state frame: `draw` re-reads the size and
+    // `compose` rebuilds the layout *and* the hit map from the same numbers, so
+    // the metrics a mouse report is resolved against belong to the frame on
+    // screen from the first paint.
+    terminal.refresh_size();
+
     let mut ticker = tokio::time::interval(Duration::from_millis(120));
     // The first tick fires immediately; consume it so the loop's first draw is
     // not followed by a burst.
@@ -250,6 +262,15 @@ async fn quit(
             if let Some(kind) = PickerKind::from_command(command) {
                 let data = live.data(1);
                 workbench.open_picker(kind, &data);
+                continue;
+            }
+            // A verb that names something on screen is answered by the surface
+            // (a panel to show, a workspace to explain). The palette advertises
+            // these, so they must not reach the agent: it has no such commands
+            // and answered `Unknown command` for all five.
+            if let VerbOutcome::Done { notice } = workbench.surface_command(command, &live.data(1))
+            {
+                live.notice = notice;
                 continue;
             }
         }

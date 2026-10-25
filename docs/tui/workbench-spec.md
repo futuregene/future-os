@@ -350,7 +350,7 @@ nothing here is ever clipped mid-value.
 
 | File | Size | What it proves |
 |---|---|---|
-| `workbench-120x38.png` | 120×38 | the full frame: header (wordmark), sidebar with tabs, divider, framed input box, activity, status, hint |
+| `workbench-chat.png` | 120×38 | the full frame: header (wordmark, plus `cwd · ⎇ branch` on line 2), sidebar with tabs, divider, framed input box, activity, status, hint |
 | `workbench-90x24.png` | 90×24 | still two columns; the header falls back to its text brand; the hairline spans the whole width |
 | `workbench-60x20.png` | 60×20 | `< 88`: no sidebar and no dead rail; `< 24`: one-row header, the input box keeps a frame (top edge + sides), the hint row drops whole entries |
 | `workbench-panel-todo.png` | 120×38 | 待办 lists the repo's real goal todos (`✔/◉/○/✖`, priority, text) |

@@ -284,32 +284,35 @@ gone, pinned by `help_describes_this_build`
 
 | Subsystem | What exists now | Evidence |
 |---|---|---|
-| Frame | one full-screen frame of exactly `h` rows: header (+hairline), body, input band, activity, status, hint; overlays sheet over it | `[F:tui/src/workbench/screen.rs:29]`, `[S:workbench-120x38.png]` |
+| Frame | one full-screen frame of exactly `h` rows: header (+hairline), body, input band, activity, status, hint; overlays sheet over it | `[F:tui/src/workbench/screen.rs:29]`, `[S:workbench-chat.png]` |
 | Terminal session | alt screen, bracketed paste, Kitty keyboard, mouse mode written with the alt screen and written back on stop/crash | `[F:tui/src/terminal.rs:233]`, `[F:tui/src/workbench/run.rs:92]`, `[V]` (`mouse_any_flag=1` while running, `0` after) |
 | Frame bytes | every row is addressed absolutely (`CSI row;1H`) and the frame never advances the cursor with a line feed — a feed on the bottom row scrolls the alt screen and shifts every click by a row | `[F:tui/src/workbench/run.rs:368]` |
-| Mouse | SGR 1006 parser (`Press/Release/Drag/Move/WheelUp/WheelDown`), hit map shared with the renderer, click on input/chat/divider/tabs/rows/picker rows, wheel on chat and the focused panel, divider drag (**its sign is inverted** — P0-1), picker rows apply on click, `?1000h?1002h?1006h` only (no hover tracking) | `[F:tui/src/workbench/mouse.rs:56]`, `[F:tui/src/workbench/mod.rs:534]`, `[V]` (clicking `用量` switched the panel), `[S:workbench-panel-usage.png]`, `[S:workbench-drag-inverted.png]` |
+| Mouse | SGR 1006 parser (`Press/Release/Drag/Move/WheelUp/WheelDown`), hit map shared with the renderer, click on input/chat/divider/tabs/rows/picker rows, wheel on chat and the focused panel, divider drag (the edge follows the pointer; `30..48`, clamped), picker rows apply on click, `?1000h?1002h?1006h` only (no hover tracking) | `[F:tui/src/workbench/mouse.rs:56]`, `[F:tui/src/workbench/mod.rs:534]`, `[V]` (clicking `用量` switched the panel), `[S:workbench-panel-usage.png]`, `[S:workbench-drag-fixed.png]` |
 | Layout | `NARROW_WIDTH = 88`, `SMALL_HEIGHT = 24`, `SIDEBAR_DEFAULT/MIN/MAX = 36/30/48`, 2 cells of chat padding; one `Metrics`/hit-region source for drawing and hit-testing | `[F:tui/src/workbench/layout.rs:65]` |
 | Sidebar | five tabs `待办 任务 会话 用量 技能`, persistent at ≥88 columns, full-screen panel under `ctrl+b` below that, divider drag 30..48 persisted on release | `[F:tui/src/workbench/panels.rs:18]`, `[S:workbench-panel-full-60x20.png]` |
 | Panel data | goal todos from `events.jsonl` (✔/◉/○/✖ + priority), skills from `get_state` + both skill dirs, jobs from a read-only `tasks.db`, sessions from `list_sessions`, usage from `get_state` | `[F:tui/src/workbench/local.rs:92]`, `[F:tui/src/workbench/live.rs:201]`, `[S:workbench-panel-todo.png]`, `[S:workbench-panel-skills.png]` |
 | Launchpad | whale + block wordmark + tagline, framed composer, parameter chips (model/effort/mode/permission), hint line, recent sessions | `[F:tui/src/workbench/launchpad.rs]`, `[S:workbench-launchpad.png]` |
-| Status / activity | `model · effort · permission | gauge + ctx used/total + % · ≈¥`; activity `spinner + verb + elapsed + tools + tok/s`, `缓存 N%` | `[F:tui/src/workbench/screen.rs:468]`, `[F:tui/src/workbench/screen.rs:430]`, `[S:workbench-120x38.png]` |
+| Status / activity | `model · effort · permission | gauge + ctx used/total + % · ≈¥`; activity `spinner + verb + elapsed + tools + tok/s`, `缓存 N%` | `[F:tui/src/workbench/screen.rs:468]`, `[F:tui/src/workbench/screen.rs:430]`, `[S:workbench-chat.png]` |
 | Themes | six 256-colour palettes (`dark`, `light`, `one-dark`, `one-light`, `high-contrast`, `dracula`), the ids of the inline catalogue because `themeId` is one key for both surfaces; `/theme` opens a picker that previews as the highlight moves, `esc` restores, only `enter` persists | `[F:tui/src/workbench/theme.rs:54]`, `[F:tui/src/workbench/picker.rs:312]`, `[S:workbench-picker-theme.png]`, `[S:workbench-light-120x38.png]` |
 | Pickers | one overlay for `/model`, `/theme`, `/sessions`: search line, group headings, `✓` on the value in force, the model picker's reasoning slider, a click moves the highlight **and** applies | `[F:tui/src/workbench/picker.rs]`, `[F:tui/src/workbench/screen.rs:721]`, `[S:workbench-picker-model.png]`, `[S:workbench-picker-sessions.png]` |
 | Palette / help | `/` filter over 12 commands with descriptions; `/model`, `/theme`, `/sessions` open their picker, five entries still have no handler; `?` key table; both overlay the frame | `[F:tui/src/workbench/mod.rs:904]`, `[F:tui/src/workbench/run.rs:249]`, `[S:workbench-palette.png]`, `[S:workbench-help.png]` |
 | Approvals | a parked approval owns `y`/`n`; the activity row names the tool and its summary | `[F:tui/src/workbench/run.rs:189]`, `[F:tui/src/workbench/live.rs:586]` |
-| Transcript | reuses the existing markdown/tool-card/diff components' rendered rows; tail paging on `LoadOlder` | `[F:tui/src/workbench/live.rs:266]`, `[S:workbench-120x38.png]` |
+| Transcript | reuses the existing markdown/tool-card/diff components' rendered rows; tail paging on `LoadOlder` | `[F:tui/src/workbench/live.rs:266]`, `[S:workbench-chat.png]` |
 | Print mode | `future tui -p` unchanged (non-interactive) | `[F:tui/src/index.rs:617]` |
 
 **What the workbench did *not* carry over.** Deleting the inline UI removed
 screens whose replacement is not a panel: `/sandbox`, `/worktree`, `/keymap`,
 `/copy` and the external editor are not reachable from the workbench at all
 `[F:tui/src/workbench/live.rs:694]` (`command()` knows `quit/new/sessions/model/
-thinking/reply-detail/refresh/help` plus the launchpad chips; the three list
-verbs are intercepted earlier, in `run.rs:249`, and become pickers). Five
-palette entries — `/workspace`, `/usage`, `/skills`, `/export`, `/transcript` —
-are advertised and answer `Unknown command` `[V]` (`[S:workbench-dead-usage.png]`,
-`[S:workbench-dead-skills.png]`). That is a regression against what the inline UI
-could do, and it is item P0-3 in the change list.
+thinking/reply-detail/refresh/help/export` plus the launchpad chips; the three
+list verbs are intercepted earlier, in `run.rs:249`, and become pickers, and the
+verbs that name something on screen are answered by the surface itself).
+Five palette entries used to be advertised and then answer `Unknown command` —
+`/workspace`, `/usage`, `/skills`, `/export`, `/transcript`; all five resolve
+now `[V]` (`[S:workbench-usage-panel.png]`, `[S:workbench-skills-panel.png]`),
+and `every_palette_entry_has_a_handler` keeps the next entry from rotting the
+same way. That gap was a regression against what the inline UI could do, and it
+was item P0-3 in the change list.
 
 ## 6. Gap matrix
 
@@ -321,7 +324,7 @@ verdict from the first pass at `9d5f02beb`.
 
 | # | Capability | dsh-TUI 0.17 | `future-tui` now | now | was | Level |
 |---|---|---|---|---|---|---|
-| 1 | Layered full-screen frame | yes `[S:dsh_chat]` | header/body/sidebar/input/activity/status/hint `[S:workbench-120x38.png]` | equivalent | missing | — |
+| 1 | Layered full-screen frame | yes `[S:dsh_chat]` | header/body/sidebar/input/activity/status/hint `[S:workbench-chat.png]` | equivalent | missing | — |
 | 2 | Mouse click / wheel / drag-resize | SGR 1006, hit regions everywhere `[R]` | click+wheel+drag wired; **drag moves the rail the wrong way**, no hover `[V]` | partial | missing | P0 |
 | 3 | Hover affordance and tooltips | hover names a panel, shows goal text `[R]` | `Move` is parsed and dropped; `?1003h` is never written | missing | missing | P1 |
 | 4 | Launchpad with a real composer | yes `[S:dsh_launchpad]` | `[S:workbench-launchpad.png]` | equivalent | missing | — |

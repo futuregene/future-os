@@ -219,11 +219,17 @@ What the flags are for:
 - `--scale` sets the device pixel ratio (default 2).
 - `--session <id>` opens a specific session instead of leaving it to the agent.
 - `--scenario <name>` drives the surface to a screen a reader would reach:
-  `chat` (as it opens), `help` (`?`), `palette` (`/`), and the sidebar panels
-  `todo` / `usage` / `skills` / `sessions`, which are selected by clicking their
-  tab — the workbench switches panels by click and has no key for it. The click
-  is resolved from the frame on screen when the step runs, so it follows the
-  layout instead of a hard-coded column.
+  `chat` (as it opens), `help` (`?`), `palette` (`/`), `palette-filter` (`/`
+  plus a query, without Enter), the sidebar panels `todo` / `usage` / `skills` /
+  `sessions` (selected by clicking their tab — the workbench switches panels by
+  click and has no key for it), the two palette verbs that name a panel
+  (`command-usage`, `command-skills`), `launchpad` (`/new`), `full-panel`
+  (`ctrl+b` on a narrow terminal), `scrolled` (a click, then three wheel-ups),
+  `light` (`/theme`, one row down, Enter — it persists, so it goes last) and
+  `drag` (grab the divider and pull it six columns right). Every coordinate is
+  resolved from the frame on screen when the step runs — the tab click from the
+  painted label, the drag from the painted seam — so they follow the layout
+  instead of a hard-coded column.
 - `--addr <host:port>` attaches to an agent that is already running (a *real*
   session) instead of starting `demo_agent`, and leaves the caller's
   `FUTURE_HOME` alone.
@@ -234,7 +240,8 @@ The repository's own entry point for these frames is
 
 ```bash
 tui/scripts/shot.sh chat 120x38      # → docs/tui/assets/workbench-120x38.png
-tui/scripts/shot.sh usage 120x38     # → docs/tui/assets/workbench-usage-120x38.png
+tui/scripts/shot.sh usage 120x38     # → docs/tui/assets/workbench-panel-usage-120x38.png
+tui/scripts/shot.sh drag 120x38 $PWD/docs/tui/assets/workbench-drag-fixed.png
 ```
 
 Two runs produce byte-identical PNGs, which is what makes this usable as
