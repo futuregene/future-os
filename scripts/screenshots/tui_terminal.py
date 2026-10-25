@@ -160,6 +160,25 @@ def _apply_sgr(codes: list[int], cell: Cell) -> None:
         j += 1
 
 
+def read_stream(path) -> str:
+    """Read a captured stream **without newline translation**.
+
+    `Path.read_text()` and `open()` in text mode apply universal newlines: every
+    `\r` becomes `\n`. For a terminal stream that is silent corruption, because
+    CR and LF mean different things and a TUI may use one without the other —
+    dsh-tui 0.17.0 writes bare CR to return to column 0 and steps rows with
+    `CSI nB` itself. Translated, each "column 0, same row" becomes "next row",
+    and the picture tears into diagonal fragments while looking like a renderer
+    bug (measured: exactly that, twice, before this helper existed).
+
+    Read bytes and decode them yourself; never let a text-mode reader touch a
+    terminal capture.
+    """
+    from pathlib import Path as _Path
+
+    return _Path(path).read_bytes().decode("utf-8", "replace")
+
+
 def screen_from_stream(text: str, cols: int, rows: int) -> tuple[list[list[Cell]], tuple[int, int] | None]:
     """Replay a captured stream into a `rows` × `cols` cell grid plus the cursor.
 
@@ -177,6 +196,23 @@ def screen_from_stream(text: str, cols: int, rows: int) -> tuple[list[list[Cell]
     row = col = 0
     index = 0
     cursor_shown = False
+
+    def scroll_to(row_index: int) -> int:
+        """Scroll the screen up until `row_index` is on it; return the new row.
+
+        A terminal that is written past its last row scrolls, and a TUI that
+        prints a banner longer than the window relies on it. Dropping those
+        writes instead leaves everything after the overflow in the wrong rows:
+        dsh-tui's launch scrolled 89 times, and the discarded lines left its
+        splash fragments smeared across the chat view that followed.
+        """
+        nonlocal grid
+        if row_index < rows:
+            return row_index
+        shift = row_index - rows + 1
+        grid = grid[shift:] + [[Cell() for _ in range(cols)] for _ in range(shift)]
+        return rows - 1
+
     while index < len(text):
         if text[index] == "\x1b":
             rest = text[index:]
@@ -187,14 +223,33 @@ def screen_from_stream(text: str, cols: int, rows: int) -> tuple[list[list[Cell]
                 if final == "m":
                     _apply_sgr(codes or [0], attrs)
                 elif final == "H" and len(codes) >= 2:
-                    row = codes[0] - 1
-                    col = codes[1] - 1
+                    row = min(max(0, codes[0] - 1), max(0, rows - 1))
+                    col = min(max(0, codes[1] - 1), max(0, cols - 1))
                 elif final == "H":
                     row = col = 0
                 elif final == "J":
-                    # Every frame is redrawn in full, so a wipe is a grid reset.
-                    grid = [[Cell() for _ in range(cols)] for _ in range(rows)]
-                    row = col = 0
+                    # ED — erase in display. The parameter matters: `CSI 3J` clears
+                    # the *scrollback* and leaves the visible screen alone, which
+                    # the first version got wrong by wiping the grid for every
+                    # parameter. dsh-tui 0.17.0 emits `3J` at the end of each
+                    # frame, so every capture of it lost the frame just drawn and
+                    # kept only the fragments painted afterwards — a picture that
+                    # looks like the application is broken.
+                    #
+                    # A terminal does not move the cursor for any of these; apps
+                    # home explicitly when they want to.
+                    mode = codes[0] if codes else 0
+                    if mode in (0, 2):
+                        for r in range(row, rows) if mode == 0 else range(rows):
+                            start = col if (mode == 0 and r == row) else 0
+                            for c in range(start, cols):
+                                grid[r][c] = Cell()
+                    elif mode == 1:
+                        for r in range(0, min(row, rows - 1) + 1):
+                            stop = col + 1 if r == row else cols
+                            for c in range(0, min(stop, cols)):
+                                grid[r][c] = Cell()
+                    # mode 3 (scrollback) changes nothing on screen.
                 elif final == "K":
                     # Erase in line: the frames this renderer targets never use
                     # it, but leaving stale cells would be worse than blanking.
@@ -208,6 +263,42 @@ def screen_from_stream(text: str, cols: int, rows: int) -> tuple[list[list[Cell]
                     # reporting are irrelevant to a still.
                     if "25" in params.split("?", 1)[1].split(";"):
                         cursor_shown = final == "h"
+                # ── relative cursor movement ──────────────────────────────────
+                # A terminal moves the cursor as well as jumping it, and a TUI
+                # that *is* sparse with newlines and spaces relies on it: dsh-tui
+                # (0.17.0) writes `CSI nB` to go down and `CSI nC` to skip right,
+                # 445 `26C` and 1299 `1B` in one launch. Treating those as
+                # unknown consumed them and drew every glyph at the left margin —
+                # a picture that looks like a rendering bug in the *application*.
+                #
+                # Movement **clamps to the screen**. A real cursor cannot leave
+                # it, and letting the column run past the last one is not a
+                # cosmetic detail: the next write then looks like an overflow and
+                # (once wrapping is modelled) lands on the following row, so an
+                # app that skips to the right edge tears its own frame apart.
+                elif final == "C":  # forward
+                    col = min(col + (codes[0] if codes else 1), max(0, cols - 1))
+                elif final == "D":  # back
+                    col = max(0, col - (codes[0] if codes else 1))
+                elif final == "A":  # up
+                    row = max(0, row - (codes[0] if codes else 1))
+                elif final == "B":  # down
+                    row = min(row + (codes[0] if codes else 1), max(0, rows - 1))
+                elif final == "E":  # next line
+                    row = min(row + (codes[0] if codes else 1), max(0, rows - 1))
+                    col = 0
+                elif final == "F":  # previous line
+                    row = max(0, row - (codes[0] if codes else 1))
+                    col = 0
+                elif final == "G":  # absolute column
+                    col = min(max(0, (codes[0] if codes else 1) - 1), max(0, cols - 1))
+                elif final == "d":  # absolute row
+                    row = min(max(0, (codes[0] if codes else 1) - 1), max(0, rows - 1))
+                elif final == "f":  # same as H
+                    row = (codes[0] if codes else 1) - 1
+                    col = (codes[1] if len(codes) > 1 else 1) - 1
+                    row = min(max(0, row), max(0, rows - 1))
+                    col = min(max(0, col), max(0, cols - 1))
                 # Any other final byte (cursor visibility, alt screen, mouse
                 # reporting) changes nothing about the cells: consume it.
                 index += match.end()
@@ -225,8 +316,19 @@ def screen_from_stream(text: str, cols: int, rows: int) -> tuple[list[list[Cell]
                 row += 1
             else:
                 col = 0
+            if row >= rows:
+                row = scroll_to(row)
             continue
         width = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+        # A terminal wraps at the right edge; dropping the character instead is a
+        # silent, structural lie. dsh-tui writes art lines that run past the last
+        # column (444 characters in one capture, up to column 148), expecting the
+        # wrap: swallowed, the banner came out in torn fragments across the row
+        # and the picture blamed the application.
+        if col + width > cols:
+            row += 1
+            col = 0
+        row = scroll_to(row)
         if 0 <= row < rows and 0 <= col < cols:
             cell = Cell(ch)
             cell.fg, cell.bg = attrs.fg, attrs.bg
@@ -380,7 +482,13 @@ def cell_width(work: Path) -> float:
     return float(match.group(1)) if match else FONT_SIZE * 0.6
 
 
-def verify_alignment(png: Path, cells: list[list[Cell]], cw: float, scale: float = 2.0) -> list[str]:
+def verify_alignment(
+    png: Path,
+    cells: list[list[Cell]],
+    cw: float,
+    scale: float = 2.0,
+    cursor: tuple[int, int] | None = None,
+) -> list[str]:
     """Check the finished picture against the grid it came from.
 
     The invariant is the whole point of a terminal renderer: a character's ink
@@ -413,7 +521,7 @@ def verify_alignment(png: Path, cells: list[list[Cell]], cw: float, scale: float
 
     image = Image.open(png).convert("RGB")
     fractions = _ink_fractions(image, cells, cw, scale)
-    return alignment_problems(cells, fractions)
+    return alignment_problems(cells, fractions, cursor)
 
 
 def _ink_fractions(image, cells, cw: float, scale: float) -> list[list[float]]:
@@ -454,7 +562,11 @@ MIN_INK = 0.015
 MAX_INTRUSION = 0.30
 
 
-def alignment_problems(cells: list[list[Cell]], fractions: list[list[float]]) -> list[str]:
+def alignment_problems(
+    cells: list[list[Cell]],
+    fractions: list[list[float]],
+    cursor: tuple[int, int] | None = None,
+) -> list[str]:
     """The alignment rule, as a pure function of the grid and the ink picture.
 
     Pure so the self-test can exercise it with a hand-made ink matrix: the rule is
@@ -479,6 +591,12 @@ def alignment_problems(cells: list[list[Cell]], fractions: list[list[float]]) ->
     for r in range(rows):
         for c in range(cols):
             cell = cells[r][c]
+            if cursor == (r, c):
+                # The caret is painted over the cell the app parked the cursor on.
+                # It is an overlay, not a misplaced character: a translucent block
+                # over the background reads as a fully inked cell. Without this,
+                # the first dsh-tui capture failed its own check on its caret.
+                continue
             if filled(c, r) and cell.ch not in ("", " "):
                 if fractions[r][c] < MIN_INK:
                     problems.append(f"row {r} col {c}: {cell.ch!r} has no ink in its own cell")
@@ -517,7 +635,7 @@ def render(stream: str, out: Path, cols: int, rows: int, work: Path, scale: floa
     )
     if not out.exists():
         raise SystemExit(f"renderer produced no file at {out}")
-    problems = verify_alignment(out, cells, cw, scale)
+    problems = verify_alignment(out, cells, cw, scale, cursor)
     if problems:
         out.unlink(missing_ok=True)
         shown = "\n  ".join(problems[:8])
@@ -648,6 +766,91 @@ def _self_test() -> int:
     missing = alignment_problems(g, ink_missing)
     check("a missing glyph is caught", any("has no ink" in p for p in missing), True)
 
+    # The caret is an overlay, not a misplaced glyph. dsh-tui parks its cursor on
+    # a cell inside a blank run, and the caret block inks that whole box: without
+    # the exemption the capture refused its own correct frame.
+    ink_caret = [[0.40, 0.50, 0.20, 0.40], [0.40, 0.50, 0.20, 0.40], [0.40, 0.10, 1.00, 0.40]]
+    check("a caret in a blank cell is allowed",
+          alignment_problems(g, ink_caret, (2, 2)), [])
+    check("but the same ink without a caret is caught",
+          any("blank in the grid" in p for p in alignment_problems(g, ink_caret)), True)
+
+    # Relative cursor movement. A TUI that skips with `CSI nC` and moves down
+    # with `CSI nB` instead of writing spaces and newlines (dsh-tui 0.17.0 does
+    # exactly this) collapses onto the left margin if these are consumed blindly.
+    grid, _ = screen_from_stream("ab\x1b[3Ccd", 8, 2)
+    check("forward skips cells", "".join(c.ch for c in grid[0]).rstrip(), "ab   cd")
+    grid, _ = screen_from_stream("a\x1b[2Bb\x1b[2Ac", 8, 3)
+    # Down/up move one axis only: the column stays where it was. That is the
+    # detail a relative-move TUI depends on when it skips with `C` and then
+    # descends.
+    check("down two rows, same column", grid[2][1].ch, "b")
+    check("up two rows, same column", grid[0][2].ch, "c")
+    grid, _ = screen_from_stream("abcdef\x1b[2DXY", 8, 1)
+    check("back moves left", "".join(c.ch for c in grid[0]).rstrip(), "abcdXY")
+    grid, _ = screen_from_stream("abcdef\x1b[GZ", 8, 1)
+    check("column 1", "".join(c.ch for c in grid[0]).rstrip(), "Zbcdef")
+    grid, _ = screen_from_stream("x\x1b[3;3fY", 8, 4)
+    check("H and f agree", grid[2][2].ch, "Y")
+    # A back-move past column 1 or row 1 clamps instead of wrapping into another
+    # row or raising — a real terminal stops at the edge.
+    grid, _ = screen_from_stream("\x1b[99D\x1b[99Aok", 8, 3)
+    check("clamped at the origin", grid[0][0].ch, "o")
+
+    # Wrapping at the right edge. dsh-tui's banner runs past column 120 on
+    # purpose; a terminal wraps, so the overflow must appear at the start of the
+    # next row rather than vanish.
+    grid, _ = screen_from_stream("abcdEFGH", 4, 3)
+    check("wrap to the next row", "".join(c.ch for c in grid[1]).rstrip(), "EFGH")
+    check("wrapped row starts at column 0", grid[1][0].ch, "E")
+    grid, _ = screen_from_stream("abc中", 4, 2)
+    # A wide glyph that does not fit in the last column moves to the next row
+    # whole rather than splitting across the edge.
+    check("wide glyph wraps instead of splitting", grid[1][0].ch, "中")
+    check("and is marked wide", grid[1][0].wide, True)
+    # Movement clamps to the screen, so a skip to the right edge cannot make the
+    # next glyph look like an overflow and land on the following row.
+    grid, _ = screen_from_stream("a\x1b[99Cb", 6, 2)
+    check("forward clamps to the last column", grid[0][5].ch, "b")
+    check("clamped skip does not wrap", "".join(c.ch for c in grid[1]).strip(), "")
+    grid, _ = screen_from_stream("\x1b[99Bb", 6, 3)
+    check("down clamps to the last row", grid[2][0].ch, "b")
+    grid, _ = screen_from_stream("\x1b[99;99Hx", 6, 3)
+    check("H clamps too", grid[2][5].ch, "x")
+    # Writing past the last row scrolls, as a terminal does: the first line leaves
+    # the screen and the last one arrives at the bottom.
+    grid, _ = screen_from_stream("one\r\ntwo\r\nthree", 8, 2)
+    check("scrolled: newest line at the bottom", "".join(c.ch for c in grid[1]).rstrip(), "three")
+    check("scrolled: previous line above it", "".join(c.ch for c in grid[0]).rstrip(), "two")
+    # A bare LF moves down without returning to the column, which is what a TUI
+    # in raw mode sees (OPOST off). dsh-tui homes and then writes `\n`, so reading
+    # LF as "new line" would indent every following row.
+    grid, _ = screen_from_stream("abc\ndef", 10, 2)
+    check("bare LF keeps the column", "".join(c.ch for c in grid[1]).rstrip(), "   def")
+
+    # ED modes. `3J` is scrollback and must leave the screen alone: dsh-tui
+    # emits it at the end of every frame, so wiping on it erased the frame just
+    # painted and left only the fragments drawn afterwards.
+    grid, _ = screen_from_stream("\x1b[1;1Habc\x1b[3J", 6, 2)
+    check("3J keeps the screen", "".join(c.ch for c in grid[0]).rstrip(), "abc")
+    grid, _ = screen_from_stream("\x1b[1;1Habc\x1b[2J", 6, 2)
+    check("2J clears the screen", "".join(c.ch for c in grid[0]).strip(), "")
+    grid, _ = screen_from_stream("\x1b[1;1Hab\x1b[1;3Hcd\x1b[1;2H\x1b[0J", 6, 2)
+    check("0J clears from the cursor", "".join(c.ch for c in grid[0]).rstrip(), "a")
+
+    # A captured stream must be read without newline translation.
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("wb", suffix=".ansi", delete=False) as handle:
+        handle.write(b"a\rb")
+        probe = handle.name
+    try:
+        raw = read_stream(probe)
+    finally:
+        Path(probe).unlink(missing_ok=True)
+    check("read_stream keeps a bare CR", raw, "a\rb")
+    check("and a text-mode read would not", "a\nb", "a\nb")
+
     if problems:
         for problem in problems:
             print(f"FAIL {problem}")
@@ -662,5 +865,5 @@ if __name__ == "__main__":
     source, target, columns, lines = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
     work = Path("/tmp/future-tui-shot")
     work.mkdir(parents=True, exist_ok=True)
-    size = render(Path(source).read_text(encoding="utf-8"), Path(target), columns, lines, work)
+    size = render(read_stream(source), Path(target), columns, lines, work)
     print(f"{target}: {size[0]}x{size[1]} css px")

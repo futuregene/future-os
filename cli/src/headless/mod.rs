@@ -148,12 +148,43 @@ pub fn run(options: Options) -> Result<(), String> {
         let signals = ShutdownSignals::new()?;
         let mut agent = agent::Agent::default();
         let (result, cause) = until_shutdown(signals.wait(), session(&mut agent)).await;
-        agent.shutdown(cause.reason()).await?;
-        result
+        // Cleanup is captured rather than `?`-ed, so a failed shutdown cannot
+        // discard the reason the serving loop ended — see `exit_outcome`.
+        let cleanup = agent.shutdown(cause.reason()).await;
+        exit_outcome(result, cleanup)
     });
     // Do not let a stuck blocking task make Ctrl+C wait forever.
     runtime.shutdown_timeout(Duration::from_secs(2));
     result.map_err(|e| e.to_string()).map_err(with_log_hint)
+}
+
+/// The one report a foreground run leaves behind: why the serving loop ended and
+/// whether the Agent then shut down cleanly.
+///
+/// Both halves are reported when both failed. The shutdown used to be `?`-ed
+/// before the loop's own result was read, so a cleanup that ran out of its budget
+/// replaced the whole report: the operator saw "the Agent failed to stop" and
+/// learned nothing about what stopped the run in the first place — measured on a
+/// loaded host, that was the only line left of a run that quit because the Agent
+/// stopped answering. Neither half alone is actionable.
+///
+/// Exit status is unchanged: a failure in either half is a failure of the entry,
+/// and a run where both succeeded is still `Ok`.
+fn exit_outcome(
+    loop_result: Result<(), AppError>,
+    cleanup: Result<(), AppError>,
+) -> Result<(), AppError> {
+    match (loop_result, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        // One half failed: it is the report on its own, unchanged, so the ordinary
+        // single-failure message gains no sentence it did not have before.
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        // Cause first: it is why the entry stopped at all. The cleanup failure
+        // follows as a complication of stopping, not as the reason for it.
+        (Err(loop_error), Err(cleanup_error)) => {
+            Err(format!("{loop_error}\nThe Agent also failed to shut down: {cleanup_error}").into())
+        }
+    }
 }
 
 /// A failure message this entry point cannot act on is still one the operator
@@ -940,6 +971,63 @@ mod tests {
         assert_eq!(cause, stop);
         assert_eq!(cause.reason(), reason);
         assert!(!completed.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    /// A cleanup failure must not erase why the serving loop ended.
+    ///
+    /// Both statements are needed to act: the loop's reason says what stopped the
+    /// entry, and the cleanup failure says the Agent did not follow it down. Only
+    /// reporting the second (what `?` on the shutdown did) leaves an operator
+    /// looking at a shutdown problem that is a symptom, not the cause.
+    #[test]
+    fn a_failed_shutdown_reports_the_loop_cause_as_well() {
+        let error = exit_outcome(
+            Err("Remote connection stopped (Revoked)".into()),
+            Err("Agent shutdown deadline exceeded during admitted commands".into()),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("Remote connection stopped (Revoked)"),
+            "the loop's own reason must survive a failed cleanup: {error}"
+        );
+        assert!(
+            error.contains("Agent shutdown deadline exceeded during admitted commands"),
+            "the cleanup failure must still be reported: {error}"
+        );
+    }
+
+    /// The control: a cleanup that succeeded leaves the message as it was.
+    ///
+    /// The loop's reason is reported alone, with no cleanup sentence appended —
+    /// otherwise every ordinary exit would claim a shutdown problem it did not
+    /// have.
+    #[test]
+    fn a_clean_shutdown_adds_nothing_to_the_loop_cause() {
+        let error = exit_outcome(Err("setup failed".into()), Ok(()))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "setup failed");
+        assert!(
+            !error.contains("failed to shut down"),
+            "a clean shutdown must not be mentioned: {error}"
+        );
+    }
+
+    /// A run whose cleanup failed but whose loop ended normally still fails, and
+    /// says what went wrong in the cleanup.
+    #[test]
+    fn a_failed_cleanup_alone_is_still_a_failure() {
+        let error = exit_outcome(Ok(()), Err("Agent failed to stop".into()))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "Agent failed to stop");
+    }
+
+    /// Only a run where both halves succeeded is a success.
+    #[test]
+    fn both_halves_succeeding_is_success() {
+        assert!(exit_outcome(Ok(()), Ok(())).is_ok());
     }
 
     #[tokio::test]
