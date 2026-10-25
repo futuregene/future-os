@@ -1214,7 +1214,7 @@ conflated with the immediacy of the Desktop's local entry close.
 | Desktop sleep/wake | power events integrated on macOS/Windows/Linux; recovery depends on the startup, credential, and sync chains |
 | NATS restart, long unreachable | retries exist; authorization-config faults are retried as generation rebuilds and cool down once over budget, as do critical-task faults |
 | Platform HTTP fault, NATS still normal | existing chains may keep serving while credentials are valid; startup/renewal affected, phone requests lack bounded cancellation |
-| Desktop normal exit, process rebuild | remote disconnects; the owned sidecar exits, conversations end. Reopening can only recover the entry per the user's connection policy; old *remote* tasks are not auto-resumed, while a local conversation the exit interrupted continues on the next launch per [ER](ER.md) (the `autoResumeInterrupted` setting turns that off) |
+| Desktop normal exit, process rebuild | remote disconnects; the owned sidecar exits, conversations end. Reopening can only recover the entry per the user's connection policy; neither remote nor local *tasks* are auto-resumed — a conversation the exit interrupted stays interrupted, and the next run starts from a prompt somebody sends (a supervising conversation included) |
 | Agent unavailable, Desktop heartbeat normal | may show connected while business fails; needs separately published Agent availability |
 | Claim succeeded but response lost | self-recovery not guaranteed; currently the invitation may have to be regenerated |
 | User active disconnect/unbind | must stop, not self-recover; current cancel, late-result, and revocation compensation still need completion per the target contract |

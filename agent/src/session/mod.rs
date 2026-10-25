@@ -55,9 +55,9 @@ mod tools;
 
 pub use checkpoint::{checkpoint_to_entry, entry_to_checkpoint, latest_context_checkpoint};
 pub use entry::{
-    SessionEntry, ENTRY_NAME_RECOVERY_ACKNOWLEDGED, ENTRY_TYPE_ASSISTANT, ENTRY_TYPE_COMPACTION,
-    ENTRY_TYPE_CUSTOM, ENTRY_TYPE_CUSTOM_MESSAGE, ENTRY_TYPE_LABEL, ENTRY_TYPE_MODEL_CHANGE,
-    ENTRY_TYPE_RUN_STARTED, ENTRY_TYPE_RUN_TERMINAL, ENTRY_TYPE_SESSION_INFO, ENTRY_TYPE_SYSTEM,
+    SessionEntry, ENTRY_TYPE_ASSISTANT, ENTRY_TYPE_COMPACTION, ENTRY_TYPE_CUSTOM,
+    ENTRY_TYPE_CUSTOM_MESSAGE, ENTRY_TYPE_LABEL, ENTRY_TYPE_MODEL_CHANGE, ENTRY_TYPE_RUN_STARTED,
+    ENTRY_TYPE_RUN_TERMINAL, ENTRY_TYPE_SESSION_INFO, ENTRY_TYPE_SYSTEM,
     ENTRY_TYPE_THINKING_LEVEL_CHANGE, ENTRY_TYPE_TOOL, ENTRY_TYPE_USER,
 };
 pub use fork::{build_fork_session, set_creation_provenance, ForkPoint, ForkRequest, ForkResult};
@@ -68,7 +68,6 @@ pub use projection::{
     agent_message_to_entry, build_context, entries_to_agent_messages, first_message_title,
     truncate_visible,
 };
-pub(crate) use repair::interrupted_tool_placeholder;
 pub use run_journal::{
     find_resumable_run, find_run_terminal, find_unterminated_run, is_run_marker, next_run_sequence,
     RUN_STATE_CANCELLED, RUN_STATE_COMPLETED, RUN_STATE_ERROR, RUN_STATE_INCOMPLETE,

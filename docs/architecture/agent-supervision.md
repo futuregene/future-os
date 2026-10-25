@@ -32,12 +32,11 @@ a failed/dropped serving future requests a bounded drain; only a successful drai
 retires the service. A deadline or storage failure remains terminal. The host
 serializes repairs and respects application shutdown/update admission.
 
-Repair and ordinary startup both honour the saved `resumeInterruptedOnStart` policy.
-System drain records the existing `interrupted_by_restart` state with
+Repair and ordinary startup settle the journal; neither continues a run. System drain
+records the existing `interrupted_by_restart` state with
 `interruption_cause=system_shutdown`; a user stop remains `cancelled` and wins races
-with shutdown. Only the latest abrupt interruption or explicit system interruption
-can resume. Completed, user-cancelled and superseded work stays ended. A durable
-`run_stop_requested` records user intent before cooperative cancellation; it does
+with shutdown. A durable `run_stop_requested` records user intent before cooperative
+cancellation; it does
 not acknowledge that execution stopped. A crash during cancellation, a stop racing
 system finalization, or a stop during the startup delay cannot resurrect that work.
 A refused continuation never falls back to a new prompt.
@@ -103,9 +102,9 @@ All four are closed today (P1 for 1–3, D6 for 4 — the TUI's part of 1 and 4 
 | **D11** | The TUI never starts or restarts the Agent; it attaches and otherwise names the command to run ([§7.6](#76-reversal-d11--the-tui-stops-hosting-2026-10-25)) | **Product decision** | **Landed** (2026-10-25): `tui/src/agent_attach.rs` replaces `agent_host`/`agent_supervisor` |
 | **P2** | Let the Agent outlive the TUI: detached sidecar + `--ephemeral` idle exit ([§8](#8-lifetime-and-ownership)) | **Product decision** | **Awaiting the user** |
 | **D7** | After the **user** stops the Agent, should other clients restart it? ([§4.3](#43-four-kinds-of-death)) | Product decision | Recommendation: no; **awaiting confirmation** |
-| **D8** | Post-restart continuation: who runs it, and when is a run resumable? (§9.1, §9.2) | Design | **Implemented**: system interruption, durable user stop intent and outcome verification; see the 2026-10-23 revision above. Native fault validation remains with CI/device testing |
-| **D9** | The trigger lives in the Agent too (proposed by the user, 2026-10-21) | Product decision | **Landed**: the Agent triggers it after starting; the switch is `resumeInterruptedOnStart` in `~/.future/agent/settings.json` (**on by default**, matching the desktop's `autoResumeInterrupted`); the desktop's one-shot pass is retired |
-| **D10** | Continuation sends no user message; it continues inside the loop via a request-only directive (§9.3, proposed by the user, 2026-10-21) | Product decision → design | **Landed** in three steps: the accepting path + directive, the placeholder tool result, then the relaxed assistant tail |
+| **D8** | Post-restart continuation: who runs it, and when is a run resumable? (§9.1, §9.2) | Design | **Reversed 2026-10-25**: no automatic continuation at all (see §9.1's reversal note); the run is left open for a client or a supervising conversation to decide |
+| **D9** | The trigger lives in the Agent too (proposed by the user, 2026-10-21) | Product decision | **Reversed 2026-10-25**: there is no trigger to place; `resumeInterruptedOnStart` is gone |
+| **D10** | Continuation sends no user message; it continues inside the loop via a request-only directive (§9.3, proposed by the user, 2026-10-21) | Product decision → design | **Reversed 2026-10-25**: nothing continues a run, so there is no continuation message to send |
 
 P2 and D7 are **not settled**. This document does not design code paths for them; it states the options, their costs, and what they affect.
 
@@ -305,7 +304,45 @@ Under either option, **the idle decision must be made by the Agent from real sta
 
 ### 9.1 What happens to the conversation after a restart
 
-[#1277](../../agent/src/rpc/resume.rs) (the implementation of its day, since taken over by the Agent) supplies the right foundation, but its boundaries decide whether "a restart is just jitter" actually holds. This design must depend on it explicitly, or self-healing turns "the conversation continues" into "the conversation stops half way".
+#### Reversal (2026-10-25) — the Agent does not continue an interrupted run
+
+Auto-continuation was **removed**, by the user's decision, after it produced a
+failure mode worse than the one it fixed: a restart that happened to land on a
+running tool call left that session refusing every mutating tool forever (see the
+subsections below for the design that did it). Two removals, together:
+
+| Removed | Why it went |
+|---|---|
+| The startup pass that continued interrupted runs (`agent/src/rpc/resume.rs`, its hook in `agent/src/service/startup.rs`, `resumeInterruptedOnStart` in `agent/settings.json`, its host write-through, and the continuation-without-a-user-message path: `continue_interrupted_run`, `ResumeContext`, `auto_resume_of`) | Nobody asked for it at the moment it spent credits, and it was the only reason an unknown side effect could be re-issued without a person present |
+| The recovery fence and its release valve (`agent/src/rpc/recovery_safety.rs`, `acknowledge_recovery`, `future session unblock`) | It existed to make *automatic* continuation safe. With nothing continuing a run by itself, it guarded a re-issue that cannot happen, while its own cost — a session that only had `read` until a human ran a CLI command — was real |
+
+What a restart leaves behind now:
+
+- The crashed run's `run_started` marker stays open. That is the state clients
+already render as `interruptedRun`, so "this conversation was cut off" stays
+visible instead of being papered over.
+- A tool call whose result never landed keeps the placeholder that
+`repair_dangling_tool_calls` writes: *"the Agent was interrupted after this call
+was issued and before its result was recorded, so whether it ran is unknown.
+Check whether it took effect before running it again"*. That is the whole
+mechanism: the model is told, and is free to verify and to repair.
+- The next run starts from a prompt somebody submitted — the user, a client, or a
+supervising conversation. A normal prompt closes the crashed run through
+`append_run_start` like any other run boundary, so the journal never carries two
+open runs.
+
+**Why the fence is not needed without auto-continuation.** The fence's premise was
+"an operation whose outcome is unknown may be replayed". Removing the automatic
+re-issue removes the replay: nothing re-sends that call, and a new run begins from
+a message a person (or a supervisor) wrote. The per-tool concerns that remain are
+cheap to check and are checked by whoever sends the next prompt ("was that build
+dir half-written?"). A session-wide lockout answered them by destroying the rest
+of the conversation.
+
+The subsections below (§9.1–§9.3, D8, D9, D10) are kept as the record of the
+decision that was reversed, not as a description of the code.
+
+#1277 (`agent/src/rpc/resume.rs`, since deleted) (the implementation of its day, since taken over by the Agent) supplies the right foundation, but its boundaries decide whether "a restart is just jitter" actually holds. This design must depend on it explicitly, or self-healing turns "the conversation continues" into "the conversation stops half way".
 
 #### What it actually does
 
@@ -339,7 +376,8 @@ The first draft used **who is still watching** (the active-subscription count): 
 
 Use the cause instead ([§9.2](#92-where-it-belongs-the-tui-a-host-or-the-agent), premise 1): **why it ended** decides whether to resume, **not who was watching**. The subscription count is only for P2's idle exit; the two questions must not share one yardstick.
 
-`autoResumeInterrupted` (becoming a key in `~/.future/agent/settings.json`) remains the consent gate for "send prompts on my behalf".
+`autoResumeInterrupted` is retained in the desktop's settings store but no longer
+gates anything: no prompt is ever sent on the user's behalf after a restart.
 
 ### 9.2 Where it belongs: the TUI, a host, or the Agent
 

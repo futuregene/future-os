@@ -511,29 +511,25 @@ Notes:
   the Agent was still working on that run (an accepted-but-queued prompt returns
   its invoke response at the ack) is restored, or settled `completed` once the
   Agent has finished it. A user abort and a `completed` row are never re-read.
-- **A conversation the exit interrupted continues on the next launch.** The
-  Agent is embedded, so quitting ends the run it was streaming: its journal keeps
-  a `run_started` with no terminal, `get_run_state` reports it as
-  `interruptedRun`, and the local row is left non-terminal. The pass now runs in
-  the Agent itself, once per launch after startup
-  (`agent/src/rpc/resume.rs` `resume_interrupted_sessions`, called from
-  `agent/src/service/startup.rs:314`): a session whose newest run is that marker
-  (not a live/queued run the watchdog reattaches, not a durable terminal) gets
-  one continuation prompt, because the Agent's own journal is the only authority
-  on what was interrupted and the instance lock guarantees one process asks.
-  Conversations still streaming, parked on an approval, missing a model, or idle
-  for more than a week are skipped, and the Agent resolves the same preference
-  the UI switch writes (`resume_interrupted_on_start`, on by default — the
-  Desktop's `autoResumeInterrupted` writes through to it in
-  `store/app_settings.rs` `write_agent_resume_policy`). The Desktop keeps its own
+- **A conversation the exit interrupted is left interrupted.** The Agent is
+  embedded, so quitting ends the run it was streaming: its journal keeps a
+  `run_started` with no terminal, `get_run_state` reports it as `interruptedRun`,
+  and the local row is left non-terminal. Nothing continues it automatically
+  (the startup pass was removed on 2026-10-25, see
+  [agent-supervision](../../architecture/agent-supervision.md) §9.1): the next run
+  starts from a prompt the user — or a supervising conversation — actually sends,
+  and that prompt closes the crashed run like any other run boundary. A tool call
+  whose result never landed keeps the `[Tool execution lost — …]` placeholder, so
+  the model is told the outcome is unknown rather than having an unknown side
+  effect silently replayed. The Desktop keeps its own
   side: `reconcile_interrupted_runs` settles the rows a GUI crash left open
   against the Agent's ledger, and an unknown reason is re-read rather than
   guessed.
-- If an approval later produces file changes, Review Changeset shows the actual
-  modification comparison.
 - P2 added structured `action_payload` and `sandbox_boundary` fields; both ship
   as columns of `approval_requests` (`store/schema.rs`), and the design record
   lives in git history.
+- If an approval later produces file changes, Review Changeset shows the actual
+  modification comparison.
 - **v2 (approval rule refactor, 2026-07-04)**: ordinary approval objects
   converge to **file-path access**, rules become **file-based**
   (`${WS}/.future/approval_rule.json`, `~/.future/approval_rule.json`, read
