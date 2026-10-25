@@ -707,6 +707,16 @@ async fn add(args: &[String], out: &Output) -> Result<(), String> {
 /// the same fault the same way. A terminal has room to explain, and the fix for
 /// every link failure is the same errand on the other machine, so this does.
 fn describe_pairing_error(error: &future_host::Error) -> String {
+    // A platform-minted invitation is claimed with this machine's account, so
+    // "not signed in" arrives as an account fault rather than a link fault. The
+    // command that fixes it is not visible from here otherwise.
+    if matches!(error, future_host::Error::NotSignedIn) {
+        return "This machine is not signed in to Future OS, and that invitation was minted by \
+                the Future platform, so claiming it needs an account: run `future auth login`, \
+                then paste the invitation again. (An invitation from a self-hosted relay needs \
+                no account.)"
+            .to_string();
+    }
     if let future_host::Error::Remote { code, message, .. } = error {
         let advice = match message.as_str() {
             "pairing_link_expired" => Some(

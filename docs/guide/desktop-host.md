@@ -195,6 +195,13 @@ future remote devices use <id|#>       # choose the one in control
 
 - A device is named by its pair id — the `pair_` prefix and letter case are
   decoration, and a unique prefix is enough — or by the row number the list prints.
+- **Signing in is what makes the list serve anything.** Without a Future OS
+  account (and without a self-hosted relay), `future remote devices` and `use`
+  still work — they read and edit the local pairing book — and both say so:
+  nothing can connect until you run `future auth login`. `add` and `enable` are
+  refused up front with that same command, because the platform mints the
+  invitation and the credential. A machine serving through a self-hosted relay
+  (`--relay`) needs no account at all.
 - `remove` revokes the device where it was minted (the Future platform, or its
   room on a self-hosted relay) and only then drops the local slot. When a Desktop
   is running it is asked to perform the removal, which is what stops serving the
