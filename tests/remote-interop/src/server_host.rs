@@ -93,6 +93,7 @@ pub struct MemoryServerHost {
     catalog_label: String,
     chunk_bytes: usize,
     chunk_delay: Duration,
+    upload_chunks: AtomicU64,
     chunk_gate: ChunkGate,
 }
 impl MemoryServerHost {
@@ -110,6 +111,7 @@ impl MemoryServerHost {
             catalog_label,
             chunk_bytes: CHUNK_BYTES,
             chunk_delay: Duration::ZERO,
+            upload_chunks: AtomicU64::new(0),
             chunk_gate: ChunkGate::default(),
         }
     }
@@ -127,6 +129,7 @@ impl MemoryServerHost {
     pub fn metrics(&self) -> Value {
         let gate = self.chunk_gate.state.lock().unwrap();
         json!({ "executions": self.counts.lock().unwrap().clone(), "uploads": self.uploads.lock().unwrap().len(), "downloads": self.downloads.lock().unwrap().len(),
+            "uploadChunks": self.upload_chunks.load(Ordering::SeqCst),
             "chunkWaiting": gate.waiting, "chunkReads": gate.reads, "chunkFinished": gate.finished, "chunkMaxActive": self.chunk_gate.maximum_active.load(Ordering::SeqCst),
             "identityBound": self.creds.lock().unwrap().as_ref().and_then(|creds| creds.secure.as_ref()).is_some_and(|secure| secure.peer_public_key.is_some() && secure.secret.is_none()) })
     }
@@ -316,6 +319,7 @@ impl FileHost for MemoryServerHost {
             }
         }
         upload.parts.insert(index, bytes.to_vec());
+        self.upload_chunks.fetch_add(1, Ordering::SeqCst);
         Ok(json!({}))
     }
     fn download_chunk(&self, id: &str, index: u64) -> Result<Vec<u8>, Error> {
