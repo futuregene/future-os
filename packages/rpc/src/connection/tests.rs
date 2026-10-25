@@ -151,6 +151,10 @@ struct MockAgent {
     info: std::sync::Arc<std::sync::Mutex<AgentReadinessPayload>>,
     mutations: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     handshake_failure: u8,
+    /// How many readiness calls fail with a transient transport error before the
+    /// Agent starts answering. Fault injection for the retry policy: a stalled
+    /// or descheduled Agent looks exactly like this from the client side.
+    transient_readiness_failures: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[tonic::async_trait]
@@ -160,6 +164,20 @@ impl proto::future_agent_server::FutureAgent for MockAgent {
         request: tonic::Request<proto::RpcCommand>,
     ) -> Result<tonic::Response<proto::RpcResponse>, tonic::Status> {
         let command = request.into_inner();
+        if command.r#type == "get_agent_readiness"
+            && self
+                .transient_readiness_failures
+                .fetch_update(
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                    |left| left.checked_sub(1),
+                )
+                .is_ok()
+        {
+            return Err(tonic::Status::unavailable(
+                "readiness temporarily unavailable",
+            ));
+        }
         if command.r#type == "get_agent_readiness" {
             match self.handshake_failure {
                 1 => return Err(tonic::Status::unavailable("readiness unavailable")),
@@ -255,7 +273,69 @@ fn mock_agent() -> MockAgent {
         })),
         mutations: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         handshake_failure: 0,
+        transient_readiness_failures: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     }
+}
+
+#[tokio::test]
+async fn a_transiently_unanswered_readiness_is_retried_rather_than_refused() {
+    // One failed readiness, then the Agent answers: the case a descheduled or
+    // storage-stalled Agent produces. A single attempt reports this as a refusal
+    // that forbids starting locally, while the Agent was answering all along.
+    let mut mock = mock_agent();
+    mock.transient_readiness_failures = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(1));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let (_stop, task) = serve_mock(listener, mock.clone()).await;
+    let selection = crate::supervision::select_agent_with_retries(
+        &address,
+        "1.2.3",
+        Duration::from_secs(1),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert!(
+        matches!(selection, Ok(AgentSelection::External(_))),
+        "a retried readiness must attach, got: {:?}",
+        selection.err()
+    );
+    // Readiness alone: a retry never turns into a business command.
+    assert_eq!(mock.mutations.load(std::sync::atomic::Ordering::Acquire), 0);
+    drop(_stop);
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+}
+
+#[tokio::test]
+async fn readiness_retries_are_bounded_before_the_refusal_is_reported() {
+    // Permanently unavailable readiness still ends as the same refusal, after a
+    // bounded number of attempts: retrying must not hold an entry open.
+    let mut mock = mock_agent();
+    let remaining = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(99));
+    mock.transient_readiness_failures = remaining.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let (_stop, task) = serve_mock(listener, mock.clone()).await;
+    let result = crate::supervision::select_agent_with_retries(
+        &address,
+        "1.2.3",
+        Duration::from_secs(1),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert!(
+        matches!(result, Err(ConnectionError::Unverified(_))),
+        "a permanently unavailable Agent must stay Unverified"
+    );
+    let attempts = 99 - remaining.load(std::sync::atomic::Ordering::Acquire);
+    assert_eq!(
+        attempts,
+        crate::supervision::READINESS_PROBE_ATTEMPTS as usize
+    );
+    assert_eq!(mock.mutations.load(std::sync::atomic::Ordering::Acquire), 0);
+    drop(_stop);
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
 }
 
 #[tokio::test]
