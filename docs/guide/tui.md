@@ -1,4 +1,11 @@
-# FutureOS Terminal UI (TUI)
+# FutureOS Terminal UI (TUI) — the inline UI
+
+> **This page documents the previous inline terminal UI**, which
+> `future tui --legacy` still runs. `future tui` itself now starts the
+> full-screen [workbench](workbench.md), whose commands and keys are documented
+> there. The two share the agent connection, the transcript renderer and the
+> settings file; what differs is the surface, and this page describes the one
+> the workbench replaced.
 
 The TUI is the terminal client: `future-tui`. It is a thin gRPC client that
 connects over **per-user local IPC** by default (Unix-domain socket on

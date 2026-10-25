@@ -55,6 +55,7 @@ pub mod notifications;
 pub mod paste;
 pub mod paste_burst;
 pub mod rpc;
+pub mod session_rows;
 pub mod skill_reco;
 pub mod skills_cli;
 pub mod stderr_log;
@@ -67,6 +68,7 @@ pub mod tui;
 mod update;
 pub mod utils;
 pub mod version;
+pub mod workbench;
 pub mod worktree;
 
 /// Shared lock for tests that mutate process-global state (env vars), so

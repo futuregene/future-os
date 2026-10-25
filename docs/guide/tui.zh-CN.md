@@ -1,4 +1,9 @@
-# FutureOS 终端界面（TUI）
+# FutureOS 终端界面（TUI）——行内界面
+
+> **本页记录的是之前的行内终端界面**，`future tui --legacy` 仍然能跑它。
+> `future tui` 现在启动的是全屏的 [workbench](workbench.zh-CN.md)，它的命令与键位在
+> 那一页。两者共用 agent 连接、对话渲染器和设置文件；不同的是界面本身，本页描述的就是
+> 被 workbench 取代的那个。
 
 TUI 是终端客户端：`future-tui`，默认通过**每用户本地 IPC**连接 Agent。
 macOS/Linux 使用 Unix socket，Windows 使用仅当前用户可访问的命名管道。

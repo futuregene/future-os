@@ -22,7 +22,9 @@
 5. 状态栏真实指标：模型 · 强度 · cwd · git 分支 · 上下文占用条 · token · 费用/缓存。
 6. `/` 命令面板（带说明、Tab 补全）、`?` 帮助覆盖层、`/` 过滤、历史 ↑↓。
 7. 主题：内置 `future-dark` / `future-light` 两套 256 色，支持 `/theme`。
-8. 与现有 inline 模式共存：`--layout workbench|inline`，默认 workbench（保留回退）。
+8. **独立的 TUI，并且它就是 `future tui`**：workbench 有自己的入口
+   （`tui/src/bin/workbench.rs`）和自己的全屏渲染循环，`future tui` 启动它；旧的行内界面
+   退到 `future tui --legacy`。它不是 `--layout` 开关——两个渲染器共用一条输出流的做法被否掉了。
 
 ### P1（本次只做骨架/文档，不要求完成）
 
@@ -55,9 +57,13 @@ tui/examples/workbench_demo.rs  // 打印任意尺寸的一帧 + 鼠标自测
 tui/src/lib.rs                  // 仅加一行 `pub mod workbench;`
 ```
 
-live 接入（第二个 worker）只允许改：
-`tui/src/workbench/live.rs`（新建）、`tui/src/app.rs`、`tui/src/index.rs`、
-`tui/src/workbench/mod.rs` 的导出区。**不得改** `tui/src/components/**` 的既有行为。
+`tui/src/workbench/run.rs` 是驱动、`tui/src/bin/workbench.rs` 是独立入口：它们各自拥有
+raw mode / alternate screen / 事件循环，workbench 的界面**不经过** `tui/src/app.rs`。
+`index.rs` 只负责把 `future tui` 路由到驱动；行内界面退到 `--legacy`。
+
+live 接入只允许改：`tui/src/workbench/live.rs`、`tui/src/workbench/state.rs` 的填充函数、
+以及 `run.rs` 里「需要先问 agent 的键」那一段。**不得改** `tui/src/components/**` 的既有行为
+（只复用它们产出的行）。
 
 ---
 

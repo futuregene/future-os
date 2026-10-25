@@ -17,7 +17,8 @@
 |---|---|
 | [Build & Install](guide/build-and-install.md) ([中文](guide/build-and-install.zh-CN.md)) | Prerequisites, per-platform toolchains (macOS / Linux / Windows), `make` targets, GUI packaging, `future-goal` install, skills install |
 | [Continuous integration](guide/ci.md) ([中文](guide/ci.zh-CN.md)) | Affected-project selection, dependency graph, shared runners, merge gate and manual specialty suites |
-| [TUI](guide/tui.md) ([中文](guide/tui.zh-CN.md)) | The terminal UI (`future-tui`): slash commands, keyboard shortcuts, settings |
+| [TUI](guide/tui.md) ([中文](guide/tui.zh-CN.md)) | The inline terminal UI (`future-tui`): slash commands, keyboard shortcuts, settings |
+| [Workbench](guide/workbench.md) ([中文](guide/workbench.zh-CN.md)) | The second, full-screen TUI (`future-workbench`): its own entry point, layout and breakpoints, keys and mouse, what is wired to an agent and what is not yet |
 | [Channels configuration](guide/channels-config.md) ([中文](guide/channels-config.zh-CN.md)) | Unified reference for `~/.future/channels/config.json` (agent / providers / Feishu / DingTalk blocks, defaults) |
 | [Channel providers](guide/channels-providers.md) ([中文](guide/channels-providers.zh-CN.md)) | Shared-bridge channels: capability matrix, per-channel config, maturity, diagnostics, proactive send |
 | [Channel provider contract](guide/channels-provider-contract.md) ([中文](guide/channels-provider-contract.zh-CN.md)) | Adding a channel: the provider traits, the inbound/outbound boundary, config, errors, tests and coverage |
@@ -77,7 +78,7 @@ test harness conventions.
 
 | Doc | What it covers |
 |---|---|
-| [Workbench TUI spec](tui/workbench-spec.md) ([中文](tui/workbench-spec.zh-CN.md)) | A frozen contract for a *planned* full-screen workbench: layout constants, the mouse and keyboard contract, type names and acceptance commands. Design proposal for work not yet built — what the TUI actually ships today is in the [TUI guide](guide/tui.md) |
+| [Workbench TUI spec](tui/workbench-spec.md) ([中文](tui/workbench-spec.zh-CN.md)) | The frozen contract behind the [workbench](guide/workbench.md): layout constants, mouse and keyboard contract, type names and acceptance commands. The surface it describes is built; the agent adapter and P1 items are not |
 
 ## Wiki (user-facing app guide)
 
