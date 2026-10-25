@@ -69,6 +69,83 @@ pub(crate) enum ReadWait {
     Signal(i32),
 }
 
+/// One platform poll of the reader loop.
+///
+/// `stdin_gone` (POSIX only) is set once stdin reports EOF or a read error:
+/// fd 0 then leaves the poll set — a hung-up pty stays readable-with-hangup
+/// forever, so leaving it in would spin — while the signal self-pipe stays.
+/// The termination-signal handlers `enable_raw` installed are still in place
+/// until `restore_raw`, so the pipe must keep being drained even though the
+/// keyboard is gone.
+#[cfg(unix)]
+fn wait_next(backend: &platform::Backend, timeout_ms: i32, stdin_gone: bool) -> ReadWait {
+    if stdin_gone {
+        backend.wait_for_signals(timeout_ms)
+    } else {
+        backend.wait(timeout_ms)
+    }
+}
+
+#[cfg(windows)]
+fn wait_next(backend: &platform::Backend, timeout_ms: i32, _stdin_gone: bool) -> ReadWait {
+    // No signals on Windows: console close / ctrl+c arrive as input events.
+    backend.wait(timeout_ms)
+}
+
+/// How long a graceful stop may take after a termination signal has been
+/// caught before the process exits anyway.
+///
+/// A `SIGTERM` that leaves the process running is worse than one that is never
+/// handled: `kill` returns 0, scripts and supervisors report success, and the
+/// process is still there (only `SIGKILL` could remove it). The callback below
+/// hands the app a ctrl+c and waits for its own exit, which is the right path
+/// when it works and no path at all when the app loop is blocked (agent read
+/// hanging, a terminal that never drains, a loop already gone). Override with
+/// `FUTURE_TUI_EXIT_DEADLINE_MS` — the shutdown tests cannot wait ten seconds.
+const SIGNAL_EXIT_DEADLINE: Duration = Duration::from_secs(10);
+const SIGNAL_EXIT_DEADLINE_ENV: &str = "FUTURE_TUI_EXIT_DEADLINE_MS";
+
+fn signal_exit_deadline() -> Duration {
+    std::env::var(SIGNAL_EXIT_DEADLINE_ENV)
+        .ok()
+        .and_then(|ms| ms.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(SIGNAL_EXIT_DEADLINE)
+}
+
+/// Second chance for a caught termination signal: after the deadline, if the
+/// terminal is still in raw mode (i.e. cleanup has not got as far as restoring
+/// it), restore it the way the failsafe path does and die with `sig`'s default
+/// disposition. Nothing here can block: the thread only sleeps and writes.
+fn arm_exit_deadline(
+    sig: i32,
+    backend: &Arc<platform::Backend>,
+    kitty_active: &Arc<AtomicBool>,
+    modify_other_keys_active: &Arc<AtomicBool>,
+    write_lock: &Arc<Mutex<()>>,
+) {
+    let backend = Arc::clone(backend);
+    let kitty_active = Arc::clone(kitty_active);
+    let modify_other_keys_active = Arc::clone(modify_other_keys_active);
+    let write_lock = Arc::clone(write_lock);
+    let deadline = signal_exit_deadline();
+    std::thread::spawn(move || {
+        std::thread::sleep(deadline);
+        if !backend.raw_active() {
+            // Cleanup already handed the terminal back; the graceful path is
+            // past its last risky step and finishes (or does not) on its own.
+            return;
+        }
+        restore_terminal_for_exit(
+            &backend,
+            &kitty_active,
+            &modify_other_keys_active,
+            &write_lock,
+        );
+        platform::die_with_signal(sig);
+    });
+}
+
 // ─── Low-level write ──────────────────────────────────────────────────────
 
 /// Write all bytes to stdout, retrying on interruption, serialized by `lock`.
@@ -318,6 +395,14 @@ impl Terminal {
 
         self.reader_thread = Some(std::thread::spawn(move || {
             let mut buffer = StdinBuffer::with_timeout(10);
+            // POSIX: set when stdin is gone (EOF or read error). fd 0 then
+            // leaves the poll set and the loop keeps running for the signal
+            // pipe alone — see `wait_next`. (Windows has no signal pipe to keep
+            // the loop for, so it never leaves the option open.)
+            #[cfg(unix)]
+            let mut stdin_gone = false;
+            #[cfg(windows)]
+            let stdin_gone = false;
             let mut kitty_query_deadline = Some(Instant::now() + Duration::from_millis(150));
             let mut flush_deadline: Option<Instant> = None;
             // The paste-burst gate: off unless bracketed paste has to be
@@ -353,14 +438,25 @@ impl Terminal {
                 }
                 let timeout_ms = timeout_ms.max(0) as i32;
 
-                let wait = backend.wait(timeout_ms);
+                let wait = wait_next(&backend, timeout_ms, stdin_gone);
 
                 match wait {
                     ReadWait::Input => {
                         let mut chunk = [0u8; 4096];
                         let n = match backend.read_stdin(&mut chunk) {
                             Ok(n) => n,
-                            Err(_) => break, // read error — stdin gone
+                            // Read error — stdin is gone. POSIX keeps the loop
+                            // alive for the signal pipe; Windows has no signal
+                            // pipe to keep it for.
+                            Err(_) => {
+                                #[cfg(unix)]
+                                {
+                                    stdin_gone = true;
+                                    continue;
+                                }
+                                #[cfg(windows)]
+                                break;
+                            }
                         };
                         // Windows: a zero read is a spurious wake (window
                         // event with no key data) — keep polling.
@@ -368,8 +464,23 @@ impl Terminal {
                         if n == 0 && !backend.eof_is_terminal() {
                             continue;
                         }
-                        // POSIX: EOF — stdin closed.
+                        // POSIX: EOF — stdin closed. `enable_raw` installed the
+                        // SIGINT/SIGTERM/SIGHUP/SIGQUIT handlers and nothing
+                        // restores them before `restore_raw`, so the reader
+                        // must NOT exit here: it is the only thing draining the
+                        // self-pipe those handlers write to. Exiting left a
+                        // captured SIGTERM sitting in a pipe nobody reads — the
+                        // signal neither terminates the process nor is it ever
+                        // seen, so the only way out was SIGKILL. Keep the loop
+                        // for the pipe and stop watching fd 0 (a hung-up pty
+                        // would otherwise spin the poll).
                         if n == 0 {
+                            #[cfg(unix)]
+                            {
+                                stdin_gone = true;
+                                continue;
+                            }
+                            #[cfg(windows)]
                             break;
                         }
                         *last_data_time.lock() = Instant::now();
@@ -411,6 +522,19 @@ impl Terminal {
                         // app's `stop()` (TS `process.on("SIGINT")`).
                         let mut cb = exit_signal_cb.lock();
                         if let Some(cb_fn) = cb.as_mut() {
+                            // Arm the deadline *before* running the callback:
+                            // a captured signal has to end the process even
+                            // when the graceful path cannot (the app loop is
+                            // blocked on the agent, on a write to a terminal
+                            // that never drains, or has stopped looping
+                            // altogether). See `arm_exit_deadline`.
+                            arm_exit_deadline(
+                                sig,
+                                &backend,
+                                &kitty_active,
+                                &modify_other_keys_active,
+                                &write_lock,
+                            );
                             cb_fn();
                             drop(cb);
                             continue;
@@ -1983,6 +2107,44 @@ mod tests {
         std::thread::sleep(Duration::from_millis(300));
         t.stop(); // joins the reader; kitty protocol was active → pop written
         assert!(!t.kitty_protocol_active());
+    }
+
+    /// A termination signal must still be *handled* once stdin is gone.
+    ///
+    /// The reader loop used to `break` at EOF, and it is the only thing that
+    /// drains the self-pipe: every termination-signal handler `enable_raw`
+    /// installs kept writing into a pipe nobody read, so a `SIGTERM` (or
+    /// `SIGINT`/`SIGHUP`/`SIGQUIT`) was captured and then silently dropped —
+    /// its default action never ran either, so only `SIGKILL` could stop the
+    /// process. That is the state of an orphaned TUI whose terminal went away
+    /// (measured: six such processes, all immune to `pkill -TERM`).
+    #[cfg(unix)]
+    #[test]
+    fn reader_loop_keeps_handling_signals_after_stdin_eof() {
+        let _g = terminal_test_lock();
+        let pty = PtyStdin::install();
+        let (exit_tx, exit_rx) = std::sync::mpsc::channel::<()>();
+        let mut t = Terminal::new().unwrap();
+        t.set_exit_signal_callback(Some(Box::new(move || {
+            let _ = exit_tx.send(());
+        })));
+        t.start(Box::new(|_| {}), Box::new(|| {})).unwrap();
+
+        // The pty master goes away: the reader takes the EOF path, exactly as
+        // it does for a TUI whose terminal closed underneath it.
+        pty.close_master();
+        std::thread::sleep(Duration::from_millis(300));
+
+        unsafe { libc::raise(libc::SIGTERM) };
+        assert!(
+            spin_until(&mut || exit_rx.try_recv().is_ok(), 2000),
+            "SIGTERM after stdin EOF must still reach the exit callback; \
+             if it does not, the signal was captured with nobody draining the \
+             self-pipe and the process can only be stopped with SIGKILL"
+        );
+
+        // The signal-only loop must still answer `stop()` (it is joined there).
+        t.stop();
     }
 
     /// The reader loop with the burst gate armed and `FUTURE_TUI_PASTE_BURST`
