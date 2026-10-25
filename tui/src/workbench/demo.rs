@@ -159,6 +159,9 @@ fn base() -> WorkbenchData {
         },
         activity: Activity::default(),
         notice: None,
+        queue: Vec::new(),
+        revision: 0,
+        mouse_capture: true,
     }
 }
 

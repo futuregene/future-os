@@ -16,6 +16,7 @@
 //! * [`GrpcClient`] talks to the agent; this module never touches proto or a
 //!   socket directly.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -31,8 +32,8 @@ use crate::rpc::GrpcClient;
 use super::i18n::{self, t, Key, Language, LanguagePreference};
 use super::layout::Frame;
 use super::state::{
-    Activity, ActivityKind, InputView, JobRow, ModelChoice, SessionMeta, SessionRow, SkillRow,
-    TodoItem, UsageData, WorkbenchData, THINKING_LEVELS,
+    Activity, ActivityKind, InputView, JobRow, ModelChoice, QueuedPrompt, SessionMeta, SessionRow,
+    SkillRow, TodoItem, UsageData, WorkbenchData, THINKING_LEVELS,
 };
 use super::WbAction;
 
@@ -71,7 +72,20 @@ struct Paging {
 /// ([`super::Workbench::surface_command`]) and this list have to account for
 /// every entry exactly once. That is the check whose absence let five entries
 /// advertise themselves and then answer `Unknown command`.
-pub const APP_COMMANDS: [&str; 4] = ["/new", "/reply-detail", "/export", "/quit"];
+pub const APP_COMMANDS: [&str; 6] = [
+    "/new",
+    "/reply-detail",
+    "/export",
+    "/quit",
+    "/copy",
+    "/mouse",
+];
+
+#[derive(Clone)]
+struct DraftSnapshot {
+    editor: super::editor::EditorState,
+    pending: crate::components::input::PendingDraft,
+}
 
 /// One attached session plus everything the surface needs to paint it.
 pub struct Live {
@@ -89,6 +103,10 @@ pub struct Live {
     activity_start: Option<Instant>,
     open_tools: usize,
     draft: InputView,
+    /// Drafts are local to this client, one per session and launchpad.
+    drafts: HashMap<String, DraftSnapshot>,
+    revision: u64,
+    mouse_capture: bool,
     detail: ReplyDetail,
     /// Palette id, so a `/theme` cycle does not need the surface's own state.
     pub theme_id: String,
@@ -175,10 +193,13 @@ impl Live {
             activity: Activity::default(),
             activity_start: None,
             open_tools: 0,
-            draft: InputView {
-                placeholder: t(lang, Key::InputHintLaunchpad).into(),
-                ..InputView::default()
-            },
+            draft: InputView::from_editor(
+                super::editor::EditorState::default(),
+                t(lang, Key::InputHintLaunchpad).into(),
+            ),
+            drafts: HashMap::new(),
+            revision: 0,
+            mouse_capture: true,
             detail,
             theme_id: theme.id.to_string(),
             lang,
@@ -297,6 +318,7 @@ impl Live {
     pub async fn load_tail(&mut self) {
         let session_id = self.client.get_current_session_id();
         self.chat.clear_messages();
+        self.reset_scroll_revision();
         self.paging = Paging {
             session_id: session_id.clone(),
             has_more: false,
@@ -355,6 +377,20 @@ impl Live {
             if !current.is_empty() && session != current {
                 return;
             }
+        }
+        if matches!(
+            event.r#type.as_str(),
+            "text_chunk"
+                | "thinking_delta"
+                | "thinking_start"
+                | "thinking_end"
+                | "tool_start"
+                | "tool_delta"
+                | "tool_end"
+                | "agent_start"
+                | "agent_end"
+        ) {
+            self.revision = self.revision.wrapping_add(1);
         }
         let text = event.text().to_string();
         // The turn's spend is the agent's to total up, and these are the two
@@ -531,12 +567,16 @@ impl Live {
     }
 
     pub fn set_draft(&mut self, text: String, cursor: usize) {
+        if self.draft.text != text {
+            self.draft.editor.set(&text, cursor);
+        }
         self.draft.text = text;
         self.draft.cursor = cursor;
     }
 
     pub fn set_detail(&mut self, detail: ReplyDetail) {
         self.detail = detail;
+        self.revision = self.revision.wrapping_add(1);
         self.chat.set_reply_detail(detail);
     }
 
@@ -574,6 +614,97 @@ impl Live {
     /// The driver used to ask for a whole frame at width `1` just to read the
     /// activity kind, on every key and every streamed token, so nothing within
     /// a keystroke ever hit that cache.
+    fn draft_key(&self) -> String {
+        if self.launchpad {
+            "launchpad".into()
+        } else {
+            self.state.session_id.clone()
+        }
+    }
+    fn save_draft(&mut self) {
+        self.drafts.insert(
+            self.draft_key(),
+            DraftSnapshot {
+                editor: self.draft.editor.clone(),
+                pending: self.draft.editor.pending(),
+            },
+        );
+    }
+    fn restore_draft(&mut self) {
+        let key = self.draft_key();
+        if let Some(saved) = self.drafts.remove(&key) {
+            let mut editor = saved.editor;
+            let text = editor.text().to_string();
+            editor.replace(&text, saved.pending);
+            self.draft = InputView::from_editor(editor, self.draft.placeholder.clone());
+        } else {
+            self.draft = InputView::from_editor(
+                super::editor::EditorState::default(),
+                self.draft.placeholder.clone(),
+            );
+        }
+    }
+    fn reset_scroll_revision(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    pub async fn cancel_queued(&mut self, run_id: &str) {
+        match self.client.cancel_queued_run(run_id).await {
+            Ok(()) => {
+                self.refresh_state().await;
+                self.notice = Some(t(self.lang, Key::QueueCancelled).into());
+            }
+            Err(error) => {
+                self.notice = Some(i18n::render(self.lang, Key::QueueCancelFailed, &[&error]))
+            }
+        }
+    }
+    pub async fn recall_queued(&mut self, run_id: &str) {
+        let Some(item) = self
+            .state
+            .queued_runs
+            .iter()
+            .find(|row| row.run_id == run_id)
+            .cloned()
+        else {
+            return;
+        };
+        match self.client.cancel_queued_run(run_id).await {
+            Ok(()) => {
+                self.save_draft();
+                self.draft
+                    .editor
+                    .replace(&item.display_text, Default::default());
+                self.draft = InputView::from_editor(
+                    self.draft.editor.clone(),
+                    self.draft.placeholder.clone(),
+                );
+                self.refresh_state().await;
+                self.notice = Some(t(self.lang, Key::QueueRecalled).into());
+            }
+            Err(error) => {
+                self.notice = Some(i18n::render(self.lang, Key::QueueRecallFailed, &[&error]))
+            }
+        }
+    }
+
+    pub fn language(&self) -> Language {
+        self.lang
+    }
+
+    pub fn copy_last(&self) -> Result<String, String> {
+        self.chat
+            .last_assistant_text()
+            .map(|text| crate::clipboard::clean_assistant_text(&text))
+            .filter(|text| !text.is_empty())
+            .ok_or_else(|| t(self.lang, Key::CopyEmpty).to_string())
+    }
+
+    pub fn toggle_mouse(&mut self) -> bool {
+        self.mouse_capture = !self.mouse_capture;
+        self.mouse_capture
+    }
+
     pub fn data(&mut self, frame: &Frame) -> WorkbenchData {
         let state = self.state.clone();
         let messages = self.chat.render_all(frame.inner);
@@ -685,6 +816,17 @@ impl Live {
             input,
             activity,
             notice: self.notice.clone(),
+            queue: self
+                .state
+                .queued_runs
+                .iter()
+                .map(|row| QueuedPrompt {
+                    run_id: row.run_id.clone(),
+                    text: row.display_text.clone(),
+                })
+                .collect(),
+            revision: self.revision,
+            mouse_capture: self.mouse_capture,
         }
     }
 
@@ -741,6 +883,12 @@ impl Live {
         match action {
             WbAction::Quit => return Outcome::Quit,
             WbAction::EditInput { text, cursor } => self.set_draft(text, cursor),
+            WbAction::EditEditor(editor) => {
+                self.draft = InputView::from_editor(*editor, self.draft.placeholder.clone())
+            }
+            WbAction::CopyLast | WbAction::ToggleMouse | WbAction::OpenQueue => {}
+            WbAction::CancelQueued(id) => self.cancel_queued(&id).await,
+            WbAction::RecallQueued(id) => self.recall_queued(&id).await,
             WbAction::Submit(text) => self.submit(&text).await,
             WbAction::Command(command) => return self.command(&command).await,
             WbAction::Scroll(_) => {}
@@ -773,8 +921,16 @@ impl Live {
 
     /// Send the draft. A submission while a run is in flight queues behind it
     /// (the agent's coalescing policy), which is what the inline TUI does too.
-    async fn submit(&mut self, text: &str) {
-        let message = text.trim().to_string();
+    async fn submit(&mut self, _text: &str) {
+        self.draft.editor.record_submission();
+        let original_text = self.draft.editor.text().to_string();
+        let message = self
+            .draft
+            .editor
+            .pending()
+            .expand(&original_text)
+            .trim()
+            .to_string();
         if message.is_empty() {
             return;
         }
@@ -788,10 +944,14 @@ impl Live {
                 return;
             }
         }
-        self.draft = InputView {
-            placeholder: self.draft.placeholder.clone(),
-            ..InputView::default()
-        };
+        let pending = self.draft.editor.take_pending();
+        let attachments = pending.attachments().to_vec();
+        self.drafts.remove(&self.draft_key());
+        self.draft = InputView::from_editor(
+            super::editor::EditorState::default(),
+            self.draft.placeholder.clone(),
+        );
+        self.revision = self.revision.wrapping_add(1);
         self.chat.add_message(ChatMessage::new(
             crate::session_rows::random_id(),
             ChatRole::User,
@@ -803,13 +963,22 @@ impl Live {
             .prompt(
                 &message,
                 crate::rpc::types::BUSY_ENQUEUE_COALESCING,
-                Vec::new(),
+                attachments,
             )
             .await
         {
-            Ok(_ack) => {}
+            Ok(ack) => {
+                if ack.accepted_state == "queued" {
+                    self.refresh_state().await;
+                }
+            }
             Err(error) => {
                 self.notice = Some(format!("Failed to send: {error}"));
+                self.draft.editor.replace(&original_text, pending);
+                self.draft = InputView::from_editor(
+                    self.draft.editor.clone(),
+                    self.draft.placeholder.clone(),
+                );
                 self.activity = Activity::default();
                 self.activity_start = None;
             }
@@ -829,6 +998,8 @@ impl Live {
         let arg = parts.next().unwrap_or("").trim().to_string();
         match name.as_str() {
             "quit" => return Outcome::Quit,
+            "queue" => self.refresh_state().await,
+            "copy" | "mouse" => {}
             "new" => {
                 self.notice = None;
                 // `/new` is the launchpad, not an immediate session: the
@@ -899,12 +1070,15 @@ impl Live {
         if !self.launchpad && session_id == self.state.session_id {
             return;
         }
+        self.save_draft();
         match self.client.switch_session(session_id).await {
             Ok(_) => {
                 self.launchpad = false;
                 self.notice = None;
                 self.refresh_state().await;
                 self.load_tail().await;
+                self.reset_scroll_revision();
+                self.restore_draft();
             }
             Err(error) => self.notice = Some(format!("Could not switch session: {error}")),
         }
@@ -918,13 +1092,12 @@ impl Live {
     /// start). A run still streaming in the session left behind is muted by the
     /// `launchpad` guard in `handle_event`.
     pub fn to_launchpad(&mut self) {
+        self.save_draft();
         self.launchpad = true;
         self.chat.clear_messages();
         self.paging = Paging::default();
-        self.draft = InputView {
-            placeholder: self.draft.placeholder.clone(),
-            ..InputView::default()
-        };
+        self.restore_draft();
+        self.reset_scroll_revision();
         self.activity = Activity::default();
         self.activity_start = None;
         self.open_tools = 0;
@@ -1012,6 +1185,7 @@ impl Live {
         {
             Ok(_) => {
                 self.launchpad = false;
+                self.drafts.remove("launchpad");
                 // The agent now owns the choice (the session was created with
                 // it), so the staging is spent — keeping it would let a stale
                 // pick override the session's own on the next `/new`.

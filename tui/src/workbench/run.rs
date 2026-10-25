@@ -218,7 +218,7 @@ async fn event_loop(
                     TerminalEvent::Data(data) => events_of(data),
                 };
                 for event in events {
-                    if quit(workbench, live, event, &frame, settings, settings_path).await? {
+                    if quit(workbench, live, event, &frame, terminal, settings, settings_path).await? {
                         return Ok(());
                     }
                 }
@@ -385,6 +385,7 @@ async fn quit(
     live: &mut Live,
     event: WbEvent,
     frame: &Frame,
+    terminal: &mut Terminal,
     settings: &mut TuiSettings,
     settings_path: &Path,
 ) -> Result<bool, String> {
@@ -410,6 +411,22 @@ async fn quit(
     // the surface. Overlay keys still belong to the overlay.
     if let WbEvent::Key(key) = &event {
         if workbench.overlay.is_none() {
+            match key.as_str() {
+                "f6" => {
+                    copy_last(live).await;
+                    return Ok(false);
+                }
+                "f7" => {
+                    toggle_mouse(live, terminal);
+                    return Ok(false);
+                }
+                "ctrl+g" => {
+                    live.refresh_state().await;
+                    let _ = workbench.surface_command("/queue", &live.data(frame));
+                    return Ok(false);
+                }
+                _ => {}
+            }
             match workbench.keys.action(key) {
                 Some(super::preferences::Action::Stop) => {
                     live.abort().await;
@@ -445,6 +462,17 @@ async fn quit(
         // not the picker. Opening it here (rather than in `live.command`) is
         // what lets the palette and the draft both reach it.
         if let WbAction::Command(command) = &action {
+            match command.trim() {
+                "/copy" => {
+                    copy_last(live).await;
+                    continue;
+                }
+                "/mouse" => {
+                    toggle_mouse(live, terminal);
+                    continue;
+                }
+                _ => {}
+            }
             if let Some(kind) = PickerKind::from_command(command) {
                 let data = live.data(frame);
                 workbench.open_picker(kind, &data);
@@ -489,6 +517,23 @@ async fn quit(
             let _ = workbench
                 .keys
                 .save(&super::preferences::keybindings_path(settings_path));
+        }
+        if matches!(action, WbAction::OpenQueue) {
+            live.refresh_state().await;
+            if let VerbOutcome::Done { notice } =
+                workbench.surface_command("/queue", &live.data(frame))
+            {
+                live.notice = notice;
+            }
+            continue;
+        }
+        if matches!(action, WbAction::CopyLast) {
+            copy_last(live).await;
+            continue;
+        }
+        if matches!(action, WbAction::ToggleMouse) {
+            toggle_mouse(live, terminal);
+            continue;
         }
         if let WbAction::Notice(notice) = &action {
             live.notice = Some(notice.clone());
@@ -603,6 +648,41 @@ fn frame_of(terminal: &Terminal, workbench: &Workbench) -> Frame {
         workbench.density,
         workbench.sidebar_position,
     )
+}
+
+async fn copy_last(live: &mut Live) {
+    match live.copy_last() {
+        Ok(text) => {
+            let result =
+                tokio::task::spawn_blocking(move || crate::clipboard::copy_text(&text)).await;
+            live.notice = Some(match result {
+                Ok(Ok(())) => super::i18n::t(live.language(), super::i18n::Key::CopyDone).into(),
+                Ok(Err(error)) => {
+                    super::i18n::render(live.language(), super::i18n::Key::CopyFailed, &[&error])
+                }
+                Err(error) => {
+                    super::i18n::render(live.language(), super::i18n::Key::CopyFailed, &[&error])
+                }
+            });
+        }
+        Err(error) => live.notice = Some(error),
+    }
+}
+
+fn toggle_mouse(live: &mut Live, terminal: &mut Terminal) {
+    let enabled = live.toggle_mouse();
+    terminal.set_mouse_mode(enabled);
+    live.notice = Some(
+        super::i18n::t(
+            live.language(),
+            if enabled {
+                super::i18n::Key::MouseOn
+            } else {
+                super::i18n::Key::MouseOff
+            },
+        )
+        .into(),
+    );
 }
 
 fn draw(

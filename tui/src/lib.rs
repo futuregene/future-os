@@ -28,6 +28,7 @@
 
 pub mod agent_attach;
 pub mod approval_mode;
+pub mod clipboard;
 pub mod components;
 pub mod crash;
 pub mod help;

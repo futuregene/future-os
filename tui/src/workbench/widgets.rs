@@ -256,15 +256,66 @@ pub fn input_box(
     let bottom = box_bottom(palette, columns);
     // Two columns go to the sides; below that there is nothing to frame.
     let framed = columns >= 6;
-    let row = prompt_row(palette, columns, view, focused, framed);
-    let (row, cursor_column) = row;
-    if compact {
-        return (vec![top, row], cursor_column, 1);
+    let content_width = if framed {
+        columns.saturating_sub(4)
+    } else {
+        columns.saturating_sub(2)
+    };
+    let mut editor = view.editor.clone();
+    editor.resize(content_width.max(1));
+    let (mut visual, cursor_row, cursor_column) = editor.rows(content_width.max(1));
+    if view.text.is_empty() {
+        visual = vec![palette.dim(&fit(&view.placeholder, content_width))];
     }
-    (vec![top, row, bottom], cursor_column, 1)
+    // A bounded composer grows up to eight visual rows; keep the cursor's
+    // window visible instead of painting a hundred pasted lines over the chat.
+    let window = if compact { 1 } else { 8 };
+    let shown_cursor_row = cursor_row.min(window - 1);
+    let first = cursor_row.saturating_sub(shown_cursor_row);
+    let last = (first + window).min(visual.len());
+    let prompt_width = 2usize;
+    let mut rows = vec![top];
+    for (index, line) in visual[first..last].iter().enumerate() {
+        let source = first + index;
+        let prompt = if source == 0 {
+            palette.text(palette.accent, "❯ ")
+        } else {
+            "  ".to_string()
+        };
+        let body = fit(line, content_width.max(1));
+        let row = format!("{prompt}{}", palette.body(&body));
+        let row = if focused {
+            palette.on(
+                palette.panel,
+                &fit(&row, columns.saturating_sub(2)),
+                columns.saturating_sub(2),
+            )
+        } else {
+            fit(&row, columns.saturating_sub(2))
+        };
+        rows.push(if framed {
+            format!(
+                "{}{}{}",
+                palette.text(palette.border, "│"),
+                row,
+                palette.text(palette.border, "│")
+            )
+        } else {
+            row
+        });
+    }
+    if !compact {
+        rows.push(bottom);
+    }
+    (
+        rows,
+        (cursor_column + prompt_width + usize::from(framed)).min(columns.saturating_sub(1)) as u16,
+        shown_cursor_row + 1,
+    )
 }
 
 /// The `│ ❯ draft │` row, and the cursor's cell within it.
+#[allow(dead_code)]
 fn prompt_row(
     palette: &Palette,
     columns: usize,
@@ -349,6 +400,11 @@ mod tests {
             text: "hi".into(),
             cursor: 2,
             placeholder: "p".into(),
+            editor: {
+                let mut editor = crate::workbench::editor::EditorState::default();
+                editor.set("hi", 2);
+                editor
+            },
         };
         for (columns, compact) in [(60usize, false), (60, true), (9, true)] {
             let (rows, cursor, prompt_row) = input_box(&P, columns, &view, "输入", true, compact);

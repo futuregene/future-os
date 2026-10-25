@@ -156,7 +156,7 @@ impl Action {
             Self::Sidebar => "ctrl+b",
             Self::Sessions => "ctrl+r",
             Self::Preferences => "ctrl+o",
-            Self::Refresh => "ctrl+k",
+            Self::Refresh => "f5",
             Self::ReplyDetail => "ctrl+e",
             Self::Stop => "ctrl+x",
         }

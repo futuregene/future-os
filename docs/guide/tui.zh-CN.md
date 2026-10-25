@@ -38,7 +38,7 @@ cargo run -p future-tui --example workbench_demo -- --self-test
  对话（底部对齐，向上有 ↑ 更早）            │ 侧栏：待办 任务 会话
                                             │       用量 技能
  ──────────────────────────────────────────┴──────────────────────
- 输入框（❯ 草稿）
+ 输入框（❯ 多行草稿，最多增高到 8 个可视行）
  活动行：⠋ 思考 … · 3s · 2 工具                      42 tok/s · 缓存 96%
  状态栏：model · effort · permission   ░░ ctx 6.9k/1.0M 0.7% · ≈¥0.01
  提示行：Esc 回到聊天 · ctrl+b 侧栏 · / 命令 · ? 帮助
@@ -77,8 +77,14 @@ launchpad 是**正文**，不是盖在对话上的弹窗：没有会话时整块
 |---|---|
 | `tab` / `shift+tab` | launchpad：在输入框与参数行之间移动；对话里：焦点进入 / 离开侧栏 |
 | `←` `→` | 移动草稿光标 |
-| `↑` `↓` | 滚动对话（或当前面板的列表） |
-| `pageUp` / `pageDown` | 对话整页滚动 |
+| `↑` `↓` | 在草稿行 / 提交历史之间移动；侧栏聚焦时滚动列表 |
+| `shift+enter` / `alt+enter` | 插入换行（`ctrl+j` 为终端回退；Shift+Enter 需要增强键盘协议） |
+| `ctrl+w`、`alt+d`、`ctrl+u`、`ctrl+k`、`ctrl+y` | 删词、删到行首 / 行尾、粘贴刚删除的内容 |
+| `ctrl+z` / `ctrl+shift+z`（或 `alt+y`） | 撤销 / 重做草稿编辑 |
+| `pageUp` / `pageDown` 或 `ctrl+↑` / `ctrl+↓` | 滚动对话；`esc` 回到最新输出 |
+| `ctrl+g` 或 `/queue` | 查看排队消息；`x` 取消，`r` / `enter` 取消并取回草稿（`ctrl+x` 停止当前运行，不是取消队列） |
+| `F6` 或 `/copy` | 复制最后一条助手回答的正文和代码，不带界面装饰 |
+| `F7` 或 `/mouse` | 关闭 / 恢复鼠标捕获，便于终端原生选择复制 |
 | `ctrl+b` | 侧栏：显示并聚焦 → 取消聚焦 → 收起；窄终端下全屏打开 |
 | `/` 或 `ctrl+p` | 命令面板（`/` 需要草稿为空）——输入过滤，`enter` 执行 |
 | `ctrl+r` | 会话选择器 |
@@ -88,7 +94,7 @@ launchpad 是**正文**，不是盖在对话上的弹窗：没有会话时整块
 | `ctrl+←` / `ctrl+→` | 草稿按词移动；`ctrl+↑` / `ctrl+↓` 滚动对话 |
 | `/lang` | 界面语言：跟随系统 / 中文 / English |
 | `ctrl+e` | 请 app 切换「最终输出 / 完整过程」 |
-| `ctrl+k` | 刷新会话与用量；`ctrl+x` 停止当前生成 |
+| `F5` | 刷新会话与用量；`ctrl+x` 停止当前生成 |
 | `ctrl+c` | 退出 |
 
 | 鼠标 | 动作 |
@@ -100,7 +106,11 @@ launchpad 是**正文**，不是盖在对话上的弹窗：没有会话时整块
 | 对话区滚轮 | 滚动；到顶时请求更早一页 |
 | 侧栏滚轮 | 滚动面板 |
 
-鼠标上报是 SGR 1006，只由本程序开启；inline TUI 从不打开它。
+鼠标上报使用 SGR 1006，启动时开启；`/mouse` 可以在运行时释放 / 恢复捕获，退出时总会还原终端。草稿的文字、光标、折叠粘贴和图片附件按会话保留，经过浮层、launchpad 和会话切换也不丢失（仅在当前 TUI 进程内，不写入磁盘）。
+
+对话默认跟随最新输出。手动向上滚动后保持阅读位置；新输出只显示提醒徽标，不把读者拉回底部。滚回底部或按 `esc` 恢复跟随。
+
+驱动只重绘有变化的帧：空闲时没有 120ms 定时重绘。流式输出与 spinner 更新按 80ms 合并，输入与 resize 立即重绘；转录按宽度和内容版本缓存。
 
 ## 布局与个性化
 
@@ -143,6 +153,8 @@ launchpad 是**正文**，不是盖在对话上的弹窗：没有会话时整块
 | 接会话、`--session`、`--continue` | `get_state` + `switch_session` |
 | 历史与翻页 | 启动加载最新一页，到顶时取更早一页（`get_session_entries`，有界的向后游标） |
 | 发消息与流式 | `prompt`（并入策略）；`text_chunk`、`thinking_*`、`tool_*`、`agent_end` 驱动对话 |
+| 队列管理 | `/queue` 读取 `get_state.queuedRuns`；取消与取回复用现有 `cancel_queued_run`，不维护第二套客户端队列 |
+| 草稿附件 | 复用 `components/input.rs` 的折叠粘贴和图片标记机制；附件随 prompt 发送 |
 | 审批 | 被挂起的请求显示在活动行，`y` / `n` 回答；重启后由 `get_state.pendingApprovals` 恢复，任一客户端作答后 `approval_decision` 清除 |
 | 会话面板 | `list_sessions`，最近活跃在前，点击即切换 |
 | 用量 / 上下文 / 成本 | `get_state` 的 usage，随同样的事件刷新 |
@@ -155,7 +167,7 @@ launchpad 是**正文**，不是盖在对话上的弹窗：没有会话时整块
 - **待办 / 任务面板**：goal 控制面是本地 CLI（`future goal`），workbench 还没读它；面板显示
   "no todos" 而不是编造行。
 - **技能面板**只按名字列出本会话已加载的技能（没有浏览器、不能安装）。
-- **图片附件与 `@` 文件引用**：输入路径还不带附件；要接的话，`tui/src/paste.rs`（粘贴折叠、剪贴板读取）是要复用的那套机制。
+- **`@` 文件引用**尚未实现；粘贴图片路径与折叠粘贴已复用 `tui/src/paste.rs`。
 - **命令面板**只列适配层实现的命令。行内界面里那些 providers / tools / sandbox / skills /
   worktree 面板还没有等价物；它们背后是会话级的 agent 设置，今天请用桌面端或 `future` 命令行改。
 - 契约里的 P1：时间线轨、diff 双栏卡、图片预览、会话管理器全屏版、全屏草稿编辑器。
@@ -164,7 +176,10 @@ launchpad 是**正文**，不是盖在对话上的弹窗：没有会话时整块
 
 | 文件 | 职责 |
 |---|---|
-| `tui/src/workbench/run.rs` | `future tui` 跑的驱动：终端、事件循环、需要先问 agent 的键（审批、停止） |
+| `tui/src/workbench/run.rs` | 驱动：终端、按需合并重绘、复制与鼠标捕获 |
+| `tui/src/workbench/editor.rs` | 共享多行编辑器的字节索引适配；按会话保存完整草稿 |
+| `tui/src/workbench/scroll.rs` | 跟随最新、未读输出与回到最新语义 |
+| `tui/src/clipboard.rs` | 纯助手正文剪贴板输出 |
 | `tui/src/workbench/live.rs` | agent 适配层：填 `WorkbenchData`、落地 `WbAction` |
 | `tui/src/index.rs` | 参数、`--help`、print mode、`--list-models`；交互式交给驱动 |
 | `tui/src/workbench/mod.rs` | `Workbench`（视图状态）、`WbEvent` / `WbAction`、键鼠分发 |

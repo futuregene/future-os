@@ -308,6 +308,16 @@ impl Terminal {
     /// off unless someone asks, which is what keeps the user's own selection and
     /// click-to-copy working for a caller with no mouse targets.
     pub fn set_mouse_mode(&mut self, on: bool) {
+        if self.raw_enabled && self.mouse != on {
+            write_str(
+                &self.write_lock,
+                if on {
+                    crate::workbench::mouse::MOUSE_ON
+                } else {
+                    crate::workbench::mouse::MOUSE_OFF
+                },
+            );
+        }
         self.mouse = on;
     }
 
