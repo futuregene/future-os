@@ -36,6 +36,7 @@ Options:
   --verbose             Show detailed startup information
   --skill <path>        Load a skill file or directory
   --no-skills, -ns      Disable skills discovery
+  --legacy              Run the previous inline UI instead of the workbench
   --version, -v         Show version number
   --help, -h            Show this help
 
@@ -88,6 +89,6 @@ mod tests {
         let h = help_text();
         assert!(h.starts_with("future-tui TUI\n"));
         assert!(h.ends_with("What is 2+2?\"\n"));
-        assert_eq!(h.lines().count(), 58);
+        assert_eq!(h.lines().count(), 59);
     }
 }

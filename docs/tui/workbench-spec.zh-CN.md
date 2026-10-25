@@ -22,9 +22,9 @@
 5. 状态栏真实指标：模型 · 强度 · cwd · git 分支 · 上下文占用条 · token · 费用/缓存。
 6. `/` 命令面板（带说明、Tab 补全）、`?` 帮助覆盖层、`/` 过滤、历史 ↑↓。
 7. 主题：内置 `future-dark` / `future-light` 两套 256 色，支持 `/theme`。
-8. **独立的 TUI**：`future-workbench` 有自己的入口（`tui/src/bin/workbench.rs`）和自己的全屏渲染循环，
-   不是 `future-tui` 的 `--layout` 开关，也不改 `app.rs` / `index.rs` 的既有行为。现有 inline TUI
-   （`future tui`）保持原样；workbench 成熟后再决定要不要成为默认入口。
+8. **独立的 TUI，并且它就是 `future tui`**：workbench 有自己的入口
+   （`tui/src/bin/workbench.rs`）和自己的全屏渲染循环，`future tui` 启动它；旧的行内界面
+   退到 `future tui --legacy`。它不是 `--layout` 开关——两个渲染器共用一条输出流的做法被否掉了。
 
 ### P1（本次只做骨架/文档，不要求完成）
 

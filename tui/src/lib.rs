@@ -56,6 +56,7 @@ pub mod notifications;
 pub mod paste;
 pub mod paste_burst;
 pub mod rpc;
+pub mod session_rows;
 pub mod skill_reco;
 pub mod skills_cli;
 pub mod stderr_log;

@@ -95,7 +95,14 @@ pub(crate) fn compose(
     }
     paint(&mut rows, frame.status, status_row(data, &palette, columns));
     if let Some(hint) = frame.hint {
-        paint(&mut rows, hint, hint_row(&palette, columns, frame.compact));
+        let row = match data.notice.as_deref() {
+            Some(notice) => vec![fit(
+                &palette.text(palette.red, &format!(" {notice}")),
+                columns,
+            )],
+            None => hint_row(&palette, columns, frame.compact),
+        };
+        paint(&mut rows, hint, row);
     }
 
     // ── overlays ──────────────────────────────────────────────────────

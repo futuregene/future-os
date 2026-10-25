@@ -31,12 +31,11 @@ implementation may extend it, but may not change its meaning.
    `/` filter, ↑↓ history.
 7. Themes: two built-in 256-colour palettes, `future-dark` / `future-light`,
    selectable with `/theme`.
-8. **An independent TUI**: `future-workbench` has its own entry point
-   (`tui/src/bin/workbench.rs`) and its own full-screen render loop. It is not a
-   `--layout` switch on `future-tui`, and it does not change the behaviour of
-   `app.rs` / `index.rs`. The existing inline TUI (`future tui`) stays exactly as
-   it is; whether the workbench later becomes the default entry is a separate
-   decision.
+8. **An independent TUI, and it is `future tui`**: the workbench has its own
+   entry point (`tui/src/bin/workbench.rs`) and its own full-screen render loop,
+   and `future tui` starts it. The previous inline UI moved to
+   `future tui --legacy`. It is not a `--layout` switch — two renderers sharing
+   one output stream was the thing that got rejected.
 
 ### P1 (skeleton / documentation only this round, completion not required)
 

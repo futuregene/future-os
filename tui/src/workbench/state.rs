@@ -266,6 +266,10 @@ pub struct WorkbenchData {
     pub input: InputView,
     pub activity: Activity,
     pub palette: &'static str,
+    /// A failed request or command, shown in place of the hint row until
+    /// something succeeds. Distinct from the transcript: it is about the
+    /// surface's own last action, not part of the conversation.
+    pub notice: Option<String>,
 }
 
 impl WorkbenchData {

@@ -150,6 +150,7 @@ fn base(palette: &Palette) -> WorkbenchData {
         },
         activity: Activity::default(),
         palette: palette.id,
+        notice: None,
     }
 }
 

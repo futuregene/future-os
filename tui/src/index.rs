@@ -53,6 +53,8 @@ pub struct CliArgs {
     pub skill: Option<Vec<String>>,
     pub no_skills: bool,
     pub version: bool,
+    /// `--legacy`: run the previous inline UI instead of the workbench.
+    pub legacy: bool,
 }
 
 /// Result of argument scanning: help/unknown-option terminate during parsing.
@@ -217,6 +219,9 @@ pub fn parse_args(args: &[String]) -> ParseOutcome {
                 }
             }
             "--no-skills" | "-ns" => result.no_skills = true,
+            // The previous inline UI, kept as an escape hatch while the
+            // workbench catches up (see `docs/guide/workbench.md`).
+            "--legacy" | "--classic" => result.legacy = true,
             "--version" | "-v" => result.version = true,
             "--help" | "-h" => return ParseOutcome::Help,
             _ => {
@@ -1161,7 +1166,28 @@ pub fn run(args: &[String]) -> ExitCode {
         };
     }
 
-    // Interactive mode (TUI).
+    // Interactive mode. The workbench is the terminal UI; `--legacy` runs the
+    // previous inline one (see `docs/guide/workbench.md`).
+    if !args.legacy {
+        let options = crate::workbench::run::Options {
+            addr: args.grpc_addr.clone(),
+            session: args.session.clone(),
+            no_context_files: args.no_context_files,
+            initial_prompt: build_initial_prompt(&args.file_args, &args.messages),
+            continue_recent: args.r#continue,
+            settings_path: tui_settings_path(),
+        };
+        let result = runtime.block_on(crate::workbench::run::run(options));
+        crate::agent_supervisor::stop_owned_agent();
+        return match result {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("future-tui: {error}");
+                ExitCode::from(1)
+            }
+        };
+    }
+
     let code = runtime.block_on(run_interactive(&args));
     crate::agent_supervisor::stop_owned_agent();
     ExitCode::from(code)
@@ -1177,6 +1203,21 @@ mod tests {
             ParseOutcome::Args(a) => a,
             other => panic!("expected Args, got {other:?}"),
         }
+    }
+
+    /// `future tui` runs the workbench; `--legacy` is the only way back to the
+    /// previous inline UI. A regression here would silently restore the old
+    /// surface as the default, which is exactly the change this exists to
+    /// prevent.
+    #[test]
+    fn the_default_entry_is_the_workbench() {
+        assert!(!args(&[]).legacy);
+        assert!(!args(&["--session", "s1"]).legacy);
+        assert!(args(&["--legacy"]).legacy);
+        assert!(args(&["--classic"]).legacy);
+        // Non-interactive paths are unaffected: print mode never reaches the
+        // surface at all.
+        assert!(!args(&["-p", "hi"]).legacy);
     }
 
     #[test]

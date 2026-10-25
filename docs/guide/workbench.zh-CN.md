@@ -1,18 +1,26 @@
-# Workbench —— 第二个 TUI
+# Workbench —— 终端界面
 
-`future-workbench` 是 FutureOS 的全屏终端界面。它是**第二个 TUI**，不是 `future-tui`
-的一种模式：inline TUI 把行追加进终端自己的 scrollback 并只对尾部做 diff，而 workbench
-占有整块屏幕、重绘绝对行、用「画过什么」来解析鼠标点击。这个程序没有任何一处走 `app.rs`。
+`future tui` 跑的就是 workbench：FutureOS 的全屏终端界面。它是**新的 TUI**，不是旧界面的
+一种模式——旧的行内界面把行追加进终端自己的 scrollback 并只对尾部做 diff，而 workbench
+占有整块屏幕、重绘绝对行、用「画过什么」来解析鼠标点击。
 
-目前交付的是**界面本身**：七个分区、侧栏、launchpad、浮层、鼠标与键盘，数据来自确定性的
-演示数据。接 agent 的那一层（用 `get_state` / `list_sessions` / 事件流填同一份数据）是下一片；
+`future tui --legacy` 仍然能跑旧的行内界面。它是 workbench 补齐旧界面那批命令和面板之前的
+逃生口，不是一个受支持的模式。
+
 设计契约见 [`docs/tui/workbench-spec.zh-CN.md`](../tui/workbench-spec.zh-CN.md)。
 
 ## 怎么跑
 
 ```bash
-# 界面本身，演示数据（标题栏会写 demo）
+future tui                          # workbench，接上你的 agent
+future tui --session <id>           # 打开指定会话
+future tui --continue               # 最近活跃的那个
+future tui "看看这个挂掉的测试"      # 启动时直接发第一条消息
+future tui --legacy                 # 旧的行内界面
+
+# 只跑界面，确定性演示数据（不连 agent，标题栏写 demo）
 cargo run -p future-tui --bin future-workbench -- --scenario chat
+cargo run -p future-tui --bin future-workbench -- --grpc-addr 127.0.0.1:50051
 
 # 任意尺寸打一帧：截图或检查布局
 cargo run -p future-tui --example workbench_demo -- --scenario launchpad --width 120 --height 38
@@ -75,19 +83,41 @@ launchpad 是**正文**，不是盖在对话上的弹窗：没有会话时整块
 
 鼠标上报是 SGR 1006，只由本程序开启；inline TUI 从不打开它。
 
+## 哪些已经接上 agent
+
+适配层是 `tui/src/workbench/live.rs`：从 `WorkbenchData` 画、把 `WbAction` 落地，并且复用
+行内界面的叶子而不是重写——对话用 `ChatArea`（markdown、工具行、思考、最终输出折叠）、
+历史用 `session_rows::rows_to_messages`、所有调用走 `GrpcClient`。
+
+| 已经可用 | 说明 |
+|---|---|
+| 接会话、`--session`、`--continue` | `get_state` + `switch_session` |
+| 历史与翻页 | 启动加载最新一页，到顶时取更早一页（`get_session_entries`，和行内界面同一个向后游标） |
+| 发消息与流式 | `prompt`（并入策略）；`text_chunk`、`thinking_*`、`tool_*`、`agent_end` 驱动对话 |
+| 审批 | 被挂起的请求显示在活动行，`y` / `n` 回答；重启后由 `get_state.pendingApprovals` 恢复，任一客户端作答后 `approval_decision` 清除 |
+| 会话面板 | `list_sessions`，最近活跃在前，点击即切换 |
+| 用量 / 上下文 / 成本 | `get_state` 的 usage，随同样的事件刷新 |
+| `ctrl+n` / `/new`、`ctrl+x` 停止、`ctrl+k` 刷新 | |
+| launchpad 参数 | 点「模型 / 强度 / 权限 / 模式」直接在 agent 上循环；launchpad 发出的第一条消息会先建会话 |
+| 主题、阅读档位 | 存 `~/.future/tui/settings.json`，与行内界面同一批键，两个界面看到的一致 |
+
 ## 还没有的部分
 
-- **agent 适配层**：现在数据来自 `workbench::demo`。下一片把 `WorkbenchData` 用 agent 填满
-  （会话、用量、模型、技能、待办）并提交 prompt——界面这一侧的契约已经定死：从
-  `WorkbenchData` 画，返回 `WbAction`。
-- **`future wb`**：统一 `future` 二进制里的子命令，以及「workbench 要不要成为默认终端入口」这个决定。
+- **待办 / 任务面板**：goal 控制面是本地 CLI（`future goal`），workbench 还没读它；面板显示
+  "no todos" 而不是编造行。
+- **技能面板**只按名字列出本会话已加载的技能（没有浏览器、不能安装）。
+- **图片附件与 `@` 文件引用**：输入路径还不带附件（该复用的是行内界面那套粘贴机制）。
+- **命令面板**只列适配层实现的命令；行内界面的 `/providers`、`/tools`、`/sandbox`、`/skills`、
+  `/worktree` 面板在 workbench 里还没有等价物——这些暂时用 `--legacy`。
 - 契约里的 P1：时间线轨、diff 双栏卡、图片预览、会话管理器全屏版、全屏草稿编辑器。
 
 ## 代码在哪
 
 | 文件 | 职责 |
 |---|---|
-| `tui/src/bin/workbench.rs` | 入口：raw mode、alternate screen、事件循环、动作应用 |
+| `tui/src/workbench/run.rs` | `future tui` 跑的驱动：终端、事件循环、需要先问 agent 的键（审批、停止） |
+| `tui/src/workbench/live.rs` | agent 适配层：填 `WorkbenchData`、落地 `WbAction` |
+| `tui/src/bin/workbench.rs` | 独立入口（同一个驱动，不经过 CLI） |
 | `tui/src/workbench/mod.rs` | `Workbench`（视图状态）、`WbEvent` / `WbAction`、键鼠分发 |
 | `tui/src/workbench/screen.rs` | 帧合成：七个分区、把局部区域拼进整行、浮层 |
 | `tui/src/workbench/layout.rs` | 分区矩形、两个断点、命中区域 |

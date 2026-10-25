@@ -1,22 +1,28 @@
-# Workbench — the second TUI
+# Workbench — the terminal UI
 
-`future-workbench` is a full-screen terminal UI for FutureOS. It is a **second
-TUI**, not a mode of `future-tui`: the inline TUI appends rows into the
-terminal's scrollback and diffs the tail, while the workbench owns the screen,
+`future tui` is the workbench: a full-screen terminal UI for FutureOS. It is a
+**new TUI**, not a mode of the old one — the old inline UI appended rows into the
+terminal's scrollback and diffed the tail, while the workbench owns the screen,
 repaints absolute rows and resolves mouse clicks against what it painted.
-Nothing in this program runs through `app.rs`.
 
-What exists today is the **surface**: the bands, the sidebar, the launchpad, the
-overlays, the mouse and the keyboard, painted from deterministic demo data. The
-agent adapter (filling the same data from `get_state` / `list_sessions` / the
-event stream) is the next slice; the design contract is
-[`docs/tui/workbench-spec.md`](../tui/workbench-spec.md).
+`future tui --legacy` still runs the previous inline UI. It is an escape hatch
+while the workbench catches up on the commands and panels that one had, not a
+supported mode.
+
+The design contract is [`docs/tui/workbench-spec.md`](../tui/workbench-spec.md).
 
 ## Running it
 
 ```bash
-# the surface, on demo data (the header says "demo")
+future tui                          # the workbench, attached to your agent
+future tui --session <id>           # open a specific conversation
+future tui --continue               # the most recently active one
+future tui "look at this failing test"   # send a first message on start
+future tui --legacy                 # the previous inline UI
+
+# the surface alone, on deterministic demo data (no agent; says "demo")
 cargo run -p future-tui --bin future-workbench -- --scenario chat
+cargo run -p future-tui --bin future-workbench -- --grpc-addr 127.0.0.1:50051
 
 # one frame at any size, for a screenshot or a layout check
 cargo run -p future-tui --example workbench_demo -- --scenario launchpad --width 120 --height 38
@@ -87,14 +93,39 @@ the frame tests and in `ansi::fit`, the one function that pads.
 Mouse reporting is SGR 1006 and is enabled by this program only; the inline TUI
 never turns it on.
 
+## What is wired to the agent
+
+The adapter is `tui/src/workbench/live.rs`: it paints from `WorkbenchData` and
+applies `WbAction`s, and it reuses the inline TUI's leaves rather than
+reimplementing them — `ChatArea` for the conversation (markdown, tool rows,
+thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
+`GrpcClient` for every call.
+
+| Works | Notes |
+|---|---|
+| Session attach, `--session`, `--continue` | `get_state` + `switch_session` |
+| History with paging | The newest page on attach, older pages when the top is reached (`get_session_entries`, the same backward cursor the inline TUI uses) |
+| Prompting and streaming | `prompt` with the coalescing policy; `text_chunk`, `thinking_*`, `tool_*` and `agent_end` drive the transcript |
+| Approvals | A parked request shows on the activity row; `y` / `n` answer it. `get_state`'s `pendingApprovals` brings it back after a restart, and `approval_decision` clears it whichever client answered |
+| Sessions panel | `list_sessions`, newest first, click to switch |
+| Usage / context / cost | `get_state`'s usage block, refreshed on the same events |
+| `ctrl+n` / `/new`, `ctrl+x` stop, `ctrl+k` refresh | |
+| Launchpad chips | Click 模型 / 强度 / 权限 / 模式 to cycle them on the agent; the first message from the launchpad creates the session |
+| Theme, reading level | Persisted in `~/.future/tui/settings.json`, the same keys the inline TUI writes, so both surfaces agree |
+
 ## What is not here yet
 
-- **The agent adapter.** Today's data comes from `workbench::demo`. The next
-  slice fills `WorkbenchData` from the agent (session, usage, models, skills,
-  todos) and submits prompts — the surface's side of that contract is already
-  fixed: it paints from `WorkbenchData` and returns `WbAction`s.
-- **`future wb`** as a subcommand of the unified `future` binary, and the
-  decision about whether the workbench becomes the default terminal entry.
+- **Todo / jobs panels.** The goal plane is a local CLI (`future goal`) and the
+  workbench does not read it yet; the panels say "no todos" rather than
+  inventing rows.
+- **Skills panel** lists the session's loaded skills by name only (no browser,
+  no install).
+- **Image attachments and `@` file mentions** — the prompt path has no
+  attachment support yet (the inline TUI's paste machinery is the thing to
+  reuse).
+- **The command palette** lists the commands the adapter implements; the inline
+  TUI's `/providers`, `/tools`, `/sandbox`, `/skills`, `/worktree` panels have
+  no workbench equivalent yet — use `--legacy` for those.
 - P1 from the contract: timeline rail, two-column diff card, image preview,
   full-screen session manager, full-screen draft editor.
 
@@ -102,7 +133,9 @@ never turns it on.
 
 | File | Responsibility |
 |---|---|
-| `tui/src/bin/workbench.rs` | The entry point: raw mode, alternate screen, event loop, applying actions |
+| `tui/src/workbench/run.rs` | The driver `future tui` runs: terminal, event loop, keys that need the agent first (approvals, stop) |
+| `tui/src/workbench/live.rs` | The agent adapter: `WorkbenchData` in, `WbAction`s applied |
+| `tui/src/bin/workbench.rs` | The standalone entry point (same driver, no CLI) |
 | `tui/src/workbench/mod.rs` | `Workbench` (view state), `WbEvent` / `WbAction`, key and mouse dispatch |
 | `tui/src/workbench/screen.rs` | Frame composition: the bands, splicing partial bands into a row, overlays |
 | `tui/src/workbench/layout.rs` | Band rectangles, the two breakpoints, the hit map |

@@ -32,8 +32,10 @@ pub mod ansi;
 pub mod demo;
 pub mod launchpad;
 pub mod layout;
+pub mod live;
 pub mod mouse;
 pub mod panels;
+pub mod run;
 pub mod screen;
 pub mod state;
 pub mod theme;
@@ -382,20 +384,20 @@ impl Workbench {
                 text: String::new(),
                 cursor: 0,
             }],
-            "up" | "down" => {
-                let step: i32 = if key == "up" { -1 } else { 1 };
-                if self.sidebar_focus {
-                    let index = self.panel.index();
-                    let next = self.panel_scroll[index] as i32 + step;
-                    self.panel_scroll[index] = next.max(0) as usize;
-                } else {
-                    let next = self.chat_scroll as i32 - step;
-                    self.chat_scroll = next.max(0) as usize;
-                }
-                vec![WbAction::Redraw]
+            "up" => self.scroll(-1, data),
+            "down" => self.scroll(1, data),
+            "pageUp" => self.scroll(-10, data),
+            "pageDown" => self.scroll(10, data),
+            // Space is a character in the draft, not the "select" key the
+            // menus use: the prompt has to be able to contain words.
+            "space" => {
+                let mut view = data.input.clone();
+                view.insert(" ");
+                vec![WbAction::EditInput {
+                    text: view.text,
+                    cursor: view.cursor,
+                }]
             }
-            "pageUp" => vec![WbAction::Scroll(-10)],
-            "pageDown" => vec![WbAction::Scroll(10)],
             "escape" => {
                 self.chat_scroll = 0;
                 vec![WbAction::Redraw]
@@ -419,6 +421,33 @@ impl Workbench {
                 }
             }
         }
+    }
+
+    /// Move the conversation (`up` negative = towards the tail) or the focused
+    /// panel's list, and ask for an older page when the top is reached.
+    ///
+    /// One method for the keys and the wheel: a scroll offset the surface keeps
+    /// in two places would disagree with itself the first time a key and the
+    /// wheel alternated.
+    fn scroll(&mut self, up: i32, data: &WorkbenchData) -> Vec<WbAction> {
+        if self.sidebar_focus {
+            let index = self.panel.index();
+            let next = self.panel_scroll[index] as i32 - up;
+            self.panel_scroll[index] = next.max(0) as usize;
+            return vec![WbAction::Redraw];
+        }
+        let total = data.messages.len();
+        // `chat_scroll` counts rows up from the tail: 0 is pinned to the newest
+        // row, and the ceiling is "everything loaded is above the viewport".
+        let ceiling = total.saturating_sub(1);
+        let at_top = self.chat_scroll >= ceiling && total > 0;
+        let next = (self.chat_scroll as i32 - up).clamp(0, ceiling as i32);
+        self.chat_scroll = next as usize;
+        if up < 0 && at_top {
+            // Nothing older is loaded: the app may fetch one more page.
+            return vec![WbAction::LoadOlder];
+        }
+        vec![WbAction::Scroll(up)]
     }
 
     fn handle_overlay_key(&mut self, overlay: Overlay, key: &str) -> Vec<WbAction> {
@@ -531,11 +560,8 @@ impl Workbench {
                     self.panel_scroll[index] = next.max(0) as usize;
                     return vec![WbAction::Redraw];
                 }
-                if delta < 0 && self.chat_scroll == 0 {
-                    vec![WbAction::LoadOlder]
-                } else {
-                    vec![WbAction::Scroll(delta)]
-                }
+                // The wheel's sign is "up = negative", the same as the keys.
+                self.scroll(delta, data)
             }
             mouse::MouseKind::Press => match self.hit.hit(event.x, event.y).map(str::to_string) {
                 Some(id) => self.click(&id, data),
@@ -954,26 +980,32 @@ mod tests {
     fn the_wheel_scrolls_and_reaching_the_top_asks_for_older_rows() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
-        let wheel_up = mouse::MouseEvent {
-            kind: mouse::MouseKind::WheelUp,
+        let wheel = |kind| mouse::MouseEvent {
+            kind,
             x: 10,
             y: 12,
             shift: false,
             alt: false,
             ctrl: false,
         };
-        // Nothing is above the transcript yet: the surface asks for a page.
+        // The wheel moves three rows and reports the gesture; the app uses it
+        // to know the reader is scrolling, not to move anything itself.
         assert_eq!(
-            workbench.handle(WbEvent::Mouse(wheel_up), &data),
-            vec![WbAction::LoadOlder]
-        );
-        let wheel_down = mouse::MouseEvent {
-            kind: mouse::MouseKind::WheelDown,
-            ..wheel_up
-        };
-        assert_eq!(
-            workbench.handle(WbEvent::Mouse(wheel_down), &data),
+            workbench.handle(WbEvent::Mouse(wheel(mouse::MouseKind::WheelDown)), &data),
             vec![WbAction::Scroll(3)]
+        );
+        assert_eq!(
+            workbench.handle(WbEvent::Mouse(wheel(mouse::MouseKind::WheelUp)), &data),
+            vec![WbAction::Scroll(-3)]
+        );
+        // Enough wheel-up gestures reach the top of what is loaded, and the
+        // next one asks for a page above it.
+        for _ in 0..8 {
+            workbench.handle(WbEvent::Mouse(wheel(mouse::MouseKind::WheelUp)), &data);
+        }
+        assert_eq!(
+            workbench.handle(WbEvent::Mouse(wheel(mouse::MouseKind::WheelUp)), &data),
+            vec![WbAction::LoadOlder]
         );
     }
 
