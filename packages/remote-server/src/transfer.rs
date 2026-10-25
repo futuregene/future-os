@@ -11,6 +11,11 @@ use std::{
 /// window without allowing one peer to create an unbounded blocking-read queue.
 const DOWNLOAD_CONCURRENCY: usize = 4;
 
+/// A chunk index that is not a number cannot address a chunk at all. Uploads
+/// and pulls are malformed in the same way, so they report the same message;
+/// clients match on it.
+const INVALID_CHUNK_INDEX: &str = "Invalid chunk index.";
+
 type DownloadResult = (
     Option<async_nats::Subject>,
     crate::secure::Reply,
@@ -117,8 +122,11 @@ impl TransferLoop {
                     let response = match parts.as_slice() {
                         [transfer_id, "chunk", index] => index
                             .parse::<u64>()
-                            .map_err(|_| "Invalid chunk index.".to_string())
+                            .map_err(|_| INVALID_CHUNK_INDEX.to_string())
                             .and_then(|index| self.host.upload_chunk(transfer_id, index, &plaintext)),
+                        // Only numeric pulls are dispatched above; a non-numeric one
+                        // falls through to here, exactly like an upload's bad index.
+                        [_, "pull", _] => Err(INVALID_CHUNK_INDEX.to_string()),
                         _ => Err("Unsupported transfer operation.".to_string()),
                     };
                     reply_to(&client, message.reply, &reply_security, response).await;
