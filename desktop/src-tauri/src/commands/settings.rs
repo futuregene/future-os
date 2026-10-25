@@ -43,7 +43,6 @@ mod tests {
             title_language: None,
             community_edition: Some(true),
             skill_recommend: None,
-            auto_resume_interrupted: None,
         })
         .expect("update");
         assert_eq!(updated.approval_tier, "manual");

@@ -391,9 +391,5 @@
     "followCopyName": "复制公众号名",
     "followCopied": "已复制",
     "followReadArticle": "阅读文章"
-  },
-  "autoResumeInterrupted": {
-    "title": "自动继续被中断的对话",
-    "description": "关闭 FutureOS 会中止正在运行的对话（智能体在应用内运行）。开启后，下次打开应用会自动接着跑这些被中断的对话；关闭则保持中断状态，需要你手动继续。"
   }
 }

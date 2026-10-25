@@ -68,8 +68,6 @@ function mount(overrides: Partial<React.ComponentProps<typeof GeneralPage>> = {}
     onToggleBellOnComplete: vi.fn(),
     autoTitleFirstTurn: true,
     onToggleAutoTitleFirstTurn: vi.fn(),
-    autoResumeInterrupted: true,
-    onToggleAutoResumeInterrupted: vi.fn(),
     ...overrides,
   };
   act(() => {
@@ -391,7 +389,7 @@ describe("generalPage approval tier picker", () => {
 
 describe("generalPage switches", () => {
   it("exposes every toggle as an accessible switch with its current value", () => {
-    const { container } = mount({ autoUpgradeSkills: true, skillRecommend: false, bellOnComplete: false, autoTitleFirstTurn: true, autoResumeInterrupted: false });
+    const { container } = mount({ autoUpgradeSkills: true, skillRecommend: false, bellOnComplete: false, autoTitleFirstTurn: true });
 
     const switches = [...container.querySelectorAll<HTMLButtonElement>("[role=switch]")];
     expect(switches.map(item => item.getAttribute("aria-label"))).toEqual([
@@ -399,9 +397,8 @@ describe("generalPage switches", () => {
       "Skill recommendations",
       "Generate a title after the first answer",
       "Completion bell",
-      "Continue interrupted conversations",
     ]);
-    expect(switches.map(item => item.getAttribute("aria-checked"))).toEqual(["true", "false", "true", "false", "false"]);
+    expect(switches.map(item => item.getAttribute("aria-checked"))).toEqual(["true", "false", "true", "false"]);
   });
 
   it("reports each toggle to its own callback, inverted", () => {
@@ -411,10 +408,8 @@ describe("generalPage switches", () => {
 
     act(() => toggle("Auto-upgrade skills").click());
     act(() => toggle("Completion bell").click());
-    act(() => toggle("Continue interrupted conversations").click());
 
     expect(props.onToggleAutoUpgradeSkills).toHaveBeenCalledExactlyOnceWith(false);
     expect(props.onToggleBellOnComplete).toHaveBeenCalledExactlyOnceWith(false);
-    expect(props.onToggleAutoResumeInterrupted).toHaveBeenCalledExactlyOnceWith(false);
   });
 });

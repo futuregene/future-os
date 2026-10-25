@@ -28,8 +28,6 @@ export function GeneralPage({
   onToggleBellOnComplete,
   autoTitleFirstTurn,
   onToggleAutoTitleFirstTurn,
-  autoResumeInterrupted,
-  onToggleAutoResumeInterrupted,
 }: {
   approvalTier: ApprovalTier;
   futureSessionStatus?: string;
@@ -42,8 +40,6 @@ export function GeneralPage({
   onToggleBellOnComplete: (value: boolean) => void;
   autoTitleFirstTurn: boolean;
   onToggleAutoTitleFirstTurn: (value: boolean) => void;
-  autoResumeInterrupted: boolean;
-  onToggleAutoResumeInterrupted: (value: boolean) => void;
 }) {
   const { t } = useTranslation("settings");
   const themeMode = useThemeMode();
@@ -203,16 +199,6 @@ export function GeneralPage({
           description={t("bellOnComplete.description")}
         >
           <Switch checked={bellOnComplete} label={t("bellOnComplete.title")} onChange={onToggleBellOnComplete} />
-        </SettingsRow>
-        <SettingsRow
-          title={t("autoResumeInterrupted.title")}
-          description={t("autoResumeInterrupted.description")}
-        >
-          <Switch
-            checked={autoResumeInterrupted}
-            label={t("autoResumeInterrupted.title")}
-            onChange={onToggleAutoResumeInterrupted}
-          />
         </SettingsRow>
       </SettingsList>
     </SettingsSection>
