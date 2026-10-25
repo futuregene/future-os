@@ -33,3 +33,41 @@ pub fn home_dir_or_default() -> std::path::PathBuf {
 pub fn future_state_dir() -> std::path::PathBuf {
     future_rpc::home::future_home()
 }
+
+/// Expand a `/cwd`-style path argument: `~`, `~/x`, and a relative path joined
+/// onto `base` when one is given.
+///
+/// `/cwd` and the new-session screen's workspace field both take a path the
+/// user typed, and they must agree on what one means — a leading `~` is the
+/// user's home, and a relative path is relative to the caller's base (the
+/// session's cwd), never to whatever directory the TUI process happens to be in.
+pub fn expand_path(input: &str, base: Option<&str>) -> std::path::PathBuf {
+    let mut resolved = input.trim().to_string();
+    let home = home_dir_or_default();
+    // Both separators name a directory: a path typed on Windows may carry `\`
+    // even when the host is POSIX (a pasted Windows path is the usual way).
+    let tilde_child = format!("~{}", std::path::MAIN_SEPARATOR);
+    let tilde_alternate = if std::path::MAIN_SEPARATOR == '/' {
+        "~\\"
+    } else {
+        ""
+    };
+    if resolved == "~" {
+        resolved = home.display().to_string();
+    } else if resolved.starts_with(&tilde_child)
+        || (!tilde_alternate.is_empty() && resolved.starts_with(tilde_alternate))
+    {
+        let rest = resolved
+            .strip_prefix(&tilde_child)
+            .or_else(|| resolved.strip_prefix(tilde_alternate))
+            .unwrap_or_default();
+        resolved = home.join(rest).display().to_string();
+    } else if !std::path::Path::new(&resolved).is_absolute() {
+        let base = match base.filter(|base| !base.is_empty()) {
+            Some(base) => std::path::PathBuf::from(base),
+            None => home,
+        };
+        resolved = base.join(&resolved).display().to_string();
+    }
+    std::path::PathBuf::from(resolved)
+}
