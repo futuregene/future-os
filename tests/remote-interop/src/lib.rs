@@ -51,11 +51,49 @@ impl Fixture {
         )
         .await
     }
+    pub async fn start_transfer(
+        nats_url: &str,
+        websocket_url: &str,
+        file_bytes: Vec<u8>,
+        chunk_bytes: usize,
+        chunk_delay: Duration,
+    ) -> anyhow::Result<Self> {
+        Self::start_transfer_with_ids(
+            nats_url,
+            websocket_url,
+            DESKTOP,
+            PAIR,
+            file_bytes,
+            chunk_bytes,
+            chunk_delay,
+        )
+        .await
+    }
     async fn start_with_ids(
         nats_url: &str,
         websocket_url: &str,
         desktop: &str,
         pair: &str,
+    ) -> anyhow::Result<Self> {
+        Self::start_transfer_with_ids(
+            nats_url,
+            websocket_url,
+            desktop,
+            pair,
+            contract::suite()?.file_bytes,
+            CHUNK_BYTES,
+            Duration::ZERO,
+        )
+        .await
+    }
+    async fn start_transfer_with_ids(
+        nats_url: &str,
+        websocket_url: &str,
+        desktop: &str,
+        pair: &str,
+        file_bytes: Vec<u8>,
+        chunk_bytes: usize,
+        chunk_delay: Duration,
     ) -> anyhow::Result<Self> {
         for endpoint in [nats_url, websocket_url] {
             let parsed = url::Url::parse(endpoint)?;
@@ -105,7 +143,11 @@ impl Fixture {
             jwt_expires_at: expires,
             control_url: None,
         };
-        let host = Arc::new(MemoryServerHost::new(creds, contract::suite()?.file_bytes));
+        let host = Arc::new(
+            MemoryServerHost::new(creds, file_bytes)
+                .with_chunk_bytes(chunk_bytes)
+                .with_chunk_delay(chunk_delay),
+        );
         let server = Supervisor::new(host.clone(), Arc::new(server_host::Executor));
         let status = server.start().await?;
         anyhow::ensure!(
