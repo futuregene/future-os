@@ -1362,12 +1362,18 @@ def changed_regions(mask, min_area: int = 24, pad: int = 4) -> list:
 # ─── Terminal captures ──────────────────────────────────────────────────────
 
 
-def _tui_binaries(args: argparse.Namespace) -> tuple[Path, Path]:
-    """The two programs a TUI capture needs, with the build hint when missing."""
+def _tui_binaries(args: argparse.Namespace) -> tuple[Path, Path | None]:
+    """The programs a TUI capture needs, with the build hint when missing.
+
+    Reaching an existing agent (`--addr`) needs only the TUI itself; the scripted
+    agent is required only when the capture has to start one.
+    """
     profile = "release" if args.release else "debug"
     tui = Path(args.bin) if args.bin else ROOT / "target" / profile / "future"
-    agent = Path(args.agent_bin) if args.agent_bin else ROOT / "target" / profile / "examples" / "demo_agent"
-    missing = [path for path in (tui, agent) if not path.exists()]
+    agent: Path | None = None if args.addr else (
+        Path(args.agent_bin) if args.agent_bin else ROOT / "target" / profile / "examples" / "demo_agent"
+    )
+    missing = [path for path in (tui, agent) if path is not None and not path.exists()]
     if missing:
         print(
             "error: missing\n  " + "\n  ".join(str(p) for p in missing) + "\nbuild them first:\n"
@@ -1399,6 +1405,90 @@ def _wait_for_addr(process: subprocess.Popen, timeout: float) -> str:
     raise SystemExit("demo agent did not report its address in time")
 
 
+# The scenarios `capture.py tui --scenario` and `tui/scripts/shot.sh` accept.
+#
+# Each maps to what a reader would do: `chat` is the surface as it opens; `help`
+# presses `?`; `palette` presses `/` on an empty draft (which is the only way
+# the palette opens); the panel scenarios click a sidebar tab, because the
+# workbench switches panels by click and has no key for it.
+#
+# The click is resolved from the frame that is on screen when the step runs, not
+# from a fixed column: the tab labels move with the sidebar's width, the theme
+# and the language, and a hard-coded column that lands one cell off selects the
+# neighbouring panel — a wrong picture that still looks plausible.
+TUI_SCENARIO_KEYS: dict[str, str] = {
+    "chat": "",
+    "help": "?",
+    "palette": "/",
+}
+TUI_SCENARIO_TABS: dict[str, str] = {
+    "todo": "待办",
+    "usage": "用量",
+    "skills": "技能",
+    "sessions": "会话",
+}
+
+
+def _painted_cells(row: list) -> list[tuple[int, str]]:
+    """`(cell index, character)` for each painted character, left to right.
+
+    A wide (CJK) character owns two cells: its own, and a `""` continuation the
+    renderer keeps so that the following cell starts at the right column. Using
+    a string index instead of the cell index is what made a click land on the
+    tab *before* its target: `待办 任务 会话 用量` is 11 characters but 19
+    columns, so every target after the first CJK label was clicked short.
+    """
+    painted = []
+    for index, cell in enumerate(row):
+        if cell.ch:
+            painted.append((index, cell.ch))
+    return painted
+
+
+def _find_word_column(cells: list, word: str) -> tuple[int, int] | None:
+    """Locate `word` in a painted grid: `(row, first cell index)`."""
+    for row_index, row in enumerate(cells):
+        painted = _painted_cells(row)
+        for start in range(len(painted)):
+            if "".join(ch for _, ch in painted[start : start + len(word)]) == word:
+                return row_index, painted[start][0]
+    return None
+
+
+def _tui_click_tab(word: str, cols: int, rows: int, settle: float):
+    """A step that clicks the sidebar tab labelled `word`."""
+
+    def action(text: str) -> bytes | None:
+        import tui_terminal
+
+        cells, _ = tui_terminal.screen_from_stream(text, cols, rows)
+        found = _find_word_column(cells, word)
+        if found is None:
+            raise SystemExit(
+                f"error: the frame has no {word!r} tab to click at {cols}x{rows}. On a "
+                "terminal too narrow for the sidebar the tabs are unreachable; try a "
+                "wider --cols."
+            )
+        row_index, column = found
+        # SGR 1006, 1-based: press then release at the same cell.
+        press = f"\x1b[<0;{column + 1};{row_index + 1}M".encode()
+        release = f"\x1b[<0;{column + 1};{row_index + 1}m".encode()
+        return press + release
+
+    return (settle, action)
+
+
+def _tui_steps(scenario: str, cols: int, rows: int, settle: float = 2.5):
+    """The input script for a scenario, or a clear error for an unknown one."""
+    if scenario in TUI_SCENARIO_KEYS:
+        keys = TUI_SCENARIO_KEYS[scenario]
+        return [(settle, keys.encode())] if keys else []
+    if scenario in TUI_SCENARIO_TABS:
+        return [_tui_click_tab(TUI_SCENARIO_TABS[scenario], cols, rows, settle)]
+    known = ", ".join(sorted(list(TUI_SCENARIO_KEYS) + list(TUI_SCENARIO_TABS)))
+    raise SystemExit(f"error: unknown tui scenario {scenario!r}. Known: {known}")
+
+
 def tui(args: argparse.Namespace) -> int:
     """Capture the terminal UI as a real screenshot.
 
@@ -1424,22 +1514,30 @@ def tui(args: argparse.Namespace) -> int:
     home = work / "home"
     home.mkdir()
     agent = None
+    steps = _tui_steps(args.scenario, args.cols, args.rows)
     try:
-        agent = subprocess.Popen(
-            [str(agent_bin), "--port", "0"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-        addr = _wait_for_addr(agent, 20)
-        env = {"FUTURE_HOME": str(home), "HOME": str(home)}
+        if args.addr:
+            # Attaching to an agent that is already running (the "real session"
+            # path): the caller's FUTURE_HOME is authoritative, so the child
+            # inherits the environment instead of getting a scratch home.
+            addr = args.addr
+            env = None
+        else:
+            agent = subprocess.Popen(
+                [str(agent_bin), "--port", "0"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            addr = _wait_for_addr(agent, 20)
+            env = {"FUTURE_HOME": str(home), "HOME": str(home)}
         argv = [str(tui_bin), "tui", "--offline", "--grpc-addr", addr]
         if args.session:
             argv += ["--session", args.session]
         # The app must be sized before it draws, and it must not inherit the
         # caller's terminal: `tui_capture.run` opens its own pty and does both.
-        stream = tui_capture.run(argv, args.cols, args.rows, args.seconds, env=env)
+        stream = tui_capture.run(argv, args.cols, args.rows, args.seconds, env=env, steps=steps)
         text = stream.decode("utf-8", "replace")
         if not text.strip():
             raise SystemExit(
@@ -1461,6 +1559,49 @@ def tui(args: argparse.Namespace) -> int:
             except subprocess.TimeoutExpired:
                 agent.kill()
         _shutil.rmtree(work, ignore_errors=True)
+
+
+def _self_test() -> int:
+    """Check the pieces a screenshot depends on, without a browser or an agent."""
+    problems = []
+
+    def check(name, got, want):
+        if got != want:
+            problems.append(f"{name}: got {got!r}, want {want!r}")
+
+    # The tab click resolves a word to a *cell* column. Counting characters
+    # instead put the click on the tab before the target once any CJK label
+    # preceded it, which is what shipped first and produced a "usage" frame
+    # showing the sessions panel.
+    import tui_terminal
+
+    tabs = "  待办   任务   会话   用量   技能"
+    stream = "\x1b[1;1H" + tabs
+    cells, _ = tui_terminal.screen_from_stream(stream, 40, 2)
+    location = _find_word_column(cells, "用量")
+    check("tab row", location[0] if location else None, 0)
+    # Hand-counted from the layout: two spaces, then three double-width labels
+    # and three-space gaps put `用` (a wide char) at cells 23-24, while the same
+    # word sits at string index 17. The difference is what the first version got
+    # wrong.
+    check("usage cell", location[1] if location else None, 23)
+    check("chars would say 17", tabs.index("用量"), 17)
+
+    # And the bytes a scenario step actually writes: SGR 1006 press + release at
+    # the cell a reader sees, 1-based.
+    step = _tui_click_tab("用量", 40, 2, 0.0)
+    sent = step[1](stream)
+    check("click bytes", sent, b"\x1b[<0;24;1M\x1b[<0;24;1m")
+    check("no phantom find", _find_word_column(cells, "不存在"), None)
+    # A word starting mid-slot is still found; a partial match is not a match.
+    check("chat tab", _find_word_column(cells, "待办")[1], 2)
+
+    if problems:
+        for problem in problems:
+            print(f"FAIL {problem}")
+        return 1
+    print("capture.py self-test: ok")
+    return 0
 
 
 def terminal(args: argparse.Namespace) -> int:
@@ -1656,13 +1797,19 @@ def main() -> int:
     upright_parser.set_defaults(func=check_upright, platform="mobile")
 
     tui_parser = sub.add_parser("tui", help="capture the terminal UI as a real screenshot")
-    tui_parser.add_argument("output", help="PNG to write (relative paths land in --out)")
+    tui_parser.add_argument("output", nargs="?", default="tui.png",
+                            help="PNG to write (relative paths land in --out; default tui.png)")
     tui_parser.add_argument("--cols", type=int, default=130, help="pty width in columns (default 130)")
     tui_parser.add_argument("--rows", type=int, default=40, help="pty height in rows (default 40)")
     tui_parser.add_argument("--scale", type=float, default=2.0, help="device pixel ratio (default 2)")
     tui_parser.add_argument("--seconds", type=float, default=6.0,
                             help="how long to let the app paint before the capture closes (default 6)")
     tui_parser.add_argument("--session", default=None, help="open a specific session id")
+    tui_parser.add_argument("--addr", default=None,
+                            help="attach to an already-running agent instead of starting demo_agent")
+    tui_parser.add_argument("--scenario", default="chat",
+                            choices=sorted(list(TUI_SCENARIO_KEYS) + list(TUI_SCENARIO_TABS)),
+                            help="what the surface is showing (default chat)")
     tui_parser.add_argument("--bin", default=None, help="path to the future binary")
     tui_parser.add_argument("--agent-bin", default=None, help="path to the demo_agent example binary")
     tui_parser.add_argument("--release", action="store_true", help="look in target/release instead of target/debug")
@@ -1698,4 +1845,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--self-test"]:
+        # Importable from anywhere: the TUI helpers live beside this file.
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        sys.exit(_self_test())
     sys.exit(main())
