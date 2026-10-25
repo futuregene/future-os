@@ -208,6 +208,14 @@ struct Drag {
     grab_width: u16,
 }
 
+/// How many animation ticks the spinner holds one frame.
+///
+/// The ticker fires every 120 ms (see `run`), so a frame lasts 480 ms — slow
+/// enough that the spinner reads as motion rather than flicker, and coarse
+/// enough that a run whose only visible change is the spinner needs two frames
+/// a second instead of eight.
+pub const SPINNER_TICKS: usize = 4;
+
 /// The surface's own state: where the panels and the pointers are.
 ///
 /// Deliberately *not* the data — the conversation, the todos and the usage
@@ -403,10 +411,27 @@ impl Workbench {
             .copied()
     }
 
+    /// One animation step: advance the clock the spinner and the elapsed-time
+    /// counter read. Returns the tick it landed on.
+    ///
+    /// The driver's ticker calls this directly — it must not compose a frame
+    /// just to advance a counter — while [`WbEvent::Tick`] is the surface's
+    /// route to the same step.
+    pub fn advance_tick(&mut self) -> usize {
+        self.tick = self.tick.wrapping_add(1);
+        self.tick
+    }
+
+    /// The spinner frame the activity row draws right now: the tick divided by
+    /// [`SPINNER_TICKS`], so four ticks make one drawn frame.
+    pub fn spinner_frame(&self) -> usize {
+        self.tick / SPINNER_TICKS
+    }
+
     pub fn handle(&mut self, event: WbEvent, data: &WorkbenchData) -> Vec<WbAction> {
         match event {
             WbEvent::Tick => {
-                self.tick = self.tick.wrapping_add(1);
+                self.advance_tick();
                 Vec::new()
             }
             WbEvent::Resize(_, _) => vec![WbAction::Redraw],

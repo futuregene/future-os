@@ -395,8 +395,10 @@ fn conversation(
     if rows == 0 || columns == 0 {
         return Vec::new();
     }
-    let padding = (layout::CHAT_PADDING as usize).min(columns / 4);
-    let inner = columns.saturating_sub(padding * 2).max(1);
+    // One definition of the conversation's text width, shared with the driver
+    // that wraps the transcript — see `layout::chat_inner`.
+    let padding = layout::chat_padding(area.w);
+    let inner = layout::chat_inner(area.w);
     let messages = &data.messages;
     let total = messages.len();
     // `chat_scroll` counts rows up from the tail; it is clamped so a stale
@@ -508,7 +510,7 @@ fn activity_row(
     let spinner = if activity.is_busy() {
         palette.text(
             palette.amber,
-            &format!("{} ", widgets::spinner(workbench.tick / 4)),
+            &format!("{} ", widgets::spinner(workbench.spinner_frame())),
         )
     } else {
         palette.dim("· ")
