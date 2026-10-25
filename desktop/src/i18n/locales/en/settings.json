@@ -1,7 +1,8 @@
 {
   "language": {
     "title": "Language",
-    "description": "Choose the display language of the app"
+    "description": "Choose the display language of the app. Follows the system by default",
+    "system": "Follow system"
   },
   "appearance": {
     "title": "Appearance",

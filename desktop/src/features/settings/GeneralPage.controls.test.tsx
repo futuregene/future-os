@@ -94,8 +94,9 @@ describe("generalPage language picker", () => {
     const { container } = mount();
     const language = select(container, 0);
 
-    expect(language.value).toBe("en");
-    expect([...language.options].map(option => option.textContent)).toEqual(["中文", "English"]);
+    // Nothing chosen yet, so the picker sits on "follow the system" (en-US here).
+    expect(language.value).toBe("system");
+    expect([...language.options].map(option => option.textContent)).toEqual(["Follow system", "中文", "English"]);
 
     choose(language, "zh");
 
@@ -103,6 +104,18 @@ describe("generalPage language picker", () => {
     expect(document.documentElement.lang).toBe("zh-CN");
     // Stored so the next launch starts in the chosen language.
     expect(localStorage.getItem("future.language")).toBe("zh");
+  });
+
+  it("goes back to following the system without pinning a language", () => {
+    const { container } = mount();
+
+    choose(select(container, 0), "zh");
+    choose(select(container, 0), "system");
+
+    // jsdom's OS locale is en-US, so the system preference resolves to English.
+    expect(i18n.language).toBe("en");
+    expect(document.documentElement.lang).toBe("en");
+    expect(localStorage.getItem("future.language")).toBe("system");
   });
 
   it("switches back to English and restores the document language", () => {

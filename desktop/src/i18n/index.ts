@@ -24,6 +24,14 @@ for (const [path, mod] of Object.entries(modules)) {
 export const SUPPORTED_LANGUAGES = ["zh", "en"] as const;
 export type Language = (typeof SUPPORTED_LANGUAGES)[number];
 
+/**
+ * What the user picked in settings. "system" defers to the OS locale, which is
+ * also the default until the user chooses either language explicitly.
+ */
+export const LANGUAGE_PREFERENCES = ["system", "zh", "en"] as const;
+export type LanguagePreference = (typeof LANGUAGE_PREFERENCES)[number];
+
+/** Labels that read the same in either UI language; the "system" one is translated by the caller. */
 export const LANGUAGE_LABELS: Record<Language, string> = {
   zh: "中文",
   en: "English",
@@ -31,9 +39,10 @@ export const LANGUAGE_LABELS: Record<Language, string> = {
 
 const STORAGE_KEY = "future.language";
 export const DEFAULT_LANGUAGE: Language = "zh";
+const DEFAULT_PREFERENCE: LanguagePreference = "system";
 
 /**
- * First-run default follows the OS: the webview mirrors the system locale, and
+ * The system default follows the OS: the webview mirrors the system locale, and
  * we only ship zh/en bundles, so a Chinese system picks "zh" and any other
  * language falls back to English. `navigator` is guarded for non-DOM contexts.
  */
@@ -46,20 +55,26 @@ function systemLanguage(): Language {
   }
 }
 
-function readStoredLanguage(): Language {
+function readStoredPreference(): LanguagePreference {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === "zh" || stored === "en")
+    if (stored === "system" || stored === "zh" || stored === "en")
       return stored;
   }
   catch {
-    // localStorage may be unavailable; fall through to the system language.
+    // localStorage may be unavailable; fall through to the system default.
   }
-  return systemLanguage();
+  return DEFAULT_PREFERENCE;
+}
+
+/** The bundle a preference resolves to right now. */
+export function resolveLanguage(preference: LanguagePreference): Language {
+  return preference === "system" ? systemLanguage() : preference;
 }
 
 const namespaces = Object.keys(resources[DEFAULT_LANGUAGE] ?? {});
-const initialLanguage = readStoredLanguage();
+let currentPreference = readStoredPreference();
+const initialLanguage = resolveLanguage(currentPreference);
 
 function syncDocumentLanguage(language: string): void {
   if (typeof document !== "undefined")
@@ -79,19 +94,26 @@ void i18n.use(initReactI18next).init({
   returnNull: false,
 });
 
+/** The language the UI is actually showing (a "system" preference already resolved). */
 export function getLanguage(): Language {
   const current = i18n.language;
   return current === "en" ? "en" : "zh";
 }
 
-export function setLanguage(language: Language): void {
+/** The preference the picker should show, which may be "system". */
+export function getLanguagePreference(): LanguagePreference {
+  return currentPreference;
+}
+
+export function setLanguage(preference: LanguagePreference): void {
+  currentPreference = preference;
   try {
-    localStorage.setItem(STORAGE_KEY, language);
+    localStorage.setItem(STORAGE_KEY, preference);
   }
   catch {
     // Persistence is best-effort; the change still applies for this session.
   }
-  void i18n.changeLanguage(language);
+  void i18n.changeLanguage(resolveLanguage(preference));
 }
 
 export default i18n;

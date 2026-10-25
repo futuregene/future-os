@@ -1,7 +1,8 @@
 {
   "language": {
     "title": "界面语言",
-    "description": "选择应用的显示语言"
+    "description": "选择应用的显示语言，默认跟随系统",
+    "system": "跟随系统"
   },
   "appearance": {
     "title": "界面外观",
