@@ -72,8 +72,9 @@ Debian/Ubuntu 使用匹配的 `.deb`；其他 Linux 使用 portable 桌面包。
   `future host`，在无图形界面的终端前台提供手机远程入口。
 - **桌面便携版：**解压实际下载的 tarball，保持 `futureos` 与 `future`
   同目录，运行 `./futureos` 或 `./future host`。
-- **无界面 CLI：**解压 CLI-only 包，运行 `./future config`，再运行 `./future tui`（需要时自动
-  启动 Agent）；也可手动运行 `./future agent` 供需要 Agent 的 CLI 命令使用。按需将目录加入 PATH。
+- **无界面 CLI：**解压 CLI-only 包，运行 `./future config`，用 `./future host` 启动宿主（无需登录），
+  再在另一个终端用 `./future tui` 连接；也可手动运行 `./future agent` 作为只需要 Agent 的宿主。
+  TUI 自己从不启动 Agent。按需将目录加入 PATH。
 
 发布的 GUI 包需要较新的 glibc 发行版（glibc ≥ 2.39，约 Ubuntu 24.04+）和 WebKitGTK 4.1。
 portable 用户可能需要 `sudo apt install libwebkit2gtk-4.1-0` 或

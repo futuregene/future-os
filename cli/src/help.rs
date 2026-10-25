@@ -324,6 +324,13 @@ pairing book the Desktop itself reads (~/.future/remote_pairings.json), and use
 writes it, so neither needs a running Desktop; a self-hosted relay needs no
 account either.
 
+None of this needs a Future OS account except where the platform is the issuer:
+`list`, `remove` and `use` act on the book, so they work signed out (and say
+that nothing connects until you either run `future auth login` or serve through
+a self-hosted relay). `add` and `enable` do need one, because the platform mints
+the invitation and the credential; both are refused up front with that command
+named, instead of failing later inside the Desktop.
+
 add, remove and use are the exceptions to "the book is enough", because the
 Desktop is what actually serves a device. An invitation is only usable while the
 bridge for that pairing is connected, and a removal only takes effect *now* if

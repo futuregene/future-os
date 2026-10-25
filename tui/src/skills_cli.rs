@@ -8,8 +8,7 @@
 //!
 //! Binary resolution: when the process *is* the unified binary (`future tui`)
 //! use it directly, else look for a sibling `future` next to the current
-//! executable, else fall back to `PATH` — wider than the sidecar launcher,
-//! which spawns only the running binary itself (see `agent_supervisor`).
+//! executable, else fall back to `PATH`.
 //!
 //! Implemented by the `skills-cli` worker; see
 //! `.future/tui-parity/texts/skills-cli.md` for the required API.
@@ -599,7 +598,7 @@ fn candidates_with_suffix(
 }
 
 /// Lower-cased file stem (`/opt/future.exe` → `future`), or `""` for a path
-/// without one (`/`). Mirrors `agent_supervisor::executable_name`.
+/// without one (`/`).
 fn executable_name(path: &Path) -> String {
     path.file_stem()
         .and_then(|name| name.to_str())

@@ -1,8 +1,7 @@
 //! Take stderr off the terminal while the TUI owns it.
 //!
-//! The TUI runs the Agent **in this process** (`agent_host`), so anything the
-//! Agent writes to stderr lands on the TUI's own terminal. While the alternate
-//! screen and raw mode are active that is not a cosmetic detail:
+//! While the alternate screen and raw mode are active, a write to stderr from
+//! anywhere in the process is not a cosmetic detail:
 //!
 //! * raw mode clears `OPOST` on POSIX (`terminal_posix::apply_raw_mode`), so a
 //!   plain `\n` from `eprintln!` moves down without returning to column 0 —
@@ -13,14 +12,16 @@
 //!   An external write moves the real cursor, so the rows drawn afterwards land
 //!   in the wrong place and the damaged rows are never repainted.
 //!
-//! The witness was the Agent's restart-recovery pass, which logged one line per
-//! `future tui` start onto a freshly painted welcome screen. The TUI already
-//! treats the terminal as its own for input and output; this module completes
-//! that contract for stderr: [`redirect`] points fd 2 / the Windows stderr
-//! handle at `~/.future/tui/stderr.log` while the screen is held, and
-//! [`restore`] hands the real terminal back on the exit path. The crash hook
-//! restores first, so its teardown sequences and panic note still reach the
-//! terminal instead of the log.
+//! The witness was the Agent's restart-recovery pass, back when the TUI still
+//! hosted it in-process and logged one line per `future tui` start onto a
+//! freshly painted welcome screen; the TUI no longer runs an Agent (see
+//! `agent_attach`), so the capture now protects the frame against any other
+//! writer. The TUI already treats the terminal as its own for input and output;
+//! this module completes that contract for stderr: [`redirect`] points fd 2 /
+//! the Windows stderr handle at `~/.future/tui/stderr.log` while the screen is
+//! held, and [`restore`] hands the real terminal back on the exit path. The
+//! crash hook restores first, so its teardown sequences and panic note still
+//! reach the terminal instead of the log.
 //!
 //! Best-effort by design: a log file that cannot be opened must not stop the
 //! TUI from starting, so callers ignore the `Err`.

@@ -57,13 +57,12 @@ tui/examples/workbench_demo.rs  // 打印任意尺寸的一帧 + 鼠标自测
 tui/src/lib.rs                  // 仅加一行 `pub mod workbench;`
 ```
 
-`tui/src/bin/workbench.rs` 是 workbench 的入口（`[[bin]] name = "future-workbench"`）：
-它有自己的 raw mode / alternate screen / 事件循环，**不经过** `tui/src/app.rs`。
+`tui/src/workbench/run.rs` 是驱动、`tui/src/bin/workbench.rs` 是独立入口：它们各自拥有
+raw mode / alternate screen / 事件循环，workbench 的界面**不经过** `tui/src/app.rs`。
+`index.rs` 只负责把 `future tui` 路由到驱动；行内界面退到 `--legacy`。
 
-live 接入（第二个 worker）只允许改：
-`tui/src/workbench/live.rs`（新建）、`tui/src/workbench/state.rs` 的填充函数、
-`tui/src/bin/workbench.rs` 的 `apply()`。**不得改** `tui/src/app.rs`、`tui/src/index.rs`
-——workbench 不是 inline app 的一种布局。也**不得改** `tui/src/components/**` 的既有行为
+live 接入只允许改：`tui/src/workbench/live.rs`、`tui/src/workbench/state.rs` 的填充函数、
+以及 `run.rs` 里「需要先问 agent 的键」那一段。**不得改** `tui/src/components/**` 的既有行为
 （只复用它们产出的行）。
 
 ---

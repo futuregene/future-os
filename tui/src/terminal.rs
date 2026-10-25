@@ -274,10 +274,10 @@ impl Terminal {
         write_str(&self.write_lock, "\x1b[?1004h");
         self.refresh_size();
 
-        // The screen is ours now: take stderr with it. Anything the in-process
-        // Agent prints from here on belongs in the log, not on this terminal —
-        // raw mode turns `\n` into a column-preserving line feed and the diff
-        // renderer cannot see writes it did not make (see `stderr_log`).
+        // The screen is ours now: take stderr with it. Anything printed from
+        // here on belongs in the log, not on this terminal — raw mode turns
+        // `\n` into a column-preserving line feed and the diff renderer cannot
+        // see writes it did not make (see `stderr_log`).
         if let Some(path) = self.stderr_log.clone() {
             let _ = crate::stderr_log::redirect(&path);
         }

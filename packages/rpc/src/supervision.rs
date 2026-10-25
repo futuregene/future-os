@@ -66,6 +66,27 @@ const READINESS_RETRY_BASE: Duration = Duration::from_millis(250);
 /// Upper bound on one readiness backoff, so a probe never waits unboundedly.
 const READINESS_RETRY_CAP: Duration = Duration::from_secs(2);
 
+/// Select an Agent (attaching to one that answers, or obtaining permission to
+/// start a local one) with the transient failures retried.
+///
+/// Every path that decides "is an Agent there?" runs through here, including the
+/// entry's own startup selection. Retrying is not optional for that decision:
+/// one attempt turns an Agent that was descheduled past the handshake deadline
+/// into a permanent refusal ("local startup is forbidden"), while the Agent is in
+/// fact answering moments later. See [`READINESS_PROBE_ATTEMPTS`] for why a
+/// single attempt is not enough.
+pub async fn select_agent_with_retries(
+    configured: &str,
+    version: &str,
+    connect_timeout: Duration,
+    handshake_timeout: Duration,
+) -> Result<AgentSelection, ConnectionError> {
+    with_readiness_retries(READINESS_PROBE_ATTEMPTS, READINESS_RETRY_BASE, || {
+        connection::select_agent(configured, version, connect_timeout, handshake_timeout)
+    })
+    .await
+}
+
 /// Probe the local Agent and classify the result.
 ///
 /// A successful selection is dropped immediately: this only classifies. An
@@ -77,14 +98,12 @@ pub async fn probe_local_agent(
     connect_timeout: Duration,
     handshake_timeout: Duration,
 ) -> LocalAgentState {
-    let outcome = with_readiness_retries(READINESS_PROBE_ATTEMPTS, READINESS_RETRY_BASE, || {
-        connection::select_agent(
-            configured,
-            connection::EXPECTED_AGENT_VERSION,
-            connect_timeout,
-            handshake_timeout,
-        )
-    })
+    let outcome = select_agent_with_retries(
+        configured,
+        connection::EXPECTED_AGENT_VERSION,
+        connect_timeout,
+        handshake_timeout,
+    )
     .await;
     match outcome {
         Ok(AgentSelection::External(client)) => {

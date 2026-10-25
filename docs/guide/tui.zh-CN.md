@@ -12,12 +12,17 @@ Unix 优先使用
 `~/.future/run/agent.sock`，设置 `FUTURE_HOME` 时为
 `<FUTURE_HOME>/run/agent.sock`——见[多实例运行](directory-layout.zh-CN.md#多实例运行future_home)。
 若 FutureOS home 位于无法承载 Unix socket 的文件系统（如 NFS），请将 `FUTURE_HOME`
-指向本地文件系统上的目录。若无可连接 Agent，TUI 会启动 sidecar 并在退出时关闭它，无需手动预先启动。
-也可以自行运行：
+指向本地文件系统上的目录。
+
+**先启动宿主，TUI 只负责连接。** Agent 的生命周期归它的宿主——`future host`、桌面应用，
+或显式运行的 `future agent`；TUI 从不启动或重启 Agent。没有 Agent 在服务时，它会退出并给出
+应执行的命令；若它连上的 Agent 之后消失，它只会继续重连并显示该状态。因为它什么都不代启，
+所以任意多个终端都可以连接同一个宿主：
 
 ```bash
-future agent      # 终端 1：agent
+future host       # 终端 1：宿主（持有 Agent）
 future tui        # 终端 2：终端界面
+future tui        # 终端 3：再来一个——同一个宿主，不会多起 Agent
 ```
 
 远程/开发环境可给 Agent 传入 `--grpc-addr <host:port>` 显式启用 TCP，客户端设置
@@ -526,9 +531,9 @@ TUI 把客户端侧设置持久化到 `~/.future/tui/settings.json`：
 `defaultApprovalMode` 会在 TUI 启动时应用到 agent。日志：`PI_DEBUG_REDRAW=1` 时把调试重绘日志写入
 `~/.future/tui/debug.log`；`PI_TUI_WRITE_LOG=1` 时原始屏幕写入记录到
 `~/.future/tui/write.log`。占用备用屏幕期间，TUI 还会把 stderr 指向
-`~/.future/tui/stderr.log`：`future tui` 可能在自己的进程内托管 Agent，该进程
-打印的任何内容都不能写进 TUI 自己的屏幕（raw mode 下换行不回列，差分渲染也看不到
-不是它写的输出）。退出时会恢复真实 stderr，因此崩溃报告与退出信息仍能送到终端。
+`~/.future/tui/stderr.log`：进程内任何写入 stderr 的内容都不能落到 TUI 自己的屏幕上
+（raw mode 下换行不回列，差分渲染也看不到不是它写的输出）。退出时会恢复真实 stderr，
+因此崩溃报告与退出信息仍能送到终端。
 
 上文的按键是默认值。`/keymap` 会打开覆盖全部已注册动作的编辑器：在高亮行上按一个键
 即可重新绑定，与默认值的差异会写入 `~/.future/tui/keybindings.json`（与
@@ -539,7 +544,7 @@ TUI 把客户端侧设置持久化到 `~/.future/tui/settings.json`：
 
 | 症状 | 解决办法 |
 |---|---|
-| 启动即连接 / gRPC 错误 | 未找到或未能启动 Agent。检查 sidecar 错误、用户与 IPC 环境，或手动运行 `future agent`；仅显式 TCP 模式检查配置端口是否占用。 |
+| 启动即连接 / gRPC 错误 | 没有 Agent 在服务：先用 `future host`（或桌面应用、`future agent`）启动一个——TUI 从不自己启动 Agent。检查用户与 IPC 环境是否一致；仅显式 TCP 模式检查配置端口是否被占用。 |
 | auth / 「no model」错误 | 未配置模型。运行 `future auth login`，用 `/providers` 添加 provider，或编辑 `~/.future/agent/models.json`——见仓库 README「配置模型」 |
 | `/editor` 提示缺少编辑器 | `$VISUAL` 与 `$EDITOR` 都未设置。带上其中一个启动，例如 `EDITOR=vim future tui`；空的 `$VISUAL` 不会回退到 `$EDITOR`。 |
 | `/copy` 提示 unconfirmed 或失败 | 原生剪贴板程序不可用（远程/SSH 会话？），已改为 OSC 52 请求，需终端自行应用。超过 100 KB 的内容会被拒绝，请改复制较小的范围。 |

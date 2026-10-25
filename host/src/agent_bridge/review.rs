@@ -61,7 +61,11 @@ fn resolve(thread_id: &str) -> Result<Option<ReviewContext>, AppError> {
 /// the Run resolve to the "directory too large" state via capabilities.
 pub fn capture_before(thread_id: &str, run_id: &str) {
     if let Err(error) = try_capture_before(thread_id, run_id) {
-        eprintln!("FutureOS shadow review before-snapshot failed: {error}");
+        tracing::error!(
+            target: "future_host::shadow_review",
+            thread_id, run_id, error = %error,
+            "before-snapshot failed"
+        );
     }
 }
 
@@ -107,7 +111,11 @@ pub fn capture_after(thread_id: &str, run_id: &str) -> Vec<String> {
     match try_capture_after(thread_id, run_id) {
         Ok(sensitive) => sensitive,
         Err(error) => {
-            eprintln!("FutureOS shadow review after-snapshot failed: {error}");
+            tracing::error!(
+                target: "future_host::shadow_review",
+                thread_id, run_id, error = %error,
+                "after-snapshot failed"
+            );
             Vec::new()
         }
     }
@@ -150,8 +158,10 @@ pub fn materialize_changeset(thread_id: &str, run_id: &str, sensitive: Vec<Strin
         // Name the Run and Thread: the same line used to read only
         // "FOREIGN KEY constraint failed", which said neither what failed nor
         // which Run it belonged to.
-        eprintln!(
-            "FutureOS shadow review materialize failed for run {run_id} (thread {thread_id}): {error}"
+        tracing::error!(
+            target: "future_host::shadow_review",
+            thread_id, run_id, error = %error,
+            "materialize failed"
         );
     }
 }

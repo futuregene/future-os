@@ -128,7 +128,7 @@ release manifest, verifies its SHA-256, then runs `future init`:
 
 - **Debian/Ubuntu** — `FutureOS_<version>_amd64.deb` or `FutureOS_<version>_arm64.deb`, installed with `apt` (resolves dependencies). It installs graphical `futureos` and the unified `future` CLI (including `future host`).
 - **Other Linux** — `FutureOS_<version>_linux_<arch>-portable.tar.gz` (`futureos` + unified `future` (including `future host`)), extracted to `/usr/local/bin` (or `~/.local/bin` when not writable). Architectures: `x86_64`, `aarch64`.
-- **Host machines** — download `FutureOS_<version>_linux_<arch>-cli.tar.gz` from the official release channel, extract it, then run `./future config` and `./future tui` (or `./future agent` for CLI clients). No GUI libraries are needed for the official static musl CLI.
+- **Host machines** — download `FutureOS_<version>_linux_<arch>-cli.tar.gz` from the official release channel, extract it, then run `./future config`, start the host with `./future host` (it needs no sign-in), and attach with `./future tui` in another terminal (`./future agent` also works as the host). No GUI libraries are needed for the official static musl CLI.
 
 The published GUI needs glibc ≥ 2.39 (roughly Ubuntu 24.04+) and WebKitGTK 4.1.
 The `future` CLI, including `future host`, is fully static

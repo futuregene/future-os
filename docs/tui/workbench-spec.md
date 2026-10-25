@@ -71,16 +71,16 @@ tui/examples/workbench_demo.rs  // prints one frame at any size + mouse self-tes
 tui/src/lib.rs                  // one added line: `pub mod workbench;`
 ```
 
-`tui/src/bin/workbench.rs` is the workbench's entry point
-(`[[bin]] name = "future-workbench"`): it owns its own raw mode, alternate screen
-and event loop, and **never goes through** `tui/src/app.rs`.
+`tui/src/workbench/run.rs` is the driver and `tui/src/bin/workbench.rs` the
+standalone entry point: they own raw mode, the alternate screen and the event
+loop, and the workbench's surface **never goes through** `tui/src/app.rs`.
+`index.rs` routes `future tui` to the driver; the inline UI stays behind
+`--legacy`.
 
-Live integration (the second worker) may only touch:
-`tui/src/workbench/live.rs` (new), the fill functions in
-`tui/src/workbench/state.rs`, and `apply()` in `tui/src/bin/workbench.rs`.
-`tui/src/app.rs` and `tui/src/index.rs` **must not** change — the workbench is
-not a layout of the inline app. Existing behaviour in `tui/src/components/**`
-**must not** change either (their rendered rows are reused, nothing else).
+Live integration may only touch: `tui/src/workbench/live.rs`, the fill
+functions in `tui/src/workbench/state.rs`, and `run.rs`'s interception of keys
+that need the agent first. Existing behaviour in `tui/src/components/**`
+**must not** change — their rendered rows are reused, nothing else.
 
 ---
 

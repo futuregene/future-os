@@ -75,11 +75,11 @@ home 下的其余一切，例如：
 - `<home>/app/desktop.lock` —— Desktop 后端在整个生命周期持有时，GUI 和前台运行的
   `future host` 都一样。
 - `<home>/agent/agent-instance.lock` —— Agent 持有。Desktop 或 `future host` 运行的是
-  内置 Agent 时，停掉该进程即可同时释放两把锁；独立运行的 `future agent`，或 TUI
-  自行拉起的 Agent，需要单独停掉。
+  内置 Agent 时，停掉该进程即可同时释放两把锁；独立运行的 `future agent` 同样需要单独停掉。
+  TUI 从不持有这把锁：它只连接 Agent，从不启动 Agent。
 
-所以要：退出 Desktop，停掉终端里的 `future host`/`future agent`，关闭自行持有 Agent
-的客户端。锁被占用时会如实报告 —— `Desktop is running; quit it before data
+所以要：退出 Desktop，停掉终端里的 `future host`/`future agent`（TUI 不用管——它不持有
+Agent）。锁被占用时会如实报告 —— `Desktop is running; quit it before data
 maintenance` 或 `Agent is running; stop it before data maintenance`。
 
 同一处检查也区分“被进程占用”和“文件系统根本不支持锁”（某些网络共享与 FUSE 挂载）。

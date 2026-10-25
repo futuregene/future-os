@@ -167,7 +167,7 @@ Skip this and the agent still answers fine — skills just add ready-made
 workflows. `uninstall` / `update` and friends are in the
 [CLI reference](docs/wiki/en/CLI.md).
 
-### Run the agent
+### Run the Agent, then the terminals
 
 The terminal and CLI clients are thin gRPC clients. They connect over
 **per-user local IPC** by default (a Unix-domain socket on macOS/Linux,
@@ -178,15 +178,23 @@ instance started with its own home (`FUTURE_HOME=DIR`) — see
 [isolated instances](docs/guide/directory-layout.md#running-several-isolated-instances-future_home).
 If the FutureOS home sits on a filesystem that cannot host Unix sockets (e.g.
 NFS), point `FUTURE_HOME` at a directory on a local filesystem.
-Desktop GUI and host mode first attach to a compatible external Agent; when the default
-endpoint is absent and its instance lock is free, they run the complete Agent in
-their own process. Incompatible or locked/unavailable services produce an error
-without starting a second Agent. The TUI retains its independent Agent startup.
-You can also start an external Agent yourself:
+
+**The Agent belongs to its host, not to the terminal.** Start a host first —
+either of these owns the Agent and keeps it running:
 
 ```bash
-future agent     # start the agent in the terminal (logs to stdout; Ctrl-C to stop)
+future host      # this machine as a FutureOS host: local runs, tasks, and paired remote desktops
+future agent     # just the Agent server (logs to stdout; Ctrl-C to stop)
 ```
+
+`future host` needs **no sign-in**: without an account it serves everything local
+with your own model providers, and only the paired remote desktops stay closed
+until you run `future auth login` in another terminal — it picks the account up
+and starts serving them without a restart. `--relay URL` skips the Future
+platform entirely. Desktop GUI and host mode first attach to a compatible
+external Agent; when the default endpoint is absent and its instance lock is
+free, they run the complete Agent in their own process. Incompatible or
+locked/unavailable services produce an error without starting a second Agent.
 
 Quitting an embedded Desktop stops work from every connected client, including
 CLI/TUI conversations. An attached external Agent stays running; Desktop cancels
@@ -197,6 +205,14 @@ Then launch the terminal UI from the same `future` command:
 ```bash
 future tui       # terminal UI
 ```
+
+The TUI only ever **attaches** to a serving Agent: it never starts or restarts
+one. With no Agent reachable it says so and names the command to run
+(`future host`, the desktop app, or `future agent`), and if the Agent it was
+attached to goes away it keeps reconnecting and showing that state instead of
+bringing a replacement up. So you can open **as many terminals as you like**
+against one host — and closing one leaves the Agent and the other terminals
+untouched.
 
 Published builds check for updates once in the background after TUI startup.
 A newer version is shown as a local notice with the official installer link;
@@ -275,6 +291,7 @@ Run `/help` in the TUI for the full list (40+ commands).
 
 | Symptom | Fix |
 |---|---|
+| TUI says no Agent is serving and exits | Start the Agent's host first — `future host` (or the desktop app, or `future agent`). The TUI only attaches; it never starts one. |
 | Client exits with a connection / gRPC error | Run `future doctor`; check Agent startup/version/lock errors and that client/Agent use the same user and IPC environment. See the [Desktop Agent guide](docs/guide/desktop-agent.md) before changing service ownership. Only in explicit TCP mode, check the configured address/port. |
 | Agent replies with an auth / "no model" error | No model configured yet. Run `future config` — see [Configure a model](#configure-a-model). |
 | Build / install problems | See [Build & Install](docs/guide/build-and-install.md) (platform toolchains, linker, GUI packaging). |

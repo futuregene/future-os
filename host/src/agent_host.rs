@@ -342,7 +342,12 @@ impl AgentHost {
             tokio::select! {
                 biased;
                 _ = probe_cancel.notified() => Ok(None),
-                result = future_rpc::connection::select_agent(
+                // Retried, not a single attempt: this decision is what turns a
+                // momentarily stalled Agent into a permanent "local startup is
+                // forbidden" refusal, and the same transient answer that made one
+                // probe miss (a descheduled process, a socket stalled behind a
+                // storage write) is gone on the next fresh deadline.
+                result = future_rpc::supervision::select_agent_with_retries(
                     configured,
                     crate::build_info::VERSION,
                     Duration::from_secs(2),
