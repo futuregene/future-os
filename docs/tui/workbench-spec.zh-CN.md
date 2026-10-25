@@ -244,8 +244,10 @@ cargo run -p future-tui --example workbench_demo -- --self-test
   `cargo fmt --check -p future-tui`（若仓库未强制，可只 fmt 新文件）、
   `cargo build -p future-tui`、`cargo test -p future-tui workbench`。
 
-截图：`tui/scripts/shot.sh <scenario> <out.png>`，用 tmux 运行 demo → `capture-pane -e`
-→ 渲染 PNG（脚本可依赖 workspace 里的 `tools/ansi2png.py`，路径通过 `SHOT_PY` 覆盖）。
+截图：`tui/scripts/shot.sh <scenario> <out.png>`（第二个参数也可以用尺寸形式：
+`shot.sh chat 120x38`）。它在指定尺寸的 pty 里跑应用，再把写出的字节交给
+`scripts/screenshots/tui_terminal.py` 渲染；没有 `FUTURE_AGENT_GRPC_ADDR` 时用脚本化的
+`demo_agent`，所以不需要 agent、不需要模型、也不需要凭据。
 
 ---
 

@@ -404,8 +404,8 @@ P0-3。
 2. 重抓 dsh 屏幕：tmux 里跑 `dsh-tui`，用按键驱动，`tmux capture-pane -e -p` 存成
    `shots/raw_<name>.txt`，再把同一缓冲区渲染成 `shots/dsh_<name>.png`。
 3. 重抓 FutureOS 屏幕：`tui/scripts/shot.sh`（完整配方见 `verification.md` §7）——
-   隔离 `FUTURE_HOME`、隔离 agent 端口、指定尺寸的 tmux、`capture-pane -e`、
-   `ansi2png.py`。
+   隔离 `FUTURE_HOME`、隔离 agent 端口、尺寸写在第二个参数（`120x38`）。它在那个尺寸
+   的 pty 里跑工作台并把它写出的字节渲染成图；不用 tmux，也不用 `ansi2png.py`。
 4. 用 `[F:…]` 标签核验 FutureOS 的结论；真正要 grep 的是 `?100`（鼠标）、
    `sidebar`、`goal_todos`、`branch`。
 
