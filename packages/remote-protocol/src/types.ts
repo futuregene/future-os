@@ -314,6 +314,14 @@ export interface RemoteSessionState {
   /** The session's active (in-flight) run, if any — the tail of its events
    *  can be backfilled from `get_events_since` to resync on open/reconnect. */
   activeRun?: { runId?: string } | null;
+  /**
+   * The run the session's journal records as never having ended, reported only
+   * when no run is live (the agent crashed or restarted mid-run). It is the
+   * host's answer to "this reply's log has no terminal, and nobody is working
+   * on it" — the one thing that tells a dead run apart from one still being
+   * written, which the log alone cannot say. An older host omits it.
+   */
+  interruptedRun?: { runId?: string } | null;
 }
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
