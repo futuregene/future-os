@@ -125,3 +125,16 @@ launchpad 是**正文**，不是盖在对话上的弹窗：没有会话时整块
 | `tui/src/workbench/mouse.rs` | SGR 1006 解析 |
 | `tui/src/workbench/theme.rs` | `future-dark` / `future-light` |
 | `tui/src/workbench/demo.rs` | 确定性演示数据（截图与测试） |
+| `tui/examples/demo_agent.rs` | 截图对话用的脚本化 gRPC agent |
+
+## 截图
+
+终端界面和桌面/手机端一样是真截的：真实二进制在固定尺寸的 pty 里跑一个脚本化 agent，把它写出的字节重放成 PNG。
+
+```bash
+cargo build -p future-cli --bin future
+cargo build -p future-tui --example demo_agent
+python3 scripts/screenshots/capture.py tui tui-chat.png     # → .screenshots/tui-chat.png
+```
+
+完整做法、参数和两点限制见 [screenshots.zh-CN.md](screenshots.zh-CN.md)（第 8 条）；`scripts/screenshots/tui_terminal.py --self-test` 不开浏览器就能验证单元模型。

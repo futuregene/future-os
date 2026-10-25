@@ -143,3 +143,20 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | `tui/src/workbench/mouse.rs` | SGR 1006 parsing |
 | `tui/src/workbench/theme.rs` | `future-dark` / `future-light` |
 | `tui/src/workbench/demo.rs` | Deterministic demo data (screenshots, tests) |
+| `tui/examples/demo_agent.rs` | The scripted gRPC agent screenshots talk to |
+
+## Screenshots
+
+The terminal UI is captured for real, like the desktop and mobile apps: the
+shipped binary runs in a pty of a fixed size against a scripted agent, and the
+bytes it writes are replayed into a PNG.
+
+```bash
+cargo build -p future-cli --bin future
+cargo build -p future-tui --example demo_agent
+python3 scripts/screenshots/capture.py tui tui-chat.png     # → .screenshots/tui-chat.png
+```
+
+The full recipe, the flags and the two honest limits are in
+[screenshots.md](screenshots.md) (§8); `scripts/screenshots/tui_terminal.py
+--self-test` checks the cell model without a browser.
