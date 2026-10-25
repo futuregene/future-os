@@ -41,6 +41,9 @@ pub struct TuiSettings {
     /// Absent ⇒ `default`, which keeps a finished reply to its final answer plus
     /// a count of the work above it.
     pub reply_detail: Option<String>,
+    /// Interface language (`language`: `system` | `zh` | `en`). Absent ⇒
+    /// `system`, the same default the desktop and the phone use.
+    pub language: Option<String>,
 }
 
 impl TuiSettings {
@@ -75,6 +78,9 @@ impl TuiSettings {
         if let Some(detail) = &self.reply_detail {
             obj.insert("replyDetail".into(), Value::String(detail.clone()));
         }
+        if let Some(language) = &self.language {
+            obj.insert("language".into(), Value::String(language.clone()));
+        }
         Value::Object(obj)
     }
 
@@ -96,6 +102,7 @@ impl TuiSettings {
                 }),
             theme_id: string("themeId"),
             reply_detail: string("replyDetail"),
+            language: string("language"),
         }
     }
 }
@@ -115,6 +122,7 @@ mod tests {
             enabled_model_ids: Some(vec!["a".into(), "b".into()]),
             theme_id: Some("future-light".into()),
             reply_detail: Some("detailed".into()),
+            language: Some("system".into()),
         };
         let back = TuiSettings::from_json(&settings.to_json());
         assert_eq!(back.default_model.as_deref(), Some("future/deepseek-flash"));
@@ -124,6 +132,7 @@ mod tests {
         assert_eq!(back.enabled_model_ids, Some(vec!["a".into(), "b".into()]));
         assert_eq!(back.theme_id.as_deref(), Some("future-light"));
         assert_eq!(back.reply_detail.as_deref(), Some("detailed"));
+        assert_eq!(back.language.as_deref(), Some("system"));
     }
 
     #[test]

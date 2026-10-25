@@ -7,6 +7,8 @@
 //! what keeps the drawing code from growing a second source of truth for "how
 //! many sessions are there".
 
+use crate::workbench::i18n::{t, Key, Language};
+
 /// Who the session is: the four facts the header and the launchpad print.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionMeta {
@@ -272,15 +274,19 @@ impl PanelId {
         PanelId::Skills,
     ];
 
-    /// The tab label (the contract's `待办 任务 会话 用量 技能`).
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Todo => "待办",
-            Self::Jobs => "任务",
-            Self::Sessions => "会话",
-            Self::Usage => "用量",
-            Self::Skills => "技能",
-        }
+    /// The tab label (the contract's `待办 任务 会话 用量 技能`, and its English
+    /// reading).
+    pub fn label(self, lang: Language) -> &'static str {
+        t(
+            lang,
+            match self {
+                Self::Todo => Key::TabTodo,
+                Self::Jobs => Key::TabJobs,
+                Self::Sessions => Key::TabSessions,
+                Self::Usage => Key::TabUsage,
+                Self::Skills => Key::TabSkills,
+            },
+        )
     }
 
     /// The stable id used in key bindings, hit regions and `/panel` arguments.

@@ -23,7 +23,7 @@ use crate::settings::TuiSettings;
 use crate::terminal::Terminal;
 
 use super::layout;
-use super::live::{Live, Outcome};
+use super::live::{self, Live, Outcome};
 use super::mouse;
 use super::picker::PickerKind;
 use super::{VerbOutcome, WbAction, WbEvent, Workbench};
@@ -64,6 +64,7 @@ pub async fn run(options: Options) -> Result<(), String> {
     .await?;
     let mut workbench = Workbench::new();
     workbench.set_theme(&live.theme_id);
+    workbench.set_language(live::persisted_language(&settings));
 
     if options.continue_recent && options.session.is_none() {
         live.attach_most_recent().await;
@@ -129,6 +130,9 @@ pub async fn run(options: Options) -> Result<(), String> {
     // Persist what the reader chose, through the same file the inline TUI uses.
     if workbench.palette.id != settings.theme_id.as_deref().unwrap_or_default() {
         settings.theme_id = Some(workbench.palette.id.to_string());
+    }
+    if settings.language.as_deref() != Some(workbench.language_pref.as_wire()) {
+        settings.language = Some(workbench.language_pref.as_wire().to_string());
     }
     let detail = live.detail().as_wire().to_string();
     if settings.reply_detail.as_deref() != Some(detail.as_str()) {
@@ -280,6 +284,15 @@ async fn quit(
             workbench.set_theme(id);
             live.theme_id = id.clone();
             settings.theme_id = Some(id.clone());
+            save_settings(settings_path, settings);
+            continue;
+        }
+        // Same rule for the language: the surface and the adapter both switch
+        // now, and `settings.json` remembers it for the next start.
+        if let WbAction::SetLanguage(preference) = action {
+            workbench.set_language(preference);
+            live.set_language(preference);
+            settings.language = Some(preference.as_wire().to_string());
             save_settings(settings_path, settings);
             continue;
         }

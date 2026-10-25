@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use super::i18n::{t, Key, Language};
 use super::state::{JobRow, SkillRow, TodoItem, TodoState};
 
 // ─── goal store ─────────────────────────────────────────────────────────────
@@ -400,7 +401,7 @@ fn truncate_chars(text: &str, max: usize) -> String {
 /// Read-only: the store is opened with `SQLITE_OPEN_READ_ONLY` and a missing
 /// database is simply "no jobs". A panel must not create or migrate a store the
 /// tasks host owns.
-pub fn scheduled_jobs() -> Vec<JobRow> {
+pub fn scheduled_jobs(lang: Language) -> Vec<JobRow> {
     let home = crate::home::future_state_dir();
     let Ok(Some(store)) = future_tasks::store::Store::open_existing_read_only(&home) else {
         return Vec::new();
@@ -412,13 +413,17 @@ pub fn scheduled_jobs() -> Vec<JobRow> {
         .into_iter()
         .map(|task| JobRow {
             name: task.name,
-            state: if !task.enabled {
-                "暂停".to_string()
-            } else if task.next_due_at.is_some() {
-                "已排期".to_string()
-            } else {
-                "手动".to_string()
-            },
+            state: t(
+                lang,
+                if !task.enabled {
+                    Key::JobPaused
+                } else if task.next_due_at.is_some() {
+                    Key::JobScheduled
+                } else {
+                    Key::JobManual
+                },
+            )
+            .to_string(),
         })
         .collect()
 }
