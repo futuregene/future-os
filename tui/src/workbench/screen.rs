@@ -245,7 +245,10 @@ fn header(palette: &Palette, data: &WorkbenchData, frame: &Layout, columns: usiz
         identity.push(String::new());
         identity.push(String::new());
     }
-    // Four identity lines beside the logo, then the hairline.
+    // Five identity rows beside the logo, then the hairline. Five is
+    // `wordmark_rows`' height: drawing four dropped the bottom stroke of every
+    // letter in `FUTURE OS` (the launchpad hero draws all five, so the header
+    // and the hero disagreed about the same block font).
     let detail = [
         format!(" · {title}"),
         // The workspace, then the branch it is on. `⎇` names *what* the second
@@ -260,8 +263,9 @@ fn header(palette: &Palette, data: &WorkbenchData, frame: &Layout, columns: usiz
         },
         format!("{} · {} · {}", data.model, data.effort, data.mode),
         String::new(),
+        String::new(),
     ];
-    for index in 0..4 {
+    for index in 0..5 {
         let mut row = String::new();
         row.push_str(logo.get(index).map(String::as_str).unwrap_or("         "));
         row.push_str("  ");
@@ -275,7 +279,7 @@ fn header(palette: &Palette, data: &WorkbenchData, frame: &Layout, columns: usiz
             row.push_str(&identity.get(index).cloned().unwrap_or_default());
             if index == 0 {
                 row.push_str(&palette.dim(&detail[0]));
-            } else if index < 4 {
+            } else if index < detail.len() {
                 // Line the details up under the wordmark instead of under the
                 // logo, where they would read as part of the logo.
                 row.push_str(&palette.dim(&format!("          {}", detail[index].trim_start())));
@@ -912,6 +916,35 @@ mod tests {
         let narrow = plain(&hint_row(&FUTURE_DARK, 40, true)[0]);
         assert!(narrow.trim_end().ends_with("帮助"), "{narrow:?}");
         assert!(narrow.contains("ctrl+b"), "{narrow:?}");
+    }
+
+    #[test]
+    fn the_header_draws_every_row_of_the_block_wordmark() {
+        // The header's identity block is the 5-row `FUTURE OS` block font, and
+        // the header used to be five rows tall *including* the hairline — so
+        // only four wordmark rows were painted and the bottom stroke of every
+        // letter (F `█  `, U `███`, E `███`, S `███`) was missing. Clipped art
+        // reads as a broken renderer, not as a deliberate crop, and the
+        // launchpad hero drew all five, so the two screens disagreed.
+        let mut workbench = Workbench::new();
+        let data = crate::workbench::demo::chat();
+        let rows = workbench.render(&data, 120, 38);
+        let mark = widgets::wordmark_rows(&FUTURE_DARK);
+        assert_eq!(mark.len(), 5, "the block font is five rows");
+        for (index, want) in mark.iter().enumerate() {
+            let got = plain(&rows[index]);
+            let want_plain = plain(want);
+            assert!(
+                got.contains(&want_plain),
+                "header row {index} is missing the wordmark row {want_plain:?}: {got:?}"
+            );
+        }
+        // And the hairline still closes the header, one row below the last one.
+        let hairline = plain(&rows[5]);
+        assert!(
+            hairline.chars().all(|ch| ch == '─'),
+            "row 5 should be the hairline: {hairline:?}"
+        );
     }
 
     #[test]

@@ -33,9 +33,9 @@
 | 图 7 | `workbench-help.png` | 120×38 | 真机 | `?` 帮助浮层（键位表 + 命令表） |
 | 图 8 | `workbench-palette.png` | 120×38 | 真机 | `/` 命令面板，每条带描述 |
 | 图 9 | `workbench-palette-filter.png` | 120×38 | 真机 | 面板被过滤到 `theme` |
-| 图 10 | `workbench-picker-theme.png` | 120×38 | `capture.py tui` | `/theme` 选择器：六套调色板、当前值上的 `✓`、预览页脚 |
-| 图 11 | `workbench-picker-model.png` | 120×38 | `capture.py tui` | `/model` 选择器：强度滑杆、provider 分组、每行 `ctx · thinking` |
-| 图 12 | `workbench-picker-sessions.png` | 120×38 | `capture.py tui` | `/sessions` 选择器：搜索行、带 cwd 与时长的会话行 |
+| 图 10 | `workbench-picker-theme.png` | 120×38 | live | `/theme` 选择器：六套调色板、当前值上的 `✓`、预览页脚 |
+| 图 11 | `workbench-picker-model.png` | 120×38 | live | `/model` 选择器：强度滑杆、provider 分组、每行 `ctx · thinking` |
+| 图 12 | `workbench-picker-sessions.png` | 120×38 | live | `/sessions` 选择器：搜索行、带 cwd 与时长的会话行 |
 | 图 13 | `workbench-light-120x38.png` | 120×38 | 真机 | 选择器应用 `light` 之后的同一会话 |
 | 图 14 | `workbench-90x24.png` | 90×24 | 真机 | 90 列仍是两栏；页眉退回文字字标；六条提示全在 |
 | 图 15 | `workbench-60x20.png` | 60×20 | 真机 | `< 88`：没有侧栏也没有空轨；`< 24`：单行页眉、带框两行输入框、三条提示、无 activity 行 |
@@ -44,10 +44,12 @@
 | 图 18 | `workbench-usage-panel.png` | 120×38 | 真机 | 面板里的 `/usage` 真的跑了：侧栏切到用量（`上下文 128.9k/200.0k 64.4%`），插入符标出拿到键盘的侧栏，提示行**没有** `Unknown command` |
 | 图 19 | `workbench-skills-panel.png` | 120×38 | 真机 | 面板里的 `/skills` 真的跑了：技能面板（`22 个技能`），同样没有提示行报错 |
 
-图 10–12 是仓库自己的确定性抓帧
-（`python3 scripts/screenshots/capture.py tui`，跑 `future tui --offline` + 脚本化
-agent）。这里没有重拍它们：选择器浮层整张盖住帧，真机会话在它背后不增加信息，而那个
-工具两次运行字节相同，是更强的物证。
+图 10–12 就是三个选择器场景（`picker-model`、`picker-theme`、`picker-sessions`），和
+其余帧一样走真机会话——和上一版用脚本化 agent 抓的是同一个浮层，现在可以通过 `shot.sh`
+复现，并由同一个按格子定位的渲染器出图。
+
+本套图全部在渲染器的对齐自检修好之后重拍；上一批 PNG 出图时字形还是交给浏览器排版的。
+量出来的差别在分隔条上：侧栏边框的最长连续竖线从 **3 个文本行**（共 24 行）变成 **24 行**。
 
 ## 2. 逐条对照
 
@@ -245,6 +247,9 @@ tui/scripts/shot.sh scrolled       120x38 $A/workbench-chat-scrolled.png
 tui/scripts/shot.sh help           120x38 $A/workbench-help.png
 tui/scripts/shot.sh palette        120x38 $A/workbench-palette.png
 tui/scripts/shot.sh palette-filter 120x38 $A/workbench-palette-filter.png
+tui/scripts/shot.sh picker-model    120x38 $A/workbench-picker-model.png
+tui/scripts/shot.sh picker-theme    120x38 $A/workbench-picker-theme.png
+tui/scripts/shot.sh picker-sessions 120x38 $A/workbench-picker-sessions.png
 tui/scripts/shot.sh chat           90x24  $A/workbench-90x24.png
 tui/scripts/shot.sh chat           60x20  $A/workbench-60x20.png
 tui/scripts/shot.sh full-panel     60x20  $A/workbench-panel-full-60x20.png

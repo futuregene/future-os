@@ -1435,6 +1435,14 @@ TUI_SCENARIO_KEYS: dict[str, str] = {
     "light": "/theme\r\x1b[B\r",
     # `/new` detaches from the session without creating one: the launchpad.
     "launchpad": "/new\r",
+    # The three pickers share one overlay (`run.rs` intercepts these three verbs
+    # before `live::command` sees them). Each frame is the picker itself: the
+    # reasoning slider and provider groups, the six palettes, the session rows.
+    # Typed through the palette rather than as a bare command so the frame is the
+    # route a reader takes.
+    "picker-model": "/model\r",
+    "picker-theme": "/theme\r",
+    "picker-sessions": "/sessions\r",
     # `ctrl+b` on a terminal too narrow for the rail: the panel takes the body.
     "full-panel": "\x02",
     # A click that hands the keys back to the conversation, then three wheel-ups:

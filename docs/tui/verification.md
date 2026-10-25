@@ -37,9 +37,9 @@ What was checked, what the screens show, and what is still wrong. Every row of
 | 图 7 | `workbench-help.png` | 120×38 | live | `?` help overlay (the key table) |
 | 图 8 | `workbench-palette.png` | 120×38 | live | `/` command palette with descriptions |
 | 图 9 | `workbench-palette-filter.png` | 120×38 | live | the palette filtered to `theme` |
-| 图 10 | `workbench-picker-theme.png` | 120×38 | `capture.py tui` | the `/theme` picker: six palettes, `✓` on the one in force, preview footer |
-| 图 11 | `workbench-picker-model.png` | 120×38 | `capture.py tui` | the `/model` picker: reasoning slider, provider headings, `ctx · thinking` per row |
-| 图 12 | `workbench-picker-sessions.png` | 120×38 | `capture.py tui` | the `/sessions` picker: search line, session row with cwd and age |
+| 图 10 | `workbench-picker-theme.png` | 120×38 | live | the `/theme` picker: six palettes, `✓` on the one in force, preview footer |
+| 图 11 | `workbench-picker-model.png` | 120×38 | live | the `/model` picker: reasoning slider, provider headings, `ctx · thinking` per row |
+| 图 12 | `workbench-picker-sessions.png` | 120×38 | live | the `/sessions` picker: search line, session row with cwd and age |
 | 图 13 | `workbench-light-120x38.png` | 120×38 | live | the same session after the picker applied `light` |
 | 图 14 | `workbench-90x24.png` | 90×24 | live | 90 columns still two-column; the header falls back to the text brand; all six hints |
 | 图 15 | `workbench-60x20.png` | 60×20 | live | `< 88`: no rail and no dead column; `< 24`: one-row header, framed two-row input, three hints, no activity row |
@@ -48,11 +48,15 @@ What was checked, what the screens show, and what is still wrong. Every row of
 | 图 18 | `workbench-usage-panel.png` | 120×38 | live | the palette's `/usage` ran: the rail shows 用量 (`上下文 128.9k/200.0k 64.4%`), the caret marks the focused strip, and the hint row carries **no** `Unknown command` |
 | 图 19 | `workbench-skills-panel.png` | 120×38 | live | the palette's `/skills` ran: 技能 panel (`22 个技能`), again with no notice |
 
-Figures 10–12 are the repository's own deterministic capture
-(`python3 scripts/screenshots/capture.py tui` over `future tui --offline` with a
-scripted agent). They are not re-shot here because the picker sheets the whole
-frame: the live session adds nothing behind it, and two identical runs of that
-tool are byte-identical, which is the stronger artifact.
+Figures 10–12 are the three picker scenarios (`picker-model`, `picker-theme`,
+`picker-sessions`), shot live like the rest of the set — the same overlay that the
+previous revision captured with the scripted agent, now reproducible through
+`shot.sh` and rendered by the same cell-exact renderer.
+
+Every frame in this set was re-shot after the renderer's alignment gate was
+fixed; the previous PNGs were rasterized while glyphs were still flowed as text.
+The measured difference is in the divider: the longest unbroken vertical run of
+the sidebar border went from **3 text rows** (out of 24) to **24**.
 
 ## 2. Requirements, one by one
 
@@ -252,6 +256,9 @@ tui/scripts/shot.sh scrolled       120x38 $A/workbench-chat-scrolled.png
 tui/scripts/shot.sh help           120x38 $A/workbench-help.png
 tui/scripts/shot.sh palette        120x38 $A/workbench-palette.png
 tui/scripts/shot.sh palette-filter 120x38 $A/workbench-palette-filter.png
+tui/scripts/shot.sh picker-model    120x38 $A/workbench-picker-model.png
+tui/scripts/shot.sh picker-theme    120x38 $A/workbench-picker-theme.png
+tui/scripts/shot.sh picker-sessions 120x38 $A/workbench-picker-sessions.png
 tui/scripts/shot.sh chat           90x24  $A/workbench-90x24.png
 tui/scripts/shot.sh chat           60x20  $A/workbench-60x20.png
 tui/scripts/shot.sh full-panel     60x20  $A/workbench-panel-full-60x20.png
