@@ -56,9 +56,13 @@ pub struct AppSettings {
     /// (PRD v1.6 §3). **Off by default**, per the integration plan's rule 1; the
     /// user opts in from Settings.
     pub skill_recommend: bool,
-    /// Continue, on the next launch, the conversations a run was interrupted in
-    /// when the app was closed. On by default: the embedded Agent dies with the
-    /// app, so without this the work stops until the user types "继续".
+    /// **Reserved — the agent has no implementation behind it.** In
+    /// `9c83f6115` the agent stopped continuing an interrupted run on its own
+    /// (restart auto-resume and the recovery fence it needed were removed), so
+    /// nothing reads this switch and the desktop no longer shows or writes it.
+    /// The field and its stored key stay so existing `app.db` rows and older
+    /// clients keep reading back the same document. Do not give it a UI or a
+    /// writer again without a new agent-side implementation.
     pub auto_resume_interrupted: bool,
 }
 
@@ -78,7 +82,6 @@ pub struct UpdateAppSettingsInput {
     pub title_language: Option<String>,
     pub community_edition: Option<bool>,
     pub skill_recommend: Option<bool>,
-    pub auto_resume_interrupted: Option<bool>,
 }
 
 pub const KEY_APPROVAL_TIER: &str = "approval_tier";
@@ -94,6 +97,9 @@ pub const KEY_AUTO_TITLE_FIRST_TURN: &str = "auto_compact_first_turn";
 pub const KEY_TITLE_LANGUAGE: &str = "title_language";
 pub const KEY_COMMUNITY_EDITION: &str = "community_edition";
 pub const KEY_SKILL_RECOMMEND: &str = "skill_recommend";
+/// Reserved, read-only: the agent has no auto-resume implementation behind it
+/// (removed in `9c83f6115`). Kept so an existing row still reads and no writer
+/// is left that would store a value nothing consumes.
 pub const KEY_AUTO_RESUME_INTERRUPTED: &str = "auto_resume_interrupted";
 pub const KEY_DEVICE_ID: &str = "device_id";
 
@@ -270,12 +276,6 @@ pub const SETTINGS: &[Setting] = &[
         stored: KEY_SKILL_RECOMMEND,
         kind: ValueKind::Bool,
         help: "Recommend one uninstalled skill per conversation",
-    },
-    Setting {
-        key: "autoResumeInterrupted",
-        stored: KEY_AUTO_RESUME_INTERRUPTED,
-        kind: ValueKind::Bool,
-        help: "Continue interrupted conversations when the app opens again",
     },
 ];
 
@@ -495,7 +495,7 @@ pub fn read(conn: &Connection) -> Result<AppSettings, Error> {
         .unwrap_or(false); // Off by default (PRD v1.6 §3, integration plan rule 1); the Settings toggle opts in.
     let auto_resume_interrupted = read_value(conn, KEY_AUTO_RESUME_INTERRUPTED)?
         .map(|value| value == "true")
-        .unwrap_or(true); // On by default: closing the app should not end the work.
+        .unwrap_or(true); // Reserved: read back for old rows only; nothing consumes it.
     Ok(AppSettings {
         approval_tier,
         hidden_models,
@@ -588,14 +588,6 @@ pub fn apply(
     if let Some(skill_recommend) = input.skill_recommend {
         write_value(conn, KEY_SKILL_RECOMMEND, bool_str(skill_recommend), now)?;
     }
-    if let Some(auto_resume_interrupted) = input.auto_resume_interrupted {
-        write_value(
-            conn,
-            KEY_AUTO_RESUME_INTERRUPTED,
-            bool_str(auto_resume_interrupted),
-            now,
-        )?;
-    }
     read(conn)
 }
 
@@ -673,7 +665,6 @@ mod tests {
             title_language: None,
             community_edition: Some(true),
             skill_recommend: None,
-            auto_resume_interrupted: None,
         }
     }
 
@@ -719,12 +710,16 @@ mod tests {
     fn every_settable_key_round_trips_and_is_serialized() {
         // SETTINGS is the single list: a field added to the struct but not here
         // (or vice versa) fails this test instead of silently missing from the CLI.
+        // `autoResumeInterrupted` is the one deliberate exception: the struct
+        // keeps it so old rows read back (the agent has had no implementation
+        // behind it since `9c83f6115`), and nothing settable is left behind it.
         let serialized = serde_json::to_value(AppSettings::default()).expect("serialize");
         let fields: Vec<&str> = serialized
             .as_object()
             .expect("object")
             .keys()
             .map(String::as_str)
+            .filter(|key| *key != "autoResumeInterrupted")
             .collect();
         let mut listed: Vec<&str> = SETTINGS.iter().map(|setting| setting.key).collect();
         let mut sorted_fields = fields.clone();
@@ -771,7 +766,6 @@ mod tests {
                 "titleLanguage": input.title_language,
                 "communityEdition": input.community_edition,
                 "skillRecommend": input.skill_recommend,
-                "autoResumeInterrupted": input.auto_resume_interrupted,
             });
             let set: Vec<&str> = serialized
                 .as_object()

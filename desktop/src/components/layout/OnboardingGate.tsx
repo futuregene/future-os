@@ -1,10 +1,10 @@
-import type { Language } from "../../i18n";
+import type { LanguagePreference } from "../../i18n";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import { Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useFutureLoginFlow } from "../../features/settings/useFutureLoginFlow";
-import { getLanguage, LANGUAGE_LABELS, setLanguage, SUPPORTED_LANGUAGES } from "../../i18n";
+import { getLanguagePreference, LANGUAGE_LABELS, LANGUAGE_PREFERENCES, setLanguage } from "../../i18n";
 import { loadAgentModelOptions, localizedModelDescription, modelKey, rememberLastUsedModel, syncFutureModels } from "../../integrations/agent/agentClient";
 import { getFutureEnvironment } from "../../integrations/agent/providers";
 import { bootstrapBuiltinSkills } from "../../integrations/skills/skillsClient";
@@ -300,13 +300,15 @@ export function OnboardingGate({ communityEdition = false, onEnableBYOK, onInitC
       {/* Top-right corner: language (always) + environment (dev only) */}
       <div className="absolute right-4 top-4 flex items-center gap-2">
         <Select
-          onChange={e => setLanguage(e.target.value as Language)}
+          onChange={e => setLanguage(e.target.value as LanguagePreference)}
           size="sm"
-          value={getLanguage()}
+          value={getLanguagePreference()}
           wrapperClassName="w-28"
         >
-          {SUPPORTED_LANGUAGES.map(lang => (
-            <option key={lang} value={lang}>{LANGUAGE_LABELS[lang]}</option>
+          {LANGUAGE_PREFERENCES.map(preference => (
+            <option key={preference} value={preference}>
+              {preference === "system" ? t("language.system") : LANGUAGE_LABELS[preference]}
+            </option>
           ))}
         </Select>
         {isDev

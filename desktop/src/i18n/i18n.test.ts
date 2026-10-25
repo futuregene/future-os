@@ -62,4 +62,21 @@ describe("i18n language helpers", () => {
     expect(mod.getLanguage()).toBe("zh");
     expect(document.documentElement.lang).toBe("zh-CN");
   });
+
+  it("treats the system preference as a stored choice, not a first run", async () => {
+    vi.resetModules();
+    vi.stubGlobal("navigator", { language: "zh-CN" });
+    const mod = await import("./index");
+
+    mod.setLanguage("system");
+
+    expect(localStorage.getItem("future.language")).toBe("system");
+    expect(mod.getLanguagePreference()).toBe("system");
+    // Resolves against the OS rather than staying pinned to the previous bundle.
+    expect(mod.getLanguage()).toBe("zh");
+
+    vi.stubGlobal("navigator", { language: "en-US" });
+    mod.setLanguage("system");
+    expect(mod.getLanguage()).toBe("en");
+  });
 });

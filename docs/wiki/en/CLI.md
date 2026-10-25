@@ -270,7 +270,9 @@ agent's settings document — `future config` owns the latter. No running deskto
 is needed: a running app picks the change up the next time it reads the settings.
 `future desktop settings --help` lists every settable key, including
 `hiddenModels`, `autoUpgradeSkills`, `autoConnectRemote`, `bellOnComplete`,
-`titleLanguage`, `skillRecommend` and `autoResumeInterrupted`. A workspace added
+`titleLanguage`, `skillRecommend` and `autoResumeInterrupted` (the last one is now
+inert: the Agent never continues an interrupted run by itself — the next run starts
+from a prompt somebody sends). A workspace added
 here appears in the app's sidebar (and on a paired phone) once the app publishes
 its catalogue; the directory must already exist.
 

@@ -95,7 +95,7 @@ impl TaskExecutor for Stopping {
 #[tokio::test]
 async fn a_stopping_host_neither_records_nor_rebuilds_a_dead_generation() {
     let serving = Supervisor::new(Arc::new(MemoryHost::default()), Arc::new(TokioExecutor));
-    serving.spawn_runtime_reconnect("pair_serving".into());
+    serving.spawn_runtime_reconnect("pair_serving".into(), 1);
     assert_eq!(
         serving.runtime_reconnect_attempts.load(Ordering::Acquire),
         1,
@@ -106,7 +106,7 @@ async fn a_stopping_host_neither_records_nor_rebuilds_a_dead_generation() {
         Arc::new(MemoryHost::default()),
         Arc::new(Stopping(TokioExecutor)),
     );
-    stopping.spawn_runtime_reconnect("pair_stopping".into());
+    stopping.spawn_runtime_reconnect("pair_stopping".into(), 1);
     assert_eq!(
         stopping.runtime_reconnect_attempts.load(Ordering::Acquire),
         0,

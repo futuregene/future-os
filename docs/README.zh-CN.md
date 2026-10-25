@@ -66,6 +66,7 @@
 | 文档 | 内容 |
 |---|---|
 | [Workbench TUI 规格](tui/workbench-spec.zh-CN.md)（[English](tui/workbench-spec.md)） | [终端界面](guide/tui.zh-CN.md) 背后的冻结契约：布局常量、鼠标与键盘约定、类型名与验收命令。它描述的界面已经实现；agent 适配层与 P1 项还没有 |
+| [没进表的界面文案](tui/i18n-homeless-strings.zh-CN.md) （[English](tui/i18n-homeless-strings.md)） | 当 workbench 绘制了取自 `workbench/i18n.rs` 之外的文案时会失败的检查：它读什么、看不见什么、顺带冻住的既有纯英文文案，以及在引入这张表之前离开的分支要移植的清单 |
 
 ## Wiki（面向用户的应用指南）
 

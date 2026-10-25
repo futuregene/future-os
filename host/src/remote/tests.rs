@@ -1881,9 +1881,10 @@ mod runtime_tests {
         }
     }
 
-    /// A refreshed credential the broker rejects is terminal: the loop records
-    /// `service_authorization` on the live bridge and returns instead of
-    /// rotating the same invalid credential forever.
+    /// A refreshed credential the broker rejects ends *this generation*: the
+    /// loop records `service_authorization` on the live bridge and returns
+    /// instead of rotating the same invalid credential forever. The replacement
+    /// is the supervisor's job, and it builds one from a new mint.
     ///
     /// The refresh request itself succeeds — the platform hands out a
     /// credential for the refused endpoint — which is exactly the production
@@ -1930,6 +1931,206 @@ mod runtime_tests {
             "the worker reports the failure; stopping the bridge is the supervisor's"
         );
         *SUPERVISOR.last_error_code.lock().unwrap() = None;
+        stop();
+    }
+
+    /// Run the production recovery workers for as long as this lives.
+    ///
+    /// Lowered by `Drop`, not by the test's last line: the switch is
+    /// process-global, so an assertion that panics must not hand the next test a
+    /// background rebuild it never asked for.
+    struct RecoveryEnabled;
+
+    impl RecoveryEnabled {
+        fn new() -> Self {
+            SUPERVISOR
+                .hooks
+                .recovery_enabled
+                .store(true, Ordering::Release);
+            Self
+        }
+    }
+
+    impl Drop for RecoveryEnabled {
+        fn drop(&mut self) {
+            SUPERVISOR
+                .hooks
+                .recovery_enabled
+                .store(false, Ordering::Release);
+        }
+    }
+
+    /// A grant the relay ends under a live bridge, and then refuses, must be
+    /// replaced by a new mint — without anyone restarting the process.
+    ///
+    /// This is the incident `desktop.log` recorded and nothing acted on: the
+    /// socket reported `User Authentication Expired`, the reconnect presented the
+    /// same lapsed grant and got `authorization violation`, and then every later
+    /// line was silence. The watch that would have minted a replacement had
+    /// already returned — a refused credential was read as the end of watching
+    /// rather than the end of *that generation* — so the machine stayed offline
+    /// until it was killed and started again.
+    ///
+    /// Both halves are load-bearing, which is why they are asserted together with
+    /// a real start: the refusal ends the generation, and the rebuild that follows
+    /// is retried by the watch instead of being spent as a single attempt.
+    #[tokio::test]
+    async fn a_grant_the_relay_refuses_is_replaced_without_a_restart() {
+        let _home = HomeGuard::new("remote-refused-grant-recovery");
+        // The rebuild this test is about is the supervisor's recovering worker,
+        // which the fixture keeps off unless asked.
+        let _recovery = RecoveryEnabled::new();
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        platform.respond_pair_code(nats.url());
+
+        let started = start(RemoteStartInput {}).await.expect("start");
+        assert!(matches!(started.phase, RemotePhase::Ready));
+        // Pair the device: an unclaimed invitation is rebuilt from its own
+        // carried identity instead of a refresh (there is no device to rotate
+        // for yet), so it is the *paired* bridge this test is about.
+        let code = started.pairing_code.clone().expect("an invitation");
+        let pair_id = started.pair_id.clone();
+        let mobile = nats_connect(&nats).await;
+        let _channel = super::test_support::secure_pair(&mobile, &code, &pair_id).await;
+        let granted = nats
+            .presented_jwts()
+            .last()
+            .cloned()
+            .expect("the bridge presented its grant");
+
+        // The relay ends the socket that grant authorized and refuses the grant
+        // from now on; the platform answers the rebuild with a fresh one.
+        //
+        // Spelled out instead of `respond_refresh`: that helper mints
+        // `jwt(now + 3600)`, and `jwt` is deterministic in its payload — minted
+        // in the same second as the original, it is the *same* string, which a
+        // revoked grant would refuse again and the test would report as a
+        // recovery that never happened. A different `exp` is what makes this a
+        // distinct credential.
+        let replacement =
+            crate::remote::test_support::jwt(crate::remote::test_support::now_secs() + 7_200);
+        nats.revoke_jwt(&granted);
+        nats.expire_jwt(&granted);
+        platform.push(
+            "/client/v1/remote/auth/token",
+            200,
+            json!({
+                "user_jwt": replacement,
+                "nats_url": nats.url(),
+                "nats_ws_url": nats.url().replace("nats://", "ws://"),
+            }),
+        );
+
+        crate::remote::test_support::wait_until(
+            "a replacement generation presenting a different grant",
+            Duration::from_secs(15),
+            || {
+                let presented = nats.presented_jwts();
+                let seen = presented.iter().any(|presented| presented != &granted);
+                if !seen {
+                    eprintln!(
+                        "presented={presented:?}\nreplacement={replacement}\ngranted={granted}\nplatform={:?}",
+                        platform
+                            .requests()
+                            .iter()
+                            .map(|(method, path, _)| format!("{method} {path}"))
+                            .collect::<Vec<_>>()
+                    );
+                }
+                seen
+            },
+        )
+        .await;
+        crate::remote::test_support::wait_until(
+            "the bridge to serve again after the refusal",
+            Duration::from_secs(15),
+            || matches!(status().phase, RemotePhase::Ready),
+        )
+        .await;
+        stop();
+    }
+
+    /// A rebuild that fails is not the last thing that happens for the device.
+    ///
+    /// The watch spends exactly one attempt per rebuild, and the grant a refused
+    /// bridge was holding is replaced by a *new mint* — a platform round trip that
+    /// can come back 401 while the account session is being renewed, or 503 while
+    /// the platform is busy. Before the re-arm, that first answer ended recovery:
+    /// the watch had already returned, `retryable_start_status` said the refusal was
+    /// not transient, and nothing was scheduled again. The device stayed dark until
+    /// the process restarted, with a perfectly good bridge one attempt away.
+    #[tokio::test]
+    async fn a_failed_rebuild_is_retried_rather_than_abandoned() {
+        let _home = HomeGuard::new("remote-failed-rebuild-retried");
+        let _recovery = RecoveryEnabled::new();
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        platform.respond_pair_code(nats.url());
+
+        let started = start(RemoteStartInput {}).await.expect("start");
+        assert!(matches!(started.phase, RemotePhase::Ready));
+        let code = started.pairing_code.clone().expect("an invitation");
+        let pair_id = started.pair_id.clone();
+        let mobile = nats_connect(&nats).await;
+        let _channel = super::test_support::secure_pair(&mobile, &code, &pair_id).await;
+        let granted = nats
+            .presented_jwts()
+            .last()
+            .cloned()
+            .expect("the bridge presented its grant");
+
+        let replacement =
+            crate::remote::test_support::jwt(crate::remote::test_support::now_secs() + 7_200);
+        nats.revoke_jwt(&granted);
+        nats.expire_jwt(&granted);
+        // The first rebuild's mint is refused outright — the account authorization
+        // shape, which no retry policy calls transient — and the second succeeds.
+        platform.push(
+            "/client/v1/remote/auth/token",
+            401,
+            json!({ "error": "unauthorized", "message": "session is being renewed" }),
+        );
+        platform.push(
+            "/client/v1/remote/auth/token",
+            200,
+            json!({
+                "user_jwt": replacement,
+                "nats_url": nats.url(),
+                "nats_ws_url": nats.url().replace("nats://", "ws://"),
+            }),
+        );
+
+        // The first rebuild has to actually happen (and its mint be refused)
+        // before anything can be said about what came after it: the phase is
+        // `ready` until the socket is ended, so a bare "wait for ready" would be
+        // satisfied by the state the test started in.
+        crate::remote::test_support::wait_until(
+            "the first rebuild to ask the platform for a grant",
+            Duration::from_secs(15),
+            || {
+                platform
+                    .requests()
+                    .iter()
+                    .any(|(_, path, _)| path == "/client/v1/remote/auth/token")
+            },
+        )
+        .await;
+        crate::remote::test_support::wait_until(
+            "the bridge to come back after a rebuild that failed",
+            Duration::from_secs(20),
+            || {
+                nats.presented_jwts()
+                    .iter()
+                    .any(|presented| presented == &replacement)
+                    && matches!(status().phase, RemotePhase::Ready)
+            },
+        )
+        .await;
         stop();
     }
 
@@ -3324,7 +3525,7 @@ mod runtime_tests {
         SUPERVISOR
             .runtime_reconnect_attempts
             .store(0, Ordering::Release);
-        spawn_runtime_reconnect("pair_test".to_string());
+        spawn_runtime_reconnect("pair_test".to_string(), 1);
         assert_eq!(
             SUPERVISOR
                 .runtime_reconnect_attempts

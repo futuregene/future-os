@@ -57,7 +57,13 @@ impl TaskExecutor for DesktopExecutor {
                 expired_retry: std::time::Duration::from_millis(5),
                 transfer_cleanup: std::time::Duration::from_millis(20),
                 reply_ttl: std::time::Duration::from_millis(500),
-                automatic_recovery: false,
+                // Production's own value, unless a test raised the switch: the
+                // recovery path is what some tests are about, and it has no other
+                // way to run here.
+                automatic_recovery: crate::remote::SUPERVISOR
+                    .hooks
+                    .recovery_enabled
+                    .load(std::sync::atomic::Ordering::Acquire),
                 revoke_cleanup: false,
             }
         }

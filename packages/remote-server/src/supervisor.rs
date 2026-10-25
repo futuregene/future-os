@@ -51,6 +51,13 @@ pub struct RemoteState {
     pub client: async_nats::Client,
     pub nats_health: Arc<NatsHealth>,
     pub nats_url: String,
+    /// Unix-seconds expiry of the relay grant this generation is authorized by.
+    ///
+    /// The socket can only re-present the JWT it was opened with, so this is the
+    /// deadline the generation lives under: a bridge that reaches it without a
+    /// rotation is already lost. Carried in the status so "when does it renew"
+    /// is answerable without reading a log.
+    pub credential_expires_at: i64,
     pub pair_id: String,
     pub desktop_id: String,
     pub desktop_public_key: String,

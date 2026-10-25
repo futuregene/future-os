@@ -68,8 +68,6 @@ function mount(overrides: Partial<React.ComponentProps<typeof GeneralPage>> = {}
     onToggleBellOnComplete: vi.fn(),
     autoTitleFirstTurn: true,
     onToggleAutoTitleFirstTurn: vi.fn(),
-    autoResumeInterrupted: true,
-    onToggleAutoResumeInterrupted: vi.fn(),
     ...overrides,
   };
   act(() => {
@@ -94,8 +92,9 @@ describe("generalPage language picker", () => {
     const { container } = mount();
     const language = select(container, 0);
 
-    expect(language.value).toBe("en");
-    expect([...language.options].map(option => option.textContent)).toEqual(["中文", "English"]);
+    // Nothing chosen yet, so the picker sits on "follow the system" (en-US here).
+    expect(language.value).toBe("system");
+    expect([...language.options].map(option => option.textContent)).toEqual(["Follow system", "中文", "English"]);
 
     choose(language, "zh");
 
@@ -103,6 +102,18 @@ describe("generalPage language picker", () => {
     expect(document.documentElement.lang).toBe("zh-CN");
     // Stored so the next launch starts in the chosen language.
     expect(localStorage.getItem("future.language")).toBe("zh");
+  });
+
+  it("goes back to following the system without pinning a language", () => {
+    const { container } = mount();
+
+    choose(select(container, 0), "zh");
+    choose(select(container, 0), "system");
+
+    // jsdom's OS locale is en-US, so the system preference resolves to English.
+    expect(i18n.language).toBe("en");
+    expect(document.documentElement.lang).toBe("en");
+    expect(localStorage.getItem("future.language")).toBe("system");
   });
 
   it("switches back to English and restores the document language", () => {
@@ -378,7 +389,7 @@ describe("generalPage approval tier picker", () => {
 
 describe("generalPage switches", () => {
   it("exposes every toggle as an accessible switch with its current value", () => {
-    const { container } = mount({ autoUpgradeSkills: true, skillRecommend: false, bellOnComplete: false, autoTitleFirstTurn: true, autoResumeInterrupted: false });
+    const { container } = mount({ autoUpgradeSkills: true, skillRecommend: false, bellOnComplete: false, autoTitleFirstTurn: true });
 
     const switches = [...container.querySelectorAll<HTMLButtonElement>("[role=switch]")];
     expect(switches.map(item => item.getAttribute("aria-label"))).toEqual([
@@ -386,9 +397,8 @@ describe("generalPage switches", () => {
       "Skill recommendations",
       "Generate a title after the first answer",
       "Completion bell",
-      "Continue interrupted conversations",
     ]);
-    expect(switches.map(item => item.getAttribute("aria-checked"))).toEqual(["true", "false", "true", "false", "false"]);
+    expect(switches.map(item => item.getAttribute("aria-checked"))).toEqual(["true", "false", "true", "false"]);
   });
 
   it("reports each toggle to its own callback, inverted", () => {
@@ -398,10 +408,8 @@ describe("generalPage switches", () => {
 
     act(() => toggle("Auto-upgrade skills").click());
     act(() => toggle("Completion bell").click());
-    act(() => toggle("Continue interrupted conversations").click());
 
     expect(props.onToggleAutoUpgradeSkills).toHaveBeenCalledExactlyOnceWith(false);
     expect(props.onToggleBellOnComplete).toHaveBeenCalledExactlyOnceWith(false);
-    expect(props.onToggleAutoResumeInterrupted).toHaveBeenCalledExactlyOnceWith(false);
   });
 });

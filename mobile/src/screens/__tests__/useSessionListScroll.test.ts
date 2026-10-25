@@ -101,6 +101,26 @@ test("separates desktops and tabs and does not replace browse offsets with searc
   expect(current.initialOffset.y).toBe(600);
 });
 
+test("hands the native view one anchor that keeps the reader's row in place", () => {
+  // Both pages re-rank themselves while the reader sits on them, so the rows
+  // above the viewport move without any navigation at all. The anchor is what
+  // keeps the first visible row where the reader left it, and it stays at the
+  // top only when they are already there — a new conversation then belongs on
+  // screen, not pushed above it.
+  expect(current.maintainVisibleContentPosition).toEqual({
+    minIndexForVisible: 0,
+    autoscrollToTopThreshold: 0,
+  });
+  const anchor = current.maintainVisibleContentPosition;
+  remember(1200);
+  act(() => current.onScroll(scrollEvent(1240)));
+  // One object for the app's lifetime: the native view re-reads this prop, so a
+  // fresh object per render would look like a new anchor on every scroll event.
+  expect(current.maintainVisibleContentPosition).toBe(anchor);
+  remount();
+  expect(current.maintainVisibleContentPosition).toBe(anchor);
+});
+
 test("cold or empty lists do not issue scroll commands or store bounce offsets", () => {
   act(() => {
     current.onLayout(layoutEvent(600));

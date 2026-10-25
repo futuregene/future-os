@@ -217,7 +217,6 @@ Settable keys (camelCase, as the desktop API spells them):
   titleLanguage           en|zh              Language used for generated titles
   communityEdition        true|false         Use the community-edition UI
   skillRecommend          true|false         Recommend one uninstalled skill
-  autoResumeInterrupted   true|false         Continue interrupted conversations on app open
 
 A list value is a JSON array or a comma-separated list; an empty value clears it."#;
 
@@ -428,6 +427,10 @@ self-hosted relay).
   warningCode                a non-fatal local problem (e.g. the web listener)
   invitationExpiresAt        when an unscanned invitation lapses; the code itself
                              is never printed by this command
+  credentialExpiresAt        when the relay grant behind the bridge lapses; the
+                             credential renews a few minutes earlier, so a value
+                             in the past means the bridge is unauthorized and
+                             can only come back through a new one
   build                      the build the ANSWERING Desktop is running:
                              gitCommit, gitCommitShort, gitDirty, buildTarget,
                              buildProfile. null when that Desktop predates the
