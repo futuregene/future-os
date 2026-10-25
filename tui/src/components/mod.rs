@@ -1,20 +1,11 @@
-//! UI components — 1:1 ports of `tui/src/components/*.ts`.
+//! UI components the workbench builds its surface from.
+//!
+//! What is left here is what the workbench actually draws with: the transcript
+//! renderer (`chat_area`, with `diff` and `markdown` underneath it) and the
+//! prompt box (`input`). The inline TUI's menus, panels, footer, pager and
+//! dialogs went with it.
 
-pub mod approval_view;
-pub mod autocomplete;
 pub mod chat_area;
 pub mod diff;
-pub mod footer;
 pub mod input;
-pub mod keymap_view;
 pub mod markdown;
-pub mod menu;
-pub mod new_session;
-pub mod pager;
-pub mod provider_dialogs;
-pub mod sandbox_view;
-pub mod scoped_models_selector;
-pub mod select_list;
-pub mod skills_view;
-pub mod usage_view;
-pub mod worktree_view;

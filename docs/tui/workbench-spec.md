@@ -31,11 +31,11 @@ implementation may extend it, but may not change its meaning.
    `/` filter, ↑↓ history.
 7. Themes: two built-in 256-colour palettes, `future-dark` / `future-light`,
    selectable with `/theme`.
-8. **An independent TUI, and it is `future tui`**: the workbench has its own
-   entry point (`tui/src/bin/workbench.rs`) and its own full-screen render loop,
-   and `future tui` starts it. The previous inline UI moved to
-   `future tui --legacy`. It is not a `--layout` switch — two renderers sharing
-   one output stream was the thing that got rejected.
+8. **The terminal UI, and it is `future tui`**: the workbench has its own
+   full-screen render loop and `future tui` starts it. The previous inline UI is
+   **deleted**, not deprecated — its code, its page and its `--legacy` flag are
+   gone. It is not a `--layout` switch either: two renderers sharing one output
+   stream was the thing that got rejected.
 
 ### P1 (skeleton / documentation only this round, completion not required)
 
@@ -71,11 +71,10 @@ tui/examples/workbench_demo.rs  // prints one frame at any size + mouse self-tes
 tui/src/lib.rs                  // one added line: `pub mod workbench;`
 ```
 
-`tui/src/workbench/run.rs` is the driver and `tui/src/bin/workbench.rs` the
-standalone entry point: they own raw mode, the alternate screen and the event
-loop, and the workbench's surface **never goes through** `tui/src/app.rs`.
-`index.rs` routes `future tui` to the driver; the inline UI stays behind
-`--legacy`.
+`tui/src/workbench/run.rs` is the driver: it owns raw mode, the alternate
+screen and the event loop. `index.rs` parses arguments (print mode, `--help`,
+`--list-models`) and hands interactive use to the driver; there is no second
+surface.
 
 Live integration may only touch: `tui/src/workbench/live.rs`, the fill
 functions in `tui/src/workbench/state.rs`, and `run.rs`'s interception of keys

@@ -1670,25 +1670,6 @@ impl ChatArea {
             .rposition(|m| m.role == ChatRole::Assistant)
     }
 
-    /// Test-only view: (role, plain-text content) per message.
-    #[cfg(test)]
-    pub(crate) fn plain_messages(&self) -> Vec<(ChatRole, String)> {
-        self.messages
-            .iter()
-            .map(|m| (m.role, crate::utils::strip_ansi_codes(&m.content)))
-            .collect()
-    }
-
-    /// Test-only view: the last assistant message's thinking text.
-    #[cfg(test)]
-    pub(crate) fn last_assistant_thinking(&self) -> Option<&str> {
-        self.messages
-            .iter()
-            .rev()
-            .find(|m| m.role == ChatRole::Assistant)
-            .and_then(|m| m.thinking.as_deref())
-    }
-
     fn find_tool_index(&self, tool_id: &str) -> Option<usize> {
         self.messages
             .iter()

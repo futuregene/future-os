@@ -1,5 +1,11 @@
 # future-tui — coverage, measurement basis, branch analysis, waivers and test-quality record
 
+> **Historical record.** This page measures the *inline* TUI — `tui/src/app.rs`
+> and the components around it — which was **deleted on 2026-10-25** and replaced by
+> the full-screen workbench (`tui/src/workbench/`, see the TUI guide at `docs/guide/tui.md`).
+> The waivers, counts and file references below describe code that no longer exists;
+> the page is kept for provenance only, and its numbers are not a current baseline.
+
 Goal `cov-100-multidim` · module **future-tui** (`tui/`) · branch `test/cov100`
 (worktree `.worktrees/cov100`) · host **Windows 11 x86_64**, rustc 1.97.0
 (`rust-toolchain.toml`, stable) · cargo-llvm-cov **0.9.1** · session

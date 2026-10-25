@@ -1,10 +1,11 @@
-//! Core TUI types and utilities — 1:1 port of `tui/src/tui.ts` (the parts
-//! that don't touch the Node terminal): ANSI escape constants, cursor/color
-//! helpers, the `Component` architecture, and overlay positioning math.
+//! Core types the renderers share: ANSI escape constants, cursor/colour helpers
+//! and the [`Component`] trait.
 //!
-//! The Node `Terminal` interface + `NodeTerminal` implementation live in
-//! `terminal.rs` (self-implemented backend). The `Theme` table is in
-//! `theme.rs`. `InputListener` types are app-layer concerns (P2).
+//! What is left is exactly what the workbench draws with. The overlay layout
+//! maths (`OverlayLayout`, anchors, margins), the focus plumbing and the theme
+//! fan-out that walked an overlay stack all belonged to the inline UI's
+//! compositor, which no longer exists: the workbench composes rows itself and
+//! paints chrome from its own palette (`workbench::theme`).
 
 // ─── ANSI Escape Sequences ─────────────────────────────────────────────────
 
@@ -18,8 +19,9 @@ pub const RESET: &str = "\x1b[m";
 pub const BOLD: &str = "\x1b[1m";
 pub const DIM: &str = "\x1b[2m";
 
-// Synchronized output — terminal buffers all writes between begin/end
-// and flushes atomically, preventing flicker and tearing.
+// Synchronized output — the terminal buffers everything written between
+// begin/end and flushes it atomically, which is what keeps a full repaint from
+// tearing.
 pub const SYNC_BEGIN: &str = "\x1b[?2026h";
 pub const SYNC_END: &str = "\x1b[?2026l";
 
@@ -35,471 +37,61 @@ pub fn set_bg(c: u8) -> String {
     format!("{CSI}48;5;{c}m")
 }
 
-// ─── Component Architecture ─────────────────────────────────────────────────
+// ─── Component ─────────────────────────────────────────────────────────────
 
-/// ANSI "pi:c" cursor marker injected into rendered input lines; the
-/// renderer strips it before writing to the terminal (see `render`).
+/// ANSI "pi:c" cursor marker injected into rendered input lines; the renderer
+/// strips it before writing to the terminal (see `workbench::run`).
 pub const CURSOR_MARKER: &str = "\x1b_pi:c\x07";
 
-/// A renderable UI element. `render` returns display rows (ANSI-styled
-/// strings); `handle_input` receives normalized key ids (see `keys.rs`) or
-/// paste chunks; `invalidate` drops any cached layout.
+/// A renderable element. `render` returns display rows (ANSI-styled strings);
+/// `handle_input` receives normalised key ids (see `keys.rs`) or paste chunks.
+///
+/// The workbench treats components as *rectangles*: it asks one for rows of a
+/// given width and places them, rather than letting a component decide how much
+/// of the screen it takes.
 pub trait Component: std::any::Any {
     fn render(&mut self, width: usize) -> Vec<String>;
     fn handle_input(&mut self, _data: &str) {}
     fn invalidate(&mut self) {}
 
-    /// Port of the TS `wantsKeyRelease?: boolean` optional component field
-    /// (default false). Only consulted by the app layer (P3).
-    fn wants_key_release(&self) -> bool {
-        false
-    }
-
-    /// True when this component wants `escape` delivered to it *before* the app
-    /// layer closes its overlay — an active incremental search owns the first
-    /// escape (it clears the query) and the second one closes the panel.
-    ///
-    /// Mirrors [`Component::wants_key_release`]: optional, default `false`, and
-    /// only consulted by the app layer. A component that repaints itself from
-    /// `escape` (rather than cancelling) must flip this, or the app's
-    /// close-the-overlay fallback swallows the key before `handle_input` ever
-    /// sees it.
+    /// True when this component wants `escape` delivered to it before anything
+    /// else acts on it (an active incremental search owns the first escape).
     fn wants_escape(&self) -> bool {
         false
     }
 
-    /// Downcast support (mirrors TS duck-typing like `"focused" in component`).
-    fn as_any(&self) -> &dyn std::any::Any;
+    /// True when this component wants key-release events.
+    fn wants_key_release(&self) -> bool {
+        false
+    }
 
-    /// Mutable downcast support — used by the app layer to flip the `focused`
-    /// flag on boxed overlay components (mirrors TS `component.focused = true`).
+    fn as_any(&self) -> &dyn std::any::Any;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
-/// Set/clear the `focused` flag on a component, mirroring the TS
-/// `isFocusable(component)` guard + `component.focused = ...` assignment.
-/// Only the focusable components (Input, ScopedModelsSelector) are affected.
-pub fn set_component_focused(component: &mut dyn Component, focused: bool) {
-    if let Some(input) = component
-        .as_any_mut()
-        .downcast_mut::<crate::components::input::Input>()
-    {
-        input.focused = focused;
-    } else if let Some(sel) = component
-        .as_any_mut()
-        .downcast_mut::<crate::components::scoped_models_selector::ScopedModelsSelector>(
-    ) {
-        sel.focused = focused;
-    }
-}
-
-/// Components that can receive keyboard focus (port of the TS `Focusable`
-/// interface — `{ focused: boolean }`).
+/// Components that can hold keyboard focus (`{ focused: bool }`).
 pub trait Focusable: Component {
     fn focused(&self) -> bool;
     fn set_focused(&mut self, focused: bool);
 }
-
-/// Port of `isFocusable(component)` — TS checks `"focused" in component` at
-/// runtime; in Rust we downcast against the known focusable components.
-pub fn is_focusable(component: &dyn Component) -> bool {
-    component.as_any().is::<crate::components::input::Input>()
-        || component
-            .as_any()
-            .is::<crate::components::scoped_models_selector::ScopedModelsSelector>()
-}
-
-/// Apply a palette to every component that can repaint itself (`/theme`).
-///
-/// Every chrome widget is theme-aware now: the chat area, the popup menus
-/// (including the provider list and the scoped-model selector), the footer,
-/// the input, the select list, the pager and the usage panel. Each keeps
-/// [`crate::theme::Chrome::LEGACY`] for the default palette, so `/theme dark`
-/// cannot change a byte of output; any other palette repaints the whole frame.
-/// A component that is not theme-aware is left untouched.
-pub fn apply_theme_to_component(component: &mut dyn Component, theme: crate::theme::Theme) {
-    if let Some(chat) = component
-        .as_any_mut()
-        .downcast_mut::<crate::components::chat_area::ChatArea>()
-    {
-        chat.set_theme(theme);
-    } else if let Some(menu) = component
-        .as_any_mut()
-        .downcast_mut::<crate::components::menu::MenuOverlay>()
-    {
-        menu.set_theme(theme);
-    } else if let Some(list) = component
-        .as_any_mut()
-        .downcast_mut::<crate::components::provider_dialogs::ProviderListOverlay>(
-    ) {
-        list.set_theme(theme);
-    } else if let Some(footer) = component
-        .as_any_mut()
-        .downcast_mut::<crate::components::footer::Footer>()
-    {
-        footer.set_theme(&theme);
-    } else if let Some(input) = component
-        .as_any_mut()
-        .downcast_mut::<crate::components::input::Input>()
-    {
-        input.set_theme(&theme);
-    } else if let Some(list) = component
-        .as_any_mut()
-        .downcast_mut::<crate::components::select_list::SelectList>()
-    {
-        list.set_theme(&theme);
-    } else if let Some(pager) = component
-        .as_any_mut()
-        .downcast_mut::<crate::components::pager::PagerOverlay>()
-    {
-        pager.set_theme(&theme);
-    } else if let Some(usage) = component
-        .as_any_mut()
-        .downcast_mut::<crate::components::usage_view::UsageOverlay>()
-    {
-        usage.set_theme(&theme);
-    } else if let Some(selector) = component
-        .as_any_mut()
-        .downcast_mut::<crate::components::scoped_models_selector::ScopedModelsSelector>(
-    ) {
-        selector.set_theme(&theme);
-    }
-}
-
-/// Simple container that renders children top-to-bottom (port of `Container`).
-#[derive(Default)]
-pub struct Container {
-    pub children: Vec<Box<dyn Component>>,
-}
-
-impl Container {
-    pub fn new() -> Self {
-        Self {
-            children: Vec::new(),
-        }
-    }
-
-    pub fn add_child(&mut self, component: Box<dyn Component>) {
-        self.children.push(component);
-    }
-
-    /// TS `removeChild(component)` removes by object identity; in Rust we
-    /// remove by index (the app layer keeps track of its own children).
-    pub fn remove_child_at(&mut self, index: usize) -> Option<Box<dyn Component>> {
-        if index < self.children.len() {
-            Some(self.children.remove(index))
-        } else {
-            None
-        }
-    }
-
-    pub fn clear(&mut self) {
-        self.children.clear();
-    }
-}
-
-impl Component for Container {
-    fn render(&mut self, width: usize) -> Vec<String> {
-        let mut lines = Vec::new();
-        for child in &mut self.children {
-            for line in child.render(width) {
-                lines.push(line);
-            }
-        }
-        lines
-    }
-
-    fn invalidate(&mut self) {
-        for child in &mut self.children {
-            child.invalidate();
-        }
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-}
-
-// ─── Overlay Positioning ──────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OverlayAnchor {
-    Center,
-    TopLeft,
-    TopRight,
-    TopCenter,
-    BottomLeft,
-    BottomRight,
-    BottomCenter,
-    LeftCenter,
-    RightCenter,
-}
-
-// TS `anchor ?? "center"` — the default anchor. Manual impl (clippy's
-// derivable_impls suggestion needs nightly for non-unit variants).
-#[allow(clippy::derivable_impls)]
-impl Default for OverlayAnchor {
-    fn default() -> Self {
-        Self::Center
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct OverlayMargin {
-    pub top: Option<usize>,
-    pub right: Option<usize>,
-    pub bottom: Option<usize>,
-    pub left: Option<usize>,
-}
-
-/// TS `OverlayMargin | number` — a plain number applies to all four sides.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MarginValue {
-    All(usize),
-    Sides(OverlayMargin),
-}
-
-/// Port of `SizeValue` = `number | \`${number}%\``. Invalid strings parse to
-/// 0 in TS; the enum only models the two valid forms.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum SizeValue {
-    Fixed(usize),
-    Percent(f64),
-}
-
-pub fn parse_size_value(v: &SizeValue, total: i64) -> i64 {
-    match v {
-        SizeValue::Fixed(n) => *n as i64,
-        SizeValue::Percent(pct) => ((pct / 100.0) * total as f64).floor() as i64,
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct OverlayOptions {
-    pub width: Option<SizeValue>,
-    pub min_width: Option<usize>,
-    pub max_height: Option<SizeValue>,
-    pub anchor: Option<OverlayAnchor>,
-    pub offset_x: Option<i64>,
-    pub offset_y: Option<i64>,
-    pub row: Option<SizeValue>,
-    pub col: Option<SizeValue>,
-    pub margin: Option<MarginValue>,
-    /// `visible(termWidth, termHeight)` gate — app-layer (P2); kept as a doc
-    /// note since a bare fn pointer can't capture state.
-    pub non_capturing: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OverlayLayout {
-    pub row: usize,
-    pub col: usize,
-    pub width: usize,
-    pub max_height: usize,
-}
-
-pub fn resolve_overlay_layout(
-    term_width: usize,
-    term_height: usize,
-    component_lines: usize,
-    options: Option<&OverlayOptions>,
-) -> OverlayLayout {
-    let opt = options.cloned().unwrap_or_default();
-
-    let (m_top, m_right, m_bottom, m_left) = match &opt.margin {
-        None => (0usize, 0usize, 0usize, 0usize),
-        Some(MarginValue::All(n)) => (*n, *n, *n, *n),
-        Some(MarginValue::Sides(m)) => (
-            m.top.unwrap_or(0),
-            m.right.unwrap_or(0),
-            m.bottom.unwrap_or(0),
-            m.left.unwrap_or(0),
-        ),
-    };
-
-    // JS number math — widths can go negative; clamp at the end like TS.
-    let avail_w = term_width as i64 - m_left as i64 - m_right as i64;
-    let avail_h = term_height as i64 - m_top as i64 - m_bottom as i64;
-
-    let mut w = match opt.width {
-        Some(v) => parse_size_value(&v, term_width as i64),
-        None => 80.min(avail_w),
-    };
-    if let Some(min_width) = opt.min_width {
-        w = w.max(min_width as i64);
-    }
-    w = 1.max(w.min(avail_w));
-
-    let mut max_h = match opt.max_height {
-        Some(v) => parse_size_value(&v, term_height as i64),
-        None => term_height as i64,
-    };
-    max_h = max_h.min(avail_h);
-
-    let effective_h = (component_lines as i64).min(max_h);
-    let anchor = opt.anchor.unwrap_or(OverlayAnchor::Center);
-
-    let row = match opt.row {
-        Some(v) => parse_size_value(&v, avail_h),
-        None => match anchor {
-            OverlayAnchor::TopLeft | OverlayAnchor::TopRight | OverlayAnchor::TopCenter => {
-                m_top as i64
-            }
-            OverlayAnchor::BottomLeft
-            | OverlayAnchor::BottomRight
-            | OverlayAnchor::BottomCenter => m_top as i64 + avail_h - effective_h,
-            _ => m_top as i64 + ((avail_h - effective_h) as f64 / 2.0).floor() as i64,
-        },
-    };
-
-    let col = match opt.col {
-        Some(v) => parse_size_value(&v, avail_w),
-        None => match anchor {
-            OverlayAnchor::TopLeft | OverlayAnchor::BottomLeft | OverlayAnchor::LeftCenter => {
-                m_left as i64
-            }
-            OverlayAnchor::TopRight | OverlayAnchor::BottomRight | OverlayAnchor::RightCenter => {
-                m_left as i64 + avail_w - w
-            }
-            _ => m_left as i64 + ((avail_w - w) as f64 / 2.0).floor() as i64,
-        },
-    };
-
-    let mut row = row + opt.offset_y.unwrap_or(0);
-    let mut col = col + opt.offset_x.unwrap_or(0);
-    // TS: Math.max(0, Math.min(row, termHeight - 1)) — clamp inside first.
-    row = row.min(term_height as i64 - 1).max(0);
-    col = col.min(term_width as i64 - 1).max(0);
-
-    OverlayLayout {
-        row: row as usize,
-        col: col as usize,
-        width: w.max(0) as usize,
-        max_height: max_h.max(0) as usize,
-    }
-}
-
-// ─── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn cursor_pos_formats_1_based() {
-        assert_eq!(cursor_pos(3, 5), "\x1b[3;5H");
+    fn the_colour_and_cursor_helpers_emit_the_256_colour_forms() {
+        assert_eq!(set_fg(80), "\x1b[38;5;80m");
+        assert_eq!(set_bg(235), "\x1b[48;5;235m");
+        assert_eq!(cursor_pos(3, 7), "\x1b[3;7H");
     }
 
     #[test]
-    fn set_fg_bg_use_256_color() {
-        assert_eq!(set_fg(151), "\x1b[38;5;151m");
-        assert_eq!(set_bg(59), "\x1b[48;5;59m");
-    }
-
-    #[test]
-    fn parse_size_value_fixed_and_percent() {
-        assert_eq!(parse_size_value(&SizeValue::Fixed(10), 80), 10);
-        assert_eq!(parse_size_value(&SizeValue::Percent(50.0), 80), 40);
-        // floor: 33% of 100 = 33; 34% of 100 = 34
-        assert_eq!(parse_size_value(&SizeValue::Percent(33.0), 100), 33);
-        // Negative totals are allowed (JS number math).
-        assert_eq!(parse_size_value(&SizeValue::Percent(50.0), -10), -5);
-    }
-
-    #[test]
-    fn overlay_default_centers() {
-        let layout = resolve_overlay_layout(100, 40, 10, None);
-        // width = min(80, 100) = 80; row = floor((40-10)/2) = 15; col = floor((100-80)/2) = 10
-        assert_eq!(
-            layout,
-            OverlayLayout {
-                row: 15,
-                col: 10,
-                width: 80,
-                max_height: 40
-            }
-        );
-    }
-
-    #[test]
-    fn overlay_respects_margin_and_max_height() {
-        let options = OverlayOptions {
-            margin: Some(MarginValue::All(2)),
-            max_height: Some(SizeValue::Percent(50.0)),
-            ..Default::default()
-        };
-        let layout = resolve_overlay_layout(100, 40, 30, Some(&options));
-        // avail 96x36; maxH = 20; effectiveH = min(30, 20) = 20
-        // row = 2 + floor((36-20)/2) = 10; col = 2 + floor((96-80)/2) = 10
-        assert_eq!(
-            layout,
-            OverlayLayout {
-                row: 10,
-                col: 10,
-                width: 80,
-                max_height: 20
-            }
-        );
-    }
-
-    #[test]
-    fn overlay_top_left_anchor() {
-        let options = OverlayOptions {
-            anchor: Some(OverlayAnchor::TopLeft),
-            width: Some(SizeValue::Fixed(50)),
-            ..Default::default()
-        };
-        let layout = resolve_overlay_layout(100, 40, 10, Some(&options));
-        assert_eq!(layout.row, 0);
-        assert_eq!(layout.col, 0);
-        assert_eq!(layout.width, 50);
-    }
-
-    #[test]
-    fn overlay_bottom_right_anchor_and_offset() {
-        let options = OverlayOptions {
-            anchor: Some(OverlayAnchor::BottomRight),
-            width: Some(SizeValue::Fixed(50)),
-            offset_x: Some(-2),
-            offset_y: Some(-1),
-            ..Default::default()
-        };
-        let layout = resolve_overlay_layout(100, 40, 10, Some(&options));
-        // col = 0 + 100 - 50 - 2 = 48; row = 0 + 40 - 10 - 1 = 29
-        assert_eq!(
-            layout,
-            OverlayLayout {
-                row: 29,
-                col: 48,
-                width: 50,
-                max_height: 40
-            }
-        );
-    }
-
-    #[test]
-    fn overlay_clamps_to_terminal_bounds() {
-        // width overflows avail: w = max(1, min(80, -10)) = 1
-        let options = OverlayOptions {
-            width: Some(SizeValue::Fixed(200)),
-            margin: Some(MarginValue::All(60)),
-            ..Default::default()
-        };
-        let layout = resolve_overlay_layout(100, 40, 10, Some(&options));
-        assert_eq!(layout.width, 1);
-        assert!(layout.col <= 99);
-    }
-
-    #[test]
-    fn container_renders_children_in_order() {
-        struct FixedLine(String);
-        impl Component for FixedLine {
-            fn render(&mut self, _width: usize) -> Vec<String> {
-                vec![self.0.clone()]
+    fn the_defaults_of_the_component_trait_are_inert() {
+        struct Blank;
+        impl Component for Blank {
+            fn render(&mut self, width: usize) -> Vec<String> {
+                vec![" ".repeat(width)]
             }
             fn as_any(&self) -> &dyn std::any::Any {
                 self
@@ -508,319 +100,13 @@ mod tests {
                 self
             }
         }
-
-        let mut c = Container::new();
-        c.add_child(Box::new(FixedLine("a".into())));
-        c.add_child(Box::new(FixedLine("b".into())));
-        assert_eq!(c.render(80), vec!["a", "b"]);
-        // as_any downcasts work on the container and its children.
-        assert!(c.as_any().downcast_ref::<Container>().is_some());
-        assert!(c.as_any_mut().downcast_mut::<Container>().is_some());
-        // remove_child_at returns the component and bounds-checks the index.
-        let mut removed = c.remove_child_at(0).unwrap();
-        assert!(removed.as_any().downcast_ref::<FixedLine>().is_some());
-        assert!(removed.as_any_mut().downcast_mut::<FixedLine>().is_some());
-        assert!(c.remove_child_at(9).is_none());
-        assert_eq!(c.render(80), vec!["b"]);
-        c.clear();
-        assert!(c.render(80).is_empty());
-    }
-
-    #[test]
-    fn apply_theme_to_component_repaints_the_theme_aware_components_only() {
-        use crate::components::chat_area::ChatArea;
-        use crate::components::menu::{MenuOptions, MenuOverlay, MenuState};
-        use crate::theme::Theme;
-
-        let light = Theme {
-            selected_bg: 99,
-            ..crate::theme::DARK_THEME
-        };
-
-        let mut chat: Box<dyn Component> = Box::new(ChatArea::new(40, None));
-        apply_theme_to_component(chat.as_mut(), light);
-        assert_eq!(
-            chat.as_any().downcast_ref::<ChatArea>().unwrap().theme(),
-            light
-        );
-
-        let mut menu: Box<dyn Component> = Box::new(MenuOverlay::new(
-            MenuState::new(MenuOptions::new("T", vec![])),
-            Box::new(|_| {}),
-        ));
-        apply_theme_to_component(menu.as_mut(), light);
-        assert_eq!(
-            menu.as_any()
-                .downcast_ref::<MenuOverlay>()
-                .unwrap()
-                .state()
-                .theme(),
-            light
-        );
-
-        // A component that is not theme-aware is left alone (no panic).
-        struct Bare;
-        impl Component for Bare {
-            fn render(&mut self, _width: usize) -> Vec<String> {
-                vec![]
-            }
-            fn as_any(&self) -> &dyn std::any::Any {
-                self
-            }
-            fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-                self
-            }
-        }
-        let mut bare: Box<dyn Component> = Box::new(Bare);
-        apply_theme_to_component(bare.as_mut(), light);
-        assert!(bare.render(10).is_empty());
-        // The non-theme-aware component answers the downcast contract too.
-        assert!(bare.as_any().downcast_ref::<Bare>().is_some());
-    }
-
-    /// `/theme` must reach *every* chrome widget, not just the chat area and the
-    /// menus: the whitelist is the whole point of [`apply_theme_to_component`].
-    #[test]
-    fn apply_theme_reaches_every_chrome_widget() {
-        use crate::components::footer::Footer;
-        use crate::components::input::Input;
-        use crate::components::pager::{Pager, PagerOverlay};
-        use crate::components::provider_dialogs::{ProviderListOverlay, ProviderListState};
-        use crate::components::scoped_models_selector::{
-            ScopedModelsSelector, ScopedModelsSelectorOptions,
-        };
-        use crate::components::select_list::{SelectItem, SelectList, SelectListOptions};
-        use crate::components::usage_view::{UsageOverlay, UsageView};
-        use std::collections::HashSet;
-
-        let light = crate::themes::theme_by_id("light").expect("light is in the catalog");
-
-        let mut footer: Box<dyn Component> = Box::new(Footer::new(80));
-        apply_theme_to_component(footer.as_mut(), light);
-        assert_eq!(
-            footer.as_any().downcast_ref::<Footer>().unwrap().theme(),
-            light
-        );
-
-        let mut input: Box<dyn Component> = Box::<Input>::default();
-        apply_theme_to_component(input.as_mut(), light);
-        assert_eq!(
-            input.as_any().downcast_ref::<Input>().unwrap().theme(),
-            light
-        );
-
-        let mut list: Box<dyn Component> = Box::new(SelectList::new(SelectListOptions {
-            title: "T".into(),
-            items: vec![SelectItem {
-                value: "v".into(),
-                label: "L".into(),
-                description: None,
-            }],
-            max_visible: None,
-            theme: None,
-            on_select: None,
-            on_cancel: None,
-            on_selection_change: None,
-            on_key: None,
-        }));
-        apply_theme_to_component(list.as_mut(), light);
-        assert_eq!(
-            list.as_any().downcast_ref::<SelectList>().unwrap().theme(),
-            light
-        );
-
-        let mut pager: Box<dyn Component> =
-            Box::new(PagerOverlay::new(Pager::new(), 5, Box::new(|_| {})));
-        apply_theme_to_component(pager.as_mut(), light);
-        assert_eq!(
-            pager
-                .as_any()
-                .downcast_ref::<PagerOverlay>()
-                .unwrap()
-                .theme(),
-            light
-        );
-
-        let mut usage: Box<dyn Component> = Box::new(UsageOverlay::new(UsageView::default()));
-        apply_theme_to_component(usage.as_mut(), light);
-        assert_eq!(
-            usage
-                .as_any()
-                .downcast_ref::<UsageOverlay>()
-                .unwrap()
-                .theme(),
-            light
-        );
-
-        let mut selector: Box<dyn Component> =
-            Box::new(ScopedModelsSelector::new(ScopedModelsSelectorOptions {
-                all_models: vec![],
-                enabled_model_ids: HashSet::new(),
-                on_save: Box::new(|_| {}),
-                on_cancel: Box::new(|| {}),
-                max_visible: None,
-            }));
-        apply_theme_to_component(selector.as_mut(), light);
-        assert_eq!(
-            selector
-                .as_any()
-                .downcast_ref::<ScopedModelsSelector>()
-                .unwrap()
-                .theme(),
-            light
-        );
-
-        // The provider list wraps a menu, so the palette is observable through
-        // what it renders rather than through an accessor.
-        let mut providers: Box<dyn Component> = Box::new(ProviderListOverlay::new(
-            ProviderListState::new(vec![]),
-            Box::new(|_| {}),
-        ));
-        let before = providers.render(70);
-        apply_theme_to_component(providers.as_mut(), light);
-        let after = providers.render(70);
-        assert_ne!(before, after, "the provider list must repaint");
-    }
-
-    #[test]
-    fn component_default_methods_are_noops() {
-        struct Bare;
-        impl Component for Bare {
-            fn render(&mut self, _width: usize) -> Vec<String> {
-                vec!["x".into()]
-            }
-            fn as_any(&self) -> &dyn std::any::Any {
-                self
-            }
-            fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-                self
-            }
-        }
-        let mut c = Bare;
-        c.handle_input("anything"); // default: ignored
-        c.invalidate(); // default: no cache to drop
-        assert!(!c.wants_key_release());
-        assert!(
-            !c.wants_escape(),
-            "escape is the app layer's by default; a component opts in"
-        );
-        assert_eq!(c.render(80), vec!["x"]);
-        assert!(c.as_any().downcast_ref::<Bare>().is_some());
-        assert!(c.as_any_mut().downcast_mut::<Bare>().is_some());
-    }
-
-    #[test]
-    fn container_invalidate_propagates_to_children() {
-        use std::cell::Cell;
-        use std::rc::Rc;
-
-        struct CountingChild(Rc<Cell<usize>>);
-        impl Component for CountingChild {
-            fn render(&mut self, _width: usize) -> Vec<String> {
-                vec![]
-            }
-            fn invalidate(&mut self) {
-                self.0.set(self.0.get() + 1);
-            }
-            fn as_any(&self) -> &dyn std::any::Any {
-                self
-            }
-            fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-                self
-            }
-        }
-
-        let count = Rc::new(Cell::new(0));
-        let mut c = Container::new();
-        let mut child = CountingChild(Rc::clone(&count));
-        assert!(child.as_any().downcast_ref::<CountingChild>().is_some());
-        assert!(child.as_any_mut().downcast_mut::<CountingChild>().is_some());
-        assert!(child.render(80).is_empty());
-        c.add_child(Box::new(child));
-        c.add_child(Box::new(CountingChild(Rc::clone(&count))));
-        c.invalidate();
-        assert_eq!(count.get(), 2);
-    }
-
-    #[test]
-    fn focus_helpers_recognize_focusable_components() {
-        use crate::components::input::Input;
-        use crate::components::scoped_models_selector::{
-            ScopedModelsSelector, ScopedModelsSelectorOptions,
-        };
-        use std::collections::HashSet;
-
-        let mut input: Box<dyn Component> = Box::<Input>::default();
-        assert!(is_focusable(input.as_ref()));
-        set_component_focused(input.as_mut(), true);
-        assert!(input.as_any().downcast_ref::<Input>().unwrap().focused);
-
-        let mut selector: Box<dyn Component> =
-            Box::new(ScopedModelsSelector::new(ScopedModelsSelectorOptions {
-                all_models: vec![],
-                enabled_model_ids: HashSet::new(),
-                on_save: Box::new(|_| {}),
-                on_cancel: Box::new(|| {}),
-                max_visible: None,
-            }));
-        assert!(is_focusable(selector.as_ref()));
-        set_component_focused(selector.as_mut(), true);
-        assert!(
-            selector
-                .as_any()
-                .downcast_ref::<ScopedModelsSelector>()
-                .unwrap()
-                .focused
-        );
-        // Fire the save/cancel callbacks so their bodies aren't dead.
-        selector.handle_input("enter");
-        selector.handle_input("escape");
-
-        struct Bare;
-        impl Component for Bare {
-            fn render(&mut self, _width: usize) -> Vec<String> {
-                vec![]
-            }
-            fn as_any(&self) -> &dyn std::any::Any {
-                self
-            }
-            fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-                self
-            }
-        }
-        let mut bare: Box<dyn Component> = Box::new(Bare);
-        assert!(!is_focusable(bare.as_ref()));
-        set_component_focused(bare.as_mut(), true); // no-op, must not panic
-        assert!(bare.render(80).is_empty());
-    }
-
-    #[test]
-    fn overlay_anchor_defaults_to_center() {
-        assert_eq!(OverlayAnchor::default(), OverlayAnchor::Center);
-    }
-
-    #[test]
-    fn overlay_layout_sides_margin_min_width_and_explicit_row_col() {
-        let opts = OverlayOptions {
-            margin: Some(MarginValue::Sides(OverlayMargin {
-                top: Some(2),
-                right: Some(4),
-                bottom: None,
-                left: Some(6),
-            })),
-            min_width: Some(30),
-            row: Some(SizeValue::Fixed(5)),
-            col: Some(SizeValue::Percent(50.0)),
-            width: Some(SizeValue::Fixed(10)),
-            ..Default::default()
-        };
-        let layout = resolve_overlay_layout(100, 40, 10, Some(&opts));
-        // width 10 is bumped to min_width 30 (avail_w = 100-6-4 = 90).
-        assert_eq!(layout.width, 30);
-        assert_eq!(layout.row, 5);
-        // col = 50% of avail_w 90.
-        assert_eq!(layout.col, 45);
-        // avail_h = 40-2-0 = 38 clamps the default max_height.
-        assert_eq!(layout.max_height, 38);
+        let mut blank = Blank;
+        assert_eq!(blank.render(3), vec!["   "]);
+        // No input, no invalidation, no special keys: a component that only
+        // draws needs to implement exactly one method.
+        blank.handle_input("x");
+        blank.invalidate();
+        assert!(!blank.wants_key_release());
+        assert!(!blank.wants_escape());
     }
 }

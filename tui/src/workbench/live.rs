@@ -87,7 +87,7 @@ impl Live {
         addr: &str,
         session: Option<&str>,
         no_context_files: bool,
-        settings: Option<&crate::app::TuiSettings>,
+        settings: Option<&crate::settings::TuiSettings>,
     ) -> Result<(Self, tokio::sync::mpsc::UnboundedReceiver<AgentEvent>), String> {
         let (client, events, _connection) = GrpcClient::new(addr);
         let client = Arc::new(client.with_no_context_files(no_context_files));
@@ -669,7 +669,7 @@ impl Live {
 
     /// The approval mode, in the desktop composer's order.
     async fn cycle_mode(&mut self) {
-        use crate::components::sandbox_view::ApprovalMode;
+        use crate::approval_mode::ApprovalMode;
         let current = self
             .state
             .sandbox_tier
@@ -794,12 +794,12 @@ fn age(updated_at_ms: i64) -> String {
 }
 
 /// The palette the inline TUI persisted, or the workbench default.
-pub fn persisted_palette(settings: &crate::app::TuiSettings) -> super::theme::Palette {
+pub fn persisted_palette(settings: &crate::settings::TuiSettings) -> super::theme::Palette {
     super::theme::resolve(settings.theme_id.as_deref())
 }
 
 /// The reading level the inline TUI persisted, or the default.
-pub fn persisted_detail(settings: &crate::app::TuiSettings) -> ReplyDetail {
+pub fn persisted_detail(settings: &crate::settings::TuiSettings) -> ReplyDetail {
     ReplyDetail::from_wire(settings.reply_detail.as_deref().unwrap_or("default"))
 }
 

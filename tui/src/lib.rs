@@ -1,65 +1,47 @@
-//! future_tui — Rust port of the TypeScript future-tui.
+//! future_tui — the FutureOS terminal UI.
 //!
-//! Goal: 1:1 behavior — UI rendering, key handling, interaction, argument
-//! parsing, and help text — with a self-implemented terminal backend
-//! (`terminal.rs`, libc on POSIX / windows-sys planned for Windows), replacing
-//! Node's `process.stdin`/`process.stdout` machinery.
+//! One surface: the full-screen **workbench** (`workbench/`), started by
+//! `future tui` and by the `future-tui` binary. It owns the screen, repaints
+//! absolute rows, and answers mouse clicks from what it painted; the agent is
+//! reached through `rpc/`, never directly.
 //!
-//! P0 modules (pure logic, ported 1:1 from `tui/src/*.ts`):
-//!   - `stdin_buffer` — escape-sequence buffering / bracketed paste
-//!   - `keys`         — raw bytes → normalized key ids (Kitty CSI-u,
-//!     modifyOtherKeys, legacy)
-//!   - `theme`        — color constants, style helpers
-//!   - `utils`        — grapheme width, ANSI tracking, wrap/slice/truncate
-//!   - `terminal`     — self-implemented POSIX terminal backend
-//!   - `help`         — verbatim `--help` text (index.ts `printHelp`)
-//!   - `version`      — build-injected version (scripts/version.mjs)
+//! What the crate provides, bottom-up:
 //!
-//! P1 modules (components layer, ported 1:1 from `tui/src/components/*.ts` +
-//! `tui/src/tui.ts` + `tui/src/help-screen.ts` + `tui/src/keybindings.ts`):
-//!   - `tui`              — Component architecture, constants, overlay layout
-//!   - `components`       — input / autocomplete / select-list /
-//!     scoped-models-selector / footer
-//!   - `help_screen`      — `renderHelp` card
-//!   - `keybindings`      — KeybindingManager
-//!   - `rpc`              — RPC types (ModelInfo for the selector)
-//!
-//! P3 modules (app layer, ported 1:1 from `tui/src/app.ts` +
-//! `tui/src/index.ts` + `tui/src/rpc/grpc-client.ts`):
-//!   - `rpc`              — full types + tonic `GrpcClient`
-//!   - `app`              — the App (session orchestration, slash commands,
-//!     overlays, diff-based render pipeline)
-//!   - `index`            — CLI arg parsing / print mode / list-models /
-//!     interactive wiring (`main.rs` calls `index::run`)
-//!   - `rpc`              — full types + tonic `GrpcClient` (wire types via
-//!     the future-rpc crate — the single proto codegen owner, PR #112)
-//!   - `insert_history`   — finished transcript rows → the terminal's own
-//!     scrollback (leave the alternate screen, append, come back)
+//! * `terminal` (+ `terminal_posix` / `terminal_windows`, `stdin_buffer`,
+//!   `paste_burst`) — the self-implemented terminal backend: raw mode, the
+//!   alternate screen, the input reader thread, resizes and signals.
+//! * `keys` — raw bytes → normalised key ids (Kitty CSI-u, modifyOtherKeys,
+//!   legacy).
+//! * `utils`, `theme`, `themes`, `tui` — grapheme/ANSI width, palettes, the
+//!   `Component` trait the renderers below share.
+//! * `components` — the transcript (`chat_area`, with `diff` + `markdown`) and
+//!   the prompt box (`input`). Shared with nothing: the workbench is the only
+//!   consumer, and it draws them into rectangles.
+//! * `workbench` — the surface: layout, palette, hit map, mouse protocol,
+//!   panels, launchpad, and the driver `future tui` runs.
+//! * `rpc` — wire types and the tonic `GrpcClient` (proto codegen lives in
+//!   `future-rpc`, the single owner).
+//! * `session_rows` — journal entries → chat messages, the one mapping both the
+//!   live path and history replay use.
+//! * `index` — argument parsing, `--help`, print mode (`-p`), `--list-models`,
+//!   and the entry into the workbench.
 
 pub mod agent_attach;
-pub mod app;
-pub mod clipboard;
+pub mod approval_mode;
 pub mod components;
-#[cfg(all(test, windows))]
-pub mod console_harness;
 pub mod crash;
-pub mod external_editor;
 pub mod help;
-pub mod help_screen;
 pub mod home;
 pub mod index;
-pub mod insert_history;
-pub mod keybindings;
 pub mod keys;
-pub mod notifications;
 pub mod paste;
 pub mod paste_burst;
 pub mod rpc;
 pub mod session_rows;
-pub mod skill_reco;
-pub mod skills_cli;
+pub mod settings;
 pub mod stderr_log;
 pub mod stdin_buffer;
+pub mod subprocess;
 pub mod terminal;
 pub mod terminal_image;
 pub mod theme;
@@ -69,7 +51,6 @@ mod update;
 pub mod utils;
 pub mod version;
 pub mod workbench;
-pub mod worktree;
 
 /// Shared lock for tests that mutate process-global state (env vars), so
 /// parallel `cargo test` threads cannot race each other. Same pattern as

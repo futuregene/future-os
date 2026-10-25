@@ -1,19 +1,16 @@
-//! The workbench — a full-screen terminal UI for FutureOS.
+//! The workbench — the FutureOS terminal UI (`future tui`).
 //!
-//! This is **a second TUI**, not a mode of the inline one. `future-tui` renders
-//! a conversation by appending rows into the terminal's own scrollback and
-//! diffing the tail; that design is why it feels like a shell transcript, and it
-//! is exactly what a full-screen surface cannot be built out of — a workbench
-//! owns the whole screen, repaints absolute rows, and resolves mouse clicks
-//! against what it painted. Wrapping the latter around the former would mean two
-//! renderers fighting for one output stream.
+//! It owns the whole screen, repaints absolute rows, and resolves mouse clicks
+//! against what it painted. The earlier inline UI — which appended rows into the
+//! terminal's own scrollback and diffed the tail — is gone; it is not a mode of
+//! this one, and nothing here renders into scrollback.
 //!
 //! So the split is:
 //!
-//! * **This module tree** owns the new surface: its own layout, palette, hit
-//!   map, mouse protocol, panels and launchpad, and its own entry point
-//!   (`future-workbench`). It never calls `app::App`.
-//! * **The existing crate** donates the reusable leaves: the gRPC client
+//! * **This module tree** owns the surface: its own layout, palette, hit map,
+//!   mouse protocol, panels and launchpad. `run` is its driver — the one
+//!   `future tui` starts.
+//! * **The crate around it** donates the reusable leaves: the gRPC client
 //!   (`rpc`), key parsing (`keys`), width/markdown helpers (`utils`,
 //!   `components::markdown`), the conversation renderer
 //!   (`components::chat_area`) and the terminal backend (`terminal`).

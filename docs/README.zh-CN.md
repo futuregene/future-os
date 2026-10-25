@@ -14,8 +14,7 @@
 |---|---|
 | [构建与安装](guide/build-and-install.zh-CN.md)（[en](guide/build-and-install.md)） | 前置条件、各平台工具链（macOS / Linux / Windows）、`make` 目标、GUI 打包、`future-goal` 安装、技能安装 |
 | [持续集成](guide/ci.zh-CN.md) ([English](guide/ci.md)) | 影响范围检测、依赖图、共享 runner、合并门禁与手动专项验证 |
-| [TUI](guide/tui.zh-CN.md)（[en](guide/tui.md)） | 行内（inline）终端界面（`future-tui`）：斜杠命令、快捷键、设置 |
-| [Workbench](guide/workbench.zh-CN.md)（[en](guide/workbench.md)） | 第二个全屏 TUI（`future-workbench`）：独立入口、布局与断点、键鼠、哪些已经接上 agent、哪些还没有 |
+| [TUI](guide/tui.zh-CN.md)（[en](guide/tui.md)） | 终端界面（`future tui`）：全屏布局、键鼠、命令面板能跑的命令，以及哪些已经接上 agent |
 | [渠道配置](guide/channels-config.zh-CN.md)（[en](guide/channels-config.md)） | `~/.future/channels/config.json` 统一参考（agent / providers / Feishu / DingTalk 块、默认值） |
 | [通道 provider 参考](guide/channels-providers.zh-CN.md)（[en](guide/channels-providers.md)） | 共享桥上的通道：能力矩阵、逐通道配置、成熟度、诊断、主动外发 |
 | [通道 provider 契约](guide/channels-provider-contract.zh-CN.md)（[en](guide/channels-provider-contract.md)） | 新增通道：provider 契约、入站/出站边界、配置、错误、测试与覆盖率要求 |
@@ -55,7 +54,6 @@
 - [desktop/](internals/desktop/PRODUCT.md) — 产品语义、数据模型（`ER.md`）、颜色、沙箱（macOS/Windows/Linux）、连接与远程、嵌入式终端、压缩（文档地图见 `desktop/CLAUDE.md`）
 - [compaction/](internals/compaction/compaction.zh-CN.md) — 运行时上下文压缩：两个策略及其参数、生产请求形状、开发指南（`compaction-development.zh-CN.md`）、检索接口，以及两个实验——闭卷（`compaction-closed-book-experiment.zh-CN.md`）与开卷（`compaction-open-book-experiment.zh-CN.md`）
 - [mobile/](internals/mobile/README.md) — 移动端构建/TestFlight、iOS 平台对齐、流式同步设计与测量、鸿蒙兼容（带日期的审计与测量报告见 `archives/verification/`）
-- [tui/](internals/tui/tests.md) — TUI 测试框架约定
 - [skill_reco/](internals/skill_reco/harness.zh-CN.md) — 技能推荐：[评测](internals/skill_reco/evaluation.zh-CN.md)、[运行框架](internals/skill_reco/harness.zh-CN.md) 与[集成方案](internals/skill_reco/integration-plan.zh-CN.md)（历史设计记录）
 - [agent/](internals/agent/README.zh-CN.md) — gRPC 后端（`agent/`）的模块地图：turn loop、工具、LLM 层、会话、沙箱，以及改每一项前该读什么
 - [host](internals/host.zh-CN.md) — `future-host`（无 GUI 的共享后端：store、agent bridge、tasks、remote、identity）的模块地图
@@ -67,7 +65,7 @@
 
 | 文档 | 内容 |
 |---|---|
-| [Workbench TUI 规格](tui/workbench-spec.zh-CN.md)（[English](tui/workbench-spec.md)） | [workbench](guide/workbench.zh-CN.md) 背后的冻结契约：布局常量、鼠标与键盘约定、类型名与验收命令。它描述的界面已经实现；agent 适配层与 P1 项还没有 |
+| [Workbench TUI 规格](tui/workbench-spec.zh-CN.md)（[English](tui/workbench-spec.md)） | [终端界面](guide/tui.zh-CN.md) 背后的冻结契约：布局常量、鼠标与键盘约定、类型名与验收命令。它描述的界面已经实现；agent 适配层与 P1 项还没有 |
 
 ## Wiki（面向用户的应用指南）
 

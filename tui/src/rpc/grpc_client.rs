@@ -21,7 +21,7 @@
 //! Like the TS client, transport failures and `success:false` responses
 //! surface as plain `String` messages.
 
-use crate::components::sandbox_view::ApprovalMode;
+use crate::approval_mode::ApprovalMode;
 use crate::rpc::provider_types::{
     parse_providers_response, validate_provider_input, ProviderInfo, ProviderInput,
 };
