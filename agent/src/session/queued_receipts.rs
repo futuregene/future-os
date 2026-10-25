@@ -48,10 +48,22 @@ impl Manager {
         })
     }
 
+    /// Record the cancellation of ONE queued run.
+    ///
+    /// This is a wrapper over [`Self::cancel_queued_receipts`]; a caller that
+    /// cancels several runs of the same session must use the batch form, or it
+    /// pays one write transaction and one commit per run.
     pub(crate) fn cancel_queued_receipt(&self, session: &str, run: &str) -> Result<()> {
         self.cancel_queued_receipts(session, &[run.to_owned()])
     }
 
+    /// Record the cancellation of every queued run of one session in a single
+    /// write transaction.
+    ///
+    /// Atomic on purpose: either every run in `runs` is marked
+    /// `cancel_requested`, or none is and the caller still holds the pre-cancel
+    /// state to retry or report. Callers must not loop over this method per run —
+    /// pass the whole batch instead.
     pub(crate) fn cancel_queued_receipts(&self, session: &str, runs: &[String]) -> Result<()> {
         let (session, runs) = (session.to_owned(), runs.to_vec());
         self.storage()?.db.call(move |db| {
@@ -130,6 +142,29 @@ impl super::sqlite_store::SqliteStore {
                 return Ok(total);
             }
         }
+    }
+}
+
+#[cfg(test)]
+impl super::sqlite_store::SqliteStore {
+    /// The durable status of every queued acceptance of one session, in run-id
+    /// order.
+    ///
+    /// A test reads this to see what a cancellation batch actually committed:
+    /// all rows changed, or none when the batch was refused.
+    pub(crate) fn receipt_statuses(&self, session: &str) -> Vec<String> {
+        let session = session.to_owned();
+        self.db
+            .call(move |db| {
+                let mut statement = db.prepare(
+                    "SELECT status FROM queued_run_receipts WHERE session_id=?1 ORDER BY run_id",
+                )?;
+                let rows = statement
+                    .query_map(params![session], |row| row.get(0))?
+                    .collect::<rusqlite::Result<Vec<String>>>()?;
+                Ok(rows)
+            })
+            .unwrap()
     }
 }
 

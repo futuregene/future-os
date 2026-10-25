@@ -467,15 +467,28 @@ impl ServerSession {
         reason: crate::runtime::QueuedCancellationReason,
     ) -> Vec<crate::runtime::ScheduledRunRequest> {
         let cancelled = self.scheduler.cancel_all_queued(reason);
-        for request in &cancelled {
-            if !self.ephemeral {
-                if let Err(error) = self
-                    .session_manager
-                    .cancel_queued_receipt(&self.session_id, &request.run_id)
-                {
-                    tracing::error!(%error,"queued cancellation remains interrupted on restart");
-                }
+        // One receipt write per session, not one per run. A session can hold many
+        // queued runs (a burst of prompts, a fan-out of child sessions) and each
+        // durable cancellation is a single row update; paying a separate
+        // transaction per row is what made cancelling a busy session's queue cost
+        // one commit per run — on the shutdown path, inside a fixed stage budget.
+        // `cancel_queued_receipts` is already the batch form.
+        if !self.ephemeral && !cancelled.is_empty() {
+            let runs: Vec<String> = cancelled
+                .iter()
+                .map(|request| request.run_id.clone())
+                .collect();
+            if let Err(error) = self
+                .session_manager
+                .cancel_queued_receipts(&self.session_id, &runs)
+            {
+                // All or nothing: the batch records every cancellation or none.
+                // Naming the rows keeps the report diagnosable, since a restart
+                // now recovers all of them instead of all but the last.
+                tracing::error!(%error,runs=?runs,"queued cancellation remains interrupted on restart");
             }
+        }
+        for request in &cancelled {
             self.scheduled_snapshots.remove(&request.run_id);
         }
         self.flush_cancelled_receipts_when_idle();
@@ -6588,5 +6601,139 @@ mod tests {
             (split.input - 1.0).abs() < 1e-9,
             "the object-style usage row is priced like any other: {split:?}"
         );
+    }
+
+    /// A session with `runs` queued behind one active run, each with its durable
+    /// receipt — the state the shutdown path finds on a busy session.
+    ///
+    /// The active run is what keeps `flush_cancelled_receipts_when_idle` from
+    /// finishing the receipts immediately, so the recorded `cancel_requested`
+    /// state stays observable.
+    fn session_with_queued_receipts(
+        id: &str,
+        runs: &[&str],
+        ephemeral: bool,
+    ) -> (ServerSession, Arc<Manager>) {
+        let cwd = test_workspace();
+        let manager = Arc::new(Manager::new(std::path::Path::new(&cwd).join("sessions")));
+        let mut session = ServerSession::new(
+            id.to_string(),
+            Arc::new(tokio::sync::RwLock::new(Loop::new(
+                Arc::new(EmptyProvider),
+                "mock",
+            ))),
+            manager.clone(),
+            &cwd,
+            Arc::new(SseBroadcaster::new()),
+            ApprovalGate::default(),
+            Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
+        );
+        session.set_ephemeral(ephemeral);
+        std::fs::create_dir_all(&session.cwd).unwrap();
+        session
+            .runtime
+            .begin(Some("run-active"), Some("request-active"))
+            .unwrap();
+        for (index, run) in runs.iter().enumerate() {
+            let request = format!("request-{run}");
+            session
+                .scheduler
+                .accept(
+                    &request,
+                    Some(run),
+                    crate::runtime::BusyPolicy::EnqueueIfBusy,
+                    serde_json::json!({"message": run}),
+                )
+                .unwrap();
+            let mut user = crate::session::SessionEntry::new_user(
+                "user",
+                serde_json::json!(format!("queued {run}")),
+            );
+            user.meta = Some(serde_json::json!({"run_id": run}));
+            manager
+                .record_queued_receipt(
+                    id,
+                    &request,
+                    &crate::runtime::RunAck::queued(run.to_string(), index as u64 + 1, 1),
+                    "fingerprint",
+                    &serde_json::json!({"message": run}),
+                    &user,
+                )
+                .unwrap();
+        }
+        (session, manager)
+    }
+
+    /// Every queued run of one session is recorded in a single write.
+    ///
+    /// One receipt write per session is what the shutdown path needs: a busy
+    /// session owns many queued runs, and a transaction per run is what made
+    /// cancelling them overrun its stage budget.
+    #[test]
+    fn cancelling_every_queued_run_records_all_receipts_in_one_write() {
+        let runs = ["run-a", "run-b", "run-c"];
+        let (mut session, manager) = session_with_queued_receipts("batch-cancel", &runs, false);
+        let cancelled =
+            session.cancel_all_queued_runs(crate::runtime::QueuedCancellationReason::Cancelled);
+        assert_eq!(cancelled.len(), runs.len());
+        session.persistence.barrier().unwrap();
+        assert_eq!(
+            manager
+                .storage()
+                .unwrap()
+                .receipt_statuses(&session.session_id),
+            vec!["cancel_requested"; runs.len()],
+            "every queued receipt must be marked cancel_requested"
+        );
+        let _ = std::fs::remove_dir_all(&session.cwd);
+    }
+
+    /// A batch that cannot be recorded records nothing.
+    ///
+    /// This is what one transaction buys, and it is the difference a test can
+    /// see: with a single row refusing, a per-run loop would already have
+    /// committed the rows before it, leaving the journal half-cancelled. Here all
+    /// three receipts stay `queued`, so a restart recovers all three inputs.
+    #[test]
+    fn a_refused_batch_leaves_every_receipt_queued() {
+        let runs = ["run-a", "run-b", "run-c"];
+        let (mut session, manager) = session_with_queued_receipts("batch-refused", &runs, false);
+        manager.test_execute(
+            "CREATE TRIGGER refuse_run_b BEFORE UPDATE ON queued_run_receipts
+                 WHEN NEW.run_id='run-b' BEGIN SELECT RAISE(ABORT,'injected'); END",
+        );
+        // The in-memory queue is still cancelled; only the durable record fails.
+        let cancelled =
+            session.cancel_all_queued_runs(crate::runtime::QueuedCancellationReason::Cancelled);
+        assert_eq!(cancelled.len(), runs.len());
+        session.persistence.barrier().unwrap();
+        assert_eq!(
+            manager
+                .storage()
+                .unwrap()
+                .receipt_statuses(&session.session_id),
+            vec!["queued"; runs.len()],
+            "a refused batch must not commit any of its rows"
+        );
+        let _ = std::fs::remove_dir_all(&session.cwd);
+    }
+
+    /// An ephemeral session keeps no durable receipt of a cancellation.
+    #[test]
+    fn an_ephemeral_session_records_no_cancellation() {
+        let runs = ["run-a", "run-b"];
+        let (mut session, manager) = session_with_queued_receipts("batch-ephemeral", &runs, true);
+        let cancelled =
+            session.cancel_all_queued_runs(crate::runtime::QueuedCancellationReason::Cancelled);
+        assert_eq!(cancelled.len(), runs.len());
+        assert_eq!(
+            manager
+                .storage()
+                .unwrap()
+                .receipt_statuses(&session.session_id),
+            vec!["queued"; runs.len()],
+            "an ephemeral session writes no receipt"
+        );
+        let _ = std::fs::remove_dir_all(&session.cwd);
     }
 }
