@@ -4604,7 +4604,7 @@
         ]
       },
       "desktops": {
-        "_comment": "The paired list: a description of the machines, each row carrying only the two actions that are about that machine (configure, unpair). The machine in use is deliberately not marked here — the highlight and the check mark read as a third control beside those two actions — and a tap on a row does nothing at all, which the steps below measure. Reached from the desktop picker above the session list; the settings screen no longer lists machines at all.",
+        "_comment": "The paired list: a description of the machines. Each row carries the phone's own label for the machine — its mark, its name, and the editor beside that name — plus the two actions that are about the machine itself (configure, unpair). The machine in use is deliberately not marked here: the highlight and the check mark read as one more control beside those actions. A tap on a row does nothing at all, which the steps below measure. Reached from the desktop picker above the session list; the settings screen no longer lists machines at all.",
         "steps": [
           {
             "wait": 900
@@ -4628,7 +4628,7 @@
             "wait": 2000
           },
           {
-            "eval": "(() => {\n  // Two machines, each with its own two actions and nothing else: the row\n  // used to carry a highlight and a check mark for the machine in use, which\n  // beside those two actions read as a third control on a row that cannot be\n  // pressed at all (see DesktopsScreen).\n  const rows = [...document.querySelectorAll('[aria-label]')].filter(el =>\n    ['实验室的 MacBook Pro', '办公室主机'].includes(el.getAttribute('aria-label')));\n  if (rows.length !== 2) throw new Error('the list does not carry both machines by name: ' + rows.length);\n  for (const row of rows) {\n    const card = row.parentElement;\n    if (getComputedStyle(card).backgroundColor === 'rgb(232, 240, 255)') throw new Error('the card is still painted as the current machine');\n    const actions = [...card.querySelectorAll('[role=button]')];\n    if (actions.length !== 2) throw new Error('a machine offers ' + actions.length + ' actions, not the two it has');\n    const glyphs = card.querySelectorAll('svg').length;\n    if (glyphs !== 2) throw new Error('the row draws ' + glyphs + ' glyphs, not its two actions');\n  }\n  return 'two descriptions, two actions each, nothing marked';\n})()"
+            "eval": "(() => {\n  // Two machines, each described by its mark and name with three controls: the\n  // label editor beside the name it edits, the machine's own settings, and\n  // unpairing. The row used to carry a highlight and a check mark for the\n  // machine in use, which read as one more control on a row that cannot be\n  // pressed at all (see DesktopsScreen).\n  const rows = [...document.querySelectorAll('[aria-label]')].filter(el =>\n    ['实验室的 MacBook Pro', '办公室主机'].includes(el.getAttribute('aria-label')));\n  if (rows.length !== 2) throw new Error('the list does not carry both machines by name: ' + rows.length);\n  for (const row of rows) {\n    const card = row.parentElement;\n    if (getComputedStyle(card).backgroundColor === 'rgb(232, 240, 255)') throw new Error('the card is still painted as the current machine');\n    const actions = [...card.querySelectorAll('[role=button]')];\n    const labels = actions.map(el => el.getAttribute('aria-label'));\n    if (actions.length !== 3) throw new Error('a machine offers ' + actions.length + ' actions, not the three it has: ' + labels.join('/'));\n    // The label editor sits beside the name, not with the actions: it is the\n    // one control that works while the machine is switched off.\n    const editor = actions.find(el => el.getAttribute('aria-label') === '名称与图标');\n    if (!editor) throw new Error('no label editor on the row: ' + labels.join('/'));\n    if (!labels.includes('桌面端设置') || !labels.includes('解除设备配对'))\n      throw new Error('the row lost one of its actions: ' + labels.join('/'));\n  }\n  return 'two descriptions, three controls each, nothing marked';\n})()"
           },
           {
             "shot": "m-desktops-list.png"
@@ -4644,8 +4644,67 @@
           }
         ]
       },
+      "desktop-label-edit": {
+        "_comment": "The phone's own label for a paired machine — its name and icon — is edited from the row of the paired list that draws it, not from the machine's settings page (whose every other row is read from or written to that machine). Both are stored locally, so the editor opens with nobody connected and one save writes one patch; the row redraws from the store.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "桌面选择"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tap": "管理已配对的桌面…"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "eval": "(() => {\n  const editors = [...document.querySelectorAll('[role=button][aria-label=\"名称与图标\"]')];\n  if (editors.length !== 2) throw new Error('expected one label editor per row: ' + editors.length);\n  editors[0].click();\n  return 'opened the first machine\\'s label editor';\n})()"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  const text = document.body.innerText;\n  for (const wanted of ['名称与图标', '名称', '图标', '保存', '取消']) {\n    if (!text.includes(wanted)) throw new Error('the editor is missing ' + wanted + ': ' + text.slice(0, 300));\n  }\n  const field = document.querySelector('input[aria-label=\"名称\"]');\n  if (!field) throw new Error('no name field');\n  if (!field.value) throw new Error('the field does not open on the stored name');\n  const icons = [...document.querySelectorAll('[role=radio]')];\n  if (icons.length < 20) throw new Error('the icon grid is not in the editor: ' + icons.length);\n  // The row behind it is the paired list, not a settings page: editing a label\n  // is not configuring the machine.\n  if (!document.body.innerText.includes('已配对的桌面端')) throw new Error('the editor did not open over the paired list');\n  return 'editor open on ' + field.value + ', ' + icons.length + ' icons';\n})()"
+          },
+          {
+            "shot": "m-desktop-label-edit.png"
+          },
+          {
+            "eval": "(() => { const option = [...document.querySelectorAll('[role=radio]')].find(el => el.getAttribute('aria-label') === '发布机'); if (!option) throw new Error('the rocket icon is missing from the grid'); option.click(); return 'picked the rocket'; })()"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "(() => {\n  // The picked tile is marked by its frame and its tint, which is what the row\n  // will wear: a picker that stores an id nothing reads looks identical.\n  const option = [...document.querySelectorAll('[role=radio]')].find(el => el.getAttribute('aria-label') === '发布机');\n  const picked = getComputedStyle(option).backgroundColor;\n  if (picked !== 'rgb(232, 240, 255)') throw new Error('the picked icon is not marked: ' + picked);\n  return picked;\n})()"
+          },
+          {
+            "eval": "(() => { const save = [...document.querySelectorAll('[role=button]')].find(el => el.getAttribute('aria-label') === '保存'); if (!save) throw new Error('no save action in the editor'); save.click(); return 'saving'; })()"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  const text = document.body.innerText;\n  if (text.includes('图标')) throw new Error('the editor is still open: ' + text.slice(0, 200));\n  if (!text.includes('已配对的桌面端')) throw new Error('saving left the paired list: ' + text.slice(0, 200));\n  return 'saved, back on the paired list';\n})()"
+          },
+          {
+            "shot": "m-desktops-list-relabelled.png"
+          }
+        ]
+      },
       "desktop-settings": {
-        "_comment": "One paired desktop's page: what it is called here, and everything that is read from or written to it — over that machine's own connection, so there is no \"connect to this desktop\" step to take first. The settings screen must not offer any of this, which is what this scenario opens with.",
+        "_comment": "One paired desktop's page: everything that is read from or written to that machine, over its own connection — so there is no \"connect to this desktop\" step to take first. Its name and icon are the phone's own label rather than the machine's, so they are not here; they are edited from the row of the paired list that draws them (`desktop-label-edit`).",
         "steps": [
           {
             "wait": 900
@@ -4675,19 +4734,10 @@
             "wait": 1800
           },
           {
-            "eval": "(() => {\n  const text = document.body.innerText;\n  // The machine's own page names it, offers its label fields, and lists the\n  // settings that live on it. Every one of these used to be on the phone's\n  // settings screen; none of them may come back there.\n  for (const wanted of ['实验室的 MacBook Pro', '设备标识', '名称', '图标', '该桌面端的设置', '自动化与审批', '模型可见性', '提供商与模型', '技能管理', '定时任务设置']) {\n    if (!text.includes(wanted)) throw new Error('the device page is missing ' + wanted + ': ' + text.slice(0, 300));\n  }\n  // And no connection step: every paired machine keeps its own live runtime,\n  // so its settings are read over that machine's own connection. The row that\n  // used to ask to \"connect to this desktop\" first is gone.\n  if (text.includes('连接该桌面端')) throw new Error('the page still asks to connect first: ' + text.slice(0, 300));\n  const grid = [...document.querySelectorAll('[role=radio]')];\n  if (grid.length < 20) throw new Error('the icon grid is not on the page: ' + grid.length);\n  return grid.length + ' icons, no connection step';\n})()"
+            "eval": "(() => {\n  const text = document.body.innerText;\n  // The machine's own page names it and lists the settings that live on it.\n  // Every one of these used to be on the phone's settings screen; none of them\n  // may come back there.\n  for (const wanted of ['实验室的 MacBook Pro', '该桌面端的设置', '自动化与审批', '模型可见性', '提供商与模型', '技能管理', '定时任务设置']) {\n    if (!text.includes(wanted)) throw new Error('the device page is missing ' + wanted + ': ' + text.slice(0, 300));\n  }\n  // The phone's own label for the machine is not a machine setting: it is\n  // edited on the row of the paired list, even while the machine is off.\n  if (text.includes('设备标识')) throw new Error('the device page still carries the identity section: ' + text.slice(0, 300));\n  if ([...document.querySelectorAll('[role=radio]')].length > 0)\n    throw new Error('the icon grid is still on the device page');\n  // And no connection step: every paired machine keeps its own live runtime,\n  // so its settings are read over that machine's own connection. The row that\n  // used to ask to \"connect to this desktop\" first is gone.\n  if (text.includes('连接该桌面端')) throw new Error('the page still asks to connect first: ' + text.slice(0, 300));\n  return 'settings only, no label fields, no connection step';\n})()"
           },
           {
             "shot": "m-device-settings.png"
-          },
-          {
-            "eval": "(() => {\n  // Picking an icon writes it through the phone's label store and the page\n  // reads it back: a picker that stores an id nothing reads looks identical.\n  const option = [...document.querySelectorAll('[role=radio]')].find(el => el.getAttribute('aria-label') === '发布机');\n  if (!option) throw new Error('the rocket icon is missing from the grid');\n  option.click();\n  return 'picked the rocket';\n})()"
-          },
-          {
-            "wait": 1200
-          },
-          {
-            "eval": "(() => {\n  const option = [...document.querySelectorAll('[role=radio]')].find(el => el.getAttribute('aria-label') === '发布机');\n  const picked = getComputedStyle(option).backgroundColor;\n  if (picked !== 'rgb(232, 240, 255)') throw new Error('the picked icon is not marked: ' + picked);\n  return picked;\n})()"
           }
         ]
       },
@@ -5399,7 +5449,7 @@
         ]
       },
       "desktop-settings-other": {
-        "_comment": "The settings page of the machine the phone is *not* reading — the case that used to open with \"Connect to this desktop\" and no rows. Each row opens its own machine's page (the second row first, then the first), neither asks for a connection, and closing one returns to the paired list rather than navigating away, which is what a tap on a row used to do.",
+        "_comment": "The settings page of the machine the phone is *not* reading — the case that used to open with \"Connect to this desktop\" and no rows. Each row opens its own machine's page (the second row first, then the first), neither asks for a connection, and closing one returns to the paired list rather than navigating away, which is what a tap on a row used to do. The label fields stay off this page: the phone's own record of the machine is edited on the row.",
         "steps": [
           {
             "wait": 900
@@ -5429,7 +5479,7 @@
             "wait": 1800
           },
           {
-            "eval": "(() => {\n  const text = document.body.innerText;\n  // The machine the phone is not reading is the page that used to open\n  // with \"Connect to this desktop\" and no rows at all.\n  for (const wanted of ['办公室主机', '设备标识', '名称', '图标', '该桌面端的设置', '自动化与审批', '模型可见性', '提供商与模型', '技能管理', '定时任务设置']) {\n    if (!text.includes(wanted)) throw new Error('the other machine page is missing ' + wanted + ': ' + text.slice(0, 300));\n  }\n  if (text.includes('连接该桌面端')) throw new Error('the page still asks to connect first: ' + text.slice(0, 300));\n  return 'its own settings, with no connection step';\n})()"
+            "eval": "(() => {\n  const text = document.body.innerText;\n  // The machine the phone is not reading is the page that used to open\n  // with \"Connect to this desktop\" and no rows at all.\n  for (const wanted of ['办公室主机', '该桌面端的设置', '自动化与审批', '模型可见性', '提供商与模型', '技能管理', '定时任务设置']) {\n    if (!text.includes(wanted)) throw new Error('the other machine page is missing ' + wanted + ': ' + text.slice(0, 300));\n  }\n  if (text.includes('设备标识')) throw new Error('the device page still carries the identity section: ' + text.slice(0, 300));\n  if (text.includes('连接该桌面端')) throw new Error('the page still asks to connect first: ' + text.slice(0, 300));\n  return 'its own settings, with no connection step';\n})()"
           },
           {
             "shot": "m-device-settings-other.png"

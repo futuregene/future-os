@@ -36,8 +36,12 @@ jest.mock("../../remote/RemoteContext", () => ({
 // The device page is a stack of its own with its own tests; here it only has to
 // be reachable, for the right machine, and closable.
 jest.mock("../../features/settings/SettingsScreen", () => ({ SettingsScreen: "SettingsScreen" }));
+// The name/icon editor is its own surface with its own tests; here it only has
+// to be opened, for the right machine, and closable.
+jest.mock("../DesktopLabelDialog", () => ({ DesktopLabelDialog: "DesktopLabelDialog" }));
 jest.mock("lucide-react-native", () => ({
   ArrowLeft: "ArrowLeft",
+  Pencil: "Pencil",
   Plus: "Plus",
   Check: "Check",
   Settings2: "Settings2",
@@ -106,6 +110,8 @@ const glyphIds = () => tree.root.findAll(node => String(node.type) === "PeerIcon
 
 /** The device page the list opened, if any. */
 const devicePage = () => tree.root.findAllByType("SettingsScreen" as never)[0];
+/** The name/icon editor the list opened, if any. */
+const labelDialog = () => tree.root.findAllByType("DesktopLabelDialog" as never)[0];
 
 beforeEach(async () => {
   jest.clearAllMocks();
@@ -154,9 +160,10 @@ test("a machine's row is not a control on the device page", () => {
 });
 
 /**
- * The list has one action per machine that opens everything about it — what to
- * call it here, and every setting that is read from or written to it. It is the
- * only way in: the phone's own settings screen has no device rows at all.
+ * The list has one action per machine that opens everything the machine itself
+ * answers — its automation, models, providers, skills and tasks. It is the only
+ * way in: the phone's own settings screen has no device rows at all, and the
+ * name and icon are edited on the row itself.
  */
 test("the configure action opens that desktop's own page, and only when asked", async () => {
   expect(devicePage()).toBeUndefined();
@@ -176,9 +183,32 @@ test("the configure action opens that desktop's own page, and only when asked", 
   expect(mockRemote.switchDesktop).not.toHaveBeenCalled();
 });
 
-test("the configure action is the row's only tap, and it stays reachable", async () => {
-  // The gear sits on the same row as a control that no longer exists: what is
-  // left has to still be findable and still be the only thing that opens it.
+test("each row's name carries the editor for that machine", async () => {
+  expect(labelDialog()).toBeUndefined();
+  // One per row, and none of them is the row itself: the label is the phone's,
+  // so it is edited where it is drawn.
+  expect(pressables("desktops.editLabel")).toHaveLength(2);
+  act(() => pressables("desktops.editLabel")[1]!.props.onPress());
+  expect(labelDialog()!.props.desktop).toEqual(mockRemote.desktops[1]);
+  // Editing a label is not configuring the machine: no settings page opens, and
+  // nothing about which machine the phone reads changes.
+  expect(devicePage()).toBeUndefined();
+  expect(mockRemote.switchDesktop).not.toHaveBeenCalled();
+  act(() => labelDialog()!.props.onClose());
+  expect(labelDialog()).toBeUndefined();
+});
+
+test("the startup picker's rows carry no inner control", async () => {
+  act(() => tree.unmount());
+  await renderPicker();
+  // There the whole row is the choice: a pressing target inside a pressing
+  // target would take the tap that picks the machine.
+  expect(pressables("desktops.editLabel")).toHaveLength(0);
+});
+
+test("the configure action is the row's action, and it stays reachable", async () => {
+  // The gear and the label editor share the row; both have to still be findable,
+  // and neither may shadow the other.
   expect(pressables("desktops.settings")).toHaveLength(2);
   act(() => pressables("desktops.settings")[0]!.props.onPress());
   expect(devicePage()!.props.deviceId).toBe("desktop-1");
@@ -237,7 +267,7 @@ test("falls back to the desktop id until the user names it", async () => {
 });
 
 /**
- * The icon is picked on the device page and drawn on this list, and those are
+ * The icon is picked in this screen's editor and drawn on the row, and those are
  * two different files: storing an id that nothing reads back looks exactly like
  * a picker that works. Every card used to draw the same fixed monitor glyph, so
  * this screen was the one place the choice had no visible effect.
