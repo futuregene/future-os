@@ -742,12 +742,29 @@ mod tests {
                 .join("alternates"),
         )
         .unwrap();
+        // Compare the lines as *paths*, not as text: the file carries whatever
+        // spelling git's `rev-parse --git-common-dir` reported — canonicalised
+        // (`/private/var/…` for a `/var/…` TMPDIR) and, on Windows, `C:/…` with
+        // a `\` appended by `PathBuf::join`, which `Path::display()` never
+        // produces. A substring match against the raw temp path was accidentally
+        // true on unix (`/private` + `/var/…`) and false on Windows.
+        let moved_objects = std::fs::canonicalize(moved.join(".git").join("objects")).unwrap();
+        let entries: Vec<&str> = alternates
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        // The entry written at init names the pre-move store, which the rename
+        // took away — so if any stale line survived, nothing on disk answers to
+        // it. Every alternate must name a live object store.
         assert!(
-            !alternates.contains(&original.display().to_string()),
+            entries.iter().copied().all(|line| Path::new(line).is_dir()),
             "the stale path is gone: {alternates}"
         );
         assert!(
-            alternates.contains(&moved.join(".git").join("objects").display().to_string()),
+            entries.iter().copied().any(|line| {
+                std::fs::canonicalize(line).is_ok_and(|resolved| resolved == moved_objects)
+            }),
             "the alternates follow the object store: {alternates}"
         );
         // Same object store, so the seeded index is still valid and must survive
