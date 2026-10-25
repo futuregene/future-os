@@ -68,7 +68,6 @@ pub use projection::{
     agent_message_to_entry, build_context, entries_to_agent_messages, first_message_title,
     truncate_visible,
 };
-pub(crate) use repair::interrupted_tool_placeholder;
 pub use run_journal::{
     find_resumable_run, find_run_terminal, find_unterminated_run, is_run_marker, next_run_sequence,
     RUN_STATE_CANCELLED, RUN_STATE_COMPLETED, RUN_STATE_ERROR, RUN_STATE_INCOMPLETE,

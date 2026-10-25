@@ -11,6 +11,7 @@
 //! take a prompt is not a launchpad.
 
 use crate::workbench::ansi::{align_right, fit, width};
+use crate::workbench::i18n::{self, t, Key, Language};
 use crate::workbench::layout::{HitMap, Rect};
 use crate::workbench::state::WorkbenchData;
 use crate::workbench::theme::Palette;
@@ -25,16 +26,16 @@ pub struct Chip {
 }
 
 /// The parameter row: what the first message will run with.
-pub fn chips(data: &WorkbenchData) -> Vec<Chip> {
+pub fn chips(data: &WorkbenchData, lang: Language) -> Vec<Chip> {
     vec![
         Chip {
             id: "launchpad.model",
-            title: "模型",
+            title: t(lang, Key::ChipModel),
             value: short_model(&data.model),
         },
         Chip {
             id: "launchpad.effort",
-            title: "强度",
+            title: t(lang, Key::ChipEffort),
             value: if data.effort.is_empty() {
                 "—".to_string()
             } else {
@@ -43,7 +44,7 @@ pub fn chips(data: &WorkbenchData) -> Vec<Chip> {
         },
         Chip {
             id: "launchpad.mode",
-            title: "模式",
+            title: t(lang, Key::ChipMode),
             value: if data.mode.is_empty() {
                 "open".to_string()
             } else {
@@ -52,7 +53,7 @@ pub fn chips(data: &WorkbenchData) -> Vec<Chip> {
         },
         Chip {
             id: "launchpad.permission",
-            title: "权限",
+            title: t(lang, Key::ChipAccess),
             value: if data.permission.is_empty() {
                 "all".to_string()
             } else {
@@ -77,11 +78,11 @@ fn short_model(model: &str) -> String {
 
 /// How the launchpad's shortcut entry points read; the loop runs them as
 /// `/command`s.
-pub const SHORTCUTS: [(&str, &str); 4] = [
-    ("/", "命令"),
-    ("?", "帮助"),
-    ("ctrl+n", "新会话"),
-    ("ctrl+b", "侧栏"),
+pub const SHORTCUTS: [(&str, Key); 4] = [
+    ("/", Key::ShortcutCommands),
+    ("?", Key::ShortcutHelp),
+    ("ctrl+n", Key::ShortcutNewChat),
+    ("ctrl+b", Key::ShortcutSidebar),
 ];
 
 /// Render the launchpad into `area`, registering what is clickable.
@@ -93,6 +94,7 @@ pub fn render(
     palette: &Palette,
     area: Rect,
     hit: &mut HitMap,
+    lang: Language,
 ) -> (Vec<String>, Option<(u16, u16)>) {
     if area.is_empty() {
         return (Vec::new(), None);
@@ -142,19 +144,16 @@ pub fn render(
         // brands stacked on top of each other.
         push(
             &mut lines,
-            palette.dim(&center(
-                "一个 AI agent，终端、桌面、手机都在",
-                content_width,
-            )),
+            palette.dim(&center(t(lang, Key::LaunchpadTagline), content_width)),
         );
     }
     push(&mut lines, String::new());
 
     // ── the input box ─────────────────────────────────────────────────
     let title = if data.session.cwd.is_empty() {
-        "新会话".to_string()
+        t(lang, Key::LaunchpadNewChat).to_string()
     } else {
-        format!("新会话 · {}", data.session.cwd)
+        i18n::render(lang, Key::LaunchpadNewChatIn, &[&data.session.cwd])
     };
     let (box_rows, cursor_column, cursor_row) =
         widgets::input_lines(palette, content_width, &data.input, &title, true);
@@ -178,7 +177,7 @@ pub fn render(
         push(&mut lines, String::new());
         let mut row = String::new();
         let mut x = left;
-        for chip in chips(data) {
+        for chip in chips(data, lang) {
             let text = format!("  {} ‹{}›", chip.title, chip.value);
             let text = crate::workbench::ansi::clip(&text, content_width);
             let chip_width = width(&text);
@@ -211,7 +210,7 @@ pub fn render(
             }
             row.push_str(&palette.text(palette.accent, key));
             row.push(' ');
-            row.push_str(&palette.dim(label));
+            row.push_str(&palette.dim(t(lang, *label)));
         }
         let y = area.y + lines.len() as u16;
         hit.push(
@@ -228,7 +227,7 @@ pub fn render(
     let remaining = rows.saturating_sub(lines.len());
     if remaining >= 4 && !data.sessions.is_empty() {
         push(&mut lines, String::new());
-        push(&mut lines, palette.dim("最近会话"));
+        push(&mut lines, palette.dim(t(lang, Key::LaunchpadRecent)));
         let room = rows.saturating_sub(lines.len());
         for (index, session) in data.sessions.iter().take(room).enumerate() {
             let age = align_right(&session.age, 6.min(content_width / 3));
@@ -273,6 +272,11 @@ fn center(text: &str, columns: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tests below read the copy, so they pin the language: the fixture's
+    /// own default is the bundle the driver would resolve, which depends on the
+    /// machine running the suite.
+    const LANG: Language = Language::Zh;
     use crate::workbench::demo;
     use crate::workbench::theme::FUTURE_DARK;
 
@@ -299,7 +303,7 @@ mod tests {
             (200, 60),
         ] {
             let mut hit = HitMap::new();
-            let (lines, _cursor) = render(&data, &P, Rect::new(0, 0, w, h), &mut hit);
+            let (lines, _cursor) = render(&data, &P, Rect::new(0, 0, w, h), &mut hit, LANG);
             assert_eq!(lines.len(), h as usize, "{w}x{h}");
             for line in &lines {
                 assert_eq!(width(line), w as usize, "{w}x{h}: {line:?}");
@@ -311,7 +315,7 @@ mod tests {
     fn a_tall_screen_shows_the_logo_the_prompt_and_the_chips() {
         let data = demo::launchpad();
         let mut hit = HitMap::new();
-        let (lines, cursor) = render(&data, &P, Rect::new(0, 0, 120, 38), &mut hit);
+        let (lines, cursor) = render(&data, &P, Rect::new(0, 0, 120, 38), &mut hit, LANG);
         let text = text_of(&lines);
         // The hero carries the name as block art; there is no second text
         // `FUTURE OS` line under it (that was the duplicate brand).
@@ -333,7 +337,7 @@ mod tests {
     fn every_chip_and_recent_session_is_clickable() {
         let data = demo::launchpad();
         let mut hit = HitMap::new();
-        let (lines, _) = render(&data, &P, Rect::new(0, 0, 120, 38), &mut hit);
+        let (lines, _) = render(&data, &P, Rect::new(0, 0, 120, 38), &mut hit, LANG);
         let ids: Vec<&str> = hit.regions().iter().map(|(_, id)| id.as_str()).collect();
         for expected in [
             "input",
@@ -363,7 +367,7 @@ mod tests {
     fn a_short_screen_keeps_the_prompt_and_drops_the_rest() {
         let data = demo::launchpad();
         let mut hit = HitMap::new();
-        let (lines, _) = render(&data, &P, Rect::new(0, 0, 60, 10), &mut hit);
+        let (lines, _) = render(&data, &P, Rect::new(0, 0, 60, 10), &mut hit, LANG);
         assert_eq!(lines.len(), 10);
         let text = text_of(&lines);
         assert!(text.contains("新会话"), "the prompt survives: {text}");

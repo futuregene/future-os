@@ -7,6 +7,7 @@
 //! full-screen panel: only the area changes.
 
 use crate::workbench::ansi::{align_right, fit, width};
+use crate::workbench::i18n::{self, t, Key, Language};
 use crate::workbench::layout::{HitMap, Rect};
 use crate::workbench::state::{PanelId, TodoState, WorkbenchData};
 use crate::workbench::theme::Palette;
@@ -22,6 +23,7 @@ pub fn render(
     area: Rect,
     scroll: usize,
     hit: &mut HitMap,
+    lang: Language,
 ) -> Vec<String> {
     if area.is_empty() {
         return Vec::new();
@@ -32,14 +34,14 @@ pub fn render(
 
     let heading = format!(
         "{}{}",
-        palette.strong(palette.fg, panel.label()),
-        palette.dim(&format!("  {}", summary(panel, data)))
+        palette.strong(palette.fg, panel.label(lang)),
+        palette.dim(&format!("  {}", summary(panel, data, lang)))
     );
     lines.push(palette.panel_row(&fit(&heading, columns), columns));
     lines.push(palette.panel_row("", columns));
 
     let body_rows = rows.saturating_sub(HEADING_ROWS);
-    let items = item_rows(panel, data, palette, columns);
+    let items = item_rows(panel, data, palette, columns, lang);
     let total = items.len();
     // The window: `scroll` items in, and the last row is spent on an indicator
     // when more remain below.
@@ -80,7 +82,7 @@ pub fn render(
 }
 
 /// The one-line counts beside the panel title.
-fn summary(panel: PanelId, data: &WorkbenchData) -> String {
+fn summary(panel: PanelId, data: &WorkbenchData, lang: Language) -> String {
     match panel {
         PanelId::Todo => {
             let open = data
@@ -88,12 +90,12 @@ fn summary(panel: PanelId, data: &WorkbenchData) -> String {
                 .iter()
                 .filter(|todo| todo.state.is_open())
                 .count();
-            format!("{open} 待办 / {} 合计", data.todos.len())
+            i18n::render(lang, Key::SummaryTodo, &[&open, &data.todos.len()])
         }
-        PanelId::Jobs => format!("{} 个任务", data.jobs.len()),
-        PanelId::Sessions => format!("{} 个会话", data.sessions.len()),
+        PanelId::Jobs => i18n::render(lang, Key::SummaryJobs, &[&data.jobs.len()]),
+        PanelId::Sessions => i18n::render(lang, Key::SummarySessions, &[&data.sessions.len()]),
         PanelId::Usage => String::new(),
-        PanelId::Skills => format!("{} 个技能", data.skills.len()),
+        PanelId::Skills => i18n::render(lang, Key::SummarySkills, &[&data.skills.len()]),
     }
 }
 
@@ -103,11 +105,12 @@ fn item_rows(
     data: &WorkbenchData,
     palette: &Palette,
     columns: usize,
+    lang: Language,
 ) -> Vec<String> {
     match panel {
         PanelId::Todo => {
             if data.todos.is_empty() {
-                return empty("no todos", palette);
+                return empty(t(lang, Key::PanelEmptyTodo), palette);
             }
             data.todos
                 .iter()
@@ -131,7 +134,7 @@ fn item_rows(
         }
         PanelId::Jobs => {
             if data.jobs.is_empty() {
-                return empty("no scheduled jobs", palette);
+                return empty(t(lang, Key::PanelEmptyJobs), palette);
             }
             data.jobs
                 .iter()
@@ -150,7 +153,7 @@ fn item_rows(
         }
         PanelId::Sessions => {
             if data.sessions.is_empty() {
-                return empty("no sessions", palette);
+                return empty(t(lang, Key::PanelEmptySessions), palette);
             }
             data.sessions
                 .iter()
@@ -178,10 +181,10 @@ fn item_rows(
                 })
                 .collect()
         }
-        PanelId::Usage => usage_rows(data, palette, columns),
+        PanelId::Usage => usage_rows(data, palette, columns, lang),
         PanelId::Skills => {
             if data.skills.is_empty() {
-                return empty("no skills", palette);
+                return empty(t(lang, Key::PanelEmptySkills), palette);
             }
             data.skills
                 .iter()
@@ -223,7 +226,12 @@ fn glyph_color(state: TodoState, palette: &Palette) -> u8 {
     }
 }
 
-fn usage_rows(data: &WorkbenchData, palette: &Palette, columns: usize) -> Vec<String> {
+fn usage_rows(
+    data: &WorkbenchData,
+    palette: &Palette,
+    columns: usize,
+    lang: Language,
+) -> Vec<String> {
     let usage = data.usage;
     let mut rows = Vec::new();
     // Every value is composed from whole pieces and dropped whole when it does
@@ -237,7 +245,7 @@ fn usage_rows(data: &WorkbenchData, palette: &Palette, columns: usize) -> Vec<St
         widgets::short_count(usage.ctx_used),
     ];
     rows.push(labelled_row(
-        "上下文",
+        t(lang, Key::UsageContext),
         &candidates,
         Palette::body,
         Palette::dim,
@@ -252,7 +260,7 @@ fn usage_rows(data: &WorkbenchData, palette: &Palette, columns: usize) -> Vec<St
 
     let cost = [widgets::cost_text(usage.cost)];
     rows.push(labelled_row(
-        "成本",
+        t(lang, Key::UsageCost),
         &cost,
         Palette::dim,
         Palette::body,
@@ -261,7 +269,7 @@ fn usage_rows(data: &WorkbenchData, palette: &Palette, columns: usize) -> Vec<St
     ));
     let cache = [format!("{}%", usage.cache_pct)];
     rows.push(labelled_row(
-        "缓存命中",
+        t(lang, Key::UsageCache),
         &cache,
         Palette::dim,
         Palette::body,
@@ -274,7 +282,7 @@ fn usage_rows(data: &WorkbenchData, palette: &Palette, columns: usize) -> Vec<St
         "—".to_string()
     }];
     rows.push(labelled_row(
-        "输出",
+        t(lang, Key::UsageOutput),
         &tps,
         Palette::dim,
         Palette::body,
@@ -322,6 +330,11 @@ fn empty(text: &str, palette: &Palette) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tests below read the copy, so they pin the language: the fixture's
+    /// own default is the bundle the driver would resolve, which depends on the
+    /// machine running the suite.
+    const LANG: Language = Language::Zh;
     use crate::workbench::demo;
     use crate::workbench::theme::FUTURE_DARK;
 
@@ -337,7 +350,7 @@ mod tests {
         for panel in PanelId::ALL {
             for rows in [0u16, 1, 2, 3, 10, 30] {
                 let mut hit = HitMap::new();
-                let lines = render(panel, &data, &P, area(rows), 0, &mut hit);
+                let lines = render(panel, &data, &P, area(rows), 0, &mut hit, LANG);
                 assert_eq!(lines.len(), rows as usize, "{panel:?} at {rows} rows");
                 for line in &lines {
                     assert_eq!(width(line), 34, "{panel:?}: {line:?}");
@@ -351,7 +364,7 @@ mod tests {
         let data = demo::chat();
         for panel in PanelId::ALL {
             let mut hit = HitMap::new();
-            let lines = render(panel, &data, &P, Rect::new(0, 0, 1, 6), 0, &mut hit);
+            let lines = render(panel, &data, &P, Rect::new(0, 0, 1, 6), 0, &mut hit, LANG);
             assert_eq!(lines.len(), 6);
             for line in &lines {
                 assert_eq!(width(line), 1, "{panel:?}: {line:?}");
@@ -363,7 +376,7 @@ mod tests {
     fn the_panels_show_their_own_content() {
         let data = demo::chat();
         let mut hit = HitMap::new();
-        let todo: String = render(PanelId::Todo, &data, &P, area(14), 0, &mut hit)
+        let todo: String = render(PanelId::Todo, &data, &P, area(14), 0, &mut hit, LANG)
             .iter()
             .map(|line| crate::utils::strip_ansi_codes(line))
             .collect::<Vec<_>>()
@@ -372,7 +385,7 @@ mod tests {
         assert!(todo.contains("✔"), "{todo}");
         assert!(todo.contains("P0"), "{todo}");
 
-        let sessions: String = render(PanelId::Sessions, &data, &P, area(14), 0, &mut hit)
+        let sessions: String = render(PanelId::Sessions, &data, &P, area(14), 0, &mut hit, LANG)
             .iter()
             .map(|line| crate::utils::strip_ansi_codes(line))
             .collect::<Vec<_>>()
@@ -380,7 +393,7 @@ mod tests {
         assert!(sessions.contains("会话"), "{sessions}");
         assert!(sessions.contains("future-os"), "{sessions}");
 
-        let usage: String = render(PanelId::Usage, &data, &P, area(14), 0, &mut hit)
+        let usage: String = render(PanelId::Usage, &data, &P, area(14), 0, &mut hit, LANG)
             .iter()
             .map(|line| crate::utils::strip_ansi_codes(line))
             .collect::<Vec<_>>()
@@ -402,7 +415,7 @@ mod tests {
             })
             .collect();
         let mut hit = HitMap::new();
-        let lines = render(PanelId::Sessions, &data, &P, area(10), 0, &mut hit);
+        let lines = render(PanelId::Sessions, &data, &P, area(10), 0, &mut hit, LANG);
         let text: String = lines
             .iter()
             .map(|line| crate::utils::strip_ansi_codes(line))
@@ -414,7 +427,7 @@ mod tests {
         // Scrolled into the middle, the last row is the last visible item, not
         // the first.
         let mut hit = HitMap::new();
-        let lines = render(PanelId::Sessions, &data, &P, area(10), 5, &mut hit);
+        let lines = render(PanelId::Sessions, &data, &P, area(10), 5, &mut hit, LANG);
         let text: String = lines
             .iter()
             .map(|line| crate::utils::strip_ansi_codes(line))
@@ -435,6 +448,7 @@ mod tests {
             Rect::new(10, 4, 34, 12),
             0,
             &mut hit,
+            LANG,
         );
         assert!(!lines.is_empty());
         // Heading occupies rows 4 and 5; the first item is row 6, column 10..44.
@@ -455,6 +469,7 @@ mod tests {
                 Rect::new(0, 0, columns as u16, 8),
                 0,
                 &mut hit,
+                LANG,
             );
             for line in &lines {
                 assert_eq!(width(line), columns, "{columns}: {line:?}");
@@ -473,7 +488,7 @@ mod tests {
             }
         }
         // Wide enough: the full count and the percentage both survive.
-        let wide = crate::utils::strip_ansi_codes(&usage_rows(&data, &P, 34)[0]);
+        let wide = crate::utils::strip_ansi_codes(&usage_rows(&data, &P, 34, LANG)[0]);
         assert!(wide.contains("6.9k/1.0M"), "{wide:?}");
         assert!(wide.contains("0.7%"), "{wide:?}");
     }
@@ -484,19 +499,23 @@ mod tests {
         data.todos.clear();
         data.skills.clear();
         data.jobs.clear();
-        for (panel, needle) in [
-            (PanelId::Todo, "no todos"),
-            (PanelId::Skills, "no skills"),
-            (PanelId::Jobs, "no scheduled jobs"),
+        // Both spellings: an empty panel that says nothing, or says it in the
+        // wrong language, is the same bug from the reader's seat.
+        for (panel, zh, en) in [
+            (PanelId::Todo, "没有待办", "no todos"),
+            (PanelId::Skills, "没有技能", "no skills"),
+            (PanelId::Jobs, "没有定时任务", "no scheduled jobs"),
         ] {
-            let mut hit = HitMap::new();
-            let lines = render(panel, &data, &P, area(8), 0, &mut hit);
-            let text: String = lines
-                .iter()
-                .map(|line| crate::utils::strip_ansi_codes(line))
-                .collect::<Vec<_>>()
-                .join("\n");
-            assert!(text.contains(needle), "{panel:?}: {text}");
+            for (lang, needle) in [(Language::Zh, zh), (Language::En, en)] {
+                let mut hit = HitMap::new();
+                let lines = render(panel, &data, &P, area(8), 0, &mut hit, lang);
+                let text: String = lines
+                    .iter()
+                    .map(|line| crate::utils::strip_ansi_codes(line))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(text.contains(needle), "{panel:?}: {text}");
+            }
         }
     }
 }

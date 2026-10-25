@@ -28,6 +28,7 @@
 pub mod ansi;
 pub mod demo;
 pub mod git;
+pub mod i18n;
 pub mod launchpad;
 pub mod layout;
 pub mod live;
@@ -35,6 +36,7 @@ pub mod local;
 pub mod mouse;
 pub mod panels;
 pub mod picker;
+pub mod preferences;
 pub mod run;
 pub mod screen;
 pub mod state;
@@ -44,6 +46,8 @@ pub mod widgets;
 use picker::{Picker, PickerKind, PickerRow};
 use state::{PanelId, WorkbenchData};
 use theme::Palette;
+
+use i18n::{t, Key, Language, LanguagePreference};
 
 /// Which input row takes keys on the launchpad. `Prompt` is the default; the
 /// others are the parameter chips, reachable with `tab`.
@@ -90,6 +94,9 @@ pub enum Overlay {
     PanelFull,
     /// `/model`, `/theme` or `/sessions`: the list picker.
     Picker(PickerKind),
+    /// Layout, density and the entry to the shortcut editor.
+    Preferences,
+    Keybindings,
 }
 
 /// Which pane owns the keyboard.
@@ -135,6 +142,16 @@ pub enum WbAction {
     SetPendingThinking(String),
     /// The theme picker committed a palette: adopt it and persist it.
     SetTheme(String),
+    /// The language picker committed a preference: adopt it and persist it. The
+    /// driver owns the resolution (a `system` choice re-reads the locale) and
+    /// the settings file; the surface only knows the two bundles.
+    SetLanguage(LanguagePreference),
+    /// A layout preference changed; the driver persists the whole surface state.
+    SetPreferences,
+    /// Persist the effective shortcut map after a rebind or reset.
+    SetKeybindings,
+    /// Explain an action that could not be applied in the notice row.
+    Notice(String),
     /// `/new`: back to the launchpad, with no session attached (the first
     /// message creates one).
     NewSession,
@@ -199,12 +216,25 @@ struct Drag {
 /// a real session without either side knowing the other's shape.
 pub struct Workbench {
     pub palette: Palette,
+    /// The language the chrome is drawn in. A stored preference resolves to one
+    /// of the two bundles before it lands here, so every renderer can read it
+    /// without asking the environment again.
+    pub lang: Language,
+    /// What the reader picked (`system` until they pick), which is the row the
+    /// language picker marks as current.
+    pub language_pref: LanguagePreference,
     pub panel: PanelId,
     pub sidebar_focus: bool,
     /// Is the sidebar allowed to show? `ctrl+b` toggles it; the width still
     /// decides whether it *can*.
     pub sidebar_visible: bool,
     pub sidebar_w: u16,
+    pub density: preferences::Density,
+    pub sidebar_position: preferences::SidebarPosition,
+    pub keys: preferences::Keybindings,
+    pub preferences_index: usize,
+    pub keybinding_index: usize,
+    pub awaiting_keybinding: bool,
     pub panel_scroll: [usize; 5],
     pub overlay: Option<Overlay>,
     pub overlay_scroll: usize,
@@ -238,10 +268,22 @@ impl Workbench {
     pub fn new() -> Self {
         Self {
             palette: theme::FUTURE_DARK,
+            // English, on an unset preference: the driver resolves the stored
+            // preference (and with it the locale) before the first frame. A
+            // constructor that read the environment would make every test's
+            // text depend on the machine running it.
+            lang: Language::default(),
+            language_pref: LanguagePreference::default(),
             panel: PanelId::Todo,
             sidebar_focus: false,
             sidebar_visible: true,
             sidebar_w: layout::SIDEBAR_DEFAULT,
+            density: preferences::Density::Focused,
+            sidebar_position: preferences::SidebarPosition::Right,
+            keys: preferences::Keybindings::default(),
+            preferences_index: 0,
+            keybinding_index: 0,
+            awaiting_keybinding: false,
             panel_scroll: [0; 5],
             overlay: None,
             overlay_scroll: 0,
@@ -251,6 +293,8 @@ impl Workbench {
                 PickerKind::Model,
                 &WorkbenchData::default(),
                 theme::FUTURE_DARK.id,
+                Language::default(),
+                LanguagePreference::default(),
             ),
             picker_restore: None,
             launch_field: LaunchField::Prompt,
@@ -261,6 +305,30 @@ impl Workbench {
             cursor: None,
             drag: None,
         }
+    }
+
+    /// Restore persisted surface choices before the first frame.
+    pub fn set_preferences(&mut self, preferences: preferences::LayoutPreferences) {
+        self.density = preferences.density;
+        self.sidebar_position = preferences.sidebar_position;
+        self.sidebar_w = preferences
+            .sidebar_width
+            .clamp(layout::SIDEBAR_MIN, layout::SIDEBAR_MAX);
+        self.sidebar_visible = preferences.sidebar_visible;
+    }
+
+    pub fn preferences(&self) -> preferences::LayoutPreferences {
+        preferences::LayoutPreferences {
+            density: self.density,
+            sidebar_position: self.sidebar_position,
+            sidebar_width: self.sidebar_w,
+            sidebar_visible: self.sidebar_visible,
+        }
+    }
+
+    pub fn open_preferences(&mut self) {
+        self.overlay = Some(Overlay::Preferences);
+        self.overlay_scroll = 0;
     }
 
     /// `/theme` — adopt the next built-in palette and return its id.
@@ -278,10 +346,22 @@ impl Workbench {
         theme::is_known(id)
     }
 
+    /// Adopt a language preference: `system` resolves against the locale now.
+    /// Repainting is the caller's business — this changes the text of the next
+    /// frame, not the frame that is up.
+    pub fn set_language(&mut self, preference: LanguagePreference) {
+        self.language_pref = preference;
+        self.lang = preference.resolve();
+    }
+
     /// Render one frame: exactly `h` rows, each exactly `w` display columns.
     pub fn render(&mut self, data: &WorkbenchData, w: u16, h: u16) -> Vec<String> {
         let rows = screen::compose(self, data, w, h);
-        debug_assert_eq!(rows.len(), h as usize, "the frame must be h rows");
+        debug_assert_eq!(
+            rows.len(),
+            h as usize,
+            "the frame must be h rows" // i18n: an invariant's panic, never drawn
+        );
         rows
     }
 
@@ -306,10 +386,11 @@ impl Workbench {
         COMMANDS
             .iter()
             .copied()
+            .map(|(command, key)| (command, t(self.lang, key)))
             .filter(|(command, description)| {
                 needle.is_empty()
                     || command.to_lowercase().contains(&needle)
-                    || description.contains(&needle)
+                    || description.to_lowercase().contains(&needle)
             })
             .collect()
     }
@@ -347,8 +428,30 @@ impl Workbench {
             return self.handle_overlay_key(overlay, key, data);
         }
 
+        // Action ids, not literal chords, drive global shortcuts. A rebind in
+        // `/preferences` therefore changes dispatch, help and hints together.
+        match self.keys.action(key) {
+            Some(preferences::Action::Quit) => return vec![WbAction::Quit],
+            Some(preferences::Action::Palette) => {
+                self.open_palette();
+                return vec![WbAction::Redraw];
+            }
+            Some(preferences::Action::Help) => {
+                self.overlay = Some(Overlay::Help);
+                self.overlay_scroll = 0;
+                return vec![WbAction::Redraw];
+            }
+            Some(preferences::Action::Sessions) => {
+                return self.open_picker(PickerKind::Sessions, data)
+            }
+            Some(preferences::Action::Preferences) => {
+                self.open_preferences();
+                return vec![WbAction::Redraw];
+            }
+            _ => {}
+        }
         match key {
-            "ctrl+c" | "ctrl+q" => vec![WbAction::Quit],
+            "ctrl+q" => vec![WbAction::Quit],
             "ctrl+b" => {
                 // Hidden → shown and focused → shown and unfocused → hidden.
                 // Whether the sidebar *can* show is the terminal's width, not
@@ -372,17 +475,19 @@ impl Workbench {
                     self.sidebar_visible = false;
                     self.sidebar_focus = false;
                 }
-                vec![WbAction::Redraw]
+                if layout::sidebar_fits(self.last_frame.0) {
+                    vec![WbAction::SetPreferences]
+                } else {
+                    vec![WbAction::Redraw]
+                }
             }
-            "?" => {
+            "?" if data.input.text.is_empty() => {
                 self.overlay = Some(Overlay::Help);
                 self.overlay_scroll = 0;
                 vec![WbAction::Redraw]
             }
             "/" if data.input.text.is_empty() => {
-                self.overlay = Some(Overlay::Palette);
-                self.palette_query.clear();
-                self.palette_index = 0;
+                self.open_palette();
                 vec![WbAction::Redraw]
             }
             "tab" => {
@@ -435,6 +540,41 @@ impl Workbench {
                     cursor: view.cursor,
                 }]
             }
+            "home" | "ctrl+a" => vec![WbAction::EditInput {
+                text: data.input.text.clone(),
+                cursor: 0,
+            }],
+            "end" | "ctrl+f" => vec![WbAction::EditInput {
+                text: data.input.text.clone(),
+                cursor: data.input.text.len(),
+            }],
+            "ctrl+left" | "alt+left" => {
+                let before = &data.input.text[..data.input.cursor.min(data.input.text.len())];
+                let cursor = before
+                    .trim_end()
+                    .rfind(char::is_whitespace)
+                    .map(|i| i + 1)
+                    .unwrap_or(0);
+                vec![WbAction::EditInput {
+                    text: data.input.text.clone(),
+                    cursor,
+                }]
+            }
+            "ctrl+right" | "alt+right" => {
+                let after = &data.input.text[data.input.cursor.min(data.input.text.len())..];
+                let offset = after
+                    .find(char::is_whitespace)
+                    .map(|i| {
+                        i + after[i..]
+                            .find(|c: char| !c.is_whitespace())
+                            .unwrap_or(after.len() - i)
+                    })
+                    .unwrap_or(after.len());
+                vec![WbAction::EditInput {
+                    text: data.input.text.clone(),
+                    cursor: data.input.cursor + offset,
+                }]
+            }
             "left" => {
                 let mut view = data.input.clone();
                 view.move_left();
@@ -455,8 +595,8 @@ impl Workbench {
                 text: String::new(),
                 cursor: 0,
             }],
-            "up" => self.scroll(-1, data),
-            "down" => self.scroll(1, data),
+            "up" | "ctrl+up" => self.scroll(-1, data),
+            "down" | "ctrl+down" => self.scroll(1, data),
             "pageUp" => self.scroll(-10, data),
             "pageDown" => self.scroll(10, data),
             // Space is a character in the draft, not the "select" key the
@@ -494,6 +634,12 @@ impl Workbench {
         }
     }
 
+    fn open_palette(&mut self) {
+        self.overlay = Some(Overlay::Palette);
+        self.palette_query.clear();
+        self.palette_index = 0;
+    }
+
     /// Move the conversation (`up` negative = towards the tail) or the focused
     /// panel's list, and ask for an older page when the top is reached.
     ///
@@ -528,6 +674,93 @@ impl Workbench {
         data: &WorkbenchData,
     ) -> Vec<WbAction> {
         match overlay {
+            Overlay::Preferences => match key {
+                "escape" | "q" => {
+                    self.overlay = None;
+                    vec![WbAction::Redraw]
+                }
+                "up" | "k" => {
+                    self.preferences_index = self.preferences_index.saturating_sub(1);
+                    vec![WbAction::Redraw]
+                }
+                "down" | "j" => {
+                    self.preferences_index =
+                        (self.preferences_index + 1).min(preferences::PREFERENCE_ROWS.len() - 1);
+                    vec![WbAction::Redraw]
+                }
+                "left" | "right" | "enter" => {
+                    let row = preferences::PREFERENCE_ROWS[self.preferences_index];
+                    let direction = if key == "left" { -1 } else { 1 };
+                    match row {
+                        preferences::PreferenceRow::Density => self.density = self.density.next(),
+                        preferences::PreferenceRow::Position => {
+                            self.sidebar_position = self.sidebar_position.next()
+                        }
+                        preferences::PreferenceRow::Width => {
+                            self.sidebar_w = (self.sidebar_w as i32 + direction * 2)
+                                .clamp(layout::SIDEBAR_MIN as i32, layout::SIDEBAR_MAX as i32)
+                                as u16;
+                        }
+                        preferences::PreferenceRow::Shortcuts => {
+                            if key != "enter" {
+                                return Vec::new();
+                            }
+                            self.overlay = Some(Overlay::Keybindings);
+                            self.awaiting_keybinding = false;
+                            return vec![WbAction::Redraw];
+                        }
+                        preferences::PreferenceRow::Reset => {
+                            if key != "enter" {
+                                return Vec::new();
+                            }
+                            self.set_preferences(preferences::LayoutPreferences::default());
+                        }
+                    }
+                    vec![WbAction::SetPreferences]
+                }
+                _ => Vec::new(),
+            },
+            Overlay::Keybindings => {
+                if self.awaiting_keybinding {
+                    if key == "escape" {
+                        self.awaiting_keybinding = false;
+                        return vec![WbAction::Redraw];
+                    }
+                    let action = preferences::ACTIONS[self.keybinding_index];
+                    if self.keys.bind(action, key).is_err() {
+                        self.awaiting_keybinding = false;
+                        return vec![WbAction::Notice(
+                            t(self.lang, Key::NoticePreferenceInvalid).into(),
+                        )];
+                    }
+                    self.awaiting_keybinding = false;
+                    return vec![WbAction::SetKeybindings];
+                }
+                match key {
+                    "escape" | "q" => {
+                        self.overlay = Some(Overlay::Preferences);
+                        vec![WbAction::Redraw]
+                    }
+                    "up" | "k" => {
+                        self.keybinding_index = self.keybinding_index.saturating_sub(1);
+                        vec![WbAction::Redraw]
+                    }
+                    "down" | "j" => {
+                        self.keybinding_index =
+                            (self.keybinding_index + 1).min(preferences::ACTIONS.len() - 1);
+                        vec![WbAction::Redraw]
+                    }
+                    "enter" => {
+                        self.awaiting_keybinding = true;
+                        vec![WbAction::Redraw]
+                    }
+                    "r" => {
+                        self.keys.reset();
+                        vec![WbAction::SetKeybindings]
+                    }
+                    _ => Vec::new(),
+                }
+            }
             Overlay::Help => match key {
                 "escape" | "q" | "?" | "enter" => {
                     self.overlay = None;
@@ -662,7 +895,7 @@ impl Workbench {
 
     /// Open one of the pickers on the value in force.
     pub fn open_picker(&mut self, kind: PickerKind, data: &WorkbenchData) -> Vec<WbAction> {
-        self.picker = Picker::new(kind, data, self.palette.id);
+        self.picker = Picker::new(kind, data, self.palette.id, self.lang, self.language_pref);
         self.picker_restore = (kind == PickerKind::Theme).then_some(self.palette.id);
         self.overlay = Some(Overlay::Picker(kind));
         self.overlay_scroll = 0;
@@ -737,6 +970,11 @@ impl Workbench {
             (PickerKind::Sessions, Some(PickerRow::Item { key, .. })) => {
                 vec![WbAction::SwitchSession(key)]
             }
+            // The row's key is the wire spelling, which is what the driver
+            // persists and what `LanguagePreference` reads back.
+            (PickerKind::Language, Some(PickerRow::Item { key, .. })) => {
+                vec![WbAction::SetLanguage(LanguagePreference::from_wire(&key))]
+            }
             _ => vec![WbAction::Redraw],
         }
     }
@@ -749,7 +987,7 @@ impl Workbench {
             return self.handle_picker_mouse(kind, event, data);
         }
         let (w, h) = self.last_frame;
-        let frame = layout::layout(
+        let frame = layout::layout_with_preferences(
             w,
             h,
             if self.sidebar_visible {
@@ -757,6 +995,8 @@ impl Workbench {
             } else {
                 0
             },
+            self.density,
+            self.sidebar_position,
         );
         match event.kind {
             mouse::MouseKind::WheelUp | mouse::MouseKind::WheelDown => {
@@ -791,7 +1031,12 @@ impl Workbench {
                     // column 84, drag to column 90, and the divider ended up at
                     // column 78 with a 42-column rail, i.e. the edge ran away
                     // from the pointer it was supposed to follow.
-                    let delta = event.x as i32 - drag.grab_x as i32;
+                    let delta = (event.x as i32 - drag.grab_x as i32)
+                        * if self.sidebar_position == preferences::SidebarPosition::Left {
+                            -1
+                        } else {
+                            1
+                        };
                     let width = (drag.grab_width as i32 - delta)
                         .clamp(layout::SIDEBAR_MIN as i32, layout::SIDEBAR_MAX as i32)
                         as u16;
@@ -989,30 +1234,33 @@ impl Workbench {
             // are named.
             "workspace" => {
                 let cwd = if data.session.cwd.is_empty() {
-                    "未指定".to_string()
+                    t(self.lang, Key::Unspecified).to_string()
                 } else {
                     data.session.cwd.clone()
                 };
                 VerbOutcome::Done {
-                    notice: Some(format!(
-                        "工作区 {cwd} · 随会话固定 · 换目录：在目标目录启动 future tui，/sessions 换已有会话"
-                    )),
+                    notice: Some(i18n::render(self.lang, Key::NoticeWorkspace, &[&cwd])),
                 }
             }
             // `future tui` has no transcript dump of its own: the two real
             // doors to the whole record are named instead.
             "transcript" => VerbOutcome::Done {
-                notice: Some(
-                    "完整记录：/export 导出整份会话（HTML） · /reply-detail 在聊天里看完整过程"
-                        .into(),
-                ),
+                notice: Some(t(self.lang, Key::NoticeTranscript).into()),
             },
+            // `/lang` never lands here: the driver opens the picker for it
+            // (`PickerKind::from_command`), the same way `/model` and `/theme`
+            // work, so the rows, the filter and the hit regions are one
+            // implementation.
             // The same box `?` opens. It used to be a no-op arm in the app, so
             // the palette's own help entry resolved to nothing visible — a verb
             // that resolves is not the same as one that does something.
             "help" => {
                 self.overlay = Some(Overlay::Help);
                 self.overlay_scroll = 0;
+                VerbOutcome::Done { notice: None }
+            }
+            "preferences" | "settings" => {
+                self.open_preferences();
                 VerbOutcome::Done { notice: None }
             }
             _ => VerbOutcome::Agent,
@@ -1052,19 +1300,21 @@ impl Workbench {
 /// The command palette's entries: `(command, description)`. Kept here rather
 /// than in the app so the palette, the help overlay and the tests share one
 /// list.
-pub const COMMANDS: [(&str, &str); 12] = [
-    ("/new", "新建会话"),
-    ("/sessions", "浏览并切换会话"),
-    ("/model", "选择模型"),
-    ("/reply-detail", "最终输出 / 完整过程"),
-    ("/workspace", "workspace 目录"),
-    ("/theme", "切换主题"),
-    ("/usage", "用量与成本"),
-    ("/skills", "技能列表"),
-    ("/export", "导出会话"),
-    ("/transcript", "完整记录"),
-    ("/help", "帮助与快捷键"),
-    ("/quit", "退出 workbench"),
+pub const COMMANDS: [(&str, Key); 14] = [
+    ("/new", Key::CmdNew),
+    ("/sessions", Key::CmdSessions),
+    ("/model", Key::CmdModel),
+    ("/lang", Key::CmdLanguage),
+    ("/reply-detail", Key::CmdReplyDetail),
+    ("/workspace", Key::CmdWorkspace),
+    ("/theme", Key::CmdTheme),
+    ("/preferences", Key::CmdPreferences),
+    ("/usage", Key::CmdUsage),
+    ("/skills", Key::CmdSkills),
+    ("/export", Key::CmdExport),
+    ("/transcript", Key::CmdTranscript),
+    ("/help", Key::CmdHelp),
+    ("/quit", Key::CmdQuit),
 ];
 
 /// A typed draft that names one of the surface's own verbs.
@@ -1100,19 +1350,15 @@ fn known_command(text: &str) -> Option<TypedCommand> {
 }
 
 /// The help overlay's key table.
-pub const HELP_KEYS: [(&str, &str); 12] = [
-    ("ctrl+n", "新会话（任意位置）"),
-    ("ctrl+b", "侧栏：打开 / 聚焦 / 收起"),
-    ("tab", "在输入框与侧栏之间移动"),
-    ("↑↓", "滚动聊天，或侧栏列表"),
-    ("pageUp / pageDown", "整页滚动聊天"),
-    ("/", "命令面板"),
-    ("?", "这份帮助"),
-    ("ctrl+e", "最终输出 / 完整过程"),
-    ("/reply-detail", "同上，直接设置"),
-    ("鼠标点击", "切页签、点行、点参数"),
-    ("鼠标拖动", "侧栏分隔条调宽"),
-    ("ctrl+c", "退出"),
+pub const HELP_KEYS: [(&str, Key); 8] = [
+    ("tab", Key::HelpKeyFocus),
+    ("↑↓", Key::HelpKeyScroll),
+    ("pageUp / pageDown", Key::HelpKeyPage),
+    ("/", Key::HelpKeyPalette),
+    ("?", Key::HelpKeyHelp),
+    ("click", Key::HelpKeyClick),
+    ("drag", Key::HelpKeyDrag),
+    ("ctrl+c", Key::HelpKeyQuit),
 ];
 
 #[cfg(test)]
@@ -1128,8 +1374,16 @@ mod tests {
             .join("\n")
     }
 
-    fn frame(data: &WorkbenchData, w: u16, h: u16) -> (Workbench, Vec<String>) {
+    /// A surface pinned to Chinese, which is the language every assertion about
+    /// the copy below is written in. The English spellings have their own cases.
+    fn workbench() -> Workbench {
         let mut workbench = Workbench::new();
+        workbench.set_language(LanguagePreference::Zh);
+        workbench
+    }
+
+    fn frame(data: &WorkbenchData, w: u16, h: u16) -> (Workbench, Vec<String>) {
+        let mut workbench = workbench();
         let rows = workbench.render(data, w, h);
         (workbench, rows)
     }
@@ -1163,6 +1417,70 @@ mod tests {
     }
 
     #[test]
+    fn preferences_edit_the_frame_and_configurable_keys_drive_actions() {
+        let data = demo::chat();
+        let mut wb = workbench();
+        assert_eq!(
+            wb.handle(WbEvent::Key("ctrl+p".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(wb.overlay, Some(Overlay::Palette));
+        wb.overlay = None;
+        assert!(wb
+            .handle(WbEvent::Key("ctrl+r".into()), &data)
+            .contains(&WbAction::Redraw));
+        assert_eq!(wb.overlay, Some(Overlay::Picker(PickerKind::Sessions)));
+        wb.overlay = None;
+        wb.keys
+            .bind(preferences::Action::Palette, "ctrl+j")
+            .unwrap();
+        wb.handle(WbEvent::Key("ctrl+j".into()), &data);
+        assert_eq!(wb.overlay, Some(Overlay::Palette));
+        wb.overlay = None;
+        wb.open_preferences();
+        wb.handle(WbEvent::Key("right".into()), &data);
+        assert_eq!(wb.density, preferences::Density::Comfortable);
+        wb.handle(WbEvent::Key("down".into()), &data);
+        wb.handle(WbEvent::Key("right".into()), &data);
+        assert_eq!(wb.sidebar_position, preferences::SidebarPosition::Left);
+        let _ = wb.render(&data, 120, 38);
+        assert!(wb
+            .hits()
+            .regions()
+            .iter()
+            .any(|(rect, id)| id == "divider" && rect.x == wb.sidebar_w));
+        wb.overlay = None;
+        wb.density = preferences::Density::Focused;
+        let _ = wb.render(&data, 120, 38);
+        let rail = wb
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "sidebar.tab.todo")
+            .unwrap()
+            .0;
+        assert_eq!(rail.x, 0);
+    }
+
+    #[test]
+    fn keybinding_editor_rebinds_and_invalid_keys_leave_the_binding_intact() {
+        let data = demo::chat();
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Keybindings);
+        wb.handle(WbEvent::Key("enter".into()), &data);
+        assert!(wb.awaiting_keybinding);
+        assert_eq!(
+            wb.handle(WbEvent::Key("ctrl+j".into()), &data),
+            vec![WbAction::SetKeybindings]
+        );
+        assert_eq!(wb.keys.key(preferences::Action::Palette), "ctrl+j");
+        wb.handle(WbEvent::Key("enter".into()), &data);
+        let actions = wb.handle(WbEvent::Key("x".into()), &data);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(wb.keys.key(preferences::Action::Palette), "ctrl+j");
+    }
+
+    #[test]
     fn a_frame_is_always_the_terminal_size() {
         for data in [demo::launchpad(), demo::chat(), demo::todo()] {
             for (w, h) in [
@@ -1188,10 +1506,12 @@ mod tests {
         let data = demo::chat();
         let (workbench, rows) = frame(&data, 120, 38);
         let text = plain(&rows);
-        // At 120 columns the header spells its name in the block font, so the
-        // literal string is not on screen — the logo and the wordmark are.
-        assert!(text.contains('▄'), "the pixel logo is drawn: {text}");
-        assert!(text.contains("██"), "the wordmark is drawn: {text}");
+        // Focused density gives the conversation the space the old branding
+        // block consumed, while keeping identity and context on the first row.
+        assert!(
+            text.contains("FUTURE OS"),
+            "the text brand is drawn: {text}"
+        );
         assert!(text.contains("future-tui v0.11.0"), "{text}");
         assert!(text.contains("修复 parser 的 off-by-one"), "{text}");
         assert!(text.contains("dev-huichen"), "{text}");
@@ -1239,9 +1559,10 @@ mod tests {
     #[test]
     fn every_palette_entry_has_a_handler() {
         let data = demo::chat();
-        let mut workbench = Workbench::new();
+        let mut workbench = workbench();
         workbench.render(&data, 120, 38);
-        for (command, description) in COMMANDS {
+        for (command, key) in COMMANDS {
+            let description = t(workbench.lang, key);
             let picker = PickerKind::from_command(command).is_some();
             let surface = matches!(
                 workbench.surface_command(command, &data),
@@ -2197,7 +2518,7 @@ mod tests {
 
     #[test]
     fn the_theme_cycles_through_the_whole_catalogue() {
-        let mut workbench = Workbench::new();
+        let mut workbench = workbench();
         assert_eq!(workbench.palette.id, FUTURE_DARK.id);
         // Every built-in in turn, wrapping back to the default.
         let mut seen = vec![workbench.palette.id];
@@ -2244,5 +2565,106 @@ mod tests {
         assert!(workbench
             .handle(WbEvent::Key("ctrl+c".into()), &data)
             .is_empty());
+    }
+
+    // ─── language ──────────────────────────────────────────────────────────
+
+    /// The whole surface is the promise: the same data, the same size, one
+    /// language and then the other. What must not change is under the chrome —
+    /// the conversation, the ids, the numbers.
+    #[test]
+    fn the_chrome_switches_language_and_the_content_does_not() {
+        let data = demo::chat();
+        let mut workbench = Workbench::new();
+        workbench.set_language(LanguagePreference::Zh);
+        let zh = plain(&workbench.render(&data, 120, 38));
+        assert!(zh.contains("待办"), "{zh}");
+        assert!(zh.contains("新会话"), "{zh}");
+
+        workbench.set_language(LanguagePreference::En);
+        let en = plain(&workbench.render(&data, 120, 38));
+        assert!(en.contains("To-do"), "{en}");
+        assert!(en.contains("New Chat"), "{en}");
+        assert!(!en.contains("待办"), "no Chinese tab left: {en}");
+
+        // The demo's own session title is content, not chrome: it stays.
+        assert!(zh.contains("修复 parser 的 off-by-one"));
+        assert!(en.contains("修复 parser 的 off-by-one"));
+    }
+
+    /// `LanguagePreference::System` is not a third bundle: it resolves to one of
+    /// the two, so the frame shows a language rather than a placeholder.
+    #[test]
+    fn the_system_preference_resolves_to_a_bundle() {
+        let mut workbench = Workbench::new();
+        workbench.set_language(LanguagePreference::System);
+        assert_eq!(workbench.lang, LanguagePreference::System.resolve());
+        assert_eq!(workbench.lang.code(), workbench.lang.code());
+        // …and an explicit choice overrides whatever the locale said.
+        workbench.set_language(LanguagePreference::En);
+        assert_eq!(workbench.lang, Language::En);
+    }
+
+    /// `/lang` opens a picker whose rows are the wire values, and picking one
+    /// hands the driver a `SetLanguage` to resolve and persist.
+    #[test]
+    fn the_language_picker_applies_a_preference() {
+        let data = demo::chat();
+        let mut workbench = Workbench::new();
+        // Pinned, so the box's own words are the ones asserted below rather than
+        // whatever this machine's locale resolves `system` to.
+        workbench.set_language(LanguagePreference::Zh);
+
+        // The palette advertises it, and a typed `/lang` opens the same box the
+        // palette does.
+        assert!(COMMANDS.iter().any(|(command, _)| *command == "/lang"));
+        let actions = workbench.handle(WbEvent::Key("/".into()), &data);
+        assert_eq!(actions, vec![WbAction::Redraw]);
+        for ch in "lang".chars() {
+            workbench.handle(WbEvent::Key(ch.to_string()), &data);
+        }
+        assert!(workbench
+            .palette_selection()
+            .is_some_and(|(command, _)| command == "/lang"));
+
+        workbench.open_picker(PickerKind::Language, &data);
+        let text = plain(&workbench.render(&data, 120, 38));
+        assert!(text.contains("语言"), "the title is in the box: {text}");
+        assert!(text.contains("跟随系统"), "{text}");
+        assert!(text.contains("中文") && text.contains("English"), "{text}");
+
+        // It opens on the row in force (中文, the second row); step to English
+        // and apply it.
+        assert_eq!(workbench.picker.index, 1);
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::SetLanguage(LanguagePreference::En)]
+        );
+        assert_eq!(workbench.overlay, None, "applying closes the box");
+    }
+
+    /// The picker marks the preference in force, not the bundle it resolved to:
+    /// a reader on `system` must not be told they chose Chinese.
+    #[test]
+    fn the_language_picker_ticks_the_preference_not_the_bundle() {
+        let data = demo::chat();
+        let mut workbench = Workbench::new();
+        workbench.set_language(LanguagePreference::Zh);
+        workbench.open_picker(PickerKind::Language, &data);
+        let view = workbench.picker.view(&data, workbench.committed_theme());
+        let current: Vec<&str> = view
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                PickerRow::Item {
+                    key, current: true, ..
+                } => Some(key.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(current, vec!["zh"]);
+        // …and it opens on that row rather than on the first one.
+        assert_eq!(workbench.picker.index, 1);
     }
 }

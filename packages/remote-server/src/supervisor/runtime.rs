@@ -70,6 +70,16 @@ pub struct RuntimeHooks {
     /// retry is otherwise only visible as elapsed time, which a broken broker
     /// spends in the same place whether or not the loop went round again.
     pub add_attempts: std::sync::atomic::AtomicU8,
+    /// Let the fixture run the production recovery workers.
+    ///
+    /// The fixture keeps `automatic_recovery` off so a test's own `start_once`
+    /// never races a background rebuild it did not ask for. A test that is
+    /// *about* that path — "was this generation replaced after its credential
+    /// was refused" — has nowhere else to observe it, so it raises this and the
+    /// watch, its attempt budget and the rebuild all run as they do in the app,
+    /// with the fixture's timings. Serialized by `HomeGuard` like every other
+    /// process-global switch here, and lowered again by the test that raised it.
+    pub recovery_enabled: std::sync::atomic::AtomicBool,
 }
 impl Supervisor {
     pub fn empty(&self) -> crate::types::RemoteStatus {

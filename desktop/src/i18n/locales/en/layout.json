@@ -1,4 +1,7 @@
 {
+  "language": {
+    "system": "Follow system"
+  },
   "model": {
     "updateFailed": "Couldn't update the model: {{message}}"
   },

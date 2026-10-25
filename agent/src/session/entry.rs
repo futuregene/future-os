@@ -209,26 +209,6 @@ impl SessionEntry {
         }
     }
 
-    /// The `run_started` marker for a run the Agent itself continued.
-    ///
-    /// A continuation run has no user entry to pair this with, so
-    /// `auto_resume_of` is what tells a client — and the history rewrite — that
-    /// this run exists because another one was interrupted, not because someone
-    /// typed something. It names the interrupted run, not the conversation, so a
-    /// chain of restarts stays readable.
-    pub fn run_started_continuation(
-        run_id: &str,
-        epoch: u64,
-        run_sequence: Option<u64>,
-        auto_resume_of: &str,
-    ) -> Self {
-        let mut entry = Self::run_started_with_sequence(run_id, epoch, run_sequence);
-        if let Some(content) = entry.content.as_mut() {
-            content["auto_resume_of"] = serde_json::json!(auto_resume_of);
-        }
-        entry
-    }
-
     /// Marker written at a run's commit boundary. `content` carries
     /// `{ run_id, state, run_tokens, run_duration_ms }` plus `error` when
     /// `state` is `error`, plus `truncation` when `state` is `incomplete`.

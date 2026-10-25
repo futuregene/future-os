@@ -817,8 +817,6 @@ export const appSettings = {
   communityEdition: false,
   // Mirrors the shipped default (PRD v1.6 §3: recommendation is on).
   skillRecommend: true,
-  // Mirrors the shipped default: an interrupted conversation continues on launch.
-  autoResumeInterrupted: true,
 };
 
 export const buildInfo = {

@@ -34,17 +34,28 @@ struct ChunkGate {
     state: Mutex<ChunkGateState>,
     changed: Condvar,
     entered: tokio::sync::Notify,
+    active: AtomicU64,
+    maximum_active: AtomicU64,
 }
 struct ChunkRead<'a>(&'a ChunkGate);
 impl Drop for ChunkRead<'_> {
     fn drop(&mut self) {
         self.0.state.lock().unwrap().finished += 1;
+        self.0.active.fetch_sub(1, Ordering::SeqCst);
     }
 }
 impl ChunkGate {
-    fn enter(&self) -> Result<ChunkRead<'_>, Error> {
+    fn enter(&self, delay: Duration) -> Result<ChunkRead<'_>, Error> {
         let mut state = self.state.lock().unwrap();
         state.reads += 1;
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.maximum_active.fetch_max(active, Ordering::SeqCst);
+        if !delay.is_zero() {
+            self.entered.notify_one();
+            let (next, _) =
+                tokio::task::block_in_place(|| self.changed.wait_timeout(state, delay).unwrap());
+            state = next;
+        }
         if state.armed {
             state.waiting = true;
             // Signal the actual held read, rather than requiring the test's
@@ -80,6 +91,8 @@ pub struct MemoryServerHost {
     sequence: AtomicU64,
     file_bytes: Vec<u8>,
     catalog_label: String,
+    chunk_bytes: usize,
+    chunk_delay: Duration,
     chunk_gate: ChunkGate,
 }
 impl MemoryServerHost {
@@ -95,8 +108,18 @@ impl MemoryServerHost {
             sequence: AtomicU64::new(1),
             file_bytes,
             catalog_label,
+            chunk_bytes: CHUNK_BYTES,
+            chunk_delay: Duration::ZERO,
             chunk_gate: ChunkGate::default(),
         }
+    }
+    pub fn with_chunk_bytes(mut self, chunk_bytes: usize) -> Self {
+        self.chunk_bytes = chunk_bytes;
+        self
+    }
+    pub fn with_chunk_delay(mut self, delay: Duration) -> Self {
+        self.chunk_delay = delay;
+        self
     }
     pub fn download_ids(&self) -> Vec<String> {
         self.downloads.lock().unwrap().keys().cloned().collect()
@@ -104,7 +127,7 @@ impl MemoryServerHost {
     pub fn metrics(&self) -> Value {
         let gate = self.chunk_gate.state.lock().unwrap();
         json!({ "executions": self.counts.lock().unwrap().clone(), "uploads": self.uploads.lock().unwrap().len(), "downloads": self.downloads.lock().unwrap().len(),
-            "chunkWaiting": gate.waiting, "chunkReads": gate.reads, "chunkFinished": gate.finished,
+            "chunkWaiting": gate.waiting, "chunkReads": gate.reads, "chunkFinished": gate.finished, "chunkMaxActive": self.chunk_gate.maximum_active.load(Ordering::SeqCst),
             "identityBound": self.creds.lock().unwrap().as_ref().and_then(|creds| creds.secure.as_ref()).is_some_and(|secure| secure.peer_public_key.is_some() && secure.secret.is_none()) })
     }
     pub fn hold_next_chunk(&self) {
@@ -143,7 +166,7 @@ impl MemoryServerHost {
                         parts: BTreeMap::new(),
                     },
                 );
-                Ok(json!({"uploadId": id, "chunkBytes": CHUNK_BYTES}))
+                Ok(json!({"uploadId": id, "chunkBytes": self.chunk_bytes}))
             }
             "upload_complete" => {
                 let uploads = self.uploads.lock().unwrap();
@@ -173,7 +196,7 @@ impl MemoryServerHost {
                     .insert(id.clone(), self.file_bytes.clone());
                 Ok(
                     json!({"transferId": id, "name": "fixture.bin", "mimeType": "application/octet-stream", "size": self.file_bytes.len(),
-                    "contentHash": format!("{:x}", Sha256::digest(&self.file_bytes)), "previewKind": "file", "variant": command.mode, "chunkBytes": CHUNK_BYTES}),
+                    "contentHash": format!("{:x}", Sha256::digest(&self.file_bytes)), "previewKind": "file", "variant": command.mode, "chunkBytes": self.chunk_bytes}),
                 )
             }
             "download_cancel" => {
@@ -280,6 +303,9 @@ impl StateHost for MemoryServerHost {
 }
 impl FileHost for MemoryServerHost {
     fn upload_chunk(&self, id: &str, index: u64, bytes: &[u8]) -> Result<Value, String> {
+        if !self.chunk_delay.is_zero() {
+            std::thread::sleep(self.chunk_delay);
+        }
         let mut uploads = self.uploads.lock().unwrap();
         let upload = uploads
             .get_mut(id)
@@ -293,17 +319,20 @@ impl FileHost for MemoryServerHost {
         Ok(json!({}))
     }
     fn download_chunk(&self, id: &str, index: u64) -> Result<Vec<u8>, Error> {
-        let _read = self.chunk_gate.enter()?;
+        if !self.chunk_delay.is_zero() {
+            std::thread::sleep(self.chunk_delay);
+        }
+        let _read = self.chunk_gate.enter(self.chunk_delay)?;
         let downloads = self.downloads.lock().unwrap();
         let bytes = downloads
             .get(id)
             .ok_or_else(|| Error::Message("download expired or does not exist".into()))?;
         let start = usize::try_from(index)
             .ok()
-            .and_then(|index| index.checked_mul(CHUNK_BYTES))
+            .and_then(|index| index.checked_mul(self.chunk_bytes))
             .filter(|start| *start < bytes.len())
             .ok_or_else(|| Error::Message("outside the file".into()))?;
-        Ok(bytes[start..bytes.len().min(start + CHUNK_BYTES)].to_vec())
+        Ok(bytes[start..bytes.len().min(start + self.chunk_bytes)].to_vec())
     }
     fn prune_transfers(&self) {}
     fn clear_transfers(&self) {
@@ -347,7 +376,9 @@ mod tests {
         gate.state.lock().unwrap().armed = true;
         let reader = gate.clone();
         let read = tokio::spawn(async move {
-            let _held = reader.enter().expect("gate released before its deadline");
+            let _held = reader
+                .enter(Duration::ZERO)
+                .expect("gate released before its deadline");
         });
         let observed = tokio::time::timeout(Duration::from_secs(5), gate.entered.notified()).await;
         let held = {

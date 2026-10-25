@@ -1792,6 +1792,7 @@ pub(in crate::remote) async fn fake_state(
         client,
         nats_health: Arc::new(NatsHealth::default()),
         nats_url: nats.url().to_string(),
+        credential_expires_at: 0,
         pair_id: pair_id.to_string(),
         desktop_id: format!("desktop_{}", unique("rt")),
         desktop_public_key: "UPUBKEY".to_string(),

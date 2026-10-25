@@ -109,6 +109,24 @@ pub struct Layout {
 /// Lay out a `w` × `h` terminal. Everything is clamped: a 1×1 terminal gets
 /// empty rectangles rather than an underflow.
 pub fn layout(w: u16, h: u16, sidebar_w: u16) -> Layout {
+    layout_with_preferences(
+        w,
+        h,
+        sidebar_w,
+        super::preferences::Density::Focused,
+        super::preferences::SidebarPosition::Right,
+    )
+}
+
+/// Lay out with the reader's density and rail position. The conversation always
+/// gets the reclaimed space: density changes the chrome, never the text width.
+pub fn layout_with_preferences(
+    w: u16,
+    h: u16,
+    sidebar_w: u16,
+    density: super::preferences::Density,
+    position: super::preferences::SidebarPosition,
+) -> Layout {
     let compact = h < SMALL_HEIGHT;
     // `0` is not a width to clamp — it is "no sidebar": `ctrl+b` closes the
     // rail by asking for none, and clamping that up to `SIDEBAR_MIN` is how a
@@ -127,10 +145,21 @@ pub fn layout(w: u16, h: u16, sidebar_w: u16) -> Layout {
     };
 
     let chat_w = w.saturating_sub(sidebar_w + if sidebar_w > 0 { 1 } else { 0 });
+    let left = position == super::preferences::SidebarPosition::Left;
+    let chat_x = if left && sidebar_w > 0 {
+        sidebar_w + 1
+    } else {
+        0
+    };
     let (divider, sidebar, chat_w) = if sidebar_w > 0 {
         (
-            Some(Rect::new(chat_w, 0, 1, h)),
-            Some(Rect::new(chat_w + 1, 0, sidebar_w, h)),
+            Some(Rect::new(if left { sidebar_w } else { chat_w }, 0, 1, h)),
+            Some(Rect::new(
+                if left { 0 } else { chat_w + 1 },
+                0,
+                sidebar_w,
+                h,
+            )),
             chat_w,
         )
     } else {
@@ -141,13 +170,13 @@ pub fn layout(w: u16, h: u16, sidebar_w: u16) -> Layout {
         let header = Rect::new(0, 0, w, 1);
         let input_y = h.saturating_sub(4);
         let body_h = input_y.saturating_sub(1);
-        let body = Rect::new(0, 1, chat_w, body_h);
-        let input = Rect::new(0, input_y, chat_w, 2.min(h.saturating_sub(input_y)));
+        let body = Rect::new(chat_x, 1, chat_w, body_h);
+        let input = Rect::new(chat_x, input_y, chat_w, 2.min(h.saturating_sub(input_y)));
         return Layout {
             compact,
             header,
             body,
-            divider: divider.map(|_| Rect::new(chat_w, 1, 1, body_h)),
+            divider: divider.map(|rect| Rect::new(rect.x, 1, 1, body_h)),
             sidebar: sidebar.map(|rect| Rect::new(rect.x, 1, rect.w, body_h)),
             input,
             prompt_row: input_y.saturating_add(1),
@@ -166,17 +195,22 @@ pub fn layout(w: u16, h: u16, sidebar_w: u16) -> Layout {
     // of every letter — the bottom stroke of F, U, E and S was cut off, which
     // reads as clipped art rather than as a frame. The launchpad hero already
     // drew all five, so the two screens disagreed about the same wordmark.
-    let header = Rect::new(0, 0, w, 6);
-    let body_y = 7u16;
-    let body_h = h.saturating_sub(14);
+    let header_h = if density == super::preferences::Density::Comfortable {
+        6
+    } else {
+        2
+    };
+    let header = Rect::new(0, 0, w, header_h);
+    let body_y = header_h + 1;
     let input_y = h.saturating_sub(7);
+    let body_h = input_y.saturating_sub(body_y);
     Layout {
         compact,
         header,
-        body: Rect::new(0, body_y, chat_w, body_h),
-        divider: divider.map(|_| Rect::new(chat_w, body_y, 1, body_h)),
+        body: Rect::new(chat_x, body_y, chat_w, body_h),
+        divider: divider.map(|rect| Rect::new(rect.x, body_y, 1, body_h)),
         sidebar: sidebar.map(|rect| Rect::new(rect.x, body_y, rect.w, body_h)),
-        input: Rect::new(0, input_y, chat_w, 4.min(h.saturating_sub(input_y))),
+        input: Rect::new(chat_x, input_y, chat_w, 4.min(h.saturating_sub(input_y))),
         prompt_row: input_y.saturating_add(1),
         activity: Some(Rect::new(0, h.saturating_sub(3), w, 1)),
         status: Rect::new(0, h.saturating_sub(2), w, 1),
@@ -247,7 +281,7 @@ mod tests {
         assert!(!tall.compact);
         assert_eq!(tall.sidebar.map(|rect| rect.w), Some(SIDEBAR_DEFAULT));
         assert!(tall.activity.is_some());
-        assert_eq!(tall.header.h, 6);
+        assert_eq!(tall.header.h, 2);
         assert_eq!(tall.input.h, 4);
 
         // Narrow: the sidebar goes, the chat takes the whole width.
@@ -335,6 +369,33 @@ mod tests {
         assert_eq!(layout(88, 38, 48).sidebar_w, 48);
         // A width outside the range is clamped into it, not honoured verbatim.
         assert_eq!(layout(88, 38, 70).sidebar_w, SIDEBAR_MAX);
+    }
+
+    #[test]
+    fn preferences_reclaim_space_and_move_the_whole_rail() {
+        let focused = layout(120, 38, SIDEBAR_DEFAULT);
+        let comfortable = layout_with_preferences(
+            120,
+            38,
+            SIDEBAR_DEFAULT,
+            super::super::preferences::Density::Comfortable,
+            super::super::preferences::SidebarPosition::Right,
+        );
+        assert_eq!(focused.header.h, 2);
+        assert_eq!(focused.body.h, comfortable.body.h + 4);
+        assert_eq!(focused.body.w, comfortable.body.w);
+        let left = layout_with_preferences(
+            120,
+            38,
+            SIDEBAR_DEFAULT,
+            super::super::preferences::Density::Focused,
+            super::super::preferences::SidebarPosition::Left,
+        );
+        assert_eq!(left.sidebar.unwrap().x, 0);
+        assert_eq!(left.divider.unwrap().x, SIDEBAR_DEFAULT);
+        assert_eq!(left.body.x, SIDEBAR_DEFAULT + 1);
+        assert_eq!(left.input.x, left.body.x);
+        assert_eq!(left.body.right(), 120);
     }
 
     #[test]

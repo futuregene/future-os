@@ -77,6 +77,7 @@ test harness conventions.
 | Doc | What it covers |
 |---|---|
 | [Workbench TUI spec](tui/workbench-spec.md) ([中文](tui/workbench-spec.zh-CN.md)) | The frozen contract behind the [terminal UI](guide/tui.md): layout constants, mouse and keyboard contract, type names and acceptance commands. The surface it describes is built; the agent adapter and P1 items are not |
+| [Interface text that never reached the table](tui/i18n-homeless-strings.md) ([中文](tui/i18n-homeless-strings.zh-CN.md)) | The guard that fails a build when the workbench draws chrome it did not take from `workbench/i18n.rs`: what it reads, what it cannot see, the English-only text it froze on the way in, and the port list for the branches that left before the table |
 
 ## Wiki (user-facing app guide)
 

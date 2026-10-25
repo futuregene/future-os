@@ -1449,11 +1449,14 @@ TUI_SCENARIO_KEYS: dict[str, str] = {
     # the frame is the chat scrolled up, with the `↑ 更早` badge.
     "scrolled": "\x1b[<0;20;20M\x1b[<0;20;20m" + "\x1b[<64;20;20M" * 3,
 }
-TUI_SCENARIO_TABS: dict[str, str] = {
-    "todo": "待办",
-    "usage": "用量",
-    "skills": "技能",
-    "sessions": "会话",
+# Each entry lists the label in every language the surface ships: the capture
+# pins one language (`--lang`), and a tab the frame spells differently is a
+# click that lands on nothing.
+TUI_SCENARIO_TABS: dict[str, tuple[str, ...]] = {
+    "todo": ("待办", "To-do"),
+    "usage": ("用量", "Usage"),
+    "skills": ("技能", "Skills"),
+    "sessions": ("会话", "Sessions"),
 }
 # The divider drag, in columns to the right. A drag is the one pointer gesture a
 # keystroke string cannot express: it needs the seam's own column, so the step
@@ -1487,17 +1490,25 @@ def _find_word_column(cells: list, word: str) -> tuple[int, int] | None:
     return None
 
 
-def _tui_click_tab(word: str, cols: int, rows: int, settle: float):
-    """A step that clicks the sidebar tab labelled `word`."""
+def _tui_click_tab(words: tuple[str, ...], cols: int, rows: int, settle: float):
+    """A step that clicks the sidebar tab labelled with any of `words`.
+
+    The surface ships more than one language, so the label is looked up in each
+    in turn rather than assumed: the frame on screen says which one is in use.
+    """
 
     def action(text: str) -> bytes | None:
         import tui_terminal
 
         cells, _ = tui_terminal.screen_from_stream(text, cols, rows)
-        found = _find_word_column(cells, word)
+        found = None
+        for word in words:
+            found = _find_word_column(cells, word)
+            if found is not None:
+                break
         if found is None:
             raise SystemExit(
-                f"error: the frame has no {word!r} tab to click at {cols}x{rows}. On a "
+                f"error: the frame has no {words!r} tab to click at {cols}x{rows}. On a "
                 "terminal too narrow for the sidebar the tabs are unreachable; try a "
                 "wider --cols."
             )
@@ -1606,6 +1617,14 @@ def tui(args: argparse.Namespace) -> int:
             )
             addr = _wait_for_addr(agent, 20)
             env = {"FUTURE_HOME": str(home), "HOME": str(home)}
+            # Pin the interface language: it otherwise follows the machine's
+            # locale, and a capture whose chrome depends on who ran it is not a
+            # baseline. Same file the TUI itself writes, so the flag goes
+            # through the real settings path rather than a special case.
+            (home / "tui").mkdir(parents=True, exist_ok=True)
+            (home / "tui" / "settings.json").write_text(
+                json.dumps({"language": args.lang}), encoding="utf-8"
+            )
         argv = [str(tui_bin), "tui", "--offline", "--grpc-addr", addr]
         if args.session:
             argv += ["--session", args.session]
@@ -1906,6 +1925,12 @@ def main() -> int:
                             help="what the surface is showing (default chat)")
     tui_parser.add_argument("--bin", default=None, help="path to the future binary")
     tui_parser.add_argument("--agent-bin", default=None, help="path to the demo_agent example binary")
+    tui_parser.add_argument(
+        "--lang",
+        default="zh",
+        choices=("system", "zh", "en"),
+        help="interface language the capture pins (default zh, the documented screenshots)",
+    )
     tui_parser.add_argument("--release", action="store_true", help="look in target/release instead of target/debug")
     tui_parser.add_argument("--keep-stream", default=None,
                             help="also write the raw pty bytes here (for debugging a blank capture)")

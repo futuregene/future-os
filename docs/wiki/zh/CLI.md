@@ -247,7 +247,8 @@ future workspace add ~/projects/demo --name Demo
 后者由 `future config` 管理。无需桌面应用在运行；运行中的应用下次读取设置时生效。
 `future desktop settings --help` 列出全部可设键，包括 `hiddenModels`、
 `autoUpgradeSkills`、`autoConnectRemote`、`bellOnComplete`、`titleLanguage`、
-`skillRecommend` 与 `autoResumeInterrupted`。这里添加的 workspace 会在应用发布目录后
+`skillRecommend` 与 `autoResumeInterrupted`（最后一项现在已无作用：Agent 不会自己续跑被中断的运行，
+下一轮由某个地方发出的 prompt 开始）。这里添加的 workspace 会在应用发布目录后
 出现在左栏（以及已配对手机上）；目录必须已存在。
 
 ### `remote` —— 已配对设备与远程桌面

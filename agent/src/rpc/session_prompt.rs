@@ -9,21 +9,6 @@ use super::prompt_helpers::{
     run_event_to_sse,
 };
 use super::ServerSession;
-
-/// A run that continues one this process interrupted.
-///
-/// Only [`super::resume`] builds one. The distinction that matters is what it
-/// does *not* have: a user message. The instruction below reaches the model as
-/// request-only context on the first turn and never enters the durable
-/// transcript, so history reads as one interrupted turn carried on rather than
-/// as a prompt somebody typed.
-pub(super) struct Continuation {
-    /// The interrupted run being continued; recorded as `auto_resume_of`.
-    pub interrupted_run_id: String,
-    /// Why the previous run stopped, for the model to read once.
-    pub instruction: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ScheduledPromptPayload {
     message: String,
@@ -515,7 +500,6 @@ impl ServerSession {
                 Some(&request),
                 Some(snapshot),
                 &coalesced_run_ids,
-                None,
             )
         })();
         let lease = match activation {
@@ -581,68 +565,17 @@ impl ServerSession {
             // A directly-submitted prompt is never a coalescing fold target:
             // folding only happens at the run boundary for queued requests.
             &[],
-            None,
         )
     }
 
-    /// Continue the run this session's journal leaves unterminated.
+    /// A run starts only because something submitted a prompt.
     ///
-    /// Called only by the Agent's own restart recovery, under the session lock
-    /// that also decided the run was interrupted — so "which run" and "start the
-    /// continuation" cannot be split by a second caller.
-    ///
-    /// **The journal is the permission.** Relaxing the loop's assistant-tail
-    /// guard is safe only because the relaxation is reachable from here, and
-    /// this refuses unless the session's own journal still shows that run
-    /// unterminated. The proof is re-read here rather than trusted from the
-    /// caller: a check placed anywhere but the accepting call would guard
-    /// nothing when the caller changes.
-    ///
-    /// No user message is created. The run is accepted, journalled and broadcast
-    /// like any other, but the model receives the continuation instruction as
-    /// request-only context instead of as something the user submitted.
-    pub(super) fn continue_interrupted_run(
-        &mut self,
-        interrupted_run_id: &str,
-        instruction: &str,
-    ) -> Result<crate::runtime::RunLease> {
-        if let Some(error) = self.broadcaster.persistence_error() {
-            return Err(crate::runtime::RunQueueError::PersistenceUnavailable(error).into());
-        }
-        let unterminated = self
-            .session_manager
-            .resumable_run_id(&self.session_id)
-            .map_err(|error| anyhow::anyhow!("journal: {error}"))?;
-        anyhow::ensure!(
-            unterminated.as_deref() == Some(interrupted_run_id),
-            "no unterminated run {interrupted_run_id} in this session's journal \
-             (journal says {unterminated:?}); refusing to continue it"
-        );
-        // The continuation continues *that history*, read from disk rather than
-        // from this handle's memory: a run that started on an empty message list
-        // would be a different conversation, and the whole point is that the
-        // model sees the turn it was cut off in.
-        self.load_history()?;
-        let continuation = Continuation {
-            interrupted_run_id: interrupted_run_id.to_string(),
-            instruction: instruction.to_string(),
-        };
-        self.prompt_internal(
-            // Unused on this path: no user message is built from it. Passing an
-            // empty prompt rather than the instruction keeps them separate, so
-            // the instruction cannot leak into the transcript by accident.
-            PromptText::new("", ""),
-            &[],
-            &[],
-            None,
-            None,
-            None,
-            None,
-            &[],
-            Some(&continuation),
-        )
-    }
-
+    /// There is deliberately no path that continues a run by itself: an
+    /// interrupted run is left in the journal as an open marker, which is what
+    /// a client renders as "this conversation was cut off", and the next run
+    /// starts from a prompt the user (or a supervising conversation) actually
+    /// sent. That is also what keeps `before_tool_call` from having to decide
+    /// whether an unknown side effect may be replayed — nothing replays it.
     #[allow(clippy::too_many_arguments)]
     fn prompt_internal(
         &mut self,
@@ -654,7 +587,6 @@ impl ServerSession {
         scheduled: Option<&crate::runtime::ScheduledRunRequest>,
         accepted_snapshot: Option<AcceptedRunSnapshot>,
         coalesced_run_ids: &[String],
-        continuation: Option<&Continuation>,
     ) -> Result<crate::runtime::RunLease> {
         let accepted_settings = accepted_snapshot
             .as_ref()
@@ -695,17 +627,6 @@ impl ServerSession {
             cwd_path,
             crate::utils::is_future_managed_dir(cwd_path),
         )?;
-        // Applies to local, remote and manual continuations alike. A new user
-        // message must not erase an unresolved tool effect from the transcript.
-        let recovery_safety = super::recovery_safety::RecoverySafety::load(
-            &self.session_manager,
-            &self.session_id,
-            &run_cwd,
-            continuation.is_some(),
-        )?;
-        if recovery_safety.history_changed {
-            self.load_history()?;
-        }
         let (system_prompt, verbose, mut run_loop) = if let Some(snapshot) = accepted_snapshot {
             let mut run_loop = snapshot.run_loop;
             self.swap_token_counters_into_loop(&mut run_loop);
@@ -778,21 +699,14 @@ impl ServerSession {
             .request_model_accepts_images(&run_model);
         // Images are read + (down)encoded to base64 here, on the agent, from the
         // local path the GUI sent — the base64 never crosses the wire.
-        //
-        // A continuation has no user message at all: the run continues one this
-        // process died in the middle of, so nothing was submitted. The
-        // instruction that says so is request-only (see `StreamContext::resume`)
-        // and deliberately never reaches this list.
-        let mut user_message = continuation.is_none().then(|| {
-            build_user_message_with_model_context(
-                prompt.message,
-                prompt.model_context,
-                images,
-                attachments,
-                model_supports_images,
-                &crate::utils::image_data_url_for_model,
-            )
-        });
+        let mut user_message = Some(build_user_message_with_model_context(
+            prompt.message,
+            prompt.model_context,
+            images,
+            attachments,
+            model_supports_images,
+            &crate::utils::image_data_url_for_model,
+        ));
 
         // NOTE: No content-based dedup here. Idempotency for transport-level
         // retries is enforced atomically by SessionRuntime::begin.
@@ -916,15 +830,7 @@ impl ServerSession {
         // because get_session_entries reads from disk.
         // Ephemeral sessions (--no-session) skip persistence entirely.
         if !self.ephemeral {
-            let persisted = match continuation {
-                // A continuation still records that this run began — that marker
-                // is what bounds the run in the journal and, carrying
-                // `auto_resume_of`, is the only trace that it was automatic.
-                Some(continuation) => {
-                    self.persist_run_continuation(&run_lease, &continuation.interrupted_run_id)
-                }
-                None => self.persist_user_message(&run_lease),
-            };
+            let persisted = self.persist_user_message(&run_lease);
             if let Err(error) = persisted {
                 if user_entry_id.is_some() {
                     self.messages.write().pop();
@@ -957,10 +863,6 @@ impl ServerSession {
         // display_text (first text block only): text() also joins the
         // agent-injected attachment manifest, which observers would render as
         // a bogus extra bubble.
-        //
-        // A continuation broadcasts nothing here on purpose: there is no user
-        // message to announce, and inventing one is exactly what this path
-        // exists to avoid.
         if let Some(user_entry_id) = user_entry_id.as_deref() {
             self.broadcaster.broadcast(crate::rpc::SseEvent::new(
                 "user_message",
@@ -1038,21 +940,11 @@ impl ServerSession {
         {
             run_loop.tool_review_annotations =
                 Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
-            // A continuation has no user message: the whole history is evidence,
-            // and the run id stands in where a review would otherwise be
-            // attributed to the request that was submitted.
-            let (review_request, review_history, review_source) = match continuation {
-                Some(continuation) => (
-                    continuation.instruction.clone(),
-                    &initial_messages[..],
-                    run_lease.run_id.as_str(),
-                ),
-                None => (
-                    prompt.message.to_string(),
-                    &initial_messages[..initial_messages.len() - 1],
-                    user_entry_id.as_deref().unwrap_or_default(),
-                ),
-            };
+            let (review_request, review_history, review_source) = (
+                prompt.message.to_string(),
+                &initial_messages[..initial_messages.len() - 1],
+                user_entry_id.as_deref().unwrap_or_default(),
+            );
             approval_gate = approval_gate.for_run(
                 review_request,
                 review_history,
@@ -1111,10 +1003,6 @@ impl ServerSession {
             on_tool_result: Some(save_closure.clone()),
             save_callback: Some(save_closure),
             on_checkpoint: (!is_ephemeral).then_some(checkpoint_callback),
-            resume: continuation.map(|continuation| crate::agent::ResumeContext {
-                interrupted_run_id: continuation.interrupted_run_id.clone(),
-                instruction: continuation.instruction.clone(),
-            }),
             compaction_journal: (!is_ephemeral).then(|| crate::compaction::CompactionJournal::new(
                 self.session_manager.clone(),self.persistence.clone(),self.session_id.clone(),
                 serde_json::json!({"model":run_model,"thinking":run_thinking_level,"cwd":session_cwd,
@@ -1132,9 +1020,6 @@ impl ServerSession {
         let approval_sandbox = sandbox.clone();
         let permission_level = run_permission_level.clone();
         run_loop.config.before_tool_call = Some(Arc::new(move |tool_name, tool_id, arguments| {
-            if let Some(result) = recovery_safety.before_tool(tool_name, arguments) {
-                return Some(result);
-            }
             match permission_level.as_str() {
                 "all" => {
                     // Legacy tool access does not grant extra OS sandbox
@@ -1813,38 +1698,6 @@ impl ServerSession {
             self.no_context_files,
         );
         prompt
-    }
-
-    /// Persist a continuation run's `run_started` marker, with no user entry.
-    ///
-    /// The journal needs the marker for the same reason a normal run does — it
-    /// is what bounds the run, and an unterminated one is what the next restart
-    /// looks for. What it does not need is a user message, because nobody
-    /// submitted one. `auto_resume_of` on the marker is the record that this run
-    /// was automatic.
-    fn persist_run_continuation(
-        &self,
-        run_lease: &crate::runtime::RunLease,
-        interrupted_run_id: &str,
-    ) -> Result<()> {
-        let run_started = crate::session::SessionEntry::run_started_continuation(
-            &run_lease.run_id,
-            run_lease.epoch,
-            run_lease.run_sequence,
-            interrupted_run_id,
-        );
-        if self.session_manager.contains(&self.session_id)? {
-            return self
-                .session_manager
-                .append_run_continuation(&self.session_id, run_started);
-        }
-        // A session that only exists in memory has no history to continue; the
-        // full-save path needs a user entry to build the session_info, so this
-        // is an error rather than a silently marker-less run.
-        Err(anyhow::anyhow!(
-            "continuation needs an existing session on disk ({})",
-            self.session_id
-        ))
     }
 
     /// Persist the just-pushed user message so the GUI sees it mid-stream.

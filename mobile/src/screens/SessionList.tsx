@@ -170,8 +170,15 @@ export function SessionList({
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const listKey = `${remote.credentials?.pairId ?? ""}:${tab}`;
-  const { listRef, initialOffset, onLayout, onContentSizeChange, onScrollBeginDrag, onScroll } =
-    useSessionListScroll<CatalogRow>(query.trim() ? null : listKey);
+  const {
+    listRef,
+    initialOffset,
+    maintainVisibleContentPosition,
+    onLayout,
+    onContentSizeChange,
+    onScrollBeginDrag,
+    onScroll,
+  } = useSessionListScroll<CatalogRow>(query.trim() ? null : listKey);
   const [menuWorkspace, setMenuWorkspace] = useState<WorkspaceRow | null>(null);
   /** The group whose name the rename dialog is editing, and its draft. */
   const [renamingWorkspace, setRenamingWorkspace] = useState<WorkspaceRow | null>(null);
@@ -1130,6 +1137,7 @@ export function SessionList({
           keyExtractor={row => row.key}
           ref={listRef}
           contentOffset={initialOffset}
+          maintainVisibleContentPosition={maintainVisibleContentPosition}
           onLayout={onLayout}
           onContentSizeChange={onContentSizeChange}
           onScrollBeginDrag={onScrollBeginDrag}

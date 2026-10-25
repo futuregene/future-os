@@ -34,8 +34,8 @@ window and its `↓ N more` row).
 ## The frame
 
 ```
- header (5 rows: pixel whale, wordmark at width ≥ 96, session · workspace ·
- model, backend dot)  ── hairline
+ focused header (2 rows: session · workspace · backend dot, then hairline)
+ comfortable header (optional 6 rows: pixel whale and full identity)
  ──────────────────────────────────────────┬──────────────────────
  conversation (bottom-anchored, ↑ 更早)     │ sidebar: 待办 任务 会话
                                             │          用量 技能
@@ -62,6 +62,43 @@ Every frame is exactly `height` rows of exactly `width` display columns (CJK and
 emoji counted as two), at any size including 1×1 — that invariant is asserted in
 the frame tests and in `ansi::fit`, the one function that pads.
 
+## Language
+
+The surface ships Chinese and English, and the chrome — tab labels, pickers, key
+hints, empty states, notices — is drawn in the reader's language. What is *not*
+translated is content: a conversation, a session title, a file path, an agent's
+output stay exactly as written.
+
+It follows the system until the reader picks one, and the pick is remembered in
+`~/.future/tui/settings.json` (`language`: `system` | `zh` | `en`, the same
+vocabulary the desktop and the phone use; a missing key means `system`).
+
+- `/lang` opens the picker: **Follow system**, **中文**, **English**.
+- The locale comes from `LC_ALL`, then `LC_MESSAGES`, then `LANG`; on Windows,
+  from the user's UI language when none of them is set. A missing or `C` locale
+  is English.
+- `cargo run -p future-tui --example workbench_demo -- --lang en` prints a frame
+  in either language; the screenshot capture pins `zh` by writing the settings
+  file into its scratch home, so a baseline does not depend on who ran it.
+
+The copy lives in one table, `tui/src/workbench/i18n.rs`, with both spellings on
+the same line: a key added in one language only does not compile.
+
+## Layout and personalization
+
+The default **focused density** uses a two-row context header, reclaiming four
+rows for the conversation. `Ctrl+O` or `/preferences` opens the preference
+panel: switch to the comfortable identity header, move the sidebar left or
+right, adjust its 30–48-column width, and rebind global shortcuts. Choices
+persist in `~/.future/tui/settings.json` as `density`, `sidebarPosition`,
+`sidebarWidth` and `sidebarVisible`; incremental shortcut overrides live beside
+it in `keybindings.json`.
+
+`Ctrl+P` opens the command palette, `Ctrl+R` sessions, and `F1` help. Help and
+footer hints show the effective bindings, not stale defaults. In the shortcut
+editor, press Enter and then a chord; conflicts swap owners, `r` restores
+defaults, and Escape cancels capture.
+
 ## Keys and mouse
 
 | Key | Action |
@@ -71,8 +108,11 @@ the frame tests and in `ansi::fit`, the one function that pads.
 | `↑` `↓` | Scroll the conversation (or the focused panel's list) |
 | `pageUp` / `pageDown` | Scroll the conversation a page |
 | `ctrl+b` | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal |
-| `/` | Command palette (on an empty draft) — type to filter, `enter` to run |
-| `?` | Help overlay (keys + commands) |
+| `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run |
+| `ctrl+r` | Session picker |
+| `ctrl+o` | Preferences and shortcut editor |
+| `F1` or `?` | Help overlay (effective keys + commands; `?` requires an empty draft) |
+| `/lang` | Interface language: follow the system, Chinese or English |
 | `ctrl+e` | Ask the app for the final-answer / detailed reading level |
 | `ctrl+c` | Quit |
 
@@ -143,6 +183,7 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | `tui/src/workbench/state.rs` | `WorkbenchData` and its parts |
 | `tui/src/workbench/mouse.rs` | SGR 1006 parsing |
 | `tui/src/workbench/theme.rs` | The six palettes: `dark`, `light`, `one-dark`, `one-light`, `high-contrast`, `dracula` |
+| `tui/src/workbench/i18n.rs` | Every piece of chrome, in Chinese and English, and the locale/preference resolution |
 | `tui/src/workbench/demo.rs` | Deterministic demo data (screenshots, tests) |
 | `tui/examples/demo_agent.rs` | The scripted gRPC agent screenshots talk to |
 

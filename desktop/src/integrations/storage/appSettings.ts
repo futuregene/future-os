@@ -45,13 +45,6 @@ export interface AppSettings {
    * Settings toggle opts in.
    */
   skillRecommend: boolean;
-  /**
-   * Continue, on the next launch, the conversations a run was interrupted in
-   * when the app was closed. **On by default**: the Agent runs inside the app,
-   * so closing it ends the run, and without this the work waits for the user to
-   * type 继续 while the conversation reads as interrupted.
-   */
-  autoResumeInterrupted: boolean;
 }
 
 /** Fallback used before the persisted settings load. */
@@ -67,7 +60,6 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   titleLanguage: "en",
   communityEdition: false,
   skillRecommend: false,
-  autoResumeInterrupted: true,
 };
 
 export async function getAppSettings() {
@@ -86,7 +78,6 @@ export async function updateAppSettings(input: {
   titleLanguage?: "en" | "zh";
   communityEdition?: boolean;
   skillRecommend?: boolean;
-  autoResumeInterrupted?: boolean;
 }) {
   return invokeCommand<AppSettings>("update_app_settings", { input });
 }

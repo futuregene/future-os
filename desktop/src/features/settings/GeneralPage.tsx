@@ -1,11 +1,11 @@
-import type { Language } from "../../i18n";
+import type { LanguagePreference } from "../../i18n";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { FontSizePreference } from "../../lib/fontSize";
 import type { ReplyDetail } from "../../lib/replyDisplay";
 import type { ThemeMode } from "../../lib/theme";
 import { useTranslation } from "react-i18next";
 import { Select } from "../../components/ui/Select";
-import { getLanguage, LANGUAGE_LABELS, setLanguage, SUPPORTED_LANGUAGES } from "../../i18n";
+import { getLanguagePreference, LANGUAGE_LABELS, LANGUAGE_PREFERENCES, setLanguage } from "../../i18n";
 import { automaticApprovalAvailable, effectiveApprovalTier } from "../../integrations/agent/automaticApproval";
 import { isWriteOnlySandbox, useSandboxAvailability } from "../../integrations/agent/useSandboxAvailability";
 import { FONT_SIZES, setFontSize, useFontSize } from "../../lib/fontSize";
@@ -28,8 +28,6 @@ export function GeneralPage({
   onToggleBellOnComplete,
   autoTitleFirstTurn,
   onToggleAutoTitleFirstTurn,
-  autoResumeInterrupted,
-  onToggleAutoResumeInterrupted,
 }: {
   approvalTier: ApprovalTier;
   futureSessionStatus?: string;
@@ -42,8 +40,6 @@ export function GeneralPage({
   onToggleBellOnComplete: (value: boolean) => void;
   autoTitleFirstTurn: boolean;
   onToggleAutoTitleFirstTurn: (value: boolean) => void;
-  autoResumeInterrupted: boolean;
-  onToggleAutoResumeInterrupted: (value: boolean) => void;
 }) {
   const { t } = useTranslation("settings");
   const themeMode = useThemeMode();
@@ -63,13 +59,13 @@ export function GeneralPage({
         >
           <Select
             size="sm"
-            value={getLanguage()}
+            value={getLanguagePreference()}
             wrapperClassName="w-32"
-            onChange={e => setLanguage(e.target.value as Language)}
+            onChange={e => setLanguage(e.target.value as LanguagePreference)}
           >
-            {SUPPORTED_LANGUAGES.map(lang => (
-              <option key={lang} value={lang}>
-                {LANGUAGE_LABELS[lang]}
+            {LANGUAGE_PREFERENCES.map(preference => (
+              <option key={preference} value={preference}>
+                {preference === "system" ? t("language.system") : LANGUAGE_LABELS[preference]}
               </option>
             ))}
           </Select>
@@ -203,16 +199,6 @@ export function GeneralPage({
           description={t("bellOnComplete.description")}
         >
           <Switch checked={bellOnComplete} label={t("bellOnComplete.title")} onChange={onToggleBellOnComplete} />
-        </SettingsRow>
-        <SettingsRow
-          title={t("autoResumeInterrupted.title")}
-          description={t("autoResumeInterrupted.description")}
-        >
-          <Switch
-            checked={autoResumeInterrupted}
-            label={t("autoResumeInterrupted.title")}
-            onChange={onToggleAutoResumeInterrupted}
-          />
         </SettingsRow>
       </SettingsList>
     </SettingsSection>

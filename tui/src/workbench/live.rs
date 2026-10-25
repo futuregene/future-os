@@ -28,6 +28,7 @@ use crate::rpc::types::{
 };
 use crate::rpc::GrpcClient;
 
+use super::i18n::{self, t, Key, Language, LanguagePreference};
 use super::state::{
     Activity, ActivityKind, InputView, JobRow, ModelChoice, SessionMeta, SessionRow, SkillRow,
     TodoItem, UsageData, WorkbenchData, THINKING_LEVELS,
@@ -90,6 +91,10 @@ pub struct Live {
     detail: ReplyDetail,
     /// Palette id, so a `/theme` cycle does not need the surface's own state.
     pub theme_id: String,
+    /// The language the adapter's own sentences are written in (the input
+    /// hint, an approval prompt, an export notice). The surface keeps its own
+    /// copy of the resolved language; this one is for the data it hands over.
+    lang: Language,
     /// The surface is on the launchpad: `/new` detached from every session
     /// without creating one, so the header's own state (connection, version)
     /// stays and the first message creates the session the reader wanted.
@@ -143,6 +148,14 @@ impl Live {
         let client = Arc::new(client.with_no_context_files(no_context_files));
 
         let detail = settings.map(persisted_detail).unwrap_or_default();
+        // The stored preference decides the adapter's language before anything
+        // is painted, so the first frame is already in the reader's language.
+        let lang = LanguagePreference::from_wire(
+            settings
+                .and_then(|settings| settings.language.as_deref())
+                .unwrap_or("system"),
+        )
+        .resolve();
         let theme = settings
             .map(persisted_palette)
             .unwrap_or(super::theme::FUTURE_DARK);
@@ -162,11 +175,12 @@ impl Live {
             activity_start: None,
             open_tools: 0,
             draft: InputView {
-                placeholder: "描述你要做的事 · @ 文件 · # 会话 · / 命令".into(),
+                placeholder: t(lang, Key::InputHintLaunchpad).into(),
                 ..InputView::default()
             },
             detail,
             theme_id: theme.id.to_string(),
+            lang,
             launchpad: false,
             pending_model: None,
             pending_effort: None,
@@ -247,7 +261,7 @@ impl Live {
             self.local_skills = Some(super::local::installed_skills());
         }
         if self.local_jobs.is_none() {
-            self.local_jobs = Some(super::local::scheduled_jobs());
+            self.local_jobs = Some(super::local::scheduled_jobs(self.lang));
         }
     }
 
@@ -652,14 +666,17 @@ impl Live {
         if let Some(approval) = &self.approval {
             return Activity {
                 kind: ActivityKind::Tool,
-                detail: format!(
-                    "等待批准：{}{} — y 允许 · n 拒绝",
-                    approval.title,
-                    if approval.summary.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" · {}", approval.summary)
-                    }
+                detail: i18n::render(
+                    self.lang,
+                    Key::ApprovalWaiting,
+                    &[
+                        &approval.title,
+                        &if approval.summary.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" · {}", approval.summary)
+                        },
+                    ],
                 ),
                 elapsed_secs: 0,
                 tools: self.open_tools,
@@ -712,7 +729,16 @@ impl Live {
             // The surface owns its own palette; the driver persists it (it is
             // the one that knows where `settings.json` is).
             WbAction::SetTheme(_) => {}
+            // Same split for the language: the driver resolves the preference,
+            // hands the bundle back here and persists it.
+            WbAction::SetLanguage(_) => {}
             WbAction::SwitchPanel(_) | WbAction::ResizeSidebar(_) | WbAction::PersistSidebar => {}
+            // Surface-only state: the driver owns persistence, the agent does
+            // not need a round trip for a rectangle or a local shortcut.
+            WbAction::SetPreferences | WbAction::SetKeybindings => {}
+            // The driver displays local notices; a demo adapter has no notice
+            // dispatch of its own to perform.
+            WbAction::Notice(_) => {}
             WbAction::FocusPane(_) => {}
             WbAction::Redraw => {}
         }
@@ -825,9 +851,9 @@ impl Live {
                         .unwrap_or("")
                         .to_string();
                     self.notice = Some(if path.is_empty() {
-                        "会话已导出".to_string()
+                        t(self.lang, Key::ExportDone).to_string()
                     } else {
-                        format!("会话已导出 → {path}")
+                        i18n::render(self.lang, Key::ExportDonePath, &[&path])
                     });
                 }
                 Err(error) => self.notice = Some(format!("Could not export: {error}")),
@@ -1277,6 +1303,28 @@ pub fn persisted_palette(settings: &crate::settings::TuiSettings) -> super::them
 /// The reading level the inline TUI persisted, or the default.
 pub fn persisted_detail(settings: &crate::settings::TuiSettings) -> ReplyDetail {
     ReplyDetail::from_wire(settings.reply_detail.as_deref().unwrap_or("default"))
+}
+
+/// The language preference `settings.json` carries. An absent key means `system`
+/// — the reader has not chosen, so the locale decides.
+pub fn persisted_language(settings: &crate::settings::TuiSettings) -> LanguagePreference {
+    LanguagePreference::from_wire(settings.language.as_deref().unwrap_or("system"))
+}
+
+impl Live {
+    /// Adopt a language preference: the adapter's own sentences (the input hint,
+    /// an approval prompt) and the panels' local facts are re-read in it, and the
+    /// resolved bundle is returned for the surface.
+    ///
+    /// The scheduled jobs are read from `tasks.db` with their state already
+    /// spelled out, so the cache is dropped rather than patched; the next frame
+    /// refills it. Skills and todos carry no chrome, so they are untouched.
+    pub fn set_language(&mut self, preference: LanguagePreference) -> Language {
+        self.lang = preference.resolve();
+        self.draft.placeholder = t(self.lang, Key::InputHintLaunchpad).into();
+        self.local_jobs = None;
+        self.lang
+    }
 }
 
 #[cfg(test)]

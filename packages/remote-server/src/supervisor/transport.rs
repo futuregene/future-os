@@ -202,8 +202,11 @@ impl Supervisor {
                             .get(&pair_id)
                             .is_some_and(|state| state.nats_health.is_terminal())
                         {
-                            // A deterministic authorization/configuration failure does
-                            // not improve by rotating the same credentials forever.
+                            // A refused credential does not improve by rotating it
+                            // forever, and the generation it belongs to is already
+                            // dead: the supervisor rebuilds from a fresh mint. Stop
+                            // this lane and leave the rebuild to the one owner of
+                            // that decision.
                             return;
                         }
                         // Renew once the lead time is reached; the delay above means
@@ -281,9 +284,33 @@ impl Supervisor {
                             continue;
                         }
                     };
+                    if pairing::seconds_until_expiry(&refreshed) <= 0 {
+                        // Never present a grant that has already lapsed. The
+                        // platform can hand one back — a mint that crossed its own
+                        // expiry, a clock that moved — and presenting it earns a
+                        // refusal the relay reports as an authorization verdict,
+                        // which spends a whole generation on a credential that was
+                        // dead on arrival. Ask for another mint instead.
+                        if let Some(line) = server.credential_failures.record(
+                            "credential_expired",
+                            "the refreshed credential had already expired",
+                        ) {
+                            eprintln!("{line}");
+                        }
+                        server.credential_refreshing.store(false, Ordering::Release);
+                        tokio::time::sleep(server.executor.options().refresh_tick).await;
+                        continue;
+                    }
                     let connected_nats = match server.connect_nats(&refreshed, true).await {
                         Ok(connection) => connection,
                         Err(crate::Error::RemoteAuthorization(error)) => {
+                            // The relay refused a credential that was just minted.
+                            // Record it on this generation so the status can name
+                            // `service_authorization`, and leave: the supervisor
+                            // rebuilds the generation with another mint (bounded by
+                            // its attempt budget), which is the only thing that can
+                            // succeed when the refusal was a stale relay-side cache
+                            // rather than a real revocation.
                             eprintln!(
                                 "remote: refreshed NATS credential rejected [AU001]: {error}"
                             );
@@ -377,6 +404,7 @@ impl Supervisor {
                     state.client = client;
                     state.nats_health = nats_health;
                     state.nats_url = refreshed.nats_url;
+                    state.credential_expires_at = refreshed.jwt_expires_at;
                     old_cmd.abort();
                     old_transfer.abort();
                     old_heartbeat.abort();

@@ -87,6 +87,10 @@ that need the agent first. Existing behaviour in `tui/src/components/**`
 
 ---
 
+The labels in this drawing are the Chinese bundle; the surface ships Chinese and
+English and draws its chrome in the reader's language (`i18n.rs`, `/lang`).
+Content — a conversation, a session title, a path — is never translated.
+
 ## 3. Layout (units: terminal cells)
 
 ```
