@@ -964,8 +964,8 @@ changed components.
 The settings panel (gear at the bottom of the left nav; the "Models" shortcut
 below New Chat jumps straight to the models page) has three pages:
 
-- **General**: UI language switch (中文 / English, default Chinese, saved
-  locally); **approval mode** by platform (macOS: Manual approval / Sandbox
+- **General**: UI language switch (Follow system / 中文 / English — it tracks
+  the OS locale until the user picks one, and the choice is saved locally); **approval mode** by platform (macOS: Manual approval / Sandbox
   protection / Automatic review / Fully open; Windows with host probe passed: Manual approval /
   Write protection / Automatic review / Fully open; Linux with Bubblewrap host probe passed:
   Manual approval / Sandbox protection / Automatic review / Fully open — on failure show the
