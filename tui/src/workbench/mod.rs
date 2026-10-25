@@ -125,6 +125,14 @@ pub enum WbAction {
     SetModel(String),
     /// The reasoning slider moved: apply the level to the agent.
     SetThinking(String),
+    /// The model picker chose a model while no session was attached: stage it
+    /// as the default the next session starts with. There is nothing to set it
+    /// on, so this must not reach the agent — the agent answers
+    /// `set_model` with "session not found" when no session exists.
+    SetPendingModel(String),
+    /// The reasoning slider moved with no session attached, staged like
+    /// [`WbAction::SetPendingModel`].
+    SetPendingThinking(String),
     /// The theme picker committed a palette: adopt it and persist it.
     SetTheme(String),
     /// `/new`: back to the launchpad, with no session attached (the first
@@ -688,20 +696,40 @@ impl Workbench {
     }
 
     /// `enter`, and a click on a row: whichever row is highlighted, apply it.
+    ///
+    /// On the launchpad there is no session to apply anything *to*: the agent
+    /// refuses `set_model`/`set_thinking_level` without one ("session not
+    /// found"), so the same two choices are returned as `SetPending*` and the
+    /// app stages them for the session the next message creates. One gesture,
+    /// two roads, decided by whether anything is attached.
     fn apply_picker(&mut self, kind: PickerKind, data: &WorkbenchData) -> Vec<WbAction> {
         let selected = self.picker.selected(data, self.committed_theme());
+        let launchpad = data.on_launchpad();
         self.overlay = None;
         self.picker_restore = None;
         match (kind, selected) {
             // The slider *is* the choice on its own row: `enter` there applies
             // the level and leaves the model alone.
             (PickerKind::Model, Some(PickerRow::Slider { level, .. })) => {
-                vec![WbAction::SetThinking(level)]
+                if launchpad {
+                    vec![WbAction::SetPendingThinking(level)]
+                } else {
+                    vec![WbAction::SetThinking(level)]
+                }
             }
-            (PickerKind::Model, Some(PickerRow::Item { key, .. })) => vec![
-                WbAction::SetModel(key),
-                WbAction::SetThinking(self.picker.level().to_string()),
-            ],
+            (PickerKind::Model, Some(PickerRow::Item { key, .. })) => {
+                // The model and the level it runs at are one choice, so both
+                // are carried on either road.
+                let level = self.picker.level().to_string();
+                if launchpad {
+                    vec![
+                        WbAction::SetPendingModel(key),
+                        WbAction::SetPendingThinking(level),
+                    ]
+                } else {
+                    vec![WbAction::SetModel(key), WbAction::SetThinking(level)]
+                }
+            }
             (PickerKind::Theme, Some(PickerRow::Item { key, .. })) => {
                 self.set_theme(&key);
                 vec![WbAction::SetTheme(key)]
@@ -1918,6 +1946,71 @@ mod tests {
         assert_eq!(
             workbench.handle(WbEvent::Key("enter".into()), &data),
             vec![WbAction::SetThinking("low".into())]
+        );
+    }
+
+    /// No session, no request. The agent answers `set_model` and
+    /// `set_thinking_level` with "session not found — pass a valid session_id"
+    /// when nothing is attached, so a picker opened on the launchpad has to
+    /// stage its choice for the session the first message creates instead. The
+    /// same two gestures with a session attached keep going over the wire.
+    #[test]
+    fn a_model_picked_before_any_session_is_staged_not_requested() {
+        let data = demo::launchpad();
+        assert!(data.session.id.is_empty(), "the launchpad has no session");
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        // It still opens on the value in force, exactly like a session's.
+        workbench.open_picker(PickerKind::Model, &data);
+        assert_eq!(workbench.picker.index, 1);
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        let actions = workbench.handle(WbEvent::Key("enter".into()), &data);
+        assert_eq!(
+            actions,
+            vec![
+                WbAction::SetPendingModel("Qwen".into()),
+                WbAction::SetPendingThinking("medium".into()),
+            ],
+            "the row and the level it will run at, staged"
+        );
+        assert_eq!(workbench.overlay, None, "applying still closes the box");
+
+        // The slider alone is staged too — that is the row that produced
+        // "Could not set thinking: session not found" before.
+        workbench.open_picker(PickerKind::Model, &data);
+        workbench.handle(WbEvent::Key("up".into()), &data);
+        workbench.handle(WbEvent::Key("left".into()), &data);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::SetPendingThinking("low".into())]
+        );
+
+        // Nothing on either road may reach the agent: no request can be built
+        // from what a launchpad picker returns.
+        workbench.open_picker(PickerKind::Model, &data);
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        let actions = workbench.handle(WbEvent::Key("enter".into()), &data);
+        for action in &actions {
+            assert!(
+                !matches!(
+                    action,
+                    WbAction::SetModel(_) | WbAction::SetThinking(_) | WbAction::Command(_)
+                ),
+                "a launchpad pick must not send anything: {action:?}"
+            );
+        }
+
+        // …and with a session attached the same gestures are the wire calls
+        // they always were.
+        let chat = demo::chat();
+        let (mut workbench, _rows) = frame(&chat, 120, 38);
+        workbench.open_picker(PickerKind::Model, &chat);
+        workbench.handle(WbEvent::Key("down".into()), &chat);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &chat),
+            vec![
+                WbAction::SetModel("Qwen".into()),
+                WbAction::SetThinking("medium".into()),
+            ]
         );
     }
 
