@@ -2434,6 +2434,9 @@ mod tests {
                 .to_string()
         );
         assert_eq!(thread_workspace_id(&conn, "thread-1"), workspace.id);
+        // The conversation left Chat: both clients group by `mode`, so filing
+        // the workspace alone would have kept it under Chat for good.
+        assert_eq!(thread_mode(&conn, "thread-1"), "workspace");
 
         // A second session pointing at the same directory reuses that row.
         // Same home: a second `mock_env` would point HOME at a fresh directory
@@ -2557,6 +2560,7 @@ mod tests {
             "CREATE TABLE IF NOT EXISTS threads (
                  id TEXT PRIMARY KEY,
                  workspace_id TEXT NOT NULL,
+                 mode TEXT NOT NULL DEFAULT 'chat',
                  agent_session_id TEXT,
                  status TEXT NOT NULL DEFAULT 'active',
                  last_message_at INTEGER,
@@ -2580,6 +2584,15 @@ mod tests {
             |row| row.get(0),
         )
         .expect("thread workspace")
+    }
+
+    fn thread_mode(conn: &rusqlite::Connection, thread_id: &str) -> String {
+        conn.query_row(
+            "SELECT mode FROM threads WHERE id = ?1",
+            rusqlite::params![thread_id],
+            |row| row.get(0),
+        )
+        .expect("thread mode")
     }
 
     #[tokio::test]

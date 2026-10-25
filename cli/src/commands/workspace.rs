@@ -768,6 +768,7 @@ mod tests {
             "CREATE TABLE IF NOT EXISTS threads (
                  id TEXT PRIMARY KEY,
                  workspace_id TEXT NOT NULL DEFAULT '',
+                 mode TEXT NOT NULL DEFAULT 'chat',
                  agent_session_id TEXT,
                  status TEXT NOT NULL DEFAULT 'active',
                  last_message_at INTEGER,

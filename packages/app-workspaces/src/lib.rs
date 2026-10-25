@@ -322,17 +322,49 @@ pub fn find_thread_by_agent_session(
 }
 
 /// File a conversation under a workspace.
+///
+/// A conversation under a *user* workspace is a **workspace conversation**, so
+/// `mode` moves with it. The two clients group and label by `mode`, never by
+/// `workspace_id` (`desktop/src/components/layout/ActivityRail.tsx`, the
+/// palette subtitle in `AppShell.tsx`, `mobile/src/screens/sessionTree.ts`),
+/// and neither ever rewrites `mode` after creation. A row that kept
+/// `mode = 'chat'` while its `workspace_id` named a user workspace therefore
+/// stayed under "Chat" for good — the state a `future session set --cwd` used
+/// to leave behind, which reads as "the workspace never changed".
+///
+/// The reverse is deliberately not undone here: a workspace conversation
+/// pointed at a chat scratch directory keeps its mode, because demoting it
+/// would need a temporary workspace that conversation never had.
 pub fn move_thread_to_workspace(
     conn: &Connection,
     thread_id: &str,
     workspace_id: &str,
 ) -> Result<(), Error> {
+    // A store old enough to predate `mode` is left with the workspace half
+    // alone rather than failing: migrations refuse such a layout outright
+    // (`host/src/store/migrations.rs`), so the app would not start on it
+    // anyway, and a cwd change must not fail over a column that cannot be set.
+    if !thread_has_mode_column(conn)? {
+        conn.execute(
+            "UPDATE threads SET workspace_id = ?1, updated_at = ?2
+             WHERE id = ?3 AND status != 'deleted'",
+            params![workspace_id, now_millis(), thread_id],
+        )?;
+        return Ok(());
+    }
     conn.execute(
-        "UPDATE threads SET workspace_id = ?1, updated_at = ?2
+        "UPDATE threads SET workspace_id = ?1, mode = 'workspace', updated_at = ?2
          WHERE id = ?3 AND status != 'deleted'",
         params![workspace_id, now_millis(), thread_id],
     )?;
     Ok(())
+}
+
+/// Whether the `threads` table carries the `mode` column.
+fn thread_has_mode_column(conn: &Connection) -> Result<bool, Error> {
+    let mut statement = conn.prepare("PRAGMA table_info(threads)")?;
+    let mut names = statement.query_map([], |row| row.get::<_, String>(1))?;
+    Ok(names.any(|name| name.is_ok_and(|name| name == "mode")))
 }
 
 /// The app-managed chat scratch root: `~/.future/workspaces/chat`. A chat
@@ -396,6 +428,11 @@ pub enum CwdFiling {
 /// applies when it sees a cwd change — the same code, so a cwd changed from the
 /// CLI and one changed in the app land identically whether or not the app was
 /// running to notice it.
+///
+/// A directory that is not a chat scratch directory files the conversation
+/// under a user workspace, which makes it a *workspace* conversation: `mode`
+/// moves with `workspace_id` (see [`move_thread_to_workspace`]), because both
+/// clients group by `mode` and would otherwise keep it under "Chat" forever.
 ///
 /// The directory must already exist: an uncreatable path is `Err`, which is how
 /// the app surfaces it (a toast) and what the CLI reports as a note rather than
@@ -795,6 +832,7 @@ mod tests {
             "CREATE TABLE threads (
                  id TEXT PRIMARY KEY,
                  workspace_id TEXT NOT NULL DEFAULT '',
+                 mode TEXT NOT NULL DEFAULT 'chat',
                  agent_session_id TEXT,
                  status TEXT NOT NULL DEFAULT 'active',
                  last_message_at INTEGER,
@@ -821,6 +859,15 @@ mod tests {
             |row| row.get(0),
         )
         .expect("thread workspace")
+    }
+
+    fn thread_mode(conn: &Connection, thread: &str) -> String {
+        conn.query_row(
+            "SELECT mode FROM threads WHERE id = ?1",
+            params![thread],
+            |row| row.get(0),
+        )
+        .expect("thread mode")
     }
 
     /// A cwd change files the conversation under the workspace for the
@@ -889,6 +936,76 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A chat conversation whose cwd moves into a real directory stops being a
+    /// chat: both clients group by `mode`, so filing the workspace alone used to
+    /// leave it under "Chat" forever — the row said `chat` while its workspace
+    /// said `future-os`, and nothing rewrites `mode` after creation.
+    #[test]
+    fn a_chat_conversation_filed_under_a_project_becomes_a_workspace_conversation() {
+        let mut conn = test_conn();
+        add_threads_table(&conn);
+        bind_thread(&conn, "thread-chat", "sess-chat");
+        assert_eq!(thread_mode(&conn, "thread-chat"), "chat");
+        let dir = temp_dir("promote");
+
+        let filing = file_session_for_cwd(&mut conn, "sess-chat", &dir.display().to_string(), 3)
+            .expect("file");
+        let Some(CwdFiling::WorkspaceCreated(id)) = filing else {
+            panic!("expected a created workspace, got {filing:?}");
+        };
+        assert_eq!(thread_workspace(&conn, "thread-chat"), id);
+        assert_eq!(
+            thread_mode(&conn, "thread-chat"),
+            "workspace",
+            "a conversation under a user workspace is a workspace conversation"
+        );
+
+        // Filing again (the app noticing a cwd it already filed, or the CLI and
+        // the app both handling one change) keeps it a workspace conversation.
+        assert_eq!(
+            file_session_for_cwd(&mut conn, "sess-chat", &dir.display().to_string(), 4)
+                .expect("refile"),
+            Some(CwdFiling::WorkspaceReused(id.clone()))
+        );
+        assert_eq!(thread_mode(&conn, "thread-chat"), "workspace");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `threads` table that predates `mode` still gets its workspace filed:
+    /// the column cannot be set, and a cwd change must not fail because of it.
+    /// (Migrations refuse such a layout outright, so no running app meets it.)
+    #[test]
+    fn a_thread_table_without_mode_is_still_filed() {
+        let mut conn = test_conn();
+        conn.execute_batch(
+            "CREATE TABLE threads (
+                 id TEXT PRIMARY KEY,
+                 workspace_id TEXT NOT NULL DEFAULT '',
+                 agent_session_id TEXT,
+                 status TEXT NOT NULL DEFAULT 'active',
+                 updated_at INTEGER NOT NULL DEFAULT 0
+             );",
+        )
+        .expect("create old threads");
+        conn.execute(
+            "INSERT INTO threads (id, workspace_id, agent_session_id, status)
+             VALUES ('thread-old', '', 'sess-old', 'active')",
+            [],
+        )
+        .expect("seed old thread");
+        let dir = temp_dir("no-mode");
+
+        let filing = file_session_for_cwd(&mut conn, "sess-old", &dir.display().to_string(), 2)
+            .expect("filed");
+        let Some(CwdFiling::WorkspaceCreated(id)) = filing else {
+            panic!("expected a created workspace, got {filing:?}");
+        };
+        assert_eq!(thread_workspace(&conn, "thread-old"), id);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A chat scratch cwd is not a project: the conversation's own temporary
     /// workspace follows the path (that is what the app does for its chats)
     /// rather than a new user workspace appearing for the scratch directory.
@@ -924,6 +1041,27 @@ mod tests {
             1,
             "no user workspace for a scratch directory"
         );
+        // A scratch cwd is a chat's own, so it never promotes; and a workspace
+        // conversation sent to one is not demoted either (demoting would need a
+        // temporary workspace it never had). Both keep the mode they had.
+        assert_eq!(thread_mode(&conn, "thread-chat"), "chat");
+        conn.execute(
+            "INSERT INTO threads (id, workspace_id, mode, agent_session_id, status, updated_at)
+             VALUES ('thread-proj', 'ws_chat', 'workspace', 'sess-proj', 'active', 1)",
+            [],
+        )
+        .expect("seed workspace thread");
+        assert_eq!(
+            file_session_for_cwd(
+                &mut conn,
+                "sess-proj",
+                &root.join("sess-proj").display().to_string(),
+                5
+            )
+            .expect("file"),
+            Some(CwdFiling::ChatWorkspaceUpdated)
+        );
+        assert_eq!(thread_mode(&conn, "thread-proj"), "workspace");
 
         // A tilde spelling of the same sentinel is recognised too.
         assert!(is_chat_directory("~/.future/workspaces/chat/sess-chat"));
