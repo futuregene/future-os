@@ -1362,6 +1362,10 @@ impl ServerSession {
             let maintenance_manager = session_manager.clone();
             let maintenance_session_id = session_id.clone();
             let child_work = crate::service::work::process_child_work();
+            // Test-only seam, read before the closure takes the writer (see
+            // `SessionPersistence::cancel_next_commit`): a cancelled blocking join
+            // cannot be produced by a live test runtime.
+            let commit_cancelled_by_runtime = session_persistence.take_cancelled_commit();
             let persistence_task = tokio::task::spawn_blocking(move || {
                 let _child_work = child_work;
                 if is_ephemeral {
@@ -1504,10 +1508,54 @@ impl ServerSession {
                     }
                 }
             });
-            let persistence_error = match persistence_task.await {
+            let commit_result = if commit_cancelled_by_runtime {
+                Err(TerminalCommitAbort::Cancelled(
+                    "terminal commit task was cancelled".to_string(),
+                ))
+            } else {
+                persistence_task
+                    .await
+                    .map_err(TerminalCommitAbort::from_join)
+            };
+            let persistence_error = match commit_result {
                 Ok(Ok(())) => None,
                 Ok(Err(error)) => Some(format!("{error:#}")),
-                Err(error) => Some(format!("persistence task failed: {error}")),
+                // A cancelled join means the runtime shut down under the task, so
+                // the terminal marker never ran because the process is exiting —
+                // not because the store failed. When this run was interrupted by
+                // that same shutdown, the honest verdict is the one startup
+                // recovery reaches from the journal anyway: the run is
+                // interrupted, not degraded, and nothing needs operator
+                // intervention. A real failure (a refused commit, a panicked
+                // task, or a cancelled join without a shutdown interruption)
+                // keeps the fail-closed path below untouched.
+                Err(TerminalCommitAbort::Cancelled(reason)) if system_interrupted => {
+                    tracing::warn!(
+                        run_id = %task_lease.run_id,
+                        reason,
+                        "run interrupted by Agent shutdown; its terminal record was not written, \
+                         so the journal keeps the run unfinished and the next start settles it as \
+                         {}",
+                        terminal_state
+                    );
+                    broadcaster.broadcast(crate::rpc::SseEvent {
+                        event_type: "agent_end".to_string(),
+                        data: serde_json::json!({
+                            "type": "agent_end",
+                            "state": terminal_state,
+                            "error": "Agent shut down before the run's terminal record was written; \
+                                      the next start settles the run as interrupted.",
+                            "usage": { "output_tokens": run_output_tokens },
+                            "duration_ms": run_duration_ms
+                        })
+                        .to_string(),
+                        ..Default::default()
+                    });
+                    return;
+                }
+                Err(
+                    TerminalCommitAbort::Cancelled(reason) | TerminalCommitAbort::Panicked(reason),
+                ) => Some(format!("persistence task failed: {reason}")),
             };
             if let Some(error) = persistence_error {
                 let _ = runtime.mark_persistence_degraded(&task_lease, &error);
@@ -2076,6 +2124,31 @@ impl ServerSession {
             parent_session_id.to_string(),
             entries,
         )
+    }
+}
+
+/// Why a run's terminal commit task did not return a result.
+///
+/// The distinction matters because only one of them is about storage: the
+/// runtime cancels a queued `spawn_blocking` task when it shuts down, and a
+/// process that is exiting owes the run an interruption, not a
+/// `persistence_degraded` verdict that reads as "restart or intervene".
+enum TerminalCommitAbort {
+    /// The runtime cancelled the task before it ran. Carries the join error's
+    /// own text, which the fail-closed path reports verbatim.
+    Cancelled(String),
+    /// Any other join failure (a panicked task), with the same text contract.
+    Panicked(String),
+}
+
+impl TerminalCommitAbort {
+    fn from_join(error: tokio::task::JoinError) -> Self {
+        let detail = error.to_string();
+        if error.is_cancelled() {
+            Self::Cancelled(detail)
+        } else {
+            Self::Panicked(detail)
+        }
     }
 }
 

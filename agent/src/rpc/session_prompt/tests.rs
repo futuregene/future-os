@@ -2310,6 +2310,99 @@ async fn prompt_persistence_commit_and_rewrite_failure_marks_degraded() {
     assert!(degraded, "run ended in persistence_degraded phase");
 }
 
+/// A terminal commit that its runtime cancelled is the first evidence of a
+/// *process* exit, not of a broken store: when the same run was also interrupted
+/// by that shutdown, the run reads as interrupted — which is exactly what the
+/// next start settles its unterminated journal entry to — instead of being
+/// left fail-closed as `persistence_degraded` (whose "restart or operator
+/// intervention required" wording sends an operator looking for a storage
+/// fault that does not exist).
+#[tokio::test(flavor = "current_thread")]
+async fn a_shutdown_cancelled_terminal_commit_is_an_interruption_not_a_degraded_store() {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let provider = ScriptedProvider::new(vec![Script::Gated(
+        gate.clone(),
+        vec![text_event("cut short"), finish_event()],
+    )]);
+    let fixture = run_fixture(provider, "shutdown-cancelled-commit");
+    let mut session = fixture.session;
+    let mut events = session.broadcaster.subscribe();
+    session.prompt("hi", &[], &[], None, None).unwrap();
+
+    // Stop the Agent the way a host stop does, while the run is still inside its
+    // model call, and have its terminal commit join as cancelled.
+    session.interrupt_for_shutdown().unwrap();
+    session.persistence.cancel_next_commit();
+    gate.notify_one();
+
+    let terminal = loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+            .await
+            .expect("run event timeout")
+            .expect("run event");
+        assert_ne!(
+            event.event_type, "persistence_error",
+            "a shutdown-cancelled commit is not a persistence failure"
+        );
+        if event.event_type == "agent_end" {
+            break serde_json::from_str::<serde_json::Value>(&event.data).unwrap();
+        }
+    };
+    assert_eq!(
+        terminal["state"],
+        crate::session::RUN_STATE_INTERRUPTED_BY_RESTART,
+        "the run reports the state the journal will be read as"
+    );
+
+    // The run was released normally; it is not held in a degraded phase, so the
+    // session is not left unusable after this shutdown.
+    wait_for_run_end(&session).await;
+    assert_eq!(
+        session.runtime.persistence_degraded_count(),
+        0,
+        "a shutdown cancellation must not mark the store degraded"
+    );
+    assert!(
+        session.persistence.last_error().is_none(),
+        "the writer has no failure of its own to report"
+    );
+}
+
+/// The counter-case: the same cancelled join without a shutdown interruption is
+/// a real failure and keeps the fail-closed path unchanged.
+#[tokio::test(flavor = "current_thread")]
+async fn a_cancelled_terminal_commit_without_a_shutdown_still_degrades() {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let provider = ScriptedProvider::new(vec![Script::Gated(
+        gate.clone(),
+        vec![text_event("cut short"), finish_event()],
+    )]);
+    let fixture = run_fixture(provider, "cancelled-commit-no-shutdown");
+    let mut session = fixture.session;
+    session.prompt("hi", &[], &[], None, None).unwrap();
+
+    // A user stop is not a shutdown interruption, so the run has no interruption
+    // cause to explain a cancelled commit.
+    session.abort();
+    session.persistence.cancel_next_commit();
+    gate.notify_one();
+
+    let mut degraded = false;
+    for _ in 0..300 {
+        if session
+            .runtime
+            .snapshot()
+            .is_some_and(|snap| snap.phase == crate::runtime::RunPhase::PersistenceDegraded)
+        {
+            degraded = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(degraded, "run ended in persistence_degraded phase");
+    assert_eq!(session.runtime.persistence_degraded_count(), 1);
+}
+
 // HOME_ENV_LOCK is a plain Mutex by design: it must exclude TestHome
 // redirects in OTHER threads for the whole test, including across awaits.
 #[allow(clippy::await_holding_lock)]
