@@ -370,7 +370,8 @@ cargo run -q -p future-tui --example workbench_demo -- --self-test   # prints `s
 Screens (only when a band changes; recipe in `verification.md` §7):
 
 ```bash
-# live session, any scenario/size (this document's frames)
+# a real session: export FUTURE_AGENT_GRPC_ADDR and SESSION_ID first (§7 step 3),
+# then any scenario/size (this document's frames)
 tui/scripts/shot.sh chat 120x38     # docs/tui/assets/workbench-120x38.png
 tui/scripts/shot.sh usage 120x38
 tui/scripts/shot.sh chat 90x24

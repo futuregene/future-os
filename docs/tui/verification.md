@@ -14,9 +14,11 @@ What was checked, what the screens show, and what is still wrong. Every row of
   `models.json`, `skills/` and a `tasks.db` backup, plus that one session's rows;
   **no credentials**. Agent: `future agent --grpc-addr 127.0.0.1:5511` (same
   version string as the client, which the client enforces).
-- **Terminal**: tmux `dv5`, 120×38 / 90×24 / 60×20, `TERM=screen-256color`.
-- **Recipe**: `tui/scripts/shot.sh` (see §7). Each PNG is
-  `tmux capture-pane -p -e` → `ansi2png.py --cols W --rows H`.
+- **Terminal**: a pty sized per shot (120×38 / 90×24 / 60×20), `TERM=xterm-256color`.
+- **Recipe**: `tui/scripts/shot.sh` (see §7), a wrapper over
+  `scripts/screenshots/capture.py tui`. Each PNG is the byte stream the TUI wrote
+  to its pty, replayed through a terminal cell model by
+  `scripts/screenshots/tui_terminal.py`.
 
 ## 1. Figure index
 
@@ -225,20 +227,19 @@ tui/scripts/shot.sh chat 120x38
 tui/scripts/shot.sh usage 120x38
 tui/scripts/shot.sh chat 60x20
 
-# 5. the picker frames, deterministically and without an agent
-python3 scripts/screenshots/capture.py tui
+# 5. the picker frame, deterministically and without an agent (→ .screenshots/tui.png)
+python3 scripts/screenshots/capture.py tui --scenario palette
 ```
 
 Rules that make the captures trustworthy:
 
 - a **fresh port** and a **private `FUTURE_HOME`** — never the agent a running
   `future tui` uses;
-- the tmux window is created at the exact size (`new-session -x W -y H`) for the
-  primary shots; 90×24 and 60×20 come from `resize-window` plus one settle
-  period;
-- `capture-pane -p -e` writes the SGR frame, never a screenshot of a running GUI;
 - a scenario that leaves a **sticky notice** (`/usage`, `/skills`) runs last, or
   in its own instance;
-- an ANSI capture is rendered with `--cols W --rows H` matching the tmux size;
+- the pty **is** the size (`shot.sh` opens it before the app starts reading it),
+  so `120x38` in the command is the frame — there is no resize step;
+- every shot is its **own process**, which is why the sticky-notice rule is about
+  reading order rather than cleanup;
 - a typed command needs a non-empty draft (a leading space), because `/` on an
   empty draft opens the palette — the same route a reader takes.

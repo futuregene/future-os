@@ -13,9 +13,10 @@
 - **实例**：`FUTURE_HOME=/tmp/dvhome` —— `settings.json`、`models.json`、`skills/`、
   一份 `tasks.db` 备份，加上那一个会话的行；**没有凭据**。Agent：
   `future agent --grpc-addr 127.0.0.1:5511`（版本串与客户端一致，客户端会强制校验）。
-- **终端**：tmux `dv5`，120×38 / 90×24 / 60×20，`TERM=screen-256color`。
-- **配方**：`tui/scripts/shot.sh`（见 §7）。每张 PNG 都是
-  `tmux capture-pane -p -e` → `ansi2png.py --cols W --rows H`。
+- **终端**：每次截图按目标尺寸开 pty（120×38 / 90×24 / 60×20），`TERM=xterm-256color`。
+- **配方**：`tui/scripts/shot.sh`（见 §7），它是
+  `scripts/screenshots/capture.py tui` 的一层包装。每张 PNG 都是 TUI 写进 pty 的字节流，
+  由 `scripts/screenshots/tui_terminal.py` 按终端单元模型重放。
 
 ## 1. 图号索引
 
@@ -210,17 +211,16 @@ tui/scripts/shot.sh chat 120x38
 tui/scripts/shot.sh usage 120x38
 tui/scripts/shot.sh chat 60x20
 
-# 5. 选择器那几张：确定性、不需要 agent
-python3 scripts/screenshots/capture.py tui
+# 5. 选择器那一张：确定性、不需要 agent（→ .screenshots/tui.png）
+python3 scripts/screenshots/capture.py tui --scenario palette
 ```
 
 让截图可信的几条规矩：
 
 - 一定用**新端口**和**私有 `FUTURE_HOME`**，绝不碰正在跑的 `future tui` 用的 agent；
-- 主要几张用 `new-session -x W -y H` 一次开成目标尺寸；90×24 与 60×20 用
-  `resize-window` 生成并留一个稳定期；
-- 用 `capture-pane -p -e` 抓 SGR 帧，不要去截运行中的图形界面；
 - 会留下**粘住提示**的场景（`/usage`、`/skills`）放到最后，或者单独开一个实例；
-- 渲染 ANSI 时 `--cols W --rows H` 必须与 tmux 尺寸一致；
+- **pty 本身就是那个尺寸**（`shot.sh` 在应用开始读尺寸之前就开好了），所以命令里的
+  `120x38` 就是画面尺寸——没有 resize 这一步；
+- 每次截图都是**独立进程**，所以上面那条“粘住提示”说的是阅读顺序，而不是清理；
 - 手打命令需要草稿非空（先打个空格），因为空草稿上的 `/` 会打开命令面板 ——
   这也是读者实际走的那条路。

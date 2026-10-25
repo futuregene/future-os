@@ -299,9 +299,11 @@ cargo run -p future-tui --example workbench_demo -- --self-test
   the new files), `cargo build -p future-tui`, `cargo test -p future-tui
   workbench`.
 
-Screenshots: `tui/scripts/shot.sh <scenario> <out.png>` runs the demo in tmux →
-`capture-pane -e` → renders a PNG (the script may depend on `tools/ansi2png.py`
-in the workspace; the path is overridable via `SHOT_PY`).
+Screenshots: `tui/scripts/shot.sh <scenario> <out.png>` (a size may stand in for
+the path: `shot.sh chat 120x38`). It runs the app in a pty of the requested size
+and renders the bytes it wrote through `scripts/screenshots/tui_terminal.py`;
+without `FUTURE_AGENT_GRPC_ADDR` it uses the scripted `demo_agent`, so the frame
+needs no agent, no model and no credentials.
 
 ---
 

@@ -218,6 +218,24 @@ What the flags are for:
   when a capture comes out blank.
 - `--scale` sets the device pixel ratio (default 2).
 - `--session <id>` opens a specific session instead of leaving it to the agent.
+- `--scenario <name>` drives the surface to a screen a reader would reach:
+  `chat` (as it opens), `help` (`?`), `palette` (`/`), and the sidebar panels
+  `todo` / `usage` / `skills` / `sessions`, which are selected by clicking their
+  tab — the workbench switches panels by click and has no key for it. The click
+  is resolved from the frame on screen when the step runs, so it follows the
+  layout instead of a hard-coded column.
+- `--addr <host:port>` attaches to an agent that is already running (a *real*
+  session) instead of starting `demo_agent`, and leaves the caller's
+  `FUTURE_HOME` alone.
+
+The repository's own entry point for these frames is
+`tui/scripts/shot.sh <scenario> [WxH] [out.png]`, a thin wrapper that supplies
+`--scenario` and the size and names the file after the asset it belongs to:
+
+```bash
+tui/scripts/shot.sh chat 120x38      # → docs/tui/assets/workbench-120x38.png
+tui/scripts/shot.sh usage 120x38     # → docs/tui/assets/workbench-usage-120x38.png
+```
 
 Two runs produce byte-identical PNGs, which is what makes this usable as
 review evidence: a difference means the UI changed, not that a model answered
@@ -228,6 +246,7 @@ user's session.
 
 ```bash
 python3 scripts/screenshots/tui_terminal.py --self-test   # the cell model, no browser
+python3 scripts/screenshots/capture.py --self-test        # the scenario steps, no browser
 ```
 
 ## Recording video

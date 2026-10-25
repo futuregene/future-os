@@ -461,8 +461,9 @@ How to re-derive this document:
    then `tmux capture-pane -e -p` into `shots/raw_<name>.txt` and render the same
    buffer to `shots/dsh_<name>.png`.
 3. Re-capture a FutureOS screen: `tui/scripts/shot.sh` (recipe in
-   `verification.md` §7) — isolated `FUTURE_HOME`, isolated agent port, tmux at
-   an exact size, `capture-pane -e`, `ansi2png.py`.
+   `verification.md` §7) — isolated `FUTURE_HOME`, isolated agent port, the size
+   as its second argument (`120x38`). It runs the workbench in a pty of that
+   size and renders what it wrote; no tmux, no `ansi2png.py`.
 4. Check a FutureOS claim with its `[F:…]` tag; the greps that matter are
    `?100` (mouse), `sidebar`, `goal_todos`, `branch`.
 

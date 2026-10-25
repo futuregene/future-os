@@ -148,11 +148,26 @@ python3 scripts/screenshots/capture.py tui tui-chat.png
 - `--keep-stream <file>` 把原始字节另存一份——截图是空白时，第一个要看的就是它。
 - `--scale` 设置设备像素比（默认 2）。
 - `--session <id>` 指定会话，而不是交给 agent 决定。
+- `--scenario <name>` 把界面驱动到读者实际会到达的那一屏：`chat`（打开时的样子）、
+  `help`（`?`）、`palette`（`/`），以及侧栏面板 `todo` / `usage` / `skills` /
+  `sessions`——面板靠点击页签切换，没有对应按键。点击位置在步骤执行时从当时屏幕上的帧
+  算出来，所以它跟着布局走，而不是写死列号。
+- `--addr <host:port>` 接到已在运行的 agent（也就是**真会话**），而不是启 `demo_agent`；
+  并且不动调用方的 `FUTURE_HOME`。
+
+仓库里拍这些帧的入口是 `tui/scripts/shot.sh <scenario> [WxH] [out.png]`，它是
+`capture.py tui` 的一层包装：补上 `--scenario` 与尺寸，并按对应资产命名文件。
+
+```bash
+tui/scripts/shot.sh chat 120x38      # → docs/tui/assets/workbench-120x38.png
+tui/scripts/shot.sh usage 120x38     # → docs/tui/assets/workbench-usage-120x38.png
+```
 
 两次运行产出的 PNG 是逐字节相同的，这才让它能当评审证据用：有差异说明界面变了，而不是模型这次回答得不一样。两点限制照实说：字形是 Chrome 依据抓到的单元格画的，不是产生这些字节的那个终端画的；数据是脚本化的（和其他 mock 一样）——截图永远不是"真实用户会话"的证据。
 
 ```bash
 python3 scripts/screenshots/tui_terminal.py --self-test   # 只验单元模型，不开浏览器
+python3 scripts/screenshots/capture.py --self-test        # 只验场景步骤，不开浏览器
 ```
 
 ## 录制视频

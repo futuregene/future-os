@@ -311,7 +311,8 @@ cargo run -q -p future-tui --example workbench_demo -- --self-test   # 输出 `s
 截图（只有分区变化时才重拍；配方见 `verification.md` §7）：
 
 ```bash
-# 真机会话，任意场景/尺寸（本文的帧）
+# 真机会话：先 export FUTURE_AGENT_GRPC_ADDR 与 SESSION_ID（§7 步骤 3），
+# 然后任意场景/尺寸（本文的帧）
 tui/scripts/shot.sh chat 120x38     # docs/tui/assets/workbench-120x38.png
 tui/scripts/shot.sh usage 120x38
 tui/scripts/shot.sh chat 90x24
