@@ -29,8 +29,8 @@ use crate::rpc::types::{
 use crate::rpc::GrpcClient;
 
 use super::state::{
-    Activity, ActivityKind, InputView, JobRow, SessionMeta, SessionRow, SkillRow, TodoItem,
-    UsageData, WorkbenchData,
+    Activity, ActivityKind, InputView, JobRow, ModelChoice, SessionMeta, SessionRow, SkillRow,
+    TodoItem, UsageData, WorkbenchData,
 };
 use super::WbAction;
 
@@ -78,6 +78,10 @@ pub struct Live {
     detail: ReplyDetail,
     /// Palette id, so a `/theme` cycle does not need the surface's own state.
     pub theme_id: String,
+    /// The surface is on the launchpad: `/new` detached from every session
+    /// without creating one, so the header's own state (connection, version)
+    /// stays and the first message creates the session the reader wanted.
+    launchpad: bool,
     /// When the current run started and how many output tokens it has reported:
     /// tok/s is the two divided. Cleared at `agent_start`, frozen at
     /// `agent_end` so an idle surface still shows the turn it just finished.
@@ -140,6 +144,7 @@ impl Live {
             },
             detail,
             theme_id: theme.id.to_string(),
+            launchpad: false,
             run_started: None,
             run_output_tokens: 0,
             run_tps: 0.0,
@@ -294,6 +299,12 @@ impl Live {
     /// session are dropped: after a switch the previous session's run would
     /// otherwise narrate into the transcript that is now on screen.
     pub fn handle_event(&mut self, event: AgentEvent) {
+        // On the launchpad the transcript was cleared on purpose: the previous
+        // session's run would otherwise narrate into a screen that says "no
+        // session yet".
+        if self.launchpad {
+            return;
+        }
         let current = self.client.get_current_session_id();
         if let Some(session) = event.session_id.as_deref() {
             if !current.is_empty() && session != current {
@@ -499,7 +510,13 @@ impl Live {
         let activity = self.activity_snapshot();
         let input = self.draft.clone();
         let sessions = self.sessions.clone();
-        let title = self.title();
+        // On the launchpad there is no session, so no session's title: the
+        // header must not keep naming the conversation `/new` left behind.
+        let title = if self.launchpad {
+            String::new()
+        } else {
+            self.title()
+        };
         let current = state.session_id.clone();
         let mut rows: Vec<SessionRow> = sessions
             .iter()
@@ -508,7 +525,9 @@ impl Live {
                 title: display_name(session),
                 workspace: shorten(&session.cwd),
                 age: age(session.updated_at_ms),
-                current: session.id == current,
+                // On the launchpad nothing is attached, so no row claims to be
+                // the current one.
+                current: !self.launchpad && session.id == current,
             })
             .collect();
         rows.sort_by(|a, b| {
@@ -547,7 +566,11 @@ impl Live {
             version: crate::version::VERSION.to_string(),
             connected: true,
             session: SessionMeta {
-                id: current,
+                id: if self.launchpad {
+                    String::new()
+                } else {
+                    current
+                },
                 title,
                 cwd: state.cwd.clone().unwrap_or_default(),
                 branch: String::new(),
@@ -572,12 +595,26 @@ impl Live {
             },
             todos: self.todos.clone(),
             sessions: rows,
+            models: self
+                .models
+                .iter()
+                .map(|model| ModelChoice {
+                    id: model.id.clone(),
+                    label: if model.label.trim().is_empty() {
+                        model.id.clone()
+                    } else {
+                        model.label.clone()
+                    },
+                    provider: model.provider.clone(),
+                    context_window: model.context_window,
+                    thinking_level: model.thinking_level.clone(),
+                })
+                .collect(),
             skills,
             jobs: self.local_jobs.clone().unwrap_or_default(),
             messages,
             input,
             activity,
-            palette: "",
             notice: self.notice.clone(),
         }
     }
@@ -637,6 +674,12 @@ impl Live {
             WbAction::Scroll(_) => {}
             WbAction::LoadOlder => self.load_older().await,
             WbAction::SwitchSession(id) => self.switch(&id).await,
+            WbAction::SetModel(id) => self.set_model(&id).await,
+            WbAction::SetThinking(level) => self.set_thinking(&level).await,
+            WbAction::NewSession => self.to_launchpad(),
+            // The surface owns its own palette; the driver persists it (it is
+            // the one that knows where `settings.json` is).
+            WbAction::SetTheme(_) => {}
             WbAction::SwitchPanel(_) | WbAction::ResizeSidebar(_) | WbAction::PersistSidebar => {}
             WbAction::FocusPane(_) => {}
             WbAction::Redraw => {}
@@ -653,9 +696,11 @@ impl Live {
         }
         // The launchpad's first message: there is no session to send it to yet,
         // so create one in the folder the surface is showing before sending.
-        if self.state.session_id.is_empty() {
+        // `/new` left the previous session attached on the agent's side, which
+        // is exactly why this asks for a *new* one instead of reusing it.
+        if self.launchpad || self.state.session_id.is_empty() {
             self.new_session().await;
-            if self.state.session_id.is_empty() {
+            if self.state.session_id.is_empty() || self.launchpad {
                 return;
             }
         }
@@ -702,7 +747,10 @@ impl Live {
             "quit" => return Outcome::Quit,
             "new" => {
                 self.notice = None;
-                self.new_session().await;
+                // `/new` is the launchpad, not an immediate session: the
+                // session is created by the first message, with whatever model
+                // and workspace the reader chose there.
+                self.to_launchpad();
             }
             "sessions" => self.refresh_sessions().await,
             "model" if !arg.is_empty() => match self.client.set_model(&arg).await {
@@ -736,17 +784,45 @@ impl Live {
     }
 
     async fn switch(&mut self, session_id: &str) {
-        if session_id == self.state.session_id {
+        if !self.launchpad && session_id == self.state.session_id {
             return;
         }
         match self.client.switch_session(session_id).await {
             Ok(_) => {
+                self.launchpad = false;
                 self.notice = None;
                 self.refresh_state().await;
                 self.load_tail().await;
             }
             Err(error) => self.notice = Some(format!("Could not switch session: {error}")),
         }
+    }
+
+    /// `/new`: detach from the session and show the launchpad.
+    ///
+    /// Nothing is created and nothing is asked of the agent — the header keeps
+    /// its connection state and version, the transcript goes, and the first
+    /// message starts the session (`submit` already handled that on a fresh
+    /// start). A run still streaming in the session left behind is muted by the
+    /// `launchpad` guard in `handle_event`.
+    pub fn to_launchpad(&mut self) {
+        self.launchpad = true;
+        self.chat.clear_messages();
+        self.paging = Paging::default();
+        self.draft = InputView {
+            placeholder: self.draft.placeholder.clone(),
+            ..InputView::default()
+        };
+        self.activity = Activity::default();
+        self.activity_start = None;
+        self.open_tools = 0;
+        self.approval = None;
+        self.notice = None;
+    }
+
+    /// Is the surface on the launchpad (no session attached)?
+    pub fn on_launchpad(&self) -> bool {
+        self.launchpad
     }
 
     async fn new_session(&mut self) {
@@ -763,11 +839,34 @@ impl Live {
             .await
         {
             Ok(_) => {
+                self.launchpad = false;
                 self.refresh_state().await;
                 self.refresh_sessions().await;
                 self.load_tail().await;
             }
             Err(error) => self.notice = Some(format!("Could not start a session: {error}")),
+        }
+    }
+
+    /// Apply one model by id (the `/model` picker's row).
+    async fn set_model(&mut self, model_id: &str) {
+        match self.client.set_model(model_id).await {
+            Ok(()) => {
+                self.notice = None;
+                self.refresh_state().await;
+            }
+            Err(error) => self.notice = Some(format!("Could not set the model: {error}")),
+        }
+    }
+
+    /// Apply one reasoning level (the model picker's slider).
+    async fn set_thinking(&mut self, level: &str) {
+        match self.client.set_thinking_level(level).await {
+            Ok(()) => {
+                self.notice = None;
+                self.refresh_state().await;
+            }
+            Err(error) => self.notice = Some(format!("Could not set thinking: {error}")),
         }
     }
 

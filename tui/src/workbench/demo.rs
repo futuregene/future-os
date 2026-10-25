@@ -11,10 +11,10 @@
 
 use crate::workbench::ansi::style;
 use crate::workbench::state::{
-    Activity, ActivityKind, InputView, JobRow, SessionMeta, SessionRow, SkillRow, TodoItem,
-    TodoState, UsageData, WorkbenchData,
+    Activity, ActivityKind, InputView, JobRow, ModelChoice, SessionMeta, SessionRow, SkillRow,
+    TodoItem, TodoState, UsageData, WorkbenchData,
 };
-use crate::workbench::theme::{Palette, FUTURE_DARK};
+use crate::workbench::theme::FUTURE_DARK;
 
 /// Which demo screen to build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,7 +55,7 @@ pub fn data(scenario: Scenario) -> WorkbenchData {
     }
 }
 
-fn base(palette: &Palette) -> WorkbenchData {
+fn base() -> WorkbenchData {
     WorkbenchData {
         app_name: "future-tui".into(),
         version: "0.11.0".into(),
@@ -122,6 +122,7 @@ fn base(palette: &Palette) -> WorkbenchData {
                 current: false,
             },
         ],
+        models: demo_models(),
         skills: vec![
             SkillRow {
                 name: "future-versioning".into(),
@@ -152,15 +153,57 @@ fn base(palette: &Palette) -> WorkbenchData {
             ..InputView::default()
         },
         activity: Activity::default(),
-        palette: palette.id,
         notice: None,
     }
+}
+
+/// The models a believable `/model` picker lists: three providers, one of them
+/// with two models, a context window of 1M and a small one — enough shapes for
+/// the grouping, the capability column and the `✓` to be reviewed on screen.
+fn demo_models() -> Vec<ModelChoice> {
+    vec![
+        ModelChoice {
+            id: "deepseek-flash".into(),
+            label: "deepseek-flash".into(),
+            provider: "westlakehpc".into(),
+            context_window: 1_000_000,
+            thinking_level: "medium".into(),
+        },
+        ModelChoice {
+            id: "Qwen".into(),
+            label: "Qwen 3.8 27B".into(),
+            provider: "westlakehpc".into(),
+            context_window: 262_144,
+            thinking_level: "low".into(),
+        },
+        ModelChoice {
+            id: "gpt-6-astra".into(),
+            label: "gpt-6-astra".into(),
+            provider: "azure".into(),
+            context_window: 1_000_000,
+            thinking_level: "high".into(),
+        },
+        ModelChoice {
+            id: "glm-flash".into(),
+            label: "glm-flash".into(),
+            provider: "westlakehpc".into(),
+            context_window: 200_000,
+            thinking_level: "off".into(),
+        },
+        ModelChoice {
+            id: "omlx-local".into(),
+            label: "omlx (local)".into(),
+            provider: "omlx".into(),
+            context_window: 131_072,
+            thinking_level: "xhigh".into(),
+        },
+    ]
 }
 
 /// The launchpad: nothing attached yet, so the header has no session and the
 /// body is the composer.
 pub fn launchpad() -> WorkbenchData {
-    let mut data = base(&FUTURE_DARK);
+    let mut data = base();
     data.input.text.clear();
     data.sessions[0].current = false;
     data
@@ -169,7 +212,7 @@ pub fn launchpad() -> WorkbenchData {
 /// A conversation with the work folded away, which is what the default reading
 /// level produces: one summary row above the answer it produced.
 pub fn chat() -> WorkbenchData {
-    let mut data = base(&FUTURE_DARK);
+    let mut data = base();
     data.session = SessionMeta {
         id: "s1".into(),
         title: "修复 parser 的 off-by-one".into(),

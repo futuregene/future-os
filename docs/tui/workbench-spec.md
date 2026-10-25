@@ -29,8 +29,11 @@ implementation may extend it, but may not change its meaning.
    gauge · tokens · cost / cache.
 6. `/` command palette (with descriptions, Tab completion), `?` help overlay,
    `/` filter, ↑↓ history.
-7. Themes: two built-in 256-colour palettes, `future-dark` / `future-light`,
-   selectable with `/theme`.
+7. Themes: six built-in 256-colour palettes — `dark`, `light`, `one-dark`,
+   `one-light`, `high-contrast`, `dracula` — selectable with `/theme`, which
+   opens a picker that previews each one as the highlight moves. The ids are the
+   inline TUI's catalogue (`crate::themes::THEME_SPECS`), because
+   `settings.json` → `themeId` is one key for both surfaces.
 8. **The terminal UI, and it is `future tui`**: the workbench has its own
    full-screen render loop and `future tui` starts it. The previous inline UI is
    **deleted**, not deprecated — its code, its page and its `--legacy` flag are
@@ -58,13 +61,14 @@ manager, `Ctrl+O` detailed/collapsed, full-screen draft editor.
 ```
 tui/src/workbench/mod.rs        // module exports + Workbench state machine + WbEvent/WbAction
 tui/src/workbench/ansi.rs       // width/truncate/join/pad (CJK safe)
-tui/src/workbench/theme.rs      // Palette, the two themes, semantic colours
+tui/src/workbench/theme.rs      // Palette, the six themes, semantic colours
 tui/src/workbench/widgets.rs    // borders, tabs, progress bars, badges, pixel logo, spinner
 tui/src/workbench/layout.rs     // Rect, Panes, hit regions (HitMap)
 tui/src/workbench/mouse.rs      // SGR 1006 parsing, MouseEvent, wheel/drag state machine
 tui/src/workbench/launchpad.rs  // first screen
 tui/src/workbench/screen.rs     // full-screen composition: header/body/sidebar/input/status
 tui/src/workbench/panels.rs     // rendering of the 4 sidebar panels (pure functions over PanelData)
+tui/src/workbench/picker.rs     // the /model, /theme and /sessions list overlay
 tui/src/workbench/state.rs      // WorkbenchData / TodoItem / SessionRow / UsageData
 tui/src/workbench/demo.rs       // demo data (for screenshots/self-tests; does not connect to the agent)
 tui/examples/workbench_demo.rs  // prints one frame at any size + mouse self-test
@@ -117,19 +121,26 @@ that need the agent first. Existing behaviour in `tui/src/components/**`
 
 ### Visual spec (256 colours)
 
-| Semantic | future-dark | future-light | Use |
-|---|---|---|---|
-| bg | 233 | 254 | canvas |
-| panel | 235 | 252 | sidebar / input background |
-| border | 238 | 246 | borders, dividers |
-| fg | 252 | 236 | body text |
-| muted | 245 | 243 | secondary notes |
-| accent | 80 (teal) | 30 | brand, selection, progress |
-| iris | 111 | 62 | links, active tab |
-| amber | 179 | 130 | thinking, warning |
-| green | 114 | 28 | success |
-| red | 203 | 124 | error, danger |
-| purple | 141 | 91 | sub-agent / skills |
+| Semantic | dark | light | one-dark | one-light | high-contrast | dracula | Use |
+|---|---|---|---|---|---|---|
+| bg | 233 | 254 | 236 | 231 | 16 | 236 | canvas |
+| panel | 235 | 252 | 237 | 254 | 17 | 237 | sidebar / input background |
+| border | 238 | 246 | 240 | 250 | 250 | 239 | borders, dividers |
+| fg | 252 | 236 | 249 | 236 | 231 | 255 | body text |
+| muted | 245 | 243 | 243 | 245 | 246 | 243 | secondary notes |
+| accent | 80 (teal) | 30 | 75 | 25 | 51 | 141 | brand, selection, progress |
+| iris | 111 | 62 | 73 | 30 | 123 | 117 | links, active tab |
+| amber | 179 | 130 | 180 | 130 | 226 | 228 | thinking, warning |
+| green | 114 | 28 | 108 | 28 | 46 | 84 | success |
+| red | 203 | 124 | 168 | 160 | 196 | 203 | error, danger |
+| purple | 141 | 91 | 176 | 91 | 213 | 212 | sub-agent / skills |
+
+The four newer palettes mirror `crate::themes`' colours wherever the inline
+`Theme` has the same semantic (`accent`, `fg`, `border`, `dim`, `error`,
+`success`, `md_link`, `md_heading`, `md_code`); `bg` and `panel` are the
+workbench's own, because a full-screen canvas paints an explicit background
+step where the inline theme inherits the terminal's. Ids older workbench builds
+wrote (`future-dark`, `future-light`) still resolve, to `dark` and `light`.
 
 Logo: a 9x4 pixel whale (using the three block levels `█ ▀ ▄`), swishing its tail
 slightly at 8fps at runtime (the demo may keep it static). The wordmark
@@ -179,6 +190,40 @@ pins it.
 Double-click = two clicks at the same point <400ms apart; triple click = row
 selection (P1).
 
+### Pickers (`/model`, `/theme`, `/sessions`)
+
+One overlay component (`picker.rs`) behind all three menus: a titled box with an
+incremental-search line (`❯`), group headings (the model list is grouped by
+provider, in the agent's order), a `✓` on the row already in force, and the
+key hints for that menu on its last row.
+
+| Key / gesture | Behaviour |
+|---|---|
+| `↑` `↓` | move the highlight, stepping over group headings |
+| `pageUp` / `pageDown` | ten rows |
+| any other character | joins the search; the list filters and the highlight returns to the top |
+| `backspace` | widens the search again |
+| `←` `→` | the model picker's reasoning slider (six levels); elsewhere nothing |
+| `enter` | apply the highlighted row and close |
+| wheel | one row per notch |
+| click a row | move the highlight *and* apply: a pointer has no second `enter` |
+| `esc` / click outside | close without applying |
+
+The row a picker opens on is the value in force, so `esc` straight after opening
+changes nothing. `/theme` previews as the highlight moves — the whole frame
+repaints in the palette named — and `esc` restores the palette that was there
+when the box opened; only `enter` persists (`settings.json` → `themeId`). The
+model picker commits the model **and** the slider's level together (`SetModel` +
+`SetThinking`), and its slider row applies the level alone.
+
+`/new` returns to the launchpad instead of creating a session: the header's own
+state (connection dot, version) stays, the transcript goes, and the first
+message creates the session with whatever model/effort the launchpad shows.
+
+Rows are painted and registered as hit regions from one list and one geometry
+(`screen::picker_box` over `box_geometry`), which is what makes a click land on
+the row under the pointer rather than one beside it.
+
 ### Keyboard
 
 Keep the existing global bindings; add/override:
@@ -207,13 +252,17 @@ pub struct WorkbenchData {
     pub activity: Activity,            // idle|thinking|tool|streaming + detail
     pub scroll: usize,                 // 0 = pinned to the bottom
     pub sidebar: SidebarState,         // panel + width + focus
-    pub overlay: Option<Overlay>,      // palette|help|panel-full
+    pub overlay: Option<Overlay>,      // palette|help|panel-full|picker(kind)
+    pub models: Vec<ModelChoice>,      // id/label/provider/context/thinking
+    // the picker's own state (kind, query, highlight, slider) lives on the
+    // surface, not here: it is what the reader is doing, not what is on screen
 }
 
 pub enum WbEvent { Key(KeyEvent), Mouse(MouseEvent), Resize(u16,u16), Tick }
 pub enum WbAction {
     Submit(String), Command(String), Scroll(i32), LoadOlder,
-    SwitchSession(String), SetModel(String), SetEffort(String),
+    SwitchSession(String), SetModel(String), SetThinking(String),
+    SetTheme(String), NewSession,
     SetPanel(PanelId), ResizeSidebar(u16), FocusPane(PaneId),
     ToggleToolCall(usize), PersistSettings(SettingsPatch), Quit, Redraw,
 }
@@ -232,15 +281,19 @@ returns **exactly h rows, each exactly w display columns wide**, as ANSI strings
 
 ```
 cargo run -p future-tui --example workbench_demo -- \
-    --scenario launchpad|chat|todo|help --width 120 --height 38 [--ansi|--plain]
+    --scenario launchpad|chat|todo|help --width 120 --height 38 [--ansi|--plain] \
+    [--picker model|theme|sessions]
 cargo run -p future-tui --example workbench_demo -- --self-test
 ```
 
 - `--plain`: the text frame with ANSI stripped, for grep assertions.
+- `--picker`: the same frame with one of the menus open — a picker can be
+  reviewed (and screenshotted) without an agent.
 - `--self-test`: builds 120x38 and 90x24 frames and asserts the hit regions:
   clicking (id=sidebar.todo) returns `SetPanel(Todo)`; dragging the divider
   returns `ResizeSidebar`; the wheel returns `Scroll`; clicking the input box
-  returns `FocusPane(Input)`. When everything passes it prints `self-test ok`.
+  returns `FocusPane(Input)`; clicking a picker row returns `SwitchSession`.
+  When everything passes it prints `self-test ok`.
 - Acceptance commands (every worker runs these before delivering):
   `cargo fmt --check -p future-tui` (if the repo does not enforce it, fmt only
   the new files), `cargo build -p future-tui`, `cargo test -p future-tui
@@ -301,8 +354,17 @@ nothing here is ever clipped mid-value.
 | `workbench-panel-todo.png` | 120×38 | 待办 lists the repo's real goal todos (`✔/◉/○/✖`, priority, text) |
 | `workbench-panel-skills.png` | 120×38 | 技能 lists the 22 installed skills |
 | `workbench-panel-usage.png` | 120×38 | 用量: `上下文` and the numbers are separate pieces, no trailing `…` |
+| `workbench-picker-model.png` | 120×38 | `/model` against the live agent: 20 models in 4 provider groups, the reasoning slider, `✓` on the model in force (`1.0M ctx · thinking high` per row) |
+| `workbench-picker-theme.png` | 120×38 | `/theme`: six palettes, the frame painted in the one in force (Dracula), `✓` on it |
+| `workbench-picker-sessions.png` | 120×38 | `/sessions`: real conversations with workspace and relative age, `✓` on the attached one |
 
 The panel shots come from a live tmux session against an isolated agent
 (`FUTURE_HOME` with a copy of the installed skills and the tasks database),
 clicked with `tools/click.py`; `tmux display -p '#{mouse_any_flag}'` reads `1`
 while it runs and `0` after it quits.
+
+The picker shots come from a live tmux session at 120×38 against the running
+agent, opened by typing the command, with the row chosen by a real SGR mouse
+click (`tools/click.py`) and the menu reopened afterwards so the shot shows the
+clicked value ticked — model and session on throwaway sessions, so nothing else
+was switched.

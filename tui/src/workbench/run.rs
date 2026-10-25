@@ -25,6 +25,7 @@ use crate::terminal::Terminal;
 use super::layout;
 use super::live::{Live, Outcome};
 use super::mouse;
+use super::picker::PickerKind;
 use super::{WbAction, WbEvent, Workbench};
 
 /// What a run of the workbench needs to know before it starts.
@@ -117,6 +118,8 @@ pub async fn run(options: Options) -> Result<(), String> {
         &mut live,
         &mut agent_events,
         &mut input_rx,
+        &mut settings,
+        &options.settings_path,
     )
     .await;
 
@@ -142,6 +145,8 @@ async fn event_loop(
     live: &mut Live,
     agent_events: &mut mpsc::UnboundedReceiver<AgentEvent>,
     input_rx: &mut mpsc::UnboundedReceiver<TerminalEvent>,
+    settings: &mut TuiSettings,
+    settings_path: &Path,
 ) -> Result<(), String> {
     let mut ticker = tokio::time::interval(Duration::from_millis(120));
     // The first tick fires immediately; consume it so the loop's first draw is
@@ -158,7 +163,7 @@ async fn event_loop(
                     TerminalEvent::Data(data) => events_of(data),
                 };
                 for event in events {
-                    if quit(workbench, live, event).await? {
+                    if quit(workbench, live, event, settings, settings_path).await? {
                         return Ok(());
                     }
                 }
@@ -185,7 +190,13 @@ async fn event_loop(
 }
 
 /// Handle one event. Returns `true` when the reader asked to leave.
-async fn quit(workbench: &mut Workbench, live: &mut Live, event: WbEvent) -> Result<bool, String> {
+async fn quit(
+    workbench: &mut Workbench,
+    live: &mut Live,
+    event: WbEvent,
+    settings: &mut TuiSettings,
+    settings_path: &Path,
+) -> Result<bool, String> {
     // A parked approval owns `y` and `n`: the run is stopped until someone
     // answers, and the activity row is telling the reader exactly that.
     if let WbEvent::Key(key) = &event {
@@ -232,9 +243,23 @@ async fn quit(workbench: &mut Workbench, live: &mut Live, event: WbEvent) -> Res
 
     let actions = workbench.handle(event, &live.data(1));
     for action in actions {
-        if matches!(action, WbAction::Command(ref command) if command == "/theme") {
-            workbench.cycle_theme();
-            live.theme_id = workbench.palette.id.to_string();
+        // The three list menus belong to the surface: the app owns the agent,
+        // not the picker. Opening it here (rather than in `live.command`) is
+        // what lets the palette and the draft both reach it.
+        if let WbAction::Command(command) = &action {
+            if let Some(kind) = PickerKind::from_command(command) {
+                let data = live.data(1);
+                workbench.open_picker(kind, &data);
+                continue;
+            }
+        }
+        // A committed palette is persisted now, not only at exit: a reader who
+        // picks a theme and then loses the terminal keeps the choice.
+        if let WbAction::SetTheme(id) = &action {
+            workbench.set_theme(id);
+            live.theme_id = id.clone();
+            settings.theme_id = Some(id.clone());
+            save_settings(settings_path, settings);
             continue;
         }
         if matches!(action, WbAction::Submit(_)) {

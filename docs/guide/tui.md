@@ -138,10 +138,11 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | `tui/src/workbench/ansi.rs` | Width-safe text: `fit`, `pad`, `clip`, column slicing |
 | `tui/src/workbench/widgets.rs` | Rules, boxes, tabs, bars, badges, spinner, logo, wordmark, the input box |
 | `tui/src/workbench/panels.rs` | The five sidebar panels (pure renderers) |
+| `tui/src/workbench/picker.rs` | The `/model`, `/theme` and `/sessions` list picker |
 | `tui/src/workbench/launchpad.rs` | The first screen |
 | `tui/src/workbench/state.rs` | `WorkbenchData` and its parts |
 | `tui/src/workbench/mouse.rs` | SGR 1006 parsing |
-| `tui/src/workbench/theme.rs` | `future-dark` / `future-light` |
+| `tui/src/workbench/theme.rs` | The six palettes: `dark`, `light`, `one-dark`, `one-light`, `high-contrast`, `dracula` |
 | `tui/src/workbench/demo.rs` | Deterministic demo data (screenshots, tests) |
 | `tui/examples/demo_agent.rs` | The scripted gRPC agent screenshots talk to |
 

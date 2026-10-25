@@ -21,7 +21,10 @@
 4. 侧栏 4 个真实面板：待办（goal）、会话（sessions）、用量（usage）、技能（skills）。
 5. 状态栏真实指标：模型 · 强度 · cwd · git 分支 · 上下文占用条 · token · 费用/缓存。
 6. `/` 命令面板（带说明、Tab 补全）、`?` 帮助覆盖层、`/` 过滤、历史 ↑↓。
-7. 主题：内置 `future-dark` / `future-light` 两套 256 色，支持 `/theme`。
+7. 主题：内置六套 256 色——`dark` / `light` / `one-dark` / `one-light` /
+   `high-contrast` / `dracula`——由 `/theme` 选择；选择器会把高亮所在的那套直接预览到整个界面。
+   id 就是行内 TUI 的目录（`crate::themes::THEME_SPECS`），因为 `settings.json` → `themeId`
+   两块界面共用同一个键。
 8. **它就是终端界面，也就是 `future tui`**：workbench 有自己的全屏渲染循环，`future tui`
    启动它。旧的行内界面是**删除**，不是弃用——代码、页面和 `--legacy` 开关都没了。它也不是
    `--layout` 开关：两个渲染器共用一条输出流的做法被否掉了。
@@ -44,13 +47,14 @@
 ```
 tui/src/workbench/mod.rs        // 模块导出 + Workbench 状态机 + WbEvent/WbAction
 tui/src/workbench/ansi.rs       // 宽度/截断/拼接/填充（CJK 安全）
-tui/src/workbench/theme.rs      // Palette、两套主题、语义色
+tui/src/workbench/theme.rs      // Palette、六套主题、语义色
 tui/src/workbench/widgets.rs    // 边框、页签、进度条、徽标、像素 logo、spinner
 tui/src/workbench/layout.rs     // Rect、Panes、命中区域（HitMap）
 tui/src/workbench/mouse.rs      // SGR 1006 解析、MouseEvent、滚轮/拖拽状态机
 tui/src/workbench/launchpad.rs  // 首屏
 tui/src/workbench/screen.rs     // 全屏合成：header/body/sidebar/input/status
 tui/src/workbench/panels.rs     // 侧栏 4 面板的渲染（纯函数，输入 PanelData）
+tui/src/workbench/picker.rs     // /model、/theme、/sessions 的列表选择器覆盖层
 tui/src/workbench/state.rs      // WorkbenchData / TodoItem / SessionRow / UsageData
 tui/src/workbench/demo.rs       // 演示数据（截图/自测用，不连 agent）
 tui/examples/workbench_demo.rs  // 打印任意尺寸的一帧 + 鼠标自测
@@ -98,19 +102,24 @@ live 接入只允许改：`tui/src/workbench/live.rs`、`tui/src/workbench/state
 
 ### 视觉规格（256 色）
 
-| 语义 | future-dark | future-light | 用途 |
-|---|---|---|---|
-| bg | 233 | 254 | 画布 |
-| panel | 235 | 252 | 侧栏/输入框底 |
-| border | 238 | 246 | 边框、分隔 |
-| fg | 252 | 236 | 正文 |
-| muted | 245 | 243 | 次要说明 |
-| accent | 80 (teal) | 30 | 品牌、选中、进度 |
-| iris | 111 | 62 | 链接、页签激活 |
-| amber | 179 | 130 | 思考、警告 |
-| green | 114 | 28 | 成功 |
-| red | 203 | 124 | 错误、危险 |
-| purple | 141 | 91 | 子代理/技能 |
+| 语义 | dark | light | one-dark | one-light | high-contrast | dracula | 用途 |
+|---|---|---|---|---|---|---|---|
+| bg | 233 | 254 | 236 | 231 | 16 | 236 | 画布 |
+| panel | 235 | 252 | 237 | 254 | 17 | 237 | 侧栏/输入框底 |
+| border | 238 | 246 | 240 | 250 | 250 | 239 | 边框、分隔 |
+| fg | 252 | 236 | 249 | 236 | 231 | 255 | 正文 |
+| muted | 245 | 243 | 243 | 245 | 246 | 243 | 次要说明 |
+| accent | 80 (teal) | 30 | 75 | 25 | 51 | 141 | 品牌、选中、进度 |
+| iris | 111 | 62 | 73 | 30 | 123 | 117 | 链接、页签激活 |
+| amber | 179 | 130 | 180 | 130 | 226 | 228 | 思考、警告 |
+| green | 114 | 28 | 108 | 28 | 46 | 84 | 成功 |
+| red | 203 | 124 | 168 | 160 | 196 | 203 | 错误、危险 |
+| purple | 141 | 91 | 176 | 91 | 213 | 212 | 子代理/技能 |
+
+后四套在行内 `Theme` 有同名语义的位置上与 `crate::themes` 一致（`accent`、`fg`、`border`、
+`dim`、`error`、`success`、`md_link`、`md_heading`、`md_code`）；`bg` 与 `panel` 是
+workbench 自己的——全屏画布必须自己画一层背景，而行内主题是继承终端背景的。早期
+workbench 写下的 id（`future-dark`、`future-light`）仍能解析到 `dark` / `light`。
 
 Logo：9x4 像素鲸（用 `█ ▀ ▄` 三档方块），运行时按 8fps 轻微摆尾（demo 可静态）。
 字标 `FUTURE OS` 用 block 字体 5 行版本，仅在宽度 ≥ 96 时显示；否则单行文字。
@@ -143,6 +152,34 @@ Logo：9x4 像素鲸（用 `█ ▀ ▄` 三档方块），运行时按 8fps 轻
 `ctrl+b` 侧栏开/聚焦/关；`tab` 面板内焦点；`shift+tab` 反向；
 `ctrl+q` 折叠待办；`alt+z` 放大侧栏；`/` 命令面板；`?` 帮助；`esc` 逐层关闭。
 
+### 选择器（`/model`、`/theme`、`/sessions`）
+
+三个菜单共用同一个组件（`picker.rs`）：带标题的盒子 + 增量搜索行（`❯`）+ 分组标题
+（模型按 provider 分组，顺序跟 agent 一致）+ 生效行上的 `✓` + 最后一行该菜单的键位提示。
+
+| 键 / 手势 | 行为 |
+|---|---|
+| `↑` `↓` | 移动高亮，跳过分组标题 |
+| `pageUp` / `pageDown` | 十行 |
+| 其他字符 | 进入搜索；列表收窄，高亮回到第一行 |
+| `backspace` | 收回一格搜索 |
+| `←` `→` | 模型选择器的推理强度滑块（六档）；其余菜单无动作 |
+| `enter` | 应用高亮行并关闭 |
+| 滚轮 | 一格一行 |
+| 点击行 | 同时移动高亮并应用（鼠标没有第二个 `enter`） |
+| `esc` / 点盒子外 | 关闭且不应用 |
+
+打开时高亮就在当前生效的值上，所以刚打开就 `esc` 什么都不会变。`/theme` 随高亮预览——
+整个界面按那套调色板重绘——`esc` 恢复到打开时的主题，只有 `enter` 才会落盘
+（`settings.json` → `themeId`）。模型选择器把模型**和**滑块档位一起提交
+（`SetModel` + `SetThinking`）；单独按在滑块行上则只改强度。
+
+`/new` 回到启动台，而不是立刻建会话：头部自己的状态（连接点、版本）留着，对话清空，
+第一条消息才按启动台上显示的模型/强度建会话。
+
+行的绘制与命中区域来自同一份列表和同一份几何（`screen::picker_box` 用 `box_geometry`），
+所以点击一定落在指针下面那一行，而不是旁边一行。
+
 ---
 
 ## 5. 类型契约
@@ -159,18 +196,22 @@ pub struct WorkbenchData {
     pub sessions: Vec<SessionRow>,
     pub skills: Vec<SkillRow>,
     pub jobs: Vec<JobRow>,
+    pub models: Vec<ModelChoice>,      // id/label/provider/context/thinking
     pub messages: Vec<String>,         // 已渲染 ANSI 行（由 live 层提供）
     pub input: InputView,              // text + cursor byte offset + placeholder
     pub activity: Activity,            // idle|thinking|tool|streaming + detail
     pub scroll: usize,                 // 0 = 贴底
     pub sidebar: SidebarState,         // panel + width + focus
-    pub overlay: Option<Overlay>,      // palette|help|panel-full
+    pub overlay: Option<Overlay>,      // palette|help|panel-full|picker(kind)
+    // 选择器自身状态（kind/query/高亮/滑块）在 surface 上，不在这里：
+    // 那是读者正在做什么，而不是屏幕上有什么
 }
 
 pub enum WbEvent { Key(KeyEvent), Mouse(MouseEvent), Resize(u16,u16), Tick }
 pub enum WbAction {
     Submit(String), Command(String), Scroll(i32), LoadOlder,
-    SwitchSession(String), SetModel(String), SetEffort(String),
+    SwitchSession(String), SetModel(String), SetThinking(String),
+    SetTheme(String), NewSession,
     SetPanel(PanelId), ResizeSidebar(u16), FocusPane(PaneId),
     ToggleToolCall(usize), PersistSettings(SettingsPatch), Quit, Redraw,
 }
@@ -188,14 +229,17 @@ pub enum WbAction {
 
 ```
 cargo run -p future-tui --example workbench_demo -- \
-    --scenario launchpad|chat|todo|help --width 120 --height 38 [--ansi|--plain]
+    --scenario launchpad|chat|todo|help --width 120 --height 38 [--ansi|--plain] \
+    [--picker model|theme|sessions]
 cargo run -p future-tui --example workbench_demo -- --self-test
 ```
 
 - `--plain`：去 ANSI 的文本帧，便于 grep 断言。
+- `--picker`：同一个帧但菜单已经打开——不需要 agent 就能评审（和截图）选择器。
 - `--self-test`：构造 120x38 与 90x24 两帧，断言命中区域：
   点 (id=sidebar.todo) 返回 `SetPanel(Todo)`；拖分隔条返回 `ResizeSidebar`；
-  滚轮返回 `Scroll`；点击输入框返回 `FocusPane(Input)`。全部通过打印 `self-test ok`。
+  滚轮返回 `Scroll`；点击输入框返回 `FocusPane(Input)`；点击选择器行返回 `SwitchSession`。
+  全部通过打印 `self-test ok`。
 - 验收命令（任何 worker 交付前都要跑）：
   `cargo fmt --check -p future-tui`（若仓库未强制，可只 fmt 新文件）、
   `cargo build -p future-tui`、`cargo test -p future-tui workbench`。
