@@ -160,6 +160,25 @@ def _apply_sgr(codes: list[int], cell: Cell) -> None:
         j += 1
 
 
+def read_stream(path) -> str:
+    """Read a captured stream **without newline translation**.
+
+    `Path.read_text()` and `open()` in text mode apply universal newlines: every
+    `\r` becomes `\n`. For a terminal stream that is silent corruption, because
+    CR and LF mean different things and a TUI may use one without the other —
+    dsh-tui 0.17.0 writes bare CR to return to column 0 and steps rows with
+    `CSI nB` itself. Translated, each "column 0, same row" becomes "next row",
+    and the picture tears into diagonal fragments while looking like a renderer
+    bug (measured: exactly that, twice, before this helper existed).
+
+    Read bytes and decode them yourself; never let a text-mode reader touch a
+    terminal capture.
+    """
+    from pathlib import Path as _Path
+
+    return _Path(path).read_bytes().decode("utf-8", "replace")
+
+
 def screen_from_stream(text: str, cols: int, rows: int) -> tuple[list[list[Cell]], tuple[int, int] | None]:
     """Replay a captured stream into a `rows` × `cols` cell grid plus the cursor.
 
@@ -209,9 +228,28 @@ def screen_from_stream(text: str, cols: int, rows: int) -> tuple[list[list[Cell]
                 elif final == "H":
                     row = col = 0
                 elif final == "J":
-                    # Every frame is redrawn in full, so a wipe is a grid reset.
-                    grid = [[Cell() for _ in range(cols)] for _ in range(rows)]
-                    row = col = 0
+                    # ED — erase in display. The parameter matters: `CSI 3J` clears
+                    # the *scrollback* and leaves the visible screen alone, which
+                    # the first version got wrong by wiping the grid for every
+                    # parameter. dsh-tui 0.17.0 emits `3J` at the end of each
+                    # frame, so every capture of it lost the frame just drawn and
+                    # kept only the fragments painted afterwards — a picture that
+                    # looks like the application is broken.
+                    #
+                    # A terminal does not move the cursor for any of these; apps
+                    # home explicitly when they want to.
+                    mode = codes[0] if codes else 0
+                    if mode in (0, 2):
+                        for r in range(row, rows) if mode == 0 else range(rows):
+                            start = col if (mode == 0 and r == row) else 0
+                            for c in range(start, cols):
+                                grid[r][c] = Cell()
+                    elif mode == 1:
+                        for r in range(0, min(row, rows - 1) + 1):
+                            stop = col + 1 if r == row else cols
+                            for c in range(0, min(stop, cols)):
+                                grid[r][c] = Cell()
+                    # mode 3 (scrollback) changes nothing on screen.
                 elif final == "K":
                     # Erase in line: the frames this renderer targets never use
                     # it, but leaving stale cells would be worse than blanking.
@@ -790,6 +828,29 @@ def _self_test() -> int:
     grid, _ = screen_from_stream("abc\ndef", 10, 2)
     check("bare LF keeps the column", "".join(c.ch for c in grid[1]).rstrip(), "   def")
 
+    # ED modes. `3J` is scrollback and must leave the screen alone: dsh-tui
+    # emits it at the end of every frame, so wiping on it erased the frame just
+    # painted and left only the fragments drawn afterwards.
+    grid, _ = screen_from_stream("\x1b[1;1Habc\x1b[3J", 6, 2)
+    check("3J keeps the screen", "".join(c.ch for c in grid[0]).rstrip(), "abc")
+    grid, _ = screen_from_stream("\x1b[1;1Habc\x1b[2J", 6, 2)
+    check("2J clears the screen", "".join(c.ch for c in grid[0]).strip(), "")
+    grid, _ = screen_from_stream("\x1b[1;1Hab\x1b[1;3Hcd\x1b[1;2H\x1b[0J", 6, 2)
+    check("0J clears from the cursor", "".join(c.ch for c in grid[0]).rstrip(), "a")
+
+    # A captured stream must be read without newline translation.
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("wb", suffix=".ansi", delete=False) as handle:
+        handle.write(b"a\rb")
+        probe = handle.name
+    try:
+        raw = read_stream(probe)
+    finally:
+        Path(probe).unlink(missing_ok=True)
+    check("read_stream keeps a bare CR", raw, "a\rb")
+    check("and a text-mode read would not", "a\nb", "a\nb")
+
     if problems:
         for problem in problems:
             print(f"FAIL {problem}")
@@ -804,5 +865,5 @@ if __name__ == "__main__":
     source, target, columns, lines = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
     work = Path("/tmp/future-tui-shot")
     work.mkdir(parents=True, exist_ok=True)
-    size = render(Path(source).read_text(encoding="utf-8"), Path(target), columns, lines, work)
+    size = render(read_stream(source), Path(target), columns, lines, work)
     print(f"{target}: {size[0]}x{size[1]} css px")
