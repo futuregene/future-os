@@ -1,5 +1,5 @@
 import { PeerIconChip } from "../remote/PeerIconChip";
-import { ArrowLeft, Plus, Settings2, Trash2 } from "lucide-react-native";
+import { ArrowLeft, Pencil, Plus, Settings2, Trash2 } from "lucide-react-native";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -17,8 +17,9 @@ import { useAppDialog } from "../components/useAppDialog";
 import { DesktopScope, useRemoteControls } from "../remote/RemoteContext";
 import { SettingsScreen, type SettingsScreenHandle } from "../features/settings/SettingsScreen";
 import type { PairedDesktop } from "../remote/types";
-import { layout, radius, spacing } from "../theme/tokens";
+import { layout, radius, slopToTouchTarget, spacing } from "../theme/tokens";
 import { createThemedStyles, useTheme } from "../theme/ThemeContext";
+import { DesktopLabelDialog } from "./DesktopLabelDialog";
 
 const label = (desktop: PairedDesktop) => desktop.name ?? desktop.desktopId;
 
@@ -32,9 +33,11 @@ const label = (desktop: PairedDesktop) => desktop.name ?? desktop.desktopId;
  * threw away the page they were reading. Switching has its own control where
  * the sessions are (the device picker on the session list). What a row offers
  * here is the two things that are about the machine: the configure action
- * beside it — its name and icon, plus everything that is read from or written
- * to it — and unpairing. Settings for a device are not reachable from anywhere
- * else, and the phone's own settings deliberately do not list machines at all.
+ * beside it — everything that is read from or written to it — and unpairing.
+ * Its name and icon are the phone's own label rather than the machine's, so
+ * they are edited on the row itself, by the mark and the name they describe;
+ * settings for a device are not reachable from anywhere else, and the phone's
+ * own settings deliberately do not list machines at all.
  *
  * The one list still serves as the startup picker, for a phone that has paired
  * desktops but no usable active pair: App renders this screen with no back
@@ -55,11 +58,16 @@ export function DesktopsScreen({ onBack, onAdd, onOpenConversation }: {
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
+  /** The machine whose name and icon are being edited, if any. */
+  const [labeling, setLabeling] = useState<string | null>(null);
   const settingsRef = useRef<SettingsScreenHandle>(null);
   /** A phone with paired desktops but no active pair (see App) gets this list
    * with nothing behind it, so there — and only there — a row picks the machine
    * the app uses. Opened from the session list it is the device page instead. */
   const picking = !onBack;
+  /** The machine the label dialog is for — looked up on every render, so a
+   * machine unpaired while it is open simply closes the dialog. */
+  const labelled = labeling ? remote.desktops.find(item => item.desktopId === labeling) : undefined;
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
@@ -142,12 +150,34 @@ export function DesktopsScreen({ onBack, onAdd, onOpenConversation }: {
                     own colour. */}
                 <PeerIconChip id={desktop.icon} size={{ height: 44, width: 36 }} />
                 <View style={styles.identity}>
-                  <Text
-                    numberOfLines={1}
-                    style={[styles.name, desktop.name ? null : styles.nameFallback]}
-                  >
-                    {label(desktop)}
-                  </Text>
+                  <View style={styles.nameRow}>
+                    <Text
+                      numberOfLines={1}
+                      style={[styles.name, desktop.name ? null : styles.nameFallback]}
+                    >
+                      {label(desktop)}
+                    </Text>
+                    {/* Beside the label it edits, not among the row's actions:
+                        the name and the icon are this phone's own record, so
+                        they are changed here even while the machine is off —
+                        unlike everything behind the gear. Not drawn on the
+                        startup picker, where the whole row is the choice and a
+                        second control inside it would only take taps away. */}
+                    {picking
+                      ? null
+                      : (
+                          <Pressable
+                            accessibilityLabel={t("desktops.editLabel")}
+                            accessibilityRole="button"
+                            disabled={busy}
+                            hitSlop={slopToTouchTarget(24)}
+                            onPress={() => setLabeling(desktop.desktopId)}
+                            style={({ pressed }) => [styles.editButton, pressed && styles.pressed]}
+                          >
+                            <Pencil color={colors.inkMuted} size={14} />
+                          </Pressable>
+                        )}
+                  </View>
                   {desktop.name ? (
                     <Text numberOfLines={1} style={styles.id}>{desktop.desktopId}</Text>
                   ) : null}
@@ -181,9 +211,9 @@ export function DesktopsScreen({ onBack, onAdd, onOpenConversation }: {
                         {identity}
                       </View>
                     )}
-                {/* A settings glyph rather than a pencil: the page behind it is the
-                    machine's whole configuration, and the name and icon are two
-                    fields on it. */}
+                {/* A settings glyph rather than a pencil: the page behind it is
+                    everything the machine reads and writes, and the name and
+                    icon — the phone's own record — are beside this row instead. */}
                 <Pressable
                   accessibilityLabel={t("desktops.settings")}
                   accessibilityRole="button"
@@ -239,6 +269,13 @@ export function DesktopsScreen({ onBack, onAdd, onOpenConversation }: {
             </DesktopScope>
           : null}
       </Modal>
+
+      {/* A dialog rather than a level inside the machine's settings: the name and
+          icon are the phone's own label, so they are edited where that label is
+          drawn, and the settings page keeps to what the machine itself answers.
+          Resolved from the list rather than held as an object: a machine can be
+          unpaired while the dialog is open, and there is nothing left to edit. */}
+      {labelled ? <DesktopLabelDialog desktop={labelled} key={labelled.desktopId} onClose={() => setLabeling(null)} /> : null}
     </SafeAreaView>
   );
 }
@@ -277,8 +314,18 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   iconButton: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center", borderRadius: radius.md },
   pressed: { backgroundColor: theme.colors.surfaceSubtle },
   identity: { flex: 1, minWidth: 0, gap: spacing.xs },
-  name: { color: theme.colors.inkStrong, fontSize: theme.font(16), fontWeight: "600" },
+  // The name and the control that edits it share a line, so the row keeps its
+  // two actions and a long name truncates instead of wrapping.
+  nameRow: { flexDirection: "row", alignItems: "center", gap: spacing.xs, minWidth: 0 },
+  name: { flexShrink: 1, color: theme.colors.inkStrong, fontSize: theme.font(16), fontWeight: "600" },
   nameFallback: { color: theme.colors.ink, fontWeight: "500" },
+  editButton: {
+    width: 24,
+    height: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radius.sm,
+  },
   id: { color: theme.colors.inkMuted, fontSize: theme.font(12) },
   empty: { color: theme.colors.inkSoft, fontSize: theme.font(15), textAlign: "center", paddingVertical: spacing.xl },
   footer: { marginTop: "auto", paddingTop: spacing.lg, gap: spacing.md },
