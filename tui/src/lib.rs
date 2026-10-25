@@ -68,6 +68,7 @@ pub mod tui;
 mod update;
 pub mod utils;
 pub mod version;
+pub mod workbench;
 pub mod worktree;
 
 /// Shared lock for tests that mutate process-global state (env vars), so

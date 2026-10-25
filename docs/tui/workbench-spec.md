@@ -31,8 +31,12 @@ implementation may extend it, but may not change its meaning.
    `/` filter, ↑↓ history.
 7. Themes: two built-in 256-colour palettes, `future-dark` / `future-light`,
    selectable with `/theme`.
-8. Coexistence with the existing inline mode: `--layout workbench|inline`,
-   workbench by default (keeping a fallback).
+8. **An independent TUI**: `future-workbench` has its own entry point
+   (`tui/src/bin/workbench.rs`) and its own full-screen render loop. It is not a
+   `--layout` switch on `future-tui`, and it does not change the behaviour of
+   `app.rs` / `index.rs`. The existing inline TUI (`future tui`) stays exactly as
+   it is; whether the workbench later becomes the default entry is a separate
+   decision.
 
 ### P1 (skeleton / documentation only this round, completion not required)
 
@@ -68,10 +72,16 @@ tui/examples/workbench_demo.rs  // prints one frame at any size + mouse self-tes
 tui/src/lib.rs                  // one added line: `pub mod workbench;`
 ```
 
+`tui/src/bin/workbench.rs` is the workbench's entry point
+(`[[bin]] name = "future-workbench"`): it owns its own raw mode, alternate screen
+and event loop, and **never goes through** `tui/src/app.rs`.
+
 Live integration (the second worker) may only touch:
-`tui/src/workbench/live.rs` (new), `tui/src/app.rs`, `tui/src/index.rs`, and the
-export block of `tui/src/workbench/mod.rs`. Existing behaviour in
-`tui/src/components/**` **must not** change.
+`tui/src/workbench/live.rs` (new), the fill functions in
+`tui/src/workbench/state.rs`, and `apply()` in `tui/src/bin/workbench.rs`.
+`tui/src/app.rs` and `tui/src/index.rs` **must not** change — the workbench is
+not a layout of the inline app. Existing behaviour in `tui/src/components/**`
+**must not** change either (their rendered rows are reused, nothing else).
 
 ---
 

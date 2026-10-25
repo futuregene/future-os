@@ -14,7 +14,8 @@
 |---|---|
 | [构建与安装](guide/build-and-install.zh-CN.md)（[en](guide/build-and-install.md)） | 前置条件、各平台工具链（macOS / Linux / Windows）、`make` 目标、GUI 打包、`future-goal` 安装、技能安装 |
 | [持续集成](guide/ci.zh-CN.md) ([English](guide/ci.md)) | 影响范围检测、依赖图、共享 runner、合并门禁与手动专项验证 |
-| [TUI](guide/tui.zh-CN.md)（[en](guide/tui.md)） | 终端界面（`future-tui`）：斜杠命令、快捷键、设置 |
+| [TUI](guide/tui.zh-CN.md)（[en](guide/tui.md)） | 行内（inline）终端界面（`future-tui`）：斜杠命令、快捷键、设置 |
+| [Workbench](guide/workbench.zh-CN.md)（[en](guide/workbench.md)） | 第二个全屏 TUI（`future-workbench`）：独立入口、布局与断点、键鼠、哪些已经接上 agent、哪些还没有 |
 | [渠道配置](guide/channels-config.zh-CN.md)（[en](guide/channels-config.md)） | `~/.future/channels/config.json` 统一参考（agent / providers / Feishu / DingTalk 块、默认值） |
 | [通道 provider 参考](guide/channels-providers.zh-CN.md)（[en](guide/channels-providers.md)） | 共享桥上的通道：能力矩阵、逐通道配置、成熟度、诊断、主动外发 |
 | [通道 provider 契约](guide/channels-provider-contract.zh-CN.md)（[en](guide/channels-provider-contract.md)） | 新增通道：provider 契约、入站/出站边界、配置、错误、测试与覆盖率要求 |
@@ -66,7 +67,7 @@
 
 | 文档 | 内容 |
 |---|---|
-| [Workbench TUI 规格](tui/workbench-spec.zh-CN.md)（[English](tui/workbench-spec.md)） | **尚未实现**的全屏工作台冻结契约：布局常量、鼠标与键盘约定、类型名与验收命令。它是设计提案，TUI 目前实际交付的能力见 [TUI 指南](guide/tui.zh-CN.md) |
+| [Workbench TUI 规格](tui/workbench-spec.zh-CN.md)（[English](tui/workbench-spec.md)） | [workbench](guide/workbench.zh-CN.md) 背后的冻结契约：布局常量、鼠标与键盘约定、类型名与验收命令。它描述的界面已经实现；agent 适配层与 P1 项还没有 |
 
 ## Wiki（面向用户的应用指南）
 

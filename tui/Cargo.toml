@@ -9,6 +9,12 @@ license = "MIT"
 name = "future-tui"
 path = "src/main.rs"
 
+# The workbench: a second, full-screen TUI (see `src/workbench/mod.rs`). It has
+# its own entry point on purpose — it is not a layout mode of `future-tui`.
+[[bin]]
+name = "future-workbench"
+path = "src/bin/workbench.rs"
+
 [lib]
 name = "future_tui"
 path = "src/lib.rs"

@@ -22,7 +22,9 @@
 5. 状态栏真实指标：模型 · 强度 · cwd · git 分支 · 上下文占用条 · token · 费用/缓存。
 6. `/` 命令面板（带说明、Tab 补全）、`?` 帮助覆盖层、`/` 过滤、历史 ↑↓。
 7. 主题：内置 `future-dark` / `future-light` 两套 256 色，支持 `/theme`。
-8. 与现有 inline 模式共存：`--layout workbench|inline`，默认 workbench（保留回退）。
+8. **独立的 TUI**：`future-workbench` 有自己的入口（`tui/src/bin/workbench.rs`）和自己的全屏渲染循环，
+   不是 `future-tui` 的 `--layout` 开关，也不改 `app.rs` / `index.rs` 的既有行为。现有 inline TUI
+   （`future tui`）保持原样；workbench 成熟后再决定要不要成为默认入口。
 
 ### P1（本次只做骨架/文档，不要求完成）
 
@@ -55,9 +57,14 @@ tui/examples/workbench_demo.rs  // 打印任意尺寸的一帧 + 鼠标自测
 tui/src/lib.rs                  // 仅加一行 `pub mod workbench;`
 ```
 
+`tui/src/bin/workbench.rs` 是 workbench 的入口（`[[bin]] name = "future-workbench"`）：
+它有自己的 raw mode / alternate screen / 事件循环，**不经过** `tui/src/app.rs`。
+
 live 接入（第二个 worker）只允许改：
-`tui/src/workbench/live.rs`（新建）、`tui/src/app.rs`、`tui/src/index.rs`、
-`tui/src/workbench/mod.rs` 的导出区。**不得改** `tui/src/components/**` 的既有行为。
+`tui/src/workbench/live.rs`（新建）、`tui/src/workbench/state.rs` 的填充函数、
+`tui/src/bin/workbench.rs` 的 `apply()`。**不得改** `tui/src/app.rs`、`tui/src/index.rs`
+——workbench 不是 inline app 的一种布局。也**不得改** `tui/src/components/**` 的既有行为
+（只复用它们产出的行）。
 
 ---
 
