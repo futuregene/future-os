@@ -8,7 +8,7 @@
 
 use crate::workbench::ansi::{align_right, fit, width};
 use crate::workbench::layout::{HitMap, Rect};
-use crate::workbench::state::{PanelId, WorkbenchData};
+use crate::workbench::state::{PanelId, TodoState, WorkbenchData};
 use crate::workbench::theme::Palette;
 use crate::workbench::widgets;
 
@@ -83,7 +83,11 @@ pub fn render(
 fn summary(panel: PanelId, data: &WorkbenchData) -> String {
     match panel {
         PanelId::Todo => {
-            let open = data.todos.iter().filter(|todo| !todo.done).count();
+            let open = data
+                .todos
+                .iter()
+                .filter(|todo| todo.state.is_open())
+                .count();
             format!("{open} 待办 / {} 合计", data.todos.len())
         }
         PanelId::Jobs => format!("{} 个任务", data.jobs.len()),
@@ -108,11 +112,16 @@ fn item_rows(
             data.todos
                 .iter()
                 .map(|todo| {
-                    let marker = if todo.done { "[x]" } else { "[ ]" };
-                    let text = format!(" {marker} {}", todo.text);
-                    if todo.active {
+                    let glyph = palette.text(glyph_color(todo.state, palette), todo.state.glyph());
+                    let priority = if todo.priority.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{} ", palette.dim(&todo.priority))
+                    };
+                    let text = format!(" {glyph} {priority}{}", todo.text);
+                    if todo.state == TodoState::Active {
                         palette.strong(palette.accent, &fit(&text, columns))
-                    } else if todo.done {
+                    } else if todo.state.is_done() || todo.state == TodoState::Cancelled {
                         palette.dim(&fit(&text, columns))
                     } else {
                         palette.body(&fit(&text, columns))
@@ -205,51 +214,105 @@ fn item_rows(
     }
 }
 
+fn glyph_color(state: TodoState, palette: &Palette) -> u8 {
+    match state {
+        TodoState::Done => palette.green,
+        TodoState::Active => palette.accent,
+        TodoState::Blocked | TodoState::Cancelled => palette.red,
+        TodoState::Open => palette.muted,
+    }
+}
+
 fn usage_rows(data: &WorkbenchData, palette: &Palette, columns: usize) -> Vec<String> {
     let usage = data.usage;
     let mut rows = Vec::new();
-    let label = "上下文";
-    let numbers = format!(
-        "{} {:.1}%",
-        widgets::context_text(usage.ctx_used, usage.ctx_total),
-        usage.context_fraction() * 100.0
-    );
-    let numbers = fit(&numbers, columns.saturating_sub(2));
-    let numbers_width = width(&numbers);
-    let label_row = format!(
-        " {}{}{}",
-        palette.body(label),
-        " ".repeat(columns.saturating_sub(1 + width(label) + numbers_width)),
-        palette.dim(&numbers)
-    );
-    rows.push(label_row);
+    // Every value is composed from whole pieces and dropped whole when it does
+    // not fit: a `…` in the middle of `18.8k/1.0M` reads as a different number,
+    // and half a digit is worse than none.
+    let percent = format!("{:.1}%", usage.context_fraction() * 100.0);
+    let numbers = widgets::context_text(usage.ctx_used, usage.ctx_total);
+    let candidates = [
+        format!("{numbers} {percent}"),
+        numbers,
+        widgets::short_count(usage.ctx_used),
+    ];
+    rows.push(labelled_row(
+        "上下文",
+        &candidates,
+        Palette::body,
+        Palette::dim,
+        palette,
+        columns,
+    ));
     let bar_width = columns.saturating_sub(2).max(4);
     rows.push(format!(
         " {}",
         widgets::progress(palette, usage.context_fraction(), bar_width, palette.accent)
     ));
 
-    let line = |key: &str, value: String| {
-        let value = fit(&value, columns.saturating_sub(2 + width(key)));
-        let value_width = width(&value);
-        format!(
-            " {}{}{}",
-            palette.dim(key),
-            " ".repeat(columns.saturating_sub(1 + width(key) + value_width)),
-            palette.body(&value)
-        )
-    };
-    rows.push(line("成本", widgets::cost_text(usage.cost)));
-    rows.push(line("缓存命中", format!("{}%", usage.cache_pct)));
-    rows.push(line(
+    let cost = [widgets::cost_text(usage.cost)];
+    rows.push(labelled_row(
+        "成本",
+        &cost,
+        Palette::dim,
+        Palette::body,
+        palette,
+        columns,
+    ));
+    let cache = [format!("{}%", usage.cache_pct)];
+    rows.push(labelled_row(
+        "缓存命中",
+        &cache,
+        Palette::dim,
+        Palette::body,
+        palette,
+        columns,
+    ));
+    let tps = [if usage.tps > 0.0 {
+        format!("{:.0} tok/s", usage.tps)
+    } else {
+        "—".to_string()
+    }];
+    rows.push(labelled_row(
         "输出",
-        if usage.tps > 0.0 {
-            format!("{:.0} tok/s", usage.tps)
-        } else {
-            "—".to_string()
-        },
+        &tps,
+        Palette::dim,
+        Palette::body,
+        palette,
+        columns,
     ));
     rows
+}
+
+/// A `label … value` row: the widest candidate that fits beside the label wins,
+/// separated by at least one space, and the value is dropped rather than cut.
+fn labelled_row(
+    label: &str,
+    candidates: &[String],
+    label_style: fn(&Palette, &str) -> String,
+    value_style: fn(&Palette, &str) -> String,
+    palette: &Palette,
+    columns: usize,
+) -> String {
+    // A label that does not fit is dropped, not ellipsized: `缓存命…` is
+    // half a word, and at that width the row has nothing to say anyway.
+    if 1 + width(label) > columns {
+        return " ".repeat(columns);
+    }
+    let painted_label = label_style(palette, label);
+    let room = columns.saturating_sub(1 + width(label) + 1);
+    match candidates.iter().find(|candidate| width(candidate) <= room) {
+        Some(value) => {
+            let pad = columns.saturating_sub(1 + width(label) + 1 + width(value));
+            format!(
+                " {}{}{}",
+                painted_label,
+                " ".repeat(1 + pad),
+                value_style(palette, value)
+            )
+        }
+        None => fit(&format!(" {}", painted_label), columns),
+    }
 }
 
 fn empty(text: &str, palette: &Palette) -> Vec<String> {
@@ -306,7 +369,8 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(todo.contains("待办"), "{todo}");
-        assert!(todo.contains("[x]"), "{todo}");
+        assert!(todo.contains("✔"), "{todo}");
+        assert!(todo.contains("P0"), "{todo}");
 
         let sessions: String = render(PanelId::Sessions, &data, &P, area(14), 0, &mut hit)
             .iter()
@@ -377,6 +441,41 @@ mod tests {
         assert_eq!(hit.hit(12, 6), Some("sidebar.row.0"));
         assert_eq!(hit.hit(12, 8), Some("sidebar.row.2"));
         assert_eq!(hit.hit(12, 5), None, "the blank heading row is not a row");
+    }
+
+    #[test]
+    fn the_usage_panel_drops_numbers_whole_instead_of_cutting_them() {
+        let data = demo::chat();
+        for columns in [34usize, 30, 24, 18, 12, 8] {
+            let mut hit = HitMap::new();
+            let lines = render(
+                PanelId::Usage,
+                &data,
+                &P,
+                Rect::new(0, 0, columns as u16, 8),
+                0,
+                &mut hit,
+            );
+            for line in &lines {
+                assert_eq!(width(line), columns, "{columns}: {line:?}");
+                let text = crate::utils::strip_ansi_codes(line);
+                assert!(
+                    !text.contains('…'),
+                    "{columns}: a value was cut instead of dropped: {text:?}"
+                );
+            }
+            let context = crate::utils::strip_ansi_codes(&lines[2]);
+            if columns >= 20 {
+                // The label and its value are two pieces, separated by a space
+                // (never `上下文6.9k`).
+                assert!(context.contains("上下文 "), "{columns}: {context:?}");
+                assert!(!context.contains("上下文…"), "{columns}: {context:?}");
+            }
+        }
+        // Wide enough: the full count and the percentage both survive.
+        let wide = crate::utils::strip_ansi_codes(&usage_rows(&data, &P, 34)[0]);
+        assert!(wide.contains("6.9k/1.0M"), "{wide:?}");
+        assert!(wide.contains("0.7%"), "{wide:?}");
     }
 
     #[test]

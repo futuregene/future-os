@@ -29,7 +29,8 @@ use crate::rpc::types::{
 use crate::rpc::GrpcClient;
 
 use super::state::{
-    Activity, ActivityKind, InputView, SessionMeta, SessionRow, SkillRow, UsageData, WorkbenchData,
+    Activity, ActivityKind, InputView, JobRow, SessionMeta, SessionRow, SkillRow, TodoItem,
+    UsageData, WorkbenchData,
 };
 use super::WbAction;
 
@@ -89,6 +90,16 @@ pub struct Live {
     /// (`take_state_refresh`) — that is what makes the footer move after a turn
     /// instead of only when someone presses ctrl+k.
     state_refresh_pending: bool,
+    /// The workspace the local facts below were read for. A worktree move is the
+    /// one thing that has to re-read the goal store, so the panel follows the
+    /// session instead of the process's own directory.
+    local_cwd: String,
+    /// The goal store's todos for `local_cwd` (see [`super::local`]).
+    todos: Vec<TodoItem>,
+    /// Installed skills and scheduled jobs are machine-wide: read once, then
+    /// reused for every frame.
+    local_skills: Option<Vec<SkillRow>>,
+    local_jobs: Option<Vec<JobRow>>,
 }
 
 impl Live {
@@ -133,6 +144,10 @@ impl Live {
             run_output_tokens: 0,
             run_tps: 0.0,
             state_refresh_pending: false,
+            local_cwd: String::new(),
+            todos: Vec::new(),
+            local_skills: None,
+            local_jobs: None,
         };
 
         if let Some(id) = session.filter(|id| !id.is_empty()) {
@@ -174,6 +189,31 @@ impl Live {
             self.client.set_current_session_id(&state.session_id);
         }
         self.state = state;
+        self.refresh_local();
+    }
+
+    /// Read the panels' local facts for the workspace the session is in.
+    ///
+    /// The todo list belongs to the *session's* cwd, not to the directory the
+    /// TUI was started in: attaching to a conversation that ran in
+    /// `.worktrees/<name>` must show that checkout's goal, and moving to another
+    /// workspace must re-read rather than keep painting the old one's list.
+    fn refresh_local(&mut self) {
+        let cwd = self.state.cwd.clone().unwrap_or_default();
+        if cwd != self.local_cwd {
+            self.todos = if cwd.is_empty() {
+                Vec::new()
+            } else {
+                super::local::goal_todos(std::path::Path::new(&cwd))
+            };
+            self.local_cwd = cwd;
+        }
+        if self.local_skills.is_none() {
+            self.local_skills = Some(super::local::installed_skills());
+        }
+        if self.local_jobs.is_none() {
+            self.local_jobs = Some(super::local::scheduled_jobs());
+        }
     }
 
     pub async fn refresh_sessions(&mut self) {
@@ -482,6 +522,25 @@ impl Live {
             at(b).cmp(&at(a))
         });
         let skill_names = state.skills.clone();
+        // The agent names the skills it discovered; the sidebar's local read adds
+        // the descriptions (and is the fallback when an older agent reports
+        // none). One list, deduplicated by name, in the agent's order.
+        let local_skills = self.local_skills.clone().unwrap_or_default();
+        let skills: Vec<SkillRow> = if skill_names.is_empty() {
+            local_skills
+        } else {
+            skill_names
+                .iter()
+                .map(|name| SkillRow {
+                    name: name.clone(),
+                    description: local_skills
+                        .iter()
+                        .find(|skill| &skill.name == name)
+                        .map(|skill| skill.description.clone())
+                        .unwrap_or_default(),
+                })
+                .collect()
+        };
 
         WorkbenchData {
             app_name: "future-tui".into(),
@@ -511,16 +570,10 @@ impl Live {
                 cache_pct: cache_percent(&state),
                 tps: self.live_tps(),
             },
-            todos: Vec::new(),
+            todos: self.todos.clone(),
             sessions: rows,
-            skills: skill_names
-                .iter()
-                .map(|name| SkillRow {
-                    name: name.clone(),
-                    description: String::new(),
-                })
-                .collect(),
-            jobs: Vec::new(),
+            skills,
+            jobs: self.local_jobs.clone().unwrap_or_default(),
             messages,
             input,
             activity,

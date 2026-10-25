@@ -268,3 +268,41 @@ skills (local directory).
 2. 80% of operations are reachable without moving a hand off the mouse: switch
    panel, switch session, scroll chat, open commands, click a tool card.
 3. Neither 120x38 nor 90x24 breaks the layout; CJK text never shifts columns.
+
+---
+
+## 9. Where the side panels read from
+
+Three of the five panels are filled from files this machine owns, not from gRPC
+(`tui/src/workbench/local.rs`). Each reader is best-effort: a missing store, a
+half-written line or an unreadable file yields fewer rows, never a panic and
+never a notice.
+
+| Panel | Source | Rule |
+|---|---|---|
+| 待办 | `<goal root>/goals/<id>/events.jsonl` | `FUTURE_GOAL_ROOT`, else the nearest ancestor with `.future/goal/goals`, else the git toplevel's — so a session in `.worktrees/<name>` reads the checkout it was cut from. The goal is the most recently active one that has not reached a terminal state. `✔` done · `◉` claimed · `○` open · `✖` blocked/superseded, then `P0`…`P3`, then the text. |
+| 技能 | `~/.future/agent/skills`, `~/.agents/skills` | The agent's `get_state` names them; the local read adds the `description:` line (and is the fallback when an agent reports none). |
+| 任务 | `<home>/tasks/tasks.db` | Opened `SQLITE_OPEN_READ_ONLY`; a missing database is `no scheduled jobs`, never a newly created store. |
+
+The usage panel composes each row from whole pieces and drops a value that does
+not fit (`上下文 18.8k/1.0M 1.9%` → `上下文 18.8k/1.0M` → `上下文 18.8k` → the
+label alone). A `…` in the middle of a number reads as a different number, so
+nothing here is ever clipped mid-value.
+
+## 10. Screenshots
+
+`docs/tui/assets/`, all rendered from the real compositor:
+
+| File | Size | What it proves |
+|---|---|---|
+| `workbench-120x38.png` | 120×38 | the full frame: header (wordmark), sidebar with tabs, divider, framed input box, activity, status, hint |
+| `workbench-90x24.png` | 90×24 | still two columns; the header falls back to its text brand; the hairline spans the whole width |
+| `workbench-60x20.png` | 60×20 | `< 88`: no sidebar and no dead rail; `< 24`: one-row header, the input box keeps a frame (top edge + sides), the hint row drops whole entries |
+| `workbench-panel-todo.png` | 120×38 | 待办 lists the repo's real goal todos (`✔/◉/○/✖`, priority, text) |
+| `workbench-panel-skills.png` | 120×38 | 技能 lists the 22 installed skills |
+| `workbench-panel-usage.png` | 120×38 | 用量: `上下文` and the numbers are separate pieces, no trailing `…` |
+
+The panel shots come from a live tmux session against an isolated agent
+(`FUTURE_HOME` with a copy of the installed skills and the tasks database),
+clicked with `tools/click.py`; `tmux display -p '#{mouse_any_flag}'` reads `1`
+while it runs and `0` after it quits.

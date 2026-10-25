@@ -12,7 +12,7 @@
 use crate::workbench::ansi::style;
 use crate::workbench::state::{
     Activity, ActivityKind, InputView, JobRow, SessionMeta, SessionRow, SkillRow, TodoItem,
-    UsageData, WorkbenchData,
+    TodoState, UsageData, WorkbenchData,
 };
 use crate::workbench::theme::{Palette, FUTURE_DARK};
 
@@ -75,18 +75,21 @@ fn base(palette: &Palette) -> WorkbenchData {
         todos: vec![
             TodoItem {
                 text: "复现 parser 的 off-by-one".into(),
-                done: true,
-                active: false,
+                priority: "P0".into(),
+                state: TodoState::Done,
+                ..TodoItem::default()
             },
             TodoItem {
                 text: "补一个回归测试".into(),
-                done: false,
-                active: true,
+                priority: "P0".into(),
+                state: TodoState::Active,
+                ..TodoItem::default()
             },
             TodoItem {
                 text: "跑 tui 的完整测试套件".into(),
-                done: false,
-                active: false,
+                priority: "P1".into(),
+                state: TodoState::Open,
+                ..TodoItem::default()
             },
         ],
         sessions: vec![
@@ -207,8 +210,14 @@ pub fn todo() -> WorkbenchData {
                 index + 1,
                 panel_for(index)
             ),
-            done: index % 4 == 0,
-            active: index == 2,
+            priority: if index < 8 { "P0" } else { "P1" }.into(),
+            state: match index % 5 {
+                0 => TodoState::Done,
+                2 => TodoState::Active,
+                4 => TodoState::Blocked,
+                _ => TodoState::Open,
+            },
+            ..TodoItem::default()
         })
         .collect();
     data.session.title = "workbench 侧栏验收".into();
@@ -265,8 +274,15 @@ mod tests {
     fn the_todo_scenario_is_long_enough_to_scroll() {
         let data = todo();
         assert_eq!(data.todos.len(), 24);
-        assert!(data.todos.iter().any(|todo| todo.done));
-        assert!(data.todos.iter().any(|todo| todo.active));
+        assert!(data.todos.iter().any(|todo| todo.state.is_done()));
+        assert!(data
+            .todos
+            .iter()
+            .any(|todo| todo.state == TodoState::Active));
+        assert!(data
+            .todos
+            .iter()
+            .any(|todo| todo.state == TodoState::Blocked));
     }
 
     #[test]

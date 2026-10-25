@@ -42,13 +42,54 @@ impl UsageData {
     }
 }
 
+/// How far a goal todo has got, as the panel's one-cell marker says it.
+///
+/// The four states are the goal control plane's own vocabulary folded down to
+/// what fits beside a line of text: `✔` finished, `◉` claimed and running, `○`
+/// waiting, `✖` blocked or superseded.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TodoState {
+    #[default]
+    Open,
+    /// Claimed by an agent (a live lease) right now.
+    Active,
+    Done,
+    /// Blocked by a gate or a failed dependency.
+    Blocked,
+    /// Superseded or cancelled: it will not happen.
+    Cancelled,
+}
+
+impl TodoState {
+    /// The one-cell marker the panel prints before the text.
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Self::Open => "○",
+            Self::Active => "◉",
+            Self::Done => "✔",
+            Self::Blocked | Self::Cancelled => "✖",
+        }
+    }
+
+    pub fn is_done(self) -> bool {
+        self == Self::Done
+    }
+
+    /// Still worth counting as outstanding (`○` and `◉`).
+    pub fn is_open(self) -> bool {
+        matches!(self, Self::Open | Self::Active)
+    }
+}
+
 /// One goal todo, as the sidebar shows it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TodoItem {
+    /// The control plane's todo id (empty for a fixture that names none).
+    pub id: String,
     pub text: String,
-    pub done: bool,
-    /// The item a goal is currently working on.
-    pub active: bool,
+    /// `P0`…`P3`, or empty when the store recorded none.
+    pub priority: String,
+    pub state: TodoState,
 }
 
 /// One conversation in the sidebar's session panel.
