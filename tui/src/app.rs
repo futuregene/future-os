@@ -4686,11 +4686,15 @@ impl<T: TerminalIo> App<T> {
 
     /// The post-listener input flow: paste, interrupt, key parse, fallback.
     fn handle_input_continue(&mut self, data: &str) {
-        // Bracketed paste.
+        // Bracketed paste. The new-session screen owns the box while it is
+        // open, so a terminal paste lands in *its* prompt — the conversation's
+        // draft behind it must not grow by text the reader cannot see.
         if data.starts_with("\x1b[200~") {
             if let Some(end_idx) = data.find("\x1b[201~") {
                 let content = &data[6..end_idx];
-                if !self.overlay_stack.is_empty() {
+                if let Some(screen) = self.new_session.as_mut() {
+                    screen.input.insert_text(content);
+                } else if !self.overlay_stack.is_empty() {
                     let top = self.get_top_overlay_index();
                     if let Some(idx) = top {
                         self.overlay_stack[idx].component.handle_input(content);
@@ -4700,6 +4704,14 @@ impl<T: TerminalIo> App<T> {
                 }
                 self.request_render(false);
             }
+            return;
+        }
+
+        // Ctrl+C while the new-session screen is open closes it: the rawer form
+        // of "get me out", for a reader who does not know ctrl+n toggles.
+        if data == "\x03" && self.new_session.is_some() {
+            self.close_new_session();
+            self.request_render(true);
             return;
         }
 
@@ -27884,6 +27896,31 @@ mod tests {
         app.handle_key(Key::ESCAPE);
         assert!(app.new_session.is_none());
         assert_eq!(app.input.get_value(), "half typed prompt");
+    }
+
+    /// A terminal paste (and ctrl+c) reach the screen, not the conversation
+    /// behind it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_terminal_paste_lands_in_the_screen_prompt() {
+        let (mut app, _rx) = running_app(100, 30);
+        app.input.set_value("conversation draft", None);
+        app.handle_key_action(KeyAction::NewSession);
+
+        app.handle_input("\x1b[200~pasted into the first message\x1b[201~");
+        assert_eq!(
+            app.new_session.as_ref().unwrap().input.get_value(),
+            "pasted into the first message"
+        );
+        assert_eq!(
+            app.input.get_value(),
+            "conversation draft",
+            "the conversation draft is untouched"
+        );
+
+        // Raw ctrl+c closes the screen instead of interrupting a run.
+        app.handle_input("\x03");
+        assert!(app.new_session.is_none());
+        assert_eq!(app.input.get_value(), "conversation draft");
     }
 
     /// The screen is modal: a key it does not use must not reach the
