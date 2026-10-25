@@ -17,6 +17,11 @@ pub const ENTRY_TYPE_SESSION_INFO: &str = "session_info";
 pub const ENTRY_TYPE_THINKING_LEVEL_CHANGE: &str = "thinking_level_change";
 pub const ENTRY_TYPE_CUSTOM: &str = "custom";
 pub const ENTRY_TYPE_CUSTOM_MESSAGE: &str = "custom_message";
+/// `name` of the `custom` entry that records an explicit release of the
+/// restart-recovery fence (`acknowledge_recovery` / `future session unblock`).
+/// A `custom` entry keeps every projection, fork/clone and export path working
+/// unchanged: unknown entry types are already skipped in the model transcript.
+pub const ENTRY_NAME_RECOVERY_ACKNOWLEDGED: &str = "recovery_acknowledged";
 /// Run lifecycle markers. These bound a run in the append-only journal:
 /// `run_started` is written durably with the accepted user message, and
 /// `run_terminal` is written at the run's commit boundary. A `run_started`
@@ -122,6 +127,38 @@ impl SessionEntry {
             timestamp: Local::now(),
             tool_call_id: String::new(),
             name: String::new(),
+            tool_args: String::new(),
+            thinking: String::new(),
+            meta: None,
+        }
+    }
+
+    /// Journal record of an explicit release of the restart-recovery fence.
+    ///
+    /// `calls` carries the `[{run_id, call_id, tool}]` list the user released.
+    /// This is append-only history: it never rewrites the interrupted calls
+    /// themselves, and it does not record that anything was verified — only
+    /// that a person accepted the risk of an unknown side effect.
+    pub fn recovery_acknowledged(
+        name: &str,
+        calls: serde_json::Value,
+        by: &str,
+        reason: &str,
+    ) -> Self {
+        Self {
+            id: generate_entry_id(),
+            entry_type: ENTRY_TYPE_CUSTOM.to_string(),
+            role: String::new(),
+            content: Some(serde_json::json!({
+                "calls": calls,
+                "acknowledged_at": Local::now().to_rfc3339(),
+                "by": by,
+                "reason": reason,
+            })),
+            tool_calls: vec![],
+            timestamp: Local::now(),
+            tool_call_id: String::new(),
+            name: name.to_string(),
             tool_args: String::new(),
             thinking: String::new(),
             meta: None,

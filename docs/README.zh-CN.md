@@ -25,6 +25,7 @@
 | [目录布局](guide/directory-layout.zh-CN.md)（[en](guide/directory-layout.md)） | `~/.future/` 下各目录职责（agent、channels、TUI、GUI、goal） |
 | [数据备份与恢复](guide/data-backup.zh-CN.md)（[en](guide/data-backup.md)） | `future data`：离线备份、校验、恢复到原 home、中断恢复后的 resume/rollback，以及启动围栏 |
 | [会话历史召回](guide/session-history.zh-CN.md)（[en](guide/session-history.md)） | 只读的历史检索／条目读取、字节分页，以及压缩后的模型指引 |
+| [被围栏的会话怎么放行](guide/session-recovery.zh-CN.md)（[en](guide/session-recovery.md)） | 为什么一次重启会围住整个会话、`future session unblock` 的用法、放行做了什么与没做什么，以及它追加的 journal 记录 |
 | [移动端延迟诊断](guide/mobile-latency-diagnosis.zh-CN.md)（[en](guide/mobile-latency-diagnosis.md)） | 移动端端到端延迟测量与诊断 |
 | [截图工具](guide/screenshots.zh-CN.md)（[en](guide/screenshots.md)） | 用演示数据渲染真实桌面端 / 手机端界面，在无显示器环境产出截图、功能示意图与图文文档 |
 

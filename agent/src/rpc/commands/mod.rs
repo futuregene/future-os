@@ -7,9 +7,11 @@
 //! - `run_control`: prompt enqueue, cancel, abort, approval
 //! - `settings`: model/thinking/tools/sandbox/permission/cwd and config reload
 //! - `observability`: state/messages/events/stats/export
+//! - `recovery`: the explicit release of a restart-recovery fence
 
 mod observability;
 mod providers;
+mod recovery;
 mod run_control;
 mod session_lifecycle;
 mod session_reset;
@@ -26,6 +28,8 @@ mod dispatcher_tests;
 mod observability_tests;
 #[cfg(test)]
 mod providers_tests;
+#[cfg(test)]
+mod recovery_tests;
 #[cfg(test)]
 mod run_control_tests;
 #[cfg(test)]
@@ -420,6 +424,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "reload_config" => settings::cmd_reload_config(state, &session, id),
         "set_cwd" => settings::handle_set_cwd(&session, &cmd, id),
         "add_session_rule" => settings::handle_add_session_rule(&session, &cmd, id),
+        "acknowledge_recovery" => recovery::handle_acknowledge_recovery(&session, &cmd, id),
         "set_sandbox_policy" => settings::handle_set_sandbox_policy(&session, &cmd, id),
         "set_permission_level" => settings::handle_set_permission_level(&session, &cmd, id),
         _ => RpcResponse::build_fail(id, cmd_type, &format!("unknown command: {}", cmd_type)),

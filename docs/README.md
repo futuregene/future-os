@@ -27,6 +27,7 @@
 | [Directory layout](guide/directory-layout.md) ([中文](guide/directory-layout.zh-CN.md)) | What lives where under `~/.future/` ((agent, channels, TUI, GUI, goal)) |
 | [Data backup and recovery](guide/data-backup.md) ([中文](guide/data-backup.zh-CN.md)) | `future data`: offline backup, verify, restore to the original home, resume/rollback after an interrupted restore, and the startup fence |
 | [Session history recall](guide/session-history.md) ([中文](guide/session-history.zh-CN.md)) | Read-only history search/entry reads, byte paging, and post-compaction model guidance |
+| [Releasing a fenced session](guide/session-recovery.md) ([中文](guide/session-recovery.zh-CN.md)) | Why a restart fences a whole session, `future session unblock`, what the release does and does not claim, and the journal record it appends |
 | [Self-inspection](guide/self-inspection.md) ([中文](guide/self-inspection.zh-CN.md)) | Reading an agent's own state (settings, skills, tools, sessions) and the user–agent record, and changing global settings from the CLI |
 | [Mobile latency diagnosis](guide/mobile-latency-diagnosis.md) ([中文](guide/mobile-latency-diagnosis.zh-CN.md)) | Mobile end-to-end latency measurement and diagnosis |
 | [Screenshot harness](guide/screenshots.md) ([中文](guide/screenshots.zh-CN.md)) | Rendering the real desktop/mobile UI against demo data to produce screenshots, feature diagrams and illustrated documents without a display |
