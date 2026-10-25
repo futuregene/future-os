@@ -155,7 +155,12 @@ launchpad 是**正文**，不是盖在对话上的弹窗：没有会话时整块
 | 发消息与流式 | `prompt`（并入策略）；`text_chunk`、`thinking_*`、`tool_*`、`agent_end` 驱动对话 |
 | 队列管理 | `/queue` 读取 `get_state.queuedRuns`；取消与取回复用现有 `cancel_queued_run`，不维护第二套客户端队列 |
 | 草稿附件 | 复用 `components/input.rs` 的折叠粘贴和图片标记机制；附件随 prompt 发送 |
-| 审批 | 被挂起的请求显示在活动行，`y` / `n` 回答；重启后由 `get_state.pendingApprovals` 恢复，任一客户端作答后 `approval_decision` 清除 |
+| 审批 | 请求挂起时打开完整卡片，显示工具、类型、风险、动作/路径、原始请求和 sandbox 边界。`y` / `n` 允许一次或拒绝；`a` 先添加 agent 建议的**本次运行**工作区规则再批准，规则失败则请求仍保持待决。Esc 只收起卡片，不作决定 |
+| Diff 审查 | `/diff` 列出会话工作区已跟踪与未跟踪改动，并显示选中文件的真实 git patch。左右键换文件、上下键滚动、`r` 刷新；这是当前未提交工作区，不是按轮次归属，patch 预览有大小上限 |
+| 历史搜索与树 | `/history` 筛选当前 `list_sessions` 的标题/首条消息预览、目录与 id；`/tree` 使用 `parentSessionId`。回车打开所选会话 |
+| Fork | `/fork` 列出 `get_fork_messages` 的真实用户消息节点；回车调用 `fork` 并打开子会话 |
+| Worktree | `/worktree` 列出真实 git worktree，回车设为会话目录；`/worktree new <branch>` 在 `.worktrees/` 下创建并移动会话。不提供 remove/prune/reset/clean |
+| 已有设置入口 | `/sandbox`、`/permission [all|workspace|none]`、`/compact [说明]`、`/tools a,b` 或 `/tools off`、`/providers`；`/skills` 与 `/model` 保留已有界面 |
 | 会话面板 | `list_sessions`，最近活跃在前，点击即切换 |
 | 用量 / 上下文 / 成本 | `get_state` 的 usage，随同样的事件刷新 |
 | `ctrl+n` / `/new`、`ctrl+x` 停止、`ctrl+k` 刷新 | |
@@ -168,8 +173,8 @@ launchpad 是**正文**，不是盖在对话上的弹窗：没有会话时整块
   "no todos" 而不是编造行。
 - **技能面板**只按名字列出本会话已加载的技能（没有浏览器、不能安装）。
 - **`@` 文件引用**尚未实现；粘贴图片路径与折叠粘贴已复用 `tui/src/paste.rs`。
-- **命令面板**只列适配层实现的命令。行内界面里那些 providers / tools / sandbox / skills /
-  worktree 面板还没有等价物；它们背后是会话级的 agent 设置，今天请用桌面端或 `future` 命令行改。
+- **命令面板**只列适配层实现的命令。提供商与工具管理采用紧凑入口（`/providers`、
+  `/tools`），`/skills` 仍是技能面板。审批允许规则仅本次运行有效；持久化规则文件编辑仍在桌面端。
 - 契约里的 P1：时间线轨、diff 双栏卡、图片预览、会话管理器全屏版、全屏草稿编辑器。
 
 ## 代码在哪

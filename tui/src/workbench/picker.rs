@@ -611,6 +611,7 @@ mod tests {
                 workspace: "~/future-os".into(),
                 age: "5m".into(),
                 current: true,
+                parent_id: None,
             },
             SessionRow {
                 id: "s2".into(),
@@ -618,6 +619,7 @@ mod tests {
                 workspace: "~/notes".into(),
                 age: "3h".into(),
                 current: false,
+                parent_id: None,
             },
         ];
         data

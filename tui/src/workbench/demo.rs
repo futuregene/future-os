@@ -100,6 +100,7 @@ fn base() -> WorkbenchData {
                 workspace: "~/future-os".into(),
                 age: "2m".into(),
                 current: true,
+                parent_id: None,
             },
             SessionRow {
                 id: "s2".into(),
@@ -107,6 +108,7 @@ fn base() -> WorkbenchData {
                 workspace: "~/future-os".into(),
                 age: "1h".into(),
                 current: false,
+                parent_id: None,
             },
             SessionRow {
                 id: "s3".into(),
@@ -114,6 +116,7 @@ fn base() -> WorkbenchData {
                 workspace: "~/future-os/.worktrees/mobile".into(),
                 age: "3h".into(),
                 current: false,
+                parent_id: None,
             },
             SessionRow {
                 id: "s4".into(),
@@ -121,6 +124,7 @@ fn base() -> WorkbenchData {
                 workspace: "~/futureos-wechat-articles".into(),
                 age: "2d".into(),
                 current: false,
+                parent_id: None,
             },
         ],
         models: demo_models(),
@@ -162,6 +166,10 @@ fn base() -> WorkbenchData {
         queue: Vec::new(),
         revision: 0,
         mouse_capture: true,
+        approval: None,
+        diff: None,
+        fork_points: Vec::new(),
+        worktrees: Vec::new(),
     }
 }
 

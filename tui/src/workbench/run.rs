@@ -227,6 +227,10 @@ async fn event_loop(
             Some(event) = agent_events.recv() => {
                 let was = live.activity_kind();
                 live.handle_event(event);
+                if live.approval().is_some() && workbench.overlay.is_none() {
+                    workbench.overlay = Some(super::Overlay::Approval);
+                    workbench.overlay_scroll = 0;
+                }
                 // What arrived while this event was being applied is applied
                 // now, before the frame: a streaming turn emits deltas at tens
                 // per second and a frame per token is work no one can see (the
@@ -238,6 +242,10 @@ async fn event_loop(
                 // only when someone presses ctrl+k.
                 if live.take_state_refresh() {
                     live.refresh_state().await;
+                    if live.approval().is_some() && workbench.overlay.is_none() {
+                        workbench.overlay = Some(super::Overlay::Approval);
+                        workbench.overlay_scroll = 0;
+                    }
                 }
                 // A run that started or stopped changes what the lists show
                 // (a session's age, a title from its first message).
@@ -389,16 +397,21 @@ async fn quit(
     settings: &mut TuiSettings,
     settings_path: &Path,
 ) -> Result<bool, String> {
-    // A parked approval owns `y` and `n`: the run is stopped until someone
-    // answers, and the activity row is telling the reader exactly that.
+    // A parked approval owns y/n only on the base surface. Inside its card
+    // these keys belong to the card, and other overlays never approve blindly.
     if let WbEvent::Key(key) = &event {
-        if live.approval().is_some() {
+        if live.approval().is_some() && workbench.overlay.is_none() {
             if matches!(key.as_str(), "y" | "Y") {
                 live.decide(true).await;
                 return Ok(false);
             }
             if matches!(key.as_str(), "n" | "N") {
                 live.decide(false).await;
+                return Ok(false);
+            }
+            if matches!(key.as_str(), "enter") {
+                workbench.overlay = Some(super::Overlay::Approval);
+                workbench.overlay_scroll = 0;
                 return Ok(false);
             }
         }
@@ -463,6 +476,84 @@ async fn quit(
         // what lets the palette and the draft both reach it.
         if let WbAction::Command(command) = &action {
             match command.trim() {
+                "/approval" => {
+                    live.refresh_state().await;
+                    workbench.overlay = Some(super::Overlay::Approval);
+                    workbench.overlay_scroll = 0;
+                    continue;
+                }
+                "/diff" => {
+                    let selected = workbench.workflow_index;
+                    let cwd = live.data(frame).session.cwd;
+                    let previous = live.selected_diff_path(selected);
+                    let result = tokio::task::spawn_blocking(move || {
+                        let mut view = super::state::DiffView::default();
+                        match super::diff_review::load(std::path::Path::new(&cwd), &previous) {
+                            Ok(review) => {
+                                view.selected = review
+                                    .files
+                                    .iter()
+                                    .position(|file| file.path == previous)
+                                    .unwrap_or(0);
+                                view.files = review.files;
+                                view.patch = super::diff_review::bounded_patch(&review.patch);
+                            }
+                            Err(error) => view.error = Some(error),
+                        }
+                        view
+                    })
+                    .await;
+                    match result {
+                        Ok(view) => live.set_diff(view),
+                        Err(error) => live.notice = Some(error.to_string()),
+                    }
+                    workbench.overlay = Some(super::Overlay::Diff);
+                    workbench.workflow_index = selected;
+                    workbench.overlay_scroll = 0;
+                    continue;
+                }
+                "/history" | "/tree" => {
+                    live.refresh_sessions().await;
+                    workbench.overlay = Some(if command.trim() == "/history" {
+                        super::Overlay::History
+                    } else {
+                        super::Overlay::Tree
+                    });
+                    workbench.workflow_index = 0;
+                    workbench.overlay_scroll = 0;
+                    continue;
+                }
+                "/fork" => {
+                    live.load_fork_points().await;
+                    workbench.overlay = Some(super::Overlay::Fork);
+                    workbench.workflow_index = 0;
+                    continue;
+                }
+                "/worktree" | "/worktree " => {
+                    let cwd = live.data(frame).session.cwd;
+                    let result = tokio::task::spawn_blocking(move || {
+                        crate::worktree::probe_repo(
+                            &crate::worktree::GitCli::default(),
+                            &cwd,
+                            std::env::current_dir().ok().as_deref(),
+                        )
+                    })
+                    .await;
+                    match result {
+                        Ok(Ok(rows)) => live.set_worktrees(rows),
+                        Ok(Err(error)) => {
+                            live.notice = Some(super::i18n::render(
+                                live.language(),
+                                super::i18n::Key::WorkflowFailed,
+                                &[&error],
+                            ))
+                        }
+                        Err(error) => live.notice = Some(error.to_string()),
+                    }
+                    workbench.overlay = Some(super::Overlay::Worktree);
+                    workbench.workflow_index = 0;
+                    continue;
+                }
                 "/copy" => {
                     copy_last(live).await;
                     continue;
@@ -472,6 +563,24 @@ async fn quit(
                     continue;
                 }
                 _ => {}
+            }
+            if let Some(branch) = command.trim().strip_prefix("/worktree new ") {
+                let cwd = live.data(frame).session.cwd;
+                let branch = branch.to_string();
+                let created = tokio::task::spawn_blocking(move || {
+                    crate::worktree::create_worktree(
+                        &crate::worktree::GitCli::default(),
+                        &cwd,
+                        std::env::current_dir().ok().as_deref(),
+                        &branch,
+                    )
+                })
+                .await;
+                match created {
+                    Ok(created) => live.create_worktree_with(|| created).await,
+                    Err(error) => live.notice = Some(error.to_string()),
+                }
+                continue;
             }
             if let Some(kind) = PickerKind::from_command(command) {
                 let data = live.data(frame);
@@ -525,6 +634,41 @@ async fn quit(
             {
                 live.notice = notice;
             }
+            continue;
+        }
+        if matches!(action, WbAction::SelectDiff(_)) {
+            let selected = match action {
+                WbAction::SelectDiff(index) => index,
+                _ => 0,
+            };
+            let data = live.data(frame);
+            let path = data
+                .diff
+                .as_ref()
+                .and_then(|diff| diff.files.get(selected))
+                .map(|file| file.path.clone());
+            if let Some(path) = path {
+                let cwd = data.session.cwd;
+                let result = tokio::task::spawn_blocking(move || {
+                    super::diff_review::load(std::path::Path::new(&cwd), &path)
+                })
+                .await;
+                match result {
+                    Ok(Ok(review)) => live.set_diff(super::state::DiffView {
+                        files: review.files,
+                        selected,
+                        patch: super::diff_review::bounded_patch(&review.patch),
+                        error: None,
+                    }),
+                    Ok(Err(error)) => live.notice = Some(error),
+                    Err(error) => live.notice = Some(error.to_string()),
+                }
+            }
+            workbench.overlay = Some(super::Overlay::Diff);
+            continue;
+        }
+        if matches!(action, WbAction::OpenApproval) {
+            workbench.overlay = Some(super::Overlay::Approval);
             continue;
         }
         if matches!(action, WbAction::CopyLast) {

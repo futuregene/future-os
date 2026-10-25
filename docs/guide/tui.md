@@ -152,7 +152,12 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | Prompting and streaming | `prompt` with the coalescing policy; `text_chunk`, `thinking_*`, `tool_*` and `agent_end` drive the transcript |
 | Queue management | `/queue` reads `get_state.queuedRuns`; cancel and recall use the existing `cancel_queued_run`, with no second client-side queue |
 | Draft attachments | Reuses `components/input.rs` folded-paste and image-marker machinery; attachments travel with the prompt |
-| Approvals | A parked request shows on the activity row; `y` / `n` answer it. `get_state`'s `pendingApprovals` brings it back after a restart, and `approval_decision` clears it whichever client answered |
+| Approvals | A parked request opens a full card with tool, kind, risk, action/paths, requested action and sandbox boundary. `y` / `n` allow once or deny; `a` first adds the agent-suggested **this-run** workspace rule, then approves. A rule failure leaves the request pending. Escape closes the card without deciding |
+| Diff review | `/diff` lists tracked and untracked changes from the session workspace and shows the selected real git patch. Left/right changes files, up/down scrolls, `r` refreshes. This is the current uncommitted working tree, not per-turn attribution; patches are preview-bounded |
+| History search and tree | `/history` filters the current `list_sessions` titles/first-message previews, workspaces and ids; `/tree` uses `parentSessionId`. Enter opens the selected session |
+| Fork | `/fork` lists real user-message points from `get_fork_messages`; enter calls `fork` and opens the child |
+| Worktrees | `/worktree` lists real git worktrees and enter sets the session cwd. `/worktree new <branch>` creates under `.worktrees/` and moves the session. No remove/prune/reset/clean operations |
+| Existing settings | `/sandbox`, `/permission [all|workspace|none]`, `/compact [instructions]`, `/tools a,b` or `/tools off`, `/providers`; `/skills` and `/model` retain their existing surfaces |
 | Sessions panel | `list_sessions`, newest first, click to switch |
 | Usage / context / cost | `get_state`'s usage block, refreshed on the same events |
 | `ctrl+n` / `/new`, `ctrl+x` stop, `F5` refresh | |
@@ -167,10 +172,10 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 - **Skills panel** lists the session's loaded skills by name only (no browser,
   no install).
 - **`@` file mentions** — not implemented; pasted image paths and folded pastes use `tui/src/paste.rs`.
-- **The command palette** lists the commands the adapter implements. The panels
-  the inline TUI had for providers, tools, sandbox, skills and worktrees have no
-  equivalent yet; the underlying settings are per-session agent state, so the
-  desktop app or `future` CLI is the way to change them today.
+- **The command palette** lists the commands the adapter implements. Provider
+  and tool management is intentionally compact (`/providers` and `/tools`);
+  `/skills` remains the installed-skills panel. Approval allow rules are
+  runtime-only; persistent approval-rule file editing remains in the desktop.
 - P1 from the contract: timeline rail, two-column diff card, image preview,
   full-screen session manager, full-screen draft editor.
 

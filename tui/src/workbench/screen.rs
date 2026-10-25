@@ -183,6 +183,18 @@ pub(crate) fn compose(
             paint_overlay(&mut rows, &palette, lines, columns);
             workbench.set_cursor(None);
         }
+        Some(
+            overlay @ (Overlay::Approval
+            | Overlay::Diff
+            | Overlay::History
+            | Overlay::Tree
+            | Overlay::Fork
+            | Overlay::Worktree),
+        ) => {
+            let lines = workflow_box(workbench, data, &palette, w, h, overlay);
+            paint_overlay(&mut rows, &palette, lines, columns);
+            workbench.set_cursor(None);
+        }
         Some(Overlay::Picker(kind)) => {
             let lines = picker_box(workbench, data, &palette, w, h, kind);
             paint_overlay(&mut rows, &palette, lines, columns);
@@ -538,6 +550,133 @@ fn queue_box(
             Rect::new(0, index.saturating_sub(first) as u16 + 2, columns as u16, 1),
             format!("queue.row.{index}"),
         );
+    }
+    rows.push(widgets::box_bottom(palette, columns));
+    while rows.len() < h as usize {
+        rows.push(fit("", columns));
+    }
+    rows
+}
+
+fn workflow_box(
+    workbench: &mut Workbench,
+    data: &WorkbenchData,
+    palette: &Palette,
+    w: u16,
+    h: u16,
+    overlay: Overlay,
+) -> Vec<String> {
+    use crate::workbench::workflows;
+    let columns = (w as usize).clamp(1, 100);
+    let (title_key, hint_key) = match overlay {
+        Overlay::Approval => (Key::ApprovalTitle, Key::ApprovalHint),
+        Overlay::Diff => (Key::DiffTitle, Key::DiffHint),
+        Overlay::History => (Key::HistoryTitle, Key::HistoryHint),
+        Overlay::Tree => (Key::TreeTitle, Key::TreeHint),
+        Overlay::Fork => (Key::ForkTitle, Key::ForkHint),
+        Overlay::Worktree => (Key::WorktreeTitle, Key::WorktreeHint),
+        _ => unreachable!(),
+    };
+    let mut rows = vec![widgets::box_top(
+        palette,
+        columns,
+        t(workbench.lang, title_key),
+    )];
+    rows.push(widgets::box_row(
+        palette,
+        t(workbench.lang, hint_key),
+        columns,
+    ));
+    if overlay == Overlay::History {
+        rows.push(widgets::box_row(
+            palette,
+            &format!("> {}", workbench.history_query),
+            columns,
+        ));
+    }
+    let header = rows.len();
+    let available = (h as usize).saturating_sub(header + 1);
+    let body = match overlay {
+        Overlay::History => {
+            let sessions = workflows::filtered_sessions(&data.sessions, &workbench.history_query);
+            if sessions.is_empty() {
+                vec![t(workbench.lang, Key::HistoryEmpty).into()]
+            } else {
+                sessions
+                    .iter()
+                    .enumerate()
+                    .map(|(index, row)| {
+                        format!(
+                            "{}{} · {} · {}",
+                            if index == workbench.workflow_index {
+                                "› "
+                            } else {
+                                "  "
+                            },
+                            row.title,
+                            row.workspace,
+                            row.id
+                        )
+                    })
+                    .collect()
+            }
+        }
+        Overlay::Tree => workflows::tree_sessions(&data.sessions)
+            .iter()
+            .enumerate()
+            .map(|(index, (row, depth))| {
+                format!(
+                    "{}{}{} · {}",
+                    if index == workbench.workflow_index {
+                        "› "
+                    } else {
+                        "  "
+                    },
+                    "  ".repeat(*depth),
+                    row.title,
+                    row.id
+                )
+            })
+            .collect(),
+        Overlay::Fork => {
+            if data.fork_points.is_empty() {
+                vec![t(workbench.lang, Key::ForkEmpty).into()]
+            } else {
+                data.fork_points
+                    .iter()
+                    .enumerate()
+                    .map(|(index, point)| {
+                        format!(
+                            "{}{}. {}",
+                            if index == workbench.workflow_index {
+                                "› "
+                            } else {
+                                "  "
+                            },
+                            index + 1,
+                            point.text.replace('\n', " ↵ ")
+                        )
+                    })
+                    .collect()
+            }
+        }
+        Overlay::Approval => workflows::detail_lines(data, workbench.lang, "approval"),
+        Overlay::Diff => workflows::detail_lines(data, workbench.lang, "diff"),
+        Overlay::Worktree => workflows::detail_lines(data, workbench.lang, "worktree"),
+        _ => Vec::new(),
+    };
+    // Selection follows the highlight; detail overlays use an independent
+    // scroll, so moving a file selection does not discard its patch position.
+    let scroll = if matches!(overlay, Overlay::Diff | Overlay::Approval) {
+        workbench.overlay_scroll_offset()
+    } else {
+        workbench
+            .workflow_index
+            .saturating_add(1)
+            .saturating_sub(available)
+    };
+    for line in workflows::wrapped(&body, columns.saturating_sub(4), scroll, available) {
+        rows.push(widgets::box_row(palette, &line, columns));
     }
     rows.push(widgets::box_bottom(palette, columns));
     while rows.len() < h as usize {
