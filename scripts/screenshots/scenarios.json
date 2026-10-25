@@ -4703,6 +4703,111 @@
           }
         ]
       },
+      "desktops-unreachable": {
+        "_comment": "A paired machine that is not answering has nothing behind its settings action: every row on that page is read from or written to the machine. So the row greys the gear and says the state in place of the id — and the second machine, which does answer, keeps its own gear. Naming is this phone's own record and stays reachable, which is the one thing a machine that is off can still be given.",
+        "url": "http://localhost:8099/?connection=dropped&peers=1",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "桌面选择"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tap": "管理已配对的桌面…"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "eval": "(() => {\n  const gears = [...document.querySelectorAll('[role=button][aria-label=\"桌面端设置\"]')];\n  if (gears.length !== 2) throw new Error('expected one settings action per row: ' + gears.length);\n  // `aria-disabled` is only written when it applies, so an enabled action\n  // reads null — not \"false\".\n  const disabled = gears.map(el => el.getAttribute('aria-disabled') === 'true');\n  if (!disabled[0]) throw new Error('the machine that cannot answer still offers its settings');\n  if (disabled[1]) throw new Error('the machine that answers lost its settings action');\n  if (gears[0].getAttribute('tabindex') !== '-1') throw new Error('the greyed action is still in the tab order');\n  // A greyed control with no explanation reads as a broken app: this row says\n  // which state it is in, in place of the id it would otherwise file it under.\n  // The *other* row keeps its id, which is why this is read per card.\n  const card = gears[0].parentElement;\n  const said = card.innerText;\n  if (!said.includes('未连接')) throw new Error('the row does not say why: ' + said);\n  if (said.includes('desktop_')) throw new Error('the row still shows the id under the name: ' + said);\n  return gears.map(el => el.getAttribute('aria-disabled')).join('/');\n})()"
+          },
+          {
+            "shot": "m-desktops-unreachable.png"
+          },
+          {
+            "eval": "(() => {\n  // The disabled control must open nothing — on the phone the press never\n  // reaches the handler, and a page that opened anyway would write to a machine\n  // that is not answering.\n  const gear = [...document.querySelectorAll('[role=button][aria-label=\"桌面端设置\"]')][0];\n  gear.click();\n  return 'pressed the greyed gear';\n})()"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => {\n  const text = document.body.innerText;\n  if (text.includes('自动化与审批') || text.includes('模型可见性'))\n    throw new Error('a disabled settings action opened the machine page: ' + text.slice(0, 200));\n  if (!text.includes('已配对的桌面端')) throw new Error('left the paired list: ' + text.slice(0, 200));\n  return 'the greyed gear opened nothing';\n})()"
+          },
+          {
+            "eval": "(() => {\n  // Naming is this phone's own record, so it keeps working while the machine\n  // cannot be configured — that is the whole reason it lives on the row.\n  const pencils = [...document.querySelectorAll('[role=button][aria-label=\"名称与图标\"]')];\n  if (pencils.length !== 2) throw new Error('expected one label editor per row: ' + pencils.length);\n  if (pencils[0].getAttribute('aria-disabled') === 'true') throw new Error('the label editor is greyed out with the gear');\n  pencils[0].click();\n  return 'opened the label editor';\n})()"
+          },
+          {
+            "wait": 1400
+          },
+          {
+            "eval": "(() => {\n  const field = document.querySelector('input[aria-label=\"名称\"]');\n  if (!field) throw new Error('the label editor did not open');\n  return 'editor open on ' + field.value;\n})()"
+          },
+          {
+            "shot": "m-desktops-unreachable-label.png"
+          }
+        ]
+      },
+      "desktops-held": {
+        "_comment": "The open machine answers every heartbeat and is in another device's hands: it refuses every read and write, so its settings page would open on one banner and no rows. The row names the holder instead, in amber rather than an error tint — nothing is broken — and taking the machine back is offered where a machine is picked and on the connection sheet.",
+        "url": "http://localhost:8099/?held=1&peers=1",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "桌面选择"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tap": "管理已配对的桌面…"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "eval": "(() => {\n  const gears = [...document.querySelectorAll('[role=button][aria-label=\"桌面端设置\"]')];\n  if (gears.length !== 2) throw new Error('expected one settings action per row: ' + gears.length);\n  // `aria-disabled` is only written when it applies, so an enabled action\n  // reads null — not \"false\".\n  const disabled = gears.map(el => el.getAttribute('aria-disabled') === 'true');\n  if (!disabled[0]) throw new Error('the machine that cannot answer still offers its settings');\n  if (disabled[1]) throw new Error('the machine that answers lost its settings action');\n  if (gears[0].getAttribute('tabindex') !== '-1') throw new Error('the greyed action is still in the tab order');\n  // A greyed control with no explanation reads as a broken app: this row says\n  // which state it is in, in place of the id it would otherwise file it under.\n  // The *other* row keeps its id, which is why this is read per card.\n  const card = gears[0].parentElement;\n  const said = card.innerText;\n  if (!said.includes('已被「实验室的 MacBook Air」接管')) throw new Error('the row does not say why: ' + said);\n  if (said.includes('desktop_')) throw new Error('the row still shows the id under the name: ' + said);\n  return gears.map(el => el.getAttribute('aria-disabled')).join('/');\n})()"
+          },
+          {
+            "shot": "m-desktops-held.png"
+          },
+          {
+            "eval": "(() => {\n  // The disabled control must open nothing — on the phone the press never\n  // reaches the handler, and a page that opened anyway would write to a machine\n  // that is not answering.\n  const gear = [...document.querySelectorAll('[role=button][aria-label=\"桌面端设置\"]')][0];\n  gear.click();\n  return 'pressed the greyed gear';\n})()"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => {\n  const text = document.body.innerText;\n  if (text.includes('自动化与审批') || text.includes('模型可见性'))\n    throw new Error('a disabled settings action opened the machine page: ' + text.slice(0, 200));\n  if (!text.includes('已配对的桌面端')) throw new Error('left the paired list: ' + text.slice(0, 200));\n  return 'the greyed gear opened nothing';\n})()"
+          },
+          {
+            "eval": "(() => {\n  // Naming is this phone's own record, so it keeps working while the machine\n  // cannot be configured — that is the whole reason it lives on the row.\n  const pencils = [...document.querySelectorAll('[role=button][aria-label=\"名称与图标\"]')];\n  if (pencils.length !== 2) throw new Error('expected one label editor per row: ' + pencils.length);\n  if (pencils[0].getAttribute('aria-disabled') === 'true') throw new Error('the label editor is greyed out with the gear');\n  pencils[0].click();\n  return 'opened the label editor';\n})()"
+          },
+          {
+            "wait": 1400
+          },
+          {
+            "eval": "(() => {\n  const field = document.querySelector('input[aria-label=\"名称\"]');\n  if (!field) throw new Error('the label editor did not open');\n  return 'editor open on ' + field.value;\n})()"
+          }
+        ]
+      },
       "desktop-settings": {
         "_comment": "One paired desktop's page: everything that is read from or written to that machine, over its own connection — so there is no \"connect to this desktop\" step to take first. Its name and icon are the phone's own label rather than the machine's, so they are not here; they are edited from the row of the paired list that draws them (`desktop-label-edit`).",
         "steps": [
