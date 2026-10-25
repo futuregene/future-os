@@ -36,6 +36,7 @@ import base64
 import http.server
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -1548,6 +1549,22 @@ def tui(args: argparse.Namespace) -> int:
         if args.keep_stream:
             Path(args.keep_stream).write_bytes(stream)
         frames = text.count("\x1b[1;1H")
+        if frames == 0:
+            # The app wrote *something* but never a frame — an unusable binary
+            # (a version skew), a refused connection, a terminal it could not
+            # size. Rendering that as a picture produces a plausible-looking PNG
+            # of an error message and a green exit, which is worse than nothing.
+            # Measured: a stale `target/debug/future` wrote its "Incompatible
+            # Future Agent" line and the capture quietly saved it as a frame.
+            message = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text).strip()
+            shown = "\n  ".join(line for line in message.splitlines() if line.strip())[:1200]
+            raise SystemExit(
+                "error: the TUI wrote no frame, only:\n  "
+                + (shown or "(nothing readable)")
+                + "\nrebuild both sides from one tree (cargo build -p future-cli --bin future, "
+                "cargo build -p future-tui --example demo_agent), and check that the "
+                "agent's version matches the client's."
+            )
         size = tui_terminal.render(text, output, args.cols, args.rows, work, scale=args.scale)
         print(f"{output}: {size[0]}x{size[1]} css px from {len(stream)} bytes in {frames} frame(s)")
         return 0
