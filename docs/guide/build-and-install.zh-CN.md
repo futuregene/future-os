@@ -111,7 +111,7 @@ curl -fsSL https://dl.future-os.cn/install.sh | bash
 
 - **Debian/Ubuntu** —— `FutureOS_<version>_amd64.deb` 或 `FutureOS_<version>_arm64.deb`，通过 `apt` 安装并解析依赖；同时安装图形 `futureos` 和统一 `future` CLI（包含 `future host`）。
 - **其他 Linux** —— `FutureOS_<version>_linux_<arch>-portable.tar.gz`（`futureos` + 统一 `future`（包含 `future host`）），解压到 `/usr/local/bin`（不可写时为 `~/.local/bin`）；架构为 `x86_64` 或 `aarch64`。
-- **无桌面主机** —— 从官方发布渠道下载 `FutureOS_<version>_linux_<arch>-cli.tar.gz`，解压后运行 `./future config` 和 `./future tui`（或运行 `./future agent` 供 CLI 客户端连接）。官方静态 musl CLI 不需要 GUI 运行库。
+- **无桌面主机** —— 从官方发布渠道下载 `FutureOS_<version>_linux_<arch>-cli.tar.gz`，解压后运行 `./future config`，用 `./future host` 启动宿主（无需登录），再在另一个终端用 `./future tui` 连接（也可用 `./future agent` 作为宿主）。官方静态 musl CLI 不需要 GUI 运行库。
 
 发布的 GUI 需要 glibc ≥ 2.39（约 Ubuntu 24.04+）和 WebKitGTK 4.1。同包中的
 `future` CLI（包含 `future host`）是完全静态的 musl 二进制，没有 glibc 版本要求，

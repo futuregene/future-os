@@ -3,12 +3,9 @@
 > [中文](agent-supervision.zh-CN.md)
 >
 > Design date: 2026-10-21. Source baseline: `a91fcf0ec`.
-> Status: **P1 and D6 have landed** (supervisor, `Busy` yielding, bounded waiting, the breaker, all three entries wired,
-> Agent-triggered continuation, and the TUI hosting the Agent in-process). This document separates what landed from the product decisions that still need
-> the user's sign-off — see [§2](#2-approved-design-vs-product-decisions); open items are in
-> [§12](#12-open-questions) and the measurements are in [§13](#13-measured-behaviour).
+> Status: **P1 landed; D6 landed and then reversed by D11 (2026-10-25: the TUI is attach-only and never starts or restarts the Agent).** The supervisor, `Busy` yielding, bounded waiting, the breaker, the Agent-triggered continuation, and headless/desktop wiring remain; [§7.6](#76-reversal-d11--the-tui-stops-hosting-2026-10-25) records the reversal. Product decisions still open are listed in [§2](#2-approved-design-vs-product-decisions), open items in [§12](#12-open-questions) and the measurements in [§13](#13-measured-behaviour).
 
-Three entry points can bring an Agent up today: `future agent`, `future host`, and `future tui`. All three honour the same instance lock, but **who starts it, who owns it, and what happens when it dies** each has its own answer. That layer is what is missing, and it is what this document adds. It changes neither the instance lock, the storage format, nor the RPC contract.
+Two entry points can bring an Agent up: `future agent` and `future host` (and the desktop window, which embeds the same host). A third, `future tui`, is now a pure client — it attaches or reports what to start. The entries that do host all honour the same instance lock, but **who owns the Agent and what happens when it dies** still needed one shared answer; that layer is what this document adds. It changes neither the instance lock, the storage format, nor the RPC contract.
 
 ## Service repair and remote recovery (2026-10-23)
 
@@ -79,18 +76,18 @@ Windows execution belong to CI.
 |---|---|---|---|
 | `future agent` | Itself | — | `~/.future/agent/agent-instance.lock` (service lock) + the socket's `.owner.lock` (endpoint lease) |
 | `future host` | Yes, when it gets the service lock | No | `~/.future/app/desktop.lock` (host lock) + the service lock, conditionally |
-| `future tui` | Yes, through `crate::agent_host` when the binary is `future` | No | The service lock, when it hosts |
+| `future tui` | **No** — attach-only since D11 | No | None |
 
-All three funnel through [`select_agent`](../../packages/rpc/src/connection.rs): handshake an external service first; only on failure plus a confirmed-absent local endpoint (`NotFound`/`ConnectionRefused`) plus a passing [`check_instance_lock`](../../packages/rpc/src/connection.rs) does it issue a `LocalStartPermit`, and the real arbitration is the `try_write()` inside [`AgentService::with_instance`](../../agent/src/service/mod.rs).
+Both hosting entries funnel through [`select_agent`](../../packages/rpc/src/connection.rs): handshake an external service first; only on failure plus a confirmed-absent local endpoint (`NotFound`/`ConnectionRefused`) plus a passing [`check_instance_lock`](../../packages/rpc/src/connection.rs) does it issue a `LocalStartPermit`, and the real arbitration is the `try_write()` inside [`AgentService::with_instance`](../../agent/src/service/mod.rs). The TUI never asks for a permit: it classifies the endpoint with `probe_local_agent` and reports what the user should start (`tui/src/agent_attach.rs`).
 
 ### 1.2 Four gaps
 
-All four are closed today (P1 for 1–3, D6 for 4); they are kept as the record of what the supervisor replaced. The two TUI gaps (1 and 4) were closed by [§7](#7-tui-starts-the-agent-in-process), not by a better sidecar.
+All four are closed today (P1 for 1–3, D6 for 4 — the TUI's part of 1 and 4 is now moot: it hosts nothing, see [§7.6](#76-reversal-d11--the-tui-stops-hosting-2026-10-25)); they are kept as the record of what the supervisor replaced.
 
-1. **Launch happens once.** The TUI calls [`ensure_agent_running`](../../tui/src/agent_supervisor.rs) at the top of `run` and never again; what remains is the [reconnect prober in grpc_client](../../tui/src/rpc/grpc_client.rs) (1s→30s backoff, "Connection to agent lost" in the UI), which **never re-spawns**. Desktop is the same: one call in setup.
+1. **Launch happens once.** The TUI called `ensure_agent_running` (`tui/src/agent_supervisor.rs`, deleted by D11) at the top of `run` and never again; what remains is the [reconnect prober in grpc_client](../../tui/src/rpc/grpc_client.rs) (1s→30s backoff, "Connection to agent lost" in the UI), which **never re-spawns**. Desktop is the same: one call in setup.
 2. **headless cannot see an external Agent die.** Its loop calls [`check_running`](../../cli/src/headless/agent.rs) every second, but that only reads **its own host's `Phase::Failed`**. While attached it is `Ready` forever, so a dead external Agent leaves headless serving and every RPC failing.
 3. **Losing the lock race is treated as failure.** `InstanceFile::acquire` turns the conflict into a string ([instance.rs](../../agent/src/service/instance.rs)), `AgentHost` records `Phase::Failed` (terminal there: keep the lock when cleanup is uncertain, no in-process restart), and headless exits while the TUI reports `exited with status 1`. **The correct behaviour is to yield and wait.**
-4. **The TUI's sidecar dies with the TUI.** `OwnedAgent::drop` kills it ([agent_supervisor.rs](../../tui/src/agent_supervisor.rs)), so headless availability hangs on "some terminal window is still open".
+4. **The TUI's sidecar died with the TUI.** `OwnedAgent::drop` killed it (`tui/src/agent_supervisor.rs`, deleted by D11), so headless availability hung on "some terminal window is still open". After D11 the TUI never has one to kill.
 
 ## 2 Approved design vs product decisions
 
@@ -102,7 +99,8 @@ All four are closed today (P1 for 1–3, D6 for 4); they are kept as the record 
 | D4 | Waiting is bounded and visible (see [§5](#5-waiting-is-bounded)) | Design requirement | **Approved** |
 | D5 | A crash-loop breaker (see [§6](#6-the-breaker)) | Design | **Approved** |
 | **P1** | Supervisor core + `Busy` classification + wiring the three entries ([§10](#10-implementation-checklist)) | Implementation | **Landed** |
-| **D6** | TUI switches to "external first, otherwise in-process" and drops the child sidecar ([§7](#7-tui-starts-the-agent-in-process)) | **Product decision** | **Landed**: `tui/src/agent_host.rs` hosts through `future_host`, and `tui/src/agent_supervisor.rs` installs `start_in_process` as the driver; the standalone `future-tui` binary stays attach-only |
+| **D6** | TUI switches to "external first, otherwise in-process" and drops the child sidecar ([§7](#7-tui-starts-the-agent-in-process)) | **Product decision** | **Superseded by D11** (was landed, reverted) |
+| **D11** | The TUI never starts or restarts the Agent; it attaches and otherwise names the command to run ([§7.6](#76-reversal-d11--the-tui-stops-hosting-2026-10-25)) | **Product decision** | **Landed** (2026-10-25): `tui/src/agent_attach.rs` replaces `agent_host`/`agent_supervisor` |
 | **P2** | Let the Agent outlive the TUI: detached sidecar + `--ephemeral` idle exit ([§8](#8-lifetime-and-ownership)) | **Product decision** | **Awaiting the user** |
 | **D7** | After the **user** stops the Agent, should other clients restart it? ([§4.3](#43-four-kinds-of-death)) | Product decision | Recommendation: no; **awaiting confirmation** |
 | **D8** | Post-restart continuation: who runs it, and when is a run resumable? (§9.1, §9.2) | Design | **Implemented**: system interruption, durable user stop intent and outcome verification; see the 2026-10-23 revision above. Native fault validation remains with CI/device testing |
@@ -152,7 +150,7 @@ Corollary: **lock held but endpoint not ready yet = someone else is starting**. 
 |---|---|---|---|
 | `future host` | Yes | No (it can embed; a second process buys nothing) | Yes |
 | Desktop GUI | Yes | No | Yes |
-| `future tui` | Yes (unified `future` binary only) | No | Yes |
+| `future tui` | **No** (D11) | No | **No** — attach only, and it says what to start |
 | channels / goal / `future run` / mobile | No | No | Attach only |
 
 For production, keep `future host` under systemd / launchd / NSSM: a process manager does not die with itself, so client self-healing is only the fallback.
@@ -172,7 +170,7 @@ For production, keep `future host` under systemd / launchd / NSSM: a process man
 
 | Entry | Probe cadence | Cap | What the UI/terminal shows meanwhile | Effect on its own runs | After the cap |
 |---|---|---|---|---|---|
-| `future tui` | 1s (`WAIT_PROBE_INTERVAL`) | **180s** (`WAIT_FOR_OWNER`) | Status line: `waiting for the Agent started by another client (pid 1234 @ host-a)… 12s`; from 30s (`WAIT_NOTICE_AFTER`), add "a cold data root can take minutes; progress: `<log path>`" | Input stays editable; a send is refused with the same sentence — **never queued, never faked** | Exits 1 with the same sentence (the TUI starts before the screen does, so there is no usable UI to drop back to) |
+| `future tui` | one probe at startup | none | — (with no Agent it exits at once, naming the command to run) | — (it never has runs of its own in flight before the first prompt) | Exits 1 with the same sentence |
 | `future host` | 250ms→1s | **180s** | One stderr line every 30s, same content | Accepts nothing (it never came up) | **Exit with an error** (exit 1), printing the holder's pid/host and the log path, and let the process manager retry |
 | Desktop GUI | 250ms→1s | **180s** | The Agent status page shows "waiting for the Agent started by another client", with pid/host | Agent-dependent pages unavailable | Enter `Failed` with a Retry button; never start a second instance |
 
@@ -206,7 +204,10 @@ A process restart clears the counter (it lives in memory). Two clients therefore
 
 ## 7 TUI starts the Agent in-process
 
-> **Landed (D6).** The TUI now does this: `tui/src/agent_host.rs` hosts a complete Agent in-process (only the unified `future` binary may), and `tui/src/agent_supervisor.rs` drives attach → wait → start. The section below is the proposal that was accepted, kept for its costs.
+> **Superseded (D11).** This section was landed as D6 and then reversed: the TUI
+> now only attaches (see [§7.6](#76-reversal-d11--the-tui-stops-hosting-2026-10-25)).
+> It is kept because the costs below are why the reversal is not free — the
+> arguments for hosting remain true, they just lost to a stronger one.
 
 ### 7.1 The proposal
 
@@ -241,11 +242,51 @@ The TUI adopts headless's policy exactly: attach when an external Agent is reach
 - The TUI no longer has "the lifetime of a child process" to reason about (P2 becomes unnecessary for the TUI).
 - The ownership inversion — "headless's Agent actually lives in some terminal window" — disappears.
 
+### 7.6 Reversal (D11) — the TUI stops hosting, 2026-10-25
+
+**Decision (user):** the Agent is started by `future agent` or by `future host`
+only. The TUI performs no start and no restart: with no Agent serving it prints
+what to start (Future Host, the desktop app, or `future agent`) and exits; if the
+Agent it attached to disappears, it keeps reconnecting and shows that state.
+
+Three problems the hosting policy had, each observed in use:
+
+1. **Several terminals raced to repair one Agent.** Each TUI ran its own
+   supervision loop, so once an Agent died, every open terminal wanted to own the
+   replacement — the instance lock serialized them, but the churn (probes, waits,
+   `recover_in_process` attempts, the breaker's messages) came from all of them
+   at once.
+2. **A client doubled as an owner.** Whoever happened to have a terminal open
+   became the process whose exit interrupted every other client's runs. The
+   ownership inversion §7.5 claims to remove was removed in the wrong direction:
+   instead of headless owning the Agent, *any* terminal could.
+3. **The lifetime question of §8 (P2) is a client's question.** It only arises
+   because a client started the Agent. With hosting out of the TUI, "does the
+   Agent outlive the TUI" stops being asked at all.
+
+What replaces it: `tui/src/agent_attach.rs`, which classifies the endpoint with
+`probe_local_agent` once at startup and never takes a start permit. The three
+outcomes are attach, a refusal naming the command (unreachable, incompatible,
+`agent_stopping`), or a "no Agent serving this data root" message — all of them
+immediate, none of them a start. `agent_host.rs`, `agent_supervisor.rs`, the
+supervision loop, the exit-path `stop_owned_agent`, and the TUI's `future-host`
+hosting dependency are gone; `future-host` remains only for `install_rustls_provider`
+in the update check.
+
+Costs accepted: the TUI no longer self-heals a crashed Agent (its recovery is the
+user's `future host`, and the client's own reconnect banner), and a machine that
+only ever runs `future tui` now needs a host started first. The stderr capture
+added for §7.4 stays — it protects the frame against any writer, and the crash
+hook depends on it.
+
+The standalone `future-tui` binary's §7.3 constraint disappears with the hosting:
+it is now as capable as `future tui`, since neither embeds an Agent.
+
 ## 8 Lifetime and ownership
 
 > **Awaiting the user (P2).** The user's stated attitude to the desktop app is "close it and it's closed", and this item would let the Agent outlive the TUI, so it **must not be presented as settled**.
 
-The problem: once D6 is adopted, an in-process Agent still dies with the TUI. If headless is attached at that moment, its next supervision pass will **restart** the Agent — trading "in-flight runs interrupted" for "the service stays up".
+The problem: once D6 is adopted, an in-process Agent still dies with the TUI. If headless is attached at that moment, its next supervision pass will **restart** the Agent — trading "in-flight runs interrupted" for "the service stays up". (After D11 only `future agent`, `future host` and the desktop own an Agent, so the question is theirs, not the TUI's.)
 
 Two options:
 
@@ -287,7 +328,7 @@ So the accurate statement is: **the conversation does not end and history is not
 | The conversation must have a thread + run row in `app.db` | Run rows come from a host-submitted prompt or from import (discovery every 60s) | A box running only a TUI, with no host, has no candidate at all; the first self-healed launch should import once |
 | The remaining product gates | Newest run, not `waiting_approval`, within 7 days, `autoResumeInterrupted` (on by default — it spends the user's credits) | Unchanged |
 
-The second row is the easiest thing to break: the TUI used to `SIGKILL` its own sidecar (`OwnedAgent::drop`), which **skipped the graceful stop**, so the journal kept an unterminated run and the conversation happened to be resumable. With D6 the Agent runs in-process, so a normal quit takes the graceful path, the run becomes `cancelled`, and it is **no longer resumable** — which is exactly why the cause has to be recorded (§9.2, premise 1).
+The second row is the easiest thing to break: the TUI used to `SIGKILL` its own sidecar (`OwnedAgent::drop`), which **skipped the graceful stop**, so the journal kept an unterminated run and the conversation happened to be resumable. Under D6 the Agent ran in-process, so a normal quit took the graceful path, the run became `cancelled`, and it was **no longer resumable** — which is exactly why the cause has to be recorded (§9.2, premise 1). (After D11 the TUI neither hosts nor kills; the row stays as the record of why the cause exists.)
 
 #### The D8 criterion (corrected)
 
@@ -488,7 +529,7 @@ As built, the guard needed one intermediate shape before the last step: an assis
 | `Supervisor` / `Decision` / backoff; split `StartupBlocked` into `Busy` and `Blocked` | `packages/rpc/src/supervision.rs` (with `select_agent` in `packages/rpc/src/connection.rs`) |
 | The typed lock-conflict error | `agent/src/service/instance.rs` (`lock_conflict_message`), `host/src/agent_host.rs` (`Error::AgentBusy`) |
 | Yield instead of failure: `Stopped` + `yield_reason`, `detach_attached()` | `host/src/agent_host.rs` |
-| One-shot launch → resident supervision; the waiting status line ([§5](#5-waiting-is-bounded)) | `tui/src/agent_supervisor.rs` |
+| One-shot launch → resident supervision; the waiting status line ([§5](#5-waiting-is-bounded)) | `cli/src/headless/agent.rs`, `desktop/src-tauri/src/agent_supervisor.rs` (the TUI's copy is gone, D11) |
 | `check_running` → a supervision tick (probe the endpoint, not just our own phase) | `cli/src/headless/agent.rs` |
 | Same tick wired in | `desktop/src-tauri/src/agent_supervisor.rs` |
 | The breaker ([§6](#6-the-breaker)) | Inside the supervisor; no new file |
@@ -502,7 +543,7 @@ As built, the guard needed one intermediate shape before the last step: an assis
 
 ### Later
 
-- **D6** (TUI embedding): landed — `future-host` is in `tui/Cargo.toml`, `tui/src/agent_host.rs` drives it, and the spawn branch with `check_sidecar_program` is gone.
+- **D6** (TUI embedding): landed, then **reversed by D11** — `tui/src/agent_host.rs` and `tui/src/agent_supervisor.rs` were deleted in favour of `tui/src/agent_attach.rs`; `future-host` remains in `tui/Cargo.toml` only for the update check's rustls provider.
 - **P2** (lifetime): `--ephemeral` + active-subscription counting + idle exit. Not implemented: `future agent` has no `--ephemeral` flag.
 
 ## 11 Acceptance
@@ -527,7 +568,7 @@ All process-level tests, in the shape of `agent/tests/service_startup.rs` (the i
 
 Questions the user must answer, ordered by blast radius:
 
-1. ~~D6: should the TUI start the Agent in-process?~~ (**settled:** landed — see §7).
+1. ~~D6: should the TUI start the Agent in-process?~~ (**settled twice:** landed as D6, then reversed by D11 — the TUI is attach-only, see [§7.6](#76-reversal-d11--the-tui-stops-hosting-2026-10-25)).
 2. **P2: should the Agent outlive the TUI?** Option A (dies with its starter; others restart it, which interrupts the current turn though the conversation is continued — see §9.1) versus B (detached + idle exit).
 3. **D7: after the user stops it explicitly, should other clients bring it back automatically?** Recommendation: no (respect "stop means stop"), but it needs confirmation.
 4. ~~Continuation's default~~ (**settled**): `resumeInterruptedOnStart` defaults to **on**, matching the desktop's existing `autoResumeInterrupted`, so moving the mechanism cannot silently drop behaviour.
@@ -545,8 +586,8 @@ model endpoint so no real credential was spent on the verification.
 | # | Scenario | Before | Now |
 |---|---|---|---|
 | 1 | `future agent` owns the Agent, headless attached → `kill -9` the agent | nobody took over within 30s; headless only reconnected | headless brings a new Agent up **within 3s** (`the Agent is gone; starting a new one`, new instance id) |
-| 2 | headless owns the Agent, TUI attached → end headless | nobody took over within 40s; the TUI sat on `Connection to agent lost` | the TUI brings a new Agent up **within 1s** |
-| 3 | Lock held, default endpoint absent (Agent bound to TCP only) → start the TUI | the TUI **exited 1** with "Cannot start a local Agent" | the TUI **keeps waiting**, printing `waiting for the Agent another process is starting (30s of 180s)` plus the holder's pid/host |
+| 2 | headless owns the Agent, TUI attached → end headless | nobody took over within 40s; the TUI sat on `Connection to agent lost` | (as measured then: the TUI brought a new Agent up within 1s — **reversed by D11**, the TUI now stays on its reconnect banner and asks for a host) |
+| 3 | Lock held, default endpoint absent (Agent bound to TCP only) → start the TUI | the TUI **exited 1** with "Cannot start a local Agent" | (as measured then: the TUI kept waiting, printing `waiting for the Agent another process is starting (30s of 180s)` — **reversed by D11**, it now exits at once with the command to run; a waiting TUI is what made several terminals sit in the same loop) |
 | 4 | Same, with another headless | exit 1 | the same wait through `supervise()` |
 | 5 | `resumeInterruptedOnStart=true`, an interrupted run and a model → start `future agent` | no continuation | `1 conversation(s) checked, 1 interrupted, 1 continued` (a healthy start with nothing interrupted prints nothing); the stub received one request whose last user message is the continuation prompt; `interruptedRun` becomes null and `queryCount` goes 1→2 |
 | 6 | The same but the switch is **off** (the default) | — | **zero** continuations; the session honestly stays `interrupted_by_restart` |

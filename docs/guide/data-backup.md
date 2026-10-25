@@ -89,11 +89,11 @@ for neither:
   whether that is the GUI or a foreground `future host`.
 - `<home>/agent/agent-instance.lock` — held by the Agent. When Desktop or
   `future host` runs the embedded Agent, stopping that process releases both;
-  a standalone `future agent`, or an Agent a TUI started on its own, must be
-  stopped as well.
+  a standalone `future agent` must be stopped as well. A TUI never holds it:
+  the TUI only attaches to an Agent and never starts one.
 
-So: quit the Desktop app, stop any `future host`/`future agent` in a terminal,
-and close any TUI or client that started its own Agent. A held lock is reported
+So: quit the Desktop app and stop any `future host`/`future agent` in a
+terminal (TUIs need no stopping — they hold no Agent). A held lock is reported
 for what it is — `Desktop is running; quit it before data maintenance` or
 `Agent is running; stop it before data maintenance`.
 

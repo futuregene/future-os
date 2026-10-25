@@ -1104,20 +1104,17 @@ pub fn run(args: &[String]) -> ExitCode {
         .build()
         .expect("failed to start tokio runtime");
 
-    // Desktop-style ownership: attach to an existing Agent when possible;
-    // otherwise run one in this process. A busy instance lock means another
-    // process is already starting the Agent, so this waits for it (bounded, and
-    // it says so) instead of refusing to run.
-    if let Err(error) = runtime.block_on(crate::agent_supervisor::ensure_agent_running(
-        &args.grpc_addr,
-    )) {
+    // Attach only. The Agent belongs to its host (`future host`, the desktop
+    // app, or an explicit `future agent`); without one this says what to start
+    // rather than starting it, so several terminals cannot race over the
+    // instance lock. Losing the Agent later keeps showing the client's own
+    // "connection lost" state — the TUI does not restart it either.
+    if let Err(error) =
+        runtime.block_on(crate::agent_attach::ensure_agent_attached(&args.grpc_addr))
+    {
         eprintln!("future-tui: {error}");
         return ExitCode::from(1);
     }
-    // Keep watching: the launch above happened once, and an Agent that dies
-    // later would otherwise leave this terminal reconnecting forever. The
-    // handle is explicit because this runs outside async context.
-    crate::agent_supervisor::spawn_agent_supervision(runtime.handle(), args.grpc_addr.clone());
 
     // Handle --list-models.
     if let Some(search) = &args.list_models {
@@ -1129,7 +1126,6 @@ pub fn run(args: &[String]) -> ExitCode {
             Some(search.clone())
         };
         let result = runtime.block_on(list_models(&addr, search.as_deref()));
-        crate::agent_supervisor::stop_owned_agent();
         return match result {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
@@ -1149,7 +1145,6 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         let addr = args.grpc_addr.clone();
         let result = runtime.block_on(run_print_mode(&addr, &args));
-        crate::agent_supervisor::stop_owned_agent();
         return match result {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
@@ -1163,7 +1158,6 @@ pub fn run(args: &[String]) -> ExitCode {
 
     // Interactive mode (TUI).
     let code = runtime.block_on(run_interactive(&args));
-    crate::agent_supervisor::stop_owned_agent();
     ExitCode::from(code)
 }
 

@@ -83,8 +83,10 @@ redownload before overriding security controls.
 - **Portable desktop:** extract the downloaded tarball, keep `futureos` and `future` together, and run `./futureos` or
   `./future host`.
 - **CLI on a server:** extract the CLI-only tarball and run `./future config`, then
-  `./future tui` (starts its agent when needed), or start `./future agent` for CLI
-  commands that require an agent. Add the executable directory to PATH as needed.
+  start the host with `./future host` (no sign-in needed) and attach from another
+  terminal with `./future tui`. `./future agent` also works as the host for CLI
+  commands that only need an agent. The TUI never starts an agent itself. Add the
+  executable directory to PATH as needed.
 
 The published GUI packages require a recent glibc-based distribution (glibc ≥ 2.39,
 roughly Ubuntu 24.04+) and WebKitGTK 4.1. Portable users may need

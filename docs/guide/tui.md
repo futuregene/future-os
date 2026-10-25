@@ -8,14 +8,19 @@ instance's FutureOS home: `~/.future/run/agent.sock` by default,
 `<FUTURE_HOME>/run/agent.sock` with `FUTURE_HOME` set — see
 [isolated instances](directory-layout.md#running-several-isolated-instances-future_home).
 If the FutureOS home sits on a filesystem that cannot host Unix sockets (e.g.
-NFS), point `FUTURE_HOME` at a directory on a local filesystem. If no agent is
-reachable, the TUI launches one as a sidecar and
-shuts it down on exit — no manual startup needed. You can still run the
-agent yourself:
+NFS), point `FUTURE_HOME` at a directory on a local filesystem.
+
+**Start a host first; the TUI only attaches.** The Agent's lifetime belongs to
+its host — `future host`, the desktop app, or an explicit `future agent` — and
+the TUI never starts or restarts one. With no Agent serving, it exits with the
+command to run; if the Agent it was attached to goes away, it keeps reconnecting
+and shows that state. Nothing is started on its behalf, so any number of
+terminals can attach to one host:
 
 ```bash
-future agent      # terminal 1: the agent
+future host       # terminal 1: the host (owns the Agent)
 future tui        # terminal 2: the terminal UI
+future tui        # terminal 3: another one — same host, no second Agent
 ```
 
 For remote/development setups pass `--grpc-addr <host:port>` to the agent to
@@ -605,10 +610,10 @@ object above. `defaultModel`, `defaultThinkingLevel`, `defaultPermissionLevel`
 and `defaultApprovalMode` are applied to the agent when the TUI starts. Logs: `PI_DEBUG_REDRAW=1` writes debug redraw
 logging to `~/.future/tui/debug.log`; `PI_TUI_WRITE_LOG=1` logs raw screen writes
 to `~/.future/tui/write.log`. While the alternate screen is up, the TUI also
-points stderr at `~/.future/tui/stderr.log`: `future tui` may host the Agent in
-its own process, and anything that process prints must not be written into the
-screen the TUI owns (a raw-mode line feed does not return to column 0, and the
-diff renderer cannot see writes it did not make). The real stderr comes back on
+points stderr at `~/.future/tui/stderr.log`: anything written to stderr from
+inside the process must not land in the screen the TUI owns (a raw-mode line
+feed does not return to column 0, and the diff renderer cannot see writes it did
+not make). The real stderr comes back on
 exit, so crash reports and shutdown messages still reach the terminal.
 
 The keys in the table above are the defaults. `/keymap` opens an editor over
@@ -622,7 +627,7 @@ and the defaults stay in force.
 
 | Symptom | Fix |
 |---|---|
-| Connection / gRPC error on startup | No agent could be found or started. Check the sidecar error, or start `future agent` yourself. In TCP mode, check nothing else holds the port: `lsof -i :<port>`. |
+| Connection / gRPC error on startup | No Agent is serving: start one first with `future host` (or the desktop app, or `future agent`) — the TUI never starts one itself. Check that user and IPC environment match; in TCP mode, check nothing else holds the port: `lsof -i :<port>`. |
 | Auth / "no model" error | No model configured. Run `future auth login`, add a provider through `/providers`, or edit `~/.future/agent/models.json` — see the repo README "Configure a model". |
 | `/editor` reports a missing editor | Neither `$VISUAL` nor `$EDITOR` is set. Start with one, e.g. `EDITOR=vim future tui`. A blank `$VISUAL` does not fall back to `$EDITOR`. |
 | `/copy` says "unconfirmed" or fails | The native clipboard program is unavailable (remote/SSH session?) and the copy went out as an OSC 52 request — the terminal has to apply it. A payload above 100 KB is refused; copy a smaller range. |

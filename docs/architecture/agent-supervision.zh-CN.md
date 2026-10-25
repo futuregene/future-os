@@ -3,10 +3,10 @@
 > [English](agent-supervision.md)
 >
 > 设计日期：2026-10-21。源码基线：`a91fcf0ec`。
-> 状态：**P1 与 D6 已落地**（监督器、`Busy` 让位、有界等待、熔断、三入口接线、Agent 自触发续跑，以及 TUI 进程内托管 Agent）。
+> 状态：**P1 已落地；D6 落地后又被 D11 反转**（2026-10-25：TUI 只连接，从不启动或重启 Agent）。监督器、`Busy` 让位、有界等待、熔断、Agent 自触发续跑，以及 headless/桌面端接线均保留；反转记录见 [§7.6](#76-反转d11tui-不再托管-2026-10-25)。
 > 本文把"已落地的设计"与"必须由用户拍板的产品决定"分开写，见 [§2](#2-判定分区设计-vs-产品决定)；待决项汇总在 [§12](#12-待决问题汇总)，实测记录在 [§13](#13-实测记录)。
 
-现在有三个入口会把 Agent 带起来：`future agent`、`future host`、`future tui`。三者都遵守同一个实例锁，但**谁先启动、谁负责、死了怎么办**三件事各有各的写法，缺的正是这一层。本文补的是这一层，不改变实例锁、存储格式和 RPC 契约。
+现在能把 Agent 带起来的是两个入口：`future agent` 和 `future host`（桌面窗口内嵌的就是同一个宿主）。第三个入口 `future tui` 现在只是纯客户端——能连就连，连不上就说明该启动什么。托管方都遵守同一个实例锁，但**谁负责、死了怎么办**仍需同一套答案，这正是本文补的那一层。它不改变实例锁、存储格式和 RPC 契约。
 
 ## 服务修复与远程恢复（2026-10-23）
 
@@ -58,24 +58,24 @@ Rust 远程客户端只有在请求具有稳定 ID 且协商出 `prompt_receipt_
 
 ## 1 现状
 
-### 1.1 三个入口的所有权
+### 1.1 各入口的所有权
 
 | 入口 | 进程内跑 Agent | 拉起外部 Agent | 持有的锁 |
 |---|---|---|---|
 | `future agent` | 它自己 | — | `~/.future/agent/agent-instance.lock`（服务锁）+ socket 的 `.owner.lock`（端点租约） |
 | `future host` | 取到服务锁时 | 否 | `~/.future/app/desktop.lock`（宿主锁）+ 视情况服务锁 |
-| `future tui` | 是：二进制为 `future` 时经 `crate::agent_host` 内嵌 | 否 | 内嵌时持服务锁 |
+| `future tui` | **否**：D11 起只连接 | 否 | 无 |
 
-三者的判定都收敛在 [`select_agent`](../../packages/rpc/src/connection.rs)：先握手外部服务，失败且确认本地端点缺席（`NotFound`/`ConnectionRefused`）+ [`check_instance_lock`](../../packages/rpc/src/connection.rs) 通过，才发 `LocalStartPermit`，最终由 [`AgentService::with_instance`](../../agent/src/service/mod.rs) 里的 `try_write()` 真正仲裁。
+托管方的判定都收敛在 [`select_agent`](../../packages/rpc/src/connection.rs)：先握手外部服务，失败且确认本地端点缺席（`NotFound`/`ConnectionRefused`）+ [`check_instance_lock`](../../packages/rpc/src/connection.rs) 通过，才发 `LocalStartPermit`，最终由 [`AgentService::with_instance`](../../agent/src/service/mod.rs) 里的 `try_write()` 真正仲裁。TUI 从不申请 permit：它用 `probe_local_agent` 做一次分类，然后告诉用户该启动什么（`tui/src/agent_attach.rs`）。
 
 ### 1.2 四个缺口
 
-四个缺口今天均已关闭（1–3 由 P1 关闭，4 由 D6 关闭）；保留这段是为了记住监督器取代了什么。两个 TUI 缺口（1 与 4）是由 [§7](#7-tui-改为进程内启动) 关闭的，不是靠改良 sidecar。
+四个缺口今天均已关闭（1–3 由 P1 关闭，4 由 D6 关闭；D11 之后 TUI 侧的第 1、4 项已无对象——它什么都不托管，见 [§7.6](#76-反转d11tui-不再托管-2026-10-25)）；保留这段是为了记住监督器取代了什么。
 
-1. **只有启动时拉起一次。** TUI 的 [`ensure_agent_running`](../../tui/src/agent_supervisor.rs) 在 `run` 开头调用一次，之后只剩 [grpc_client 的重连探测器](../../tui/src/rpc/grpc_client.rs)（1s→30s backoff，界面显示 "Connection to agent lost"），**永远不会重新 spawn**。Desktop 同理，只在 setup 里调一次。
+1. **只有启动时拉起一次。** TUI 的 `ensure_agent_running`（`tui/src/agent_supervisor.rs`，已由 D11 删除）在 `run` 开头调用一次，之后只剩 [grpc_client 的重连探测器](../../tui/src/rpc/grpc_client.rs)（1s→30s backoff，界面显示 "Connection to agent lost"），**永远不会重新 spawn**。Desktop 同理，只在 setup 里调一次。
 2. **headless 看不见外部 Agent 的死。** 主循环每秒调 [`check_running`](../../cli/src/headless/agent.rs)，但它只读**自己 host 的 `Phase::Failed`**；attach 外部 Agent 时 `Phase` 恒为 `Ready`，所以外部 Agent 死了 headless 继续 serving，然后每个 RPC 报错。
 3. **输掉锁竞争的一方当作失败处理。** `InstanceFile::acquire` 把冲突变成字符串（[instance.rs](../../agent/src/service/instance.rs)），`AgentHost` 把它记成 `Phase::Failed`（终态：清理不确定就保锁、不允许同进程重启），headless 直接退出、TUI 报 `exited with status 1`。**正确行为是让位等待**。
-4. **TUI 的 sidecar 随 TUI 死亡。** `OwnedAgent::drop` 会 kill（[agent_supervisor.rs](../../tui/src/agent_supervisor.rs)），于是 headless 的可用性挂在"某个终端窗口还开着"上。
+4. **TUI 的 sidecar 随 TUI 死亡。** `OwnedAgent::drop` 会 kill（`tui/src/agent_supervisor.rs`，已由 D11 删除），于是 headless 的可用性挂在"某个终端窗口还开着"上。D11 之后 TUI 根本没有可杀的子进程。
 
 ## 2 判定分区：设计 vs 产品决定
 
@@ -87,7 +87,8 @@ Rust 远程客户端只有在请求具有稳定 ID 且协商出 `prompt_receipt_
 | D4 | 等待必须有界，且期间界面必须说明（[§5](#5-等待必须有界)） | 设计要求 | **已认可** |
 | D5 | 崩溃循环熔断（[§6](#6-熔断)） | 设计 | **已认可** |
 | **P1** | 监督器核心 + `Busy` 分类 + 三个入口接线（[§10](#10-落地清单)） | 实现 | **已落地** |
-| **D6** | TUI 改为"外部优先，否则进程内启动"，去掉子进程 sidecar（[§7](#7-tui-改为进程内启动)） | **产品决定** | **已落地**：`tui/src/agent_host.rs` 经 `future_host` 内嵌，`tui/src/agent_supervisor.rs` 把 `start_in_process` 装成驱动；独立的 `future-tui` 二进制仍是 attach-only |
+| **D6** | TUI 改为"外部优先，否则进程内启动"，去掉子进程 sidecar（[§7](#7-tui-改为进程内启动)） | **产品决定** | **已被 D11 反转**（曾落地，后撤销） |
+| **D11** | TUI 从不启动或重启 Agent；只连接，否则给出该执行的命令（[§7.6](#76-反转d11tui-不再托管-2026-10-25)） | **产品决定** | **已落地**（2026-10-25）：`tui/src/agent_attach.rs` 取代 `agent_host`/`agent_supervisor` |
 | **P2** | 让 Agent 活过 TUI 退出：detached sidecar + `--ephemeral` 空闲退出（[§8](#8-生命周期与所有权)） | **产品决定** | **待用户决定** |
 | **D7** | Agent 被**用户主动**停掉后，其他客户端是否自动重启（[§4.3](#43-四种死法要分开)） | 产品决定 | 建议：不自动；**待确认** |
 | **D8** | 重启后的续跑语义：谁跑、什么时候算可续跑（§9.1、§9.2） | 设计 | **已实现**：系统中断、持久用户停止意图及结果核对，见本文顶部的 2026-10-23 修订；原生故障验证仍交 CI/联调 |
@@ -137,7 +138,7 @@ P2 与 D7 **不是已定方案**，本文不为它们设计代码路径，只描
 |---|---|---|---|
 | `future host` | 是 | 否（自己能内嵌，多进程无收益） | 是 |
 | Desktop GUI | 是 | 否 | 是 |
-| `future tui` | 是（仅限合并后的 `future` 二进制） | 否 | 是 |
+| `future tui` | **否**（D11） | 否 | **否**——只 attach，并说明该启动什么 |
 | channels / goal / `future run` / 手机 | 否 | 否 | 只 attach |
 
 生产部署仍建议用 systemd / launchd / NSSM 包住 `future host`：进程管理器不会"自己也死掉"，客户端自愈只该是兜底。
@@ -157,7 +158,7 @@ P2 与 D7 **不是已定方案**，本文不为它们设计代码路径，只描
 
 | 入口 | 探测节奏 | 等待上限 | 期间界面/终端 | 对它自己的 run 的影响 | 上限到达后 |
 |---|---|---|---|---|---|
-| `future tui` | 1s（`WAIT_PROBE_INTERVAL`） | **180s**（`WAIT_FOR_OWNER`） | 状态行：`等待另一个客户端启动的 Agent（pid 1234 @ host-a）… 12s`；从 30s（`WAIT_NOTICE_AFTER`）起追加"冷数据根可能要几分钟，进度见 `<日志路径>`" | 输入仍可编辑；发送被拒并显示同一句话——**不排队、不假装成功** | 以 exit 1 报错并打印同一句话（TUI 的启动发生在界面之前，没有可退回的可用界面） |
+| `future tui` | 启动时探测一次 | 无 | ——（没有 Agent 就立即退出，并给出该执行的命令） | ——（在第一条 prompt 之前它没有自己的 run） | 以 exit 1 报错并打印同一句话 |
 | `future host` | 250ms→1s | **180s** | stderr 每 30s 一行，同上信息 | 不接单（它本来就没起来） | **报错退出**（exit 1），打印持锁者 pid/host + 日志路径，交给进程管理器 |
 | Desktop GUI | 250ms→1s | **180s** | Agent 状态页显示"等待另一个客户端启动的 Agent"，带 pid/host | 依赖 Agent 的页面不可用 | 进入 `Failed` 并给"重试"按钮；不启动第二份 |
 
@@ -191,7 +192,7 @@ P2 与 D7 **不是已定方案**，本文不为它们设计代码路径，只描
 
 ## 7 TUI 改为进程内启动
 
-> **已落地（D6）。** TUI 现在就是这么做的：`tui/src/agent_host.rs` 在进程内托管完整 Agent（只有合并后的 `future` 二进制可以），`tui/src/agent_supervisor.rs` 负责 attach → 等待 → 启动。下面的内容是当时被接受的那个方案，保留其代价分析。
+> **已被反转（D11）。** 本节曾以 D6 落地，随后被撤销：TUI 现在只连接（见 [§7.6](#76-反转d11tui-不再托管-2026-10-25)）。保留它是因为下面的代价正是"反转并不免费"的原因——支持托管的论据依然成立，只是输给了更强的那个。
 
 ### 7.1 方案
 
@@ -226,11 +227,40 @@ TUI 采用与 headless 完全相同的策略：外部可达就 attach；缺席�
 - TUI 里不再有"子进程的生命周期"这类问题（P2 对 TUI 不再需要）。
 - 不再出现"headless 的 Agent 其实住在某个终端窗口里"的所有权倒置。
 
+### 7.6 反转（D11）——TUI 不再托管，2026-10-25
+
+**决定（用户）**：Agent 只由 `future agent` 或 `future host` 启动。TUI 不做任何启动与重启：
+没有 Agent 在服务时，它打印该启动的东西（Future Host、桌面应用或 `future agent`）后退出；
+它连上的 Agent 之后消失时，只继续重连并显示该状态。
+
+托管策略实际遇到的三个问题：
+
+1. **多个终端抢着修同一个 Agent。** 每个 TUI 都跑自己的监督循环，Agent 一死，每个已打开的终端都
+   想成为替代者的 owner——实例锁把它们串行化了，但探测、等待、`recover_in_process` 尝试与熔断提示
+   是同时来自所有终端的。
+2. **客户端兼职做了 owner。** 谁恰好开着终端，谁的退出就会打断其他所有客户端的运行。§7.5 说要去掉
+   的所有权倒置，方向反了：不是 headless 拥有 Agent，而是**任何**终端都能拥有。
+3. **§8（P2）那个生命周期问题本来就属于客户端。** 它之所以存在，只因为客户端启动了 Agent。托管
+   从 TUI 移除后，"Agent 是否活过 TUI 退出"这个问题就不再被提出。
+
+取代它的实现：`tui/src/agent_attach.rs`，启动时用 `probe_local_agent` 分类一次，永不申请启动 permit。
+结果只有三种：连上；带原因拒绝（不可达、版本不兼容、`agent_stopping`）并要求用户启动；或"本数据根
+没有 Agent 在服务"。三者都立即返回，都不是启动。`agent_host.rs`、`agent_supervisor.rs`、监督循环、
+退出路径上的 `stop_owned_agent`，以及 TUI 对 `future-host` 的托管依赖一并移除；`future-host` 只
+剩下更新检查里的 `install_rustls_provider`。
+
+接受的代价：TUI 不再自愈崩溃的 Agent（恢复手段变成用户的 `future host` 与客户端自身的重连提示），
+只跑 `future tui` 的机器现在需要先启动一个宿主。为 §7.4 加的 stderr 捕获保留——它保护画面不被任何
+写入者破坏，崩溃钩子也依赖它。
+
+独立 `future-tui` 二进制的 §7.3 约束随托管一并消失：现在它与 `future tui` 能力相同，两者都不内嵌
+Agent。
+
 ## 8 生命周期与所有权
 
 > **待用户决定（P2）。** 用户此前对桌面端的态度是"关掉就关掉"，而本项会让 Agent 活过 TUI 退出，因此**不能当作已定方案**。
 
-问题陈述：D6 采纳后，TUI 内嵌的 Agent 仍然随 TUI 退出而死。若此刻 headless 在 attach，它会在下一轮监督里**重启** Agent —— 以"打断运行中的任务"为代价换取服务不中断。
+问题陈述：D6 采纳后，TUI 内嵌的 Agent 仍然随 TUI 退出而死。若此刻 headless 在 attach，它会在下一轮监督里**重启** Agent —— 以"打断运行中的任务"为代价换取服务不中断。（D11 之后只有 `future agent`、`future host` 和桌面端拥有 Agent，这个问题归它们，不再归 TUI。）
 
 两个选项：
 
@@ -272,7 +302,7 @@ TUI 采用与 headless 完全相同的策略：外部可达就 attach；缺席�
 | 会话必须在 `app.db` 里有 thread + run 行 | run 行由宿主提交 prompt 或 import 生成（discovery 每 60s） | 只有 TUI 在跑、没有任何宿主的机器没有候选；自愈首次拉起时补一次 import |
 | 其余产品门槛 | 最新 run、非 `waiting_approval`、7 天内、`autoResumeInterrupted`（默认开，等于代用户花钱） | 不改 |
 
-第 2 行是最容易改坏的一处：TUI 过去用 `SIGKILL` 杀自己的 sidecar（`OwnedAgent::drop`），**不走优雅停机**，所以 journal 留着未终止的 run，恰好可续跑。D6 落地后 Agent 在进程内，正常退出会走优雅停机，run 变成 `cancelled`，**反而不可续跑**——这正是必须记录 cause 的原因（§9.2 前提一）。
+第 2 行是最容易改坏的一处：TUI 过去用 `SIGKILL` 杀自己的 sidecar（`OwnedAgent::drop`），**不走优雅停机**，所以 journal 留着未终止的 run，恰好可续跑。D6 落地后 Agent 在进程内，正常退出会走优雅停机，run 变成 `cancelled`，**反而不可续跑**——这正是必须记录 cause 的原因（§9.2 前提一）。（D11 之后 TUI 既无 sidecar 也不托管，本节只作为当时的记录。）
 
 #### D8 的判据（已修正）
 
@@ -473,7 +503,7 @@ D10 优先于"发 prompt"的初版：先做"尾部是 tool"和"assistant 带 too
 | `Supervisor` / `Decision` / backoff；`StartupBlocked` 细分 `Busy` 与 `Blocked` | `packages/rpc/src/supervision.rs`（`select_agent` 在 `packages/rpc/src/connection.rs`） |
 | 锁冲突的 typed error | `agent/src/service/instance.rs`（`lock_conflict_message`）、`host/src/agent_host.rs`（`Error::AgentBusy`） |
 | 让位而非失败：`Stopped` + `yield_reason`、`detach_attached()` | `host/src/agent_host.rs` |
-| 一次性启动 → 常驻监督；等待状态行（§5） | `tui/src/agent_supervisor.rs` |
+| 一次性启动 → 常驻监督；等待状态行（§5） | `cli/src/headless/agent.rs`、`desktop/src-tauri/src/agent_supervisor.rs`（TUI 那份已随 D11 删除） |
 | `check_running` → 监督 tick（探端点，而不只看自己的 phase） | `cli/src/headless/agent.rs` |
 | 同一 tick 接入 | `desktop/src-tauri/src/agent_supervisor.rs` |
 | 熔断（§6） | 监督器内部，不落新文件 |
@@ -487,7 +517,7 @@ D10 优先于"发 prompt"的初版：先做"尾部是 tool"和"assistant 带 too
 
 ### 后续
 
-- **D6**（TUI 内嵌）：已落地——`future-host` 已在 `tui/Cargo.toml`，`tui/src/agent_host.rs` 驱动它，spawn 分支与 `check_sidecar_program` 已删除。
+- **D6**（TUI 内嵌）：已落地，随后被 **D11 反转**（2026-10-25）——`tui/src/agent_host.rs` 与 `tui/src/agent_supervisor.rs` 已删除，改为 `tui/src/agent_attach.rs`（只连接）；`future-host` 在 `tui/Cargo.toml` 里只剩更新检查用途。
 - **P2**（生命周期）：`--ephemeral` + 活跃订阅计数 + 空闲退出。尚未实现：`future agent` 没有 `--ephemeral` 参数。
 
 ## 11 验收
@@ -500,7 +530,7 @@ D10 优先于"发 prompt"的初版：先做"尾部是 tool"和"assistant 带 too
 4. **等待有界**：假 owner 持锁迟迟不就绪 → 三个入口各自打印 §5 的那句话，并在上限后按表行动。
 5. **熔断**：假 Agent 秒退 → 第 3 次后停手、打印原因；冷却后半开只试 1 次。
 6. **慢启动**：假 Agent 5s 才 ready，同时另一客户端启动 → 不抢锁、不误判缺席。
-7. **D6 采纳后**：TUI 退出不带走 headless（若 P2=A 则验证"headless 重启且任务被标记 interrupted"）。
+7. **D11 之后**：TUI 不再带走任何 Agent（它不持有），同时开多个 TUI 不会产生第二个 Agent；没有宿主时每个 TUI 都立即退出并报出该启动的命令。
 8. **手动 `future agent` Ctrl+C**：客户端不自动重启，打印提示（D7）。
 9. **用户提的五步**（§9.2 场景，必须端到端验证）：`future agent` 起来 → TUI 接入跑一个长任务 → `kill` 掉 TUI → **正常**关掉 Agent → 重新 `future agent` → 那个会话必须自动接着跑。
 10. **cause 区分**：同一个 home，一次用户主动取消 → 重启**不**续；一次正常关闭 → 重启**续**。
@@ -512,7 +542,7 @@ D10 优先于"发 prompt"的初版：先做"尾部是 tool"和"assistant 带 too
 
 需要用户明确回答的（按影响面排序）：
 
-1. ~~D6：TUI 是否改为进程内启动？~~（**已定**：已落地，见 §7）
+1. ~~D6：TUI 是否改为进程内启动？~~（**两次定案**：先以 D6 落地，后被 D11 反转——TUI 只连接，见 [§7.6](#76-反转d11tui-不再托管-2026-10-25)）。
 2. **P2：Agent 该不该活过 TUI 退出？** 选项 A（随启动者死 + 他人重启，会打断当前这一轮，但会话会续上，见 §9.1）vs B（detached + 空闲退出）。
 3. **D7：用户主动停止后，别的客户端要不要自动把它拉起来？** 建议不自动（尊重"我说停就停"），但需要确认。
 4. ~~续跑的默认值~~（已定）：`resumeInterruptedOnStart` 默认**开**，与桌面原有的 `autoResumeInterrupted` 一致，避免搬动机制时静默丢掉既有行为。
@@ -529,8 +559,8 @@ D10 优先于"发 prompt"的初版：先做"尾部是 tool"和"assistant 带 too
 | # | 场景 | 改动前 | 现在 |
 |---|---|---|---|
 | 1 | `future agent` 拥有 Agent，headless 附着 → `kill -9` agent | 30s 内无人接管，headless 只反复重连 | **3s 内** headless 拉起新 Agent（`the Agent is gone; starting a new one` + 新 instance id） |
-| 2 | headless 拥有 Agent，TUI 附着 → 结束 headless | 40s 内无人接管，TUI 停在 `Connection to agent lost` | **1s 内** TUI 拉起新 Agent |
-| 3 | 锁被占用、默认端点不存在（Agent 只绑 TCP）→ 启动 TUI | TUI **exit 1**，报 "Cannot start a local Agent" | TUI **不退出**，等待并打印 `waiting for the Agent another process is starting (30s of 180s)` + 持锁者 pid/host |
+| 2 | headless 拥有 Agent，TUI 附着 → 结束 headless | 40s 内无人接管，TUI 停在 `Connection to agent lost` | （当时的实测：**1s 内** TUI 拉起新 Agent——**已由 D11 反转**：TUI 现在只停在重连提示上，由用户启动宿主） |
+| 3 | 锁被占用、默认端点不存在（Agent 只绑 TCP）→ 启动 TUI | TUI **exit 1**，报 "Cannot start a local Agent" | （当时的实测：TUI **不退出**，等待并打印 `waiting for the Agent another process is starting (30s of 180s)` + 持锁者 pid/host——**已由 D11 反转**：现在立即退出并给出该执行的命令；多个终端卡在同一个等待里正是被撤掉的那个行为） |
 | 4 | 同上，另一个 headless | exit 1 | 同样等待（`supervise()` 路径） |
 | 5 | 开关 `resumeInterruptedOnStart=true`，有中断 run 且有模型 → 启动 `future agent` | 无续跑 | 日志 `1 conversation(s) checked, 1 interrupted, 1 continued`（没有中断 run 的健康启动不打印任何内容）；假端点收到 1 次请求，最后一条 user 消息是续跑 prompt；会话 `interruptedRun` 变为 null、`queryCount` 1→2 |
 | 6 | 同上但**开关未开**（默认） | — | **0 次**续跑，会话如实保持 `interrupted_by_restart` |
