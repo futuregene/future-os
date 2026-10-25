@@ -311,7 +311,11 @@ impl Workbench {
     /// Render one frame: exactly `h` rows, each exactly `w` display columns.
     pub fn render(&mut self, data: &WorkbenchData, w: u16, h: u16) -> Vec<String> {
         let rows = screen::compose(self, data, w, h);
-        debug_assert_eq!(rows.len(), h as usize, "the frame must be h rows");
+        debug_assert_eq!(
+            rows.len(),
+            h as usize,
+            "the frame must be h rows" // i18n: an invariant's panic, never drawn
+        );
         rows
     }
 

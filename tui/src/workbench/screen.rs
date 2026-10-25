@@ -139,7 +139,7 @@ pub(crate) fn compose(
         debug_assert_eq!(
             width(row),
             columns,
-            "a band returned a mis-sized row: {row:?}"
+            "a band returned a mis-sized row: {row:?}" // i18n: an invariant's panic, never drawn
         );
     }
     rows
