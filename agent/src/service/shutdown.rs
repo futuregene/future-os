@@ -18,6 +18,26 @@ pub struct ShutdownReport {
     pub errors: Vec<String>,
 }
 
+/// Sub-step names for the admission phase of a drain.
+///
+/// A timeout report prints whichever stage name was current when the budget ran
+/// out, so the single name "admission" could not say whether the time went on the
+/// session-map snapshot or on one session's lock — the difference between "the
+/// service is wedged" and "one busy session is wedged". These are set *before*
+/// the step that may block, which is what makes them work at all: a drain stuck
+/// past its deadline never reaches its own "finished" line, and the deadline
+/// watcher reads only this name.
+const STAGE_SESSION_SNAPSHOT: &str = "admission: session snapshot";
+const STAGE_INTERRUPTING_SESSIONS: &str = "admission: interrupting sessions";
+
+/// How long one shutdown sub-step may take before it is worth a warning.
+///
+/// Measurement only: nothing here changes what the drain does or how long it is
+/// allowed to take. The whole stop budget is five seconds, so a quarter of a
+/// second inside a single step is already the interesting case, and several such
+/// steps together are what actually exhausts the budget.
+const SLOW_SHUTDOWN_STEP: Duration = Duration::from_millis(250);
+
 pub(super) struct ShutdownShared {
     started: AtomicBool,
     pub(super) server_running: AtomicBool,
@@ -157,6 +177,15 @@ impl AgentHandle {
         true
     }
 
+    /// Name the sub-step a timeout report should show while it runs.
+    ///
+    /// Set before the work, never after it: a step that blocks past the deadline
+    /// never gets to report its own completion, and the deadline watcher reads
+    /// only this name to say where the drain was when its budget ran out.
+    fn set_stage(&self, stage: &'static str) {
+        *self.shutdown.stage.lock() = stage;
+    }
+
     fn drain(&self) -> Vec<String> {
         let mut errors = Vec::new();
         self.state
@@ -164,6 +193,8 @@ impl AgentHandle {
             .cancel_all("Agent is shutting down.");
         // Abort approvals/shells before waiting for blocking RPC handlers: a
         // shell command or a tool awaiting approval is itself admitted work.
+        self.set_stage(STAGE_SESSION_SNAPSHOT);
+        let started = Instant::now();
         let sessions = self
             .state
             .sessions
@@ -171,8 +202,37 @@ impl AgentHandle {
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        for session in &sessions {
-            let session = session.read();
+        let snapshot_waited = started.elapsed();
+        if snapshot_waited > SLOW_SHUTDOWN_STEP {
+            tracing::warn!(
+                step = STAGE_SESSION_SNAPSHOT,
+                waited_ms = snapshot_waited.as_millis() as u64,
+                sessions = sessions.len(),
+                "Agent shutdown step blocked"
+            );
+        }
+        // Per-session interruption, timed per session so a single held lock is
+        // named rather than averaged into the whole phase. The session id comes
+        // from the guard, not from the map: the snapshot keeps the same shape it
+        // always had, and the id is only needed once the lock was released.
+        self.set_stage(STAGE_INTERRUPTING_SESSIONS);
+        for handle in &sessions {
+            let started = Instant::now();
+            let session = handle.read();
+            let waited = started.elapsed();
+            if waited > SLOW_SHUTDOWN_STEP {
+                // Safe to read the session's own state here: the guard is ours,
+                // so what made the wait long is already gone and the report is
+                // about what this session was doing when it was released.
+                tracing::warn!(
+                    step = STAGE_INTERRUPTING_SESSIONS,
+                    session_id = %session.session_id,
+                    waited_ms = waited.as_millis() as u64,
+                    sessions = sessions.len(),
+                    active_run = session.runtime.snapshot().is_some(),
+                    "Agent shutdown step blocked"
+                );
+            }
             let _ = session.interrupt_for_shutdown();
             session
                 .approval_gate
@@ -314,3 +374,9 @@ impl AgentHandle {
         errors
     }
 }
+
+/// Tests live here, not next to `service::tests`, so they can drive `drain` on
+/// the test thread and observe a thread-local subscriber.
+#[cfg(test)]
+#[path = "shutdown_tests.rs"]
+mod tests;
