@@ -20,7 +20,7 @@ struct HelpEntry {
     desc: &'static str,
 }
 
-const SHORTCUTS: [HelpEntry; 13] = [
+const SHORTCUTS: [HelpEntry; 15] = [
     HelpEntry {
         key: "ctrl+c",
         desc: "interrupt",
@@ -32,6 +32,10 @@ const SHORTCUTS: [HelpEntry; 13] = [
     HelpEntry {
         key: "ctrl+r",
         desc: "browse sessions",
+    },
+    HelpEntry {
+        key: "ctrl+n",
+        desc: "new session (workspace, model, thinking)",
     },
     HelpEntry {
         key: "ctrl+t",
@@ -48,6 +52,10 @@ const SHORTCUTS: [HelpEntry; 13] = [
     HelpEntry {
         key: "ctrl+d",
         desc: "compact view (fold tool runs and thinking)",
+    },
+    HelpEntry {
+        key: "ctrl+e",
+        desc: "toggle final-answer view",
     },
     HelpEntry {
         key: "ctrl+x",
@@ -95,7 +103,7 @@ const GUTTER: usize = 2;
 /// [`SHORTCUTS`] above is deliberately *not* sorted: it is grouped by what the
 /// keys act on (interrupt first, then the cycling keys, then paging), which is
 /// how a key table is read.
-const COMMANDS: [HelpEntry; 44] = [
+const COMMANDS: [HelpEntry; 46] = [
     HelpEntry {
         key: "/agent",
         desc: "agent version and instance info",
@@ -209,6 +217,10 @@ const COMMANDS: [HelpEntry; 44] = [
         desc: "reload skills and context",
     },
     HelpEntry {
+        key: "/reply-detail [default|detailed]",
+        desc: "final answer only, or the whole process",
+    },
+    HelpEntry {
         key: "/sandbox",
         desc: "show and set the approval mode",
     },
@@ -271,6 +283,10 @@ const COMMANDS: [HelpEntry; 44] = [
     HelpEntry {
         key: "/usage",
         desc: "tokens, cost and context usage",
+    },
+    HelpEntry {
+        key: "/workspace [new] [path]",
+        desc: "list, create or switch workspace folders",
     },
 ];
 
@@ -448,7 +464,7 @@ mod tests {
     /// The commands the card must list, as a set the test maintains by hand so
     /// it cannot silently follow a change to `COMMANDS` itself. Membership
     /// only — the order is `command_card_is_sorted_by_command_name`'s business.
-    const EXPECTED_COMMANDS: [&str; 44] = [
+    const EXPECTED_COMMANDS: [&str; 46] = [
         "/model [name]",
         "/new",
         "/sessions",
@@ -493,6 +509,8 @@ mod tests {
         "/context [on|off]",
         "/delete [--yes]",
         "/keymap",
+        "/reply-detail [default|detailed]",
+        "/workspace [new] [path]",
     ];
 
     #[test]
