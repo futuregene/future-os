@@ -271,6 +271,16 @@ impl ShadowRepo {
 
     fn ensure_initialized(&self) -> Result<(), Error> {
         if self.git_dir.join("HEAD").exists() {
+            // The alternates file is written once, at init, from wherever the
+            // real object store was then. A renamed, moved or re-cloned
+            // Workspace leaves that entry pointing at a path that no longer
+            // resolves, and nothing later repairs it — every read then fails
+            // with "unable to normalize alternate object path", and because
+            // the index was seeded from the real repo's index it still
+            // references objects only the lost store had, so `write-tree` dies
+            // ("invalid object … for <path>") and every Run records a failed
+            // snapshot. Check it on every open; it costs one file read.
+            self.repair_alternates()?;
             return Ok(());
         }
         fs::create_dir_all(&self.git_dir)?;
@@ -340,6 +350,25 @@ impl ShadowRepo {
                 Err(_) => return Ok(()),
             };
         let source = PathBuf::from(&common);
+        let alternates = self.alternate_sources(&source);
+        // `real_git` above only succeeds for a valid repo, and a valid repo
+        // always has an `objects` dir — so `alternates` is non-empty here.
+        // (Deleting the objects dir makes `real_git` fail, so this function
+        // early-returns above instead.)
+        self.write_alternates(&alternates)?;
+
+        // Seed the index so already-hashed entries are reused (pairs with
+        // alternates — see §5.2). Best-effort.
+        let source_index = source.join("index");
+        if source_index.exists() {
+            let _ = fs::copy(&source_index, &self.index_path);
+        }
+        Ok(())
+    }
+
+    /// Paths the shadow repo may borrow objects from: the real repo's object
+    /// store, plus whatever the real repo's own `alternates` file adds.
+    fn alternate_sources(&self, source: &Path) -> Vec<String> {
         let source_objects = source.join("objects");
         let mut alternates: Vec<String> = Vec::new();
         if source_objects.exists() {
@@ -353,22 +382,106 @@ impl ShadowRepo {
                 }
             }
         }
-        // `real_git` above only succeeds for a valid repo, and a valid repo
-        // always has an `objects` dir — so `source_objects` exists and
-        // `alternates` is non-empty here. (Deleting the objects dir makes
-        // `real_git` fail, so this function early-returns above instead.)
+        alternates
+    }
+
+    fn write_alternates(&self, alternates: &[String]) -> Result<(), Error> {
         let info = self.git_dir.join("objects").join("info");
         fs::create_dir_all(&info)?;
-        let body = format!("{}\n", alternates.join("\n"));
+        let body = if alternates.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n", alternates.join("\n"))
+        };
         fs::write(info.join("alternates"), body)?;
-
-        // Seed the index so already-hashed entries are reused (pairs with
-        // alternates — see §5.2). Best-effort.
-        let source_index = source.join("index");
-        if source_index.exists() {
-            let _ = fs::copy(&source_index, &self.index_path);
-        }
         Ok(())
+    }
+
+    /// Re-point `objects/info/alternates` when the real object store moved since
+    /// this repo was seeded (§5.2).
+    ///
+    /// The file is written once, at init, so a renamed, moved or re-cloned
+    /// Workspace strands it: git then reports "unable to normalize alternate
+    /// object path" on every read, and `write-tree` fails on the seeded index's
+    /// entries ("invalid object … for <path>"), which makes each Run record a
+    /// failed snapshot. Only a path that no longer resolves triggers any work —
+    /// the check itself is one file read on open.
+    fn repair_alternates(&self) -> Result<(), Error> {
+        if !self.is_git_workspace {
+            return Ok(());
+        }
+        let path = self.git_dir.join("objects").join("info").join("alternates");
+        let Ok(text) = fs::read_to_string(&path) else {
+            return Ok(());
+        };
+        let stale = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .any(|line| !Path::new(line).exists());
+        if !stale {
+            return Ok(());
+        }
+        let sources = self
+            .real_git(&["rev-parse", "--path-format=absolute", "--git-common-dir"])
+            .map(|common| PathBuf::from(common.trim()))
+            .map(|source| self.alternate_sources(&source))
+            .unwrap_or_default();
+        self.write_alternates(&sources)?;
+        if !self.index_readable() {
+            // The seeded index still names objects the current store does not
+            // have (a re-clone rather than a rename). Dropping it makes the next
+            // snapshot hash the Workspace again instead of failing on entries
+            // nothing can read.
+            let _ = fs::remove_file(&self.index_path);
+        }
+        tracing::warn!(
+            target: "future_host::shadow_review",
+            workspace = %self.workspace_id,
+            sources = sources.len(),
+            "shadow repo alternates re-pointed after the object store moved"
+        );
+        Ok(())
+    }
+
+    /// Whether the persisted index describes objects this repo can still read.
+    ///
+    /// A seeded index whose store is gone passes every file-level check, and
+    /// `write-tree` is no use as a probe here: it writes trees from the oids the
+    /// index already carries without reading the blobs behind them, so it
+    /// succeeds on entries nothing can serve. Ask for the objects themselves.
+    /// Only called from the (rare) repair path.
+    fn index_readable(&self) -> bool {
+        if !self.index_path.exists() {
+            return true;
+        }
+        let Ok(listed) = self.git_bytes(&["ls-files", "--stage", "-z"], Some(&self.index_path))
+        else {
+            return false;
+        };
+        let mut oids = String::new();
+        for entry in listed.split(|byte| *byte == 0) {
+            let Ok(entry) = std::str::from_utf8(entry) else {
+                continue;
+            };
+            // `<mode> <oid> <stage>\t<path>`
+            let Some((meta, _path)) = entry.split_once('\t') else {
+                continue;
+            };
+            if let Some(oid) = meta.split(' ').nth(1) {
+                oids.push_str(oid);
+                oids.push('\n');
+            }
+        }
+        if oids.is_empty() {
+            return true;
+        }
+        match self.run(&["cat-file", "--batch-check"], None, Some(oids.as_bytes())) {
+            Ok(output) if output.status.success() => {
+                !String::from_utf8_lossy(&output.stdout).contains(" missing")
+            }
+            _ => false,
+        }
     }
 
     /// Run git against the user's *real* repo (no GIT_DIR override), used only
@@ -415,7 +528,23 @@ mod tests {
     use crate::auth_store::test_support::HomeGuard;
 
     fn git_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("futureos-shadow-repo-{}", std::process::id()));
+        git_repo("repo")
+    }
+
+    /// A committed repo at a temp path unique to `name` (two tests in one process
+    /// run in parallel threads, so they must not share a directory).
+    fn git_repo(name: &str) -> PathBuf {
+        git_repo_with(name, "a.txt", "hello\n")
+    }
+
+    /// The same, with one committed file of the caller's choosing — a repo whose
+    /// object store shares no blob with another is what tells a moved store from
+    /// a different one.
+    fn git_repo_with(name: &str, file: &str, body: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "futureos-shadow-repo-{}-{name}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let out = std::process::Command::new("git")
@@ -425,21 +554,23 @@ mod tests {
             .output()
             .unwrap();
         assert!(out.status.success());
-        std::fs::write(dir.join("a.txt"), "hello\n").unwrap();
+        std::fs::write(dir.join(file), body).unwrap();
         // Opened for writing: `set_modified` needs FILE_WRITE_ATTRIBUTES, which
         // a read-only handle does not carry on Windows (ACCESS_DENIED).
-        let file = std::fs::OpenOptions::new()
+        let handle = std::fs::OpenOptions::new()
             .write(true)
-            .open(dir.join("a.txt"))
+            .open(dir.join(file))
             .unwrap();
-        file.set_modified(
-            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000),
-        )
-        .unwrap();
+        handle
+            .set_modified(
+                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000),
+            )
+            .unwrap();
+        let add_args = ["add", file];
         for args in [
             &["config", "user.email", "t@e.com"][..],
             &["config", "user.name", "T"][..],
-            &["add", "a.txt"][..],
+            &add_args[..],
             &["commit", "-qm", "init"][..],
         ] {
             let out = std::process::Command::new("git")
@@ -582,6 +713,95 @@ mod tests {
         // present (false branch of `!path.exists()`).
         let path = repo.ensure_empty_excludes_file().unwrap();
         assert!(path.exists());
+    }
+
+    #[test]
+    fn alternates_are_repointed_after_the_workspace_moves() {
+        let _home = HomeGuard::new("shadow-repair-alternates");
+        crate::store::initialize_app_store().unwrap();
+
+        // Seed from the repo where it lives now, then move the whole checkout:
+        // the shadow repo keeps the old path in `objects/info/alternates`, which
+        // is what makes every later `write-tree` fail in the field.
+        let original = git_repo("moved-from");
+        let seeded = ShadowRepo::open("ws-moved", &original, true).unwrap();
+        assert!(seeded.index_path.exists(), "the real index is seeded");
+        let moved = std::env::temp_dir().join(format!(
+            "futureos-shadow-repo-{}-moved-to",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&moved);
+        std::fs::rename(&original, &moved).unwrap();
+
+        let reopened = ShadowRepo::open("ws-moved", &moved, true).unwrap();
+        let alternates = std::fs::read_to_string(
+            reopened
+                .git_dir
+                .join("objects")
+                .join("info")
+                .join("alternates"),
+        )
+        .unwrap();
+        // Compare the lines as *paths*, not as text: the file carries whatever
+        // spelling git's `rev-parse --git-common-dir` reported — canonicalised
+        // (`/private/var/…` for a `/var/…` TMPDIR) and, on Windows, `C:/…` with
+        // a `\` appended by `PathBuf::join`, which `Path::display()` never
+        // produces. A substring match against the raw temp path was accidentally
+        // true on unix (`/private` + `/var/…`) and false on Windows.
+        let moved_objects = std::fs::canonicalize(moved.join(".git").join("objects")).unwrap();
+        let entries: Vec<&str> = alternates
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        // The entry written at init names the pre-move store, which the rename
+        // took away — so if any stale line survived, nothing on disk answers to
+        // it. Every alternate must name a live object store.
+        assert!(
+            entries.iter().copied().all(|line| Path::new(line).is_dir()),
+            "the stale path is gone: {alternates}"
+        );
+        assert!(
+            entries.iter().copied().any(|line| {
+                std::fs::canonicalize(line).is_ok_and(|resolved| resolved == moved_objects)
+            }),
+            "the alternates follow the object store: {alternates}"
+        );
+        // Same object store, so the seeded index is still valid and must survive
+        // (re-hashing a large repo on every move is the cost this avoids).
+        assert!(
+            reopened.index_path.exists(),
+            "a moved store keeps its index"
+        );
+        assert!(reopened.index_readable());
+        assert!(reopened
+            .git(&["write-tree"], Some(&reopened.index_path))
+            .is_ok());
+    }
+
+    #[test]
+    fn a_stale_index_is_dropped_when_the_object_store_is_a_different_repo() {
+        let _home = HomeGuard::new("shadow-repair-reclone");
+        crate::store::initialize_app_store().unwrap();
+
+        // The Workspace moved to a path that holds a *different* repo (a fresh
+        // clone). The alternates file records the old store, so the repair runs;
+        // the new store cannot serve the seeded index's objects, so the index
+        // goes with it and the next snapshot hashes the checkout itself.
+        let original = git_repo("reclone-from");
+        let seeded = ShadowRepo::open("ws-reclone", &original, true).unwrap();
+        assert!(seeded.index_path.exists());
+        std::fs::remove_dir_all(&original).unwrap();
+        let cloned = git_repo_with("reclone-to", "other.txt", "a different history\n");
+
+        let reopened = ShadowRepo::open("ws-reclone", &cloned, true).unwrap();
+        assert!(
+            !reopened.index_path.exists(),
+            "an index the new store cannot serve is dropped"
+        );
+        // A fresh index writes an (empty) tree without touching the old objects.
+        let temp = reopened.prepare_temp_index("r1.before").unwrap();
+        assert!(reopened.git(&["write-tree"], Some(&temp)).is_ok());
     }
 
     #[test]

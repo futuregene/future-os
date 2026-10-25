@@ -20,7 +20,11 @@ const RETENTION_KEEP: usize = 10;
 /// gc when warranted. Called after each Run finalizes.
 pub fn enforce_retention(thread_id: &str) {
     if let Err(error) = try_enforce_retention(thread_id) {
-        eprintln!("FutureOS shadow review retention failed: {error}");
+        tracing::error!(
+            target: "future_host::shadow_review",
+            thread_id, error = %error,
+            "retention failed"
+        );
     }
 }
 
@@ -57,7 +61,11 @@ pub fn run_startup_maintenance() {
 /// changeset resolves to `unavailable` rather than reading a broken commit (§8.4).
 fn verify_consistency() {
     if let Err(error) = try_verify_consistency() {
-        eprintln!("FutureOS shadow review consistency check failed: {error}");
+        tracing::error!(
+            target: "future_host::shadow_review",
+            error = %error,
+            "consistency check failed"
+        );
     }
 }
 
@@ -84,7 +92,11 @@ fn try_verify_consistency() -> Result<(), Error> {
 ///     verbatim and mark it `normal` — the diff is fully attributable.
 fn recover_interrupted_runs() {
     if let Err(error) = try_recover_interrupted_runs() {
-        eprintln!("FutureOS shadow review recovery failed: {error}");
+        tracing::error!(
+            target: "future_host::shadow_review",
+            error = %error,
+            "recovery failed"
+        );
     }
 }
 
@@ -93,7 +105,11 @@ fn try_recover_interrupted_runs() -> Result<(), Error> {
         match recover_one(&run_id, &thread_id, &workspace_id) {
             Ok(()) => {}
             Err(error) => {
-                eprintln!("FutureOS shadow review recovery of run {run_id} failed: {error}");
+                tracing::error!(
+                    target: "future_host::shadow_review",
+                    run_id, thread_id, error = %error,
+                    "recovery of run failed"
+                );
             }
         }
     }

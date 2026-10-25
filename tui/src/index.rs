@@ -6,17 +6,13 @@
 //!   - `list_models` — `list_models` table (provider/model/context/thinking/
 //!     images, K/M suffixes, 100-row cap)
 //!   - `run_print_mode` — non-interactive `-p` prompt via raw gRPC
-//!   - `run_interactive` — the App event loop (input/events/cmds/timers)
+//!   - `run` — the entry point: the workbench for interactive use
 
-use crate::app::{App, CliOptions, UiCmd, UiInput};
-use crate::rpc::grpc_client::GrpcClient;
 use crate::rpc::types::ModelInfo;
 use crate::version::VERSION;
 use future_rpc::proto::{RpcCommand, RpcResponse, StreamRequest};
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::mpsc;
 
 const GRPC_DEADLINE_SEC: u64 = 30;
 
@@ -27,7 +23,6 @@ pub struct CliArgs {
     pub grpc_addr: String,
     pub session: Option<String>,
     pub r#continue: bool,
-    pub resume: bool,
     pub fork: Option<String>,
     pub print: bool,
     pub file_args: Vec<String>,
@@ -96,7 +91,6 @@ pub fn parse_args(args: &[String]) -> ParseOutcome {
                 }
             }
             "--continue" | "-c" => result.r#continue = true,
-            "--resume" | "-r" => result.resume = true,
             "--fork" => {
                 if i + 1 < args.len() {
                     i += 1;
@@ -497,12 +491,6 @@ async fn dial_channel(addr: &str) -> Result<future_rpc::connection::VerifiedAgen
 /// updated session, and anything else mints a fresh session (tagged
 /// `createdBy: "tui"`, so other clients discover it).
 async fn resolve_print_session(grpc_addr: &str, args: &CliArgs) -> Result<String, String> {
-    if args.resume {
-        return Err(
-            "--resume opens a session picker and needs an interactive terminal; use --continue or --session"
-                .to_string(),
-        );
-    }
     if let Some(entry_id) = &args.fork {
         let parent = match &args.session {
             Some(session) => session.clone(),
@@ -869,205 +857,6 @@ async fn list_models(grpc_addr: &str, search: Option<&str>) -> Result<(), String
     Ok(())
 }
 
-// ─── Interactive mode ───────────────────────────────────────────────────────
-
-fn tui_settings_path() -> std::path::PathBuf {
-    crate::home::future_state_dir()
-        .join("tui")
-        .join("settings.json")
-}
-
-/// Build the interactive App and run its event loop until exit.
-async fn run_interactive(args: &CliArgs) -> u8 {
-    let (op_tx, mut op_rx) = mpsc::unbounded_channel::<UiCmd>();
-    let (input_tx, mut input_rx) = mpsc::unbounded_channel::<UiInput>();
-
-    let terminal = match crate::terminal::Terminal::new() {
-        Ok(t) => t,
-        Err(err) => {
-            eprintln!("future-tui: failed to initialize terminal: {err}");
-            return 1;
-        }
-    };
-
-    // Wire SIGINT/SIGTERM to the graceful stop path (TS process.on).
-    let mut terminal = terminal;
-    let sig_tx = input_tx.clone();
-    terminal.set_exit_signal_callback(Some(Box::new(move || {
-        let _ = sig_tx.send(UiInput::ExitSignal);
-    })));
-
-    let (client, mut event_rx, mut conn_rx) = GrpcClient::new(&args.grpc_addr);
-    let client = Arc::new(client.with_no_context_files(args.no_context_files));
-
-    let cli_options = CliOptions {
-        session: args.session.clone(),
-        r#continue: args.r#continue,
-        resume: args.resume,
-        fork: args.fork.clone(),
-        initial_prompt: if !args.print && (!args.messages.is_empty() || !args.file_args.is_empty())
-        {
-            build_initial_prompt(&args.file_args, &args.messages)
-        } else {
-            None
-        },
-    };
-
-    let mut app = App::new(
-        terminal,
-        client.clone(),
-        op_tx,
-        &cli_options,
-        tui_settings_path(),
-    );
-
-    // Startup: enter raw mode, wait for the agent, establish the session.
-    // The startup future borrows `app`; an interrupt (SIGINT / Ctrl+C during
-    // the agent handshake) is signalled through a watch so the loop does not
-    // touch the app while it is borrowed. The whole phase lives in a nested
-    // scope so the future (and its `&mut app` borrow) is dropped before the
-    // main loop uses the app.
-    let startup_result: Result<(), std::io::Error> = {
-        let (interrupt_tx, mut interrupt_rx) = tokio::sync::watch::channel(false);
-        let startup = async {
-            tokio::select! {
-                r = app.start(input_tx.clone()) => r,
-                _ = interrupt_rx.changed() => Err(std::io::Error::new(
-                    std::io::ErrorKind::Interrupted,
-                    "interrupted during startup",
-                )),
-            }
-        };
-        let mut startup = std::pin::pin!(startup);
-        loop {
-            tokio::select! {
-                r = &mut startup => break r,
-                Some(ui) = input_rx.recv() => {
-                    match ui {
-                        UiInput::ExitSignal => {
-                            let _ = interrupt_tx.send(true);
-                        }
-                        UiInput::Input(d) => {
-                            if d == "\x03" {
-                                // Interrupt during startup — exit like the TS app.
-                                let _ = interrupt_tx.send(true);
-                            }
-                            // Other input during startup is dropped (the agent
-                            // handshake owns the screen).
-                        }
-                        UiInput::Resize => {}
-                    }
-                }
-            }
-        }
-    };
-    // The startup future is dropped with the scope above; `app` is free now.
-    match startup_result {
-        Ok(()) => {}
-        Err(err) => {
-            eprintln!("future-tui: {err}");
-            app.stop();
-            return 1;
-        }
-    }
-    // (No is_running gate here: the main loop's own check handles it.)
-    #[cfg(test)]
-    fire_main_loop_gate();
-
-    // Poll once alongside input/events, never during the startup handshake.
-    // Dropping this future on exit cancels an in-flight check.
-    let update_check = async {
-        if args.offline {
-            None
-        } else {
-            crate::update::check(VERSION).await
-        }
-    };
-    tokio::pin!(update_check);
-    let mut update_checked = false;
-
-    // ── Main event loop ────────────────────────────────────────────────
-    loop {
-        let next = app.next_deadline();
-        let sleep = match next {
-            Some(d) => tokio::time::sleep_until(tokio::time::Instant::from_std(d)),
-            None => tokio::time::sleep(Duration::from_millis(50)),
-        };
-        tokio::pin!(sleep);
-        tokio::select! {
-            biased;
-            Some(ui) = input_rx.recv() => {
-                match ui {
-                    UiInput::Input(d) => app.handle_input(&d),
-                    UiInput::Resize => app.request_resize_render(),
-                    UiInput::ExitSignal => {
-                        app.stop();
-                        break;
-                    }
-                }
-            }
-            notice = &mut update_check, if !update_checked => {
-                update_checked = true;
-                // The arm always runs (once per session); applying the answer is
-                // the app's, so "a notice arrived" is testable on its own
-                // (`App::apply_update_notice`) without a manifest fetch.
-                app.apply_update_notice(notice);
-            }
-            Some(cmd) = op_rx.recv() => app.handle_cmd(cmd),
-            Some(event) = event_rx.recv() => app.handle_agent_event(&event),
-            changed = conn_rx.changed() => {
-                if changed.is_ok() {
-                    app.on_connection_change(*conn_rx.borrow());
-                }
-            }
-            _ = &mut sleep => app.on_tick(),
-        }
-        if !app.is_running() {
-            app.stop();
-            break;
-        }
-    }
-    0
-}
-
-/// Test seam: the moment `run_interactive` leaves startup for the main loop.
-///
-/// The interactive fixtures have to tell "startup" from "the main loop": a
-/// resize or a ctrl+c that must land *after* startup cannot be scheduled from
-/// the mock's command sequence, because startup keeps issuing unary calls after
-/// its last handshake command (`list_models` follows the session handshake) and
-/// any grace sized on the handshake lands inside startup on a loaded host. That
-/// is how `interactive_resize_during_and_after_startup` failed — the ctrl+c was
-/// read by the startup interrupt arm and the exit code was 1, not 0.
-///
-/// One slot, like the stream manager's gates in `rpc::grpc_client`; it is safe
-/// because every test that runs the interactive loop holds `test_env::lock()`.
-#[cfg(test)]
-mod main_loop_gate {
-    use std::sync::{Arc, Mutex};
-
-    static SLOT: Mutex<Option<Arc<tokio::sync::Notify>>> = Mutex::new(None);
-
-    /// Arm the gate for the next `run_interactive`, returning the handle its
-    /// arrival is delivered on. Call before the run starts; a notification
-    /// that arrives before the waiter awaits is retained (one permit).
-    pub(super) fn arm() -> Arc<tokio::sync::Notify> {
-        let gate = Arc::new(tokio::sync::Notify::new());
-        *SLOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(gate.clone());
-        gate
-    }
-
-    pub(super) fn fire() {
-        let gate = SLOT.lock().unwrap_or_else(|e| e.into_inner()).take();
-        if let Some(gate) = gate {
-            gate.notify_one();
-        }
-    }
-}
-
-#[cfg(test)]
-use main_loop_gate::fire as fire_main_loop_gate;
-
 // ─── Main ───────────────────────────────────────────────────────────────────
 
 /// `main()` equivalent — mirrors index.ts's top-level flow and exit codes.
@@ -1104,20 +893,17 @@ pub fn run(args: &[String]) -> ExitCode {
         .build()
         .expect("failed to start tokio runtime");
 
-    // Desktop-style ownership: attach to an existing Agent when possible;
-    // otherwise run one in this process. A busy instance lock means another
-    // process is already starting the Agent, so this waits for it (bounded, and
-    // it says so) instead of refusing to run.
-    if let Err(error) = runtime.block_on(crate::agent_supervisor::ensure_agent_running(
-        &args.grpc_addr,
-    )) {
+    // Attach only. The Agent belongs to its host (`future host`, the desktop
+    // app, or an explicit `future agent`); without one this says what to start
+    // rather than starting it, so several terminals cannot race over the
+    // instance lock. Losing the Agent later keeps showing the client's own
+    // "connection lost" state — the TUI does not restart it either.
+    if let Err(error) =
+        runtime.block_on(crate::agent_attach::ensure_agent_attached(&args.grpc_addr))
+    {
         eprintln!("future-tui: {error}");
         return ExitCode::from(1);
     }
-    // Keep watching: the launch above happened once, and an Agent that dies
-    // later would otherwise leave this terminal reconnecting forever. The
-    // handle is explicit because this runs outside async context.
-    crate::agent_supervisor::spawn_agent_supervision(runtime.handle(), args.grpc_addr.clone());
 
     // Handle --list-models.
     if let Some(search) = &args.list_models {
@@ -1129,7 +915,6 @@ pub fn run(args: &[String]) -> ExitCode {
             Some(search.clone())
         };
         let result = runtime.block_on(list_models(&addr, search.as_deref()));
-        crate::agent_supervisor::stop_owned_agent();
         return match result {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
@@ -1149,7 +934,6 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         let addr = args.grpc_addr.clone();
         let result = runtime.block_on(run_print_mode(&addr, &args));
-        crate::agent_supervisor::stop_owned_agent();
         return match result {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
@@ -1161,10 +945,25 @@ pub fn run(args: &[String]) -> ExitCode {
         };
     }
 
-    // Interactive mode (TUI).
-    let code = runtime.block_on(run_interactive(&args));
-    crate::agent_supervisor::stop_owned_agent();
-    ExitCode::from(code)
+    // Interactive mode: the workbench, the only terminal surface there is.
+    // Attach-only (see `agent_attach`): the Agent belongs to its host, so there
+    // is nothing of ours to stop on the way out.
+    let options = crate::workbench::run::Options {
+        addr: args.grpc_addr.clone(),
+        session: args.session.clone(),
+        no_context_files: args.no_context_files,
+        initial_prompt: build_initial_prompt(&args.file_args, &args.messages),
+        continue_recent: args.r#continue,
+        offline: args.offline,
+        settings_path: crate::settings::path(),
+    };
+    match runtime.block_on(crate::workbench::run::run(options)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("future-tui: {error}");
+            ExitCode::from(1)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1177,62 +976,6 @@ mod tests {
             ParseOutcome::Args(a) => a,
             other => panic!("expected Args, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn parse_version_flag() {
-        let a = args(&["--version"]);
-        assert!(a.version);
-        let a = args(&["-v"]);
-        assert!(a.version);
-    }
-
-    #[test]
-    fn parse_help_exits_during_scanning() {
-        // --help terminates parsing immediately (TS process.exit inside the
-        // loop) — even a later unknown option is never reached.
-        assert!(matches!(
-            parse_args(&["--help".into(), "--unknown-flag".into()]),
-            ParseOutcome::Help
-        ));
-        assert!(matches!(parse_args(&["-h".into()]), ParseOutcome::Help));
-    }
-
-    #[test]
-    fn parse_unknown_option_rejected() {
-        assert!(matches!(
-            parse_args(&["--bogus".into()]),
-            ParseOutcome::UnknownOption(_)
-        ));
-    }
-
-    /// The TUI's own settings file is FutureOS state, so it follows the same
-    /// root every other component uses: `$HOME/.future` normally, and the
-    /// absolute `FUTURE_HOME` override when one is set (which is how a second,
-    /// isolated instance keeps its own model/theme defaults).
-    #[test]
-    fn tui_settings_path_follows_home_and_the_future_home_override() {
-        use crate::test_env::EnvVarGuard;
-        let _guard = crate::test_env::lock();
-        let home = tempfile::tempdir().unwrap();
-        let isolated = tempfile::tempdir().unwrap();
-
-        let _home = EnvVarGuard::set("HOME", home.path());
-        let override_guard = EnvVarGuard::remove("FUTURE_HOME");
-        assert_eq!(
-            tui_settings_path(),
-            home.path()
-                .join(".future")
-                .join("tui")
-                .join("settings.json")
-        );
-
-        drop(override_guard);
-        let _isolated = EnvVarGuard::set("FUTURE_HOME", isolated.path());
-        assert_eq!(
-            tui_settings_path(),
-            isolated.path().join("tui").join("settings.json")
-        );
     }
 
     /// Every value-taking flag has a `if i + 1 < args.len()` guard in front of
@@ -1442,13 +1185,11 @@ mod tests {
             "-ns",
             "--continue",
             "-c",
-            "--resume",
-            "-r",
         ]);
         assert!(booleans.no_tools && booleans.no_builtin_tools && booleans.no_session);
         assert!(booleans.no_prompt_templates && booleans.no_context_files);
         assert!(booleans.offline && booleans.verbose && booleans.no_skills);
-        assert!(booleans.r#continue && booleans.resume);
+        assert!(booleans.r#continue);
     }
 
     /// `ExitCode` exposes no accessor, so the only in-process way to compare it
@@ -1499,60 +1240,6 @@ mod tests {
                 "an unreachable agent must exit 1: {argv:?}"
             );
         }
-    }
-
-    /// With no mode flags at all, `run` falls through to the interactive TUI.
-    /// The loop owns the calling thread, so the test gives it a way out: a PTY
-    /// as stdin, a mock agent behind `--grpc-addr`, and ctrl+c typed through the
-    /// terminal by a driver thread once startup has talked to the agent. A clean
-    /// exit (0) is only reachable through the loop's input arm.
-    #[cfg(unix)]
-    #[test]
-    fn run_without_flags_drives_the_interactive_loop_and_exits_cleanly() {
-        let _guard = crate::test_env::lock();
-        let home = tempfile::tempdir().unwrap();
-        let old_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", home.path());
-
-        let mock_rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-        let addr = mock_rt.block_on(spawn_mock(MockAgent {
-            state_data: "{\"sessionId\":\"s1\"}".into(),
-            events: vec![stream_event("ping", "{}")],
-            hold_open: true,
-            seen_commands: seen.clone(),
-            ..Default::default()
-        }));
-        let pty = PtyStdin::install();
-        let master = pty.master;
-        let driver = std::thread::spawn(move || {
-            // Startup is done once `new_session` and both `get_state` calls
-            // have been received (the same handshake `await_startup_complete`
-            // waits for); then ctrl+c quits the main loop.
-            for _ in 0..400 {
-                let done = {
-                    let seen = seen.lock().unwrap();
-                    let states = seen.iter().filter(|t| *t == "get_state").count();
-                    seen.iter().any(|t| t == "new_session") && states >= 2
-                };
-                if done {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            std::thread::sleep(Duration::from_millis(400));
-            let byte = b"\x03";
-            unsafe { libc::write(master, byte.as_ptr() as *const libc::c_void, 1) };
-        });
-
-        let code = run(&["--grpc-addr".to_string(), addr]);
-        driver.join().unwrap();
-        drop(pty);
-        restore_env("HOME", old_home);
-        assert_eq!(code, ExitCode::SUCCESS);
     }
 
     /// `-p --mode json` with no prompt is the machine-readable path: it must
@@ -1692,95 +1379,6 @@ mod tests {
     }
 
     // ─── parse_args gaps ──────────────────────────────────────────────
-
-    #[test]
-    fn parse_value_options() {
-        let a = args(&[
-            "--session",
-            "s1",
-            "--fork",
-            "e9",
-            "--provider",
-            "openai",
-            "--api-key",
-            "sk-test",
-            "--thinking",
-            "high",
-            "--system-prompt",
-            "be nice",
-            "--mode",
-            "json",
-            "--prompt-template",
-            "t1",
-            "--skill",
-            "review",
-        ]);
-        assert_eq!(a.session.as_deref(), Some("s1"));
-        assert_eq!(a.fork.as_deref(), Some("e9"));
-        assert_eq!(a.provider.as_deref(), Some("openai"));
-        assert_eq!(a.api_key.as_deref(), Some("sk-test"));
-        assert_eq!(a.thinking.as_deref(), Some("high"));
-        assert_eq!(a.system_prompt.as_deref(), Some("be nice"));
-        assert_eq!(a.mode.as_deref(), Some("json"));
-        assert_eq!(a.prompt_template.as_deref(), Some(&["t1".to_string()][..]));
-        assert_eq!(a.skill.as_deref(), Some(&["review".to_string()][..]));
-    }
-
-    #[test]
-    fn parse_model_colon_edge_cases() {
-        // Colon at position 0 → no model/thinking split happens.
-        let a = args(&["--model", ":high"]);
-        assert!(a.model.is_none());
-        assert!(a.thinking.is_none());
-        // Trailing colon → kept whole (empty suffix is not a level).
-        let a = args(&["--model", "sonnet:"]);
-        assert_eq!(a.model.as_deref(), Some("sonnet:"));
-        // No colon at all.
-        let a = args(&["--model", "sonnet"]);
-        assert_eq!(a.model.as_deref(), Some("sonnet"));
-    }
-
-    #[test]
-    fn parse_flags_without_trailing_values_are_ignored() {
-        // A value option as the last argument simply has no value.
-        let a = args(&["--session"]);
-        assert!(a.session.is_none());
-        let a = args(&["--model"]);
-        assert!(a.model.is_none());
-        let a = args(&["--grpc-addr"]);
-        assert_eq!(a.grpc_addr, "auto");
-    }
-
-    #[test]
-    fn build_initial_prompt_uses_absolute_path_verbatim() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("abs.txt");
-        std::fs::write(&file, "contents").unwrap();
-        let abs = file.to_str().unwrap().to_string();
-        let prompt = build_initial_prompt(std::slice::from_ref(&abs), &[]).expect("prompt built");
-        assert!(prompt.contains(&format!("<file name=\"{abs}\">")));
-        assert!(prompt.contains("contents"));
-    }
-
-    #[test]
-    fn now_id_is_epoch_millis() {
-        let id = now_id();
-        let v: u128 = id.parse().expect("numeric id");
-        assert!(v > 1_000_000_000_000); // after 2001
-    }
-
-    #[test]
-    fn tui_settings_path_lives_under_home() {
-        use crate::test_env::EnvVarGuard;
-        let _guard = crate::test_env::lock();
-        let home = tempfile::tempdir().unwrap();
-        let _home = EnvVarGuard::set("HOME", home.path());
-        let _override = EnvVarGuard::remove("FUTURE_HOME");
-        assert_eq!(
-            tui_settings_path(),
-            home.path().join(".future/tui/settings.json")
-        );
-    }
 
     #[test]
     fn build_initial_prompt_relative_path_uses_cwd() {
@@ -2377,14 +1975,12 @@ mod tests {
         );
         assert_eq!(commands(), vec!["fork".to_string()]);
 
-        // --resume needs a terminal; it never reaches the agent.
-        seen.lock().unwrap().clear();
-        assert!(
-            resolve_print_session(&addr, &args(&["-p", "hi", "--resume"]))
-                .await
-                .is_err()
-        );
-        assert!(commands().is_empty());
+        // --resume is no longer a flag at all: the picker it opened went with
+        // the inline UI, so print mode cannot be asked for it.
+        assert!(matches!(
+            parse_args(&["-p".to_string(), "hi".to_string(), "--resume".to_string()]),
+            ParseOutcome::UnknownOption(_)
+        ));
     }
 
     #[tokio::test]
@@ -2613,552 +2209,4 @@ mod tests {
     }
 
     // ─── run() top-level flow ─────────────────────────────────────────
-
-    #[test]
-    fn run_help_version_and_unknown_option() {
-        assert_eq!(run(&["--help".to_string()]), ExitCode::SUCCESS);
-        assert_eq!(run(&["--version".to_string()]), ExitCode::SUCCESS);
-        assert_eq!(run(&["--bogus".to_string()]), ExitCode::from(1));
-    }
-
-    #[test]
-    fn run_list_models_unreachable_agent() {
-        let code = run(&[
-            "--list-models".to_string(),
-            "--grpc-addr".to_string(),
-            "127.0.0.1:1".to_string(),
-        ]);
-        assert_eq!(code, ExitCode::from(1));
-    }
-
-    #[test]
-    fn run_list_models_against_mock_succeeds() {
-        let mock_rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let addr = mock_rt.block_on(spawn_mock(MockAgent {
-            models_data: models_json(),
-            ..Default::default()
-        }));
-        // With and without a search term.
-        let code = run(&[
-            "--list-models".to_string(),
-            "--grpc-addr".to_string(),
-            addr.clone(),
-        ]);
-        assert_eq!(code, ExitCode::SUCCESS);
-        let code = run(&[
-            "--list-models".to_string(),
-            "gpt".to_string(),
-            "--grpc-addr".to_string(),
-            addr,
-        ]);
-        assert_eq!(code, ExitCode::SUCCESS);
-    }
-
-    #[test]
-    fn run_reports_a_list_models_failure_from_the_agent() {
-        let mock_rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        // The default mock answers `get_available_models` with an empty body,
-        // which the table cannot parse — so the command fails on a *reachable*
-        // agent. That is the `Err` tail `run_list_models_unreachable_agent`
-        // cannot reach: an endpoint with nothing listening never gets past the
-        // agent supervisor.
-        let addr = mock_rt.block_on(spawn_mock(MockAgent::default()));
-        let code = run(&["--list-models".to_string(), "--grpc-addr".to_string(), addr]);
-        assert_eq!(code, ExitCode::from(1));
-    }
-
-    /// `--print` with no message, against a *reachable* agent: the refusal is
-    /// reported in text mode and stays silent in json mode (the caller parses
-    /// stdout as JSON).
-    #[test]
-    fn run_print_without_a_message_reaches_the_usage_path_with_a_live_agent() {
-        let mock_rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let addr = mock_rt.block_on(spawn_mock(MockAgent::default()));
-        for extra in [vec![], vec!["--mode".to_string(), "json".to_string()]] {
-            let mut argv = vec![
-                "--print".to_string(),
-                "--grpc-addr".to_string(),
-                addr.clone(),
-            ];
-            argv.extend(extra.iter().cloned());
-            assert!(exit_code_is_one(run(&argv)), "{argv:?}");
-        }
-    }
-
-    /// Print mode against a mock that cannot mint a session: `run_print_mode`
-    /// reports the agent's own message and `run` turns it into exit 1 — with
-    /// the message on stderr in text mode, silently in json mode.
-    #[test]
-    fn run_reports_a_print_mode_failure_from_the_agent() {
-        let mock_rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let addr = mock_rt.block_on(spawn_mock(MockAgent {
-            fail_types: HashSet::from(["new_session".to_string()]),
-            ..Default::default()
-        }));
-        for extra in [vec![], vec!["--mode".to_string(), "json".to_string()]] {
-            let mut argv = vec![
-                "-p".to_string(),
-                "hi".to_string(),
-                "--grpc-addr".to_string(),
-                addr.clone(),
-            ];
-            argv.extend(extra.iter().cloned());
-            assert!(exit_code_is_one(run(&argv)), "{argv:?}");
-        }
-    }
-
-    #[test]
-    fn run_print_failure_json_mode_stays_quiet() {
-        // The error message is suppressed in json mode.
-        let code = run(&[
-            "-p".to_string(),
-            "hi".to_string(),
-            "--mode".to_string(),
-            "json".to_string(),
-            "--grpc-addr".to_string(),
-            "127.0.0.1:1".to_string(),
-        ]);
-        assert_eq!(code, ExitCode::from(1));
-    }
-
-    #[test]
-    fn run_print_failure_text_mode_prints_error() {
-        let code = run(&[
-            "-p".to_string(),
-            "hi".to_string(),
-            "--grpc-addr".to_string(),
-            "127.0.0.1:1".to_string(),
-        ]);
-        assert_eq!(code, ExitCode::from(1));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    #[allow(clippy::await_holding_lock)] // env-var serialization across awaits
-    async fn run_interactive_terminal_init_failure() {
-        let _guard = crate::test_env::lock();
-        let home = tempfile::tempdir().unwrap();
-        let old_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", home.path());
-        // Call the interactive path directly: run() can fail at agent discovery
-        // before Terminal::new, leaking the injected failure into another test.
-        crate::terminal::FORCE_NEW_FAILURE.store(true, std::sync::atomic::Ordering::SeqCst);
-        let code = run_interactive(&args(&["--offline"])).await;
-        restore_env("HOME", old_home);
-        assert_eq!(code, 1);
-    }
-
-    fn restore_env(key: &str, old: Option<std::ffi::OsString>) {
-        match old {
-            Some(v) => std::env::set_var(key, v),
-            None => std::env::remove_var(key),
-        }
-    }
-
-    #[test]
-    fn restore_env_handles_set_and_unset() {
-        let _guard = crate::test_env::lock();
-        let old = std::env::var_os("FUTURE_TUI_INDEX_PROBE");
-        restore_env("FUTURE_TUI_INDEX_PROBE", Some("1".into()));
-        assert_eq!(std::env::var("FUTURE_TUI_INDEX_PROBE").as_deref(), Ok("1"));
-        restore_env("FUTURE_TUI_INDEX_PROBE", None);
-        assert!(std::env::var_os("FUTURE_TUI_INDEX_PROBE").is_none());
-        restore_env("FUTURE_TUI_INDEX_PROBE", old);
-    }
-
-    #[test]
-    fn run_print_without_message_fails() {
-        let code = run(&["-p".to_string()]);
-        assert_eq!(code, ExitCode::from(1));
-    }
-
-    #[test]
-    fn run_print_against_mock_succeeds() {
-        let _guard = crate::test_env::lock();
-        let home = tempfile::tempdir().unwrap();
-        let old_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", home.path());
-        // Multi-thread runtime: the mock server keeps being driven on worker
-        // threads while run() blocks on its own runtime.
-        let mock_rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let addr = mock_rt.block_on(spawn_mock(MockAgent {
-            command_data: new_session_data(),
-            events: vec![
-                stream_event("text_chunk", "{\"text\":\"Hi\"}"),
-                stream_event("agent_end", "{}"),
-            ],
-            ..Default::default()
-        }));
-        let code = run(&[
-            "-p".to_string(),
-            "hello".to_string(),
-            "--grpc-addr".to_string(),
-            addr,
-        ]);
-        restore_env("HOME", old_home);
-        assert_eq!(code, ExitCode::SUCCESS);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn run_interactive_fails_fast_without_tty() {
-        let _guard = crate::test_env::lock();
-        let home = tempfile::tempdir().unwrap();
-        let old_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", home.path());
-        // Make stdin deterministically not-a-TTY (a developer shell may have
-        // a real one): swap fd 0 for /dev/null for the duration.
-        let code = with_null_stdin(|| run(&["--grpc-addr".to_string(), "127.0.0.1:1".to_string()]));
-        restore_env("HOME", old_home);
-        assert_eq!(code, ExitCode::from(1));
-    }
-
-    /// Run `f` with fd 0 redirected from /dev/null (restored afterwards).
-    #[cfg(unix)]
-    fn with_null_stdin<F: FnOnce() -> std::process::ExitCode>(f: F) -> std::process::ExitCode {
-        use std::os::unix::io::AsRawFd;
-        let devnull = std::fs::File::open("/dev/null").unwrap();
-        let null_fd = devnull.as_raw_fd();
-        unsafe {
-            let saved = libc::dup(0);
-            libc::dup2(null_fd, 0);
-            let code = f();
-            libc::dup2(saved, 0);
-            libc::close(saved);
-            code
-        }
-    }
-
-    /// A PTY pair with fd 0 redirected to the slave (restored on drop).
-    #[cfg(unix)]
-    struct PtyStdin {
-        master: i32,
-        slave: i32,
-        saved: i32,
-    }
-
-    #[cfg(unix)]
-    impl PtyStdin {
-        fn install() -> Self {
-            unsafe {
-                let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
-                assert!(master >= 0);
-                assert_eq!(libc::grantpt(master), 0);
-                assert_eq!(libc::unlockpt(master), 0);
-                let slave_name = libc::ptsname(master);
-                assert!(!slave_name.is_null());
-                let slave = libc::open(slave_name, libc::O_RDWR | libc::O_NOCTTY);
-                assert!(slave >= 0);
-                let saved = libc::dup(0);
-                assert!(saved >= 0);
-                assert_ne!(libc::dup2(slave, 0), -1);
-                Self {
-                    master,
-                    slave,
-                    saved,
-                }
-            }
-        }
-
-        fn write_input(&self, data: &str) {
-            unsafe {
-                libc::write(
-                    self.master,
-                    data.as_ptr() as *const libc::c_void,
-                    data.len(),
-                );
-            }
-        }
-    }
-
-    #[cfg(unix)]
-    impl Drop for PtyStdin {
-        fn drop(&mut self) {
-            unsafe {
-                libc::dup2(self.saved, 0);
-                libc::close(self.saved);
-                libc::close(self.slave);
-                libc::close(self.master);
-            }
-        }
-    }
-
-    /// Full interactive loop against a PTY + mock agent: startup completes,
-    /// the main event loop runs, and a ctrl+c byte through the PTY quits.
-    #[cfg(unix)]
-    #[tokio::test]
-    #[allow(clippy::await_holding_lock)] // env-var serialization across awaits
-    async fn interactive_loop_runs_and_ctrl_c_quits() {
-        let _guard = crate::test_env::lock();
-        let home = tempfile::tempdir().unwrap();
-        let old_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", home.path());
-
-        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let addr = spawn_mock(MockAgent {
-            state_data: "{\"sessionId\":\"s1\"}".into(),
-            events: vec![stream_event("ping", "{}")],
-            hold_open: true,
-            seen_commands: seen.clone(),
-            ..Default::default()
-        })
-        .await;
-        let pty = PtyStdin::install();
-
-        let args = CliArgs {
-            grpc_addr: addr,
-            offline: true,
-            ..Default::default()
-        };
-        let driver = async {
-            // Wait for startup to finish (the last startup RPC is
-            // new_session), then deliver ctrl+c through the terminal input.
-            for _ in 0..1200 {
-                if seen.lock().unwrap().iter().any(|t| t == "new_session") {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-            // Grace for the welcome render.
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            pty.write_input("\x03");
-        };
-        let (code, ()) = tokio::join!(run_interactive(&args), driver);
-
-        drop(pty);
-        restore_env("HOME", old_home);
-        assert_eq!(code, 0);
-    }
-
-    /// Shared setup for the PTY interactive scenarios: mock agent + scratch
-    /// HOME + PTY stdin. Returns the pieces the drivers need.
-    #[cfg(unix)]
-    struct InteractiveFixture {
-        addr: String,
-        seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-        /// Kept for drop (cleanup); never read.
-        _home: tempfile::TempDir,
-        old_home: Option<std::ffi::OsString>,
-        pty: PtyStdin,
-        /// Armed before the run starts: fires when `run_interactive` enters the
-        /// main loop (see [`main_loop_gate`]).
-        main_loop: std::sync::Arc<tokio::sync::Notify>,
-    }
-
-    #[cfg(unix)]
-    impl InteractiveFixture {
-        async fn new() -> Self {
-            Self::with_delay(0).await
-        }
-
-        async fn with_delay(unary_delay_ms: u64) -> Self {
-            let home = tempfile::tempdir().unwrap();
-            let old_home = std::env::var_os("HOME");
-            std::env::set_var("HOME", home.path());
-            // Arm before the run: the notification must not be missed if
-            // startup finishes before a driver first awaits it.
-            let main_loop = main_loop_gate::arm();
-            let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-            let addr = spawn_mock(MockAgent {
-                state_data: "{\"sessionId\":\"s1\"}".into(),
-                events: vec![stream_event("ping", "{}")],
-                hold_open: true,
-                seen_commands: seen.clone(),
-                unary_delay_ms,
-                ..Default::default()
-            })
-            .await;
-            let pty = PtyStdin::install();
-            Self {
-                addr,
-                seen,
-                _home: home,
-                old_home,
-                pty,
-                main_loop,
-            }
-        }
-
-        fn args(&self) -> CliArgs {
-            CliArgs {
-                grpc_addr: self.addr.clone(),
-                offline: true,
-                ..Default::default()
-            }
-        }
-
-        /// Wait until the mock sees `what` (bounded), then a grace beat.
-        async fn await_command(&self, what: &str) {
-            for _ in 0..400 {
-                if self.seen.lock().unwrap().iter().any(|t| t == what) {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-
-        /// Wait until `run_interactive` has left startup and entered the main
-        /// loop.
-        ///
-        /// This used to be a command-sequence heuristic — `new_session`, two
-        /// `get_state`s, then a grace of `unary_delay_ms + 400` — which sized
-        /// the wait on the *handshake* while startup keeps issuing unary calls
-        /// after it (`list_models` follows), so at a 400 ms unary delay the
-        /// grace expired inside startup and a ctrl+c meant for the main loop
-        /// was consumed by the startup interrupt arm
-        /// (`interactive_resize_during_and_after_startup`: exit 1, not 0).
-        /// The product now signals the transition itself.
-        async fn await_startup_complete(&self) {
-            self.main_loop.notified().await;
-        }
-
-        fn finish(self) {
-            let Self { old_home, pty, .. } = self;
-            drop(pty);
-            restore_env("HOME", old_home);
-        }
-    }
-
-    /// A real SIGINT quits via the exit-signal callback + ExitSignal arm.
-    #[cfg(unix)]
-    #[tokio::test]
-    #[allow(clippy::await_holding_lock)] // env-var serialization across awaits
-    async fn interactive_sigint_quits_via_exit_signal() {
-        let _guard = crate::test_env::lock();
-        let fx = InteractiveFixture::new().await;
-        let driver = async {
-            fx.await_startup_complete().await;
-            unsafe { libc::raise(libc::SIGINT) };
-        };
-        let args = fx.args();
-        let (code, ()) = tokio::join!(run_interactive(&args), driver);
-        fx.finish();
-        assert_eq!(code, 0);
-    }
-
-    /// ctrl+c DURING startup interrupts it (exit 1 like the TS app). The
-    /// mock answers slowly so startup is guaranteed to be in flight.
-    #[cfg(unix)]
-    #[tokio::test]
-    #[allow(clippy::await_holding_lock)] // env-var serialization across awaits
-    async fn interactive_ctrl_c_during_startup() {
-        let _guard = crate::test_env::lock();
-        let fx = InteractiveFixture::with_delay(500).await;
-        let driver = async {
-            // The byte sits in the PTY buffer until the reader starts.
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            fx.pty.write_input("\x03");
-        };
-        let args = fx.args();
-        let (code, ()) = tokio::join!(run_interactive(&args), driver);
-        fx.finish();
-        assert_eq!(code, 1);
-    }
-
-    /// SIGINT during startup drives the ExitSignal startup arm.
-    #[cfg(unix)]
-    #[tokio::test]
-    #[allow(clippy::await_holding_lock)] // env-var serialization across awaits
-    async fn interactive_sigint_during_startup() {
-        let _guard = crate::test_env::lock();
-        let fx = InteractiveFixture::with_delay(500).await;
-        let driver = async {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            unsafe { libc::raise(libc::SIGINT) };
-        };
-        let args = fx.args();
-        let (code, ()) = tokio::join!(run_interactive(&args), driver);
-        fx.finish();
-        assert_eq!(code, 1);
-    }
-
-    /// SIGWINCH during startup AND in the main loop (both Resize arms).
-    /// The mock is slow so startup is still in flight for the first raise.
-    #[cfg(unix)]
-    #[tokio::test]
-    #[allow(clippy::await_holding_lock)] // env-var serialization across awaits
-    async fn interactive_resize_during_and_after_startup() {
-        let _guard = crate::test_env::lock();
-        let fx = InteractiveFixture::with_delay(400).await;
-        let driver = async {
-            // Resize during startup.
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            unsafe { libc::raise(libc::SIGWINCH) };
-            // Resize in the main loop, then quit.
-            fx.await_startup_complete().await;
-            unsafe { libc::raise(libc::SIGWINCH) };
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            fx.pty.write_input("\x03");
-        };
-        let args = fx.args();
-        let (code, ()) = tokio::join!(run_interactive(&args), driver);
-        fx.finish();
-        assert_eq!(code, 0);
-    }
-
-    /// CLI messages become the initial prompt (sent after startup).
-    #[cfg(unix)]
-    #[tokio::test]
-    #[allow(clippy::await_holding_lock)] // env-var serialization across awaits
-    async fn interactive_with_initial_prompt_message() {
-        let _guard = crate::test_env::lock();
-        let fx = InteractiveFixture::new().await;
-        let driver = async {
-            // The initial prompt goes out as a `prompt` command ~100 ms
-            // after startup.
-            fx.await_command("prompt").await;
-            fx.pty.write_input("\x03");
-        };
-        let mut args = fx.args();
-        args.messages = vec!["hello agent".to_string()];
-        let (code, ()) = tokio::join!(run_interactive(&args), driver);
-        fx.finish();
-        assert_eq!(code, 0);
-    }
-
-    /// Without `--offline` the main loop also polls the startup update check
-    /// once (the arm the offline fixtures skip). This build's version is a dev
-    /// build (`0.0.2-<hash><+local>`), which is in no published channel, so
-    /// `update::check` answers immediately and fetches nothing.
-    #[cfg(unix)]
-    #[tokio::test]
-    #[allow(clippy::await_holding_lock)] // env-var serialization across awaits
-    async fn interactive_polls_the_update_check_when_not_offline() {
-        let _guard = crate::test_env::lock();
-        assert!(
-            !crate::version::is_release()
-                && !crate::version::VERSION.ends_with("+test")
-                && !crate::version::VERSION.ends_with("+nightly"),
-            "a published-channel build ({}) would really fetch the manifest from \
-             a unit test; the check below is only side-effect-free for a \
-             commit-hash build",
-            crate::version::VERSION
-        );
-        let fx = InteractiveFixture::new().await;
-        let driver = async {
-            fx.await_startup_complete().await;
-            fx.pty.write_input("\x03");
-        };
-        let mut args = fx.args();
-        args.offline = false;
-        let (code, ()) = tokio::join!(run_interactive(&args), driver);
-        fx.finish();
-        assert_eq!(code, 0);
-    }
 }

@@ -160,13 +160,18 @@ future skills install          # 不带名字：安装全部内置技能
 
 跳过这一步 agent 也能正常回答——技能只是提供现成的工作流。卸载、升级等用法见 [CLI 参考](docs/wiki/zh/CLI.md)。
 
-### 启动 Agent
+### 启动主机，再启动终端
 
-终端与 CLI 客户端都是轻量 gRPC 客户端，默认使用**每用户本地 IPC**（macOS/Linux 为 Unix socket，Windows 为仅当前用户可访问的命名管道）。Unix 优先使用 `FUTURE_AGENT_SOCKET`；否则端点始终位于实例的 FutureOS home 之下：默认 `~/.future/run/agent.sock`，`FUTURE_HOME=DIR` 指定的实例使用 `<FUTURE_HOME>/run/agent.sock`——见[多实例运行](docs/guide/directory-layout.zh-CN.md#多实例运行future_home)。若 FutureOS home 位于无法承载 Unix socket 的文件系统（如 NFS），请将 `FUTURE_HOME` 指向本地文件系统上的目录。桌面 GUI 与主机模式先尝试连接兼容的外部 Agent；默认端点上没有服务且其实例锁空闲时，它们在自己的进程内运行完整 Agent；不兼容或锁被占用/不可用时直接报错，不会另起第二个 Agent。TUI 保留自己独立的 Agent 启动逻辑。也可以手动启动：
+终端与 CLI 客户端都是轻量 gRPC 客户端，默认使用**每用户本地 IPC**（macOS/Linux 为 Unix socket，Windows 为仅当前用户可访问的命名管道）。Unix 优先使用 `FUTURE_AGENT_SOCKET`；否则端点始终位于实例的 FutureOS home 之下：默认 `~/.future/run/agent.sock`，`FUTURE_HOME=DIR` 指定的实例使用 `<FUTURE_HOME>/run/agent.sock`——见[多实例运行](docs/guide/directory-layout.zh-CN.md#多实例运行future_home)。若 FutureOS home 位于无法承载 Unix socket 的文件系统（如 NFS），请将 `FUTURE_HOME` 指向本地文件系统上的目录。
+
+**Agent 由它的宿主负责，不由终端负责。** 先启动一个宿主——两者都会持有并维持 Agent：
 
 ```bash
-future agent      # 在终端启动 agent（日志打到 stdout，Ctrl-C 停止）
+future host       # 把本机作为 FutureOS 主机：本地运行、定时任务，以及已配对的远程桌面
+future agent      # 只启动 Agent 服务（日志打到 stdout，Ctrl-C 停止）
 ```
+
+`future host` **不需要先登录**：没有账号时它用你自己的模型 provider 提供全部本地能力，只有已配对的远程桌面会保持关闭——在另一个终端执行 `future auth login` 后它无需重启就会接管并开始提供远程桌面；`--relay URL` 则完全绕开 Future 平台。桌面 GUI 与主机模式先尝试连接兼容的外部 Agent；默认端点上没有服务且其实例锁空闲时，它们在自己的进程内运行完整 Agent；不兼容或锁被占用/不可用时直接报错，不会另起第二个 Agent。
 
 退出内置 Agent 的 Desktop 会停止所有客户端的任务，包括 CLI/TUI 对话；连接外部 Agent 时只取消本 Desktop 提交的运行，外部服务保持存活。详见 [Desktop Agent 生命周期与恢复](docs/guide/desktop-agent.zh-CN.md)。
 
@@ -175,6 +180,8 @@ future agent      # 在终端启动 agent（日志打到 stdout，Ctrl-C 停止�
 ```bash
 future tui        # 终端界面
 ```
+
+TUI **只连接**正在提供服务的 Agent，自己从不启动或重启 Agent。没有可达的 Agent 时它会说明这一点并给出该执行的命令（`future host`、桌面应用或 `future agent`）；若它连上的 Agent 之后消失，它只会继续重连并显示该状态，而不会另起一个。因此**可以同时开任意多个终端**连接同一个宿主——关掉其中一个不会影响 Agent 和其它终端。
 
 正式发布的构建会在 TUI 启动后于后台检查一次更新：发现新版本时仅在本地提示
 并给出官方安装脚本链接，不会自动安装。release 构建检查 release 通道，
@@ -247,6 +254,7 @@ test/nightly 构建检查 nightly；本地/源码构建跳过检查。网络失�
 
 | 现象 | 解决 |
 |---|---|
+| TUI 提示没有 Agent 提供服务并退出 | 先启动 Agent 的宿主——`future host`（或桌面应用、`future agent`）。TUI 只连接，从不自己启动。 |
 | 客户端报连接 / gRPC 错误退出 | 运行 `future doctor`，检查 Agent 启动、版本、实例锁错误以及用户、数据根和 IPC 环境是否一致；更换服务前先看 [Desktop Agent 指南](docs/guide/desktop-agent.zh-CN.md)。仅在显式 TCP 模式下检查配置的地址/端口。 |
 | Agent 回复鉴权 / "no model" 错误 | 还没配置模型。运行 `future config`——见 [配置模型](#配置模型)。 |
 | 构建 / 安装问题 | 见 [构建与安装](docs/guide/build-and-install.zh-CN.md)（平台工具链、链接器、GUI 打包）。 |

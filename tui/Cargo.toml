@@ -2,7 +2,7 @@
 name = "future-tui"
 version = "0.0.0"
 edition = "2021"
-description = "Rust port of the TypeScript future-tui — 1:1 behavior (UI rendering, key handling, interaction, args, help text) with a self-implemented terminal backend"
+description = "The FutureOS terminal UI: a full-screen workbench (layout, mouse, sidebar panels) over a self-implemented terminal backend, plus print mode and the models listing"
 license = "MIT"
 
 [[bin]]
@@ -30,7 +30,8 @@ tonic.workspace = true
 # Single proto codegen owner (PR #112): generated proto code lives in the
 # future-rpc crate; the TUI consumes it instead of owning a generated copy.
 future-rpc = { path = "../packages/rpc" }
-# In-process Agent hosting (the Agent no longer runs as this process's child).
+# Only `install_rustls_provider` (the TUI's update check). The Agent is not
+# hosted here: the TUI attaches to whoever runs it (see `agent_attach`).
 future-host = { path = "../host" }
 chrono = { workspace = true, features = ["clock"] }
 

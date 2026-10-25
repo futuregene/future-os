@@ -14,7 +14,7 @@
 |---|---|
 | [构建与安装](guide/build-and-install.zh-CN.md)（[en](guide/build-and-install.md)） | 前置条件、各平台工具链（macOS / Linux / Windows）、`make` 目标、GUI 打包、`future-goal` 安装、技能安装 |
 | [持续集成](guide/ci.zh-CN.md) ([English](guide/ci.md)) | 影响范围检测、依赖图、共享 runner、合并门禁与手动专项验证 |
-| [TUI](guide/tui.zh-CN.md)（[en](guide/tui.md)） | 终端界面（`future-tui`）：斜杠命令、快捷键、设置 |
+| [TUI](guide/tui.zh-CN.md)（[en](guide/tui.md)） | 终端界面（`future tui`）：全屏布局、键鼠、命令面板能跑的命令，以及哪些已经接上 agent |
 | [渠道配置](guide/channels-config.zh-CN.md)（[en](guide/channels-config.md)） | `~/.future/channels/config.json` 统一参考（agent / providers / Feishu / DingTalk 块、默认值） |
 | [通道 provider 参考](guide/channels-providers.zh-CN.md)（[en](guide/channels-providers.md)） | 共享桥上的通道：能力矩阵、逐通道配置、成熟度、诊断、主动外发 |
 | [通道 provider 契约](guide/channels-provider-contract.zh-CN.md)（[en](guide/channels-provider-contract.md)） | 新增通道：provider 契约、入站/出站边界、配置、错误、测试与覆盖率要求 |
@@ -40,7 +40,7 @@
 | [定时任务](architecture/tasks.zh-CN.md)（[en](architecture/tasks.md)） | `future-tasks` — 可复用提示词 + 触发器（按计划或随时手动）、全权限运行、确定性 `next_due` 内核、运行台账与提示词版本历史 |
 | [SQLite 迁移](architecture/sqlite-migration.zh-CN.md)（[en](architecture/sqlite-migration.md)） | Agent/Desktop SQLite 存储布局与迁移策略 |
 | [Desktop 内置 Agent 开发计划](architecture/embedded-agent-development.zh-CN.md)（[en](architecture/embedded-agent-development.md)） | 进程内完整 Agent、服务与宿主生命周期、实例锁、退出清理、升级安装、开发工具及分阶段验收 |
-| [Agent 启动仲裁与自愈](architecture/agent-supervision.zh-CN.md)（[en](architecture/agent-supervision.md)） | 同一数据根下 `future agent` / `future host` / `future tui` 谁启动 Agent：实例锁仲裁、让位而非失败、有界等待、崩溃熔断，以及尚未拍板的产品决定 |
+| [Agent 启动仲裁与自愈](architecture/agent-supervision.zh-CN.md)（[en](architecture/agent-supervision.md)） | 同一数据根下 `future agent` 与 `future host` 谁启动 Agent：实例锁仲裁、让位而非失败、有界等待、崩溃熔断，以及 TUI 为何只连接（D11） |
 | [回复结果语义](architecture/response-outcomes.zh-CN.md)（[en](architecture/response-outcomes.md)） | 回复结束的结果语义（停止 / 拒答 / 过滤 / 暂停） |
 | [goal/](architecture/goal/README.md) | `future-goal` crate：[架构](architecture/goal/ARCHITECTURE.md)（en/zh）、[上游来源](../orchestration/goal/UPSTREAM.md)、[决策内核快照](architecture/goal/snapshots.md) |
 | [共享包](architecture/packages.zh-CN.md)（[en](architecture/packages.md)） | `packages/` 约定：npm/workspace 包与 crate 边界 |
@@ -54,7 +54,6 @@
 - [desktop/](internals/desktop/PRODUCT.md) — 产品语义、数据模型（`ER.md`）、颜色、沙箱（macOS/Windows/Linux）、连接与远程、嵌入式终端、压缩（文档地图见 `desktop/CLAUDE.md`）
 - [compaction/](internals/compaction/compaction.zh-CN.md) — 运行时上下文压缩：两个策略及其参数、生产请求形状、开发指南（`compaction-development.zh-CN.md`）、检索接口，以及两个实验——闭卷（`compaction-closed-book-experiment.zh-CN.md`）与开卷（`compaction-open-book-experiment.zh-CN.md`）
 - [mobile/](internals/mobile/README.md) — 移动端构建/TestFlight、iOS 平台对齐、流式同步设计与测量、鸿蒙兼容（带日期的审计与测量报告见 `archives/verification/`）
-- [tui/](internals/tui/tests.md) — TUI 测试框架约定
 - [skill_reco/](internals/skill_reco/harness.zh-CN.md) — 技能推荐：[评测](internals/skill_reco/evaluation.zh-CN.md)、[运行框架](internals/skill_reco/harness.zh-CN.md) 与[集成方案](internals/skill_reco/integration-plan.zh-CN.md)（历史设计记录）
 - [agent/](internals/agent/README.zh-CN.md) — gRPC 后端（`agent/`）的模块地图：turn loop、工具、LLM 层、会话、沙箱，以及改每一项前该读什么
 - [host](internals/host.zh-CN.md) — `future-host`（无 GUI 的共享后端：store、agent bridge、tasks、remote、identity）的模块地图
@@ -66,7 +65,7 @@
 
 | 文档 | 内容 |
 |---|---|
-| [Workbench TUI 规格](tui/workbench-spec.zh-CN.md)（[English](tui/workbench-spec.md)） | **尚未实现**的全屏工作台冻结契约：布局常量、鼠标与键盘约定、类型名与验收命令。它是设计提案，TUI 目前实际交付的能力见 [TUI 指南](guide/tui.zh-CN.md) |
+| [Workbench TUI 规格](tui/workbench-spec.zh-CN.md)（[English](tui/workbench-spec.md)） | [终端界面](guide/tui.zh-CN.md) 背后的冻结契约：布局常量、鼠标与键盘约定、类型名与验收命令。它描述的界面已经实现；agent 适配层与 P1 项还没有 |
 
 ## Wiki（面向用户的应用指南）
 

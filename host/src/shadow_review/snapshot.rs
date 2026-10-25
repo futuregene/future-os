@@ -261,9 +261,10 @@ fn try_stage(repo: &ShadowRepo, index: &Path, paths: &[String]) -> Result<(), Er
         // A pathspec that matches nothing (deleted file no longer tracked)
         // shouldn't fail the whole snapshot — skip it with a warning.
         if stderr.contains("pathspec") && stderr.contains("did not match") {
-            eprintln!(
-                "FutureOS shadow review: skipped {} paths that no longer exist",
-                paths.len()
+            tracing::warn!(
+                target: "future_host::shadow_review",
+                paths = paths.len(),
+                "skipped paths that no longer exist"
             );
             return Ok(());
         }

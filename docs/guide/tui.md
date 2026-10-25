@@ -1,637 +1,145 @@
 # FutureOS Terminal UI (TUI)
 
-The TUI is the terminal client: `future-tui`. It is a thin gRPC client that
-connects over **per-user local IPC** by default (Unix-domain socket on
-macOS/Linux, a current-user-only named pipe on Windows). Unix honors
-`FUTURE_AGENT_SOCKET`; otherwise the endpoint always lives under the
-instance's FutureOS home: `~/.future/run/agent.sock` by default,
-`<FUTURE_HOME>/run/agent.sock` with `FUTURE_HOME` set — see
-[isolated instances](directory-layout.md#running-several-isolated-instances-future_home).
-If the FutureOS home sits on a filesystem that cannot host Unix sockets (e.g.
-NFS), point `FUTURE_HOME` at a directory on a local filesystem. If no agent is
-reachable, the TUI launches one as a sidecar and
-shuts it down on exit — no manual startup needed. You can still run the
-agent yourself:
+`future tui` is a full-screen terminal UI: it owns the screen, repaints absolute
+rows and resolves mouse clicks against what it painted. It replaced the earlier
+inline TUI (which appended rows into the terminal's scrollback and diffed the
+tail); that UI, its code and its page are gone, not deprecated.
+
+The design contract is [`docs/tui/workbench-spec.md`](../tui/workbench-spec.md).
+
+## Running it
 
 ```bash
-future agent      # terminal 1: the agent
-future tui        # terminal 2: the terminal UI
+future tui                          # the terminal UI, attached to your agent
+future tui --session <id>           # open a specific conversation
+future tui --continue               # the most recently active one
+future tui "look at this failing test"   # send a first message on start
+future tui -p "what is this error?"      # one question, no surface
+
+# the surface alone, on deterministic demo data (no agent; the header says demo)
+cargo run -p future-tui --example workbench_demo -- --scenario chat
+
+# one frame at any size, for a screenshot or a layout check
+cargo run -p future-tui --example workbench_demo -- --scenario launchpad --width 120 --height 38
+cargo run -p future-tui --example workbench_demo -- --scenario chat --plain     # ANSI stripped
+
+# the mouse acceptance check (hit regions at 120x38 and 90x24)
+cargo run -p future-tui --example workbench_demo -- --self-test
 ```
 
-For remote/development setups pass `--grpc-addr <host:port>` to the agent to
-serve TCP instead, and set `FUTURE_AGENT_GRPC_ADDR=<host:port>` on clients
-(an explicit TCP target is authoritative and never falls back to local IPC).
+Scenarios: `launchpad` (no session yet), `chat` (a conversation with the work
+folded into one summary row), `todo` (a long goal list, to see the sidebar
+window and its `↓ N more` row).
 
-`future tui <args>` runs the TUI in-process; the standalone `future-tui`
-binary is equivalent but no longer installed by default (build it with
-`cargo build -p future-tui` if you need it). `future tui --help` lists all
-options (print mode, `--list-models`, `--session`, ...). One feature needs that
-distinction: `/skills` installs and removes skills by spawning the unified
-`future` binary, so a standalone `future-tui` needs `future` on `PATH` (see
-[Skills](#skills)).
-
-- Build / install: see [Build & Install](build-and-install.md).
-- Session persistence, model config, tool approval and the sandbox all run
-  through the agent; the TUI is a front-end. `/sandbox` and `/permission` edit
-  the agent's session policy from here (see
-  [Sandbox and tool permissions](#sandbox-and-tool-permissions)); nothing is
-  changed behind your back at startup, apart from applying the TUI's own
-  persisted `defaultPermissionLevel` / `defaultApprovalMode` (below).
-- Fresh sessions default to permission `all`. A protected approval mode (see
-  [Sandbox and tool permissions](#sandbox-and-tool-permissions)) raises that to
-  `workspace`, because `all` skips the approval gate entirely. The CLI's
-  `future run --permission none` disables all tool calls, not just writes. See
-  the [sandbox guide](../wiki/en/Sandbox.md) for the distinction.
-
-## Project instructions
-
-At each run, the agent reads the first readable file in the session's working
-directory: `AGENTS.md` → `CLAUDE.md` → `GEMINI.md`. It does not merge files or
-search parent directories; an empty readable file also stops the search.
-`/reload` uses the same order, and context-file status lists file names, not contents.
-
-Use `future tui --no-context-files` (short form `-nc`, also supported with `-p`)
-to disable these project instructions. The opt-out is session-local, applies to
-subsequent requests, and is reapplied when this TUI switches or creates sessions.
-It does not erase earlier conversation content or disable the separate
-`FUTURE.md` workspace memory layer. An agent that cannot apply the opt-out causes
-the request to fail rather than silently ignoring the flag. `/context on|off`
-toggles the same switch from inside the TUI.
-
-## Slash commands
-
-Every command below is intercepted by the TUI: it either opens a panel, changes
-a setting through the agent, or runs one agent command — it is never sent to the
-model as a prompt. Command names are case-insensitive; `arg` is everything after
-the command name. This table is the authoritative dispatch set — the in-app help
-overlay (`/help`) lists only a subset, and anything that is not a known command
-(including a command missing its required argument, e.g. `/cwd`) is sent to the
-model as an ordinary prompt.
-
-| Command | Purpose |
-|---|---|
-| `/help` | Show the help overlay (shortcuts + core commands) |
-| `/keymap` | Key-binding editor: list every action with its keys, rebind by pressing a key |
-| `/model [name]` | Set the model directly, or open the searchable model selector with no arg |
-| `/models` | Open the model enable-scope editor (same menu as `/scoped-models`) |
-| `/models default` | Pick the agent-side default model for new sessions |
-| `/scoped-models` | Configure the model enable/disable list |
-| `/providers` | Manage providers: add/edit/delete, API keys, sync models |
-| `/provider-key <id>` | Prompt for a provider API key (see below) |
-| `/skills` | Skill browser: search, preview, insert, install / uninstall / upgrade |
-| `/skill-recommend [on\|off]` | Offer a fitting skill before sending a message (on by default) |
-| `/tools [none\|all]` | Multi-select the built-in tools; `none` disables all of them |
-| `/permission <all\|workspace\|none>` | Set the tool permission level (and remember it) |
-| `/mode [manual\|sandbox\|auto\|off]` | Show the approval mode, or apply one directly (it persists) |
-| `/sandbox` | Approval mode card: the four modes and backend availability |
-| `/theme [id]` | Pick a theme, or set one directly by id |
-| `/sessions` | Browse and switch sessions (newest activity first, each row naming its workspace) |
-| `/new` | Start a new session |
-| `/workspace [new] [path]` | List the workspace folders, create one (`new <path>`) and move this session into it |
-| `/reply-detail [default\|detailed]` | How much of a finished reply to keep: the final answer only, or every step |
-| `/clone` | Clone the current session (continue in a new branch) |
-| `/fork` | Fork from a chosen message |
-| `/tree` | Session tree with fork/clone hierarchy |
-| `/name <name>` | Set the session name |
-| `/delete [--yes]` | Delete the current session (confirmed with `--yes`) and start a new one |
-| `/title [zh\|en]` | Generate a session title with the model and apply it as the name |
-| `/compact` | Compress the conversation context |
-| `/status` | Session state, model, token usage, cost and this session's message/tool counters (printed into the chat) |
-| `/usage` | Token, cost, context and quota panel |
-| `/agent` | Agent version, instance id, discovered and loaded skills |
-| `/metrics` | The agent's runtime counters |
-| `/snapshot` | The current (or last) run's projection snapshot — it needs a run |
-| `/history <query>` | Search this session's persisted history (up to 20 matches), snippets in the pager |
-| `/tool-output [call-id]` | List this run's stored tool calls, or read one call's full output |
-| `/transcript` | Full transcript in a searchable pager |
-| `/copy` | Copy the last assistant message |
-| `/export` | Ask the agent to write this session to an HTML file |
-| `/import` | *Not available in the TUI* (stub, replies with a notice) |
-| `/reload` | Reload skills + context files |
-| `/cwd <dir>` | Change the working directory |
-| `/worktree [new <branch>]` | List the repository's worktrees (branch, dirty state) and move this session into one; with `new` it adds a worktree under the main checkout's `.worktrees/` first |
-| `/context [on\|off]` | List the context files, or turn loading them on/off |
-| `/autocompact [on\|off]` | Turn automatic context compaction on/off |
-| `/autoretry [on\|off]` | Turn automatic retry of failed runs on/off |
-| `/shell <cmd>` | Run one command through the agent and show its output |
-| `/stop` | Stop the current generation |
-| `/cancel <run-id>` | Cancel a queued run |
-| `/approve [id]` | Allow the pending approval (front of the queue, or by id) |
-| `/reject [id]` | Deny the pending approval (front of the queue, or by id) |
-| `/editor` | Edit the current draft in `$VISUAL` / `$EDITOR` |
-| `/cancel-input` | Abort a pending `/provider-key` prompt |
-
-`/editor` is handled before the input line is cleared, so it opens the
-**current draft** and puts the edited text back into the input on exit; it does
-not submit it.
-
-`/provider-key <id>` starts a key prompt: the *next* submission is the key, not
-a prompt — `/cancel-input` aborts the prompt instead. In the `/providers` list
-the same flow is reached with `k`.
-
-`/autocompact` and `/autoretry` accept `on`/`off` (also `true`/`enable` and
-`false`/`disable`, case-insensitive); with no argument they flip the current
-state. Both are agent-side settings for this session: the footer shows an
-indicator while auto-compaction is on, and `/autoretry` is mirrored in the TUI
-because the agent does not report it back. `/permission <level>`
-persists its argument as `defaultPermissionLevel` in the TUI's settings
-file, so the next `future tui` starts from it.
-
-`/shell <cmd>` takes the raw rest of the line rather than the whitespace-collapsed
-argument, so `printf '%s  %s'` reaches the agent unchanged. There is no PTY: it is
-the agent's one-shot `shell` command — run in the session cwd under the agent's
-own timeout (120 s by default) — and the captured output plus `exit code: N` open
-in the pager.
-
-`/delete` is the destructive command: without the literal `--yes` it only
-explains itself and sends no request. `/delete --yes` removes the session file
-and then starts a fresh session. `/worktree` is deliberately read-and-add only —
-it runs `git worktree list`/`status`/`rev-parse` and `git worktree add`, and
-refuses `remove`/`prune`/`reset`/`clean`/`checkout`/`gc`/`reflog` outright.
-
-## Approvals
-
-When the agent wants to run something the approval gate does not clear (a
-shell command outside the allowlist, a write outside the workspace, …), it
-parks the run and asks. A card takes over the lower part of the screen:
+## The frame
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│ Tool use  ·  MEDIUM risk                                         │
-│                                                                  │
-│   Approve shell command                                          │
-│   $ curl -s https://example.com | head -c 2000                   │
-│   Agent wants to run a shell command.                            │
-│                                                                  │
-│ Do you want to proceed?                                          │
-│ ❯ 1. Yes                                                         │
-│   2. No                                                          │
-│                                                                  │
-│ ↑/↓ select · enter confirm · esc cancel                          │
-└──────────────────────────────────────────────────────────────────┘
+ header (5 rows: pixel whale, wordmark at width ≥ 96, session · workspace ·
+ model, backend dot)  ── hairline
+ ──────────────────────────────────────────┬──────────────────────
+ conversation (bottom-anchored, ↑ 更早)     │ sidebar: 待办 任务 会话
+                                            │          用量 技能
+ ──────────────────────────────────────────┴──────────────────────
+ input box (❯ draft)
+ activity: ⠋ 思考 … · 3s · 2 工具                   42 tok/s · 缓存 96%
+ status:   model · effort · permission   ░░ ctx 6.9k/1.0M 0.7% · ≈¥0.01
+ hint:     Esc 回到聊天 · ctrl+b 侧栏 · / 命令 · ? 帮助
 ```
 
-| Key | Action |
-|---|---|
-| `↑↓` / `k` `j` | Move between the two options |
-| `enter` / `space` | Confirm the highlighted option |
-| `1` / `y`, `2` / `n` | Answer without moving the cursor |
-| `escape` | Deny (the run is parked — leaving without an answer would hang it) |
+The launchpad is the *body*, not a dialog over the conversation: with no session
+attached the composer fills the surface (logo, wordmark, box, model / effort /
+mode / permission chips, shortcuts, recent sessions) and there is no second
+input band.
 
-The card shows the tool-use details the agent curated for it: the command for
-a shell request, the affected paths for a file write, and the risk level.
-Your editor draft is untouched — the card owns the keys while it is open, and
-the message you queued is delivered once the run resumes.
+Two breakpoints, both from the contract:
 
-More than one request pending adds a count to the footer and the card walks
-the queue in order. The `/approve` and `/reject` commands remain the
-scriptable path: bare they act on the front of the queue, with an id on a
-specific request. Another client (the desktop, the phone) answering first is
-announced in the transcript and the card moves on; a reconnect rebuilds the
-queue from the agent's state, so a dropped connection cannot strand a parked
-run.
+- **width < 88**: the sidebar is dropped; `ctrl+b` opens the current panel
+  full-screen instead.
+- **height < 24**: the header collapses to one row, the input box keeps only its
+  top rule, and the activity row is hidden.
 
-## Pop-up menus and the pager
+Every frame is exactly `height` rows of exactly `width` display columns (CJK and
+emoji counted as two), at any size including 1×1 — that invariant is asserted in
+the frame tests and in `ansi::fit`, the one function that pads.
 
-The menu pickers — `/model`, `/models`, `/models default`, `/scoped-models`,
-`/theme`, `/tools`, `/sessions`, `/tree` — share one pop-up-menu framework
-(incremental search, tabs, multi-select, a fixed scroll window and footer
-hints):
+## Keys and mouse
 
 | Key | Action |
 |---|---|
-| typing, or `/` | Incremental search — filter the rows as you type |
-| `↑↓` / `k` `j` | Move the highlight |
-| `page up` / `page down`, `home` / `end` | Scroll the window; jump to an edge |
-| `tab` / `shift+tab` | Switch tabs (menus that have them) |
-| `space` | Toggle a row (multi-select menus, e.g. `/tools`) |
-| `enter` | Confirm; in a multi-select menu applies the marked rows, and with nothing marked falls back to the highlighted row |
-| `escape` | Clear the search query first, then close the menu |
+| `tab` / `shift+tab` | Launchpad: move between the prompt and the parameter chips. Conversation: move focus to / from the sidebar |
+| `←` `→` | Move the draft cursor |
+| `↑` `↓` | Scroll the conversation (or the focused panel's list) |
+| `pageUp` / `pageDown` | Scroll the conversation a page |
+| `ctrl+b` | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal |
+| `/` | Command palette (on an empty draft) — type to filter, `enter` to run |
+| `?` | Help overlay (keys + commands) |
+| `ctrl+e` | Ask the app for the final-answer / detailed reading level |
+| `ctrl+c` | Quit |
 
-An empty multi-select is not expressible that way, which is why "disable every
-tool" has its own argument (`/tools none`).
-
-`/providers`, `/skills` and `/sandbox` are richer panels with their own key
-sets, documented in their sections below ([Providers and models](#providers-and-models),
-[Skills](#skills), [Sandbox and tool permissions](#sandbox-and-tool-permissions)).
-
-The session lists (`/sessions`, `/tree`, `/fork`) use a simpler filterable
-list instead: type to filter (backspace deletes a character), `↑↓` moves the
-highlight and wraps at the ends, `enter` selects and `escape` closes.
-
-`/transcript`, `/agent`, `/metrics`, `/snapshot`, `/history` and
-`/tool-output` open the whole result in a full-screen pager:
-
-| Key | Action |
+| Mouse | Action |
 |---|---|
-| `↑↓` / `k` `j`, `ctrl+u` `ctrl+b` / `ctrl+d` `ctrl+f`, `space` / `b` | Scroll by a line or a page |
-| `g` / `home`, `G` / `end` | Jump to the top / bottom |
-| `/` | Start an incremental search; `n` / `N` step to the next / previous match |
-| `y` | Copy the current line (the pager closes on the copy) |
-| `q` / `escape` | Close |
+| Click a sidebar tab | Switch panel |
+| Click a session row | Open that conversation |
+| Drag the divider | Resize the sidebar (30–48 columns), persisted on release |
+| Click anywhere in the input box | Focus it |
+| Wheel over the conversation | Scroll; at the top it asks for an older page |
+| Wheel over the sidebar | Scroll the panel |
 
-Its status row shows `[i/n] query` on the left and the scroll percentage on the
-right. An empty result is reported as a chat message instead of opening an empty
-pager (e.g. `No history matches for 'needle'.`).
+Mouse reporting is SGR 1006 and is enabled by this program only; the inline TUI
+never turns it on.
 
-## Keyboard shortcuts
+## What is wired to the agent
 
-| Key | Action |
+The adapter is `tui/src/workbench/live.rs`: it paints from `WorkbenchData` and
+applies `WbAction`s, and it reuses the inline TUI's leaves rather than
+reimplementing them — `ChatArea` for the conversation (markdown, tool rows,
+thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
+`GrpcClient` for every call.
+
+| Works | Notes |
 |---|---|
-| `ctrl+p` | Cycle model (within the scoped list when one is set) |
-| `ctrl+t` | Cycle thinking level |
-| `shift+tab` | Cycle thinking |
-| `ctrl+o` | Expand / collapse thinking |
-| `ctrl+g` | Expand / collapse tool output |
-| `ctrl+d` | Compact view: fold runs of tool calls and thinking |
-| `ctrl+e` | Toggle the final-answer view (see below) |
-| `ctrl+x` | Copy the last assistant message |
-| `ctrl+r` | Browse sessions |
-| `ctrl+n` | New-session screen: workspace, model, thinking level, first message |
-| `ctrl+c` | Interrupt / exit |
-| `ctrl+l` | Clear screen / redraw |
-| `tab` | Autocomplete |
-| `enter` | Submit / accept |
-| `escape` | Close popup |
-| `page up` / `page down` | Scroll chat up/down (scrolling up past the top loads older history) |
-| `ctrl+↑` / `ctrl+↓` | Scroll chat up/down (line) |
-| `↑↓` | Scroll / navigate lists |
+| Session attach, `--session`, `--continue` | `get_state` + `switch_session` |
+| History with paging | The newest page on attach, older pages when the top is reached (`get_session_entries`, a bounded backward cursor) |
+| Prompting and streaming | `prompt` with the coalescing policy; `text_chunk`, `thinking_*`, `tool_*` and `agent_end` drive the transcript |
+| Approvals | A parked request shows on the activity row; `y` / `n` answer it. `get_state`'s `pendingApprovals` brings it back after a restart, and `approval_decision` clears it whichever client answered |
+| Sessions panel | `list_sessions`, newest first, click to switch |
+| Usage / context / cost | `get_state`'s usage block, refreshed on the same events |
+| `ctrl+n` / `/new`, `ctrl+x` stop, `ctrl+k` refresh | |
+| Launchpad chips | Click 模型 / 强度 / 权限 / 模式 to cycle them on the agent; the first message from the launchpad creates the session |
+| Theme, reading level | Persisted in `~/.future/tui/settings.json` (`tui/src/settings.rs`) |
 
-While a popup or the pager is open every key goes to that overlay, so the global
-shortcuts above apply to the chat input only.
+## What is not here yet
 
-### Compact view (`ctrl+d`)
+- **Todo / jobs panels.** The goal plane is a local CLI (`future goal`) and the
+  workbench does not read it yet; the panels say "no todos" rather than
+  inventing rows.
+- **Skills panel** lists the session's loaded skills by name only (no browser,
+  no install).
+- **Image attachments and `@` file mentions** — the prompt path has no
+  attachment support yet; `tui/src/paste.rs` (folded pastes, clipboard capture)
+  is the machinery to build it on.
+- **The command palette** lists the commands the adapter implements. The panels
+  the inline TUI had for providers, tools, sandbox, skills and worktrees have no
+  equivalent yet; the underlying settings are per-session agent state, so the
+  desktop app or `future` CLI is the way to change them today.
+- P1 from the contract: timeline rail, two-column diff card, image preview,
+  full-screen session manager, full-screen draft editor.
 
-A long agent run is mostly calls and reasoning, and each one costs rows. With
-`ctrl+d` an *uninterrupted run* of completed calls to the same tool folds into
-one summary row — `▸ read 3 files`, `▸ $ 4 commands` — and a thinking block
-folds into a one-line marker (`▸ thinking`, `×N` when several blocks run
-together). The same key expands everything again; the compact view is off by
-default, and toggling it back restores the transcript exactly as it was.
+## Where the code lives
 
-A fold never hides something you need to read: a text answer, a user turn, a
-call that is still running or one that failed all break the run, and a failed
-call always keeps its own row and its body. Counting matches the desktop's
-collapsed bursts — file tools count distinct files, shell commands count every
-call. `ctrl+g` (expand every tool body) turns folding off, since asking for the
-bodies and hiding the calls cannot both win; `ctrl+o` still hides thinking
-entirely, marker included.
-
-### Final-answer view (`ctrl+e`)
-
-A finished reply is mostly work: reasoning, calls, notes between them. By
-default the TUI keeps what the reply actually says and folds the rest into one
-summary row above it:
-
-```
-▸ 4 tool calls · 2 thoughts
-**Fixed** the off-by-one in the parser.
-```
-
-The counts are the same two numbers the desktop's process fold and the phone's
-step summary use (calls first, then reasoning), so one conversation reads the
-same on every client. `ctrl+e` (or `/reply-detail detailed`) shows every slice
-in place instead; the setting persists in `~/.future/tui/settings.json` as
-`replyDetail`, the same two values the GUI apps store.
-
-What folding never does:
-
-- It never folds a reply that is still streaming — you are watching the work
-  happen. Older, settled replies stay folded while the newest one streams.
-- It never folds a reply with no prose of its own (a run that so far only
-  reasoned, or one whose answer the compaction replaced): there is no answer to
-  isolate, so everything stays on screen.
-- It is a *reading* choice, not a body request: a tool call is still one row and
-  its output still waits for `ctrl+g`, at either level. The summary row counts
-  the calls; it does not inline them.
-
-`ctrl+d` (compact view) still works on whatever the reading level left
-standing, so the two compose.
-
-### New-session screen (`ctrl+n`)
-
-`ctrl+n` opens the composer a first message is written in, from anywhere — over
-a running turn, over an open menu, over a half-typed draft. The whole surface is
-that screen: the conversation, its footer and its input are not drawn, and every
-key belongs to it until it closes.
-
-```
-New session
-Ctrl+N opens this from anywhere.  Enter starts the session.
-
-  Workspace ‹ ~/future-os › (12 sessions)
-  Model     ‹ DeepSeek Flash (future/deepseek-flash) ›
-  Thinking  ‹ medium ›
-> write the first message
-@ files · # sessions · / commands · Tab for workspace, model, thinking · Enter to start
-```
-
-| Key | Action |
+| File | Responsibility |
 |---|---|
-| typing | Write the first message (the same box as the conversation's: paste folding, image attachments, undo) |
-| `tab` / `shift+tab` | Move between the prompt, workspace, model and thinking rows |
-| `←` `→`, `space` | Change the value under the focused row (the prompt keeps the arrows for its cursor) |
-| `n` on the workspace row | Name a new folder: type a path, `enter` creates it and selects it (`escape` leaves the field) |
-| `enter` | Create the session with these choices, send the draft as its first message, and switch onto it |
-| `ctrl+v` / `cmd+v` | Paste into the prompt (an image becomes an attachment) |
-| `escape`, `ctrl+n`, `ctrl+c` | Leave the screen without creating anything |
-
-The workspace list is every folder this agent already has sessions in, newest
-activity first, plus the current session's folder; the model list is the
-agent's catalog; the thinking row cycles the six levels the agent accepts. A
-folder that cannot be created says why on the screen and leaves the field open.
-The conversation's own draft is never touched: leaving the screen returns you to
-it exactly as you left it. `/workspace new <path>` does the same folder creation
-from the conversation screen, and `/workspace` lists the folders as a menu.
-
-### History is paged
-
-Switching to a session loads the newest ten exchanges; scrolling up past the
-top of the transcript fetches the ten before those, and so on until the session
-begins. Each page is one bounded read (the agent's indexed
-`get_session_entries`), so a long session loads in a fraction of a second
-instead of transferring its whole transcript in one response — and a session too
-large for a single gRPC message is still readable. The older rows go above what
-is on screen and the view shows them, so `page up` at the top is what walks back
-through a conversation; a transcript whose top is the real beginning simply
-stops there. `/transcript` shows the pages loaded so far, and `/export` always
-writes the whole session (the agent reads it from its own store).
-
-A tool call is one row: the call itself (`edit src/a.rs +12 -3`,
-`$ make test`, `read src/main.rs:1-20`), with a diff's `+N -M` badge on that
-same row — a transcript of twenty calls is twenty rows, not twenty previews.
-`ctrl+g` expands the body beneath its row (up to 200 rows, with a
-`… N more lines · truncated` marker at the cap) and collapses it again; a call
-that *failed* keeps its body while collapsed, so the reason is readable without
-knowing a key. `/tool-output <call-id>` prints one call's stored output in full.
-Unified diffs
-(`---`/`+++` headers, `@@` hunks) and `apply_patch` envelopes get a
-line-number gutter and tinted add/remove rows. Raw ANSI escapes inside tool
-output are stripped so they cannot corrupt the screen — the diff renderer
-supplies the only colour.
-
-## Copying text
-
-`/copy` and `ctrl+x` copy the most recent assistant message; `y` in the
-`/transcript` pager (and in any other pager) copies the current line (and closes
-the pager). Delivery is attempted in order:
-
-1. a native clipboard program — `pbcopy` (macOS), `clip.exe` (Windows),
-   `wl-copy` → `xclip` → `xsel` (Linux); this is the only path that *confirms*
-   delivery,
-2. tmux passthrough (`ESC Ptmux; … ESC \`) when the TUI runs inside tmux,
-3. a plain OSC 52 request when the terminal understands it.
-
-A native copy reports `Copied N characters.`; an OSC 52 copy only *requests* it
-and the TUI says so (`the terminal has to apply it (unconfirmed)`). Payloads
-above 100 KB are refused up front with an error. With no backend at all the TUI
-reports `Copy failed: …`.
-
-## Skills
-
-`/skills` opens a browser over two sources: the skills the agent loaded for this
-session (`get_commands`, which is what the panel has immediately, even offline)
-and the installable catalogue (`future skills list --json`). The panel is opened
-synchronously from the session's skills and then enriched by both fetches, so a
-failed catalogue load is reported in the status row without hiding the rows that
-did load.
-
-| Key | Action |
-|---|---|
-| `/`, typing | Incremental search over the id, name, description and group (Chinese too, when the skill ships it) |
-| `↑↓` / `k` `j` | Move the highlight |
-| `tab` | Switch group tabs (`All`, `Installed`, `Available`, plus the skill's own group) |
-| `enter` | Insert the highlighted skill's **canonical English name** into the prompt |
-| `ctrl+o` | Show the highlighted skill's details in the pager |
-| `i` | Install (or upgrade) the highlighted skill |
-| `u`, `u` | Uninstall the highlighted skill — two presses confirm |
-| `U`, `U` | Upgrade every installed skill that is behind — two presses confirm, and the prompt names them |
-| `r` | Refresh: re-scan the agent's skill directories and re-read the catalogue |
-| `s` | Cycle the scope (`All` / `Installed`) |
-| `esc` | Close |
-
-Rows merge the two sources: an installed skill shows its installed version
-(`v1.2`), a skill the catalogue is ahead of shows `v1.2 → v1.3 ⬆`, a skill only
-the catalogue knows shows `v1.4 · not installed`. `enter` on a row that is not
-installed says so and points at `i` (it never inserts a name the agent cannot
-resolve). While an operation runs, its row shows `working…` and a second
-operation is refused until the first finishes.
-
-Installing, uninstalling and upgrading are real, and go through the unified
-binary: the TUI runs `future skills install <id> --version <v>` /
-`future skills uninstall <id>` / `future skills update` as a child process
-(120 s timeout). A standalone `future-tui` therefore needs `future` on `PATH`;
-without it every entry point says
-`The \`future\` executable was not found — installing or removing skills is
-unavailable.` instead of failing later with an OS error. Only a *successful*
-operation re-scans the agent (`refresh_skills`) and then re-reads both lists —
-a failure, a timeout or a rejected id reports the outcome and re-reads nothing.
-
-## Sandbox and tool permissions
-
-`/sandbox` opens the approval-mode card: the four modes, their descriptions,
-the backend availability line and (after a refused request) the fallback
-banner. The tool-permission level is not on the card — `/permission <level>`
-is its only surface.
-
-| Key | Action |
-|---|---|
-| `↑↓` / `k` `j` | Move over the four mode rows |
-| `enter` / `space` | Apply the highlighted row |
-| `r` | Re-check the sandbox backend and the FutureOS account |
-| `esc` | Close |
-
-The mode rows are the desktop's four approval modes:
-
-| Mode | Meaning |
-|---|---|
-| `Manual` | File access follows approval rules; allowlisted read-only commands run automatically, other commands ask. No OS sandbox. |
-| `Sandboxed` | Commands run in the OS sandbox and ask for approval when needed. |
-| `Automatic review` (`auto`) | A second model reviews each bounded request the sandbox lets through; needs an available backend and a signed-in FutureOS account. |
-| `Full access` (`off`) | Bypasses approval prompts and the OS sandbox — every command runs with full access to this machine. |
-
-The approval mode is only enforced while the tool-permission level gates tool
-calls. The agent's legacy `all` level returns *before* the approval rules are
-consulted, so picking `Manual`, `Sandboxed` or `Automatic review` in the TUI
-also raises `all` → `Workspace` (and remembers it, so a restart keeps gating;
-`none` is left alone). Conversely, `/permission all` is the explicit “stop
-gating” switch: it moves the approval mode to `Full access` and says so, so the
-footer never advertises a policy nothing enforces.
-
-The OS sandbox is native only to macOS (Seatbelt); on Linux the agent runs it
-through the system Bubblewrap, and on Windows there is no sandbox tier at all
-(commands run under FutureOS write protection instead). A panel opened on a
-non-macOS host therefore says so, and the `Sandboxed` row is **disabled while the
-backend is unavailable** — the highlight skips it and selecting it does nothing.
-`Automatic review` is disabled the same way, and additionally while the
-FutureOS account check has not resolved or came back signed out (`(sign in)`).
-
-Availability has three states, and the panel never conflates them:
-
-- **checking** — the probe has not answered yet (`Sandboxed (checking)`);
-- **available** — a backend was found, with its name, path and version;
-- **unavailable** — the probe came back without one, with the diagnostic reason
-  and the stable diagnostic code (e.g. `bubblewrap` missing, not trusted, too
-  old). A *failed* probe (transport error) stays "checking" instead of claiming
-  the sandbox is missing, and the panel reports the error.
-
-The agent downgrades rather than lying: asking for `sandbox` on a host whose
-probe found no backend comes back as `manual`, and asking for `auto` without an
-account comes back as `sandboxed`; the panel prints the fallback banner
-(`Sandbox requested but unavailable — fell back to Manual: …`) instead of
-reporting success. The mode shown before you apply one here is this platform's
-default and the panel labels it as such, unless a policy answer or a
-`sandbox_policy_changed` event told it the session's real mode.
-
-The permission rows are the agent's three levels for tool calls:
-
-| Level | Meaning |
-|---|---|
-| `All` | Every tool call runs without asking. |
-| `Workspace` | Tool calls ask for approval before they run; the grant is scoped to this workspace. |
-| `None` | Every tool call is denied before it runs. |
-
-`/permission <level>` applies the level directly and persists it as
-`defaultPermissionLevel` in `~/.future/tui/settings.json`.
-`defaultPermissionLevel` is re-applied to the agent the next time this TUI
-starts.
-
-## Providers and models
-
-The TUI edits the same agent-side configuration as `future models` and
-`~/.future/agent/models.json`; every change goes through the agent, so it is
-visible to the other clients too.
-
-### `/providers`
-
-The list has two tabs — **Built-in** (the catalog) and **Custom** — with
-incremental search over the rows, plus these action keys (also listed in the
-menu footer):
-
-| Key | Action |
-|---|---|
-| `enter` | Edit the highlighted custom provider; on a built-in row it opens the key prompt instead |
-| `e` | Edit the highlighted custom provider |
-| `k` | Set / replace the highlighted provider's API key |
-| `d` | Delete the highlighted custom provider |
-| `a` | Add a custom provider |
-| `s` | Sync the model list from `future models` |
-| `r` | Reload `~/.future/agent/auth.json` |
-| `escape` | Close |
-
-Built-in providers are read-only apart from their key: `e` and `d` on a
-built-in row only raise a notice, while `k` still works.
-
-The add/edit form covers ID, name, API type, base URL, API key and the model
-table:
-
-| Key | Action |
-|---|---|
-| `tab` / `shift+tab`, `↑↓` | Move between fields |
-| `←` / `→` | Cycle the API type (API row) |
-| `ctrl+n` / `ctrl+d` | Add / remove a model row |
-| `space` / `ctrl+t` | Toggle the highlighted model's image / thinking support |
-| `enter` | Save (validated first), `escape` cancels |
-
-A blank API-key field keeps the stored key; the agent never sends a key back, so
-the form cannot show one.
-
-### Selecting and scoping models
-
-- `/model [name]` sets the session model; without an argument it opens the
-  searchable model selector.
-- `/models` and `/scoped-models` open the enable-scope editor — the models
-  `ctrl+p` cycles through. The selection is persisted as `enabledModelIds` in
-  `~/.future/tui/settings.json`.
-- `/models default` picks the global default model used for new sessions —
-  persisted in the **agent's** `~/.future/agent/settings.json`, not in the TUI
-  settings file.
-- `/status` prints session state (model, provider, image support, context
-  window, token totals, cost) into the chat; `/usage` renders the same state as
-  a panel: title row with the model and session name, the context bar, per-model
-  token/cost rows, quota and queue warnings; `/agent` reports the agent's own
-  version and instance facts. `/status` prints into the chat, `/usage` opens its
-  own panel, and the rest open in the pager.
-
-## Theme
-
-`/theme` opens a searchable picker and `/theme <id>` sets a theme directly.
-Known ids: `dark` (default), `light`, `one-dark`, `one-light`, `high-contrast`,
-`dracula`. Ids are case-insensitive and `_` is accepted for `-`; an unknown id
-falls back to the default. The choice is stored as `themeId` in
-`~/.future/tui/settings.json` and reaches the whole interface: the chat area,
-the footer, the pop-up menus, the provider list, the session lists, the pager
-and the usage/sandbox panels. The default palette is unchanged from before the
-palette was extended — `/theme dark` renders byte-identically to the built-in
-colours. The input line's ported renderer emits no colour of its own (the prompt
-is a plain `> `), so there is nothing there for a palette to change.
-
-## Notifications and the terminal title
-
-When one of *your* runs finishes or fails, the TUI can ring the terminal bell
-and/or emit an `OSC 9` desktop notification (iTerm2, Ghostty, WezTerm, kitty,
-warp). Runs started by another client on the same session never notify.
-
-The channels live under `notify` in `~/.future/tui/settings.json`:
-
-```json
-{
-  "themeId": "one-dark",
-  "notify": { "enabled": true, "bell": true, "osc9": true, "title": false }
-}
-```
-
-- `enabled` — master switch; `false` silences every channel.
-- `bell` — emit `BEL`. The legacy top-level `bellOnComplete: false` still
-  silences the bell.
-- `osc9` — emit the desktop notification.
-- `title` — additionally set the window title from each event. The run-state
-  title is separate: while a run streams it reads `[>] <project> | <model> |
-  <session>`, and it is written by default unless an explicit `notify` object is
-  present (then `title` decides, and defaults to `false`).
-
-Notification titles and bodies are sanitized — escape sequences, control
-characters and bidi/invisible characters from a path or session name cannot
-escape into the terminal — and titles are truncated to 100 columns. Nothing is
-written when stdout is not a TTY, so print mode and piped runs stay clean.
-
-## Settings & local files
-
-The TUI persists client-side settings to `~/.future/tui/settings.json`:
-`defaultModel`, `defaultThinkingLevel`, `defaultPermissionLevel`,
-`defaultApprovalMode`, `enabledModelIds`, `themeId`, `bellOnComplete`,
-`skillRecommend` (set by `/skill-recommend`, on by default) and the `notify`
-object above. `defaultModel`, `defaultThinkingLevel`, `defaultPermissionLevel`
-and `defaultApprovalMode` are applied to the agent when the TUI starts. Logs: `PI_DEBUG_REDRAW=1` writes debug redraw
-logging to `~/.future/tui/debug.log`; `PI_TUI_WRITE_LOG=1` logs raw screen writes
-to `~/.future/tui/write.log`. While the alternate screen is up, the TUI also
-points stderr at `~/.future/tui/stderr.log`: `future tui` may host the Agent in
-its own process, and anything that process prints must not be written into the
-screen the TUI owns (a raw-mode line feed does not return to column 0, and the
-diff renderer cannot see writes it did not make). The real stderr comes back on
-exit, so crash reports and shutdown messages still reach the terminal.
-
-The keys in the table above are the defaults. `/keymap` opens an editor over
-every registered action: press a key on a highlighted row to rebind it, and the
-difference from the defaults is written to `~/.future/tui/keybindings.json`
-(beside `settings.json`), which is read at startup. A file that cannot be read,
-or that names an action this build does not have, is reported inside that panel
-and the defaults stay in force.
-
-## Troubleshooting
-
-| Symptom | Fix |
-|---|---|
-| Connection / gRPC error on startup | No agent could be found or started. Check the sidecar error, or start `future agent` yourself. In TCP mode, check nothing else holds the port: `lsof -i :<port>`. |
-| Auth / "no model" error | No model configured. Run `future auth login`, add a provider through `/providers`, or edit `~/.future/agent/models.json` — see the repo README "Configure a model". |
-| `/editor` reports a missing editor | Neither `$VISUAL` nor `$EDITOR` is set. Start with one, e.g. `EDITOR=vim future tui`. A blank `$VISUAL` does not fall back to `$EDITOR`. |
-| `/copy` says "unconfirmed" or fails | The native clipboard program is unavailable (remote/SSH session?) and the copy went out as an OSC 52 request — the terminal has to apply it. A payload above 100 KB is refused; copy a smaller range. |
-| `/skills` cannot install: "the `future` executable was not found" | The panel resolves `future` once, when this TUI starts. Run `future tui` (or put the unified binary on `PATH`) instead of the standalone `future-tui`; a restart is needed after installing it. |
-| `/sandbox` says the sandbox is unavailable | The probe found no usable backend (macOS Seatbelt; Linux Bubblewrap). The reason and its diagnostic code are on the panel; `r` re-probes. On Linux the agent falls back to `Manual` and the panel says so rather than pretending the tier stuck. |
-| A tool call is refused without asking | The permission level is `None` — apply `/permission workspace` (or `all`). |
-| No bell / no desktop notification | Check `notify.enabled` (and `notify.bell` / `notify.osc9`, plus a `bellOnComplete: false` legacy key) in `~/.future/tui/settings.json`. A run started by another client, print mode and piped output never notify. |
-| A theme does not repaint something | The chat area, footer, menus, provider list, session lists, pager and usage/sandbox panels all follow `/theme`. If a widget still looks unstyled, it is a bug — the input line is the only intentional non-participant, because it draws no colours. |
-
-See also: [Directory layout](directory-layout.md) for what lives under
-`~/.future/`, and the wiki [CLI](../wiki/en/CLI.md) / [Settings](../wiki/en/Settings.md)
-pages for the desktop-app equivalents.
+| `tui/src/workbench/run.rs` | The driver `future tui` runs: terminal, event loop, keys that need the agent first (approvals, stop) |
+| `tui/src/workbench/live.rs` | The agent adapter: `WorkbenchData` in, `WbAction`s applied |
+| `tui/src/index.rs` | Arguments, `--help`, print mode, `--list-models`; interactive goes to the driver |
+| `tui/src/workbench/mod.rs` | `Workbench` (view state), `WbEvent` / `WbAction`, key and mouse dispatch |
+| `tui/src/workbench/screen.rs` | Frame composition: the bands, splicing partial bands into a row, overlays |
+| `tui/src/workbench/layout.rs` | Band rectangles, the two breakpoints, the hit map |
+| `tui/src/workbench/ansi.rs` | Width-safe text: `fit`, `pad`, `clip`, column slicing |
+| `tui/src/workbench/widgets.rs` | Rules, boxes, tabs, bars, badges, spinner, logo, wordmark, the input box |
+| `tui/src/workbench/panels.rs` | The five sidebar panels (pure renderers) |
+| `tui/src/workbench/launchpad.rs` | The first screen |
+| `tui/src/workbench/state.rs` | `WorkbenchData` and its parts |
+| `tui/src/workbench/mouse.rs` | SGR 1006 parsing |
+| `tui/src/workbench/theme.rs` | `future-dark` / `future-light` |
+| `tui/src/workbench/demo.rs` | Deterministic demo data (screenshots, tests) |

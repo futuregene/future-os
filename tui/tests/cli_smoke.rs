@@ -138,3 +138,27 @@ fn list_models_without_agent_exits_one() {
     let out = run_with_args(&["--list-models", "--grpc-addr", "127.0.0.1:1"]);
     assert_eq!(out.status.code(), Some(1));
 }
+
+/// The TUI is a client, not a host: with no Agent reachable it must say which
+/// command starts one and exit, instead of bringing an Agent up itself (which
+/// is what made several terminals race over the instance lock). Fast exit is
+/// part of the assertion — a start attempt would either take the 180s budget or
+/// take the lock and serve.
+#[test]
+fn no_agent_means_a_hint_to_start_the_host_not_a_self_start() {
+    let started = std::time::Instant::now();
+    let out = run_with_args(&["--list-models", "--grpc-addr", "127.0.0.1:1"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("future host"), "{stderr}");
+    assert!(stderr.contains("future agent"), "{stderr}");
+    assert!(
+        stderr.contains("never starts or restarts"),
+        "the boundary has to be stated, not implied: {stderr}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(30),
+        "the refusal must be immediate, not a start attempt: {:?}",
+        started.elapsed()
+    );
+}

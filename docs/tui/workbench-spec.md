@@ -31,8 +31,11 @@ implementation may extend it, but may not change its meaning.
    `/` filter, ↑↓ history.
 7. Themes: two built-in 256-colour palettes, `future-dark` / `future-light`,
    selectable with `/theme`.
-8. Coexistence with the existing inline mode: `--layout workbench|inline`,
-   workbench by default (keeping a fallback).
+8. **The terminal UI, and it is `future tui`**: the workbench has its own
+   full-screen render loop and `future tui` starts it. The previous inline UI is
+   **deleted**, not deprecated — its code, its page and its `--legacy` flag are
+   gone. It is not a `--layout` switch either: two renderers sharing one output
+   stream was the thing that got rejected.
 
 ### P1 (skeleton / documentation only this round, completion not required)
 
@@ -68,10 +71,15 @@ tui/examples/workbench_demo.rs  // prints one frame at any size + mouse self-tes
 tui/src/lib.rs                  // one added line: `pub mod workbench;`
 ```
 
-Live integration (the second worker) may only touch:
-`tui/src/workbench/live.rs` (new), `tui/src/app.rs`, `tui/src/index.rs`, and the
-export block of `tui/src/workbench/mod.rs`. Existing behaviour in
-`tui/src/components/**` **must not** change.
+`tui/src/workbench/run.rs` is the driver: it owns raw mode, the alternate
+screen and the event loop. `index.rs` parses arguments (print mode, `--help`,
+`--list-models`) and hands interactive use to the driver; there is no second
+surface.
+
+Live integration may only touch: `tui/src/workbench/live.rs`, the fill
+functions in `tui/src/workbench/state.rs`, and `run.rs`'s interception of keys
+that need the agent first. Existing behaviour in `tui/src/components/**`
+**must not** change — their rendered rows are reused, nothing else.
 
 ---
 

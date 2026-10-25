@@ -1,6 +1,6 @@
 .PHONY: help version \
 	build build-cli build-cli-local build-desktop build-desktop-local build-local build-desktop-headless desktop-frontend build-mobile-android build-mobile-ios desktop-sidecars \
-	test test-agent test-channels test-cli test-app-settings test-tui test-cli-diff test-tui-diff test-tui-tmux \
+	test test-agent test-channels test-cli test-app-settings test-tui test-cli-diff \
 	test-desktop test-desktop-rust test-mobile \
 	lint lint-rust lint-desktop stylelint-desktop lint-mobile check-desktop check-mobile fmt \
 	check-docs test-docs-check \
@@ -311,11 +311,6 @@ test-tui:
 test-cli-diff:
 	./cli/tests/golden-diff.sh
 
-test-tui-diff:
-	./tui/tests/golden-diff.sh
-
-test-tui-tmux:
-	./tui/tests/tmux-diff.sh
 
 test-desktop:
 	$(call npm-install-if-needed,desktop)
@@ -583,7 +578,7 @@ help:
 	@echo "  build-mobile-android / -ios         Build & install the mobile app (Expo)"
 	@echo "  test                                All unit tests (Rust crates + desktop + mobile)"
 	@echo "  test-<crate>                        test-agent / -channels / -cli / -tui / -desktop(-rust) / -mobile"
-	@echo "  test-cli-diff / -tui-diff / -tui-tmux  [manual] TS→Rust migration gates"
+	@echo "  test-cli-diff                     [manual] TS→Rust migration gate"
 	@echo "  lint                                Rust (CI flags) + desktop + mobile lints"
 	@echo "  check-desktop / check-mobile        Lint + typecheck + tests without building apps"
 	@echo "  check-docs / test-docs-check        Docs placement/pairing/links gate + its regression tests"

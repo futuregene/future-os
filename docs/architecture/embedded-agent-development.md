@@ -66,10 +66,12 @@ Retain models, tools, approvals, sandboxing, skills, sessions, compaction,
 events, queues and persistence. CLI clients use RPC rather than directly
 accessing the active Agent's memory or database.
 
-Keep `future agent` and standalone `future-agent`. TUI may still launch its own
-external sidecar when no service exists. GUI and headless share the service;
-Agent core must not depend on Tauri, WebView, GTK or the Desktop application
-crate.
+Keep `future agent` and standalone `future-agent`. GUI and headless share the
+service; Agent core must not depend on Tauri, WebView, GTK or the Desktop
+application crate. Clients do not own an Agent: the TUI attaches to one and never
+starts or restarts it (`tui/src/agent_attach.rs`, D11 in
+[agent supervision](agent-supervision.md); this supersedes the phase-three "TUI
+launches its own sidecar" statement kept in the history below).
 
 The first release does not support multiple Agent data roots inside one
 process, automatic takeover of an occupied lock, or restart before all old work
@@ -84,7 +86,7 @@ while accepted runs continue. Full host shutdown is a separate lifecycle API.
 | [GUI supervisor](../../desktop/src-tauri/src/agent_supervisor.rs) | Probe and own a `future agent` child; reset Windows permissions and kill on exit | Manage an embedded handle or an external connection and use complete shutdown |
 | [GUI startup](../../desktop/src-tauri/src/lib.rs) and [host lock](../../desktop/src-tauri/src/instance.rs) | Background work starts in setup; GUI/headless lock is acquired after Tauri build | Defer dependent work until host locking and compatibility validation |
 | [Business connection](../../desktop/src-tauri/src/agent_bridge/client.rs) | Cache Channels and probe reachability; status checks compatibility separately | Gate all business calls and reconnection on compatibility and instance identity |
-| [Headless Agent owner](../../cli/src/headless/agent.rs) and [TUI supervisor](../../tui/src/agent_supervisor.rs) | Independently manage children or reuse a reachable Agent | Integrate headless with the common host; retain TUI ownership and share handshake/conflict diagnostics |
+| [Headless Agent owner](../../cli/src/headless/agent.rs) and [TUI attach](../../tui/src/agent_attach.rs) | Independently manage children or reuse a reachable Agent | Integrate headless with the common host; the TUI only attaches and shares handshake/conflict diagnostics |
 | [SQLite worker](../../agent/src/session/database/mod.rs), [Manager](../../agent/src/session/manager/mod.rs), [event writer](../../agent/src/rpc/broadcaster/journal_writer.rs) | Ordered writes, terminal transactions, maintenance and destructor joins | Explicitly drain, stop, join and report failures rather than relying on process death |
 | [RPC shutdown](../../agent/src/rpc/commands/session_lifecycle.rs) and [scheduler](../../agent/src/rpc/session.rs) | Reject new prompts; completed runs may still trigger dequeue | Add host shutdown that closes admission and dequeue atomically and publishes queued cancellation |
 | [RPC server](../../agent/src/grpc/mod.rs) and [global broadcaster](../../agent/src/rpc/mod.rs) | Production servers wait indefinitely; global events use process statics | Add explicit server shutdown and termination of global/session subscriptions |

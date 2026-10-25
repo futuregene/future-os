@@ -144,16 +144,8 @@ pub(crate) static FORCE_NEW_FAILURE: AtomicBool = AtomicBool::new(false);
 /// the test skips instead of failing. POSIX construction is infallible, so the
 /// unix tests never skip: they build a `Terminal` directly (`terminal_for_methods`)
 /// or run against a PTY of their own (`with_pty_stdin`).
-///
-/// Inside the console child spawned by `console_harness`, a console *is*
-/// available and the skip is not an option: the test must run for real, so a
-/// failure to build one panics instead of quietly passing an empty test.
 #[cfg(all(test, windows))]
 pub(crate) fn terminal_or_skip() -> Option<Terminal> {
-    if crate::console_harness::in_console_child() {
-        crate::console_harness::adopt_own_console();
-        return Some(Terminal::new().expect("console child must be able to build a Terminal"));
-    }
     match Terminal::new() {
         Ok(terminal) => Some(terminal),
         Err(error) => {
@@ -167,12 +159,6 @@ pub(crate) fn terminal_or_skip() -> Option<Terminal> {
 /// can be unavailable on Windows (on unix it never is: `backend_for_methods`).
 #[cfg(all(test, windows))]
 pub(crate) fn backend_or_skip() -> Option<platform::Backend> {
-    if crate::console_harness::in_console_child() {
-        crate::console_harness::adopt_own_console();
-        return Some(
-            platform::Backend::new().expect("console child must be able to build a Backend"),
-        );
-    }
     match platform::Backend::new() {
         Ok(backend) => Some(backend),
         Err(error) => {
@@ -274,10 +260,10 @@ impl Terminal {
         write_str(&self.write_lock, "\x1b[?1004h");
         self.refresh_size();
 
-        // The screen is ours now: take stderr with it. Anything the in-process
-        // Agent prints from here on belongs in the log, not on this terminal —
-        // raw mode turns `\n` into a column-preserving line feed and the diff
-        // renderer cannot see writes it did not make (see `stderr_log`).
+        // The screen is ours now: take stderr with it. Anything printed from
+        // here on belongs in the log, not on this terminal — raw mode turns
+        // `\n` into a column-preserving line feed and the diff renderer cannot
+        // see writes it did not make (see `stderr_log`).
         if let Some(path) = self.stderr_log.clone() {
             let _ = crate::stderr_log::redirect(&path);
         }
@@ -935,52 +921,6 @@ impl Drop for PtyStdin {
     }
 }
 
-/// The master side of the PTY [`with_pty_stdin`] installed: write to it to type
-/// into the terminal under test.
-#[cfg(all(test, unix))]
-pub(crate) struct TestPty {
-    stdin: PtyStdin,
-}
-
-#[cfg(all(test, unix))]
-impl TestPty {
-    /// Type `data` into the terminal under test.
-    pub(crate) fn write(&self, data: &str) {
-        self.stdin.write(data);
-    }
-
-    /// Resize the PTY's window and deliver the `SIGWINCH` a terminal emulator
-    /// sends with it, so the reader under test refreshes its cached size and
-    /// fires the resize callback it was started with.
-    pub(crate) fn resize(&self, cols: u16, rows: u16) {
-        unsafe {
-            let mut winsize: libc::winsize = std::mem::zeroed();
-            winsize.ws_col = cols;
-            winsize.ws_row = rows;
-            assert_eq!(
-                libc::ioctl(
-                    self.stdin.master.load(Ordering::Relaxed),
-                    libc::TIOCSWINSZ,
-                    &mut winsize,
-                ),
-                0
-            );
-            libc::raise(libc::SIGWINCH);
-        }
-    }
-}
-
-/// Run `body` with fd 0 pointed at a fresh PTY (the master is handed over), so
-/// the body may call `Terminal::start` and friends for real.
-///
-/// The redirection is process-global: the caller must hold
-/// `crate::test_env::lock()`.
-#[cfg(all(test, unix))]
-pub(crate) fn with_pty_stdin<R>(body: impl FnOnce(&TestPty) -> R) -> R {
-    let stdin = PtyStdin::install();
-    body(&TestPty { stdin })
-}
-
 // ─── Tests (shared logic; POSIX primitives live in terminal_posix.rs) ─────
 
 #[cfg(test)]
@@ -1243,7 +1183,7 @@ mod tests {
     /// `Terminal::default()` is the `impl Default` the app's own construction
     /// path uses (`Self::new().expect(...)`). POSIX construction is infallible,
     /// so it runs here for real; Windows needs a console object and still skips
-    /// outside the `console_harness` child.
+    /// on a runner without one.
     #[test]
     fn default_constructs_a_terminal_from_a_real_console() {
         let _guard = crate::test_env::lock();

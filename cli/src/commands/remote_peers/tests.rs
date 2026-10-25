@@ -669,6 +669,21 @@ async fn add_explains_what_it_wants_before_touching_the_network() {
     assert!(stderr.contains("One invitation at a time"), "{stderr}");
 }
 
+/// A platform-minted invitation is claimed with this machine's account. The host
+/// reports that as the typed `NotSignedIn` fault, and this is the only place with
+/// room to turn it into the command that fixes it: "Not signed in to FutureOS."
+/// on its own sends the reader looking at the link instead of the account.
+#[test]
+fn a_signed_out_pairing_names_the_login_command() {
+    let message = describe_pairing_error(&future_host::Error::NotSignedIn);
+    assert!(message.contains("future auth login"), "{message}");
+    assert!(message.contains("self-hosted relay"), "{message}");
+    // Every other failure keeps its own advice: the login hint must not become
+    // the generic answer for a broken link.
+    let other = describe_pairing_error(&future_host::Error::Message("boom".into()));
+    assert!(!other.contains("future auth login"), "{other}");
+}
+
 #[tokio::test]
 async fn an_unknown_action_is_a_usage_error() {
     let _guard = crate::test_env::lock_env().await;

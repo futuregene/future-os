@@ -715,8 +715,23 @@ fn signed_in() -> bool {
 fn login_advice() -> &'static str {
     "Not signed in to Future OS. The remote desktop serves through your account, so sign in \
      first: `future auth login`, then run this again. (A self-hosted relay needs no account: \
-     start the Desktop with `futureos --relay <url>`, and export FUTURE_RELAY_URL=<url> here so \
-     this command knows the machine serves through a relay rather than an account.)"
+     start the Desktop with `futureos --relay <url>` or `future host --relay <url>`, and export \
+     FUTURE_RELAY_URL=<url> here so this command knows the machine serves through a relay \
+     rather than an account.)"
+}
+
+/// The line a command that *worked* still owes a signed-out reader.
+///
+/// `list` and `use` act on the pairing book alone, so they succeed with no
+/// account — but nothing can connect until the machine holds a credential, and
+/// a table of paired devices (or "X now drives this machine") reads as "this
+/// works". Said after the result, because it is not a refusal: the command did
+/// what it was asked.
+fn signed_out_note() -> &'static str {
+    "Nothing can connect yet: this machine is signed out, and the remote desktop serves \
+     through your Future OS account. Run `future auth login`, or serve through a self-hosted \
+     relay instead (`futureos --relay <url>` or `future host --relay <url>`, with \
+     FUTURE_RELAY_URL=<url> exported here)."
 }
 
 // ── list ────────────────────────────────────────────────────────────────────
@@ -747,6 +762,12 @@ fn list(args: &[String], out: &Output) -> Result<(), String> {
         if !switch {
             out.log("");
             out.log(switch_advice(running));
+        }
+        // Pairing itself mints through the platform, so this is where a
+        // signed-out reader learns what `add` will need (see `add`).
+        if !signed_in() {
+            out.log("");
+            out.log(signed_out_note());
         }
         return Ok(());
     }
@@ -869,6 +890,13 @@ fn list(args: &[String], out: &Output) -> Result<(), String> {
         out.log("A Desktop is running here; `future remote status` reports whether it is serving.");
     } else {
         out.log("No Desktop is running, so nothing is serving these pairings right now.");
+    }
+    // The rows above are the book, which is local and needs no account. Serving
+    // them does, and a signed-out machine serving none of them is exactly the
+    // state a reader cannot see from the table.
+    if !signed_in() {
+        out.log("");
+        out.log(signed_out_note());
     }
     Ok(())
 }
@@ -2325,6 +2353,22 @@ async fn revoke(device: &Device) -> Option<String> {
         };
     }
     let platform = platform_url();
+    // Signed out: the platform cannot be told, and the queue is drained by a
+    // Desktop that holds the account. Name that command, instead of reporting
+    // the missing `auth.json` as if it were a revoke failure — the removal did
+    // work locally, and the reader's next step is a login, not a retry.
+    if future_host::future_platform::future_api_key().is_err() {
+        return Some(match queue_pending_revoke(&device.pair_id, &platform) {
+            Ok(()) => "warning: not signed in to Future OS, so the platform still lists this \
+                       pairing. The removal is queued: run `future auth login` and the next \
+                       Desktop retries it."
+                .to_string(),
+            Err(error) => format!(
+                "warning: not signed in to Future OS, so the platform still lists this pairing, \
+                 and the retry could not be queued either ({error})."
+            ),
+        });
+    }
     let key = match platform_api_key() {
         Ok(key) => key,
         Err(error) => {
@@ -2602,6 +2646,13 @@ async fn take_control(args: &[String], out: &Output) -> Result<(), String> {
     if !switch_is_on()? {
         out.log("");
         out.log(switch_advice(running));
+    }
+    // And a signed-out machine cannot serve the device it was just handed: the
+    // pointer is recorded, so this is the one fact left that explains a phone
+    // that still cannot connect.
+    if !signed_in() {
+        out.log("");
+        out.log(signed_out_note());
     }
     Ok(())
 }
@@ -3396,6 +3447,9 @@ mod tests {
         assert!(stdout.contains("Unpaired AAAA"), "{stdout}");
         assert!(stdout.contains("1 device remains paired."), "{stdout}");
         assert!(stderr.contains("queued"), "{stderr}");
+        // The undeliverable revoke is not a mystery: the machine is signed out,
+        // and signing in is what drains the queue.
+        assert!(stderr.contains("future auth login"), "{stderr}");
 
         let value: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
         assert_eq!(value["slots"].as_array().unwrap().len(), 1);
@@ -4150,6 +4204,85 @@ mod tests {
             seen.lock().unwrap().is_empty(),
             "a signed-out refusal must not ask for an invitation"
         );
+    }
+
+    /// `list` reads the local book, so it works signed out 鈥?and that is exactly
+    /// why it has to say that nothing can connect: a table of paired devices
+    /// reads as "this works", and the machine has no credential to serve them
+    /// with. The relay exit stays quiet, because there the book *is* enough.
+    #[tokio::test]
+    async fn list_says_a_signed_out_machine_cannot_serve_until_it_signs_in() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+
+        let (code, stdout, stderr) = run(&["remote", "devices"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stdout.contains("Nothing can connect yet"),
+            "list must not let a signed-out machine look like it serves: {stdout}"
+        );
+        assert!(stdout.contains("future auth login"), "{stdout}");
+        assert!(stdout.contains("self-hosted relay"), "{stdout}");
+    }
+
+    #[tokio::test]
+    async fn list_is_quiet_about_a_login_when_there_is_one() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        sign_in();
+
+        let (code, stdout, _) = run(&["remote", "devices"]).await;
+        assert_eq!(code, 0);
+        assert!(!stdout.contains("Not signed in"), "{stdout}");
+        assert!(!stdout.contains("Nothing can connect yet"), "{stdout}");
+    }
+
+    /// A machine serving through a self-hosted relay has no account and needs
+    /// none: the note must not send that reader to a login that changes nothing.
+    #[tokio::test]
+    async fn list_is_quiet_in_relay_mode() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let _relay = use_relay("http://127.0.0.1:8099");
+
+        let (code, stdout, _) = run(&["remote", "devices"]).await;
+        assert_eq!(code, 0);
+        assert!(!stdout.contains("Nothing can connect yet"), "{stdout}");
+    }
+
+    /// An empty book has nothing to serve, but the very next step (pair a
+    /// device) mints through the platform: say so here instead of letting `add`
+    /// be the first place the reader hears about a login.
+    #[tokio::test]
+    async fn list_with_an_empty_book_names_the_login_pairing_will_need() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+
+        let (code, stdout, stderr) = run(&["remote", "devices"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("No devices are paired"), "{stdout}");
+        assert!(stdout.contains("future auth login"), "{stdout}");
+    }
+
+    /// `use` writes the book, so it succeeds signed out 鈥?but a pointer on a
+    /// machine that serves nobody is not the answer the reader thinks it is.
+    #[tokio::test]
+    async fn use_reports_the_recorded_pointer_and_the_missing_login() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+
+        let (code, stdout, stderr) = run(&["remote", "devices", "use", "AAAA"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("now drives this machine"), "{stdout}");
+        assert!(
+            stdout.contains("Nothing can connect yet"),
+            "a handover on a signed-out machine must say nothing connects: {stdout}"
+        );
+        assert!(stdout.contains("future auth login"), "{stdout}");
     }
 
     /// With a Desktop running the request goes to it, and its answer is the

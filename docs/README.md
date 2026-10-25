@@ -17,7 +17,7 @@
 |---|---|
 | [Build & Install](guide/build-and-install.md) ([中文](guide/build-and-install.zh-CN.md)) | Prerequisites, per-platform toolchains (macOS / Linux / Windows), `make` targets, GUI packaging, `future-goal` install, skills install |
 | [Continuous integration](guide/ci.md) ([中文](guide/ci.zh-CN.md)) | Affected-project selection, dependency graph, shared runners, merge gate and manual specialty suites |
-| [TUI](guide/tui.md) ([中文](guide/tui.zh-CN.md)) | The terminal UI (`future-tui`): slash commands, keyboard shortcuts, settings |
+| [TUI](guide/tui.md) ([中文](guide/tui.zh-CN.md)) | The terminal UI (`future tui`): the full-screen layout, keys and mouse, the commands the palette runs, and what is wired to the agent |
 | [Channels configuration](guide/channels-config.md) ([中文](guide/channels-config.zh-CN.md)) | Unified reference for `~/.future/channels/config.json` (agent / providers / Feishu / DingTalk blocks, defaults) |
 | [Channel providers](guide/channels-providers.md) ([中文](guide/channels-providers.zh-CN.md)) | Shared-bridge channels: capability matrix, per-channel config, maturity, diagnostics, proactive send |
 | [Channel provider contract](guide/channels-provider-contract.md) ([中文](guide/channels-provider-contract.zh-CN.md)) | Adding a channel: the provider traits, the inbound/outbound boundary, config, errors, tests and coverage |
@@ -44,7 +44,7 @@ entry point; the [wiki](wiki/en/Home.md) is the user-facing app guide.
 | [SQLite migration](architecture/sqlite-migration.md) ([中文](architecture/sqlite-migration.zh-CN.md)) | Agent/desktop SQLite storage layout and migration policy |
 | [Desktop embedded Agent development plan](architecture/embedded-agent-development.md) ([中文](architecture/embedded-agent-development.zh-CN.md)) | Complete in-process Agent, service/host lifecycle, locks, shutdown, updates/installers, development tooling and phased acceptance |
 | [Automatic update transactions](architecture/automatic-updates.md) ([中文](architecture/automatic-updates.zh-CN.md)) | Shared state machine, prepared platform executors, crash recovery, startup confirmation and CI acceptance |
-| [Agent startup arbitration](architecture/agent-supervision.md) ([中文](architecture/agent-supervision.zh-CN.md)) | Who starts the Agent when `future agent`, `future host` and `future tui` share one data root: instance-lock arbitration, yielding instead of failing, bounded waits, a crash-loop breaker, and the decisions still open |
+| [Agent startup arbitration](architecture/agent-supervision.md) ([中文](architecture/agent-supervision.zh-CN.md)) | Who starts the Agent in one data root: instance-lock arbitration between `future agent` and `future host`, yielding instead of failing, bounded waits, a crash-loop breaker, and why the TUI only attaches (D11) |
 | [Response outcomes](architecture/response-outcomes.md) ([中文](architecture/response-outcomes.zh-CN.md)) | End-of-response outcome semantics (stop / refusal / filter / pause) |
 | [goal/](architecture/goal/README.md) | The `future-goal` crate: [architecture](architecture/goal/ARCHITECTURE.md) (en/zh), [upstream attribution](../orchestration/goal/UPSTREAM.md), [decision-kernel snapshot](architecture/goal/snapshots.md) |
 | [Shared packages](architecture/packages.md) ([中文](architecture/packages.zh-CN.md)) | `packages/` conventions: npm/workspace packages and crate boundaries |
@@ -65,7 +65,6 @@ test harness conventions.
 - [desktop/](internals/desktop/PRODUCT.md) — product semantics, data model (`ER.md`), colors, sandbox (macOS/Windows/Linux), connection & remote, embedded terminal, compaction (see `desktop/CLAUDE.md` for the document map)
 - [compaction/](internals/compaction/compaction.md) — runtime context compaction: the two strategies and their parameters, the production request shape, the developer map (`compaction-development.md`), retrieval interfaces, and the two experiments — closed book (`compaction-closed-book-experiment.md`) and open book (`compaction-open-book-experiment.md`)
 - [mobile/](internals/mobile/README.md) — mobile build/TestFlight, iOS platform parity, streaming-sync design and measurements, HarmonyOS compatibility (the dated audits and measurement reports are in `archives/verification/`)
-- [tui/](internals/tui/tests.md) — TUI test harness conventions
 - [skill_reco/](internals/skill_reco/harness.md) — skill recommendation: the Jev recommender's [evaluation](internals/skill_reco/evaluation.md), its [harness](internals/skill_reco/harness.md) and the [integration plan](internals/skill_reco/integration-plan.md) (a historical design record)
 - [agent/](internals/agent/README.md) — module map of the gRPC backend (`agent/`): the turn loop, tools, LLM layer, sessions, sandbox, and what to read before changing each one
 - [host](internals/host.md) — module map of `future-host`, the GUI-free shared backend (store, agent bridge, tasks, remote, identity)
@@ -77,7 +76,7 @@ test harness conventions.
 
 | Doc | What it covers |
 |---|---|
-| [Workbench TUI spec](tui/workbench-spec.md) ([中文](tui/workbench-spec.zh-CN.md)) | A frozen contract for a *planned* full-screen workbench: layout constants, the mouse and keyboard contract, type names and acceptance commands. Design proposal for work not yet built — what the TUI actually ships today is in the [TUI guide](guide/tui.md) |
+| [Workbench TUI spec](tui/workbench-spec.md) ([中文](tui/workbench-spec.zh-CN.md)) | The frozen contract behind the [terminal UI](guide/tui.md): layout constants, mouse and keyboard contract, type names and acceptance commands. The surface it describes is built; the agent adapter and P1 items are not |
 
 ## Wiki (user-facing app guide)
 
