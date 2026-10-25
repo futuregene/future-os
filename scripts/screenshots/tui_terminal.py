@@ -253,6 +253,21 @@ def _cell_style(cell: Cell) -> tuple[str, str | None, bool]:
     return fg, bg, cell.bold
 
 
+def cell_box(cell: Cell, cw: float, columns_left: int) -> float:
+    """Width in px the glyph of `cell` occupies.
+
+    Two columns for a wide glyph — a terminal gives a hanzi both of them — and one
+    otherwise; a wide glyph in the last column can only have the one that is left.
+    This is the single definition of "how wide is this cell's box": the painter
+    and the alignment check both call it, so the picture and the check cannot
+    disagree about which pixels belong to a character.
+    """
+    span = 2 if cell.wide else 1
+    if span > columns_left:
+        span = columns_left
+    return cw * span
+
+
 def _to_html(grid: list[list[Cell]], cw: float, cols: int, cursor: tuple[int, int] | None = None) -> str:
     """Lay every cell out at the position the grid gives it.
 
@@ -298,7 +313,7 @@ def _to_html(grid: list[list[Cell]], cw: float, cols: int, cursor: tuple[int, in
                 col += 1
                 continue
             left = PAD + col * cw
-            box = cw * span
+            box = cell_box(cell, cw, cols - col)
             style = [
                 "position:absolute",
                 f"left:{left:.2f}px",
@@ -380,25 +395,43 @@ def verify_alignment(png: Path, cells: list[list[Cell]], cw: float, scale: float
     a cell the grid calls blank is *not* a failure: block glyphs in the logo
     overhang their advance box by a pixel or two, which is antialiasing, not a
     misplaced character.
+
+    A wide cell is measured over **both** columns it owns. Measuring the first
+    column alone is wrong in a way that only a right-leaning full-width glyph
+    shows: a hanzi inks across its whole two-column box and passes either way,
+    but `（` / `）` put their stroke on the *right* of the em, so a one-column box
+    reports "no ink" on a picture that is in fact correct. That false positive
+    blocked every live capture containing a Chinese parenthesis.
+
+    Both directions are checked, because "has ink" alone is nearly toothless: a
+    row pushed sideways by a whole cell still leaves each character's box
+    partly inked, so only the *other* direction — a run of blank cells that an
+    overflowing glyph inks — can see the shift. Measured: shifting one row by one
+    cell produced zero complaints from the one-sided rule.
     """
     from PIL import Image
 
     image = Image.open(png).convert("RGB")
+    fractions = _ink_fractions(image, cells, cw, scale)
+    return alignment_problems(cells, fractions)
+
+
+def _ink_fractions(image, cells, cw: float, scale: float) -> list[list[float]]:
+    """Fraction of each cell's own box that carries ink, row-major."""
     px = image.load()
     W, H = image.size
     bg = px[5, 5]
     rows = len(cells)
     cols = len(cells[0]) if cells else 0
-    problems: list[str] = []
+    out: list[list[float]] = []
     for r in range(rows):
         y0 = int((PAD + r * LINE_H) * scale)
         y1 = y0 + int(LINE_H * scale)
+        row: list[float] = []
         for c in range(cols):
             cell = cells[r][c]
-            if cell.ch in ("", " ") or (cell.bg is not None or cell.reverse):
-                continue
             x0 = int((PAD + c * cw) * scale)
-            x1 = int((PAD + (c + 1) * cw) * scale)
+            x1 = int((PAD + c * cw + cell_box(cell, cw, cols - c)) * scale)
             inked = total = 0
             for y in range(max(0, y0), min(H, y1)):
                 for x in range(max(0, x0), min(W, x1)):
@@ -406,8 +439,56 @@ def verify_alignment(png: Path, cells: list[list[Cell]], cw: float, scale: float
                     p = px[x, y]
                     if abs(p[0]-bg[0]) + abs(p[1]-bg[1]) + abs(p[2]-bg[2]) > 24:
                         inked += 1
-            if total and inked / total < 0.015:
-                problems.append(f"row {r} col {c}: {cell.ch!r} has no ink in its own cell")
+            row.append(inked / total if total else 0.0)
+        out.append(row)
+    return out
+
+
+# A cell the grid fills (a character, or a background that covers it) must carry
+# ink; below this it is blank where a glyph should be.
+MIN_INK = 0.015
+# A cell inside a run of blank cells that carries this much ink holds a glyph the
+# grid does not put there — a shifted row, not antialiasing. Measured on a trusted
+# 120x38 frame: the worst blank cell carries 11% (a block glyph's overhang), so the
+# line sits well above the noise and well below a glyph (a shifted one fills 40%+).
+MAX_INTRUSION = 0.30
+
+
+def alignment_problems(cells: list[list[Cell]], fractions: list[list[float]]) -> list[str]:
+    """The alignment rule, as a pure function of the grid and the ink picture.
+
+    Pure so the self-test can exercise it with a hand-made ink matrix: the rule is
+    what failed twice (a one-sided check, and a wide cell measured as one column),
+    and neither failure needed a browser to reproduce.
+    """
+    rows = len(cells)
+    cols = len(cells[0]) if cells else 0
+    problems: list[str] = []
+
+    def filled(c, r):
+        # The tail of a wide glyph is covered by that glyph's own two-column box,
+        # so it is neither "blank where a character should be" nor a place an
+        # intruding glyph can be detected in. This clause has to come first: the
+        # tail cell's own `ch` is empty, and reading that as blank is what made the
+        # intrusion rule fire on 306 correct cells.
+        if c > 0 and cells[r][c - 1].wide:
+            return True
+        cell = cells[r][c]
+        return cell.ch not in ("", " ") or cell.bg is not None or cell.reverse
+
+    for r in range(rows):
+        for c in range(cols):
+            cell = cells[r][c]
+            if filled(c, r) and cell.ch not in ("", " "):
+                if fractions[r][c] < MIN_INK:
+                    problems.append(f"row {r} col {c}: {cell.ch!r} has no ink in its own cell")
+                continue
+            if filled(c, r):
+                continue
+            if fractions[r][c] > MAX_INTRUSION:
+                problems.append(
+                    f"row {r} col {c}: blank in the grid, {fractions[r][c]:.0%} inked in the picture"
+                )
     return problems
 
 
@@ -521,6 +602,51 @@ def _self_test() -> int:
     # A wide cell sets its em to the box width, so the glyph fills both columns
     # instead of sitting narrow in a wide box with a gap after it.
     check("wide cell fills its box", "font-size:20.00px" in markup, True)
+
+    # The painter and the alignment check must agree on how wide a cell's box is,
+    # and that box is two columns for a wide glyph. `verify_alignment` used one
+    # column for every cell, which reported "no ink" for a correct picture whose
+    # glyph leans right — `（` sits on the right of its em, a hanzi inks across the
+    # whole box — and so refused every live frame containing a Chinese
+    # parenthesis. Both now call `cell_box`.
+    narrow, wide = Cell("a"), Cell("中")
+    wide.wide = True
+    check("narrow box is one cell", cell_box(narrow, 10.0, 5), 10.0)
+    check("wide box is two cells", cell_box(wide, 10.0, 5), 20.0)
+    check("wide box in the last column is one", cell_box(wide, 10.0, 1), 10.0)
+    # And the two-column box is what the verifier measures, not a one-column
+    # stripe: the ink of a right-leaning full-width glyph falls in the second
+    # half, which the old stripe never looked at.
+    grid = [[Cell("a"), wide, Cell("")]]
+    markup = _to_html(grid, 10.0, 3)
+    check("painter uses the same box", f"width:{cell_box(wide, 10.0, 2):.2f}px" in markup, True)
+
+    # The alignment rule, on a hand-made ink matrix (no browser): both failures it
+    # has had are pure logic, so they are unit-testable. Each value is the share of
+    # a cell's own box that carries ink — two columns wide for a wide glyph.
+    #   row 0/1: 'a' | '中' (wide) | its tail | 'b'
+    #   row 2:   'a' | ' '        | ' '      | 'b'   — blank run, where a shifted
+    #            glyph from a neighbouring row would land
+    g = [[Cell("a"), Cell("中"), Cell(""), Cell("b")],
+         [Cell("a"), Cell("中"), Cell(""), Cell("b")],
+         [Cell("a"), Cell(" "), Cell(" "), Cell("b")]]
+    g[0][1].wide = True
+    g[1][1].wide = True
+    ink = [[0.40, 0.50, 0.20, 0.40], [0.40, 0.50, 0.20, 0.40], [0.40, 0.10, 0.09, 0.40]]
+    check("a correct frame has no problems", alignment_problems(g, ink), [])
+    # A right-leaning full-width glyph: half of its two-column box is inked, which
+    # is a *low* fraction precisely because the box is two columns. The one-column
+    # stripe read that half as "no ink" and refused the frame.
+    ink_lean = [[0.40, 0.45, 0.30, 0.40], [0.40, 0.50, 0.20, 0.40], [0.40, 0.10, 0.09, 0.40]]
+    check("a wide cell is measured over both columns", alignment_problems(g, ink_lean), [])
+    # A glyph that lands in a blank cell (a row pushed sideways by one cell).
+    ink_shifted = [[0.40, 0.50, 0.20, 0.40], [0.40, 0.50, 0.20, 0.40], [0.40, 0.90, 0.09, 0.00]]
+    shifted = alignment_problems(g, ink_shifted)
+    check("a shifted row is caught", any("blank in the grid" in p for p in shifted), True)
+    # A character with no ink at all is still caught (the original rule).
+    ink_missing = [[0.40, 0.50, 0.20, 0.00], [0.40, 0.50, 0.20, 0.40], [0.40, 0.10, 0.09, 0.40]]
+    missing = alignment_problems(g, ink_missing)
+    check("a missing glyph is caught", any("has no ink" in p for p in missing), True)
 
     if problems:
         for problem in problems:

@@ -261,8 +261,21 @@ not a detail: in this font stack a hanzi advances 14px where two columns need
 16.9px, and `。` advances 7.2px, so laying a row out as text squeezed every
 Chinese line and pulled the rest of the row left — while the one-cell border
 strokes stayed put, so the frame looked aligned at its edges and was wrong
-inside. Each capture therefore re-reads its own PNG and refuses to write it if
-any character's ink is missing from its own cell.
+inside.
+
+Each capture re-reads its own PNG and checks it against the grid in **both**
+directions: every cell the grid fills must carry ink, and no cell the grid leaves
+blank may carry a glyph. One direction alone is not a check — a row pushed
+sideways by a whole cell still leaves each character's box partly inked, which is
+how a misaligned frame passed the first version of this gate. A wide cell is
+measured over the two columns it owns: measuring one column reports "no ink" for
+`（`, whose stroke sits on the right of its em, and that false positive blocked
+every live frame containing a Chinese parenthesis.
+
+A renderer fix does not fix the frames already on disk. `docs/tui/assets/` must be
+re-shot after any change here — the 19 frames committed before the absolute
+placement landed had the divider on the right column in only half their body
+rows.
 
 ```bash
 python3 scripts/screenshots/tui_terminal.py --self-test   # the cell model, no browser
