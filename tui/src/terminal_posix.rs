@@ -124,6 +124,29 @@ fn read_winsize(fd: RawFd) -> (u16, u16) {
     (0, 0)
 }
 
+/// Read self-pipe bytes until EAGAIN and return the first non-zero one (a
+/// signal number). Zero bytes are the `wake()` sentinel and are dropped.
+fn drain_signal_pipe(read_fd: RawFd) -> Option<libc::c_int> {
+    let mut sigbuf = [0u8; 64];
+    loop {
+        let n = unsafe {
+            libc::read(
+                read_fd,
+                sigbuf.as_mut_ptr() as *mut libc::c_void,
+                sigbuf.len(),
+            )
+        };
+        if n <= 0 {
+            return None;
+        }
+        for &b in &sigbuf[..n as usize] {
+            if b as libc::c_int != 0 {
+                return Some(b as libc::c_int);
+            }
+        }
+    }
+}
+
 fn install_signal_handlers() {
     unsafe {
         let mut sa: libc::sigaction = std::mem::zeroed();
@@ -274,23 +297,8 @@ impl Backend {
 
         // Signal pipe readable.
         if fds[1].revents & libc::POLLIN != 0 {
-            let mut sigbuf = [0u8; 64];
-            loop {
-                let n = unsafe {
-                    libc::read(
-                        read_fd,
-                        sigbuf.as_mut_ptr() as *mut libc::c_void,
-                        sigbuf.len(),
-                    )
-                };
-                if n <= 0 {
-                    break;
-                }
-                for &b in &sigbuf[..n as usize] {
-                    if b as libc::c_int != 0 {
-                        return ReadWait::Signal(b as libc::c_int);
-                    }
-                }
+            if let Some(sig) = drain_signal_pipe(read_fd) {
+                return ReadWait::Signal(sig);
             }
         }
 
@@ -299,6 +307,47 @@ impl Backend {
             return ReadWait::Input;
         }
         ReadWait::Timeout
+    }
+
+    /// Wait **only** for a self-pipe byte, with `timeout_ms` cap. The reader
+    /// loop switches to this once stdin is gone (EOF / read error): fd 0 must
+    /// leave the poll set — a hung-up pty stays `POLLHUP`-ready forever, so
+    /// polling it would spin — and the signal pipe must stay in it, because
+    /// the termination-signal handlers installed by `enable_raw` are still
+    /// installed (nothing restores them until `restore_raw`). Dropping both
+    /// with stdin is what left a SIGTERM written into a pipe nobody reads: the
+    /// signal is captured, its default action never runs, and the process can
+    /// only be stopped with SIGKILL.
+    pub(crate) fn wait_for_signals(&self, timeout_ms: i32) -> ReadWait {
+        let (read_fd, _write_fd) = self
+            .state
+            .lock()
+            .signal_pipe
+            .expect("enable_raw must run before wait_for_signals");
+
+        let mut fds = [libc::pollfd {
+            fd: read_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+        let rc = unsafe { libc::poll(fds.as_mut_ptr(), 1, timeout_ms) };
+        if rc <= 0 {
+            // rc < 0 is EINTR (interrupted poll); rc == 0 is the deadline.
+            return ReadWait::Timeout;
+        }
+        if fds[0].revents & libc::POLLIN != 0 {
+            if let Some(sig) = drain_signal_pipe(read_fd) {
+                return ReadWait::Signal(sig);
+            }
+        }
+        ReadWait::Timeout
+    }
+
+    /// Is raw mode still active? The exit deadline uses this to tell "cleanup
+    /// has not got as far as restoring the terminal" (force the exit) from
+    /// "the terminal is already handed back" (let the rest of `stop` finish).
+    pub(crate) fn raw_active(&self) -> bool {
+        self.state.lock().raw_enabled
     }
 
     pub(crate) fn read_stdin(&self, buf: &mut [u8]) -> io::Result<usize> {

@@ -223,6 +223,17 @@ impl Backend {
         let _ = unsafe { SetConsoleOutputCP(st.orig_out_cp) };
     }
 
+    /// Is raw mode still active? The exit deadline uses this to tell "cleanup
+    /// has not got as far as restoring the terminal" (force the exit) from "the
+    /// terminal is already handed back" (let the rest of `stop` finish). Mirrors
+    /// the POSIX backend.
+    pub(crate) fn raw_active(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .raw_enabled
+    }
+
     fn read_size(stdout: HANDLE) -> (u16, u16) {
         let mut info: CONSOLE_SCREEN_BUFFER_INFO = unsafe { std::mem::zeroed() };
         if unsafe { GetConsoleScreenBufferInfo(stdout, &mut info) } == 0 {
