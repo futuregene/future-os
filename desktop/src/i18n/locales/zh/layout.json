@@ -1,4 +1,7 @@
 {
+  "language": {
+    "system": "跟随系统"
+  },
   "model": {
     "updateFailed": "更新模型失败：{{message}}"
   },
