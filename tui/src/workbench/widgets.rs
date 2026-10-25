@@ -222,7 +222,7 @@ pub fn count_badge(palette: &Palette, count: usize, columns: usize) -> String {
 
 /// A bordered input box: title rule, the `❯ draft` line, closing rule.
 ///
-/// Returns the three rows **and the cursor's cell inside the prompt row**
+/// Returns the rows **and the cursor's cell inside the prompt row**
 /// (`column`, `row index`), so the caller can place the hardware cursor without
 /// re-deriving where the text ended — the one calculation a proportional-free
 /// terminal still gets wrong when it is duplicated.
@@ -233,29 +233,84 @@ pub fn input_lines(
     title: &str,
     focused: bool,
 ) -> (Vec<String>, u16, usize) {
+    input_box(palette, columns, view, title, focused, false)
+}
+
+/// [`input_lines`] with the short-terminal form: `compact` keeps the box *framed*
+/// in two rows instead of dropping its sides.
+///
+/// Below 24 rows the box used to be a bare prompt under a corner-less rule,
+/// which read as "no input box at all" at 60×20. A top edge plus one prompt row
+/// with `│` on both sides is enough to read as a box, and the status bar right
+/// beneath closes the shape — a third row would not fit.
+pub fn input_box(
+    palette: &Palette,
+    columns: usize,
+    view: &crate::workbench::state::InputView,
+    title: &str,
+    focused: bool,
+    compact: bool,
+) -> (Vec<String>, u16, usize) {
     let top = box_top(palette, columns, title);
     let bottom = box_bottom(palette, columns);
+    // Two columns go to the sides; below that there is nothing to frame.
+    let framed = columns >= 6;
+    let row = prompt_row(palette, columns, view, focused, framed);
+    let (row, cursor_column) = row;
+    if compact {
+        return (vec![top, row], cursor_column, 1);
+    }
+    (vec![top, row, bottom], cursor_column, 1)
+}
 
+/// The `│ ❯ draft │` row, and the cursor's cell within it.
+fn prompt_row(
+    palette: &Palette,
+    columns: usize,
+    view: &crate::workbench::state::InputView,
+    focused: bool,
+    framed: bool,
+) -> (String, u16) {
+    let inner = if framed {
+        columns.saturating_sub(2)
+    } else {
+        columns
+    };
     let prompt = palette.text(palette.accent, "❯ ");
     let prompt_width = width(&prompt);
-    let text_width = columns.saturating_sub(prompt_width + 1);
-    let (body, cursor_column) = if view.text.is_empty() {
+    let text_width = inner.saturating_sub(prompt_width + 1);
+    let (body, cursor_inner) = if view.text.is_empty() {
         (
             palette.dim(&fit(&view.placeholder, text_width)),
-            prompt_width as u16,
+            prompt_width,
         )
     } else {
         let before = &view.text[..view.cursor.min(view.text.len())];
         let cursor = prompt_width + width(before).min(text_width);
-        (palette.body(&fit(&view.text, text_width)), cursor as u16)
+        (palette.body(&fit(&view.text, text_width)), cursor)
     };
-    let row = format!("{prompt}{body}");
-    let row = if focused {
-        palette.on(palette.panel, &fit(&row, columns), columns)
+    let line = format!("{prompt}{body}");
+    let line = if focused {
+        palette.on(palette.panel, &fit(&line, inner), inner)
     } else {
-        fit(&row, columns)
+        fit(&line, inner)
     };
-    (vec![top, row, bottom], cursor_column, 1)
+    let row = if framed {
+        format!(
+            "{}{}{}",
+            palette.text(palette.border, "│"),
+            line,
+            palette.text(palette.border, "│")
+        )
+    } else {
+        line
+    };
+    let cursor = if framed {
+        cursor_inner + 1
+    } else {
+        cursor_inner
+    };
+    (row, cursor.min(columns.saturating_sub(1)) as u16)
 }
 
 #[cfg(test)]
@@ -284,6 +339,33 @@ mod tests {
         assert_eq!(width(&row), 6, "{row:?}");
         let plain = box_top(&P, 12, "");
         assert_eq!(width(&plain), 12);
+    }
+
+    #[test]
+    fn the_input_box_keeps_its_sides_in_both_heights() {
+        use crate::workbench::state::InputView;
+        let view = InputView {
+            text: "hi".into(),
+            cursor: 2,
+            placeholder: "p".into(),
+        };
+        for (columns, compact) in [(60usize, false), (60, true), (9, true)] {
+            let (rows, cursor, prompt_row) = input_box(&P, columns, &view, "输入", true, compact);
+            assert_eq!(rows.len(), if compact { 2 } else { 3 }, "{columns}");
+            assert_eq!(prompt_row, 1, "the prompt is the second row of the box");
+            for row in &rows {
+                assert_eq!(width(row), columns, "{columns}: {row:?}");
+            }
+            let top = crate::utils::strip_ansi_codes(&rows[0]);
+            assert!(top.trim_start().starts_with('╭'), "{top:?}");
+            assert!(top.trim_end().ends_with('╮'), "{top:?}");
+            let prompt = crate::utils::strip_ansi_codes(&rows[1]);
+            assert!(prompt.starts_with('│'), "left side: {prompt:?}");
+            assert!(prompt.ends_with('│'), "right side: {prompt:?}");
+            assert!(prompt.contains("❯ hi"), "{prompt:?}");
+            // The cursor is inside the frame: border, prompt glyph, text.
+            assert_eq!(cursor, 1 + 2 + 2, "{columns}");
+        }
     }
 
     #[test]
