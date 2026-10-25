@@ -336,10 +336,10 @@ pub(crate) fn die_with_signal(_sig: i32) -> ! {
 mod tests {
     use super::*;
 
-    /// A console-less runner cannot build a backend; the child of
-    /// `console_harness` can. Either way the reported values must be the ones
-    /// the shared reader loop relies on: a live TTY, a non-zero size, no
-    /// EOF-from-a-console, and a `wake` that touches nothing.
+    /// A console-less runner cannot build a backend, in which case the test
+    /// skips. Either way the reported values must be the ones the shared reader
+    /// loop relies on: a live TTY, a non-zero size, no EOF-from-a-console, and a
+    /// `wake` that touches nothing.
     #[test]
     fn backend_reports_its_own_availability() {
         let Some(backend) = super::super::backend_or_skip() else {

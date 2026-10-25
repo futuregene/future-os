@@ -144,16 +144,8 @@ pub(crate) static FORCE_NEW_FAILURE: AtomicBool = AtomicBool::new(false);
 /// the test skips instead of failing. POSIX construction is infallible, so the
 /// unix tests never skip: they build a `Terminal` directly (`terminal_for_methods`)
 /// or run against a PTY of their own (`with_pty_stdin`).
-///
-/// Inside the console child spawned by `console_harness`, a console *is*
-/// available and the skip is not an option: the test must run for real, so a
-/// failure to build one panics instead of quietly passing an empty test.
 #[cfg(all(test, windows))]
 pub(crate) fn terminal_or_skip() -> Option<Terminal> {
-    if crate::console_harness::in_console_child() {
-        crate::console_harness::adopt_own_console();
-        return Some(Terminal::new().expect("console child must be able to build a Terminal"));
-    }
     match Terminal::new() {
         Ok(terminal) => Some(terminal),
         Err(error) => {
@@ -167,12 +159,6 @@ pub(crate) fn terminal_or_skip() -> Option<Terminal> {
 /// can be unavailable on Windows (on unix it never is: `backend_for_methods`).
 #[cfg(all(test, windows))]
 pub(crate) fn backend_or_skip() -> Option<platform::Backend> {
-    if crate::console_harness::in_console_child() {
-        crate::console_harness::adopt_own_console();
-        return Some(
-            platform::Backend::new().expect("console child must be able to build a Backend"),
-        );
-    }
     match platform::Backend::new() {
         Ok(backend) => Some(backend),
         Err(error) => {
@@ -1197,7 +1183,7 @@ mod tests {
     /// `Terminal::default()` is the `impl Default` the app's own construction
     /// path uses (`Self::new().expect(...)`). POSIX construction is infallible,
     /// so it runs here for real; Windows needs a console object and still skips
-    /// outside the `console_harness` child.
+    /// on a runner without one.
     #[test]
     fn default_constructs_a_terminal_from_a_real_console() {
         let _guard = crate::test_env::lock();
