@@ -559,6 +559,41 @@ impl ChildRun {
         self.text().contains(needle)
     }
 
+    /// Wait for the child to end *by itself*, returning its exit status.
+    ///
+    /// `None` means it was still running when the budget ran out, which is what an
+    /// assertion about "the run must end" needs to tell apart from a killed child.
+    fn wait_for_exit(&mut self, timeout: Duration) -> Option<std::process::ExitStatus> {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            match self.child.try_wait() {
+                Ok(Some(status)) => return Some(status),
+                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                Err(_) => return None,
+            }
+        }
+        None
+    }
+
+    /// The transcript once the pipes have drained.
+    ///
+    /// The reader threads finish a moment after the process exits, so an assertion
+    /// about the *last* line has to read a transcript that stopped growing — otherwise
+    /// it judges a transcript the child had not finished writing.
+    fn settled_text(&self) -> String {
+        let mut last = self.text();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(200));
+            let now = self.text();
+            if now.len() == last.len() {
+                return now;
+            }
+            last = now;
+        }
+        self.text()
+    }
+
     /// Interrupt the child the way an operator does (Ctrl+C), then wait for its own exit.
     fn interrupt(&mut self) {
         if matches!(self.child.try_wait(), Ok(Some(_))) {
@@ -1250,10 +1285,11 @@ fn a_healthy_generation_resets_the_budget_and_a_retryable_reconnect_arms_the_ret
 //    worker's *attempt* is a second request on the mock platform; the unclassifiable
 //    answer ends the loop (`start.rs:455`), its exit tail runs, and the tail's re-arm
 //    is a third request. `start.rs:455, 458-470`.
-// 2. `a_freshly_refreshed_credential_rejected_on_a_live_link_is_terminal` — two
-//    devices; the standby's live link is refused with a *valid* credential, which
-//    makes the health terminal. The watching device must return instead of rebuilding,
-//    while the controlling device keeps the process up. `start.rs:606`.
+// 2. `a_freshly_refreshed_credential_rejected_on_a_live_link_is_terminal` — the live
+//    link is refused with a *valid* credential, which makes the health terminal. The
+//    run must end failing on that verdict, with `service_authorization` named, and the
+//    rebuild the watcher may arm must not turn it into continued service.
+//    `start.rs:964-1021`, `headless/mod.rs:679-701`.
 // 3. `a_reconnect_for_a_device_the_book_no_longer_holds_stops_that_runtime` — the
 //    book loses the device while the generation is live. `start.rs:530-531, 507`.
 // 4. `a_reconnect_with_a_pre_v2_slot_forgets_it` — the book now holds a pre-v2 slot.
@@ -1338,19 +1374,26 @@ fn a_retry_that_cannot_be_classified_ends_the_worker_and_rearms_it() {
     child.interrupt();
 }
 
-/// 2. `GenerationWatch`'s terminal-health return.
+/// 2. A terminal credential verdict ends the run.
 ///
 /// The link is refused *with a credential that was refreshed and has not expired*,
 /// which is what makes `mark_authorization_rejected` set `service_config_error`
-/// (`health.rs:94-102`) and print `[AU001]`; the watcher then takes
-/// `if state.nats_health.is_terminal() { return; }` instead of rebuilding.
+/// (`health.rs:110-140`) and print `[AU001]`; the entry's status poll then reads
+/// `Failed(ServiceAuthorization)` and returns it as the reason the run stopped.
 ///
-/// The refusal lands mid-tick (`error_after` 2.5 s), so the first watch tick after it
-/// already sees the terminal bit. The watcher's tick precedes the entry's one-second
-/// status poll — the watch is spawned inside `start_slot`, the poll only starts after
-/// `remote::start` returns — so the arm runs before the entry reacts to the terminal
-/// health and exits. A refusal on a tick boundary instead hits the millisecond window
-/// where the socket is gone but the event has not fired, and the watch rebuilds.
+/// The verdict is *not* the end of the generation: since a refused grant is replaced
+/// rather than ending recovery, `watch_generation` treats the terminal health as one
+/// more unhealthy generation (`start.rs:964-1021`) and may print `[RT001]` first. It
+/// is a race with the entry's one-second status poll, so this test does not read the
+/// order: it holds whichever arm wins. Neither does it read a possible `Remote: Ready`
+/// in between — the replacement connects to this broker before being refused too, and
+/// the broker refuses every connection after 2.5 s.
+///
+/// What it asserts is the endpoint the terminal verdict buys: the run ends, it fails,
+/// and the phase it ends on is the failure — a rebuild must not turn the stop into
+/// continued service, and the terminal reason must be the one named. The negative
+/// `[RT001]` assertion this replaced was that race's losing leg (macOS/Linux/Windows
+/// `tui-cli`, run 40207454243).
 #[test]
 fn a_freshly_refreshed_credential_rejected_on_a_live_link_is_terminal() {
     let broker = Broker::start(BrokerMode::Live {
@@ -1378,21 +1421,38 @@ fn a_freshly_refreshed_credential_rejected_on_a_live_link_is_terminal() {
         "the freshly refreshed credential must be rejected terminally; transcript:\n{}",
         child.text()
     );
-    let stopped = child.wait_for("Remote connection stopped", Duration::from_secs(20));
-    let transcript = child.text();
+    let stopped = child.wait_for("Remote connection stopped", Duration::from_secs(60));
     assert!(
         stopped,
-        "a terminal service_authorization must stop the entry; transcript:\n{transcript}"
+        "a terminal service_authorization must stop the entry; transcript:\n{}",
+        child.text()
+    );
+    // The entry returns rather than serving a refused credential: the process must
+    // exit on its own and fail. A rebuild that succeeded, or a watch that kept the
+    // device in the budget instead of ending it, would leave this child running.
+    let exit = child.wait_for_exit(Duration::from_secs(30));
+    let transcript = child.settled_text();
+    assert!(
+        exit.is_some_and(|status| !status.success()),
+        "a terminal service_authorization must end the run with a failure; exit={exit:?}; \
+         transcript:\n{transcript}"
     );
     assert!(
         transcript.contains("Remote connection stopped (Some(ServiceAuthorization))"),
         "the entry must name the terminal reason; transcript:\n{transcript}"
     );
+    // The run ends *on the failure*: a rebuild may report the replacement live for as
+    // long as this broker takes to refuse it, but the phase the entry stops on must be
+    // the one the verdict produced.
+    let last_phase = transcript
+        .lines()
+        .rfind(|line| line.starts_with("Remote: "))
+        .unwrap_or_default();
     assert!(
-        !transcript.contains("critical task stopped"),
-        "a terminal health must not arm a rebuild; transcript:\n{transcript}"
+        last_phase.contains("Failed"),
+        "the entry must stop on the terminal failure, not while it still reports the link \
+         live; last phase line: {last_phase:?}; transcript:\n{transcript}"
     );
-    child.interrupt();
 }
 
 /// 3. `restart_slot` on a device the book no longer holds.
