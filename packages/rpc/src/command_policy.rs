@@ -57,6 +57,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "abort",
     "abort_retry",
     "abort_session",
+    "acknowledge_recovery",
     "add_session_rule",
     "append_system_prompt",
     "approval_decision",
@@ -233,7 +234,8 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
             RetryPolicy::SafeRead,
             ExecutionKind::Bounded,
         ),
-        "add_session_rule"
+        "acknowledge_recovery"
+        | "add_session_rule"
         | "append_system_prompt"
         | "clone"
         | "cycle_model"

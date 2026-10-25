@@ -714,6 +714,24 @@ impl RunClient {
             .await
     }
 
+    /// `acknowledgeRecovery(sessionId, reason)` — `acknowledge_recovery`:
+    /// the one explicit release of a restart-recovery fence. Appends a journal
+    /// entry naming the fenced calls; nothing is replayed and nothing is marked
+    /// verified. `reason` is the optional human note (`--why`).
+    pub async fn acknowledge_recovery(
+        &self,
+        session_id: &str,
+        reason: &str,
+    ) -> Result<Value, String> {
+        let cmd = RpcCommand {
+            message: reason.to_string(),
+            created_by: "cli".to_string(),
+            ..Default::default()
+        };
+        self.execute_command("acknowledge_recovery", cmd, Some(session_id), 30)
+            .await
+    }
+
     /// `getForkMessages(sessionId)` — `get_fork_messages`: the user turns a
     /// session can be forked at.
     pub async fn get_fork_messages(&self, session_id: &str) -> Result<Value, String> {

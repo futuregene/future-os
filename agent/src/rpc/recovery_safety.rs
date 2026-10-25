@@ -4,17 +4,40 @@
 //! and a shell command whose text provably cannot change anything observable is
 //! not an unknown effect at all. The decision is made from the command text,
 //! never from what the model claimed about it.
+//!
+//! The fence has exactly one release path, and it is a person's: a `custom`
+//! journal entry written by `acknowledge_recovery` (CLI: `future session
+//! unblock`) naming the fenced calls. It does not claim the effect was
+//! verified — the calls stay questioned, once per run, like a user-aborted one;
+//! it only stops one unknown effect from ending the whole session.
 use super::prompt_helpers::prepare_session_tool_call;
-use crate::session::{Manager, SessionEntry, ENTRY_TYPE_RUN_STARTED, ENTRY_TYPE_TOOL};
+use crate::session::{
+    Manager, SessionEntry, ENTRY_NAME_RECOVERY_ACKNOWLEDGED, ENTRY_TYPE_CUSTOM,
+    ENTRY_TYPE_RUN_STARTED, ENTRY_TYPE_TOOL,
+};
 use crate::types::ToolCallResult;
 use anyhow::Result;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
+/// One call the fence is still blocking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct BlockedCall {
+    pub run_id: String,
+    pub call_id: String,
+    pub tool: String,
+}
+
+impl BlockedCall {
+    fn label(&self) -> String {
+        format!("{} ({})", self.tool, self.call_id)
+    }
+}
+
 #[derive(Default)]
 pub(super) struct RecoverySafety {
-    unresolved: Vec<String>,
+    unresolved: Vec<BlockedCall>,
     completed: HashSet<String>,
     /// Fingerprints of calls the user aborted while they were in flight. Their
     /// effect is unknown, but only that one operation is questioned: fencing
@@ -38,6 +61,7 @@ impl RecoverySafety {
             return Ok(Self::default());
         }
         let entries = manager.load_unrepaired_entries(session)?;
+        let mut acknowledged: HashSet<(String, String)> = HashSet::new();
         let mut calls = HashMap::new();
         let mut results = HashMap::new();
         let mut run = String::new();
@@ -51,6 +75,26 @@ impl RecoverySafety {
                         (content["run_id"].as_str(), content["state"].as_str())
                     {
                         terminals.insert(run.to_owned(), state.to_owned());
+                    }
+                }
+            }
+            if entry.entry_type == ENTRY_TYPE_CUSTOM
+                && entry.name == ENTRY_NAME_RECOVERY_ACKNOWLEDGED
+            {
+                // The user's release: exactly the named calls leave the
+                // session-wide fence. Parsed from every such entry, so a second
+                // acknowledgement is simply a no-op rather than a new state.
+                for call in entry
+                    .content
+                    .as_ref()
+                    .and_then(|content| content["calls"].as_array())
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+                {
+                    if let (Some(run_id), Some(call_id)) =
+                        (call["run_id"].as_str(), call["call_id"].as_str())
+                    {
+                        acknowledged.insert((run_id.to_owned(), call_id.to_owned()));
                     }
                 }
             }
@@ -154,6 +198,15 @@ impl RecoverySafety {
                 Some(ResultState::Unknown) | None if handled => Doubt::Settled,
                 Some(ResultState::Unknown) | None => Doubt::Unknown,
             };
+            // An explicit release lowers the doubt to "questioned once"; it
+            // never claims the effect was verified. The known-effect shortcuts
+            // below still apply, because they prove the outcome on their own.
+            let doubt =
+                if doubt == Doubt::Unknown && acknowledged.contains(&(run.clone(), id.clone())) {
+                    Doubt::Aborted
+                } else {
+                    doubt
+                };
             if doubt == Doubt::Settled {
                 continue;
             }
@@ -182,21 +235,50 @@ impl RecoverySafety {
                 // Questioned once, on its own, by `before_tool`.
                 safety.aborted.insert(key);
             } else {
-                safety.unresolved.push(format!("{name} ({id})"));
+                safety.unresolved.push(BlockedCall {
+                    run_id: run.clone(),
+                    call_id: id.clone(),
+                    tool: name.clone(),
+                });
             }
         }
         if !verified.is_empty() {
             manager.append_entries_synced(session, &verified)?;
             safety.history_changed = true;
         }
-        safety.unresolved.sort();
+        // Stable, transcript-independent order: the fence's message must not
+        // change between two loads of the same journal.
+        safety.unresolved.sort_by(|left, right| {
+            (left.run_id.as_str(), left.call_id.as_str())
+                .cmp(&(right.run_id.as_str(), right.call_id.as_str()))
+        });
         Ok(safety)
     }
 
     pub(super) fn pause_reason(&self) -> Option<String> {
-        (!self.unresolved.is_empty()).then(|| format!(
-            "[RECOVERY_UNCERTAIN] The previous operation's effect could not be verified: {}. Work is preserved; no uncertain operation was repeated.",
-            self.unresolved.join(", ")))
+        (!self.unresolved.is_empty()).then(|| {
+            let calls = self
+                .unresolved
+                .iter()
+                .map(BlockedCall::label)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "[RECOVERY_UNCERTAIN] The previous operation's effect could not be verified: {calls}. \
+                 This is a session-wide fence, not a transient error: every tool except `read` is \
+                 refused for the rest of this session, and retrying one of these calls returns this \
+                 same message. Do not retry them. Nothing uncertain was replayed and the session's \
+                 work is preserved. To continue, ask the user to run `future session unblock <session-id>`: \
+                 that releases exactly these calls to a one-time warning (it does not replay them and \
+                 does not claim they succeeded) and makes the other tools usable again. Afterwards verify \
+                 the affected files with `read` before re-running anything."
+            )
+        })
+    }
+
+    /// The operations blocking the session, for the release command's record.
+    pub(super) fn blocked_calls(&self) -> &[BlockedCall] {
+        &self.unresolved
     }
 
     pub(super) fn before_tool(&self, name: &str, args: &Value) -> Option<ToolCallResult> {
@@ -216,14 +298,16 @@ impl RecoverySafety {
         })
     }
 
-    /// Warns once per run about the operation the user aborted, then leaves the
-    /// decision to the model: fencing the same command forever would trade a
-    /// session-wide deadlock for a per-command one.
+    /// Warns once per run about an operation whose effect is unknown but which
+    /// the user allowed to continue (the run was stopped, or the fence was
+    /// explicitly released), then leaves the decision to the model: fencing the
+    /// same command forever would trade a session-wide deadlock for a
+    /// per-command one.
     fn aborted_once(&self, key: &str) -> Option<String> {
         if !self.warned.lock().insert(key.to_owned()) {
             return None;
         }
-        Some("[RECOVERY_ABORTED_OPERATION] The previous run was stopped while this operation was in flight, so whether it took effect is unknown. Check the result with a read-only command first, and re-run it only if that check shows it did not happen.".to_owned())
+        Some("[RECOVERY_ABORTED_OPERATION] Whether this operation took effect is unknown: the previous run ended while it was in flight and no result was recorded. Check the result with a read-only command first, and re-run it only if that check shows it did not happen.".to_owned())
     }
 }
 
@@ -1283,6 +1367,283 @@ mod tests {
             assert!(
                 safety.before_tool("shell", &args).unwrap().is_error,
                 "{state}"
+            );
+        }
+    }
+
+    // ─── the one release path: an explicit acknowledgement ─────────────────
+
+    /// Three mutating calls left in flight by a restart (no result recorded):
+    /// one shell, one write, one edit. The file paths are absolute so a later
+    /// `before_tool` fingerprint of the same call matches what `load` saw.
+    fn restart_fence_fixture() -> (tempfile::TempDir, Manager) {
+        let root = tempfile::tempdir().unwrap();
+        let manager = Manager::new(root.path().join("sessions"));
+        let written = root.path().join("written.txt");
+        let edited = root.path().join("edited.txt");
+        let call = |id: &str, name: &str, arguments: Value| ToolCall {
+            id: id.into(),
+            call_type: "function".into(),
+            function: ToolCallFn {
+                name: name.into(),
+                arguments,
+            },
+        };
+        let entries = vec![
+            SessionEntry::new_user("user", json!("finish my work")),
+            SessionEntry::run_started("run", 1),
+            SessionEntry::new_assistant(
+                json!("working"),
+                vec![
+                    call("call-shell", "shell", json!({"command":"make install"})),
+                    call(
+                        "call-write",
+                        "write",
+                        json!({"path":written.to_string_lossy(),"content":"new"}),
+                    ),
+                    call(
+                        "call-edit",
+                        "edit",
+                        json!({
+                            "path":edited.to_string_lossy(),
+                            "oldText":"a",
+                            "newText":"b",
+                        }),
+                    ),
+                ],
+            ),
+        ];
+        manager
+            .save(&Session::snapshot(
+                "session".into(),
+                root.path().to_string_lossy().into_owned(),
+                "mock".into(),
+                String::new(),
+                String::new(),
+                entries,
+            ))
+            .unwrap();
+        manager
+            .append_entries_synced(
+                "session",
+                &[stop_state(crate::session::RUN_STATE_INTERRUPTED_BY_RESTART)],
+            )
+            .unwrap();
+        (root, manager)
+    }
+
+    /// The arguments of the interrupted write, as the model sent them.
+    fn interrupted_write(root: &tempfile::TempDir) -> Value {
+        json!({"path":root.path().join("written.txt").to_string_lossy(),"content":"new"})
+    }
+
+    fn acknowledge(manager: &Manager, calls: Value) {
+        manager
+            .append_entries_synced(
+                "session",
+                &[SessionEntry::recovery_acknowledged(
+                    crate::session::ENTRY_NAME_RECOVERY_ACKNOWLEDGED,
+                    calls,
+                    "cli",
+                    "checked the workspace myself",
+                )],
+            )
+            .unwrap();
+    }
+
+    fn reload(root: &tempfile::TempDir, manager: &Manager) -> RecoverySafety {
+        RecoverySafety::load(manager, "session", root.path().to_str().unwrap(), true).unwrap()
+    }
+
+    #[test]
+    fn a_restart_fence_refuses_every_mutating_tool() {
+        // The un-released default, spelled out: this is the behaviour that must
+        // not weaken. `read` alone gets through, and the refusal names every
+        // operation the fence is holding.
+        let (root, manager) = restart_fence_fixture();
+        for automatic in [true, false] {
+            let safety = RecoverySafety::load(
+                &manager,
+                "session",
+                root.path().to_str().unwrap(),
+                automatic,
+            )
+            .unwrap();
+            let reason = safety
+                .pause_reason()
+                .expect("the restart fences the session");
+            for held in [
+                "shell (call-shell)",
+                "write (call-write)",
+                "edit (call-edit)",
+            ] {
+                assert!(reason.contains(held), "{reason}");
+            }
+            // The message has to be actionable, or the model retries the same
+            // wall until the context is gone.
+            assert!(reason.contains("session-wide fence"), "{reason}");
+            assert!(reason.contains("Do not retry"), "{reason}");
+            assert!(
+                reason.contains("future session unblock <session-id>"),
+                "{reason}"
+            );
+            assert!(safety
+                .before_tool("read", &json!({"path":"missing"}))
+                .is_none());
+            assert!(safety
+                .before_tool("write", &json!({"path":"fresh","content":"x"}))
+                .is_some());
+            assert!(safety
+                .before_tool("edit", &json!({"path":"fresh","oldText":"a","newText":"b"}))
+                .is_some());
+            // Even a read-only command is held: the fence is session-wide, not
+            // operation-specific, until a person releases it.
+            assert!(safety
+                .before_tool("shell", &json!({"command":"git status"}))
+                .is_some());
+            // Exactly what the release command records.
+            let blocked = safety.blocked_calls();
+            assert_eq!(blocked.len(), 3, "{blocked:?}");
+            assert!(blocked
+                .iter()
+                .any(|call| call.call_id == "call-shell" && call.tool == "shell"));
+        }
+    }
+
+    #[test]
+    fn an_acknowledged_restart_fence_questions_that_call_once_and_allows_the_rest() {
+        let (root, manager) = restart_fence_fixture();
+        acknowledge(
+            &manager,
+            json!([
+                {"run_id":"run","call_id":"call-shell","tool":"shell"},
+                {"run_id":"run","call_id":"call-write","tool":"write"},
+                {"run_id":"run","call_id":"call-edit","tool":"edit"},
+            ]),
+        );
+        let safety = reload(&root, &manager);
+        // The session-wide fence is gone...
+        assert!(safety.pause_reason().is_none());
+        assert!(safety.blocked_calls().is_empty());
+        // ...the interrupted command itself is questioned exactly once...
+        let shell = json!({"command":"make install"});
+        let warned = safety.before_tool("shell", &shell).expect("warned once");
+        assert!(
+            warned.result.starts_with("[RECOVERY_ABORTED_OPERATION]"),
+            "{}",
+            warned.result
+        );
+        assert!(
+            !warned.result.starts_with("[RECOVERY_UNCERTAIN]"),
+            "the released call is not fenced again: {}",
+            warned.result
+        );
+        // ...and acting on that warning is not refused a second time.
+        assert!(safety.before_tool("shell", &shell).is_none());
+        // Everything else works immediately.
+        assert!(safety
+            .before_tool("shell", &json!({"command":"git status"}))
+            .is_none());
+        assert!(safety
+            .before_tool("write", &json!({"path":"other","content":"x"}))
+            .is_none());
+        assert!(safety
+            .before_tool("edit", &json!({"path":"other","oldText":"a","newText":"b"}))
+            .is_none());
+        // A fresh run questions it again: the release accepted the risk, it did
+        // not verify the effect.
+        let reloaded = reload(&root, &manager);
+        assert!(reloaded.before_tool("shell", &shell).is_some());
+        let write = interrupted_write(&root);
+        let warned = reloaded
+            .before_tool("write", &write)
+            .expect("the released write is questioned once");
+        assert!(
+            warned.result.starts_with("[RECOVERY_ABORTED_OPERATION]"),
+            "{}",
+            warned.result
+        );
+        assert!(reloaded.before_tool("write", &write).is_none());
+        assert!(reloaded
+            .before_tool("shell", &json!({"command":"git status"}))
+            .is_none());
+    }
+
+    #[test]
+    fn acknowledging_twice_changes_nothing() {
+        // Idempotent by construction: the release is a set of call ids read
+        // from the journal, so repeating it cannot add effect or a second
+        // warning.
+        let (root, manager) = restart_fence_fixture();
+        let calls = json!([
+            {"run_id":"run","call_id":"call-shell","tool":"shell"},
+            {"run_id":"run","call_id":"call-write","tool":"write"},
+            {"run_id":"run","call_id":"call-edit","tool":"edit"},
+        ]);
+        acknowledge(&manager, calls.clone());
+        acknowledge(&manager, calls.clone());
+        let safety = reload(&root, &manager);
+        assert!(safety.pause_reason().is_none());
+        assert!(safety.blocked_calls().is_empty());
+        let shell = json!({"command":"make install"});
+        // One warning, not one per acknowledgement entry.
+        let warned = safety.before_tool("shell", &shell).expect("one warning");
+        assert!(warned.result.starts_with("[RECOVERY_ABORTED_OPERATION]"));
+        assert!(safety.before_tool("shell", &shell).is_none());
+        assert!(safety
+            .before_tool("shell", &json!({"command":"git status"}))
+            .is_none());
+    }
+
+    #[test]
+    fn a_partial_release_leaves_the_session_fenced() {
+        // The fence is session-wide by design: releasing one call while another
+        // is still unknown must not open the session. `future session unblock`
+        // releases everything pending in one entry, so this only arises when new
+        // uncertainty appears after a release — and then the fence is right.
+        let (root, manager) = restart_fence_fixture();
+        acknowledge(
+            &manager,
+            json!([{"run_id":"run","call_id":"call-shell","tool":"shell"}]),
+        );
+        let safety = reload(&root, &manager);
+        let reason = safety
+            .pause_reason()
+            .expect("write and edit are still fenced");
+        assert!(reason.contains("write (call-write)"), "{reason}");
+        assert!(reason.contains("edit (call-edit)"), "{reason}");
+        assert!(!reason.contains("call-shell"), "{reason}");
+        assert_eq!(safety.blocked_calls().len(), 2);
+        // Even the released call waits for the remaining uncertainty.
+        assert!(safety
+            .before_tool("shell", &json!({"command":"make install"}))
+            .is_some());
+        assert!(safety
+            .before_tool("shell", &json!({"command":"git status"}))
+            .is_some());
+    }
+
+    #[test]
+    fn an_acknowledgement_for_another_call_releases_nothing() {
+        // A release names exact (run, call) pairs; anything else — a call from
+        // a different run, or an id that never existed — releases nothing.
+        for bogus in [
+            json!([{"run_id":"other-run","call_id":"call-shell","tool":"shell"}]),
+            json!([{"run_id":"run","call_id":"call-never-happened","tool":"shell"}]),
+            json!([]),
+        ] {
+            let (root, manager) = restart_fence_fixture();
+            acknowledge(&manager, bogus.clone());
+            let safety = reload(&root, &manager);
+            let reason = safety
+                .pause_reason()
+                .expect("an unrelated release must not fence-drop");
+            assert!(reason.contains("shell (call-shell)"), "{bogus}: {reason}");
+            assert!(
+                safety
+                    .before_tool("shell", &json!({"command":"git status"}))
+                    .is_some(),
+                "{bogus}"
             );
         }
     }

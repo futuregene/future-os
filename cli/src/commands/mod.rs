@@ -28,6 +28,7 @@ mod session_prune;
 mod session_reset;
 mod session_status;
 mod session_transcript;
+mod session_unblock;
 mod session_wait;
 pub mod settings;
 pub mod skills;

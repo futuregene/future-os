@@ -31,6 +31,7 @@ Usage:
   future session title <id>                          Generate a title (a model call)
   future session export <id> [--out <path>]          Write the session to an HTML file
   future session abort <id>                          Stop the active run and clear the queue
+  future session unblock <id> [--why <text>]        Release a session fenced by an interrupted operation
   future session cancel <id> --run <run-id>            Cancel one queued run
   future session wait <id> [--run <run-id>]            Wait for a run to finish and print its answer
   future session approvals <id> [--json]             Approval requests the session waits on
@@ -1465,6 +1466,12 @@ pub async fn session(
 
     if subcommand == "prune" {
         return super::session_prune::run(args, out).await;
+    }
+
+    // `unblock` releases a restart-recovery fence; its own argument shape is
+    // `<session-id> [--why <text>]`, so it parses its own arguments.
+    if subcommand == "unblock" {
+        return super::session_unblock::run(args, out).await;
     }
 
     if subcommand == "wait" {
