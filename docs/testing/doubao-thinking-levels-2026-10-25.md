@@ -189,6 +189,9 @@ tokenizer 启发式、由 `resolve_effort` 按词表收敛。今天 `doubao-seed
 
 ## 7. 复现步骤
 
+验证用的两个 worktree 在合入后已经按流程删掉了；照着下面重新建即可
+（`git worktree add <dir> 9b13e0919`，以及 `git worktree add <dir> -b <branch> origin/dev-huichen`）。
+
 ```bash
 # 1. 两份二进制（同一 FUTURE_VERSION），见 §1.1
 # 2. 隔离 home：复制 auth.json + models.json，把 future.base_url 指到记录代理
