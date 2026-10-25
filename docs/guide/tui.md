@@ -34,8 +34,8 @@ window and its `↓ N more` row).
 ## The frame
 
 ```
- header (5 rows: pixel whale, wordmark at width ≥ 96, session · workspace ·
- model, backend dot)  ── hairline
+ focused header (2 rows: session · workspace · backend dot, then hairline)
+ comfortable header (optional 6 rows: pixel whale and full identity)
  ──────────────────────────────────────────┬──────────────────────
  conversation (bottom-anchored, ↑ 更早)     │ sidebar: 待办 任务 会话
                                             │          用量 技能
@@ -84,6 +84,21 @@ vocabulary the desktop and the phone use; a missing key means `system`).
 The copy lives in one table, `tui/src/workbench/i18n.rs`, with both spellings on
 the same line: a key added in one language only does not compile.
 
+## Layout and personalization
+
+The default **focused density** uses a two-row context header, reclaiming four
+rows for the conversation. `Ctrl+O` or `/preferences` opens the preference
+panel: switch to the comfortable identity header, move the sidebar left or
+right, adjust its 30–48-column width, and rebind global shortcuts. Choices
+persist in `~/.future/tui/settings.json` as `density`, `sidebarPosition`,
+`sidebarWidth` and `sidebarVisible`; incremental shortcut overrides live beside
+it in `keybindings.json`.
+
+`Ctrl+P` opens the command palette, `Ctrl+R` sessions, and `F1` help. Help and
+footer hints show the effective bindings, not stale defaults. In the shortcut
+editor, press Enter and then a chord; conflicts swap owners, `r` restores
+defaults, and Escape cancels capture.
+
 ## Keys and mouse
 
 | Key | Action |
@@ -93,8 +108,10 @@ the same line: a key added in one language only does not compile.
 | `↑` `↓` | Scroll the conversation (or the focused panel's list) |
 | `pageUp` / `pageDown` | Scroll the conversation a page |
 | `ctrl+b` | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal |
-| `/` | Command palette (on an empty draft) — type to filter, `enter` to run |
-| `?` | Help overlay (keys + commands) |
+| `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run |
+| `ctrl+r` | Session picker |
+| `ctrl+o` | Preferences and shortcut editor |
+| `F1` or `?` | Help overlay (effective keys + commands; `?` requires an empty draft) |
 | `/lang` | Interface language: follow the system, Chinese or English |
 | `ctrl+e` | Ask the app for the final-answer / detailed reading level |
 | `ctrl+c` | Quit |
