@@ -73,10 +73,9 @@ pub fn update_app_settings(mut input: UpdateAppSettingsInput) -> Result<AppSetti
     let settings = future_app_settings::apply(&tx, &input, now)?;
     tx.commit()?;
     crate::agent_events::publish_invalidation("app_settings_changed");
-    // The `autoResumeInterrupted` switch is retained in this store for the
-    // desktop UI, but it no longer has an executor: the Agent does not continue
-    // an interrupted run on its own, so there is nothing left for it to gate.
-    // Removing the row is the desktop's own change.
+    // `autoResumeInterrupted` has no executor left: the agent stopped continuing
+    // an interrupted run on its own (`9c83f6115`). The desktop no longer shows or
+    // writes it — the stored key survives only so existing rows still read.
     // Notify paired clients only after commit: their next model read must see
     // the new visibility. Reconnect also rereads the catalogue if this is lost.
     if model_visibility_changed {
@@ -119,7 +118,6 @@ mod tests {
             title_language: None,
             community_edition: Some(true),
             skill_recommend: None,
-            auto_resume_interrupted: None,
         }
     }
 
