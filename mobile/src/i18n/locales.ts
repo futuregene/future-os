@@ -94,6 +94,8 @@ export const resources = {
         saving: "Saving…",
         cancel: "Cancel",
         deviceSettings: "This desktop's settings",
+        /** The row's state line: another paired device is driving it. */
+        heldBy: "Taken over by \u300c{{name}}\u300d",
         pickerLabel: "Desktops",
         filterAll: "All desktops",
         manage: "Manage paired desktops…",
@@ -1129,6 +1131,7 @@ export const resources = {
         saving: "正在保存…",
         cancel: "取消",
         deviceSettings: "该桌面端的设置",
+        heldBy: "已被「{{name}}」接管",
         pickerLabel: "桌面选择",
         filterAll: "全部桌面",
         manage: "管理已配对的桌面…",

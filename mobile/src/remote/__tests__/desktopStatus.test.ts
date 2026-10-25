@@ -1,8 +1,10 @@
 import {
   activeMachineStatus,
+  machineConfigurable,
   machineStatusKey,
   machinesConnected,
   machinesPartlyConnected,
+  pairedMachines,
   peerMachineStatus,
   type MachineSummary,
 } from "../desktopStatus";
@@ -94,8 +96,7 @@ describe("the dot's own answer", () => {
   });
 });
 
-describe("whose words the status block uses", () => {
-  const counts = (...statuses: MachineSummary["status"][]) =>
+describe("whose words the status block uses", () => {  const counts = (...statuses: MachineSummary["status"][]) =>
     machinesConnected(statuses.map((status, index) => machine(`m${index}`, status)));
   const down = connectionPresentation({
     phase: "failed",
@@ -134,5 +135,111 @@ describe("whose words the status block uses", () => {
     // expired pairing is the thing to fix, on the machine whose conversation it
     // was.
     expect(machinesPartlyConnected(counts("connected", "offline"), revoked)).toBe(false);
+  });
+});
+
+describe("one list of the paired machines", () => {
+  const desktops = [
+    { desktopId: "open", pairId: "pair-1", name: "Studio", icon: "rocket" },
+    { desktopId: "other", pairId: "pair-2" },
+  ];
+  const ready = connectionPresentation({ phase: "ready", desktopOnline: true });
+
+  test("judges the open machine from the connection the app renders from", () => {
+    const [open] = pairedMachines({
+      desktops,
+      activeDesktopId: "open",
+      presence: { control: "active" },
+      presentation: ready,
+      others: [],
+    });
+    expect(open).toEqual({
+      desktopId: "open",
+      label: "Studio",
+      icon: "rocket",
+      active: true,
+      status: "connected",
+      control: "active",
+    });
+  });
+
+  test("falls back to the id for a machine the user never named", () => {
+    const [open] = pairedMachines({
+      desktops,
+      activeDesktopId: "other",
+      presence: null,
+      presentation: ready,
+      others: [],
+    });
+    expect(open!.label).toBe("other");
+    expect(open!.icon).toBeUndefined();
+  });
+
+  test("keeps the other machines' own report, and never lists one twice", () => {
+    const peer: MachineSummary = {
+      desktopId: "other",
+      label: "Other",
+      active: false,
+      status: "offline",
+    };
+    const machines = pairedMachines({
+      desktops,
+      activeDesktopId: "open",
+      presence: { control: "active" },
+      presentation: ready,
+      // The catalogue is supposed to exclude the open machine; a stale entry
+      // must not draw it twice under two states.
+      others: [peer, { ...peer, desktopId: "open", status: "connected" }],
+    });
+    expect(machines.map(machine => machine.desktopId)).toEqual(["open", "other"]);
+    expect(machines[1]).toEqual(peer);
+  });
+
+  test("with no open machine it is just the others", () => {
+    const peer: MachineSummary = {
+      desktopId: "other",
+      label: "Other",
+      active: false,
+      status: "connecting",
+    };
+    expect(
+      pairedMachines({
+        desktops,
+        activeDesktopId: null,
+        presence: null,
+        presentation: ready,
+        others: [peer],
+      }),
+    ).toEqual([peer]);
+  });
+});
+
+describe("whether a machine's settings are reachable", () => {
+  test("only while it answers and is this phone's to drive", () => {
+    expect(machineConfigurable({ desktopId: "a", label: "a", active: false, status: "connected" }))
+      .toBe(true);
+    expect(
+      machineConfigurable({ desktopId: "a", label: "a", active: false, status: "connected", control: "active" }),
+    ).toBe(true);
+  });
+
+  test("not while it is off, reconnecting or still starting", () => {
+    for (const status of ["offline", "connecting", "preparing"] as const) {
+      expect(machineConfigurable({ desktopId: "a", label: "a", active: false, status })).toBe(false);
+    }
+  });
+
+  test("not while another device holds it, whatever its status says", () => {
+    // It answers every heartbeat and refuses every read: the page would open on
+    // a banner and no rows.
+    expect(
+      machineConfigurable({ desktopId: "a", label: "a", active: false, status: "connected", control: "standby" }),
+    ).toBe(false);
+  });
+
+  test("missing data is not a fault", () => {
+    // No runtime has reported on this machine yet; the row keeps its action
+    // rather than greying out on an absence of evidence.
+    expect(machineConfigurable(undefined)).toBe(true);
   });
 });

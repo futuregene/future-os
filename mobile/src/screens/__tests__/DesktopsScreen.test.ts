@@ -3,23 +3,33 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { Alert, BackHandler, Modal, StyleSheet, Text } from "react-native";
 import { Button } from "../../components/Button";
 import { peerIconId, PEER_ICONS } from "../../remote/peerIcons";
+import { connectionPresentation } from "../../remote/connectionPresentation";
+import type { MachineSummary } from "../../remote/desktopStatus";
 import type { PairedDesktop } from "../../remote/types";
 import { lightColors } from "../../theme/tokens";
 import { DesktopsScreen } from "../DesktopsScreen";
 
 const mockRemote: {
-  credentials: { pairId: string };
+  credentials: { pairId: string; expectedDesktopId?: string };
   desktops: PairedDesktop[];
   switchDesktop: jest.Mock;
   removeDesktop: jest.Mock;
+  presence: { control?: "active" | "standby"; holder?: { name?: string } | null } | null;
+  connectionPresentation: ReturnType<typeof connectionPresentation>;
+  catalogs: { machines: MachineSummary[] };
 } = {
-  credentials: { pairId: "pair-1" },
+  credentials: { pairId: "pair-1", expectedDesktopId: "desktop-1" },
   desktops: [
     { desktopId: "desktop-1", pairId: "pair-1" },
     { desktopId: "desktop-2", pairId: "pair-2" },
   ],
   switchDesktop: jest.fn(),
   removeDesktop: jest.fn(),
+  // The open machine answers and is this phone's to drive; the other one's
+  // runtime has nothing to say about it (see the tests that give it a state).
+  presence: { control: "active" },
+  connectionPresentation: connectionPresentation({ phase: "ready", desktopOnline: true }),
+  catalogs: { machines: [] },
 };
 /** The machine each device page was scoped to, in render order. */
 const mockScopes: string[] = [];
@@ -54,7 +64,11 @@ jest.mock("react-native-safe-area-context", () => ({
   SafeAreaView: "SafeAreaView",
   useSafeAreaInsets: () => ({ top: 24, bottom: 34, left: 0, right: 0 }),
 }));
-jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+jest.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    t: (key: string, options?: { name?: string }) => options?.name ? `${key}: ${options.name}` : key,
+  }),
+}));
 
 let tree: ReactTestRenderer;
 const onBack = jest.fn();
@@ -116,11 +130,14 @@ const labelDialog = () => tree.root.findAllByType("DesktopLabelDialog" as never)
 beforeEach(async () => {
   jest.clearAllMocks();
   mockScopes.length = 0;
-  mockRemote.credentials = { pairId: "pair-1" };
+  mockRemote.credentials = { pairId: "pair-1", expectedDesktopId: "desktop-1" };
   mockRemote.desktops = [
     { desktopId: "desktop-1", pairId: "pair-1" },
     { desktopId: "desktop-2", pairId: "pair-2" },
   ];
+  mockRemote.presence = { control: "active" };
+  mockRemote.connectionPresentation = connectionPresentation({ phase: "ready", desktopOnline: true });
+  mockRemote.catalogs = { machines: [] };
   mockRemote.switchDesktop.mockResolvedValue(undefined);
   mockRemote.removeDesktop.mockResolvedValue(undefined);
   jest.spyOn(Alert, "alert").mockImplementation(() => {});
@@ -183,9 +200,100 @@ test("the configure action opens that desktop's own page, and only when asked", 
   expect(mockRemote.switchDesktop).not.toHaveBeenCalled();
 });
 
+/**
+ * A machine that cannot answer has nothing behind its gear: the page it opens
+ * reads and writes that machine for every row, so it would open only to say "not
+ * connected". The row says the state instead, in place of the id, because a
+ * greyed control with no explanation reads as a broken app.
+ */
+test("a machine that is not answering does not offer its settings, and says why", async () => {
+  mockRemote.connectionPresentation = connectionPresentation({ phase: "stopped", desktopOnline: false });
+  await act(async () => { tree.update(createElement(DesktopsScreen, { onBack, onAdd, onOpenConversation })); });
+
+  const gear = pressables("desktops.settings")[0]!;
+  expect(gear.props.disabled).toBe(true);
+  expect(gear.props.accessibilityState.disabled).toBe(true);
+  // The reason is on the row, where the greyed control is.
+  expect(texts()).toContain("connection.machine.offline");
+  expect(devicePage()).toBeUndefined();
+});
+
+/**
+ * Nominal but not answering yet: a machine mid-handshake or with its agent
+ * restarting answers nothing, so its page would be the same dead end. It is one
+ * of the machine's own states, not a fault, so the words come from the status.
+ */
+test("a machine still connecting offers no settings either", async () => {
+  mockRemote.connectionPresentation = connectionPresentation({ phase: "ready", desktopOnline: false });
+  await act(async () => { tree.update(createElement(DesktopsScreen, { onBack, onAdd, onOpenConversation })); });
+  expect(pressables("desktops.settings")[0]!.props.disabled).toBe(true);
+  expect(texts().some(text => text.startsWith("connection.machine."))).toBe(true);
+});
+
+/**
+ * A machine another device drives answers every heartbeat and refuses every
+ * read and write — so the page would draw one banner and no rows. The row names
+ * the holder instead, which is the fact the reader needs; taking the machine
+ * back is offered where the machine is picked and on the connection sheet.
+ */
+test("a machine in somebody else's hands does not offer its settings", async () => {
+  mockRemote.presence = { control: "standby", holder: { name: "Studio laptop" } };
+  await act(async () => { tree.update(createElement(DesktopsScreen, { onBack, onAdd, onOpenConversation })); });
+
+  expect(pressables("desktops.settings")[0]!.props.disabled).toBe(true);
+  expect(texts()).toContain("desktops.heldBy: Studio laptop");
+  // Naming it is this phone's own record and keeps working while it is held; so
+  // does unpairing, which is the way out of a pairing nobody can use.
+  expect(pressables("desktops.editLabel")[0]!.props.disabled).toBe(false);
+  expect(pressables("sessions.unpair")[0]!.props.disabled).toBe(false);
+});
+
+/** A holder that never declared a name still gets a sentence, not a blank. */
+test("a held machine with no holder name still says it is taken over", async () => {
+  mockRemote.presence = { control: "standby", holder: null };
+  await act(async () => { tree.update(createElement(DesktopsScreen, { onBack, onAdd, onOpenConversation })); });
+  expect(texts()).toContain("connection.machineStandbyHint");
+});
+
+/**
+ * The other machines keep their own runtimes, so their state comes from those
+ * rather than from the open connection: one row's gear answers for one machine.
+ */
+test("each row answers for its own machine, not for the one in use", async () => {
+  mockRemote.catalogs = {
+    machines: [
+      { desktopId: "desktop-2", label: "desktop-2", active: false, status: "offline" },
+    ],
+  };
+  await act(async () => { tree.update(createElement(DesktopsScreen, { onBack, onAdd, onOpenConversation })); });
+
+  // The open machine is fine; the other one is not there.
+  expect(pressables("desktops.settings")[0]!.props.disabled).toBe(false);
+  expect(pressables("desktops.settings")[1]!.props.disabled).toBe(true);
+  expect(pressables("desktops.editLabel")[1]!.props.disabled).toBe(false);
+});
+
+/** A machine nothing has reported on yet is not treated as a fault. */
+test("a machine with no reported state keeps its settings action", async () => {
+  mockRemote.catalogs = { machines: [] };
+  await act(async () => { tree.update(createElement(DesktopsScreen, { onBack, onAdd, onOpenConversation })); });
+  expect(pressables("desktops.settings")[1]!.props.disabled).toBe(false);
+});
+
+/**
+ * Answering and this phone's to drive: the row is the plain description it was,
+ * with the id where the state would go — no state label is drawn on a machine
+ * that has nothing to report.
+ */
+test("an answering machine draws no state line", async () => {
+  expect(pressables("desktops.settings")[0]!.props.disabled).toBe(false);
+  expect(texts()).toContain("desktop-1");
+  expect(texts().some(text => text.startsWith("connection.machine."))).toBe(false);
+  expect(texts()).not.toContain("connection.machineStandbyHint");
+});
+
 test("each row's name carries the editor for that machine", async () => {
-  expect(labelDialog()).toBeUndefined();
-  // One per row, and none of them is the row itself: the label is the phone's,
+  expect(labelDialog()).toBeUndefined();  // One per row, and none of them is the row itself: the label is the phone's,
   // so it is edited where it is drawn.
   expect(pressables("desktops.editLabel")).toHaveLength(2);
   act(() => pressables("desktops.editLabel")[1]!.props.onPress());

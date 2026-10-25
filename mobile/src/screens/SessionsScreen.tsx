@@ -32,7 +32,7 @@ import { DialogSurface } from "../components/DialogSurface";
 import { useAppDialog } from "../components/useAppDialog";
 import { RenameModal } from "../features/chat/components/RenameModal";
 import { useRemoteControls as useRemote } from "../remote/RemoteContext";
-import { activeMachineStatus, machineStatusKey, machinesConnected, type MachineSummary } from "../remote/desktopStatus";
+import { machineStatusKey, machinesConnected, pairedMachines, type MachineSummary } from "../remote/desktopStatus";
 import { mergeSessions, type DesktopFilter } from "../remote/mergeSessions";
 import type { DesktopCommands } from "../remote/desktopCommands";
 import { PeerIconGlyph } from "../remote/PeerIconGlyph";
@@ -631,21 +631,13 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
    * open (read from the connection the app renders from) and every other
    * machine's own live connection.
    */
-  const machines = useMemo<MachineSummary[]>(() => {
-    if (!activeDesktopId) return catalogs.machines;
-    const paired = remote.desktops.find(desktop => desktop.desktopId === activeDesktopId);
-    return [
-      {
-        desktopId: activeDesktopId,
-        label: paired?.name ?? activeDesktopId,
-        ...(paired?.icon ? { icon: paired.icon } : {}),
-        active: true,
-        status: activeMachineStatus(connection),
-        ...(remote.presence?.control ? { control: remote.presence.control } : {}),
-      },
-      ...catalogs.machines,
-    ];
-  }, [activeDesktopId, catalogs.machines, connection, remote.desktops, remote.presence]);
+  const machines = useMemo<MachineSummary[]>(() => pairedMachines({
+    desktops: remote.desktops,
+    activeDesktopId,
+    presence: remote.presence,
+    presentation: connection,
+    others: catalogs.machines,
+  }), [activeDesktopId, catalogs.machines, connection, remote.desktops, remote.presence]);
   /** What the user calls a paired machine; its id when they have not named it. */
   const desktopLabel = (desktopId: string): string =>
     machines.find(machine => machine.desktopId === desktopId)?.label ?? desktopId;
