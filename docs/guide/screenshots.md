@@ -190,6 +190,46 @@ python3 scripts/screenshots/capture.py capture-desktop rail-offsets --baseline /
 With a baseline each element gains a green label stating its movement and size
 change (e.g. `位移 +0, +8px · 宽 +4px`).
 
+### 8. The terminal UI → a real screenshot
+
+The terminal UI (`future tui`) is a full-screen interface, so it is captured
+like the desktop and mobile apps rather than rendered through `terminal.html`:
+
+```bash
+cargo build -p future-cli --bin future
+cargo build -p future-tui --example demo_agent
+python3 scripts/screenshots/capture.py tui tui-chat.png
+```
+
+The program in the picture is the shipped binary. `capture.py tui` starts
+`demo_agent` — a gRPC stand-in that answers with one fixed session — then runs
+`future tui --offline --grpc-addr …` in a pty of a fixed size and keeps the
+bytes it wrote there. `tui_terminal.py` replays that stream through a terminal
+cell model (absolute positioning, SGR colours, double-width CJK, the 256-colour
+palette, and the caret the app left behind) and has headless Chrome rasterize
+the glyphs.
+
+What the flags are for:
+
+- `--cols` / `--rows` size the pty (default 130×40). The frame is a function of
+  them, so a layout change shows up as a different picture instead of a
+  squeezed one.
+- `--keep-stream <file>` writes the raw pty bytes — the first thing to look at
+  when a capture comes out blank.
+- `--scale` sets the device pixel ratio (default 2).
+- `--session <id>` opens a specific session instead of leaving it to the agent.
+
+Two runs produce byte-identical PNGs, which is what makes this usable as
+review evidence: a difference means the UI changed, not that a model answered
+differently. Two limits are worth stating: the glyphs are drawn by Chrome from
+the captured cells rather than by the terminal that produced them, and the data
+is scripted like the other mocks — a screenshot is never evidence about a real
+user's session.
+
+```bash
+python3 scripts/screenshots/tui_terminal.py --self-test   # the cell model, no browser
+```
+
 ## Recording video
 
 ```bash
@@ -231,9 +271,11 @@ Consequences worth knowing before trusting a screenshot:
   harness screenshot as evidence about real user data.
 - **No backend behaviour is exercised.** Nothing here proves an RPC works, a run
   streams, or a sandbox boundary holds. Those need the real app.
-- **Two things are stylised, not captured**: command-line output is rendered
-  through `terminal.html` from a command's real stdout, and anything that lives
-  only in the TUI (`future-tui`) is out of scope.
+- **Command-line output is stylised, not captured**: `terminal.html` renders a
+  command's real stdout inside a terminal frame. The terminal UI is *not* in
+  that category — `capture.py tui` (recipe 8) runs the real binary in a real pty
+  and rasterizes the bytes it wrote, so the frame in the picture is the app's
+  own. Its *data* is still scripted, exactly like the desktop and mobile mocks.
 - **One web-only rendering deviation is corrected rather than shown.** On the web
   react-native-web gives an inverted list's refresh-control wrapper the list's own
   flip, so the transcript renders upside down — which native does not do. A
@@ -521,6 +563,8 @@ than silent:
 | `scripts/screenshots/scenarios.json` | The scenario table for both platforms |
 | `scripts/screenshots/document.css` | Print stylesheet for generated documents |
 | `scripts/screenshots/terminal.html` | Terminal-styled frame for CLI output |
+| `scripts/screenshots/tui_capture.py` | Runs the TUI in a pty of a fixed size and keeps its bytes (recipe 8) |
+| `scripts/screenshots/tui_terminal.py` | Terminal cell model that replays those bytes into a PNG |
 | `scripts/screenshots/injects/` | Variant-styling JS (see recipe 5) |
 | `scripts/screenshots/upright-probe.js` | Puts a capture's own text beside an unflipped copy of it (see the mobile upright check) |
 | `scripts/screenshots/examples/` | Worked example: the 1.1.8 release notes content |

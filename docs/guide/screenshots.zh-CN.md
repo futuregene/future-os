@@ -130,6 +130,31 @@ python3 scripts/screenshots/capture.py capture-desktop rail-offsets
 
 带基线时，每个元素旁会多一个绿色标签，写明自基线以来的位移（如 `位移 +8, 0px`）和尺寸变化。基线通过 `--baseline` 传给驱动（`measure-*` 只负责产出这个文件）。
 
+### 8. 终端界面 → 一张真实截图
+
+终端界面（`future tui`）是全屏界面，所以它按桌面/手机端的方式截，而不是走 `terminal.html` 外框：
+
+```bash
+cargo build -p future-cli --bin future
+cargo build -p future-tui --example demo_agent
+python3 scripts/screenshots/capture.py tui tui-chat.png
+```
+
+图里的程序就是真实二进制：`capture.py tui` 先起 `demo_agent`（一个只回一套固定会话的 gRPC 替身），再在固定尺寸的 pty 里跑 `future tui --offline --grpc-addr …`，把它写进 pty 的字节原样留下。`tui_terminal.py` 把这股字节流按终端单元模型重放（绝对定位、SGR 颜色、双宽 CJK、256 色板、以及应用留下的光标），再由 headless Chrome 把字形画出来。
+
+几个参数：
+
+- `--cols` / `--rows` 决定 pty 尺寸（默认 130×40）。画面是它们的函数，所以布局变了会体现成"另一张图"，而不是被压扁的一张。
+- `--keep-stream <file>` 把原始字节另存一份——截图是空白时，第一个要看的就是它。
+- `--scale` 设置设备像素比（默认 2）。
+- `--session <id>` 指定会话，而不是交给 agent 决定。
+
+两次运行产出的 PNG 是逐字节相同的，这才让它能当评审证据用：有差异说明界面变了，而不是模型这次回答得不一样。两点限制照实说：字形是 Chrome 依据抓到的单元格画的，不是产生这些字节的那个终端画的；数据是脚本化的（和其他 mock 一样）——截图永远不是"真实用户会话"的证据。
+
+```bash
+python3 scripts/screenshots/tui_terminal.py --self-test   # 只验单元模型，不开浏览器
+```
+
 ## 录制视频
 
 ```bash
@@ -162,7 +187,7 @@ python3 scripts/screenshots/capture.py video-mobile chat
 
 - **内容是编的。** 演示对话、文件名、项目名来自 `desktop/shot/mock/data.ts` / `mobile/shot/mock/data.ts`。任何情况下都不要把它当作真实用户数据的证据。
 - **没有验证任何后端行为。** 这里不证明某个 RPC 能通、run 能流式输出、沙箱边界成立——那些必须跑真实应用。
-- **有两处是"样式化呈现"而非截屏**：命令行输出是用 `terminal.html` 把命令的真实 stdout 渲染出来的；只存在于终端界面（`future-tui`）的内容不在覆盖范围内。
+- **命令行输出是"样式化呈现"，不是截屏**：`terminal.html` 把命令的真实 stdout 渲染进终端外框。终端界面**不属于**这一类——`capture.py tui`（见第 8 条）在真实 pty 里跑真实二进制，再把它写出的字节栅格化，所以图里的画面就是应用自己画的。它的**数据**仍是脚本化的，和桌面/手机端 mock 一样。
 - **有一处 web 独有的渲染偏差是被修正的，而不是被拍进去的。** web 上 react-native-web 会把 inverted 列表的 refresh control 包装也带上列表自己的翻转，于是转录上下颠倒——真机不会这样。镜像的手机截图比没有还糟，所以 `cdp.mjs` 会在手机端截图时中和这层多余翻转（DOM 里能看到修正：那个包装没有 `transform` 了），并由 `check-upright-mobile` 把结果量出来。
 
 ## 环境要求
@@ -321,6 +346,8 @@ mock 是唯一需要跟着产品走的部分，而漏掉的地方会主动报出
 | `scripts/screenshots/scenarios.json` | 两个平台的场景表 |
 | `scripts/screenshots/document.css` | 生成文档用的打印样式 |
 | `scripts/screenshots/terminal.html` | 命令行输出的终端外框 |
+| `scripts/screenshots/tui_capture.py` | 在固定尺寸 pty 里跑终端界面并留下它的字节（第 8 条） |
+| `scripts/screenshots/tui_terminal.py` | 把这些字节重放成 PNG 的终端单元模型 |
 | `scripts/screenshots/injects/` | 变体样式脚本（见「常见请求怎么做」第 5 条） |
 | `scripts/screenshots/upright-probe.js` | 把截图里的原文复制一份正立的副本（见手机端「聊天转录是正的」） |
 | `scripts/screenshots/examples/` | 完整示例：1.1.8 更新说明的内容文件 |

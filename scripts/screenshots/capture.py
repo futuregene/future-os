@@ -1362,6 +1362,107 @@ def changed_regions(mask, min_area: int = 24, pad: int = 4) -> list:
 # ─── Terminal captures ──────────────────────────────────────────────────────
 
 
+def _tui_binaries(args: argparse.Namespace) -> tuple[Path, Path]:
+    """The two programs a TUI capture needs, with the build hint when missing."""
+    profile = "release" if args.release else "debug"
+    tui = Path(args.bin) if args.bin else ROOT / "target" / profile / "future"
+    agent = Path(args.agent_bin) if args.agent_bin else ROOT / "target" / profile / "examples" / "demo_agent"
+    missing = [path for path in (tui, agent) if not path.exists()]
+    if missing:
+        print(
+            "error: missing\n  " + "\n  ".join(str(p) for p in missing) + "\nbuild them first:\n"
+            "  cargo build -p future-cli --bin future\n"
+            "  cargo build -p future-tui --example demo_agent",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    return tui, agent
+
+
+def _wait_for_addr(process: subprocess.Popen, timeout: float) -> str:
+    """Read the demo agent's `listening on HOST:PORT` line, then stop reading.
+
+    The agent prints one line and then serves; anything that goes wrong before
+    that line (a busy port) arrives as a nonzero exit, which must not turn into
+    a hang waiting for output that will never come.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        line = process.stdout.readline()
+        if not line:
+            if process.poll() is not None:
+                raise SystemExit(f"demo agent exited before listening (code {process.returncode})")
+            continue
+        marker = "listening on "
+        if marker in line:
+            return line.split(marker, 1)[1].strip()
+    raise SystemExit("demo agent did not report its address in time")
+
+
+def tui(args: argparse.Namespace) -> int:
+    """Capture the terminal UI as a real screenshot.
+
+    Real, and reproducible, in that order: the program under test is the shipped
+    `future` binary talking to the demo agent, running in raw mode against a pty
+    of a fixed size, and what gets rasterized is the byte stream it wrote there.
+    Only the *data* is scripted (the agent answers with a fixed session), so the
+    same command produces the same picture on any machine — which a live model
+    cannot. See `tui_terminal.py` for what "terminal cell model" does and does
+    not reproduce.
+    """
+    import shutil as _shutil
+    import tempfile
+
+    import tui_capture
+    import tui_terminal
+
+    tui_bin, agent_bin = _tui_binaries(args)
+    output = Path(args.output)
+    if not output.is_absolute():
+        output = Path(args.out) / output
+    work = Path(tempfile.mkdtemp(prefix="future-tui-shot-"))
+    home = work / "home"
+    home.mkdir()
+    agent = None
+    try:
+        agent = subprocess.Popen(
+            [str(agent_bin), "--port", "0"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        addr = _wait_for_addr(agent, 20)
+        env = {"FUTURE_HOME": str(home), "HOME": str(home)}
+        argv = [str(tui_bin), "tui", "--offline", "--grpc-addr", addr]
+        if args.session:
+            argv += ["--session", args.session]
+        # The app must be sized before it draws, and it must not inherit the
+        # caller's terminal: `tui_capture.run` opens its own pty and does both.
+        stream = tui_capture.run(argv, args.cols, args.rows, args.seconds, env=env)
+        text = stream.decode("utf-8", "replace")
+        if not text.strip():
+            raise SystemExit(
+                "error: the TUI wrote nothing. The usual causes: the binary was not "
+                "built with the agent's version, or the terminal size reached it after "
+                "it drew (see tui_capture.run)."
+            )
+        if args.keep_stream:
+            Path(args.keep_stream).write_bytes(stream)
+        frames = text.count("\x1b[1;1H")
+        size = tui_terminal.render(text, output, args.cols, args.rows, work, scale=args.scale)
+        print(f"{output}: {size[0]}x{size[1]} css px from {len(stream)} bytes in {frames} frame(s)")
+        return 0
+    finally:
+        if agent is not None:
+            agent.terminate()
+            try:
+                agent.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                agent.kill()
+        _shutil.rmtree(work, ignore_errors=True)
+
+
 def terminal(args: argparse.Namespace) -> int:
     """Render a shell command's output inside a terminal-styled window."""
     transcript = subprocess.run(args.command, capture_output=True, text=True, cwd=ROOT)
@@ -1553,6 +1654,21 @@ def main() -> int:
         help="judge a mobile capture's orientation against an unflipped copy of its own text")
     upright_parser.add_argument("scenario")
     upright_parser.set_defaults(func=check_upright, platform="mobile")
+
+    tui_parser = sub.add_parser("tui", help="capture the terminal UI as a real screenshot")
+    tui_parser.add_argument("output", help="PNG to write (relative paths land in --out)")
+    tui_parser.add_argument("--cols", type=int, default=130, help="pty width in columns (default 130)")
+    tui_parser.add_argument("--rows", type=int, default=40, help="pty height in rows (default 40)")
+    tui_parser.add_argument("--scale", type=float, default=2.0, help="device pixel ratio (default 2)")
+    tui_parser.add_argument("--seconds", type=float, default=6.0,
+                            help="how long to let the app paint before the capture closes (default 6)")
+    tui_parser.add_argument("--session", default=None, help="open a specific session id")
+    tui_parser.add_argument("--bin", default=None, help="path to the future binary")
+    tui_parser.add_argument("--agent-bin", default=None, help="path to the demo_agent example binary")
+    tui_parser.add_argument("--release", action="store_true", help="look in target/release instead of target/debug")
+    tui_parser.add_argument("--keep-stream", default=None,
+                            help="also write the raw pty bytes here (for debugging a blank capture)")
+    tui_parser.set_defaults(func=tui)
 
     terminal_parser = sub.add_parser("terminal", help="render a command's output as a terminal image", add_help=False)
     terminal_parser.add_argument("output")

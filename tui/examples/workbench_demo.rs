@@ -8,6 +8,7 @@ use future_tui::utils::strip_ansi_codes;
 use future_tui::workbench::demo;
 use future_tui::workbench::layout::{self, Rect};
 use future_tui::workbench::mouse::{MouseEvent, MouseKind};
+use future_tui::workbench::picker::PickerKind;
 use future_tui::workbench::state::PanelId;
 use future_tui::workbench::{PaneId, WbAction, WbEvent, Workbench};
 
@@ -17,6 +18,7 @@ fn main() {
     let mut height: u16 = 38;
     let mut plain = false;
     let mut self_test = false;
+    let mut picker: Option<PickerKind> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -32,6 +34,15 @@ fn main() {
             "--height" | "-h" => height = parse_size(&mut args),
             "--plain" => plain = true,
             "--ansi" => plain = false,
+            // Show the frame with one of the three menus open — the design
+            // review of a picker needs a frame, not an agent.
+            "--picker" | "-p" => match args.next().as_deref().and_then(PickerKind::from_command) {
+                Some(parsed) => picker = Some(parsed),
+                None => {
+                    eprintln!("expected model | theme | sessions");
+                    std::process::exit(2);
+                }
+            },
             "--self-test" => self_test = true,
             other => {
                 eprintln!("unknown argument {other}");
@@ -55,6 +66,10 @@ fn main() {
 
     let data = demo::data(scenario);
     let mut workbench = Workbench::new();
+    workbench.render(&data, width.max(1), height.max(1));
+    if let Some(kind) = picker {
+        workbench.open_picker(kind, &data);
+    }
     let rows = workbench.render(&data, width.max(1), height.max(1));
     for row in rows {
         if plain {
@@ -146,6 +161,16 @@ fn run_self_test() -> Result<(), String> {
         let actions = workbench.handle(WbEvent::Mouse(wheel), &data);
         if !matches!(actions.as_slice(), [WbAction::Scroll(_)]) {
             return Err(format!("{width}x{height}: wheel gave {actions:?}"));
+        }
+
+        // A click on a picker row completes the choice, from the same hit map
+        // the frame painted.
+        workbench.open_picker(PickerKind::Sessions, &data);
+        workbench.render(&data, width, height);
+        let row = region(&workbench, "picker.row.1")?;
+        let actions = workbench.handle(WbEvent::Mouse(press(row.x + 1, row.y)), &data);
+        if !matches!(actions.as_slice(), [WbAction::SwitchSession(_)]) {
+            return Err(format!("{width}x{height}: picker click gave {actions:?}"));
         }
     }
     Ok(())

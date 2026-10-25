@@ -11,6 +11,7 @@
 
 use crate::workbench::ansi::{self, fit, width};
 use crate::workbench::layout::{self, Layout, Rect};
+use crate::workbench::picker::{self, PickerKind};
 use crate::workbench::state::{ActivityKind, PanelId, WorkbenchData};
 use crate::workbench::theme::Palette;
 use crate::workbench::widgets;
@@ -120,6 +121,11 @@ pub(crate) fn compose(
         }
         Some(Overlay::PanelFull) => {
             let lines = panel_box(workbench, data, &palette, w, h);
+            paint_overlay(&mut rows, &palette, lines, columns);
+            workbench.set_cursor(None);
+        }
+        Some(Overlay::Picker(kind)) => {
+            let lines = picker_box(workbench, data, &palette, w, h, kind);
             paint_overlay(&mut rows, &palette, lines, columns);
             workbench.set_cursor(None);
         }
@@ -544,6 +550,10 @@ fn hint_row(palette: &Palette, columns: usize, compact: bool) -> Vec<String> {
 
 // ─── overlays ──────────────────────────────────────────────────────────────
 
+/// The width the picker asks for (a terminal narrower than this shrinks the
+/// box instead of clipping the rows).
+const PICKER_WIDTH: u16 = 76;
+
 /// A box of `content` rows, centred, used by all three overlays.
 fn framed(
     palette: &Palette,
@@ -553,29 +563,69 @@ fn framed(
     h: u16,
     min_width: u16,
 ) -> Vec<String> {
-    let box_w = w.min(min_width.max(40)).min(w);
-    let box_h = h.min((content.len() + 2) as u16).max(3).min(h);
-    let left = (w - box_w) / 2;
-    let top = (h.saturating_sub(box_h)) / 3;
-    let inner = box_w.saturating_sub(2) as usize;
+    let geometry = box_geometry(w, h, min_width, content.len());
+    paint_box(palette, title, content, w, h, &geometry)
+}
+
+/// Where a centred box lands. One struct for the painter and for anything that
+/// has to name a row afterwards (the picker's hit regions), so a click cannot
+/// be resolved against a rectangle the box was not drawn in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BoxGeometry {
+    w: u16,
+    h: u16,
+    left: u16,
+    top: u16,
+}
+
+/// The box's width for a terminal of `w`: the requested width, never narrower
+/// than 40 columns (a box narrower than that cannot hold a row and its value),
+/// never wider than the frame.
+fn box_width(w: u16, min_width: u16) -> u16 {
+    w.min(min_width.max(40))
+}
+
+fn box_geometry(w: u16, h: u16, min_width: u16, content_len: usize) -> BoxGeometry {
+    let box_w = box_width(w, min_width);
+    let box_h = h.min((content_len + 2) as u16).max(3).min(h);
+    BoxGeometry {
+        w: box_w,
+        h: box_h,
+        left: (w - box_w) / 2,
+        top: (h.saturating_sub(box_h)) / 3,
+    }
+}
+
+fn paint_box(
+    palette: &Palette,
+    title: &str,
+    content: Vec<String>,
+    w: u16,
+    h: u16,
+    geometry: &BoxGeometry,
+) -> Vec<String> {
+    let inner = geometry.w.saturating_sub(2) as usize;
     let mut lines: Vec<String> = Vec::with_capacity(h as usize);
 
-    for _ in 0..top {
+    for _ in 0..geometry.top {
         lines.push(fit("", w as usize));
     }
     lines.push(fit(
         &format!(
             "{}{}",
-            " ".repeat(left as usize),
-            widgets::box_top(palette, box_w as usize, title)
+            " ".repeat(geometry.left as usize),
+            widgets::box_top(palette, geometry.w as usize, title)
         ),
         w as usize,
     ));
-    for row in content.into_iter().take(box_h.saturating_sub(2) as usize) {
+    for row in content
+        .into_iter()
+        .take(geometry.h.saturating_sub(2) as usize)
+    {
         let body = fit(&row, inner);
         let framed_row = format!(
             "{}{}{}{}",
-            " ".repeat(left as usize),
+            " ".repeat(geometry.left as usize),
             palette.text(palette.border, "│"),
             palette.panel_row(&body, inner),
             palette.text(palette.border, "│"),
@@ -585,8 +635,8 @@ fn framed(
     lines.push(fit(
         &format!(
             "{}{}",
-            " ".repeat(left as usize),
-            widgets::box_bottom(palette, box_w as usize)
+            " ".repeat(geometry.left as usize),
+            widgets::box_bottom(palette, geometry.w as usize)
         ),
         w as usize,
     ));
@@ -660,6 +710,92 @@ fn palette_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> 
     }
     let _ = w;
     framed(palette, "命令", content, w, h, 64)
+}
+
+/// The picker: title, the incremental-search line, the rows (a window when the
+/// list is longer than the box) and the key hints.
+///
+/// The rows' hit regions are registered from the same `start..end` window and
+/// the same geometry the rows were painted with, which is what makes a click
+/// land on the row under the pointer instead of one beside it.
+fn picker_box(
+    workbench: &mut Workbench,
+    data: &WorkbenchData,
+    palette: &Palette,
+    w: u16,
+    h: u16,
+    kind: PickerKind,
+) -> Vec<String> {
+    let box_w = box_width(w, PICKER_WIDTH);
+    let inner = box_w.saturating_sub(2) as usize;
+    let view = workbench.picker.view(data, workbench.committed_theme());
+    let total = view.rows.len();
+    // Room between the borders: the search line, a blank, the rows, a blank and
+    // the hints. One row is left over for the border pair itself.
+    let room = (h as usize).saturating_sub(7).max(1);
+    let window = total.min(room);
+    // The window follows the highlight rather than a scroll offset of its own: a
+    // picker whose list and highlight disagree is what a second offset buys.
+    let selected_display = (0..total)
+        .find(|display| view.ordinal(*display) == Some(workbench.picker.index))
+        .unwrap_or(0);
+    let start = (selected_display + 1).saturating_sub(window);
+    let end = (start + window).min(total);
+
+    let mut content: Vec<String> = Vec::with_capacity(window + 4);
+    content.push(format!(
+        " {} {}",
+        palette.text(palette.accent, "❯"),
+        if workbench.picker.query.is_empty() {
+            palette.dim("输入以过滤")
+        } else {
+            palette.body(&workbench.picker.query)
+        }
+    ));
+    content.push(String::new());
+    if total == 0 {
+        content.push(palette.dim(&format!(" {}", kind.empty())));
+    }
+    for display in start..end {
+        let selected = view.ordinal(display) == Some(workbench.picker.index);
+        content.push(picker::row_line(
+            palette,
+            &view.rows[display],
+            selected,
+            inner,
+        ));
+    }
+    content.push(String::new());
+    content.push(palette.dim(&format!(" {}", kind.hint())));
+
+    let geometry = box_geometry(w, h, PICKER_WIDTH, content.len());
+    // The box takes the pointer (so a click on its padding does nothing), then
+    // every painted choice row overrides its own line.
+    let body = Rect::new(
+        geometry.left.saturating_add(1),
+        geometry.top,
+        geometry.w.saturating_sub(2),
+        geometry.h,
+    );
+    workbench.hit_map().push(body, "picker.body");
+    let rows_y = geometry.top.saturating_add(3);
+    for display in start..end {
+        let Some(ordinal) = view.ordinal(display) else {
+            continue;
+        };
+        let y = rows_y + (display - start) as u16;
+        // A row the box had to clip is not clickable: `paint_box` truncates the
+        // content to the box, and a target outside it would name a row the
+        // reader cannot see.
+        if y + 1 > geometry.top.saturating_add(geometry.h) {
+            continue;
+        }
+        workbench.hit_map().push(
+            Rect::new(body.x, y, body.w, 1),
+            format!("picker.row.{ordinal}"),
+        );
+    }
+    paint_box(palette, kind.title(), content, w, h, &geometry)
 }
 
 fn panel_box(

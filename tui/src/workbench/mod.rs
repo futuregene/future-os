@@ -33,14 +33,16 @@ pub mod live;
 pub mod local;
 pub mod mouse;
 pub mod panels;
+pub mod picker;
 pub mod run;
 pub mod screen;
 pub mod state;
 pub mod theme;
 pub mod widgets;
 
+use picker::{Picker, PickerKind, PickerRow};
 use state::{PanelId, WorkbenchData};
-use theme::{Palette, PALETTES};
+use theme::Palette;
 
 /// Which input row takes keys on the launchpad. `Prompt` is the default; the
 /// others are the parameter chips, reachable with `tab`.
@@ -85,6 +87,8 @@ pub enum Overlay {
     /// `ctrl+b` on a terminal too narrow for the sidebar: the current panel
     /// takes the body.
     PanelFull,
+    /// `/model`, `/theme` or `/sessions`: the list picker.
+    Picker(PickerKind),
 }
 
 /// Which pane owns the keyboard.
@@ -116,6 +120,15 @@ pub enum WbAction {
     /// Open this conversation.
     SwitchSession(String),
     SwitchPanel(PanelId),
+    /// The model picker chose a model: apply it to the agent.
+    SetModel(String),
+    /// The reasoning slider moved: apply the level to the agent.
+    SetThinking(String),
+    /// The theme picker committed a palette: adopt it and persist it.
+    SetTheme(String),
+    /// `/new`: back to the launchpad, with no session attached (the first
+    /// message creates one).
+    NewSession,
     /// The divider was dragged to this width. The app persists it on release.
     ResizeSidebar(u16),
     /// The divider drag finished; persist the width now.
@@ -165,6 +178,13 @@ pub struct Workbench {
     pub overlay_scroll: usize,
     pub palette_query: String,
     pub palette_index: usize,
+    /// The open picker's query, highlight and slider (`/model`, `/theme`,
+    /// `/sessions`). Kept even while it is closed so reopening resumes where the
+    /// reader left.
+    pub picker: Picker,
+    /// The palette in force when the theme picker opened: `esc` restores it, so
+    /// previewing cannot change what the reader ends up with.
+    picker_restore: Option<&'static str>,
     pub launch_field: LaunchField,
     pub chat_scroll: usize,
     pub tick: usize,
@@ -195,6 +215,12 @@ impl Workbench {
             overlay_scroll: 0,
             palette_query: String::new(),
             palette_index: 0,
+            picker: Picker::new(
+                PickerKind::Model,
+                &WorkbenchData::default(),
+                theme::FUTURE_DARK.id,
+            ),
+            picker_restore: None,
             launch_field: LaunchField::Prompt,
             chat_scroll: 0,
             tick: 0,
@@ -210,14 +236,14 @@ impl Workbench {
         self.palette = theme::next(&self.palette);
         self.palette.id
     }
-
     /// Adopt a palette by id; an unknown id is the default (and is reported).
     pub fn set_theme(&mut self, id: &str) -> bool {
-        let resolved = theme::resolve(Some(id));
-        self.palette = resolved;
-        PALETTES
-            .iter()
-            .any(|palette| palette.id.eq_ignore_ascii_case(id))
+        self.palette = theme::resolve(Some(id));
+        // `is_known` accepts the catalogue's spelling *and* the ids older
+        // workbench builds wrote (`future-dark`), the same way `resolve` does:
+        // reporting "unknown" for a palette that was in fact applied is the
+        // kind of lie that made the settings file drift.
+        theme::is_known(id)
     }
 
     /// Render one frame: exactly `h` rows, each exactly `w` display columns.
@@ -286,7 +312,7 @@ impl Workbench {
 
     fn handle_key(&mut self, key: &str, data: &WorkbenchData) -> Vec<WbAction> {
         if let Some(overlay) = self.overlay {
-            return self.handle_overlay_key(overlay, key);
+            return self.handle_overlay_key(overlay, key, data);
         }
 
         match key {
@@ -346,10 +372,28 @@ impl Workbench {
             "enter" => {
                 let text = data.input.text.trim().to_string();
                 if text.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![WbAction::Submit(text)]
+                    return Vec::new();
                 }
+                // A typed command is a command, never a prompt: `/model` in the
+                // draft used to be sent to the agent as text, which is why no
+                // picker ever opened from the input box. Only the surface's own
+                // verbs are claimed — `/something else` still reaches the agent,
+                // and a verb with arguments keeps them (`/model <id>`).
+                if let Some(command) = known_command(&text) {
+                    let mut actions = vec![WbAction::EditInput {
+                        text: String::new(),
+                        cursor: 0,
+                    }];
+                    match (command.arg.is_empty())
+                        .then(|| PickerKind::from_command(&command.name))
+                        .flatten()
+                    {
+                        Some(kind) => actions.extend(self.open_picker(kind, data)),
+                        None => actions.push(WbAction::Command(command.raw)),
+                    }
+                    return actions;
+                }
+                vec![WbAction::Submit(text)]
             }
             "backspace" => {
                 let mut view = data.input.clone();
@@ -445,7 +489,12 @@ impl Workbench {
         vec![WbAction::Scroll(up)]
     }
 
-    fn handle_overlay_key(&mut self, overlay: Overlay, key: &str) -> Vec<WbAction> {
+    fn handle_overlay_key(
+        &mut self,
+        overlay: Overlay,
+        key: &str,
+        data: &WorkbenchData,
+    ) -> Vec<WbAction> {
         match overlay {
             Overlay::Help => match key {
                 "escape" | "q" | "?" | "enter" => {
@@ -525,10 +574,128 @@ impl Workbench {
                 }
                 _ => Vec::new(),
             },
+            Overlay::Picker(kind) => match key {
+                "escape" => self.dismiss_picker(kind),
+                "enter" => self.apply_picker(kind, data),
+                // Only the arrows move the highlight: `j` and `k` are characters
+                // in the incremental search here, unlike the help overlay.
+                "up" => {
+                    self.picker.move_by(-1, data);
+                    self.preview_theme(data);
+                    vec![WbAction::Redraw]
+                }
+                "down" => {
+                    self.picker.move_by(1, data);
+                    self.preview_theme(data);
+                    vec![WbAction::Redraw]
+                }
+                "pageUp" => {
+                    self.picker.page(-1, data);
+                    self.preview_theme(data);
+                    vec![WbAction::Redraw]
+                }
+                "pageDown" => {
+                    self.picker.page(1, data);
+                    self.preview_theme(data);
+                    vec![WbAction::Redraw]
+                }
+                "left" | "right" if kind == PickerKind::Model => {
+                    self.picker.slide(if key == "left" { -1 } else { 1 });
+                    vec![WbAction::Redraw]
+                }
+                "backspace" => {
+                    self.picker.backspace();
+                    vec![WbAction::Redraw]
+                }
+                other if other.chars().count() == 1 && !other.starts_with("ctrl+") => {
+                    for ch in other.chars() {
+                        self.picker.push(ch);
+                    }
+                    self.preview_theme(data);
+                    vec![WbAction::Redraw]
+                }
+                _ => Vec::new(),
+            },
+        }
+    }
+
+    /// The palette the app considers *committed*.
+    ///
+    /// While the theme picker is open this is the palette it opened on, not the
+    /// one being previewed: the `✓` marks what the reader has, and previewing a
+    /// theme must not make the menu claim it is already theirs.
+    pub fn committed_theme(&self) -> &'static str {
+        self.picker_restore.unwrap_or(self.palette.id)
+    }
+
+    /// Open one of the pickers on the value in force.
+    pub fn open_picker(&mut self, kind: PickerKind, data: &WorkbenchData) -> Vec<WbAction> {
+        self.picker = Picker::new(kind, data, self.palette.id);
+        self.picker_restore = (kind == PickerKind::Theme).then_some(self.palette.id);
+        self.overlay = Some(Overlay::Picker(kind));
+        self.overlay_scroll = 0;
+        vec![WbAction::Redraw]
+    }
+
+    /// Close the picker. `esc` and a click outside it are the same gesture, and
+    /// on the theme picker both undo the preview: what was on screen when the
+    /// box opened is what the reader is left with.
+    fn dismiss_picker(&mut self, kind: PickerKind) -> Vec<WbAction> {
+        if kind == PickerKind::Theme {
+            if let Some(id) = self.picker_restore.take() {
+                self.set_theme(id);
+            }
+        }
+        self.overlay = None;
+        vec![WbAction::Redraw]
+    }
+
+    /// Moving the highlight in the theme picker shows the palette it named,
+    /// without committing it.
+    fn preview_theme(&mut self, data: &WorkbenchData) {
+        if self.picker.kind != PickerKind::Theme {
+            return;
+        }
+        if let Some(PickerRow::Item { key, .. }) =
+            self.picker.selected(data, self.committed_theme())
+        {
+            self.set_theme(&key);
+        }
+    }
+
+    /// `enter`, and a click on a row: whichever row is highlighted, apply it.
+    fn apply_picker(&mut self, kind: PickerKind, data: &WorkbenchData) -> Vec<WbAction> {
+        let selected = self.picker.selected(data, self.committed_theme());
+        self.overlay = None;
+        self.picker_restore = None;
+        match (kind, selected) {
+            // The slider *is* the choice on its own row: `enter` there applies
+            // the level and leaves the model alone.
+            (PickerKind::Model, Some(PickerRow::Slider { level, .. })) => {
+                vec![WbAction::SetThinking(level)]
+            }
+            (PickerKind::Model, Some(PickerRow::Item { key, .. })) => vec![
+                WbAction::SetModel(key),
+                WbAction::SetThinking(self.picker.level().to_string()),
+            ],
+            (PickerKind::Theme, Some(PickerRow::Item { key, .. })) => {
+                self.set_theme(&key);
+                vec![WbAction::SetTheme(key)]
+            }
+            (PickerKind::Sessions, Some(PickerRow::Item { key, .. })) => {
+                vec![WbAction::SwitchSession(key)]
+            }
+            _ => vec![WbAction::Redraw],
         }
     }
 
     fn handle_mouse(&mut self, event: mouse::MouseEvent, data: &WorkbenchData) -> Vec<WbAction> {
+        // An open picker owns the pointer: its rows are the only live targets,
+        // and a click anywhere else dismisses it rather than reaching the
+        // conversation painted underneath.
+        if let Some(Overlay::Picker(kind)) = self.overlay {
+            return self.handle_picker_mouse(kind, event, data);
+        }
         let (w, h) = self.last_frame;
         let frame = layout::layout(
             w,
@@ -582,6 +749,49 @@ impl Workbench {
                 Vec::new()
             }
             mouse::MouseKind::Move => Vec::new(),
+        }
+    }
+
+    /// The `enter` on a picker row, expressed with a pointer: the click moves
+    /// the highlight to the row it landed on and then applies it, because a
+    /// mouse has no second `enter`. The wheel walks the list.
+    fn handle_picker_mouse(
+        &mut self,
+        kind: PickerKind,
+        event: mouse::MouseEvent,
+        data: &WorkbenchData,
+    ) -> Vec<WbAction> {
+        match event.kind {
+            mouse::MouseKind::WheelUp | mouse::MouseKind::WheelDown => {
+                let step = if event.kind == mouse::MouseKind::WheelUp {
+                    -1
+                } else {
+                    1
+                };
+                self.picker.move_by(step, data);
+                self.preview_theme(data);
+                vec![WbAction::Redraw]
+            }
+            mouse::MouseKind::Press => {
+                let id = self.hit.hit(event.x, event.y).map(str::to_string);
+                match id.as_deref() {
+                    Some(id) if id.strip_prefix("picker.row.").is_some() => {
+                        if let Some(ordinal) = id
+                            .strip_prefix("picker.row.")
+                            .and_then(|rest| rest.parse::<usize>().ok())
+                        {
+                            self.picker.index = ordinal;
+                            self.preview_theme(data);
+                        }
+                        self.apply_picker(kind, data)
+                    }
+                    // The box itself (its search line, its hints, its padding) is
+                    // not a choice and not a dismissal.
+                    Some("picker.body") => Vec::new(),
+                    _ => self.dismiss_picker(kind),
+                }
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -706,6 +916,38 @@ pub const COMMANDS: [(&str, &str); 12] = [
     ("/quit", "退出 workbench"),
 ];
 
+/// A typed draft that names one of the surface's own verbs.
+struct TypedCommand {
+    /// The verb with its slash (`/model`).
+    name: String,
+    /// Everything after the first space, trimmed.
+    arg: String,
+    /// The whole line, shaped like a `WbAction::Command`.
+    raw: String,
+}
+
+/// Split a submitted draft into a known command, or `None` when it is a prompt.
+///
+/// The list is [`COMMANDS`]: the palette's own entries, so a verb the palette
+/// offers can also be typed. A draft that merely *starts* with a slash
+/// (`/etc/hosts is missing`) stays a prompt.
+fn known_command(text: &str) -> Option<TypedCommand> {
+    let text = text.trim();
+    let mut parts = text.splitn(2, char::is_whitespace);
+    let name = parts.next().unwrap_or("");
+    if !COMMANDS
+        .iter()
+        .any(|(command, _)| command.eq_ignore_ascii_case(name))
+    {
+        return None;
+    }
+    Some(TypedCommand {
+        name: name.to_string(),
+        arg: parts.next().unwrap_or("").trim().to_string(),
+        raw: text.to_string(),
+    })
+}
+
 /// The help overlay's key table.
 pub const HELP_KEYS: [(&str, &str); 12] = [
     ("ctrl+n", "新会话（任意位置）"),
@@ -726,7 +968,7 @@ pub const HELP_KEYS: [(&str, &str); 12] = [
 mod tests {
     use super::*;
     use crate::workbench::state::{ActivityKind, SessionRow};
-    use crate::workbench::theme::FUTURE_DARK;
+    use crate::workbench::theme::{FUTURE_DARK, PALETTES};
 
     fn plain(rows: &[String]) -> String {
         rows.iter()
@@ -739,6 +981,34 @@ mod tests {
         let mut workbench = Workbench::new();
         let rows = workbench.render(data, w, h);
         (workbench, rows)
+    }
+
+    /// Press the middle of a painted region: the same path a real click takes,
+    /// resolved against the hit map the last frame registered.
+    fn click_region(
+        workbench: &mut Workbench,
+        data: &WorkbenchData,
+        w: u16,
+        h: u16,
+        id: &str,
+    ) -> Vec<WbAction> {
+        workbench.render(data, w, h);
+        let (rect, _) = workbench
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, region)| region == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("no region {id}"));
+        let press = mouse::MouseEvent {
+            kind: mouse::MouseKind::Press,
+            x: rect.x + 1,
+            y: rect.y,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        workbench.handle(WbEvent::Mouse(press), data)
     }
 
     #[test]
@@ -1141,14 +1411,313 @@ mod tests {
         assert_eq!(actions, vec![WbAction::SwitchSession("s1".into())]);
     }
 
+    /// Submit a draft through the surface, the way the driver does: the app
+    /// applies the edit, then the surface sees the new text.
+    fn submit_draft(
+        workbench: &mut Workbench,
+        data: &mut WorkbenchData,
+        text: &str,
+    ) -> Vec<WbAction> {
+        data.input.text = text.into();
+        data.input.cursor = text.len();
+        workbench.handle(WbEvent::Key("enter".into()), data)
+    }
+
     #[test]
-    fn the_theme_cycles_between_the_two_built_ins() {
+    fn typing_a_menu_command_opens_it_instead_of_prompting_the_agent() {
+        let mut data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        // `/model` used to be sent to the agent as the prompt text, which is
+        // why no menu ever opened from the input box.
+        let actions = submit_draft(&mut workbench, &mut data, "/model");
+        assert_eq!(workbench.overlay, Some(Overlay::Picker(PickerKind::Model)));
+        // The draft is cleared and nothing is submitted.
+        assert_eq!(
+            actions,
+            vec![
+                WbAction::EditInput {
+                    text: String::new(),
+                    cursor: 0
+                },
+                WbAction::Redraw,
+            ]
+        );
+        for (command, kind) in [
+            ("/theme", PickerKind::Theme),
+            ("/sessions", PickerKind::Sessions),
+        ] {
+            let mut data = demo::chat();
+            let (mut workbench, _rows) = frame(&data, 120, 38);
+            submit_draft(&mut workbench, &mut data, command);
+            assert_eq!(workbench.overlay, Some(Overlay::Picker(kind)), "{command}");
+        }
+        // A markdown-ish prompt that starts with a slash is still a prompt, and
+        // a verb with an argument keeps going to the agent.
+        let mut data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        assert_eq!(
+            submit_draft(&mut workbench, &mut data, "/etc/hosts 里少了一行"),
+            vec![WbAction::Submit("/etc/hosts 里少了一行".into())]
+        );
+        assert_eq!(
+            submit_draft(&mut workbench, &mut data, "/model Qwen"),
+            vec![
+                WbAction::EditInput {
+                    text: String::new(),
+                    cursor: 0
+                },
+                WbAction::Command("/model Qwen".into()),
+            ]
+        );
+        assert_eq!(workbench.overlay, None);
+    }
+
+    #[test]
+    fn the_model_picker_shows_the_models_and_applies_the_row_with_the_slider() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.open_picker(PickerKind::Model, &data);
+        let text = plain(&workbench.render(&data, 120, 38));
+        // The title, the two lists and the slider are all on screen.
+        assert!(text.contains("模型"), "{text}");
+        assert!(text.contains("westlakehpc"), "{text}");
+        assert!(text.contains("azure"), "{text}");
+        assert!(text.contains("推理强度"), "{text}");
+        assert!(text.contains("medium"), "the current level: {text}");
+        // It opens on the model in force (the demo runs `future/deepseek-flash`).
+        assert_eq!(workbench.picker.index, 1);
+        assert!(
+            text.contains("✓"),
+            "the tick marks the row in force: {text}"
+        );
+
+        // ↓ lands on Qwen, → raises the reasoning one level, and enter applies
+        // both — the model and the effort it will run at.
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        workbench.handle(WbEvent::Key("right".into()), &data);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &data),
+            vec![
+                WbAction::SetModel("Qwen".into()),
+                WbAction::SetThinking("high".into()),
+            ]
+        );
+        assert_eq!(workbench.overlay, None, "applying closes the box");
+    }
+
+    #[test]
+    fn the_slider_row_applies_the_effort_alone() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.open_picker(PickerKind::Model, &data);
+        workbench.handle(WbEvent::Key("up".into()), &data);
+        assert_eq!(workbench.picker.index, 0, "the slider is the first row");
+        workbench.handle(WbEvent::Key("left".into()), &data);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::SetThinking("low".into())]
+        );
+    }
+
+    #[test]
+    fn escape_cancels_the_model_picker_without_changing_anything() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.open_picker(PickerKind::Model, &data);
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        workbench.handle(WbEvent::Key("right".into()), &data);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("escape".into()), &data),
+            vec![WbAction::Redraw],
+            "nothing is applied: no SetModel and no SetThinking"
+        );
+        assert_eq!(workbench.overlay, None);
+        // …and the surface still paints the model that is actually in force.
+        let text = plain(&workbench.render(&data, 120, 38));
+        assert!(text.contains("deepseek-flash"), "{text}");
+    }
+
+    #[test]
+    fn the_theme_picker_previews_on_move_and_escape_restores_what_was_there() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        assert_eq!(workbench.palette.id, FUTURE_DARK.id);
+        workbench.open_picker(PickerKind::Theme, &data);
+        let text = plain(&workbench.render(&data, 120, 38));
+        // All six names, and the one in force is ticked.
+        for name in [
+            "Dark",
+            "Light",
+            "One Dark",
+            "One Light",
+            "High Contrast",
+            "Dracula",
+        ] {
+            assert!(text.contains(name), "{name} missing: {text}");
+        }
+        assert!(text.contains("✓"), "{text}");
+        assert_eq!(workbench.picker.index, 0, "opens on the current theme");
+
+        // Moving the highlight previews the palette the row names…
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        assert_eq!(workbench.palette.id, "light");
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        assert_eq!(workbench.palette.id, "one-dark");
+        // …while the `✓` stays on what the reader actually has, not on the
+        // preview: a menu that ticks its own highlight would claim a choice the
+        // reader has not made.
+        let view = workbench.picker.view(&data, workbench.committed_theme());
+        let ticked: Vec<&str> = view
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                crate::workbench::picker::PickerRow::Item {
+                    key, current: true, ..
+                } => Some(key.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ticked, vec!["dark"]);
+        // …and escape puts back what was there when the box opened.
+        assert_eq!(
+            workbench.handle(WbEvent::Key("escape".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(workbench.palette.id, FUTURE_DARK.id);
+        assert_eq!(workbench.overlay, None);
+
+        // Enter commits: the palette stays and the app is told to persist it.
+        workbench.open_picker(PickerKind::Theme, &data);
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::SetTheme("light".into())]
+        );
+        assert_eq!(workbench.palette.id, "light");
+        assert_eq!(workbench.overlay, None);
+    }
+
+    #[test]
+    fn the_sessions_picker_switches_on_enter_and_on_a_click() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.open_picker(PickerKind::Sessions, &data);
+        let text = plain(&workbench.render(&data, 120, 38));
+        assert!(text.contains("修复 parser 的 off-by-one"), "{text}");
+        assert!(text.contains("~/future-os"), "the workspace column: {text}");
+        assert!(text.contains("2m"), "the relative age: {text}");
+        assert_eq!(workbench.picker.index, 0, "opens on the current session");
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::SwitchSession("s2".into())]
+        );
+        assert_eq!(workbench.overlay, None);
+
+        // A pointer has no second enter: the click moves and applies in one go.
+        workbench.open_picker(PickerKind::Sessions, &data);
+        let actions = click_region(&mut workbench, &data, 120, 38, "picker.row.2");
+        assert_eq!(actions, vec![WbAction::SwitchSession("s3".into())]);
+        assert_eq!(workbench.overlay, None);
+    }
+
+    #[test]
+    fn a_click_on_a_model_row_completes_the_choice() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.open_picker(PickerKind::Model, &data);
+        // Row 2 in the picker's own numbering: the slider, deepseek-flash, Qwen.
+        let actions = click_region(&mut workbench, &data, 120, 38, "picker.row.2");
+        assert_eq!(
+            actions,
+            vec![
+                WbAction::SetModel("Qwen".into()),
+                WbAction::SetThinking("medium".into()),
+            ]
+        );
+        assert_eq!(workbench.overlay, None);
+    }
+
+    #[test]
+    fn a_click_outside_the_picker_dismisses_it_and_keeps_the_previous_theme() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.open_picker(PickerKind::Theme, &data);
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        assert_eq!(workbench.palette.id, "light");
+        let press = mouse::MouseEvent {
+            kind: mouse::MouseKind::Press,
+            x: 1,
+            y: 1,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        assert_eq!(
+            workbench.handle(WbEvent::Mouse(press), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(workbench.overlay, None);
+        assert_eq!(
+            workbench.palette.id, FUTURE_DARK.id,
+            "the preview was undone"
+        );
+    }
+
+    #[test]
+    fn every_picker_keeps_the_frame_the_terminal_size() {
+        for kind in PickerKind::ALL {
+            for (w, h) in [(120u16, 38u16), (88, 24), (60, 12), (24, 8), (1, 1)] {
+                let data = demo::chat();
+                let (mut workbench, _rows) = frame(&data, w, h);
+                workbench.open_picker(kind, &data);
+                let rows = workbench.render(&data, w, h);
+                assert_eq!(rows.len(), h as usize, "{kind:?} {w}x{h}");
+                for row in &rows {
+                    assert_eq!(ansi::width(row), w as usize, "{kind:?} {w}x{h}: {row:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_picker_filters_as_it_is_typed_and_enter_applies_the_match() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.open_picker(PickerKind::Sessions, &data);
+        for ch in "mobile".chars() {
+            workbench.handle(WbEvent::Key(ch.to_string()), &data);
+        }
+        let text = plain(&workbench.render(&data, 120, 38));
+        assert!(text.contains("mobile 恢复会话"), "{text}");
+        assert!(
+            !text.contains("修复 parser 的 off-by-one"),
+            "filtered out: {text}"
+        );
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::SwitchSession("s3".into())]
+        );
+    }
+
+    #[test]
+    fn the_theme_cycles_through_the_whole_catalogue() {
         let mut workbench = Workbench::new();
         assert_eq!(workbench.palette.id, FUTURE_DARK.id);
-        assert_eq!(workbench.cycle_theme(), "future-light");
-        assert_eq!(workbench.cycle_theme(), "future-dark");
+        // Every built-in in turn, wrapping back to the default.
+        let mut seen = vec![workbench.palette.id];
+        for _ in 1..PALETTES.len() {
+            seen.push(workbench.cycle_theme());
+        }
+        assert_eq!(seen.len(), 6);
+        assert_eq!(seen[1], "light");
+        assert_eq!(workbench.cycle_theme(), FUTURE_DARK.id);
+        // Setting by id accepts the shared catalogue's spelling and the one
+        // workbench builds wrote before it.
+        assert!(workbench.set_theme("dracula"));
+        assert_eq!(workbench.palette.id, "dracula");
         assert!(workbench.set_theme("future-light"));
-        assert_eq!(workbench.palette.id, "future-light");
+        assert_eq!(workbench.palette.id, "light");
         assert!(!workbench.set_theme("nope"), "an unknown id is refused");
         assert_eq!(workbench.palette.id, FUTURE_DARK.id);
     }

@@ -105,6 +105,39 @@ pub struct SessionRow {
     pub current: bool,
 }
 
+/// One model the `/model` picker offers.
+///
+/// The agent's `list_models` answers with a flat list of these (see
+/// `rpc::types::ModelInfo`); the picker groups them by `provider`, so the
+/// provider has to travel with the row rather than be re-derived from the model
+/// id (a provider is not always its id's prefix).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModelChoice {
+    pub id: String,
+    /// Display name; falls back to the id when the agent names none.
+    pub label: String,
+    pub provider: String,
+    /// Context window in tokens (0 when the agent reported none).
+    pub context_window: u64,
+    /// The level the agent would run this model at by default.
+    pub thinking_level: String,
+}
+
+/// The reasoning levels a model can run at, weakest first.
+///
+/// One list for the whole crate: `index.rs` parses `--model sonnet:high`
+/// against the same six names, and the `/model` picker's slider walks them.
+pub const THINKING_LEVELS: [&str; 6] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+
+/// The position of `level` in [`THINKING_LEVELS`]; an unknown level is `off`, so
+/// a slider always has a defined place to stand.
+pub fn thinking_index(level: &str) -> usize {
+    THINKING_LEVELS
+        .iter()
+        .position(|known| known.eq_ignore_ascii_case(level))
+        .unwrap_or(0)
+}
+
 /// One skill in the sidebar's skills panel.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SkillRow {
@@ -298,6 +331,9 @@ pub struct WorkbenchData {
     pub usage: UsageData,
     pub todos: Vec<TodoItem>,
     pub sessions: Vec<SessionRow>,
+    /// Every model the agent offers, in the agent's order. The `/model` picker
+    /// groups them by provider; an empty list is a picker that says so.
+    pub models: Vec<ModelChoice>,
     pub skills: Vec<SkillRow>,
     pub jobs: Vec<JobRow>,
     /// Already-rendered ANSI rows of the conversation (see `ChatArea`). The
@@ -306,7 +342,6 @@ pub struct WorkbenchData {
     pub messages: Vec<String>,
     pub input: InputView,
     pub activity: Activity,
-    pub palette: &'static str,
     /// A failed request or command, shown in place of the hint row until
     /// something succeeds. Distinct from the transcript: it is about the
     /// surface's own last action, not part of the conversation.
@@ -395,6 +430,20 @@ mod tests {
         assert!(data.on_launchpad());
         data.session.id = "s1".into();
         assert!(!data.on_launchpad());
+    }
+
+    #[test]
+    fn the_reasoning_slider_walks_the_crates_own_levels() {
+        assert_eq!(THINKING_LEVELS.len(), 6);
+        assert_eq!(THINKING_LEVELS[0], "off");
+        assert_eq!(THINKING_LEVELS[5], "xhigh");
+        for (index, level) in THINKING_LEVELS.iter().enumerate() {
+            assert_eq!(thinking_index(level), index);
+            assert_eq!(thinking_index(&level.to_uppercase()), index);
+        }
+        // A level an older agent invented has a defined place to stand.
+        assert_eq!(thinking_index(""), 0);
+        assert_eq!(thinking_index("galaxy-brain"), 0);
     }
 
     #[test]
