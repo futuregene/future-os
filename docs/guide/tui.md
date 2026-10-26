@@ -50,7 +50,7 @@ conversations, to see the rail's window and its `↓ N more` row).
  ──────────────────────────────────────────┴──────────────────────
  input box (❯ multiline draft, grows to 8 visual rows)
  activity: ⠋ 思考 … · 3s · 2 工具                   42 tok/s · 缓存 96%
- status:   model · effort · permission   ░░ ctx 6.9k/1.0M 0.7% · ≈¥0.01
+ status:   model · effort · approval   ░░ ctx 6.9k/1.0M 0.7% · ≈¥0.01
  hint:     Esc 回到聊天 · ctrl+b 侧栏 · tab 焦点 · ctrl+r 会话 · ctrl+p 命令
 ```
 
@@ -66,11 +66,16 @@ live on the status bar, so no panel repeats them; skills are the palette's. With
 the rail focused, `←`/`→` move between the two tabs.
 
 The launchpad is the *body*, not a dialog over the conversation: with no session
-attached the composer fills the surface (logo, wordmark, box, workspace / model
-/ effort / mode / permission chips, shortcuts) and there is no second input
-band. The conversations are the rail's — the launchpad does not repeat them.
-`tab` walks the prompt and the chips, `enter` cycles the chip under the cursor,
-and typing (or `escape`) hands the keys back to the prompt.
+attached the composer fills the surface (wordmark, box, workspace / model /
+effort / approval chips, shortcut entries) and there is no second input band.
+The block is centred in the body rather than pinned to its top, and the
+conversations are the rail's — the launchpad does not repeat them. `tab` walks
+the prompt and the chips, `enter` cycles the chip under the cursor, and typing
+(or `escape`) hands the keys back to the prompt. The shortcut entries carry the
+*effective* bindings, so a rebound key is shown rebound. The four chips are the
+desktop composer's own controls (model, thinking effort, approval mode) plus the
+workspace this TUI starts from; there is no separate permission level, because
+no other client offers one.
 
 Two breakpoints, both from the contract:
 
@@ -170,7 +175,10 @@ ASCII letter or digit, F1–F24, Tab, navigation keys and Enter/Escape.
 | `F7` or `/mouse` | Toggle and persist mouse capture off/on for native terminal selection |
 | `F8` | Toggle native-scrollback linear reading |
 | `F9` | Toggle reduced motion independently |
-| `ctrl+b` | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal. The show/hide choice is written to `sidebarVisible` and is where the next start begins |
+| `ctrl+t` | Thinking effort: opens the six-level chooser (`/thinking`); on the launchpad the level is staged for the session the first message creates |
+| `ctrl+s` | Approval mode: opens the four-tier chooser (`/mode`), the desktop composer's own values — 手动审批 / 沙箱保护 / 自动审批 / 完全访问 |
+| `ctrl+l` | Workspaces: opens the workspace chooser (`/workspace`) — every directory this client has a conversation in, plus a row that creates one from the path typed into its search line |
+| `ctrl+b` | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal. The rail's own `›` edge button does the same hide/show with one click. The show/hide choice is written to `sidebarVisible` and is where the next start begins |
 | `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run |
 | `ctrl+r` | Session picker (name, workspace and age of each conversation; the footer names the key) |
 | `ctrl+o` | Preferences and shortcut editor |
@@ -182,6 +190,7 @@ ASCII letter or digit, F1–F24, Tab, navigation keys and Enter/Escape.
 | Mouse | Action |
 |---|---|
 | Click a sidebar tab | Switch panel (`←`/`→` do the same while the rail has the keys) |
+| Click the rail's `›` edge (or the `‹` it leaves behind) | Hide the rail / bring it back. `ctrl+b` does the same from the keyboard |
 | Click a session row | Open that conversation (a workspace heading only takes the keys) |
 | Drag the divider | Resize the sidebar (30–48 columns), persisted on release |
 | Click anywhere in the input box | Focus it |
@@ -222,11 +231,11 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | `/worktree` rows | `›` is the selection; `●` marks the worktree the session is already in, so choosing one is visible even when the first row is current |
 | Fork | `/fork` lists real user-message points from `get_fork_messages`; enter calls `fork` and opens the child |
 | Worktrees | `/worktree` lists real git worktrees and enter sets the session cwd. `/worktree new <branch>` creates under `.worktrees/` and moves the session. No remove/prune/reset/clean operations |
-| Existing settings | `/sandbox`, `/permission [all|workspace|none]`, `/compact [instructions]`, `/tools a,b` or `/tools off`, `/providers`; `/skills` and `/model` retain their existing surfaces |
+| Existing settings | `/mode` (or `/sandbox`) opens the approval-mode chooser, `/thinking` the reasoning chooser, `/compact [instructions]`, `/tools a,b` or `/tools off`, `/providers`; `/skills` and `/model` retain their existing surfaces |
 | Sessions panel | `list_sessions`, newest first: 最近 as a flat list, 工作区 filed by directory with the pinned ones leading. Pins persist in `settings.json` (`pinnedWorkspaces`) |
 | Usage / context / cost | `get_state`'s usage block, refreshed on the same events |
 | `ctrl+n` / `/new`, `ctrl+x` stop, `F5` refresh | |
-| Launchpad chips | Click 工作区 / 模型 / 强度 / 权限 / 模式 to cycle them; on the launchpad the workspace and the model/effort choices are staged for the session the first message creates (the agent has no session to set them on yet), while permission and mode cycle the agent's own state. 工作区 cycles the directories this client has conversations in, and the notice row names the full path it chose |
+| Launchpad chips | Click 工作区 / 模型 / 强度 / 审批 to cycle them. On the launchpad the workspace, model, effort and approval choices are staged for the session the first message creates (the agent has no session to set them on yet); with a session attached they go over the wire. 工作区 cycles the directories this client has conversations in, and the notice row names the full path it chose |
 | Theme, reading level | Persisted in `~/.future/tui/settings.json` (`tui/src/settings.rs`) |
 
 ## What is not here yet

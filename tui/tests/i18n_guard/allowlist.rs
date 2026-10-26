@@ -206,11 +206,6 @@ pub const ALLOW: &[Allow] = &[
     ),
     Allow::known_gap(
         "workbench/live.rs",
-        "Could not set the permission: {error}",
-        "notice: the permission chip failed",
-    ),
-    Allow::known_gap(
-        "workbench/live.rs",
         "Could not set the approval mode: {error}",
         "notice: the mode chip failed",
     ),
@@ -266,4 +261,4 @@ pub const FILES: &[FileExempt] = &[FileExempt {
 /// 35 → 37: the two `@path` inlining notes in `workbench/live.rs`. They are the
 /// prompt text the model reads in place of a file it was not given — never
 /// drawn — so they stay in the language the prompt is written in.
-pub const BUDGET: usize = 37;
+pub const BUDGET: usize = 36;

@@ -74,7 +74,7 @@ struct Paging {
 /// ([`super::Workbench::surface_command`]) and this list have to account for
 /// every entry exactly once. That is the check whose absence let five entries
 /// advertise themselves and then answer `Unknown command`.
-pub const APP_COMMANDS: [&str; 17] = [
+pub const APP_COMMANDS: [&str; 15] = [
     "/new",
     "/reply-detail",
     "/export",
@@ -82,8 +82,6 @@ pub const APP_COMMANDS: [&str; 17] = [
     "/copy",
     "/mouse",
     "/compact",
-    "/sandbox",
-    "/permission",
     "/tools",
     "/providers",
     "/diff",
@@ -144,6 +142,11 @@ pub struct Live {
     /// Cleared once that session exists — from then on the agent is the source.
     pending_model: Option<String>,
     pending_effort: Option<String>,
+    /// The approval mode chosen while nothing was attached. `set_sandbox_policy`
+    /// needs a session like the other two setters, so the launchpad's chip and
+    /// the `/mode` menu stage it here and the session the next message creates
+    /// is told once it exists.
+    pending_mode: Option<String>,
     /// The workspace the next session will run in, chosen on the launchpad.
     /// Nothing is sent: the agent has no session to set a directory on until
     /// the first message creates one.
@@ -239,6 +242,7 @@ impl Live {
             launchpad: false,
             pending_model: None,
             pending_effort: None,
+            pending_mode: None,
             pending_cwd: None,
             run_started: None,
             run_output_tokens: 0,
@@ -953,11 +957,7 @@ impl Live {
                 .filter(|model| !model.trim().is_empty())
                 .unwrap_or_else(|| "no model".to_string()),
             effort: self.shown_effort(),
-            mode: state.sandbox_tier.clone().unwrap_or_else(|| "open".into()),
-            permission: state
-                .permission_level
-                .clone()
-                .unwrap_or_else(|| "all".into()),
+            mode: self.shown_mode(),
             usage: UsageData {
                 ctx_used: state.context_tokens.unwrap_or(0).max(0) as u64,
                 ctx_total: state.context_window.unwrap_or(0).max(0) as u64,
@@ -1082,15 +1082,8 @@ impl Live {
             WbAction::SelectWorktree(path) => self.select_worktree(&path).await,
             WbAction::ForkAt(id) => self.fork_at(&id).await,
             WbAction::Compact(instructions) => self.compact(instructions).await,
-            WbAction::SetPermission(level) => {
-                match self.client.set_permission_level(&level).await {
-                    Ok(()) => self.refresh_state().await,
-                    Err(error) => {
-                        self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
-                    }
-                }
-            }
-            WbAction::CycleSandbox => self.cycle_mode().await,
+            WbAction::SetApproval(mode) => self.set_approval(&mode).await,
+            WbAction::SelectWorkspace(path) => self.select_workspace(&path).await,
             WbAction::SetTools(tools) => match self.client.set_tools(&tools).await {
                 Ok(()) => self.notice = Some(t(self.lang, Key::ToolsDone).into()),
                 Err(error) => {
@@ -1264,26 +1257,21 @@ impl Live {
             "compact" => {
                 self.compact(arg).await;
             }
-            "sandbox" => self.cycle_mode().await,
+            "sandbox" => {
+                // `/sandbox <mode>` sets it; a bare `/sandbox` is the menu the
+                // driver opens before this handler ever sees it.
+                if crate::approval_mode::ApprovalMode::from_wire(&arg).is_some() {
+                    self.set_approval(&arg).await;
+                } else {
+                    self.cycle_mode().await;
+                }
+            }
             "diff" | "history" | "fork" => {}
             "worktree" if !arg.is_empty() => {
                 if arg.strip_prefix("new ").is_some() {
                     self.notice = Some(t(self.lang, Key::WorktreeCreating).into());
                 } else {
                     self.notice = Some(crate::worktree::WORKTREE_USAGE.into());
-                }
-            }
-            "permission" => {
-                if ["all", "workspace", "none"].contains(&arg.as_str()) {
-                    match self.client.set_permission_level(&arg).await {
-                        Ok(()) => self.refresh_state().await,
-                        Err(error) => {
-                            self.notice =
-                                Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
-                        }
-                    }
-                } else {
-                    self.cycle_permission().await;
                 }
             }
             "tools" => {
@@ -1335,16 +1323,14 @@ impl Live {
                 Err(error) => self.notice = Some(format!("Could not set the model: {error}")),
             },
             "model" => self.cycle_model().await,
-            "thinking" | "effort" => self.cycle_thinking().await,
             // The launchpad's parameter chips. With a session attached each
             // floats a wire call rather than carrying state of its own: the
             // agent stays the single source of what the next message runs with.
-            // With none, the model and effort chips stage the choice locally —
-            // the agent has no session to accept either.
+            // With none, the model, effort and approval chips stage the choice
+            // locally — the agent has no session to accept any of them.
             "launchpad.model" => self.cycle_model().await,
             "launchpad.effort" => self.cycle_thinking().await,
-            "launchpad.permission" => self.cycle_permission().await,
-            "launchpad.mode" => self.cycle_mode().await,
+            "launchpad.approval" => self.cycle_mode().await,
             "launchpad.workspace" => self.cycle_pending_workspace(),
             "reply-detail" => {
                 let next = match self.detail {
@@ -1379,8 +1365,10 @@ impl Live {
             // handler): `/usage`, `/skills`, `/workspace`, `/transcript`,
             // `/help`. They are named here so a caller that bypasses the
             // surface is not told a command the palette advertises does not
-            // exist — the notice the whole family used to produce.
-            "usage" | "skills" | "workspace" | "transcript" | "help" => {}
+            // exist — the notice the whole family used to produce. The four
+            // choosers (`/model`, `/thinking`, `/mode`, `/workspace`) come back
+            // to the surface the same way: the picker is not the agent's.
+            "usage" | "skills" | "workspace" | "transcript" | "help" | "thinking" | "mode" => {}
             other => self.notice = Some(format!("Unknown command /{other}")),
         }
         Outcome::Continue
@@ -1460,6 +1448,25 @@ impl Live {
                 .unwrap_or_else(|| self.state.thinking_level.clone());
         }
         self.state.thinking_level.clone()
+    }
+
+    /// The approval mode the surface should name (see [`Self::shown_model`]).
+    ///
+    /// The agent reports the sandbox *tier* only, and `auto` is that tier with
+    /// the model reviewer — so a mode chosen in this process is named from what
+    /// was chosen, and a fresh attach reads the tier (`sandbox` rather than
+    /// `auto`). The empty state is the product default the desktop starts on.
+    fn shown_mode(&self) -> String {
+        if self.detached() {
+            if let Some(mode) = self.pending_mode.clone() {
+                return mode;
+            }
+        }
+        self.state
+            .sandbox_tier
+            .clone()
+            .filter(|tier| !tier.trim().is_empty())
+            .unwrap_or_else(|| "off".to_string())
     }
 
     /// The workspace the surface should name (see [`Self::shown_model`]).
@@ -1571,6 +1578,19 @@ impl Live {
                 self.pending_model = None;
                 self.pending_effort = None;
                 self.pending_cwd = None;
+                // The approval mode has no `new_session` argument: it is one
+                // call after the session exists.
+                if let Some(mode) = self.pending_mode.take() {
+                    if let Some(mode) = crate::approval_mode::ApprovalMode::from_wire(&mode) {
+                        match self.client.set_sandbox_policy(mode).await {
+                            Ok(_) => self.state.sandbox_tier = Some(mode.as_str().to_string()),
+                            Err(error) => {
+                                self.notice =
+                                    Some(format!("Could not set the approval mode: {error}"))
+                            }
+                        }
+                    }
+                }
                 self.refresh_state().await;
                 self.refresh_sessions().await;
                 self.load_tail().await;
@@ -1674,43 +1694,40 @@ impl Live {
         self.set_pending_effort(next);
     }
 
-    /// all → workspace → none → all: the level `/permission` sets, in the order
-    /// the inline TUI offers them.
-    async fn cycle_permission(&mut self) {
-        const LEVELS: [&str; 3] = ["all", "workspace", "none"];
-        let current = self
-            .state
-            .permission_level
-            .clone()
-            .unwrap_or_else(|| "all".to_string());
-        let index = LEVELS
-            .iter()
-            .position(|level| *level == current)
-            .unwrap_or(0);
-        let next = LEVELS[(index + 1) % LEVELS.len()];
-        match self.client.set_permission_level(next).await {
-            Ok(()) => {
-                self.state.permission_level = Some(next.to_string());
-            }
-            Err(error) => self.notice = Some(format!("Could not set the permission: {error}")),
-        }
-    }
-
     /// The approval mode, in the desktop composer's order.
     async fn cycle_mode(&mut self) {
         use crate::approval_mode::ApprovalMode;
-        let current = self
-            .state
-            .sandbox_tier
-            .clone()
-            .unwrap_or_else(|| "off".into());
+        let current = self.shown_mode();
         let index = ApprovalMode::ALL
             .iter()
             .position(|mode| mode.as_str() == current)
             .unwrap_or(ApprovalMode::ALL.len() - 1);
         let next = ApprovalMode::ALL[(index + 1) % ApprovalMode::ALL.len()];
-        match self.client.set_sandbox_policy(next).await {
-            Ok(_) => self.state.sandbox_tier = Some(next.as_str().to_string()),
+        self.set_approval(next.as_str()).await;
+    }
+
+    /// Apply one approval mode — the `/mode` menu's row, a click on the
+    /// launchpad's chip, or the next step of the cycle.
+    ///
+    /// With no session attached it is staged like the model and the level: the
+    /// agent answers `set_sandbox_policy` with "session not found" otherwise,
+    /// and the reader would see a red row for a choice that was perfectly fine.
+    pub async fn set_approval(&mut self, mode: &str) {
+        use crate::approval_mode::ApprovalMode;
+        let Some(mode) = ApprovalMode::from_wire(mode) else {
+            self.notice = Some(i18n::render(self.lang, Key::NoticeModeUnknown, &[&mode]));
+            return;
+        };
+        if self.detached() {
+            self.pending_mode = Some(mode.as_str().to_string());
+            self.notice = None;
+            return;
+        }
+        match self.client.set_sandbox_policy(mode).await {
+            Ok(_) => {
+                self.state.sandbox_tier = Some(mode.as_str().to_string());
+                self.notice = None;
+            }
             Err(error) => self.notice = Some(format!("Could not set the approval mode: {error}")),
         }
     }
@@ -1865,6 +1882,40 @@ impl Live {
                 self.refresh_state().await;
                 self.refresh_worktrees();
                 self.diff = None;
+            }
+            Err(error) => {
+                self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
+            }
+        }
+    }
+
+    /// Move the session to a workspace the reader picked (or typed).
+    ///
+    /// Two roads, decided by whether anything is attached — the same split the
+    /// model and the effort take. With no session the directory is staged for
+    /// the one the next message creates; with one, the agent moves it, and the
+    /// rail re-files the conversation under its new workspace.
+    pub async fn select_workspace(&mut self, path: &str) {
+        let path = path.trim().trim_end_matches(['/', '\\']);
+        if path.is_empty() {
+            return;
+        }
+        let notice = i18n::render(self.lang, Key::WorkspaceChosen, &[&shorten(path)]);
+        if self.detached() {
+            self.pending_cwd = Some(path.to_string());
+            self.notice = Some(notice);
+            return;
+        }
+        if same_path(&self.state.cwd.clone().unwrap_or_default(), path) {
+            self.notice = None;
+            return;
+        }
+        match self.client.set_cwd(path).await {
+            Ok(()) => {
+                self.refresh_state().await;
+                self.refresh_worktrees();
+                self.diff = None;
+                self.notice = Some(notice);
             }
             Err(error) => {
                 self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
