@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/Button";
+import { thinkingLevelLabel } from "../../i18n/thinkingLevelLabel";
 import { useRemoteControls } from "../../remote/RemoteContext";
 import type { DesktopSettings, RemoteModel } from "../../remote/types";
-import { modelReference, modelThinkingLevels, resolveModelThinkingLevel } from "../../remote/types";
+import { defaultThinkingLevelForModel, modelReference, modelThinkingLevels, resolveModelThinkingLevel } from "../../remote/types";
 import type { RemoteTaskDetail, RemoteTaskRow, RemoteTaskRun } from "../../remote/taskTypes";
 import { layout, radius, spacing } from "../../theme/tokens";
 import { createThemedStyles } from "../../theme/ThemeContext";
@@ -75,9 +76,6 @@ function toggleDay(days: string, weekday: string): string {
   // same set, and the summary reads the same whichever order the user tapped.
   return WEEKDAYS.filter(day => next.includes(day)).join(",");
 }
-
-/** Thinking levels a task may pin, in the composer's order. */
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 
 /**
  * Everything the editor can change. The desktop keeps the same shape in its
@@ -167,12 +165,14 @@ function draftFrom(detail: RemoteTaskDetail): Draft {
 /**
  * A blank draft for a new task.
  *
- * It leaves the model and the thinking level unset on purpose: both are
- * spending decisions the user makes, so the form asks instead of inheriting an
- * app default nobody chose. The conversation type starts on chat, which needs
- * no working directory at all (the phone cannot browse the desktop's
- * filesystem, and a chat conversation brings its own workspace); switching to
- * a workspace conversation is what asks for a path.
+ * It leaves the model unset on purpose: that is a spending decision the user
+ * makes, so the form asks instead of inheriting an app default nobody chose.
+ * The thinking level is left unset too, but that is "run at whatever the model
+ * starts at": the form shows the model's declared starting level and saves it
+ * once a model is chosen. The conversation type starts on chat, which needs no
+ * working directory at all (the phone cannot browse the desktop's filesystem,
+ * and a chat conversation brings its own workspace); switching to a workspace
+ * conversation is what asks for a path.
  */
 function newDraft(): Draft {
   return {
@@ -267,7 +267,7 @@ function draftPayload(draft: Draft): Record<string, unknown> {
 }
 
 /** Why the form cannot be submitted yet, or null when it can. */
-function draftProblem(draft: Draft): "name" | "prompt" | "cwd" | "model" | "thinking" | "trigger" | "date" | "time" | null {
+function draftProblem(draft: Draft): "name" | "prompt" | "cwd" | "model" | "trigger" | "date" | "time" | null {
   if (!draft.name.trim())
     return "name";
   if (!draft.prompt.trim())
@@ -277,8 +277,6 @@ function draftProblem(draft: Draft): "name" | "prompt" | "cwd" | "model" | "thin
     return "cwd";
   if (!draft.modelId)
     return "model";
-  if (!draft.thinkingLevel)
-    return "thinking";
   // A trigger is required, like the model: nothing else starts a scheduled task,
   // and a manual one has no next due time at all.
   if (draft.trigger.mode === "")
@@ -779,27 +777,29 @@ function TaskForm({
     ? draft.modelId
     : null;
   const workspaceConversation = draft.conversationMode === "workspace";
-  // The levels the task's model offers. The agent clamps anything else when the
-  // run starts, so the form does not offer a level the task would not run at.
-  const thinkingLevels = modelThinkingLevels(
-    enabledModels.find(model => modelKey(model) === draft.modelId),
-    THINKING_LEVELS,
-  );
+  // The levels the task's model offers, in the host's own order. A current host
+  // declares them (always starting with "default"); an older one falls back to
+  // the legacy six. The catalogue (not just the enabled list) is what answers
+  // for a model the user has since disabled, so an edit keeps that task's own
+  // choices. The agent clamps anything else when the run starts, so the form
+  // does not offer a level the task would not run at.
+  const taskModel = (models.data ?? []).find(model => modelKey(model) === draft.modelId);
+  const thinkingLevels = modelThinkingLevels(taskModel);
   /**
    * The level this form shows and saves.
    *
    * A task written when the model offered `medium`, against a model whose
-   * `models.json` list has since dropped it, would otherwise show no selected
-   * chip while its save wrote a level the run replaces. An *empty* level stays
-   * empty: that is "not chosen yet", which the form asks for rather than filling
-   * in. Derived rather than written back, so opening the form does not edit the
+   * declared list has since dropped it, would otherwise show no selected chip
+   * while its save wrote a level the run replaces. A task with no level yet
+   * shows the model's starting level — `"default"` on a current host, the legacy
+   * `"medium"` on an older one — which is also what an unchosen task runs at.
+   * Derived rather than written back, so opening the form does not edit the
    * stored task behind the user's back.
    */
-  const resolvedLevel = resolveModelThinkingLevel(
-    draft.thinkingLevel || null,
-    enabledModels.find(model => modelKey(model) === draft.modelId),
-  );
-  const thinkingLevel = draft.thinkingLevel ? (resolvedLevel ?? draft.thinkingLevel) : "";
+  const resolvedLevel = resolveModelThinkingLevel(draft.thinkingLevel || null, taskModel);
+  const thinkingLevel = draft.thinkingLevel
+    ? (resolvedLevel ?? draft.thinkingLevel)
+    : defaultThinkingLevelForModel(taskModel);
   const patch = (values: Partial<Draft>) => {
     // A keystroke makes the on-screen form the user's own: a stored draft that
     // arrives after it must not overwrite what is being typed.
@@ -1040,7 +1040,7 @@ function TaskForm({
                     <Choice
                       disabled={busy}
                       key={level}
-                      label={t(`tasks.thinkingLabels.${level}`)}
+                      label={thinkingLevelLabel(t, level, "tasks.thinkingLabels")}
                       onPress={() => patch({ thinkingLevel: level })}
                       selected={thinkingLevel === level}
                     />

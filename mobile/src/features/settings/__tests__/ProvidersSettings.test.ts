@@ -76,6 +76,16 @@ const link = (label: string) => tree.root.findAllByType(SettingsLink).find(node 
 const button = (label: string) => tree.root.findAllByType(Button).find(node => node.props.label === label)!;
 const input = (label: string) => tree.root.findAllByType(TextInput).find(node => node.props.accessibilityLabel === label)!;
 const pressable = (label: string) => tree.root.findAll(node => node.props.accessibilityLabel === label && typeof node.props.onPress === "function")[0]!;
+/** The last custom-provider payload the page submitted. */
+const lastUpsert = () => {
+  const calls = mockRemote.upsertCustomProvider.mock.calls as unknown as [unknown][];
+  return calls.at(-1)![0] as {
+    models: { thinkingLevels?: string[]; reasoning?: boolean }[];
+  };
+};
+/** One thinking-level toggle, by the wire value it toggles. */
+const levelToggle = (level: string) => tree.root
+  .findAll(node => node.props.accessibilityRole === "checkbox" && node.props.accessibilityLabel === level)[0];
 const back = () => tree.root.findAll(node => node.props.accessibilityLabel === "common.back" && typeof node.props.onPress === "function")[0]!;
 const section = (title: string) => tree.root.findAllByType(SettingsSection).find(node => node.props.title === title)!;
 const sectionTitles = () => tree.root.findAllByType(SettingsSection).map(node => node.props.title);
@@ -107,7 +117,7 @@ beforeEach(async () => {
       api: "openai-completions",
       baseUrl: "https://gateway.acme.example.com/v1",
       hasApiKey: true,
-      models: [{ id: "acme-large", name: "Acme Large", supportsImages: true, reasoning: true, contextWindow: 128000, maxTokens: 16384, inputCost: 1.5, outputCost: 6, cacheReadCost: 0, cacheWriteCost: 0 }],
+      models: [{ id: "acme-large", name: "Acme Large", supportsImages: true, reasoning: true, thinkingLevels: ["off", "low", "high"], contextWindow: 128000, maxTokens: 16384, inputCost: 1.5, outputCost: 6, cacheReadCost: 0, cacheWriteCost: 0 }],
     }],
   };
   await act(async () => { tree = create(createElement(SettingsScreen, deviceProps)); });
@@ -280,6 +290,10 @@ test("adds a custom provider with models and prices", async () => {
       inputCost: 2,
       outputCost: 8,
       cacheReadCost: 0,
+      // A new model starts on the levels the desktop's own form seeds, with the
+      // implicit "default" always available on top.
+      thinkingLevels: ["off", "low", "medium", "high"],
+      reasoning: true,
     })],
   }));
 });
@@ -359,7 +373,11 @@ test("the model editor writes every field and can drop a model again", async () 
   const capability = (label: string) =>
     tree.root.findAll(node => node.props.label === label && typeof node.props.onChange === "function")[0]!;
   await act(async () => capability("desktopSettings.modelSupportsImages").props.onChange(true));
-  await act(async () => capability("desktopSettings.modelReasoning").props.onChange(true));
+  // The single "thinking" switch is gone: the host declares the exact levels a
+  // model accepts, so they are a multi-select of wire values.
+  expect(tree.root.findAll(node => node.props.label === "desktopSettings.modelReasoning")).toHaveLength(0);
+  await act(async () => levelToggle("high")!.props.onPress());
+  await act(async () => levelToggle("max")!.props.onPress());
   await act(async () => { button("desktopSettings.save").props.onPress(); await Promise.resolve(); });
   expect(mockRemote.upsertCustomProvider).toHaveBeenCalledWith(expect.objectContaining({
     id: "acme",
@@ -370,7 +388,9 @@ test("the model editor writes every field and can drop a model again", async () 
       contextWindow: 200000,
       maxTokens: 8192,
       supportsImages: true,
+      // Round-tripped even though the phone has no switch for it any more.
       reasoning: true,
+      thinkingLevels: ["off", "low", "max"],
     })],
   }));
 });
@@ -391,6 +411,42 @@ test("adding a model then removing it leaves the provider as it was", async () =
   expect(mockRemote.upsertCustomProvider).toHaveBeenCalledWith(expect.objectContaining({
     models: [expect.objectContaining({ id: "acme-large" })],
   }));
+});
+
+test("a model's thinking levels are a multi-select and default stays implicit", async () => {
+  await openProviders();
+  await act(async () => link("Acme Gateway").props.onPress());
+  await act(async () => pressable("Acme Large").props.onPress());
+
+  // Every offered wire value is a toggle; "default" is always accepted, so it is
+  // not one — the list only carries the extras.
+  expect(levelToggle("default")).toBeUndefined();
+  for (const level of ["off", "minimal", "low", "medium", "high", "xhigh", "max"])
+    expect(levelToggle(level)).toBeDefined();
+  expect(levelToggle("off")!.props.accessibilityState.checked).toBe(true);
+  expect(levelToggle("medium")!.props.accessibilityState.checked).toBe(false);
+
+  // Clearing every level leaves the host with "default" alone, which is a
+  // legitimate choice (an empty list = implicit default only).
+  for (const level of ["off", "low", "high"])
+    await act(async () => levelToggle(level)!.props.onPress());
+  await act(async () => { button("desktopSettings.save").props.onPress(); await Promise.resolve(); });
+  const payload = lastUpsert();
+  expect(payload.models[0]!.thinkingLevels).toEqual([]);
+});
+
+test("a stored level this build has no label for round-trips", async () => {
+  // `thinkingLevels` is an open vocabulary: a token hand-written into
+  // `models.json` must survive a phone edit, not be silently dropped.
+  providers.custom[0]!.models[0]!.thinkingLevels = ["off", "turbo"];
+  mockRemote.listProviders.mockResolvedValueOnce(providers);
+  await openProviders();
+  await act(async () => link("Acme Gateway").props.onPress());
+  await act(async () => pressable("Acme Large").props.onPress());
+  expect(levelToggle("turbo")!.props.accessibilityState.checked).toBe(true);
+  await act(async () => { button("desktopSettings.save").props.onPress(); await Promise.resolve(); });
+  const payload = lastUpsert();
+  expect(payload.models[0]!.thinkingLevels).toEqual(["off", "turbo"]);
 });
 
 test("the API-type menu writes the chosen protocol and closes", async () => {

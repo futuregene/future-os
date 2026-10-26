@@ -82,7 +82,7 @@ let timelineOptions: {
 
 const mockConversation = {
   modelId: "",
-  thinkingLevel: "off",
+  thinkingLevel: "default",
   sessionUsage: null,
   openingSession: false,
   selectSession: jest.fn(async (_sessionId: string) => {}),
@@ -265,7 +265,7 @@ test("a session-state push reaches the conversation controls that own the settin
   act(() => timelineOptions.onSessionState!("s2", {}));
   expect(mockConversation.applySessionSettings).toHaveBeenLastCalledWith("s2", {
     model: "",
-    thinkingLevel: "off",
+    thinkingLevel: "default",
     usage: undefined,
   });
 });

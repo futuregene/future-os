@@ -4,9 +4,11 @@ import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-
 import { ChevronDown, ChevronRight, Trash2 } from "lucide-react-native";
 import { ActionMenu } from "../../components/ActionMenu";
 import { Button } from "../../components/Button";
+import { thinkingLevelLabel } from "../../i18n/thinkingLevelLabel";
 import { useRemoteControls } from "../../remote/RemoteContext";
 import {
   CUSTOM_PROVIDER_APIS,
+  DEFAULT_THINKING_LEVEL,
   type CustomProviderUpsert,
   type RemoteCustomProvider,
   type RemoteProviderModel,
@@ -18,6 +20,16 @@ import { SettingsField, SettingsSwitch, useSettingsStyles } from "./SettingsPrim
 /** Mirrors the desktop form defaults for a freshly added model. */
 const DEFAULT_CONTEXT_WINDOW = "128000";
 const DEFAULT_MAX_TOKENS = "16384";
+/**
+ * The thinking levels the editor offers per model. `"default"` — send no
+ * thinking parameter — is always accepted and so is never a toggle; every other
+ * entry is a wire value the model receives verbatim.
+ */
+const THINKING_LEVEL_OPTIONS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+/** A new model starts on the levels the desktop's own form seeds. */
+const NEW_MODEL_THINKING_LEVELS = ["off", "low", "medium", "high"];
+/** Mirrors the host's cap on one model's declared list. */
+const MAX_THINKING_LEVELS = 16;
 const API_LABELS: Record<string, string> = {
   "openai-completions": "OpenAI Completions",
   "openai-responses": "OpenAI Responses",
@@ -42,13 +54,43 @@ interface ModelDraft {
   id: string;
   name: string;
   supportsImages: boolean;
+  /**
+   * Kept for the wire only — an older desktop still reads it, and the phone no
+   * longer shows a switch for it. The levels below decide what is offered.
+   */
   reasoning: boolean;
+  /** The declared levels, `"default"` implicit and never stored. */
+  thinkingLevels: string[];
   contextWindow: string;
   maxTokens: string;
   inputCost: string;
   outputCost: string;
   cacheReadCost: string;
   cacheWriteCost: string;
+}
+
+/**
+ * A stored level list in the shape the editor's toggles use: `"default"` is
+ * implicit (never stored), entries are trimmed, unique and non-empty. Unknown
+ * tokens survive — the wire accepts any value, so an edit must not silently drop
+ * a level someone hand-wrote into `models.json`.
+ */
+function editableThinkingLevels(levels: string[] | undefined): string[] {
+  const result: string[] = [];
+  for (const raw of levels ?? []) {
+    const level = raw.trim();
+    if (!level || level === DEFAULT_THINKING_LEVEL || result.includes(level)) continue;
+    result.push(level);
+  }
+  return result;
+}
+
+/** The toggles one model shows: the offer above, then any stored extra token. */
+function thinkingLevelOptions(levels: string[]): string[] {
+  return [
+    ...THINKING_LEVEL_OPTIONS,
+    ...levels.filter(level => !(THINKING_LEVEL_OPTIONS as readonly string[]).includes(level)),
+  ];
 }
 
 function toDraft(model: RemoteProviderModel, key: string): ModelDraft {
@@ -59,6 +101,7 @@ function toDraft(model: RemoteProviderModel, key: string): ModelDraft {
     name: model.name ?? "",
     supportsImages: model.supportsImages ?? false,
     reasoning: model.reasoning ?? true,
+    thinkingLevels: editableThinkingLevels(model.thinkingLevels),
     contextWindow: String(model.contextWindow ?? Number(DEFAULT_CONTEXT_WINDOW)),
     maxTokens: String(model.maxTokens ?? Number(DEFAULT_MAX_TOKENS)),
     inputCost: price(model.inputCost),
@@ -75,6 +118,7 @@ function newDraft(key: string): ModelDraft {
     name: "",
     supportsImages: false,
     reasoning: true,
+    thinkingLevels: [...NEW_MODEL_THINKING_LEVELS],
     contextWindow: DEFAULT_CONTEXT_WINDOW,
     maxTokens: DEFAULT_MAX_TOKENS,
     inputCost: "",
@@ -146,6 +190,14 @@ export function CustomProviderPage({ provider, onDone }: {
   const setPrice = (key: string, field: PriceField, value: string) =>
     setModels(current => current.map(model => (model.key === key ? { ...model, [field]: value } : model)));
 
+  const toggleThinkingLevel = (key: string, level: string) =>
+    setModels(current => current.map(model => (model.key !== key ? model : {
+      ...model,
+      thinkingLevels: model.thinkingLevels.includes(level)
+        ? model.thinkingLevels.filter(entry => entry !== level)
+        : [...model.thinkingLevels, level],
+    })));
+
   /** Local rules mirroring `agent_providers::validate`; the desktop re-checks. */
   function validate(): CustomProviderUpsert | string {
     const trimmedId = id.trim().toLowerCase();
@@ -183,11 +235,18 @@ export function CustomProviderPage({ provider, onDone }: {
           return t("desktopSettings.modelPriceInvalid", { id: modelId });
         prices[field] = price;
       }
+      // Mirrors the host: trim, drop empties/duplicates and the implicit
+      // `default`, and refuse a list past the cap. `reasoning` rides along
+      // untouched — it is no longer a control here but an older host reads it.
+      const thinkingLevels = editableThinkingLevels(model.thinkingLevels);
+      if (thinkingLevels.length > MAX_THINKING_LEVELS)
+        return t("desktopSettings.modelThinkingLevelsMax", { id: modelId });
       cleaned.push({
         id: modelId,
         name: model.name.trim(),
         supportsImages: model.supportsImages,
         reasoning: model.reasoning,
+        thinkingLevels,
         contextWindow,
         maxTokens,
         inputCost: prices.inputCost,
@@ -341,8 +400,27 @@ export function CustomProviderPage({ provider, onDone }: {
                   </SettingsField>
                   <SettingsSwitch label={t("desktopSettings.modelSupportsImages")} description={t("desktopSettings.modelSupportsImagesHint")}
                     value={model.supportsImages} onChange={value => patchModel(model.key, { supportsImages: value })} />
-                  <SettingsSwitch label={t("desktopSettings.modelReasoning")} description={t("desktopSettings.modelReasoningHint")}
-                    value={model.reasoning} onChange={value => patchModel(model.key, { reasoning: value })} />
+                  {/* Not a single "thinking" switch: the host declares the exact
+                      levels a model accepts, so the phone offers them as a
+                      multi-select. "Default" is implicit and always available. */}
+                  <SettingsField hint={t("desktopSettings.modelThinkingLevelsHint")}
+                    label={t("desktopSettings.modelThinkingLevels")}>
+                    <View style={settingsStyles.actions}>
+                      {thinkingLevelOptions(model.thinkingLevels).map(level => {
+                        const selected = model.thinkingLevels.includes(level);
+                        const label = thinkingLevelLabel(t, level);
+                        return (
+                          <Pressable accessibilityLabel={label} accessibilityRole="checkbox"
+                            accessibilityState={{ checked: selected }} key={level}
+                            onPress={() => toggleThinkingLevel(model.key, level)}
+                            style={({ pressed }) => [styles.levelChip, selected && styles.levelChipSelected,
+                              pressed && settingsStyles.pressed]}>
+                            <Text style={[styles.levelChipLabel, selected && styles.levelChipLabelSelected]}>{label}</Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  </SettingsField>
                   <Text style={settingsStyles.fieldLabel}>{t("desktopSettings.modelPrices")}</Text>
                   <View style={styles.priceGrid}>
                     {PRICE_FIELDS.map(([field, labelKey]) => <View key={field} style={styles.priceCell}>
@@ -395,4 +473,8 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   modelBody: { padding: spacing.md, borderTopWidth: 1, borderTopColor: theme.colors.line, backgroundColor: theme.colors.surfaceSubtle },
   priceGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md },
   priceCell: { flexGrow: 1, flexBasis: "45%" },
+  levelChip: { minHeight: 36, justifyContent: "center", paddingHorizontal: spacing.md, borderWidth: 1, borderColor: theme.colors.line, borderRadius: radius.pill, backgroundColor: theme.colors.surface },
+  levelChipSelected: { borderColor: theme.colors.accent, backgroundColor: theme.colors.accentSoft },
+  levelChipLabel: { color: theme.colors.ink, fontSize: theme.font(13), fontWeight: "600" },
+  levelChipLabelSelected: { color: theme.colors.accent },
 }));

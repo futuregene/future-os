@@ -24,6 +24,7 @@ import { useDesktopRuntime, type DesktopRuntime } from "./useDesktopRuntime";
 import { usePairedDesktops } from "./usePairedDesktops";
 import type { TimelineState } from "@future-os/remote-client/timeline";
 import type { CatalogEntry } from "./mergeSessions";
+import { DEFAULT_THINKING_LEVEL } from "./types";
 import type {
   ConnectionPhase,
   DownloadInfo,
@@ -518,7 +519,7 @@ function machineSurface(
     streaming: runtime?.streaming ?? false,
     compacting: runtime?.compacting ?? false,
     modelId: runtime?.conversation.modelId ?? "",
-    thinkingLevel: runtime?.conversation.thinkingLevel ?? "off",
+    thinkingLevel: runtime?.conversation.thinkingLevel ?? DEFAULT_THINKING_LEVEL,
     sessionUsage: runtime?.conversation.sessionUsage ?? null,
     refreshSessionUsage: runtime?.conversation.refreshSessionUsage ?? noop,
     approvalTier: runtime?.catalog.approvalTier ?? "off",
