@@ -206,7 +206,7 @@ it("keeps the user's copy button off their own bubble", () => {
 
   const copy = byTitle("Copy")!;
   const row = container.querySelector<HTMLElement>("[data-message-id='u1']")!;
-  const bubble = row.querySelector<HTMLElement>(".bg-surface-subtle")!;
+  const bubble = row.querySelector<HTMLElement>(".bg-accent-soft")!;
   expect(bubble.textContent).toContain("再来");
   expect(bubble.contains(copy)).toBe(false);
   expect(row.contains(copy)).toBe(true);
