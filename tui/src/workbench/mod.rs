@@ -275,6 +275,9 @@ pub struct Workbench {
     pub sidebar_w: u16,
     pub density: preferences::Density,
     pub sidebar_position: preferences::SidebarPosition,
+    pub reduced_motion: bool,
+    pub linear_reading: bool,
+    pub notify: crate::notifications::NotifyConfig,
     pub keys: preferences::Keybindings,
     pub preferences_index: usize,
     pub keybinding_index: usize,
@@ -331,6 +334,9 @@ impl Workbench {
             sidebar_w: layout::SIDEBAR_DEFAULT,
             density: preferences::Density::Focused,
             sidebar_position: preferences::SidebarPosition::Right,
+            reduced_motion: false,
+            linear_reading: false,
+            notify: crate::notifications::NotifyConfig::default(),
             keys: preferences::Keybindings::default(),
             preferences_index: 0,
             keybinding_index: 0,
@@ -373,6 +379,10 @@ impl Workbench {
             .sidebar_width
             .clamp(layout::SIDEBAR_MIN, layout::SIDEBAR_MAX);
         self.sidebar_visible = preferences.sidebar_visible;
+        self.mouse_capture = preferences.mouse_capture;
+        self.notify = preferences.notify;
+        self.reduced_motion = preferences.reduced_motion;
+        self.linear_reading = preferences.linear_reading;
     }
 
     pub fn preferences(&self) -> preferences::LayoutPreferences {
@@ -381,6 +391,10 @@ impl Workbench {
             sidebar_position: self.sidebar_position,
             sidebar_width: self.sidebar_w,
             sidebar_visible: self.sidebar_visible,
+            mouse_capture: self.mouse_capture,
+            notify: self.notify,
+            reduced_motion: self.reduced_motion,
+            linear_reading: self.linear_reading,
         }
     }
 
@@ -484,6 +498,12 @@ impl Workbench {
         self.tick / SPINNER_TICKS
     }
 
+    /// Linear reading is deliberately static too: no animated activity glyph
+    /// and no auxiliary rail, while streamed text still arrives immediately.
+    pub fn motion_enabled(&self) -> bool {
+        !self.reduced_motion && !self.linear_reading
+    }
+
     pub fn handle(&mut self, event: WbEvent, data: &WorkbenchData) -> Vec<WbAction> {
         match event {
             WbEvent::Tick => {
@@ -496,7 +516,8 @@ impl Workbench {
                 view.paste(&text);
                 vec![WbAction::EditEditor(Box::new(view))]
             }
-            WbEvent::Mouse(event) => self.handle_mouse(event, data),
+            WbEvent::Mouse(event) if data.mouse_capture => self.handle_mouse(event, data),
+            WbEvent::Mouse(_) => Vec::new(),
             WbEvent::Key(key) => self.handle_key(&key, data),
         }
     }
@@ -526,42 +547,37 @@ impl Workbench {
                 self.open_preferences();
                 return vec![WbAction::Redraw];
             }
+            Some(preferences::Action::Sidebar) => {
+                return self.toggle_sidebar();
+            }
+            Some(preferences::Action::Copy) => return vec![WbAction::CopyLast],
+            Some(preferences::Action::Queue) => return vec![WbAction::OpenQueue],
+            Some(preferences::Action::Mouse) => return vec![WbAction::ToggleMouse],
+            Some(preferences::Action::LinearReading) => {
+                self.linear_reading = !self.linear_reading;
+                self.sidebar_focus = false;
+                return vec![WbAction::SetPreferences];
+            }
+            Some(preferences::Action::ReduceMotion) => {
+                self.reduced_motion = !self.reduced_motion;
+                return vec![WbAction::SetPreferences];
+            }
             _ => {}
         }
         match key {
             "ctrl+q" => vec![WbAction::Quit],
             "f6" => vec![WbAction::CopyLast],
             "f7" => vec![WbAction::ToggleMouse],
-            "ctrl+g" => vec![WbAction::OpenQueue],
-            "ctrl+b" => {
-                // Hidden → shown and focused → shown and unfocused → hidden.
-                // Whether the sidebar *can* show is the terminal's width, not
-                // its current visibility: asking `layout` with a hidden sidebar
-                // reports "no sidebar", which used to open the full-screen
-                // overlay on a wide terminal right after the reader hid the
-                // rail. On a terminal too narrow for a rail the same key opens
-                // the panel full-screen instead, which is the only way to
-                // reach it there.
-                if !layout::sidebar_fits(self.last_frame.0) {
-                    self.overlay = match self.overlay {
-                        Some(Overlay::PanelFull) => None,
-                        _ => Some(Overlay::PanelFull),
-                    };
-                } else if !self.sidebar_visible {
-                    self.sidebar_visible = true;
-                    self.sidebar_focus = true;
-                } else if !self.sidebar_focus {
-                    self.sidebar_focus = true;
-                } else {
-                    self.sidebar_visible = false;
-                    self.sidebar_focus = false;
-                }
-                if layout::sidebar_fits(self.last_frame.0) {
-                    vec![WbAction::SetPreferences]
-                } else {
-                    vec![WbAction::Redraw]
-                }
+            "f8" => {
+                self.linear_reading = !self.linear_reading;
+                self.sidebar_focus = false;
+                vec![WbAction::SetPreferences]
             }
+            "f9" => {
+                self.reduced_motion = !self.reduced_motion;
+                vec![WbAction::SetPreferences]
+            }
+            "ctrl+g" => vec![WbAction::OpenQueue],
             "?" if data.input.text.is_empty() => {
                 self.overlay = Some(Overlay::Help);
                 self.overlay_scroll = 0;
@@ -574,7 +590,10 @@ impl Workbench {
             "tab" => {
                 if data.on_launchpad() {
                     self.launch_field = self.launch_field.next();
-                } else if self.sidebar_visible && layout::sidebar_fits(self.last_frame.0) {
+                } else if self.sidebar_visible
+                    && !self.linear_reading
+                    && layout::sidebar_fits(self.last_frame.0)
+                {
                     // A hidden rail cannot take the keys: focusing it would
                     // swallow up/down with nothing on screen to show for it.
                     self.sidebar_focus = !self.sidebar_focus;
@@ -662,6 +681,29 @@ impl Workbench {
                     Vec::new()
                 }
             }
+        }
+    }
+
+    fn toggle_sidebar(&mut self) -> Vec<WbAction> {
+        if self.linear_reading {
+            self.linear_reading = false;
+            self.sidebar_visible = true;
+            self.sidebar_focus = true;
+        } else if !layout::sidebar_fits(self.last_frame.0) {
+            self.overlay = Some(Overlay::PanelFull);
+        } else if !self.sidebar_visible {
+            self.sidebar_visible = true;
+            self.sidebar_focus = true;
+        } else if !self.sidebar_focus {
+            self.sidebar_focus = true;
+        } else {
+            self.sidebar_visible = false;
+            self.sidebar_focus = false;
+        }
+        if layout::sidebar_fits(self.last_frame.0) {
+            vec![WbAction::SetPreferences]
+        } else {
+            vec![WbAction::Redraw]
         }
     }
 
@@ -771,6 +813,22 @@ impl Workbench {
                                 .clamp(layout::SIDEBAR_MIN as i32, layout::SIDEBAR_MAX as i32)
                                 as u16;
                         }
+                        preferences::PreferenceRow::Mouse => {
+                            return vec![WbAction::ToggleMouse];
+                        }
+                        preferences::PreferenceRow::Notifications => {
+                            self.notify.enabled = !self.notify.enabled;
+                        }
+                        preferences::PreferenceRow::NotificationBell => {
+                            self.notify.bell = !self.notify.bell;
+                        }
+                        preferences::PreferenceRow::Motion => {
+                            self.reduced_motion = !self.reduced_motion;
+                        }
+                        preferences::PreferenceRow::Linear => {
+                            self.linear_reading = !self.linear_reading;
+                            self.sidebar_focus = false;
+                        }
                         preferences::PreferenceRow::Shortcuts => {
                             if key != "enter" {
                                 return Vec::new();
@@ -855,7 +913,7 @@ impl Workbench {
                 _ => Vec::new(),
             },
             Overlay::PanelFull => match key {
-                "escape" | "q" | "ctrl+b" => {
+                "escape" | "q" => {
                     self.overlay = None;
                     vec![WbAction::Redraw]
                 }
@@ -1190,6 +1248,9 @@ impl Workbench {
     }
 
     fn handle_mouse(&mut self, event: mouse::MouseEvent, data: &WorkbenchData) -> Vec<WbAction> {
+        if !data.mouse_capture {
+            return Vec::new();
+        }
         // An open picker owns the pointer: its rows are the only live targets,
         // and a click anywhere else dismisses it rather than reaching the
         // conversation painted underneath.
@@ -1200,12 +1261,12 @@ impl Workbench {
         let frame = layout::layout_with_preferences(
             w,
             h,
-            if self.sidebar_visible {
+            if self.sidebar_visible && !self.linear_reading {
                 self.sidebar_w
             } else {
                 0
             },
-            self.density,
+            self.effective_density(),
             self.sidebar_position,
         );
         match event.kind {
@@ -1396,6 +1457,14 @@ impl Workbench {
             return vec![WbAction::Command(format!("/{id}"))];
         }
         Vec::new()
+    }
+
+    pub fn effective_density(&self) -> preferences::Density {
+        if self.linear_reading {
+            preferences::Density::Focused
+        } else {
+            self.density
+        }
     }
 
     /// The frame size of the last render — mouse coordinates are resolved
@@ -3012,6 +3081,77 @@ mod tests {
             vec![WbAction::SetLanguage(LanguagePreference::En)]
         );
         assert_eq!(workbench.overlay, None, "applying closes the box");
+    }
+
+    #[test]
+    fn accessibility_preferences_change_layout_motion_and_context_keys() {
+        let mut data = demo::chat();
+        let mut workbench = Workbench::new();
+        workbench.render(&data, 120, 38);
+        assert!(workbench
+            .hits()
+            .regions()
+            .iter()
+            .any(|(_, id)| id.starts_with("sidebar.tab.")));
+
+        assert_eq!(
+            workbench.handle(WbEvent::Key("f8".into()), &data),
+            vec![WbAction::SetPreferences]
+        );
+        assert!(workbench.linear_reading);
+        assert!(!workbench.motion_enabled());
+        assert_eq!(workbench.effective_density(), preferences::Density::Focused);
+        workbench.render(&data, 120, 38);
+        assert!(
+            !workbench
+                .hits()
+                .regions()
+                .iter()
+                .any(|(_, id)| id.starts_with("sidebar.tab.")),
+            "linear mode paints no rail"
+        );
+
+        workbench
+            .keys
+            .bind(preferences::Action::LinearReading, "alt+l")
+            .unwrap();
+        workbench.handle(WbEvent::Key("alt+l".into()), &data);
+        assert!(!workbench.linear_reading);
+        workbench
+            .keys
+            .bind(preferences::Action::Queue, "alt+q")
+            .unwrap();
+        assert_eq!(
+            workbench.handle(WbEvent::Key("alt+q".into()), &data),
+            vec![WbAction::OpenQueue]
+        );
+
+        data.mouse_capture = false;
+        let before = workbench.scroll.offset;
+        assert!(workbench
+            .handle(
+                WbEvent::Mouse(mouse_at(mouse::MouseKind::WheelUp, 20)),
+                &data
+            )
+            .is_empty());
+        assert_eq!(workbench.scroll.offset, before);
+    }
+
+    #[test]
+    fn reduced_motion_is_independent_and_linear_mode_restores_the_sidebar() {
+        let mut workbench = Workbench::new();
+        let data = demo::chat();
+        workbench.render(&data, 120, 38);
+        workbench.handle(WbEvent::Key("f9".into()), &data);
+        assert!(workbench.reduced_motion && !workbench.motion_enabled());
+        workbench.handle(WbEvent::Key("f8".into()), &data);
+        workbench.handle(WbEvent::Key("ctrl+b".into()), &data);
+        assert!(!workbench.linear_reading);
+        assert!(workbench.sidebar_visible && workbench.sidebar_focus);
+        assert!(
+            workbench.reduced_motion,
+            "sidebar navigation does not reset accessibility choices"
+        );
     }
 
     /// The picker marks the preference in force, not the bundle it resolved to:

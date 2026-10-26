@@ -123,6 +123,9 @@ pub struct Live {
     drafts: HashMap<String, DraftSnapshot>,
     revision: u64,
     mouse_capture: bool,
+    /// Recent runs this client submitted, awaiting a terminal state. Bounded
+    /// because cancellation and incomplete streams need not produce agent_end.
+    completion_candidates: std::collections::VecDeque<String>,
     detail: ReplyDetail,
     /// Palette id, so a `/theme` cycle does not need the surface's own state.
     pub theme_id: String,
@@ -194,6 +197,7 @@ impl Live {
         let theme = settings
             .map(persisted_palette)
             .unwrap_or(super::theme::FUTURE_DARK);
+        let mouse_capture = settings.and_then(|s| s.mouse_capture).unwrap_or(true);
         let mut chat = ChatArea::new(80, None);
         chat.set_reply_detail(detail);
 
@@ -218,7 +222,8 @@ impl Live {
             ),
             drafts: HashMap::new(),
             revision: 0,
-            mouse_capture: true,
+            mouse_capture,
+            completion_candidates: std::collections::VecDeque::new(),
             detail,
             theme_id: theme.id.to_string(),
             lang,
@@ -725,6 +730,54 @@ impl Live {
         self.mouse_capture
     }
 
+    pub fn set_mouse_capture(&mut self, enabled: bool) {
+        self.mouse_capture = enabled;
+    }
+
+    pub fn mouse_capture(&self) -> bool {
+        self.mouse_capture
+    }
+
+    /// A completion belongs on the terminal only when this client requested
+    /// the run, it succeeded, and no queued follow-up remains.
+    pub fn take_completion_notification(&mut self, event: &AgentEvent) -> bool {
+        if event.r#type != "agent_end" {
+            return false;
+        }
+        let Some(run_id) = event.run_id.as_deref().filter(|id| !id.is_empty()) else {
+            return false;
+        };
+        let own = self
+            .completion_candidates
+            .iter()
+            .position(|id| id == run_id)
+            .and_then(|index| self.completion_candidates.remove(index))
+            .is_some();
+        // The driver checks the queue after its state refresh; the state here
+        // may still predate the agent_end event and must not reject early.
+        own && crate::notifications::should_notify(
+            true,
+            event.data.get("state").and_then(Value::as_str),
+            true,
+        )
+    }
+
+    pub fn completion_notification(&self) -> crate::notifications::NotifyEvent {
+        crate::notifications::NotifyEvent::new(
+            crate::notifications::NotifyKind::Completed,
+            t(self.lang, Key::NotificationTitle),
+            self.chat
+                .last_assistant_text()
+                .map(|text| crate::clipboard::clean_assistant_text(&text))
+                .filter(|text| !text.trim().is_empty())
+                .unwrap_or_else(|| t(self.lang, Key::NotificationBody).into()),
+        )
+    }
+
+    pub fn queue_is_empty(&self) -> bool {
+        self.state.queued_runs.is_empty()
+    }
+
     pub fn data(&mut self, frame: &Frame) -> WorkbenchData {
         let state = self.state.clone();
         let messages = self.chat.render_all(frame.inner);
@@ -1043,6 +1096,12 @@ impl Live {
             .await
         {
             Ok(ack) => {
+                if !ack.run_id.is_empty() {
+                    if self.completion_candidates.len() == 32 {
+                        self.completion_candidates.pop_front();
+                    }
+                    self.completion_candidates.push_back(ack.run_id);
+                }
                 if ack.accepted_state == "queued" {
                     self.refresh_state().await;
                 }

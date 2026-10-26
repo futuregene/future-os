@@ -34,7 +34,7 @@ pub(crate) fn compose(
     if w == 0 || h == 0 {
         return rows;
     }
-    let sidebar_w = if workbench.sidebar_visible {
+    let sidebar_w = if workbench.sidebar_visible && !workbench.linear_reading {
         workbench.sidebar_w
     } else {
         0
@@ -43,14 +43,20 @@ pub(crate) fn compose(
         w,
         h,
         sidebar_w,
-        workbench.density,
+        workbench.effective_density(),
         workbench.sidebar_position,
     );
 
     paint(
         &mut rows,
         frame.header,
-        header(&palette, data, &frame, columns, workbench.density),
+        header(
+            &palette,
+            data,
+            &frame,
+            columns,
+            workbench.effective_density(),
+        ),
     );
 
     workbench.composer_width = frame.input.w.saturating_sub(6).max(1) as usize;
@@ -762,10 +768,12 @@ fn activity_row(
 ) -> Vec<String> {
     let activity = &data.activity;
     let spinner = if activity.is_busy() {
-        palette.text(
-            palette.amber,
-            &format!("{} ", widgets::spinner(workbench.spinner_frame())),
-        )
+        let glyph = if workbench.motion_enabled() {
+            format!("{} ", widgets::spinner(workbench.spinner_frame()))
+        } else {
+            "… ".into()
+        };
+        palette.text(palette.amber, &glyph)
     } else {
         palette.dim("· ")
     };
@@ -1045,12 +1053,26 @@ fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
                 },
             ),
             PreferenceRow::Width => "",
+            PreferenceRow::Mouse => enabled(workbench.mouse_capture, lang),
+            PreferenceRow::Notifications => enabled(workbench.notify.enabled, lang),
+            PreferenceRow::NotificationBell => enabled(workbench.notify.bell, lang),
+            PreferenceRow::Motion => enabled(workbench.reduced_motion, lang),
+            PreferenceRow::Linear => enabled(workbench.linear_reading, lang),
             PreferenceRow::Shortcuts => "›",
             PreferenceRow::Reset => "↺",
         };
         let value = if *row == PreferenceRow::Width {
             format!("‹ {:>2} ›", workbench.sidebar_w)
-        } else if matches!(row, PreferenceRow::Density | PreferenceRow::Position) {
+        } else if matches!(
+            row,
+            PreferenceRow::Density
+                | PreferenceRow::Position
+                | PreferenceRow::Mouse
+                | PreferenceRow::Notifications
+                | PreferenceRow::NotificationBell
+                | PreferenceRow::Motion
+                | PreferenceRow::Linear
+        ) {
             format!("‹ {value} ›")
         } else {
             value.to_string()
@@ -1069,7 +1091,31 @@ fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
     }
     content.push(String::new());
     content.push(palette.dim(t(lang, Key::PreferencesHint)));
+    let visible = h.saturating_sub(5).max(1) as usize;
+    let first = workbench
+        .preferences_index
+        .saturating_add(1)
+        .saturating_sub(visible)
+        .min(preferences::PREFERENCE_ROWS.len().saturating_sub(visible));
+    let tail = content.split_off(preferences::PREFERENCE_ROWS.len());
+    let content = content
+        .into_iter()
+        .skip(first)
+        .take(visible)
+        .chain(tail)
+        .collect();
     framed(palette, t(lang, Key::PreferencesTitle), content, w, h, 72)
+}
+
+fn enabled(value: bool, lang: Language) -> &'static str {
+    t(
+        lang,
+        if value {
+            Key::PrefEnabled
+        } else {
+            Key::PrefDisabled
+        },
+    )
 }
 
 fn keybindings_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec<String> {
@@ -1103,6 +1149,19 @@ fn keybindings_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
     }
     content.push(String::new());
     content.push(palette.dim(t(lang, Key::KeybindingsHint)));
+    let visible = h.saturating_sub(5).max(1) as usize;
+    let first = workbench
+        .keybinding_index
+        .saturating_add(1)
+        .saturating_sub(visible)
+        .min(preferences::ACTIONS.len().saturating_sub(visible));
+    let tail = content.split_off(preferences::ACTIONS.len());
+    let content = content
+        .into_iter()
+        .skip(first)
+        .take(visible)
+        .chain(tail)
+        .collect();
     framed(palette, t(lang, Key::KeybindingsTitle), content, w, h, 76)
 }
 
@@ -1304,6 +1363,44 @@ mod tests {
             connected: true,
             ..WorkbenchData::default()
         }
+    }
+
+    #[test]
+    fn accessibility_preferences_fit_short_frames_and_hide_the_auxiliary_rail() {
+        let mut workbench = Workbench::new();
+        let data = crate::workbench::demo::chat();
+        workbench.set_language(crate::workbench::i18n::LanguagePreference::En);
+        workbench.open_preferences();
+        workbench.preferences_index = crate::workbench::preferences::PREFERENCE_ROWS.len() - 1;
+        let text = workbench
+            .render(&data, 80, 12)
+            .iter()
+            .map(|row| plain(row))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Restore defaults"), "{text}");
+        assert!(text.contains("choose"), "{text}");
+
+        workbench.overlay = None;
+        workbench.linear_reading = true;
+        workbench.density = crate::workbench::preferences::Density::Comfortable;
+        let rows = workbench.render(&data, 120, 38);
+        assert!(!workbench
+            .hits()
+            .regions()
+            .iter()
+            .any(|(_, id)| id.starts_with("sidebar.tab.")));
+        assert!(!rows.iter().any(|row| plain(row).contains("To-do")));
+        let busy = WorkbenchData {
+            activity: crate::workbench::state::Activity {
+                kind: ActivityKind::Thinking,
+                ..Default::default()
+            },
+            ..data
+        };
+        workbench.tick = 8;
+        let text = workbench.render(&busy, 120, 38).join("\n");
+        assert!(plain(&text).contains("… Thinking"), "{text}");
     }
 
     #[test]

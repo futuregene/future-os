@@ -35,6 +35,7 @@ pub mod help;
 pub mod home;
 pub mod index;
 pub mod keys;
+pub mod notifications;
 pub mod paste;
 pub mod paste_burst;
 pub mod rpc;

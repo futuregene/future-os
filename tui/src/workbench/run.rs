@@ -64,6 +64,8 @@ pub async fn run(options: Options) -> Result<(), String> {
     )
     .await?;
     let mut workbench = Workbench::new();
+    let mouse_capture = settings.mouse_capture.unwrap_or(true);
+    live.set_mouse_capture(mouse_capture);
     workbench.set_theme(&live.theme_id);
     workbench.set_language(live::persisted_language(&settings));
     workbench.set_preferences(super::preferences::LayoutPreferences {
@@ -79,6 +81,10 @@ pub async fn run(options: Options) -> Result<(), String> {
             .unwrap_or_default(),
         sidebar_width: settings.sidebar_width.unwrap_or(layout::SIDEBAR_DEFAULT),
         sidebar_visible: settings.sidebar_visible.unwrap_or(true),
+        mouse_capture,
+        notify: settings.notify.unwrap_or_default(),
+        reduced_motion: settings.reduced_motion.unwrap_or(false),
+        linear_reading: settings.linear_reading.unwrap_or(false),
     });
     workbench.keys = super::preferences::Keybindings::load(&super::preferences::keybindings_path(
         &options.settings_path,
@@ -109,7 +115,7 @@ pub async fn run(options: Options) -> Result<(), String> {
     // alternate screen is up: `start` writes the mode in, `stop` takes it out —
     // and both failures' paths (the exit failsafe and the crash hook) reset it
     // too, so the shell never inherits a captured mouse.
-    terminal.set_mouse_mode(true);
+    terminal.set_mouse_mode(mouse_capture);
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<TerminalEvent>();
     let data_tx = input_tx.clone();
     let resize_tx = input_tx.clone();
@@ -226,6 +232,9 @@ async fn event_loop(
             }
             Some(event) = agent_events.recv() => {
                 let was = live.activity_kind();
+                // State refresh below re-reads the authoritative queue before
+                // this candidate can emit a notification.
+                let mut completion = live.take_completion_notification(&event);
                 live.handle_event(event);
                 if live.approval().is_some() && workbench.overlay.is_none() {
                     workbench.overlay = Some(super::Overlay::Approval);
@@ -235,7 +244,10 @@ async fn event_loop(
                 // now, before the frame: a streaming turn emits deltas at tens
                 // per second and a frame per token is work no one can see (the
                 // screen only ever shows the last one).
-                drain(agent_events, |event| live.handle_event(event));
+                drain(agent_events, |event| {
+                    completion |= live.take_completion_notification(&event);
+                    live.handle_event(event);
+                });
                 // A `usage` or `agent_end` event means the agent knows more
                 // about what the turn spent than the deltas do: ask it, so the
                 // footer's ctx/cost/cache move at the end of a turn instead of
@@ -252,6 +264,16 @@ async fn event_loop(
                 if live.activity_kind() != was {
                     live.refresh_sessions().await;
                 }
+                if completion && live.queue_is_empty() {
+                    let event = live.completion_notification();
+                    for sequence in crate::notifications::sequences_for(
+                        &workbench.notify,
+                        &event,
+                        true,
+                    ) {
+                        terminal.write(&sequence);
+                    }
+                }
                 paint = true;
             }
             _ = ticker.tick() => {
@@ -260,7 +282,9 @@ async fn event_loop(
                 // changes. Nothing else in the frame is finer than a minute.
                 // A short terminal lays out no activity row at all
                 // (`compact`), so there is nothing on screen to animate.
-                let animating = live.activity_animating() && frame.layout.activity.is_some();
+                let animating = workbench.motion_enabled()
+                    && live.activity_animating()
+                    && frame.layout.activity.is_some();
                 if animating {
                     workbench.advance_tick();
                 }
@@ -424,23 +448,30 @@ async fn quit(
     // the surface. Overlay keys still belong to the overlay.
     if let WbEvent::Key(key) = &event {
         if workbench.overlay.is_none() {
-            match key.as_str() {
-                "f6" => {
+            match workbench.keys.action(key) {
+                Some(super::preferences::Action::Copy) => {
                     copy_last(live).await;
                     return Ok(false);
                 }
-                "f7" => {
-                    toggle_mouse(live, terminal);
+                Some(super::preferences::Action::Mouse) => {
+                    toggle_mouse(live, terminal, workbench, settings, settings_path);
                     return Ok(false);
                 }
-                "ctrl+g" => {
+                Some(super::preferences::Action::Queue) => {
                     live.refresh_state().await;
                     let _ = workbench.surface_command("/queue", &live.data(frame));
                     return Ok(false);
                 }
-                _ => {}
-            }
-            match workbench.keys.action(key) {
+                Some(super::preferences::Action::LinearReading) => {
+                    let _ = workbench.handle(WbEvent::Key(key.clone()), &live.data(frame));
+                    persist_preferences(workbench, settings, settings_path);
+                    return Ok(false);
+                }
+                Some(super::preferences::Action::ReduceMotion) => {
+                    let _ = workbench.handle(WbEvent::Key(key.clone()), &live.data(frame));
+                    persist_preferences(workbench, settings, settings_path);
+                    return Ok(false);
+                }
                 Some(super::preferences::Action::Stop) => {
                     live.abort().await;
                     return Ok(false);
@@ -559,7 +590,7 @@ async fn quit(
                     continue;
                 }
                 "/mouse" => {
-                    toggle_mouse(live, terminal);
+                    toggle_mouse(live, terminal, workbench, settings, settings_path);
                     continue;
                 }
                 _ => {}
@@ -620,6 +651,11 @@ async fn quit(
             action,
             WbAction::SetPreferences | WbAction::ResizeSidebar(_) | WbAction::PersistSidebar
         ) {
+            let mouse = workbench.preferences().mouse_capture;
+            if live.mouse_capture() != mouse {
+                live.set_mouse_capture(mouse);
+                terminal.set_mouse_mode(mouse);
+            }
             persist_preferences(workbench, settings, settings_path);
         }
         if matches!(action, WbAction::SetKeybindings) {
@@ -676,7 +712,7 @@ async fn quit(
             continue;
         }
         if matches!(action, WbAction::ToggleMouse) {
-            toggle_mouse(live, terminal);
+            toggle_mouse(live, terminal, workbench, settings, settings_path);
             continue;
         }
         if let WbAction::Notice(notice) = &action {
@@ -784,12 +820,12 @@ fn frame_of(terminal: &Terminal, workbench: &Workbench) -> Frame {
     Frame::new(
         terminal.columns(),
         terminal.rows(),
-        if workbench.sidebar_visible {
+        if workbench.sidebar_visible && !workbench.linear_reading {
             workbench.sidebar_w
         } else {
             0
         },
-        workbench.density,
+        workbench.effective_density(),
         workbench.sidebar_position,
     )
 }
@@ -813,9 +849,18 @@ async fn copy_last(live: &mut Live) {
     }
 }
 
-fn toggle_mouse(live: &mut Live, terminal: &mut Terminal) {
+fn toggle_mouse(
+    live: &mut Live,
+    terminal: &mut Terminal,
+    workbench: &mut Workbench,
+    settings: &mut TuiSettings,
+    settings_path: &Path,
+) {
     let enabled = live.toggle_mouse();
+    workbench.mouse_capture = enabled;
     terminal.set_mouse_mode(enabled);
+    settings.mouse_capture = Some(enabled);
+    save_settings(settings_path, settings);
     live.notice = Some(
         super::i18n::t(
             live.language(),
@@ -880,6 +925,10 @@ fn persist_preferences(workbench: &Workbench, settings: &mut TuiSettings, path: 
     settings.sidebar_position = Some(preferences.sidebar_position.as_wire().into());
     settings.sidebar_width = Some(preferences.sidebar_width);
     settings.sidebar_visible = Some(preferences.sidebar_visible);
+    settings.mouse_capture = Some(preferences.mouse_capture);
+    settings.notify = Some(preferences.notify);
+    settings.reduced_motion = Some(preferences.reduced_motion);
+    settings.linear_reading = Some(preferences.linear_reading);
     save_settings(path, settings);
 }
 
