@@ -1105,15 +1105,15 @@ impl ServerSession {
             let registry = self.model_registry.clone();
             let model = self.model.clone();
             move |reported: &crate::types::Usage| {
-                use std::sync::atomic::Ordering;
-                tokens_in.fetch_add(reported.prompt_tokens, Ordering::Relaxed);
-                tokens_out.fetch_add(reported.completion_tokens, Ordering::Relaxed);
-                if let Some(read) = reported.cache_read_tokens {
-                    cache_r.fetch_add(read, Ordering::Relaxed);
-                }
-                if let Some(write) = reported.cache_write_tokens {
-                    cache_w.fetch_add(write, Ordering::Relaxed);
-                }
+                // One billed request per attempt, so one record per attempt: the
+                // same rule the run loop applies to a model call.
+                crate::agent::add_request_usage(
+                    &tokens_in,
+                    &tokens_out,
+                    &cache_r,
+                    &cache_w,
+                    reported,
+                );
                 // The observer receives the final usage of EACH attempt, including
                 // charged retries and cancelled/failed summary streams.
                 let cost = reported.credit_cost.unwrap_or_else(|| {
@@ -1567,6 +1567,10 @@ impl ServerSession {
                 "cacheRead": cache_read,
                 "cacheWrite": cache_write,
                 "total": input.saturating_add(output),
+                // `input` includes the cached subset, so this is
+                // `cacheRead / input` — see `models::cache_hit_rate`, the single
+                // definition of the ratio, rather than a second division here.
+                "cacheHitRate": crate::models::cache_hit_rate(input, cache_read),
             },
             "cost": *self.cumulative_cost.lock(),
         })
@@ -2461,6 +2465,33 @@ mod tests {
         assert_eq!(stats["userMessages"], 0);
         assert_eq!(stats["assistantMessages"], 0);
         assert_eq!(stats["totalMessages"], 0);
+    }
+
+    /// The session's cache hit rate is reported once, computed from the totals
+    /// with `prompt_tokens` as the denominator (it already includes the cached
+    /// subset). Dividing by `input + cacheRead` would report this 90%-cached
+    /// session as 47%.
+    #[test]
+    fn session_stats_reports_the_cache_hit_rate() {
+        let session = make_test_session("s1");
+        session
+            .tokens_in
+            .store(1_000, std::sync::atomic::Ordering::Relaxed);
+        session
+            .tokens_cache_r
+            .store(900, std::sync::atomic::Ordering::Relaxed);
+        let stats = session.get_session_stats();
+        assert_eq!(stats["tokens"]["cacheHitRate"], serde_json::json!(0.9));
+
+        // A session with no recorded prompt has no rate at all, which is not 0%.
+        session
+            .tokens_in
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        session
+            .tokens_cache_r
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        let stats = session.get_session_stats();
+        assert!(stats["tokens"]["cacheHitRate"].is_null());
     }
 
     #[test]

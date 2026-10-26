@@ -1176,4 +1176,101 @@ mod tests {
             matches!(events.as_slice(), [ModelStreamEvent::Usage(usage)] if usage.prompt_tokens == 123)
         );
     }
+
+    /// The Future gateway ends one `future/...` streaming request with three
+    /// usage-carrying frames. Captured verbatim from
+    /// `POST https://future-os.cn/api/v1/chat/completions` (`kimi-k3.1-pro`,
+    /// 2026-10-26), trimmed to the usage fields:
+    ///
+    /// 1. a coarse frame the gateway itself synthesizes (`"id":"synthesized"`)
+    ///    with no cache breakdown at all;
+    /// 2. the provider's real block, nested inside `choices[0].usage` on the
+    ///    finish chunk (this adapter reads `usage` at the top level, so it lands
+    ///    as `Finish { usage: None }`);
+    /// 3. the same real block at the top level on the trailing `choices: []`
+    ///    chunk, where the gateway also adds `credit_cost`.
+    ///
+    /// Frames 1 and 3 are the two `usage` events a run recorded per request, and
+    /// counting both is what reported a 99.9%-cached prompt as a 46% one: the
+    /// coarse frame's prompt (607k) is the gateway's estimate and carries no
+    /// cache counters, while the real block says 526,759 with 526,336 cached.
+    /// The run loop therefore has to fold a call into one record; keeping the
+    /// wire shape here makes that contract explicit.
+    #[test]
+    fn the_future_gateway_reports_one_requests_usage_three_times() {
+        let adapter = OpenAiChatAdapter;
+        let mut state = adapter.new_stream_state();
+        let mut decode = |data: Value| adapter.decode_frame(&frame(data), state.as_mut()).unwrap();
+
+        // 1. synthesized coarse frame: no cache breakdown.
+        let synthesized = decode(json!({
+            "choices": [],
+            "id": "synthesized",
+            "model": "",
+            "object": "chat.completion.chunk",
+            "usage": {
+                "completion_tokens": 271,
+                "credit_cost": "7.911534",
+                "prompt_tokens": 607162,
+                "total_tokens": 607433,
+            },
+        }));
+
+        // 2. the provider's real block, nested in the finish chunk's choice.
+        let finished = decode(json!({
+            "choices": [{
+                "delta": {},
+                "finish_reason": "stop",
+                "index": 0,
+                "usage": {
+                    "completion_tokens": 351,
+                    "completion_tokens_details": {"reasoning_tokens": 1},
+                    "prompt_tokens": 526759,
+                    "prompt_tokens_details": {
+                        "cache_write_tokens": 256,
+                        "cached_tokens": 526336,
+                    },
+                    "total_tokens": 527110,
+                },
+            }],
+            "id": "chatcmpl-6adeb4de2ce24a4453f2bf5f",
+            "model": "kimi-k3.1-pro",
+        }));
+
+        // 3. the same block, repeated at the top level of the trailing chunk.
+        let trailing = decode(json!({
+            "choices": [],
+            "id": "chatcmpl-6adeb4de2ce24a4453f2bf5f",
+            "model": "kimi-k3.1-pro",
+            "object": "chat.completion.chunk",
+            "usage": {
+                "completion_tokens": 351,
+                "credit_cost": "0.7136038",
+                "prompt_tokens": 526759,
+                "prompt_tokens_details": {
+                    "cache_write_tokens": 256,
+                    "cached_tokens": 526336,
+                },
+                "total_tokens": 527110,
+            },
+        }));
+
+        assert!(
+            matches!(synthesized.as_slice(), [ModelStreamEvent::Usage(u)]
+                if u.prompt_tokens == 607_162 && !u.has_cache_detail()),
+            "the synthesized frame is a coarse usage block: {synthesized:?}"
+        );
+        assert!(
+            matches!(
+                finished.as_slice(),
+                [ModelStreamEvent::Finish { usage: None, .. }]
+            ),
+            "the nested choice usage is not read at the top level: {finished:?}"
+        );
+        assert!(
+            matches!(trailing.as_slice(), [ModelStreamEvent::Usage(u)]
+                if u.prompt_tokens == 526_759 && u.cache_read_tokens == Some(526_336)),
+            "the trailing chunk carries the provider's real block: {trailing:?}"
+        );
+    }
 }

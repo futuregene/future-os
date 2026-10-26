@@ -141,6 +141,7 @@ function TimelineCardView({
                   <ReplyBlockRow
                     block={block}
                     onOpenFile={onOpenFile}
+                    replyStreaming={item.streaming}
                     onResolveToolTarget={onResolveToolTarget}
                     streaming={item.streaming && block.kind === "segment" && block.segment === item.segments?.at(-1)}
                   />

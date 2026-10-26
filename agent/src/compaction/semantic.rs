@@ -501,6 +501,22 @@ struct AttemptUsage<'a> {
     latest: Option<crate::types::Usage>,
     observer: Option<&'a (dyn Fn(&crate::types::Usage) + Sync)>,
 }
+
+impl AttemptUsage<'_> {
+    /// Fold a usage block of this attempt into the attempt's total.
+    ///
+    /// Same rule as a normal model call: one request can report its usage
+    /// several times (a coarse synthesized frame, then the provider's real one),
+    /// so the blocks are merged into one record instead of the last one blindly
+    /// replacing the rest.
+    fn record(&mut self, usage: crate::types::Usage) {
+        match &mut self.latest {
+            Some(total) => total.merge_later_chunk(&usage),
+            None => self.latest = Some(usage),
+        }
+    }
+}
+
 impl Drop for AttemptUsage<'_> {
     fn drop(&mut self) {
         if let (Some(usage), Some(observer)) = (&self.latest, self.observer) {
@@ -646,10 +662,10 @@ async fn call_summary_request(
             let Some(event) = event else { break };
             match event {
                 ModelStreamEvent::TextDelta { text: delta, .. } => text.push_str(&delta),
-                ModelStreamEvent::Usage(usage) => attempt_usage.latest = Some(usage),
+                ModelStreamEvent::Usage(usage) => attempt_usage.record(usage),
                 ModelStreamEvent::Finish { reason, usage } => {
-                    if usage.is_some() {
-                        attempt_usage.latest = usage;
+                    if let Some(usage) = usage {
+                        attempt_usage.record(usage);
                     }
                     match reason {
                         FinishReason::Stop => {

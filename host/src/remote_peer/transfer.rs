@@ -2,6 +2,9 @@
 #[cfg(test)]
 pub use future_remote_client::transfer::DownloadInfo;
 use future_remote_client::transfer::{DownloadedFile, UploadedFile};
+use future_remote_protocol::files::{
+    UNSUPPORTED_VARIANT, VARIANT_DESKTOP_DOWNLOAD, VARIANT_ORIGINAL,
+};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -17,6 +20,41 @@ pub async fn download(
         .download(desktop, session, path, name, variant)
         .await
         .map_err(Into::into)
+}
+
+/// Pull a file for a desktop that is **saving a copy**.
+///
+/// `download` is the variant that carries the desktop's own ceiling and drops the
+/// phone's type list (`DESKTOP_MAX_FILE_BYTES`, `remote_host::files`). A host built
+/// before that variant exists answers `UNSUPPORTED_VARIANT`, and asking here is
+/// what turns it back into today's request — same `original` mode, same phone
+/// limits, same failures — instead of failing a download the old host would have
+/// completed.
+///
+/// Only that refusal is retried. A real refusal of the *file* (over the desktop
+/// ceiling, gone from disk, a path outside what may be served) is the answer, and
+/// retrying it as `original` would replace the desktop's own limit message with
+/// the phone's — two different problems reported as one.
+pub async fn download_for_desktop(
+    desktop: &str,
+    session: &str,
+    path: &str,
+    name: Option<&str>,
+) -> Result<DownloadedFile, crate::Error> {
+    match download(desktop, session, path, name, VARIANT_DESKTOP_DOWNLOAD).await {
+        Err(error) if is_unsupported_variant(&error) => {
+            download(desktop, session, path, name, VARIANT_ORIGINAL).await
+        }
+        result => result,
+    }
+}
+
+/// Whether a host refused the *variant* rather than the file.
+///
+/// `contains` rather than equality: the refusal travels as a reply error and the
+/// client wraps it in its own message.
+fn is_unsupported_variant(error: &crate::Error) -> bool {
+    error.to_string().contains(UNSUPPORTED_VARIANT)
 }
 pub async fn upload(desktop: &str, name: &str, bytes: &[u8]) -> Result<UploadedFile, crate::Error> {
     super::runtime::client()
@@ -187,4 +225,36 @@ pub fn write_atomically(destination: &Path, bytes: &[u8]) -> Result<(), crate::E
         let _ = std::fs::remove_file(&temporary);
         crate::Error::Message(format!("remote_download_write_failed: {error}"))
     })
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::is_unsupported_variant;
+
+    /// The fallback is the reason the desktop variant is safe to ship: a host that
+    /// predates it must cost one extra request, not a failed download. So the one
+    /// string a newer client retries on has to stay matched exactly, and nothing
+    /// else may be retried — retrying a real refusal would replace the desktop's
+    /// own limit with the phone's and report two different problems as one.
+    #[test]
+    fn only_a_missing_variant_falls_back() {
+        let old_host = crate::Error::Message(format!(
+            "remote_command_failed: {}",
+            future_remote_protocol::files::UNSUPPORTED_VARIANT
+        ));
+        assert!(is_unsupported_variant(&old_host));
+
+        for refusal in [
+            "The file is over the 512 MB desktop download limit.",
+            "The file is over the 10 MB download limit.",
+            "This file type is not available on mobile; view it on desktop.",
+            "The attachment is no longer available.",
+            "remote_download_hash_mismatch",
+        ] {
+            assert!(
+                !is_unsupported_variant(&crate::Error::Message(refusal.to_string())),
+                "{refusal:?} is a refusal of the file, not of the variant"
+            );
+        }
+    }
 }
