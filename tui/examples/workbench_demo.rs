@@ -34,7 +34,7 @@ fn main() {
             "--ansi" => plain = false,
             "--picker" | "-p" => match args.next().as_deref().and_then(PickerKind::from_command) {
                 Some(parsed) => picker = Some(parsed),
-                None => fail("expected model | theme | sessions"),
+                None => fail("expected a picker command: /model /thinking /mode /workspace /theme /sessions /lang"),
             },
             "--overlay" | "-o" => overlay = args.next(),
             "--lang" | "-l" => match args.next().as_deref() {

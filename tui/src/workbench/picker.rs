@@ -1,13 +1,15 @@
-//! The picker overlay: one list component behind `/model`, `/theme` and
-//! `/sessions`.
+//! The picker overlay: one list component behind `/model`, `/theme`,
+//! `/sessions`, `/lang`, `/thinking`, `/mode` and `/workspace`.
 //!
-//! The three menus differ only in *what the rows are*, so they share one
+//! The menus differ only in *what the rows are*, so they share one
 //! implementation: a titled box with an incremental-search line, a window that
 //! keeps the highlight visible, group headings (providers for models), a `✓` on
 //! the row that is already in force, and a footer of key hints. What each kind
 //! adds is in [`rows`] — the model picker also carries the reasoning-effort
 //! slider as its first row, because the two are chosen together ("run this model
-//! at this effort"), and a separate menu for six levels would be a worse tool.
+//! at this effort"). `/thinking` still has its own six-row menu: the key that
+//! opens it names nothing else, and a reader who pressed it wants the ladder,
+//! not a model list to scroll past first.
 //!
 //! Two rules this module keeps, because they are what "works with the mouse as
 //! well as the keyboard" means in practice:
@@ -17,8 +19,9 @@
 //! * The hit regions are registered in [`crate::workbench::screen`] from the
 //!   same rows it painted, so a click cannot land on a row that is not there.
 
+use crate::approval_mode::ApprovalMode;
 use crate::workbench::ansi::{fit, width};
-use crate::workbench::i18n::{t, Key, Language, LanguagePreference};
+use crate::workbench::i18n::{self, t, Key, Language, LanguagePreference};
 use crate::workbench::state::{thinking_index, ModelChoice, WorkbenchData, THINKING_LEVELS};
 use crate::workbench::theme::{self, Palette};
 
@@ -30,11 +33,21 @@ pub enum PickerKind {
     Theme,
     Sessions,
     Language,
+    /// The reasoning ladder on its own (`/thinking`, `ctrl+t`).
+    Thinking,
+    /// The desktop composer's four approval tiers (`/mode`, `ctrl+s`).
+    Approval,
+    /// Every workspace this client has a conversation in, plus a row that
+    /// creates one from the path typed into the search line (`ctrl+l`).
+    Workspace,
 }
 
 impl PickerKind {
-    pub const ALL: [PickerKind; 4] = [
+    pub const ALL: [PickerKind; 7] = [
         PickerKind::Model,
+        PickerKind::Thinking,
+        PickerKind::Approval,
+        PickerKind::Workspace,
         PickerKind::Theme,
         PickerKind::Sessions,
         PickerKind::Language,
@@ -49,6 +62,9 @@ impl PickerKind {
                 Self::Theme => Key::PickerTitleTheme,
                 Self::Sessions => Key::PickerTitleSessions,
                 Self::Language => Key::PickerTitleLanguage,
+                Self::Thinking => Key::PickerTitleThinking,
+                Self::Approval => Key::PickerTitleApproval,
+                Self::Workspace => Key::PickerTitleWorkspace,
             },
         )
     }
@@ -61,18 +77,36 @@ impl PickerKind {
             Self::Theme => "/theme",
             Self::Sessions => "/sessions",
             Self::Language => "/lang",
+            Self::Thinking => "/thinking",
+            Self::Approval => "/mode",
+            Self::Workspace => "/workspace",
+        }
+    }
+
+    /// Older spellings that still open this menu. `/sandbox` cycled the approval
+    /// mode before the menu existed; it now opens the mode the palette lists, the
+    /// way `/lang` and `/theme` open theirs.
+    pub fn aliases(self) -> &'static [&'static str] {
+        match self {
+            Self::Thinking => &["/effort"],
+            Self::Approval => &["/sandbox"],
+            _ => &[],
         }
     }
 
     /// The picker a typed command opens, if any.
     pub fn from_command(text: &str) -> Option<Self> {
-        let name = text.trim().trim_start_matches('/');
         // `args` is not this kind's business: `/model x` in the draft is still a
         // request for the model picker, and the picker is what applies it.
+        let name = text.trim().trim_start_matches('/');
         let name = name.split_whitespace().next().unwrap_or("");
-        Self::ALL
-            .into_iter()
-            .find(|kind| kind.command().trim_start_matches('/') == name)
+        Self::ALL.into_iter().find(|kind| {
+            kind.command().trim_start_matches('/') == name
+                || kind
+                    .aliases()
+                    .iter()
+                    .any(|alias| alias.trim_start_matches('/') == name)
+        })
     }
 
     /// The footer: what the keys do *here*.
@@ -84,6 +118,9 @@ impl PickerKind {
                 Self::Theme => Key::PickerHintTheme,
                 Self::Sessions => Key::PickerHintSessions,
                 Self::Language => Key::PickerHintLanguage,
+                Self::Thinking => Key::PickerHintThinking,
+                Self::Approval => Key::PickerHintApproval,
+                Self::Workspace => Key::PickerHintWorkspace,
             },
         )
     }
@@ -97,9 +134,47 @@ impl PickerKind {
                 Self::Theme => Key::PickerEmptyTheme,
                 Self::Sessions => Key::PickerEmptySessions,
                 Self::Language => Key::PickerEmptyLanguage,
+                Self::Thinking => Key::PickerEmptyThinking,
+                Self::Approval => Key::PickerEmptyApproval,
+                Self::Workspace => Key::PickerEmptyWorkspace,
             },
         )
     }
+}
+
+/// The label a menu gives one approval mode — the desktop composer's own
+/// wording, so the same four choices read the same in both clients.
+pub fn approval_label(mode: ApprovalMode, lang: Language) -> &'static str {
+    t(
+        lang,
+        match mode {
+            ApprovalMode::Manual => Key::ModeManual,
+            ApprovalMode::Sandbox => Key::ModeSandbox,
+            ApprovalMode::Auto => Key::ModeAuto,
+            ApprovalMode::Off => Key::ModeOff,
+        },
+    )
+}
+
+/// The one-line explanation beside a mode's label.
+fn approval_detail(mode: ApprovalMode, lang: Language) -> &'static str {
+    t(
+        lang,
+        match mode {
+            ApprovalMode::Manual => Key::ModeManualDesc,
+            ApprovalMode::Sandbox => Key::ModeSandboxDesc,
+            ApprovalMode::Auto => Key::ModeAutoDesc,
+            ApprovalMode::Off => Key::ModeOffDesc,
+        },
+    )
+}
+
+/// Do two paths name the same directory? Trailing separators and case (which a
+/// Windows path spells freely) are the only differences worth erasing here;
+/// anything cleverer would need the filesystem.
+fn same_path(a: &str, b: &str) -> bool {
+    let trim = |path: &str| path.trim().trim_end_matches(['/', '\\']).to_lowercase();
+    !a.trim().is_empty() && trim(a) == trim(b)
 }
 
 /// One painted line of a picker.
@@ -129,6 +204,10 @@ pub struct PickerView {
     ordinals: Vec<Option<usize>>,
     /// How many rows can be selected.
     pub selectable: usize,
+    /// The widest ` detail ` column in this list, so every row's right-hand
+    /// value starts in the same cell: a menu of explanations (the approval
+    /// tiers) reads as a table only if its second column does.
+    pub detail_column: usize,
 }
 
 impl PickerView {
@@ -386,6 +465,92 @@ pub fn rows(
                 });
             }
         }
+        // The reasoning ladder, one row per level, `✓` where the session stands.
+        PickerKind::Thinking => {
+            let here = thinking_index(&data.effort);
+            for (index, level) in THINKING_LEVELS.iter().enumerate() {
+                if !matches(&[level]) {
+                    continue;
+                }
+                rows.push(PickerRow::Item {
+                    key: (*level).to_string(),
+                    label: (*level).to_string(),
+                    detail: String::new(),
+                    current: index == here,
+                });
+            }
+        }
+        // The desktop composer's approval tiers, in its order and its wording.
+        PickerKind::Approval => {
+            let here = ApprovalMode::from_wire(&data.mode);
+            for mode in ApprovalMode::ALL {
+                let label = approval_label(mode, lang);
+                if !matches(&[label, mode.as_str(), mode.badge()]) {
+                    continue;
+                }
+                rows.push(PickerRow::Item {
+                    key: mode.as_str().to_string(),
+                    label: label.to_string(),
+                    detail: approval_detail(mode, lang).to_string(),
+                    current: here == Some(mode),
+                });
+            }
+        }
+        // Every workspace this client has a conversation in, then — once the
+        // search line names a directory that is not one of them — a row that
+        // switches to it. Enter on that row is "create a workspace here".
+        PickerKind::Workspace => {
+            let cwd = data.session.cwd.as_str();
+            // The tick follows the directory, and an exact path wins. The
+            // fallback (the directory's own name) is for a surface that holds the
+            // session's cwd in another spelling — `~/future-os` against
+            // `/home/dev/future-os` — the same tail match the model picker uses
+            // for a provider-less model id.
+            let exact = data
+                .workspaces
+                .iter()
+                .any(|workspace| same_path(&workspace.path, cwd));
+            let cwd_name = cwd
+                .trim()
+                .trim_end_matches(['/', '\\'])
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or("")
+                .to_lowercase();
+            let typed = query.trim();
+            if !typed.is_empty()
+                && !data
+                    .workspaces
+                    .iter()
+                    .any(|workspace| same_path(&workspace.path, typed))
+            {
+                rows.push(PickerRow::Item {
+                    key: typed.to_string(),
+                    label: i18n::render(lang, Key::PickerNewWorkspace, &[&typed]),
+                    detail: String::new(),
+                    current: false,
+                });
+            }
+            for workspace in &data.workspaces {
+                if !matches(&[&workspace.name, &workspace.path]) {
+                    continue;
+                }
+                let current = if exact {
+                    same_path(&workspace.path, cwd)
+                } else {
+                    !cwd_name.is_empty() && workspace.name.to_lowercase() == cwd_name
+                };
+                rows.push(PickerRow::Item {
+                    key: workspace.path.clone(),
+                    label: workspace.name.clone(),
+                    // The path, not the conversation count: two checkouts can
+                    // share a name, and the path is both what tells them apart
+                    // and what "switch to this workspace" will run in.
+                    detail: workspace.path.clone(),
+                    current,
+                });
+            }
+        }
         // Three rows, always: the languages are ours, not the agent's, so there
         // is nothing to fetch and nothing to filter out. A reader who picked one
         // can come back here to follow the system again.
@@ -414,7 +579,17 @@ pub fn rows(
         rows,
         ordinals: Vec::new(),
         selectable: 0,
+        detail_column: 0,
     };
+    view.detail_column = view
+        .rows
+        .iter()
+        .filter_map(|row| match row {
+            PickerRow::Item { detail, .. } if !detail.is_empty() => Some(width(detail) + 2),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
     // Assign the selectable ordinals in display order; a heading keeps `None`
     // so a key step and a click both skip it.
     let mut ordinals: Vec<Option<usize>> = Vec::with_capacity(view.rows.len());
@@ -500,6 +675,7 @@ pub fn row_line(
     selected: bool,
     inner: usize,
     lang: Language,
+    detail_column: usize,
 ) -> String {
     match row {
         PickerRow::Group { label, count } => {
@@ -546,7 +722,11 @@ pub fn row_line(
             } else {
                 format!(" {} ", detail)
             };
-            let detail_width = width(&detail).min(inner.saturating_sub(8));
+            // The list's own column when there is one, so a menu of explanations
+            // lines up; never more than half the row, so the label keeps room.
+            let detail_width = detail_column
+                .max(width(&detail))
+                .min(inner.saturating_sub(8));
             let detail = palette.dim(&fit(&detail, detail_width));
             // Label first, then the detail right-aligned: two rows of different
             // providers line their capability columns up.
@@ -964,7 +1144,7 @@ mod tests {
         for inner in [1usize, 4, 12, 30, 48, 68] {
             for (index, row) in view.rows.iter().enumerate() {
                 for selected in [false, true] {
-                    let line = row_line(&FUTURE_DARK, row, selected, inner, LANG);
+                    let line = row_line(&FUTURE_DARK, row, selected, inner, LANG, 0);
                     assert_eq!(
                         crate::workbench::ansi::width(&line),
                         inner,
@@ -978,7 +1158,7 @@ mod tests {
             let view = rows(kind, &data, "", 0, "dark", LANG, LanguagePreference::System);
             for row in &view.rows {
                 assert_eq!(
-                    crate::workbench::ansi::width(&row_line(&FUTURE_DARK, row, true, 40, LANG)),
+                    crate::workbench::ansi::width(&row_line(&FUTURE_DARK, row, true, 40, LANG, 0)),
                     40
                 );
             }

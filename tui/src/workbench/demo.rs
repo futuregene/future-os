@@ -65,7 +65,6 @@ fn base() -> WorkbenchData {
         model: "future/deepseek-flash".into(),
         effort: "medium".into(),
         mode: "manual".into(),
-        permission: "workspace".into(),
         usage: UsageData {
             ctx_used: 6_900,
             ctx_total: 1_000_000,
