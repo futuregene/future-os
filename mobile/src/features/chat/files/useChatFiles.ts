@@ -21,6 +21,22 @@ import { usePreviewStack } from "./usePreviewStack";
 
 type Remote = ReturnType<typeof useRemote>;
 
+/**
+ * The alert a refused transfer maps to, read off the desktop's own message.
+ *
+ * The host names the limit that blocked the file, and the phone answers in its
+ * own wording for the limits it knows. A size refusal has to be recognised
+ * separately: it used to match only "view it on desktop", so a file that was
+ * merely too large looked like a broken transfer.
+ */
+function refusalMessage(detail: string, t: TFunction): string {
+  if (detail.includes("download limit"))
+    return t("attachment.tooLarge");
+  if (detail.includes("view it on desktop") || detail.includes("GIF preview"))
+    return t("attachment.previewOnDesktop");
+  return t("attachment.downloadFailed");
+}
+
 export interface PreviewState {
   attachment: HistoryAttachment;
   info: DownloadInfo;
@@ -232,10 +248,7 @@ export function useChatFiles(remote: Remote, t: TFunction, setTransferProgress: 
       } catch (error) {
         if (error instanceof TransferCancelledError) return;
         const detail = error instanceof Error ? error.message : "";
-        const message =
-          detail.includes("view it on desktop") || detail.includes("GIF preview")
-            ? t("attachment.previewOnDesktop")
-            : t("attachment.downloadFailed");
+        const message = refusalMessage(detail, t);
         if (handle) {
           handoffDownloadAlert(handle, message);
         } else {
@@ -566,10 +579,7 @@ export function useChatFiles(remote: Remote, t: TFunction, setTransferProgress: 
       } catch (error) {
         if (error instanceof TransferCancelledError) return;
         const detail = error instanceof Error ? error.message : "";
-        const message =
-          detail.includes("view it on desktop") || detail.includes("GIF preview")
-            ? t("attachment.previewOnDesktop")
-            : t("attachment.downloadFailed");
+        const message = refusalMessage(detail, t);
         handoffDownloadAlert(handle, message);
       } finally {
         finishDownload(handle);

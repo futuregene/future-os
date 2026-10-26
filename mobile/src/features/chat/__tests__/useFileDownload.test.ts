@@ -1286,6 +1286,22 @@ describe("progress, waiting and oversized guards", () => {
     act(() => h.tree.unmount());
   });
 
+  test("a file the desktop refuses for its size says so, not 'desktop unreachable'", async () => {
+    // A type the phone itself allows, so the refusal has to come from the
+    // desktop's own limit rather than the phone's allow-list.
+    const remote = {
+      cachedAttachment: jest.fn(() => null),
+      prepareAttachment: jest.fn(async () => {
+        throw new Error("The file is over the 10 MB download limit.");
+      }),
+      downloadAttachment: jest.fn(),
+    };
+    const h = await mount(remote);
+    await act(async () => { await h.api.openAttachment({ path: "/logs.zip", name: "logs.zip" }); });
+    expect(Alert.alert).toHaveBeenCalledWith("attachment.title", "attachment.tooLarge");
+    act(() => h.tree.unmount());
+  });
+
   test("a failed preparation reports the failure instead of leaving a dead screen", async () => {
     const remote = {
       cachedAttachment: jest.fn(() => null),
