@@ -569,12 +569,8 @@ pub(crate) async fn prepare_download_variant(
     if !source.is_file() {
         return Err("The attachment is no longer available.".to_string().into());
     }
-    if !is_mobile_download_allowed(&display_name) {
-        return Err(
-            "This file type is not available on mobile; view it on desktop."
-                .to_string()
-                .into(),
-        );
+    if let Some(refusal) = download_refusal(&display_name, std::fs::metadata(&source)?.len()) {
+        return Err(refusal.into());
     }
     let source_for_prepare = source.clone();
     let display_name_for_prepare = display_name.clone();
@@ -897,15 +893,41 @@ fn is_mobile_download_allowed(name: &str) -> bool {
     mime_type_for_name(name) != "application/octet-stream"
 }
 
+/// What a file over [`MAX_FILE_BYTES`] is refused with.
+///
+/// It names the limit rather than repeating the file's own size: the row the
+/// reader clicked is already showing that, and this string is also what the
+/// phone matches on to pick its localised wording.
+fn oversized_message() -> String {
+    format!(
+        "The file is over the {} MB download limit.",
+        MAX_FILE_BYTES / (1024 * 1024)
+    )
+}
+
+/// Why a file cannot be prepared for a remote client, or `None` when it can.
+///
+/// Size is decided before type, because naming the wrong one sends the reader
+/// after the wrong fix. A 12.5 MB `.apk` is refused by both rules, and "this
+/// type is unavailable" would have them converting or renaming a file when the
+/// bytes are what will not travel.
+fn download_refusal(name: &str, size: u64) -> Option<String> {
+    if size > MAX_FILE_BYTES {
+        return Some(oversized_message());
+    }
+    if !is_mobile_download_allowed(name) {
+        return Some("This file type is not available on mobile; view it on desktop.".to_string());
+    }
+    None
+}
+
 fn prepare_original(
     source: &Path,
     requested_display_name: &str,
 ) -> Result<PreparedPreview, crate::Error> {
     let size = std::fs::metadata(source)?.len();
     if size > MAX_FILE_BYTES {
-        return Err("The file is larger than 10 MiB; view it on desktop."
-            .to_string()
-            .into());
+        return Err(oversized_message().into());
     }
     let original_name = display_name(requested_display_name, "attachment");
     let dir = transfer_root().join("download");
@@ -1057,9 +1079,7 @@ fn prepare_preview(
     }
     let size = std::fs::metadata(source)?.len();
     if size > MAX_FILE_BYTES {
-        return Err("The file is larger than 10 MiB; view it on desktop."
-            .to_string()
-            .into());
+        return Err(oversized_message().into());
     }
     let markdown = matches!(ext.as_str(), "md" | "markdown");
     let json = matches!(ext.as_str(), "json" | "ipynb");
@@ -1342,9 +1362,9 @@ mod tests {
     #[cfg(unix)]
     use super::ensure_private_dir;
     use super::{
-        attachment_is_in_session, display_name, is_animated_image, is_mobile_download_allowed,
-        mime_type_for_name, prepare_preview, safe_disk_name, validate_mobile_image, MAX_FILE_BYTES,
-        MAX_JSON_RICH_PREVIEW_BYTES,
+        attachment_is_in_session, display_name, download_refusal, is_animated_image,
+        is_mobile_download_allowed, mime_type_for_name, oversized_message, prepare_preview,
+        safe_disk_name, validate_mobile_image, MAX_FILE_BYTES, MAX_JSON_RICH_PREVIEW_BYTES,
     };
     use serde_json::json;
 
@@ -1589,6 +1609,23 @@ mod tests {
         assert!(!is_mobile_download_allowed("unknown"));
         // A name that merely starts like one of the prefixes is not a match.
         assert!(!is_mobile_download_allowed("makefile-list.bin"));
+    }
+
+    /// A file that breaks both rules is reported by its size, and one that breaks
+    /// only the type rule keeps the type message. The version of this that named
+    /// the type for a 12.5 MB `.apk` sent the reader after the wrong fix, and told
+    /// someone already looking at the desktop panel to view it on the desktop.
+    #[test]
+    fn a_refusal_names_the_limit_that_actually_blocks_the_file() {
+        assert_eq!(
+            download_refusal("app-debug.apk", MAX_FILE_BYTES + 1).as_deref(),
+            Some(oversized_message().as_str()),
+        );
+        assert!(oversized_message().starts_with("The file is over the 10 MB"));
+        // The size is not the reason here, so the type message is unchanged.
+        assert!(download_refusal("app-debug.apk", MAX_FILE_BYTES)
+            .is_some_and(|message| message.contains("not available on mobile")));
+        assert!(download_refusal("notes.txt", 1024).is_none());
     }
 }
 
@@ -2309,7 +2346,7 @@ mod flow_tests {
         let big = dir.join("huge.txt");
         std::fs::write(&big, vec![b'x'; (MAX_FILE_BYTES + 1) as usize]).unwrap();
         let error = prepare_preview(&big, "huge.txt").unwrap_err();
-        assert!(error.to_string().contains("10 MiB"));
+        assert!(error.to_string().contains("10 MB download limit"));
 
         // Invalid UTF-8 is not previewable as text.
         let binary = dir.join("data.txt");
@@ -2551,7 +2588,7 @@ mod flow_tests {
             .set_len(MAX_FILE_BYTES + 1)
             .unwrap();
         let error = prepare_original(&big, "big.bin").unwrap_err();
-        assert!(error.to_string().contains("10 MiB"));
+        assert_eq!(error.to_string(), oversized_message());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
