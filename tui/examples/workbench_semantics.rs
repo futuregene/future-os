@@ -449,11 +449,11 @@ fn palette_row() -> Result<(), String> {
         wb.handle(WbEvent::Key(ch.to_string()), &data);
     }
     wb.render(&data, 120, 38);
-    let shown = wb.palette_entries();
+    let shown = wb.palette_rows(&data);
     if shown.is_empty() {
         return Err("the filter left no commands".into());
     }
-    let expected = shown[0].0.to_string();
+    let expected = shown[0].command();
     let row = region(&wb, "palette.row.0")?;
     let (x, y) = centre(row);
     match wb.handle(WbEvent::Mouse(press(x, y)), &data).as_slice() {

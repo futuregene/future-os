@@ -563,27 +563,50 @@ impl Workbench {
         self.drag.is_some()
     }
 
-    /// `/` palette entries that match the current query: `(command, description)`.
-    pub fn palette_entries(&self) -> Vec<(&'static str, &'static str)> {
-        let needle = self.palette_query.to_lowercase();
-        COMMANDS
+    /// `/` palette rows that match the current query: the surface's verbs first,
+    /// then the skills the agent has installed.
+    ///
+    /// One list, not two menus: a skill is written `/name` in the draft exactly
+    /// like a command is, so a reader who opens `/` and types `web` should see
+    /// both the verb and the skill that spell that way. The skills come last
+    /// because a slash menu is opened *for* a command far more often than for a
+    /// skill, and their rows are marked as skills so the two cannot be confused
+    /// (a skill's `<name>` is a prompt token the agent expands; a command never
+    /// reaches the model).
+    pub fn palette_rows(&self, data: &WorkbenchData) -> Vec<PaletteRow> {
+        let needle = self.palette_query.trim_start_matches('/').to_lowercase();
+        let matches = |values: &[&str]| {
+            needle.is_empty()
+                || values
+                    .iter()
+                    .any(|value| value.to_lowercase().contains(&needle))
+        };
+        let mut rows: Vec<PaletteRow> = COMMANDS
             .iter()
-            .copied()
-            .map(|(command, key)| (command, t(self.lang, key)))
-            .filter(|(command, description)| {
-                needle.is_empty()
-                    || command.to_lowercase().contains(&needle)
-                    || description.to_lowercase().contains(&needle)
+            .filter(|(command, key)| matches(&[command, t(self.lang, *key)]))
+            .map(|(command, key)| PaletteRow::Command {
+                command,
+                description: t(self.lang, *key),
             })
-            .collect()
+            .collect();
+        rows.extend(
+            data.skills
+                .iter()
+                .filter(|skill| matches(&[skill.name.as_str(), skill.description.as_str()]))
+                .take(PALETTE_SKILL_LIMIT)
+                .map(|skill| PaletteRow::Skill {
+                    name: skill.name.clone(),
+                    description: skill.description.clone(),
+                }),
+        );
+        rows
     }
 
-    /// The highlighted palette entry, if the palette is open.
-    pub fn palette_selection(&self) -> Option<(&'static str, &'static str)> {
-        let entries = self.palette_entries();
-        entries
-            .get(self.palette_index.min(entries.len().saturating_sub(1)))
-            .copied()
+    /// The highlighted palette row, if the palette is open.
+    pub fn palette_selection(&self, data: &WorkbenchData) -> Option<PaletteRow> {
+        let rows = self.palette_rows(data);
+        rows.get(self.palette_index.min(rows.len().saturating_sub(1)))
+            .cloned()
     }
 
     /// One animation step: advance the clock the spinner and the elapsed-time
@@ -1179,21 +1202,41 @@ impl Workbench {
                     vec![WbAction::Redraw]
                 }
                 "enter" => {
-                    let chosen = self
-                        .palette_selection()
-                        .map(|(command, _)| command.to_string());
+                    let chosen = self.palette_selection(data);
                     self.overlay = None;
                     match chosen {
-                        Some(command) => vec![WbAction::Command(command)],
+                        // A skill is a prompt token, not a verb the surface
+                        // answers: running it here would be a command the agent
+                        // never sees, so it fills the draft instead and the
+                        // reader's next `enter` sends it.
+                        Some(row) if row.is_skill() => vec![WbAction::EditInput {
+                            text: row.fill(),
+                            cursor: row.fill().len(),
+                        }],
+                        Some(row) => vec![WbAction::Command(row.command())],
                         None => vec![WbAction::Redraw],
                     }
                 }
+                // `tab` completes into the draft without leaving the palette's
+                // meaning behind: the reader can then add arguments, exactly
+                // like the desktop's composer.
+                "tab" => match self.palette_selection(data) {
+                    Some(row) => {
+                        let fill = row.fill();
+                        self.overlay = None;
+                        vec![WbAction::EditInput {
+                            text: fill.clone(),
+                            cursor: fill.len(),
+                        }]
+                    }
+                    None => Vec::new(),
+                },
                 "up" => {
                     self.palette_index = self.palette_index.saturating_sub(1);
                     vec![WbAction::Redraw]
                 }
                 "down" => {
-                    let count = self.palette_entries().len();
+                    let count = self.palette_rows(data).len();
                     if self.palette_index + 1 < count {
                         self.palette_index += 1;
                     }
@@ -1684,16 +1727,22 @@ impl Workbench {
                     .and_then(|v| v.parse::<usize>().ok())
                 {
                     // The palette is a menu: a click on an entry runs it, which
-                    // is what `enter` does on the highlighted one.
+                    // is what `enter` does on the highlighted one. A skill fills
+                    // the draft for the same reason `enter` does.
                     self.palette_index = index;
-                    let chosen = self
-                        .palette_entries()
-                        .get(index)
-                        .map(|(command, _)| command.to_string());
+                    let chosen = self.palette_selection(data);
                     self.overlay = None;
-                    return chosen
-                        .map(|command| vec![WbAction::Command(command)])
-                        .unwrap_or_else(|| vec![WbAction::Redraw]);
+                    return match chosen {
+                        Some(row) if row.is_skill() => {
+                            let fill = row.fill();
+                            vec![WbAction::EditInput {
+                                text: fill.clone(),
+                                cursor: fill.len(),
+                            }]
+                        }
+                        Some(row) => vec![WbAction::Command(row.command())],
+                        None => vec![WbAction::Redraw],
+                    };
                 }
                 if let Some(index) = id
                     .strip_prefix("diff.file.")
@@ -2069,6 +2118,59 @@ impl Workbench {
             return actions;
         }
         vec![WbAction::Submit(text)]
+    }
+}
+
+/// One row of the `/` palette: a verb the surface answers, or an installed skill
+/// the *agent* answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaletteRow {
+    Command {
+        command: &'static str,
+        description: &'static str,
+    },
+    /// A skill, offered as `/<name>`; it is a prompt token, not a surface verb.
+    Skill { name: String, description: String },
+}
+
+/// How many skills the palette lists. A machine with a hundred installed skills
+/// must not turn `/` into a scroll through all of them; the query narrows it and
+/// a typed `/name` still reaches the agent either way.
+const PALETTE_SKILL_LIMIT: usize = 40;
+
+impl PaletteRow {
+    /// What pressing `enter` on this row reports.
+    pub fn command(&self) -> String {
+        match self {
+            Self::Command { command, .. } => (*command).to_string(),
+            Self::Skill { name, .. } => format!("/{name}"),
+        }
+    }
+
+    /// The text `tab` puts in the draft — a *command* whole, so the reader can
+    /// add arguments before running it.
+    pub fn fill(&self) -> String {
+        format!("{} ", self.command())
+    }
+
+    /// Does this row name a skill (a prompt token) rather than a surface verb?
+    pub fn is_skill(&self) -> bool {
+        matches!(self, Self::Skill { .. })
+    }
+
+    /// The row's name, without the slash.
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Command { command, .. } => command,
+            Self::Skill { name, .. } => name,
+        }
+    }
+
+    pub fn description(&self) -> &str {
+        match self {
+            Self::Command { description, .. } => description,
+            Self::Skill { description, .. } => description,
+        }
     }
 }
 
@@ -3048,21 +3150,110 @@ mod tests {
         for key in ["m", "o", "d"] {
             workbench.handle(WbEvent::Key(key.into()), &data);
         }
-        let entries = workbench.palette_entries();
+        let rows = workbench.palette_rows(&data);
+        assert!(rows.iter().any(|row| row.command() == "/model"), "{rows:?}");
         assert!(
-            entries.iter().any(|(command, _)| *command == "/model"),
-            "{entries:?}"
+            rows.iter().all(|row| row.label().contains("mod")
+                || row.description().to_lowercase().contains("mod")),
+            "only matches are listed: {rows:?}"
         );
-        assert!(
-            entries.iter().all(|(command, _)| command.contains("mod")),
-            "only matches are listed: {entries:?}"
-        );
-        let chosen = workbench.palette_selection().expect("a selection");
+        let chosen = workbench.palette_selection(&data).expect("a selection");
         assert_eq!(
             workbench.handle(WbEvent::Key("enter".into()), &data),
-            vec![WbAction::Command(chosen.0.to_string())]
+            vec![WbAction::Command(chosen.command())]
         );
         assert_eq!(workbench.overlay, None);
+    }
+
+    /// The palette is one list of two kinds of thing: a verb the surface answers
+    /// and a skill the agent expands. A skill must not be *run* as a verb — the
+    /// agent would never see it — so it fills the draft instead.
+    #[test]
+    fn the_palette_lists_skills_after_the_commands_and_fills_the_draft() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        let rows = workbench.palette_rows(&data);
+        let commands = rows.iter().filter(|row| !row.is_skill()).count();
+        let skills = rows.iter().filter(|row| row.is_skill()).count();
+        assert_eq!(commands, COMMANDS.len());
+        assert_eq!(
+            skills,
+            data.skills.len(),
+            "every installed skill is offered"
+        );
+        assert!(
+            rows[..commands].iter().all(|row| !row.is_skill()),
+            "commands first, skills after"
+        );
+        // Filtering reaches a skill by its name.
+        for key in ["f", "u", "t", "u", "r", "e", "-", "p"] {
+            workbench.handle(WbEvent::Key(key.into()), &data);
+        }
+        let filtered = workbench.palette_rows(&data);
+        assert!(
+            filtered
+                .iter()
+                .any(|row| row.label() == "future-peer-review"),
+            "{filtered:?}"
+        );
+        // Enter on a skill fills the draft: the skill is a prompt token the agent
+        // expands, so running it as a surface command would be a lie.
+        let selection = workbench.palette_selection(&data).expect("a row");
+        assert!(selection.is_skill());
+        let actions = workbench.handle(WbEvent::Key("enter".into()), &data);
+        assert!(
+            matches!(actions.as_slice(), [WbAction::EditInput { text, .. }] if *text == selection.fill()),
+            "{actions:?}"
+        );
+        assert_eq!(workbench.overlay, None);
+    }
+
+    /// `tab` completes the row into the draft and leaves the palette: the reader
+    /// can then add arguments to a command, or type the sentence a skill starts.
+    #[test]
+    fn tab_completes_the_highlighted_row_into_the_draft() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        for key in ["m", "o", "d", "e", "l"] {
+            workbench.handle(WbEvent::Key(key.into()), &data);
+        }
+        let chosen = workbench.palette_selection(&data).expect("a row");
+        let actions = workbench.handle(WbEvent::Key("tab".into()), &data);
+        let [WbAction::EditInput { text, cursor }] = actions.as_slice() else {
+            panic!("{actions:?}");
+        };
+        assert_eq!(text, &chosen.fill());
+        assert_eq!(*cursor, text.len(), "the caret is after the command");
+        assert_eq!(workbench.overlay, None);
+    }
+
+    /// The painted palette says which rows are which, exactly once per kind, and
+    /// a click still lands on the row it was painted on with the headings there.
+    #[test]
+    fn the_palette_paints_a_heading_once_per_kind_and_keeps_clicks_aligned() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        let text = plain(&workbench.render(&data, 120, 38));
+        let headings = text.matches(" 命令").count() + text.matches(" 技能").count();
+        assert!(headings >= 2, "both kinds are named: {text}");
+        assert!(text.contains("/future-web"), "a skill is listed: {text}");
+        // The last command's target is on the line the last command was drawn on:
+        // click it and the action names that command, not its neighbour.
+        let last = COMMANDS.len() - 1;
+        let expected = workbench.palette_rows(&data)[last].command();
+        assert_eq!(
+            click_region(
+                &mut workbench,
+                &data,
+                120,
+                38,
+                &format!("palette.row.{last}")
+            ),
+            vec![WbAction::Command(expected)]
+        );
     }
 
     /// A copy of `data` whose draft holds `typed`, caret at the end.
@@ -3868,8 +4059,8 @@ mod tests {
             workbench.handle(WbEvent::Key(ch.to_string()), &data);
         }
         assert!(workbench
-            .palette_selection()
-            .is_some_and(|(command, _)| command == "/lang"));
+            .palette_selection(&data)
+            .is_some_and(|row| row.command() == "/lang"));
 
         workbench.open_picker(PickerKind::Language, &data);
         let text = plain(&workbench.render(&data, 120, 38));
@@ -4167,7 +4358,7 @@ mod tests {
             wb.handle(WbEvent::Key(ch.to_string()), &data);
         }
         wb.render(&data, 120, 38);
-        let expected = wb.palette_entries()[0].0.to_string();
+        let expected = wb.palette_rows(&data)[0].command();
         assert_eq!(
             click_region(&mut wb, &data, 120, 38, "palette.row.0"),
             vec![WbAction::Command(expected)]

@@ -180,7 +180,7 @@ pub(crate) fn compose(
             workbench.set_cursor(None);
         }
         Some(Overlay::Palette) => {
-            let lines = palette_box(workbench, &palette, w, h);
+            let lines = palette_box(workbench, data, &palette, w, h);
             paint_overlay(&mut rows, &palette, lines, columns);
             workbench.set_cursor(None);
         }
@@ -1531,20 +1531,37 @@ fn keybindings_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
 /// Every visible verb is a click target — the palette's whole point is not
 /// having to know a chord, so an entry a pointer cannot press would leave the
 /// menu open to the keyboard alone.
-fn palette_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec<String> {
+fn palette_box(
+    workbench: &mut Workbench,
+    data: &WorkbenchData,
+    palette: &Palette,
+    w: u16,
+    h: u16,
+) -> Vec<String> {
     let lang = workbench.lang;
-    let entries = workbench.palette_entries();
+    let rows = workbench.palette_rows(data);
     let query = workbench.palette_query.clone();
-    let selection = workbench.palette_index.min(entries.len().saturating_sub(1));
+    let selection = workbench.palette_index.min(rows.len().saturating_sub(1));
     let room = h.saturating_sub(6) as usize;
     // Keep the highlighted entry inside the window.
     let start = selection.saturating_sub(room.saturating_sub(1));
-    let shown = entries.len().saturating_sub(start).min(room);
+    let shown = rows.len().saturating_sub(start).min(room);
+    // A heading is printed once, in front of the first row of its kind, so the
+    // list stays one list to move through while still saying which rows are the
+    // surface's verbs and which are skills the agent will expand.
+    let mut headings = 0usize;
+    let mut last: Option<bool> = None;
+    for row in rows.iter().skip(start).take(shown) {
+        if last != Some(row.is_skill()) {
+            last = Some(row.is_skill());
+            headings += 1;
+        }
+    }
     // The box is sized before its rows exist, because a row's click target is
     // placed with the same geometry that frames it: two filter lines above the
     // window, one rule below.
-    let mut content_len = 2 + shown;
-    if entries.is_empty() {
+    let mut content_len = 2 + shown + headings;
+    if rows.is_empty() {
         content_len += 1;
     }
     let geometry = box_geometry(w, h, 64, content_len);
@@ -1561,32 +1578,51 @@ fn palette_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> 
         }
     ));
     content.push(String::new());
-    if entries.is_empty() {
+    if rows.is_empty() {
         content.push(palette.dim(t(lang, Key::PaletteEmpty)));
     }
-    for (index, (command, description)) in entries.iter().enumerate().skip(start).take(shown) {
+    // A painted line is not the same number as a listed row once a heading is in
+    // front of it, so the row's own target is placed from the line it drew on.
+    let mut line = 0u16;
+    let mut heading: Option<bool> = None;
+    for (index, row) in rows.iter().enumerate().skip(start).take(shown) {
+        if heading != Some(row.is_skill()) {
+            heading = Some(row.is_skill());
+            content.push(palette.dim(if row.is_skill() {
+                t(lang, Key::PaletteSkillsHeading)
+            } else {
+                t(lang, Key::PaletteCommandsHeading)
+            }));
+            line += 1;
+        }
         let marker = if index == selection { "›" } else { " " };
-        let row = format!(
+        let label = if row.is_skill() {
+            format!("/{}", row.label())
+        } else {
+            row.label().to_string()
+        };
+        let body = format!(
             " {marker} {}  {}",
-            palette.text(palette.iris, &fit(command, 16)),
-            palette.dim(description)
+            palette.text(palette.iris, &fit(&label, 20)),
+            palette.dim(row.description())
         );
         content.push(if index == selection {
-            palette.strong(palette.fg, &row)
+            palette.strong(palette.fg, &body)
         } else {
-            row
+            body
         });
-        // Filter line, blank line, then the rows: the first entry sits on the
-        // box's fourth row.
+        // Filter line, blank line, then the rows and their headings: the first
+        // entry sits on the box's fourth line.
         workbench.hit_map().push(
             Rect::new(
                 geometry.left + 1,
-                geometry.top + 3 + (index - start) as u16,
+                geometry.top + 3 + line,
                 geometry.w.saturating_sub(2),
                 1,
             ),
             format!("palette.row.{index}"),
         );
+        line += 1;
     }
     framed(
         palette,

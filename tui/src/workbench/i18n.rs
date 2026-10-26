@@ -214,6 +214,8 @@ pub enum Key {
     PaletteTitle,
     PaletteFilter,
     PaletteEmpty,
+    PaletteCommandsHeading,
+    PaletteSkillsHeading,
     // ── the `@` / `#` mention menu ────────────────────────────────────
     MentionTitleFile,
     MentionTitleSession,
@@ -454,8 +456,16 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ),
         PalettePanelTitle => (" 命令面板（/）", " Command palette (/)"),
         PaletteTitle => ("命令", "Commands"),
-        PaletteFilter => ("输入以过滤命令", "Type to filter commands"),
-        PaletteEmpty => (" 没有匹配的命令", " No matching command"),
+        PaletteFilter => (
+            "输入以过滤命令与技能 · tab 补全 · ⏎ 运行",
+            "Type to filter commands and skills · tab completes · enter runs",
+        ),
+        PaletteEmpty => (" 没有匹配的命令或技能", " No matching command or skill"),
+        PaletteCommandsHeading => (" 命令", " Commands"),
+        PaletteSkillsHeading => (
+            " 技能（进草稿后由 agent 展开）",
+            " Skills (a prompt token the agent expands)",
+        ),
 
         // The menu completes a token the reader is typing, so its own copy is
         // chrome: what the sigil means, and which keys do what while it is up.
@@ -821,7 +831,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 204] = {
+    const ALL_KEYS: [Key; 206] = {
         use Key::*;
         [
             TabTodo,
@@ -881,6 +891,8 @@ mod tests {
             PaletteTitle,
             PaletteFilter,
             PaletteEmpty,
+            PaletteCommandsHeading,
+            PaletteSkillsHeading,
             MentionTitleFile,
             MentionTitleSession,
             MentionHintFile,
