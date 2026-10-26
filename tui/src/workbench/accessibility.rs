@@ -21,6 +21,7 @@ pub fn plain(text: &str) -> String {
 pub struct LinearReader {
     session: String,
     pending: String,
+    streamed: String,
 }
 
 impl LinearReader {
@@ -32,6 +33,7 @@ impl LinearReader {
         }
         self.session = session.to_string();
         self.pending.clear();
+        self.streamed.clear();
         let body = messages
             .iter()
             .map(|row| plain(row))
@@ -54,17 +56,26 @@ impl LinearReader {
         lang: super::i18n::Language,
     ) -> String {
         match event.r#type.as_str() {
+            "agent_start" => {
+                self.pending.clear();
+                self.streamed.clear();
+                String::new()
+            }
             "text_chunk" => {
-                self.pending.push_str(&plain(event.text()));
+                let text = plain(event.text());
+                self.pending.push_str(&text);
+                self.streamed.push_str(&text);
                 self.take_lines()
             }
             "agent_end" => {
-                let final_text = event.text();
-                // Some agents send only a final answer, others also streamed
-                // it. `Live` likewise lets agent_end replace the partial text.
-                if self.pending.is_empty() {
-                    self.pending.push_str(&plain(final_text));
+                let final_text = plain(event.text());
+                // The final event repeats the streamed prefix. Append only
+                // its unseen suffix, including when the last emitted chunk
+                // ended in a newline and left `pending` empty.
+                if let Some(suffix) = final_text.strip_prefix(&self.streamed) {
+                    self.pending.push_str(suffix);
                 }
+                self.streamed.clear();
                 terminated(&std::mem::take(&mut self.pending))
             }
             "approval_request" => {
@@ -214,6 +225,18 @@ mod tests {
         let mut reader = LinearReader::default();
         reader.sync_session("a", &[]);
         assert_eq!(read(&mut reader, &event("agent_end", "done")), "done\n");
+        assert_eq!(
+            read(&mut reader, &event("text_chunk", "first\n")),
+            "first\n"
+        );
+        assert_eq!(
+            read(&mut reader, &event("agent_end", "first\nsecond")),
+            "second\n"
+        );
+        assert_eq!(read(&mut reader, &event("text_chunk", "stale")), "");
+        assert_eq!(read(&mut reader, &event("agent_start", "")), "");
+        assert_eq!(read(&mut reader, &event("text_chunk", "fresh")), "");
+        assert_eq!(read(&mut reader, &event("agent_end", "fresh")), "fresh\n");
         assert_eq!(
             read(&mut reader, &event("text_chunk", "\x1b]52;c;bad\x07ok\n")),
             "ok\n"

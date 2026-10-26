@@ -513,6 +513,15 @@ mod tests {
     }
 
     #[test]
+    fn no_color_applies_to_composed_styles_and_reverse_video() {
+        let _lock = crate::test_env::lock();
+        let _no_color = crate::test_env::EnvVarGuard::set("NO_COLOR", "");
+        let fns: [&dyn Fn(&str) -> String; 2] = [&|t| fg_raw(151, t), &|t| bold_raw(t)];
+        assert_eq!(style("plain", &fns), "plain");
+        assert_eq!(reverse_raw("plain"), "plain");
+    }
+
+    #[test]
     fn no_color_presence_including_zero_disables_styling() {
         assert!(colors_disabled(Some("".into())));
         assert!(colors_disabled(Some("0".into())));
