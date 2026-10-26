@@ -18,12 +18,18 @@ goal control plane (`future-goal`).
 
 Required on every platform for a full build (agent + TUI + CLI + GUI):
 
-- **Rust** 1.97+ (pinned via `rust-toolchain.toml`)
+- **Rust** 1.99.1 (pinned via `rust-toolchain.toml`, shared by local builds and GitHub Actions)
 - **Node.js** 24+ (see `.nvmrc`) — for the GUI frontend
 - Optional: **Python 3** — for the manual/documentation targets (`make generate-models`, `make check-docs` / `make test-docs-check`, the `make test-cli-diff` / `make test-tui-tmux` harnesses) and the profiling targets (`make profile-agent` / `profile-quick` / `profile-heap`)
 - Optional: **protoc** (Protocol Buffers compiler) — only for `make generate-proto`; generated code is checked in so normal builds don't need it
 
 The TUI and CLI are Rust (`cargo build`) and no longer need Bun or Node.
+
+The desktop uses Tauri 2.12.5, `tauri-build` 2.7.4, and the stable 2.x
+plugins locked in the root `Cargo.lock`. The JavaScript API and CLI are
+2.12.4, and the dialog bindings are 2.8.3, locked in `package-lock.json`.
+These packages have independent version numbers. Tauri 2.12 requires Rust
+1.90 or newer and no longer officially supports Windows 7.
 
 ## Clone
 
@@ -154,7 +160,7 @@ Install the toolchain:
 sudo apt update
 sudo apt install -y build-essential mold libssl-dev \
   libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust (rust-toolchain.toml pins 1.97.0)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust (rust-toolchain.toml pins 1.99.1)
 source "$HOME/.cargo/env"                                         # make cargo/rustc available in this shell
 sudo apt install -y protobuf-compiler                             # optional — only for make generate-proto
 ```

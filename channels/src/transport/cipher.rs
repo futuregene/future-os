@@ -154,7 +154,7 @@ fn xor_block(block: &mut GenericArray<u8, aes::cipher::consts::U16>, mask: &[u8;
 fn cbc_encrypt(cipher: &Aes256, iv: [u8; BLOCK], data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len());
     let mut previous = iv;
-    for chunk in data.chunks_exact(BLOCK) {
+    for chunk in data.as_chunks::<BLOCK>().0 {
         let mut block = GenericArray::clone_from_slice(chunk);
         xor_block(&mut block, &previous);
         cipher.encrypt_block(&mut block);
@@ -167,7 +167,7 @@ fn cbc_encrypt(cipher: &Aes256, iv: [u8; BLOCK], data: &[u8]) -> Vec<u8> {
 fn cbc_decrypt(cipher: &Aes256, iv: [u8; BLOCK], data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len());
     let mut previous = iv;
-    for chunk in data.chunks_exact(BLOCK) {
+    for chunk in data.as_chunks::<BLOCK>().0 {
         let mut block = GenericArray::clone_from_slice(chunk);
         cipher.decrypt_block(&mut block);
         // Chain on the *ciphertext* just consumed, not on the plaintext.

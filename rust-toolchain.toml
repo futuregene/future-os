@@ -1,5 +1,5 @@
 # Pin the Rust toolchain so local development and CI use the same compiler.
 # CI reads this file through scripts/ci/setup-rust.mjs.
 [toolchain]
-channel = "1.97.0"
+channel = "1.99.1"
 components = ["rustfmt", "clippy"]

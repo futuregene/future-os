@@ -167,7 +167,7 @@ impl proto::future_agent_server::FutureAgent for MockAgent {
         if command.r#type == "get_agent_readiness"
             && self
                 .transient_readiness_failures
-                .fetch_update(
+                .try_update(
                     std::sync::atomic::Ordering::AcqRel,
                     std::sync::atomic::Ordering::Acquire,
                     |left| left.checked_sub(1),

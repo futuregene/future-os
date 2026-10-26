@@ -124,15 +124,26 @@ async fn connect_channel_with_policy(
     request_timeout: Option<Duration>,
     pinned: bool,
 ) -> Result<ConnectedChannel, ConnectError> {
+    connect_channel_with_connector(configured, connect_timeout, |endpoint| async move {
+        connect_one(&endpoint, connect_timeout, request_timeout, pinned).await
+    })
+    .await
+}
+
+async fn connect_channel_with_connector<F, Fut>(
+    configured: Option<&str>,
+    connect_timeout: Duration,
+    mut connect: F,
+) -> Result<ConnectedChannel, ConnectError>
+where
+    F: FnMut(AgentEndpoint) -> Fut,
+    Fut: std::future::Future<Output = Result<Channel, Box<dyn std::error::Error + Send + Sync>>>,
+{
     let mut failures = Vec::new();
     let mut kind = None;
     for endpoint in connection_plan(configured) {
         let label = endpoint.label();
-        let attempt = tokio::time::timeout(
-            connect_timeout,
-            connect_one(&endpoint, connect_timeout, request_timeout, pinned),
-        )
-        .await;
+        let attempt = tokio::time::timeout(connect_timeout, connect(endpoint.clone())).await;
         match attempt {
             Ok(Ok(channel)) => return Ok(ConnectedChannel { endpoint, channel }),
             Ok(Err(error)) => {
@@ -1234,44 +1245,31 @@ mod tests {
     /// An endpoint that never answers must not hang discovery: the attempt is
     /// bounded by a connect budget and reports the endpoint it tried.
     ///
-    /// Fixture: a TEST-NET-1 address (RFC 5737), documented as unroutable and
-    /// dropped rather than answered on this host. Which of the two budgets ends
-    /// the attempt is left open (tonic's endpoint timeout and the caller's outer
-    /// budget are armed on the same millisecond and the inner one is what was
-    /// measured here); what must hold is that a stalled endpoint is a *timeout*
-    /// naming the address, not an unbounded wait.
-    #[tokio::test]
+    /// A pending connector models stalled establishment without relying on
+    /// routing, firewalls or a peer. Tokio's paused clock makes the deadline
+    /// exact and avoids wall-clock timing assumptions on loaded CI hosts.
+    #[tokio::test(start_paused = true)]
     async fn an_endpoint_that_never_answers_is_bounded_by_the_connect_budget() {
         let budget = Duration::from_millis(300);
-        let mut stalled = None;
-        for address in [
-            "http://192.0.2.1:9",
-            "http://198.51.100.1:9",
-            "http://203.0.113.1:9",
-        ] {
-            let started = std::time::Instant::now();
-            let error = connect_channel(Some(address), budget, Some(Duration::from_secs(5)))
-                .await
-                .err()
-                .expect("an endpoint that never answers must not produce a channel");
-            if error.kind == Some(io::ErrorKind::TimedOut) {
-                stalled = Some((address, started.elapsed(), error));
-                break;
-            }
-        }
-        let (address, elapsed, error) = stalled.expect(
-            "no TEST-NET fixture stalled: this host answers or refuses them, so a stalled \
-             endpoint is unmeasured here",
-        );
+        let address = "http://127.0.0.1:12345";
+        let attempts = std::cell::Cell::new(0);
+        let started = tokio::time::Instant::now();
+        let error = connect_channel_with_connector(Some(address), budget, |endpoint| {
+            assert_eq!(endpoint, AgentEndpoint::Tcp(address.into()));
+            attempts.set(attempts.get() + 1);
+            std::future::pending()
+        })
+        .await
+        .err()
+        .expect("a pending connector must time out instead of producing a channel");
+        assert_eq!(attempts.get(), 1);
+        assert_eq!(error.kind, Some(io::ErrorKind::TimedOut));
         assert!(
             error.details.contains(address),
             "the failure must name the endpoint it tried: {}",
             error.details
         );
-        assert!(
-            elapsed >= budget && elapsed < Duration::from_secs(3),
-            "the connect budget, not the peer, must end the attempt ({elapsed:?})"
-        );
+        assert_eq!(started.elapsed(), budget);
     }
 
     /// The accepted local IO is the server's whole transport on this platform:

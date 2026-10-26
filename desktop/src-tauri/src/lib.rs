@@ -1262,6 +1262,14 @@ mod gui {
         app_handle: &tauri::AppHandle<R>,
         event: tauri::RunEvent,
     ) {
+        dispatch_run_event_with_confirmation(app_handle, event, agent_supervisor::confirm_quit);
+    }
+
+    fn dispatch_run_event_with_confirmation<R: tauri::Runtime>(
+        app_handle: &tauri::AppHandle<R>,
+        event: tauri::RunEvent,
+        confirm_quit: impl FnOnce(tauri::AppHandle<R>),
+    ) {
         match event {
             // `setup` runs while Tauri is still constructing its event loop.
             // Starting the bridge there races the runtime initialization on
@@ -1298,7 +1306,7 @@ mod gui {
                     agent_supervisor::QuitDecision::Confirm { open_dialog } => {
                         api.prevent_exit();
                         if open_dialog {
-                            agent_supervisor::confirm_quit(app_handle.clone());
+                            confirm_quit(app_handle.clone());
                         }
                     }
                 }
@@ -2693,7 +2701,11 @@ mod gui {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 app.run(move |handle, event| {
                     if let tauri::RunEvent::ExitRequested { .. } = &event {
-                        dispatch_run_event(handle, event);
+                        // Build the real dialog and arm its state, but keep the
+                        // mock runtime's sentinel native handle out of rfd.
+                        dispatch_run_event_with_confirmation(handle, event, |app| {
+                            let _dialog = crate::agent_supervisor::prepare_quit_confirmation(&app);
+                        });
                         // A literal payload: this value is downcast as `&str` below,
                         // and a formatted panic would arrive as a `String`.
                         panic!("QUIT-CONFIRM-ARM: the Confirm arm ran");
