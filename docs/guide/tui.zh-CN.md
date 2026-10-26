@@ -174,8 +174,10 @@ launchpad 是**正文**，不是盖在对话上的弹窗：没有会话时整块
 | 队列管理 | `/queue` 读取 `get_state.queuedRuns`；取消与取回复用现有 `cancel_queued_run`，不维护第二套客户端队列 |
 | 草稿附件 | 复用 `components/input.rs` 的折叠粘贴和图片标记机制；附件随 prompt 发送 |
 | 审批 | 请求挂起时打开完整卡片，显示工具、类型、风险、动作/路径、原始请求和 sandbox 边界。`y` / `n` 允许一次或拒绝；`a` 先添加 agent 建议的**本次运行**工作区规则再批准，规则失败则请求仍保持待决。Esc 只收起卡片，不作决定 |
-| Diff 审查 | `/diff` 列出会话工作区已跟踪与未跟踪改动，并显示选中文件的真实 git patch。宽终端保留固定文件导航，旁边的补丁独立滚动；窄终端用 `tab` 在文件与补丁间切换。上下键操作当前视图，左右键选择文件，`r` 刷新；这是当前未提交工作区，不是按轮次归属，patch 预览有大小上限 |
+| Diff 审查 | `/diff` 列出会话工作区已跟踪与未跟踪改动，并显示选中文件的真实 git patch。宽终端保留固定文件导航，旁边的补丁独立滚动；窄终端用 `tab` 在文件与补丁间切换。上下键操作当前视图，左右键选择文件。箭头立即跟随光标，`·` 标出补丁已加载完的那个文件（重新读取还在路上时）。`r` 刷新；这是当前未提交工作区，不是按轮次归属，patch 预览有大小上限 |
 | 历史搜索与树 | `/history` 筛选当前 `list_sessions` 的标题/首条消息预览、目录与 id；`/tree` 使用 `parentSessionId`。回车打开所选会话 |
+| 浮层列表 | 一条记录固定占一行：上下键正好走一行，长标题就地缩短而不是折行（折行会让一次按键跨过两行）。放不下的字段整块丢弃——工作区路径从中间截断会读成另一个目录——所以窄框里依次是标题、标题 · 工作区、再加 id |
+| `/worktree` 列表 | `›` 是选择；`●` 表示会话已经在这个工作区，所以即使当前行是第一行，选择也看得见 |
 | Fork | `/fork` 列出 `get_fork_messages` 的真实用户消息节点；回车调用 `fork` 并打开子会话 |
 | Worktree | `/worktree` 列出真实 git worktree，回车设为会话目录；`/worktree new <branch>` 在 `.worktrees/` 下创建并移动会话。不提供 remove/prune/reset/clean |
 | 已有设置入口 | `/sandbox`、`/permission [all|workspace|none]`、`/compact [说明]`、`/tools a,b` 或 `/tools off`、`/providers`；`/skills` 与 `/model` 保留已有界面 |

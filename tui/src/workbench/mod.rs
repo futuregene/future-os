@@ -1,4 +1,4 @@
-//! The workbench — the FutureOS terminal UI (`future tui`).
+﻿//! The workbench — the FutureOS terminal UI (`future tui`).
 //!
 //! It normally owns the whole screen, repaints absolute rows, and resolves mouse
 //! clicks against what it painted. Linear reading is the explicit exception:
@@ -3546,6 +3546,100 @@ mod tests {
             Some(Overlay::Help),
             "a click on the box itself must not dismiss it"
         );
+    }
+
+    /// `down` moves the highlight one *row down the screen*, not one record.
+    ///
+    /// A record is one line of data, but the box wraps by width: a real
+    /// session title (title · workspace · id) does not fit on one row, so one
+    /// index step moved the marker two rows and the entries looked skipped.
+    /// The same shape had two more traps: the worktree list marked the
+    /// *current* checkout with the arrow (so it had no visible selection at
+    /// all), and the diff navigator drew its arrow from the file whose patch
+    /// had loaded rather than from the cursor, so `down` looked dead until
+    /// the reload came back.
+    #[test]
+    fn an_overlay_moves_the_highlight_one_visible_row_per_step() {
+        fn row_of(wb: &Workbench, id: &str) -> Option<u16> {
+            wb.hits()
+                .regions()
+                .iter()
+                .find(|(_, known)| known == id)
+                .map(|(rect, _)| rect.y)
+        }
+
+        // A realistic session list: long titles, long worktrees, long ids.
+        let mut data = demo::chat();
+        data.sessions = (0..8)
+            .map(|index| state::SessionRow {
+                id: format!("20261026-{index:06}-ebfc7c89507d4867b57705bd7789cf70"),
+                title: format!("第 {index} 个会话 · 重构整理 TUI 的浮层布局与鼠标命中区域"),
+                workspace: format!("D:/future-os/.worktrees/tui-overlay-layout-{index}"),
+                ..SessionRow::default()
+            })
+            .collect();
+        data.fork_points = (0..6)
+            .map(|index| state::ForkPoint {
+                id: format!("e{index}"),
+                text: format!(
+                    "第 {index} 条用户消息：把浮层的上下键改成一次一行，并把列表裁成一行"
+                ),
+            })
+            .collect();
+        data.worktrees = (0..6)
+            .map(|index| state::WorktreeView {
+                path: format!("D:/future-os/.worktrees/a-rather-long-worktree-name-{index}"),
+                label: format!("feat/a-rather-long-branch-name-{index}"),
+                description: format!("第 {index} 个工作区，描述也很长，长到需要换行"),
+                current: index == 0,
+            })
+            .collect();
+        data.diff = Some(state::DiffView {
+            files: (0..6)
+                .map(|index| diff_review::DiffFile {
+                    path: format!("tui/src/workbench/a/deeply/nested/module_name_{index}.rs"),
+                    status: "M".into(),
+                })
+                .collect(),
+            ..state::DiffView::default()
+        });
+
+        for overlay in [
+            Overlay::History,
+            Overlay::Tree,
+            Overlay::Fork,
+            Overlay::Worktree,
+            Overlay::Diff,
+        ] {
+            let mut wb = workbench();
+            wb.overlay = Some(overlay);
+            // Files first in the diff, so the marker is the file navigator.
+            wb.diff_patch_focus = false;
+            let mut painted = Vec::new();
+            for _ in 0..4 {
+                wb.handle(WbEvent::Key("down".into()), &data);
+                let index = wb.workflow_index;
+                let rows = wb.render(&data, 100, 30);
+                let y = row_of(&wb, &format!("workflow.row.{index}"))
+                    .or_else(|| row_of(&wb, &format!("diff.file.{index}")))
+                    .unwrap_or_else(|| panic!("{overlay:?}: no row for record {index}"));
+                let marked = crate::utils::strip_ansi_codes(&rows[y as usize]).contains('›');
+                assert!(
+                    marked,
+                    "{overlay:?}: record {index} sits on row {y} without the marker:\n{}",
+                    plain(&rows)
+                );
+                painted.push(y);
+            }
+            for pair in painted.windows(2) {
+                assert_eq!(
+                    pair[1] - pair[0],
+                    1,
+                    "{overlay:?}: one `down` moved the highlight {} rows (rows {painted:?})",
+                    pair[1] - pair[0]
+                );
+            }
+        }
     }
 
     fn workbench_surface(wb: &Workbench) -> crate::workbench::layout::Rect {
