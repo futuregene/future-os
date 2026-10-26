@@ -1114,16 +1114,20 @@ impl Live {
     async fn submit(&mut self, _text: &str) {
         self.draft.editor.record_submission();
         let original_text = self.draft.editor.text().to_string();
-        let message = self
+        // The draft is what the reader typed; the prompt is that draft with its
+        // `@path` mentions inlined. The transcript keeps the draft (that is what
+        // was said), the agent gets the files (that is what was meant).
+        let typed = self
             .draft
             .editor
             .pending()
             .expand(&original_text)
             .trim()
             .to_string();
-        if message.is_empty() {
+        if typed.is_empty() {
             return;
         }
+        let message = expand_mentions(&typed, &self.local_cwd);
         // The launchpad's first message: there is no session to send it to yet,
         // so create one in the folder the surface is showing before sending.
         // `/new` left the previous session attached on the agent's side, which
@@ -1145,7 +1149,7 @@ impl Live {
         self.chat.add_message(ChatMessage::new(
             crate::session_rows::random_id(),
             ChatRole::User,
-            &message,
+            &typed,
         ));
         self.mark(ActivityKind::Thinking);
         match self
@@ -1939,6 +1943,157 @@ pub fn persisted_detail(settings: &crate::settings::TuiSettings) -> ReplyDetail 
 /// — the reader has not chosen, so the locale decides.
 pub fn persisted_language(settings: &crate::settings::TuiSettings) -> LanguagePreference {
     LanguagePreference::from_wire(settings.language.as_deref().unwrap_or("system"))
+}
+
+/// A draft with its `@path` mentions inlined.
+///
+/// `@` completion is a *local* affordance: the agent receives a prompt, not a
+/// path it would resolve itself, and only this side knows which directory the
+/// reader means. So every `@path` that names a readable file under the session's
+/// working directory becomes a `<file name="…">…</file>` block — exactly the
+/// shape `future run @README.md` sends.
+///
+/// The limits are stated rather than silent: at most [`MAX_MENTION_FILES`] files
+/// and [`MAX_MENTION_BYTES`] each; a file that is skipped (too large, binary,
+/// unreadable) is named in the prompt with the reason, so the model is told what
+/// it did not get. A token that names no file (`@team`) stays as typed — it may
+/// still mean something to the reader's sentence.
+pub fn expand_mentions(text: &str, cwd: &str) -> String {
+    const MAX_MENTION_FILES: usize = 8;
+    const MAX_MENTION_BYTES: usize = 256 * 1024;
+
+    if !text.contains('@') {
+        return text.to_string();
+    }
+    let root = std::path::Path::new(cwd);
+    let mut out = String::with_capacity(text.len());
+    let mut inlined = 0usize;
+    for (index, token) in text.split(' ').enumerate() {
+        if index > 0 {
+            out.push(' ');
+        }
+        let Some(rest) = token.strip_prefix('@') else {
+            out.push_str(token);
+            continue;
+        };
+        // Trailing punctuation belongs to the sentence, not the path — and it is
+        // put back after the block, so the reader's comma survives the inlining.
+        let path = rest.trim_end_matches([',', '。', ':', ';', ')']);
+        let tail = &rest[path.len()..];
+        if path.is_empty() || inlined >= MAX_MENTION_FILES {
+            out.push_str(token);
+            continue;
+        }
+        let absolute = if std::path::Path::new(path).is_absolute() {
+            std::path::PathBuf::from(path)
+        } else {
+            root.join(path)
+        };
+        match std::fs::read(&absolute) {
+            Ok(bytes) if bytes.len() > MAX_MENTION_BYTES => {
+                // What the *model* reads, never what the screen draws.
+                out.push_str(&format!(
+                    "[{path}: {} KB, not inlined - read it in pieces]", // i18n: prompt text for the model
+                    bytes.len() / 1024
+                ));
+                out.push_str(tail);
+            }
+            Ok(bytes) if bytes.iter().take(4096).any(|byte| *byte == 0) => {
+                out.push_str(&format!(
+                    "[{path}: binary, not inlined]" // i18n: prompt text for the model
+                ));
+                out.push_str(tail);
+            }
+            Ok(bytes) => {
+                out.push_str(&format!(
+                    "<file name=\"{}\">\n{}\n</file>",
+                    absolute.display(),
+                    String::from_utf8_lossy(&bytes)
+                ));
+                out.push_str(tail);
+                inlined += 1;
+            }
+            Err(_) => out.push_str(token),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod mention_tests {
+    use super::expand_mentions;
+
+    fn workspace() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        std::fs::write(dir.path().join("note.md"), "hello from the file").unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/deep.rs"), "fn main() {}").unwrap();
+        dir
+    }
+
+    /// The prompt the agent reads is the CLI's `<file>` block, not a path it has
+    /// to go and open itself: the reader's sentence stays, the token does not.
+    #[test]
+    fn a_mention_becomes_the_same_file_block_the_cli_sends() {
+        let dir = workspace();
+        let cwd = dir.path().display().to_string();
+        let prompt = expand_mentions("看一下 @note.md 的结论", &cwd);
+        assert!(prompt.starts_with("看一下 "), "{prompt}");
+        assert!(prompt.contains("hello from the file"), "{prompt}");
+        assert!(
+            prompt.contains(&format!("<file name=\"{}/note.md\">", cwd)),
+            "{prompt}"
+        );
+        assert!(prompt.contains("</file>"), "{prompt}");
+        assert!(
+            !prompt.contains("@note.md"),
+            "the token is replaced: {prompt}"
+        );
+    }
+
+    /// Every mention that cannot be inlined says why in the prompt, and a token
+    /// that names nothing stays exactly as the reader typed it.
+    #[test]
+    fn every_mention_kind_that_cannot_be_inlined_says_so_in_the_prompt() {
+        let dir = workspace();
+        let cwd = dir.path().display().to_string();
+        std::fs::write(dir.path().join("blob.bin"), [0u8, 1, 2, 3]).unwrap();
+        let prompt = expand_mentions("@missing.rs 和 @blob.bin 以及 @team 都在这里", &cwd);
+        assert!(prompt.contains("@missing.rs"), "{prompt}");
+        assert!(prompt.contains("blob.bin: binary"), "{prompt}");
+        assert!(prompt.contains("@team"), "{prompt}");
+    }
+
+    /// A file past the size limit is named rather than silently dropped — and a
+    /// draft with no mention is returned untouched, byte for byte.
+    #[test]
+    fn a_large_file_is_named_and_a_draft_without_mentions_is_unchanged() {
+        let dir = workspace();
+        let cwd = dir.path().display().to_string();
+        std::fs::write(dir.path().join("big.txt"), "x".repeat(300 * 1024)).unwrap();
+        let prompt = expand_mentions("@big.txt", &cwd);
+        assert!(prompt.contains("big.txt: 300 KB"), "{prompt}");
+        assert!(!prompt.contains("<file"), "{prompt}");
+        assert_eq!(
+            expand_mentions("no mentions here", &cwd),
+            "no mentions here"
+        );
+        // And an e-mail address is not a mention either: the token does not start
+        // with the sigil.
+        assert_eq!(
+            expand_mentions("mail me@example.com", &cwd),
+            "mail me@example.com"
+        );
+        // Trailing sentence punctuation is dropped from the path, because a
+        // comma after a filename is the reader's, not the file's.
+        let prompt = expand_mentions("see @note.md, then the test", &cwd);
+        assert!(prompt.contains("</file>, then the test"), "{prompt}");
+        // A full stop is deliberately *not* trimmed: it is part of a filename as
+        // often as it is the end of a sentence, so `@note.md.` names nothing and
+        // stays exactly as typed rather than guessing.
+        let prompt = expand_mentions("see @note.md.", &cwd);
+        assert!(prompt.contains("@note.md."), "{prompt}");
+    }
 }
 
 impl Live {
