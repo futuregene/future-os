@@ -9,11 +9,11 @@ import { useNow } from "../../../lib/useNow";
  *
  * Both views use it — this app's own `MessageBlock` and the remote one — because
  * these classes *are* the look: an author line above the text, ruled off on the
- * assistant's side, and the two roles' bodies distinguished by the bubble and
- * the width rather than by colour. Two copies of that would be two conversations
- * that read as different products, which is what the remote view was: accent-
- * coloured user bubbles and a bordered card for the assistant, neither of them
- * anything this app draws.
+ * assistant's side, and the two roles' bodies distinguished by the bubble, its
+ * soft accent tint, and the width rather than by solid colour. Two copies of
+ * that would be two conversations that read as different products, which is
+ * what the remote view was: solid accent-coloured user bubbles and a bordered
+ * card for the assistant, neither of them anything this app draws.
  *
  * What a caller adds inside is its own: the activity lines, the reply steps, the
  * failure notice, the fork control. What it cannot change is the geometry, the
@@ -86,7 +86,7 @@ export function MessageFrame({
           className={cn(
             "text-sm leading-6 text-ink",
             isUser
-              ? "ml-auto w-fit max-w-2xl wrap-break-word rounded-lg bg-surface-subtle px-4 py-3 text-left"
+              ? "ml-auto w-fit max-w-2xl wrap-break-word rounded-lg border border-accent/25 bg-accent-soft px-4 py-3 text-left"
               : "w-full",
             bodyClassName,
           )}
