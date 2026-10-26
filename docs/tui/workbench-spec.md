@@ -26,6 +26,10 @@ implementation may extend it, but may not change its meaning.
    sessions.
 4. Sidebar with 2 real panels: recent conversations (name, workspace, age) and
    the same conversations filed by workspace (pinned / workspaces / chats).
+   A third, **文件**, browses the session workspace: one level at a time, a
+   directory read when it opens, `↑`/`↓` to walk, `←`/`→` to close/open, `enter`
+   to open a directory or preview a file. Its rows are the same `HitMap` rows
+   every other panel registers, so a click opens what it landed on.
 5. Real metrics in the status bar: model · effort · cwd · git branch · context
    gauge · tokens · cost / cache.
 6. `/` command palette (with descriptions, Tab completion), `?` help overlay,
@@ -70,6 +74,8 @@ tui/src/workbench/launchpad.rs  // first screen
 tui/src/workbench/screen.rs     // full-screen composition: header/body/sidebar/input/status
 tui/src/workbench/panels.rs     // rendering of the 2 sidebar panels (pure functions over a row model)
 tui/src/workbench/picker.rs     // the /model, /thinking, /mode, /workspace, /theme, /sessions and /lang list overlay
+tui/src/workbench/files.rs      // the 文件 panel's tree, and what a path previews as
+tui/src/workbench/image_view.rs // an image as half blocks: fit, zoom, pan
 tui/src/workbench/state.rs      // WorkbenchData / TodoItem / SessionRow / UsageData
 tui/src/workbench/demo.rs       // demo data (for screenshots/self-tests; does not connect to the agent)
 tui/examples/workbench_demo.rs  // prints one frame at any size + mouse self-test
@@ -255,7 +261,9 @@ the row under the pointer rather than one beside it.
 
 Keep the existing global bindings; add/override:
 `ctrl+m` model chooser; `ctrl+t` thinking-effort chooser; `ctrl+s` approval-mode
-chooser; `ctrl+l` workspace chooser; `ctrl+1` / `ctrl+2` the rail's two tabs;
+chooser; `ctrl+l` workspace chooser; `ctrl+1` / `ctrl+2` / `ctrl+3` the rail's
+three tabs; `ctrl+v` read the clipboard (an image becomes a draft attachment,
+text is pasted); `alt+v` preview the newest attached image;
 `ctrl+b` sidebar open/focus/close (the rail's own `›` edge button does the same
 with one click, and leaves a `‹` in the same column when the rail is closed);
 `tab` focus within a panel; `shift+tab`
@@ -271,8 +279,22 @@ The help overlay lists `ACTIONS` **grouped** (chats / choices / panels /
 interface), then the non-rebindable inline keys, then the commands.
 
 A held `shift+←`/`shift+→` is one switch, not one per key repeat: the key returns
-`WbAction::SessionStep(delta)`, the driver reads the whole input burst and
-applies the net step once through `Workbench::step_session`.
+`WbAction::SessionStep(delta)`, the driver reads the whole input burst andapplies the net step once through `Workbench::step_session`.
+
+### Pictures in a text surface
+
+An image is drawn as **half blocks**: one `▀` per cell, foreground the top pixel
+of the pair and background the bottom one. That needs colour and nothing else, so
+it works in any 256-colour terminal — no kitty graphics, no iTerm2 images, no
+sixel — and 24-bit colour is used when the terminal reports it. It is a
+*preview*: a couple of hundred cells is a thumbnail of a photo and a legible
+screenshot.
+
+Decoding lives in the adapter (`image`, the same crate the agent, host and
+desktop link) and happens once per file, downscaled to 1024 px on its long edge:
+a zoom redraws pixels already in hand. Text previews are read bounded
+(`MAX_TEXT_PREVIEW_BYTES`) and cut on a character boundary. A file that cannot be
+shown says why in the box rather than opening empty.
 
 ---
 
@@ -297,6 +319,8 @@ pub struct WorkbenchData {
     pub sidebar: SidebarState,         // panel + width + focus
     pub overlay: Option<Overlay>,      // palette|help|panel-full|picker(kind)
     pub models: Vec<ModelChoice>,      // id/label/provider/context/thinking
+    pub tree: FileTree,                // the 文件 panel: rows + which directories are open
+    pub preview: Option<PreviewView>,  // what the preview box is holding (pixels / text / why not)
     // the picker's own state (kind, query, highlight, slider) lives on the
     // surface, not here: it is what the reader is doing, not what is on screen
 }

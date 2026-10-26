@@ -119,6 +119,11 @@ pub enum Action {
     Workspaces,
     PanelRecent,
     PanelWorkspaces,
+    PanelFiles,
+    /// Read the clipboard into the draft: an image becomes an attachment.
+    PasteImage,
+    /// Show the image already attached to the draft.
+    PreviewAttachment,
     PrevSession,
     NextSession,
 }
@@ -153,7 +158,7 @@ impl Group {
 /// Every action, in the order the help overlay lists them: grouped, and inside
 /// a group from most to least used. `ACTIONS` is the one authority — the help
 /// table, the shortcut editor and the event dispatch all walk it.
-pub const ACTIONS: [Action; 23] = [
+pub const ACTIONS: [Action; 26] = [
     // Sessions
     Action::PrevSession,
     Action::NextSession,
@@ -171,12 +176,15 @@ pub const ACTIONS: [Action; 23] = [
     Action::Sidebar,
     Action::PanelRecent,
     Action::PanelWorkspaces,
+    Action::PanelFiles,
     // Interface
     Action::Palette,
     Action::Help,
     Action::Preferences,
     Action::Refresh,
     Action::Copy,
+    Action::PasteImage,
+    Action::PreviewAttachment,
     Action::Mouse,
     Action::LinearReading,
     Action::ReduceMotion,
@@ -209,6 +217,9 @@ impl Action {
             Self::Model => "model",
             Self::PanelRecent => "panelRecent",
             Self::PanelWorkspaces => "panelWorkspaces",
+            Self::PanelFiles => "panelFiles",
+            Self::PasteImage => "pasteImage",
+            Self::PreviewAttachment => "previewAttachment",
         }
     }
     fn from_id(id: &str) -> Option<Self> {
@@ -225,12 +236,16 @@ impl Action {
             | Self::Stop
             | Self::ReplyDetail => Group::Sessions,
             Self::Model | Self::Thinking | Self::Approval | Self::Workspaces => Group::Choice,
-            Self::Sidebar | Self::PanelRecent | Self::PanelWorkspaces => Group::Panels,
+            Self::Sidebar | Self::PanelRecent | Self::PanelWorkspaces | Self::PanelFiles => {
+                Group::Panels
+            }
             Self::Palette
             | Self::Help
             | Self::Preferences
             | Self::Refresh
             | Self::Copy
+            | Self::PasteImage
+            | Self::PreviewAttachment
             | Self::Mouse
             | Self::LinearReading
             | Self::ReduceMotion
@@ -262,6 +277,9 @@ impl Action {
             Self::Model => Key::CmdModel,
             Self::PanelRecent => Key::HelpKeyPanelRecent,
             Self::PanelWorkspaces => Key::HelpKeyPanelWorkspaces,
+            Self::PanelFiles => Key::HelpKeyPanelFiles,
+            Self::PasteImage => Key::HelpKeyPasteImage,
+            Self::PreviewAttachment => Key::HelpKeyPreviewAttachment,
         }
     }
     /// The key an action answers to when the reader has not rebound it.
@@ -296,6 +314,9 @@ impl Action {
             Self::Workspaces => "ctrl+l",
             Self::PanelRecent => "ctrl+1",
             Self::PanelWorkspaces => "ctrl+2",
+            Self::PanelFiles => "ctrl+3",
+            Self::PasteImage => "ctrl+v",
+            Self::PreviewAttachment => "alt+v",
             Self::PrevSession => "shift+left",
             Self::NextSession => "shift+right",
         }

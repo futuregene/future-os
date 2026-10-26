@@ -29,8 +29,10 @@ pub mod ansi;
 pub mod demo;
 pub mod diff_review;
 pub mod editor;
+pub mod files;
 pub mod git;
 pub mod i18n;
+pub mod image_view;
 pub mod launchpad;
 pub mod layout;
 pub mod live;
@@ -130,6 +132,8 @@ pub enum Overlay {
     Tree,
     Fork,
     Worktree,
+    /// The file preview: a picture (zoomable) or a document's text.
+    FilePreview,
     /// Layout, density and the entry to the shortcut editor.
     Preferences,
     Keybindings,
@@ -254,6 +258,18 @@ pub enum WbAction {
     /// typed into its search line. The app moves the session there, or stages it
     /// for the session the next message creates.
     SelectWorkspace(String),
+    /// The 文件 panel opened or closed a directory: the app re-reads it and the
+    /// next frame paints the new shape.
+    ToggleFolder(String),
+    /// The 文件 panel asked for a file: the app reads it (an image decoded, a
+    /// document's text) and fills `preview`; the box then paints it.
+    PreviewFile(String),
+    /// Re-read the tree, keeping the open directories.
+    RefreshFiles,
+    /// Read the clipboard: an image becomes a draft attachment, text is pasted.
+    PasteClipboard,
+    /// Show the newest image already attached to the draft.
+    PreviewAttachment,
     SetTools(Vec<String>),
     CancelQueued(String),
     RecallQueued(String),
@@ -368,6 +384,20 @@ struct Drag {
 /// a second instead of eight.
 pub const SPINNER_TICKS: usize = 4;
 
+/// How far the preview box will zoom in. Six steps over the fitted size is
+/// already past "one terminal cell is one image pixel" on a screenshot; more
+/// would only show the sampling grid.
+pub const MAX_PREVIEW_ZOOM: u32 = 6;
+
+/// The pseudo-keys the preview box answers beyond its literal chords.
+///
+/// The pointer's wheel and `+`/`-` are one intent ("further in") spelled three
+/// ways; naming it once keeps the key handler and the wheel handler from
+/// drifting, and keeps the box's own vocabulary out of the i18n table — these
+/// strings are never drawn.
+const ZOOM_IN: &str = "preview.zoomIn";
+const ZOOM_OUT: &str = "preview.zoomOut";
+
 /// The surface's own state: where the panels and the pointers are.
 ///
 /// Deliberately *not* the data — the conversation, the todos and the usage
@@ -403,7 +433,7 @@ pub struct Workbench {
     pub preferences_index: usize,
     pub keybinding_index: usize,
     pub awaiting_keybinding: bool,
-    pub panel_scroll: [usize; 2],
+    pub panel_scroll: [usize; PanelId::ALL.len()],
     pub overlay: Option<Overlay>,
     pub overlay_scroll: usize,
     pub palette_query: String,
@@ -447,6 +477,13 @@ pub struct Workbench {
     overlay_mark: usize,
     cursor: Option<(u16, u16)>,
     drag: Option<Drag>,
+    /// The preview box's own state: how far in a picture is zoomed, which cell
+    /// of it the window starts at, and how far a document has scrolled. Kept
+    /// here rather than in `WorkbenchData` because it is what the *reader* is
+    /// doing, not what is on screen.
+    pub preview_zoom: u32,
+    pub preview_pan: (i32, i32),
+    pub preview_scroll: usize,
 }
 
 impl Default for Workbench {
@@ -479,7 +516,7 @@ impl Workbench {
             preferences_index: 0,
             keybinding_index: 0,
             awaiting_keybinding: false,
-            panel_scroll: [0; 2],
+            panel_scroll: [0; PanelId::ALL.len()],
             overlay: None,
             overlay_scroll: 0,
             palette_query: String::new(),
@@ -511,6 +548,9 @@ impl Workbench {
             overlay_mark: 0,
             cursor: None,
             drag: None,
+            preview_zoom: 1,
+            preview_pan: (0, 0),
+            preview_scroll: 0,
         }
     }
 
@@ -865,6 +905,14 @@ impl Workbench {
                 _ => {}
             }
         }
+        // The preview box owns its own keys — zoom, pan, scroll — and hands
+        // everything else back: `ctrl+p` still opens the palette over it, the
+        // same way `esc` closes it.
+        if self.overlay == Some(Overlay::FilePreview) {
+            if let Some(actions) = self.preview_key(key, data) {
+                return actions;
+            }
+        }
         if let Some(overlay) = self.overlay {
             return self.handle_overlay_key(overlay, key, data);
         }
@@ -910,6 +958,14 @@ impl Workbench {
             }
             Some(preferences::Action::PanelWorkspaces) => {
                 return self.focus_panel_action(PanelId::Workspaces, data)
+            }
+            Some(preferences::Action::PanelFiles) => {
+                return self.focus_panel_action(PanelId::Files, data)
+            }
+            // The clipboard: an image becomes an attachment, text is pasted.
+            Some(preferences::Action::PasteImage) => return vec![WbAction::PasteClipboard],
+            Some(preferences::Action::PreviewAttachment) => {
+                return vec![WbAction::PreviewAttachment]
             }
             Some(preferences::Action::Sidebar) => {
                 return self.toggle_sidebar();
@@ -996,6 +1052,13 @@ impl Workbench {
             // left/right with its neighbour the way a tab strip does with a
             // click. The cursor lands on the conversation on screen, exactly as
             // the click on a tab leaves it.
+            //
+            // 文件 is the exception: there, left/right walk the tree (close a
+            // directory, open it) the way every other tree in every other
+            // editor does. The tabs are still one keystroke away (`ctrl+1`…
+            // `ctrl+3`, or a click on the strip).
+            "left" if self.sidebar_focus && self.panel == PanelId::Files => self.file_close(data),
+            "right" if self.sidebar_focus && self.panel == PanelId::Files => self.file_open(data),
             "left" if self.sidebar_focus => self.switch_panel(-1, data),
             "right" if self.sidebar_focus => self.switch_panel(1, data),
             // Pin the workspace the selected conversation belongs to, so the
@@ -1138,12 +1201,11 @@ impl Workbench {
         rows.iter().position(|row| row.session() == Some(current))
     }
 
-    /// Put the rail's cursor on `row`, if that row holds a conversation.
+    /// Put the rail's cursor on `row`, if that row holds something the cursor
+    /// can stand on (a conversation, or a file in the tree).
     fn select_row(&mut self, row: Option<usize>, data: &WorkbenchData) {
         let rows = self.panel_rows(data);
-        if let Some(row) =
-            row.filter(|row| rows.get(*row).is_some_and(|row| row.session().is_some()))
-        {
+        if let Some(row) = row.filter(|row| rows.get(*row).is_some_and(|row| row.selectable())) {
             self.sidebar_index = row;
         } else if let Some(first) = panels::first_session(&rows, 0) {
             self.sidebar_index = first;
@@ -1152,10 +1214,19 @@ impl Workbench {
         }
     }
 
-    /// Move the cursor one conversation up or down, keeping the window on it.
+    /// Move the cursor one row up or down, keeping the window on it.
+    ///
+    /// In 最近 / 工作区 a row is a conversation, so the cursor skips the headings
+    /// (`step_session`); in 文件 every row is an entry of the tree and the cursor
+    /// walks all of them (`step_row`).
     fn move_selection(&mut self, delta: i32, data: &WorkbenchData) -> Vec<WbAction> {
         let rows = self.panel_rows(data);
-        if let Some(next) = panels::step_session(&rows, self.sidebar_index, delta) {
+        let next = if self.panel == PanelId::Files {
+            panels::step_row(&rows, self.sidebar_index, delta)
+        } else {
+            panels::step_session(&rows, self.sidebar_index, delta)
+        };
+        if let Some(next) = next {
             self.sidebar_index = next;
             let index = self.panel.index();
             // The renderer also scrolls to the cursor; this keeps the stored
@@ -1167,16 +1238,97 @@ impl Workbench {
         vec![WbAction::Redraw]
     }
 
-    /// Open the conversation under the cursor.
+    /// Open what the cursor stands on: a conversation, a file's preview, or a
+    /// directory the reader wants to see inside.
     fn open_selected(&mut self, data: &WorkbenchData) -> Vec<WbAction> {
         let rows = self.panel_rows(data);
-        let Some(index) = rows.get(self.sidebar_index).and_then(|row| row.session()) else {
+        let Some(row) = rows.get(self.sidebar_index) else {
             return Vec::new();
         };
-        data.sessions
-            .get(index)
-            .map(|session| vec![WbAction::SwitchSession(session.id.clone())])
-            .unwrap_or_default()
+        if let Some(index) = row.session() {
+            return data
+                .sessions
+                .get(index)
+                .map(|session| vec![WbAction::SwitchSession(session.id.clone())])
+                .unwrap_or_default();
+        }
+        let Some(index) = row.file() else {
+            return Vec::new();
+        };
+        let Some(node) = data.tree.get(index) else {
+            return Vec::new();
+        };
+        let path = node.path.to_string_lossy().to_string();
+        if node.is_dir() {
+            vec![WbAction::ToggleFolder(path)]
+        } else {
+            vec![WbAction::PreviewFile(path)]
+        }
+    }
+
+    /// `→` in the tree: open the directory, or step into its first child.
+    ///
+    /// On an already-open directory the key does what the reader is pointing
+    /// at — it moves the cursor into the directory rather than collapsing it,
+    /// which is the one thing `→` means in every file tree.
+    fn file_open(&mut self, data: &WorkbenchData) -> Vec<WbAction> {
+        let rows = self.panel_rows(data);
+        let Some(index) = rows.get(self.sidebar_index).and_then(|row| row.file()) else {
+            return Vec::new();
+        };
+        let Some(node) = data.tree.get(index) else {
+            return Vec::new();
+        };
+        if !node.is_dir() {
+            // A file is not a folder: `→` on it is the preview, the same as `enter`.
+            return vec![WbAction::PreviewFile(
+                node.path.to_string_lossy().to_string(),
+            )];
+        }
+        if !node.expanded {
+            return vec![WbAction::ToggleFolder(
+                node.path.to_string_lossy().to_string(),
+            )];
+        }
+        // Open already: step onto the first child, if it is on screen.
+        if data
+            .tree
+            .get(index + 1)
+            .is_some_and(|child| child.depth > node.depth)
+        {
+            self.sidebar_index = index + 1;
+        }
+        vec![WbAction::Redraw]
+    }
+
+    /// `←` in the tree: close the directory, or jump to the one that holds it.
+    fn file_close(&mut self, data: &WorkbenchData) -> Vec<WbAction> {
+        let rows = self.panel_rows(data);
+        let Some(index) = rows.get(self.sidebar_index).and_then(|row| row.file()) else {
+            return Vec::new();
+        };
+        let Some(node) = data.tree.get(index) else {
+            return Vec::new();
+        };
+        if node.is_dir() && node.expanded {
+            return vec![WbAction::ToggleFolder(
+                node.path.to_string_lossy().to_string(),
+            )];
+        }
+        // Not open: up to the directory this row sits in. `depth` is the flat
+        // tree's own record of nesting, so the parent is the first row above
+        // with a smaller depth.
+        let depth = node.depth;
+        if depth == 0 {
+            return Vec::new();
+        }
+        if let Some(parent) = (0..index)
+            .rev()
+            .find(|above| data.tree.get(*above).is_some_and(|row| row.depth < depth))
+        {
+            self.sidebar_index = parent;
+        }
+        vec![WbAction::Redraw]
     }
 
     /// The workspace the conversation under the cursor belongs to.
@@ -1254,6 +1406,87 @@ impl Workbench {
             self.panel_scroll[index] = self.sidebar_index;
         }
         self.open_selected(data)
+    }
+
+    /// The preview box's keys: zoom a picture, pan it, scroll a document.
+    ///
+    /// Returns `None` for a key it does not own, so the caller can fall through
+    /// to the global map — `ctrl+p` still opens the palette over a preview, the
+    /// same way it does over every other box.
+    fn preview_key(&mut self, key: &str, data: &WorkbenchData) -> Option<Vec<WbAction>> {
+        let is_image = matches!(data.preview, Some(state::PreviewView::Image { .. }));
+        match key {
+            "escape" | "q" => {
+                self.overlay = None;
+                Some(vec![WbAction::Redraw])
+            }
+            "+" | "=" | ZOOM_IN => {
+                if is_image {
+                    self.preview_zoom = (self.preview_zoom + 1).min(MAX_PREVIEW_ZOOM);
+                } else {
+                    // A document has nothing to zoom: "further in" is up, which
+                    // is also what a wheel-up means here.
+                    self.preview_scroll = self.preview_scroll.saturating_sub(3);
+                }
+                Some(vec![WbAction::Redraw])
+            }
+            "-" | "_" | ZOOM_OUT => {
+                if is_image {
+                    self.preview_zoom = self.preview_zoom.saturating_sub(1).max(1);
+                    self.preview_pan = (0, 0);
+                } else {
+                    self.preview_scroll = self.preview_scroll.saturating_add(3);
+                }
+                Some(vec![WbAction::Redraw])
+            }
+            "0" => {
+                self.preview_zoom = 1;
+                self.preview_pan = (0, 0);
+                self.preview_scroll = 0;
+                Some(vec![WbAction::Redraw])
+            }
+            // A zoomed picture pans; a document scrolls. One key, two readings
+            // of "further into the thing", decided by what is in the box.
+            "left" | "shift+left" => Some(self.pan_preview(-2, 0)),
+            "right" | "shift+right" => Some(self.pan_preview(2, 0)),
+            "up" => Some(self.pan_preview(0, -1)),
+            "down" => Some(self.pan_preview(0, 1)),
+            "pageUp" => Some(self.page_preview(-1)),
+            "pageDown" => Some(self.page_preview(1)),
+            _ => None,
+        }
+    }
+
+    /// Pan by cells, or scroll a document by rows.
+    fn pan_preview(&mut self, dx: i32, dy: i32) -> Vec<WbAction> {
+        if self.preview_scroll > 0 || self.preview_zoom == 1 {
+            // Not zoomed in (or the box holds text): `↑`/`↓` are scroll keys.
+            if self.preview_scroll > 0 {
+                let next = (self.preview_scroll as i32 + dy).max(0) as usize;
+                self.preview_scroll = next;
+            } else if dy != 0 {
+                self.preview_scroll = (self.preview_scroll as i32 + dy * 3).max(0) as usize;
+            }
+        }
+        if dx != 0 || self.preview_zoom > 1 {
+            self.preview_pan = (self.preview_pan.0 + dx, self.preview_pan.1 + dy);
+        }
+        vec![WbAction::Redraw]
+    }
+
+    /// A window of a document at a time.
+    fn page_preview(&mut self, pages: i32) -> Vec<WbAction> {
+        let step = (self.list_page.max(1) as i32) * pages;
+        self.preview_scroll = (self.preview_scroll as i32 + step).max(0) as usize;
+        vec![WbAction::Redraw]
+    }
+
+    /// Reset the box's view state: called whenever a new file opens, so a zoom
+    /// chosen for one picture does not arrive on the next one.
+    pub fn reset_preview(&mut self) {
+        self.preview_zoom = 1;
+        self.preview_pan = (0, 0);
+        self.preview_scroll = 0;
     }
 
     fn handle_overlay_key(
@@ -1439,6 +1672,9 @@ impl Workbench {
                     _ => Vec::new(),
                 }
             }
+            // Everything the preview owns was taken by `preview_key` before
+            // this point; what is left is a key the box does not use.
+            Overlay::FilePreview => Vec::new(),
             Overlay::Help => match key {
                 "escape" | "q" | "?" | "enter" => {
                     self.overlay = None;
@@ -1992,6 +2228,18 @@ impl Workbench {
             event.kind,
             mouse::MouseKind::WheelUp | mouse::MouseKind::WheelDown
         ) {
+            // Over a picture the wheel is the zoom (a pointer has no `+`), and
+            // over a document it is the scroll.
+            if overlay == Overlay::FilePreview {
+                let key = if event.kind == mouse::MouseKind::WheelUp {
+                    ZOOM_IN
+                } else {
+                    ZOOM_OUT
+                };
+                return self
+                    .preview_key(key, data)
+                    .unwrap_or_else(|| vec![WbAction::Redraw]);
+            }
             if overlay == Overlay::Diff && self.diff_patch_focus {
                 self.overlay_scroll = self.overlay_scroll.saturating_sub(3);
                 return vec![WbAction::Redraw];
@@ -2266,6 +2514,12 @@ impl Workbench {
                         .get(*session)
                         .map(|session| vec![WbAction::SwitchSession(session.id.clone())])
                         .unwrap_or_default()
+                }
+                // A tree row is aimed at too: a file previews, a directory opens
+                // — the same two verbs `enter` runs on it.
+                Some(panels::Row::File(_)) => {
+                    self.sidebar_index = index;
+                    self.open_selected(data)
                 }
                 // A heading is not a verb: the click takes the keys and stops.
                 Some(_) => {
@@ -2615,10 +2869,11 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
 /// The command palette's entries: `(command, description)`. Kept here rather
 /// than in the app so the palette, the help overlay and the tests share one
 /// list.
-pub const COMMANDS: [(&str, Key); 27] = [
+pub const COMMANDS: [(&str, Key); 28] = [
     ("/new", Key::CmdNew),
     ("/queue", Key::CmdQueue),
     ("/copy", Key::CmdCopy),
+    ("/paste", Key::CmdPaste),
     ("/mouse", Key::CmdMouse),
     ("/diff", Key::CmdDiff),
     ("/approval", Key::CmdApproval),
@@ -3847,6 +4102,151 @@ mod tests {
         assert!(workbench.sidebar_focus && workbench.sidebar_visible);
         let rows = workbench.render(&data, 120, 38);
         assert!(plain(&rows).contains("对话会话"), "{}", plain(&rows));
+
+        // `ctrl+3` is the file tree, and it takes the keys like the other two.
+        assert_eq!(
+            workbench.handle(WbEvent::Key("ctrl+3".into()), &data),
+            vec![WbAction::SwitchPanel(PanelId::Files)]
+        );
+        assert_eq!(workbench.panel, PanelId::Files);
+        let rows = workbench.render(&data, 120, 38);
+        let text = plain(&rows);
+        assert!(text.contains("文件"), "{text}");
+        assert!(text.contains("README.md"), "{text}");
+    }
+
+    /// The tree's own keys: `↑↓` walk every row, `→`/`←` open and close a
+    /// directory, `enter` previews a file or opens a directory.
+    #[test]
+    fn the_file_panel_navigates_the_tree_with_the_keyboard() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.handle(WbEvent::Key("ctrl+3".into()), &data);
+        assert_eq!(workbench.panel, PanelId::Files);
+        // 0 = `docs` (open in the fixture), 1 = its `tui` child, 2 = README.md.
+        assert_eq!(workbench.sidebar_index, 0);
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        assert_eq!(
+            workbench.sidebar_index, 1,
+            "one row per step, headings included"
+        );
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        assert_eq!(workbench.sidebar_index, 2);
+
+        // `enter` on a file asks for its preview; on a directory, for its
+        // children.
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::PreviewFile(
+                data.tree.rows()[2].path.to_string_lossy().to_string()
+            )]
+        );
+        workbench.sidebar_index = 3; // the `tui` directory at depth 0
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::ToggleFolder(
+                data.tree.rows()[3].path.to_string_lossy().to_string()
+            )]
+        );
+        // `→` opens what is closed, `←` closes what is open, and neither
+        // switches the panel (that is `ctrl+1`…`ctrl+3` on this tab).
+        assert!(matches!(
+            workbench
+                .handle(WbEvent::Key("right".into()), &data)
+                .as_slice(),
+            [WbAction::ToggleFolder(_)]
+        ));
+        workbench.sidebar_index = 0;
+        assert!(matches!(
+            workbench
+                .handle(WbEvent::Key("left".into()), &data)
+                .as_slice(),
+            [WbAction::ToggleFolder(_)]
+        ));
+        assert_eq!(workbench.panel, PanelId::Files, "the panel did not move");
+    }
+
+    /// A preview keeps its own view state, and a new file starts fresh.
+    #[test]
+    fn the_preview_box_zooms_pans_and_resets() {
+        let mut data = demo::chat();
+        data.preview = Some(demo::preview_image());
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.overlay = Some(Overlay::FilePreview);
+        assert_eq!(workbench.preview_zoom, 1);
+        workbench.handle(WbEvent::Key("+".into()), &data);
+        assert_eq!(workbench.preview_zoom, 2);
+        workbench.handle(WbEvent::Key("=".into()), &data);
+        assert_eq!(workbench.preview_zoom, 3, "`=` is `+` without the shift");
+        for _ in 0..20 {
+            workbench.handle(WbEvent::Key("+".into()), &data);
+        }
+        assert_eq!(
+            workbench.preview_zoom, MAX_PREVIEW_ZOOM,
+            "the zoom is bounded"
+        );
+
+        // A zoomed picture pans; the pan is clamped by the renderer, so the
+        // stored value only has to move in the asked direction.
+        let before = workbench.preview_pan.1;
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        assert!(workbench.preview_pan.1 > before);
+
+        // `esc` closes the box without touching the zoom; opening another file
+        // resets it, so a zoom chosen for one picture does not arrive on the
+        // next.
+        let actions = workbench.handle(WbEvent::Key("escape".into()), &data);
+        assert_eq!(actions, vec![WbAction::Redraw]);
+        assert_eq!(workbench.overlay, None);
+        workbench.reset_preview();
+        assert_eq!((workbench.preview_zoom, workbench.preview_pan), (1, (0, 0)));
+    }
+
+    /// The wheel is the pointer's zoom, and text previews scroll with it.
+    #[test]
+    fn the_wheel_zooms_a_picture_and_scrolls_a_document() {
+        let mut data = demo::chat();
+        data.preview = Some(demo::preview_image());
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.overlay = Some(Overlay::FilePreview);
+        let press = |kind| mouse::MouseEvent {
+            kind,
+            x: 10,
+            y: 10,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        workbench.handle(WbEvent::Mouse(press(mouse::MouseKind::WheelUp)), &data);
+        assert_eq!(workbench.preview_zoom, 2);
+        workbench.handle(WbEvent::Mouse(press(mouse::MouseKind::WheelDown)), &data);
+        assert_eq!(workbench.preview_zoom, 1);
+
+        // A document has no zoom to give: the wheel scrolls it instead.
+        data.preview = Some(state::PreviewView::Text {
+            path: "README.md".into(),
+            lines: (0..40).map(|n| n.to_string()).collect(),
+            truncated: false,
+        });
+        workbench.preview_scroll = 5;
+        workbench.handle(WbEvent::Mouse(press(mouse::MouseKind::WheelDown)), &data);
+        assert!(workbench.preview_scroll > 5, "wheel down moves the text");
+    }
+
+    /// `ctrl+v` asks the adapter to read the clipboard; `alt+v` for the image
+    /// already in the draft.
+    #[test]
+    fn the_clipboard_and_attachment_keys_ask_for_their_verbs() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("ctrl+v".into()), &data),
+            vec![WbAction::PasteClipboard]
+        );
+        assert_eq!(
+            workbench.handle(WbEvent::Key("alt+v".into()), &data),
+            vec![WbAction::PreviewAttachment]
+        );
     }
 
     /// The palette is one list of two kinds of thing: a verb the surface answers
@@ -4775,6 +5175,54 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The preview box paints the picture it was given, names it, and keeps the
+    /// frame's size invariant at every terminal size.
+    #[test]
+    fn the_preview_box_paints_the_picture_and_stays_in_the_frame() {
+        let mut data = demo::chat();
+        data.preview = Some(demo::preview_image());
+        for (w, h) in [(120u16, 38u16), (88, 24), (60, 16), (24, 8), (1, 1)] {
+            let (mut workbench, _rows) = frame(&data, w, h);
+            workbench.overlay = Some(Overlay::FilePreview);
+            let rows = workbench.render(&data, w, h);
+            assert_eq!(rows.len(), h as usize, "{w}x{h}");
+            for row in &rows {
+                assert_eq!(ansi::width(row), w as usize, "{w}x{h}: {row:?}");
+            }
+        }
+        // At a size that can hold it, the box draws half blocks and its title
+        // carries the file's dimensions.
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.overlay = Some(Overlay::FilePreview);
+        let rows = workbench.render(&data, 120, 38);
+        let text = plain(&rows);
+        assert!(text.contains("design.png"), "{text}");
+        assert!(text.contains("96×64"), "the title names the size: {text}");
+        assert!(text.contains('▀'), "the picture is half blocks: {text}");
+        assert!(!text.contains('▾'), "{text}");
+        // Zooming says so, so `+` is visible before the picture grows.
+        workbench.handle(WbEvent::Key("+".into()), &data);
+        let text = plain(&workbench.render(&data, 120, 38));
+        assert!(text.contains("2x"), "{text}");
+    }
+
+    /// A preview whose bytes could not be read says why, in the reader's
+    /// language, instead of painting an empty box.
+    #[test]
+    fn a_preview_that_could_not_load_explains_itself() {
+        let mut data = demo::chat();
+        data.preview = Some(state::PreviewView::Unavailable {
+            path: "/tmp/nothing.bin".into(),
+            reason: "permission denied".into(),
+        });
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.overlay = Some(Overlay::FilePreview);
+        let text = plain(&workbench.render(&data, 120, 38));
+        assert!(text.contains("nothing.bin"), "{text}");
+        assert!(text.contains("没有可预览的内容"), "{text}");
+        assert!(text.contains("permission denied"), "{text}");
     }
 
     #[test]

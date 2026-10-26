@@ -117,11 +117,13 @@ impl RunClient {
             cmd.session_id = sid.to_string();
         }
 
-        let mut client = future_rpc::connection::connect_verified(
+        crate::dns::preflight(&self.addr).await?;
+        let mut client = future_rpc::connection::connect_verified_with(
             &self.addr,
             future_rpc::connection::EXPECTED_AGENT_VERSION,
             Duration::from_secs(timeout_secs.min(5)),
             Duration::from_secs(5),
+            crate::dns::tcp_resolver(),
         )
         .await
         .map_err(|error| error.to_string())?;
@@ -874,11 +876,13 @@ impl RunClient {
         verbose: bool,
         out: &Output,
     ) -> Result<(Vec<Value>, String), String> {
-        let mut client = future_rpc::connection::connect_verified(
+        crate::dns::preflight(&self.addr).await?;
+        let mut client = future_rpc::connection::connect_verified_with(
             &self.addr,
             future_rpc::connection::EXPECTED_AGENT_VERSION,
             Duration::from_secs(5),
             Duration::from_secs(5),
+            crate::dns::tcp_resolver(),
         )
         .await
         .map_err(|error| error.to_string())?;

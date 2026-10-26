@@ -11,10 +11,11 @@
 
 use crate::workbench::ansi::{self, fit, width};
 use crate::workbench::i18n::{self, t, Key, Language};
+use crate::workbench::image_view;
 use crate::workbench::layout::{self, Layout, Rect};
 use crate::workbench::picker::{self, PickerKind};
 use crate::workbench::preferences;
-use crate::workbench::state::{ActivityKind, PanelId, WorkbenchData};
+use crate::workbench::state::{self, ActivityKind, PanelId, WorkbenchData};
 use crate::workbench::theme::Palette;
 use crate::workbench::widgets;
 use crate::workbench::{launchpad, panels, Overlay, Workbench, COMMANDS, HELP_KEYS};
@@ -150,11 +151,24 @@ pub(crate) fn compose(
     // The input band. On the launchpad there is no band: the composer *is* the
     // body, and repeating a prompt box under it would be the same box twice.
     if !data.on_launchpad() {
+        // The composer's title counts the images waiting to be sent: the box
+        // itself has no room for a line, and an attachment that is invisible
+        // until the prompt is sent is one the reader cannot check.
+        let images = data.input.editor.image_attachment_count();
+        let title = if images == 0 {
+            t(workbench.lang, Key::InputHintChat).to_string()
+        } else {
+            format!(
+                "{}{}",
+                t(workbench.lang, Key::InputHintChat),
+                i18n::render(workbench.lang, Key::AttachmentsInDraft, &[&images])
+            )
+        };
         let (input_lines, cursor_column, _) = widgets::input_box(
             &palette,
             frame.input.w as usize,
             &data.input,
-            t(workbench.lang, Key::InputHintChat),
+            &title,
             true,
             frame.compact,
         );
@@ -266,6 +280,11 @@ pub(crate) fn compose(
         }
         Some(Overlay::Keybindings) => {
             let lines = keybindings_box(workbench, &palette, w, h);
+            paint_overlay(&mut rows, &palette, lines, columns);
+            workbench.set_cursor(None);
+        }
+        Some(Overlay::FilePreview) => {
+            let lines = preview_box(workbench, data, &palette, w, h);
             paint_overlay(&mut rows, &palette, lines, columns);
             workbench.set_cursor(None);
         }
@@ -1646,6 +1665,131 @@ fn keybindings_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
 /// Every visible verb is a click target — the palette's whole point is not
 /// having to know a chord, so an entry a pointer cannot press would leave the
 /// menu open to the keyboard alone.
+/// The preview box: a picture as half blocks (zoomable), or a document's text.
+///
+/// It is deliberately the largest overlay in the surface — it takes all but a
+/// two-row margin — because a preview in a picker-sized box is a thumbnail, and
+/// the reader opened it to *read* the thing.
+fn preview_box(
+    workbench: &mut Workbench,
+    data: &WorkbenchData,
+    palette: &Palette,
+    w: u16,
+    h: u16,
+) -> Vec<String> {
+    let lang = workbench.lang;
+    let box_w = w.saturating_sub(4).max(20);
+    let box_h = h.saturating_sub(2).max(5);
+    let inner = box_w.saturating_sub(2) as usize;
+    // The two borders, one blank line above the hint, and the hint itself — the
+    // rows the content may *not* use, or the footer is what gets cut.
+    let content_h = (box_h as usize).saturating_sub(4).max(1);
+    let geometry = BoxGeometry {
+        w: box_w,
+        h: box_h,
+        left: (w.saturating_sub(box_w)) / 2,
+        top: (h.saturating_sub(box_h)) / 2,
+    };
+    claim_box(workbench, &geometry);
+    workbench.set_list_page(content_h);
+
+    let Some(preview) = data.preview.as_ref() else {
+        let title = t(lang, Key::PreviewNothing).to_string();
+        return paint_box(
+            palette,
+            &title,
+            vec![palette.dim(&format!(" {}", t(lang, Key::PreviewNothing)))],
+            w,
+            h,
+            &geometry,
+        );
+    };
+    let zoom = workbench.preview_zoom;
+    let scroll = workbench.preview_scroll;
+    let mut content: Vec<String> = Vec::new();
+    let hint = match preview {
+        state::PreviewView::Image { pixels, .. } => {
+            // The box's own colour depth decides the renderer: a 256-colour
+            // terminal gets the cube, a truecolor one gets the pixels.
+            let true_color = crate::terminal_image::get_capabilities().true_color;
+            content = image_view::render(
+                pixels,
+                palette,
+                inner,
+                content_h,
+                zoom,
+                workbench.preview_pan,
+                true_color,
+            );
+            let _ = pixels;
+            t(lang, Key::PreviewHintImage)
+        }
+        state::PreviewView::Markdown { text, .. } => {
+            let mut renderer = crate::components::markdown::MarkdownRenderer::new();
+            let lines = renderer.render_text(text, inner.saturating_sub(2));
+            let window = window(&lines, scroll, content_h);
+            content.extend(window.into_iter().map(|line| format!(" {line}")));
+            t(lang, Key::PreviewHintText)
+        }
+        state::PreviewView::Text {
+            lines, truncated, ..
+        } => {
+            if lines.is_empty() {
+                content.push(palette.dim(&format!(" {}", t(lang, Key::PreviewEmptyFile))));
+            }
+            let window = window(
+                lines,
+                scroll,
+                content_h.saturating_sub(usize::from(*truncated)),
+            );
+            content.extend(window.into_iter().map(|line| format!(" {line}")));
+            if *truncated {
+                content.push(palette.dim(&format!(" {}", t(lang, Key::PreviewTruncated))));
+            }
+            t(lang, Key::PreviewHintText)
+        }
+        state::PreviewView::Unavailable { reason, .. } => {
+            // An empty reason is "there is nothing here to show" — the box's own
+            // sentence, in the reader's language. A reason is the loader's own
+            // words (a permission error, a decoder's complaint) and is shown as
+            // it came.
+            let line = if reason.is_empty() {
+                format!(" {}", t(lang, Key::PreviewNothing))
+            } else {
+                format!(" {}: {reason}", t(lang, Key::PreviewNothing))
+            };
+            content.push(palette.dim(&line));
+            t(lang, Key::PreviewHintText)
+        }
+    };
+    content.push(String::new());
+    content.push(palette.dim(&format!(" {hint}")));
+
+    // The title names the file and, for a picture, what is being shown: the
+    // dimensions and the zoom, so `+` is visibly doing something even before the
+    // box is redrawn large enough to see.
+    let title = match preview {
+        state::PreviewView::Image { pixels, .. } => {
+            format!(
+                "{}  ·  {}  ·  {zoom}x",
+                preview.name(),
+                image_view::describe(pixels)
+            )
+        }
+        _ => preview.name().to_string(),
+    };
+    paint_box(palette, &title, content, w, h, &geometry)
+}
+
+/// `height` lines starting at `scroll`, clamped to the end of the text.
+fn window(lines: &[String], scroll: usize, height: usize) -> Vec<String> {
+    if lines.is_empty() || height == 0 {
+        return Vec::new();
+    }
+    let start = scroll.min(lines.len().saturating_sub(1));
+    lines[start..(start + height).min(lines.len())].to_vec()
+}
+
 fn palette_box(
     workbench: &mut Workbench,
     data: &WorkbenchData,

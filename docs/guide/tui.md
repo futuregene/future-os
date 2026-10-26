@@ -61,6 +61,37 @@ rows — activity, status, hint — stay full width. The composer band is exactl
 the box it draws (top rule, prompt, closing rule); it used to reserve a fourth
 row and leave it blank.
 
+The rail has **three tabs**: 最近 (conversations by refresh time), 工作区 (filed
+by directory) and **文件** — a browser of the session workspace. 文件 lists one level
+at a time and reads a directory when it is opened, never before: a repository
+with a `node_modules` opens instantly, and each listing is capped at 400 entries
+with a line saying so. `↑`/`↓` walk the rows, `→` opens a directory (or steps into
+it, if it is already open), `←` closes it (or jumps to the directory that holds
+the row), `enter` opens a directory and previews a file, and a click does what
+`enter` does on the row it landed on. On this tab `←`/`→` belong to the tree; the
+tabs are `ctrl+1`…`ctrl+3` or a click on the strip.
+
+## Pictures
+
+`ctrl+v` reads the clipboard: an image becomes a **draft attachment** (the box's
+title counts it, `· 📎 2 images`), and text is pasted into the draft. A pasted
+image is carried as the `[Image #N]` marker the input already understands, so it
+is sent with the prompt the same way a dragged-in file is; `alt+v` opens the
+newest attached image. `/paste` is the same verb from the palette — it is there
+because Windows Terminal binds `ctrl+v` to its own paste (which cannot carry an
+image), so on that terminal the key never arrives.
+
+An image is *drawn in the terminal* as half blocks — one `▀` per cell, its
+foreground the top pixel of the pair and its background the bottom one — so it
+works in any 256-colour terminal with no graphics protocol: no kitty, no iTerm2,
+no sixel. Two pixels per cell is the most a text surface can show, and 24-bit
+colour is used when the terminal reports it. The preview box (`enter` on an image
+in 文件, or `alt+v` for an attachment) shows the picture with its dimensions in
+the title, zooms with `+`/`-` (or the wheel) up to 6×, pans with the arrows and
+returns with `0`. Documents — Markdown rendered, anything else as lines — scroll
+with `↑`/`↓` and `pageUp`/`pageDown` instead. A file it cannot show says why
+rather than opening an empty box.
+
 The rail is a *task* panel, in two tabs. **最近** (the default) lists every
 conversation — its name, then the workspace it is filed under and when it was
 last refreshed — newest first. A row names its workspace by *name*
@@ -199,7 +230,10 @@ click on the rail's tab strip are the doors to the same places.
 | `pageUp` / `pageDown` or `ctrl+↑` / `ctrl+↓` | Scroll the conversation; `esc` returns to the latest output |
 | `ctrl+g` or `/queue` | List queued prompts; `x` cancels, `r` / `enter` cancels and recalls into the draft (`ctrl+x` stops the active run, not the queue) |
 | `ctrl+m` | Model picker (`/model`): every model the agent offers, grouped by provider, with the reasoning slider on its first row |
-| `ctrl+1` / `ctrl+2` | The rail's two tabs: 最近 (conversations by refresh time) and 工作区 (filed by directory). The rail takes the keys and its cursor lands on the conversation on screen |
+| `ctrl+1` / `ctrl+2` / `ctrl+3` | The rail's three tabs: 最近 (conversations by refresh time), 工作区 (filed by directory), 文件 (the workspace tree). The rail takes the keys and its cursor lands on the conversation on screen (or on the first row of the tree) |
+| `ctrl+v` | Read the clipboard: an image becomes a draft attachment, text is pasted. `/paste` does the same for terminals that bind the key themselves |
+| `alt+v` | Preview the newest image attached to the draft |
+| `+` / `-` / `0`, arrows, wheel | In the preview box: zoom a picture (up to 6×), pan it, reset; scroll a document |
 | `alt+c` or `/copy` | Copy the last assistant answer as clean content, without terminal chrome |
 | `alt+m` or `/mouse` | Toggle and persist mouse capture off/on for native terminal selection |
 | `alt+l` | Toggle native-scrollback linear reading |
@@ -221,6 +255,7 @@ click on the rail's tab strip are the doors to the same places.
 | Click a sidebar tab | Switch panel (`←`/`→` do the same while the rail has the keys) |
 | Click the rail's `›` edge (or the `‹` it leaves behind) | Hide the rail / bring it back. `ctrl+b` does the same from the keyboard |
 | Click a session row | Open that conversation (a workspace heading only takes the keys) |
+| Click a tree row | A file previews, a directory opens — the same two verbs `enter` runs |
 | Drag the divider | Resize the sidebar (30–48 columns), persisted on release |
 | Click anywhere in the input box | Focus it |
 | Wheel over the conversation | Scroll; at the top it asks for an older page |
@@ -252,7 +287,8 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | History with paging | The newest page on attach, older pages when the top is reached (`get_session_entries`, a bounded backward cursor) |
 | Prompting and streaming | `prompt` with the coalescing policy; `text_chunk`, `thinking_*`, `tool_*` and `agent_end` drive the transcript |
 | Queue management | `/queue` reads `get_state.queuedRuns`; cancel and recall use the existing `cancel_queued_run`, with no second client-side queue |
-| Draft attachments | Reuses `components/input.rs` folded-paste and image-marker machinery; attachments travel with the prompt |
+| Draft attachments | Reuses `components/input.rs` folded-paste and image-marker machinery; attachments travel with the prompt. `ctrl+v` / `/paste` read the system clipboard through `paste::ClipboardCapture` (osascript on macOS, PowerShell `-STA` on Windows, `wl-paste`/`xclip` on Linux) on a blocking thread, and an image it writes becomes an `[Image #N]` attachment. Nothing leaves the machine |
+| File panel and preview | `alt+r` re-reads the tree; a directory is read when it opens (400 entries per level, said out loud when cut). A preview decodes an image to at most 1024 px on its long edge and draws it as half blocks; text is read bounded and cut on a character boundary |
 | Approvals | A parked request opens a full card with tool, kind, risk, action/paths, requested action and sandbox boundary. `y` / `n` allow once or deny; `a` first adds the agent-suggested **this-run** workspace rule, then approves. A rule failure leaves the request pending. Escape closes the card without deciding |
 | Diff review | `/diff` lists tracked and untracked changes from the session workspace and shows the selected real git patch. Wide terminals keep a fixed file navigator beside an independently scrolling patch. Narrow terminals switch between files and patch with `tab`; `up`/`down` operate the focused view and left/right choose a file. The arrow follows the cursor immediately, and `·` marks the file whose patch is already loaded while the reload is in flight. `r` refreshes. This is the current uncommitted working tree, not per-turn attribution; patches are preview-bounded |
 | History search and tree | `/history` filters the current `list_sessions` titles/first-message previews, workspaces and ids; `/tree` uses `parentSessionId`. Enter opens the selected session |
@@ -270,6 +306,10 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 ## What is not here yet
 
 - **`@` file mentions** — not implemented; pasted image paths and folded pastes use `tui/src/paste.rs`.
+- **A preview is a preview.** The half-block renderer draws a picture at most a
+  couple of hundred cells wide, which is a thumbnail of a photo and a legible
+  view of a screenshot or a diagram. A reader who needs the pixels opens the
+  file in an image viewer; the TUI never transmits the image data anywhere.
 - **The command palette** lists the commands the adapter implements. Provider
   and tool management is intentionally compact (`/providers` and `/tools`);
   `/skills` remains the installed-skills list in the palette. Approval allow
@@ -293,11 +333,12 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | `tui/src/workbench/layout.rs` | Band rectangles, the two breakpoints, the hit map |
 | `tui/src/workbench/ansi.rs` | Width-safe text: `fit`, `pad`, `clip`, column slicing |
 | `tui/src/workbench/widgets.rs` | Rules, boxes, tabs, bars, badges, spinner, logo, wordmark, the input box |
-| `tui/src/workbench/panels.rs` | The rail's two panels (pure renderers over one row model) |
+| `tui/src/workbench/panels.rs` | The rail's three panels (pure renderers over one row model) |
 | `tui/src/workbench/picker.rs` | The `/model`, `/theme` and `/sessions` list picker |
 | `tui/src/workbench/launchpad.rs` | The first screen |
+| `tui/src/workbench/files.rs` | The 文件 panel's tree and what a path can be previewed as |
+| `tui/src/workbench/image_view.rs` | An image as half blocks: fit, zoom, pan, 256-colour fallback |
 | `tui/src/workbench/state.rs` | `WorkbenchData` and its parts |
-| `tui/src/workbench/mouse.rs` | SGR 1006 parsing |
 | `tui/src/workbench/theme.rs` | The six palettes: `dark`, `light`, `one-dark`, `one-light`, `high-contrast`, `dracula` |
 | `tui/src/workbench/i18n.rs` | Every piece of chrome, in Chinese and English, and the locale/preference resolution |
 | `tui/src/workbench/demo.rs` | Deterministic demo data (screenshots, tests) |

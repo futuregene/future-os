@@ -351,7 +351,7 @@ pub fn strip_api_suffix(base_url: &str) -> String {
 
 /// Requests set an explicit timeout covering both headers and body.
 fn http_client() -> reqwest::Client {
-    future_agent::http::client()
+    crate::dns::client()
 }
 
 /// `tryFetch(url, init)` — network failures are wrapped in
@@ -371,7 +371,7 @@ async fn try_fetch_post(
         .await
     {
         Ok(response) => Ok(response),
-        Err(error) => Err(format!("Network error: {error}")),
+        Err(error) => Err(format!("Network error: {}", crate::dns::describe(&error))),
     }
 }
 
@@ -388,7 +388,7 @@ async fn post<T: for<'de> Deserialize<'de>>(
     let data: Value = response
         .json()
         .await
-        .map_err(|e| format!("Network error: {e}"))?;
+        .map_err(|e| format!("Network error: {}", crate::dns::describe(&e)))?;
     let message = data
         .get("message")
         .and_then(Value::as_str)
