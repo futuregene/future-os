@@ -113,9 +113,11 @@ pub enum Action {
     Mouse,
     LinearReading,
     ReduceMotion,
+    PrevSession,
+    NextSession,
 }
 
-pub const ACTIONS: [Action; 15] = [
+pub const ACTIONS: [Action; 17] = [
     Action::Palette,
     Action::NewSession,
     Action::Sessions,
@@ -124,6 +126,8 @@ pub const ACTIONS: [Action; 15] = [
     Action::Preferences,
     Action::Refresh,
     Action::ReplyDetail,
+    Action::PrevSession,
+    Action::NextSession,
     Action::Stop,
     Action::Copy,
     Action::Queue,
@@ -151,6 +155,8 @@ impl Action {
             Self::Mouse => "mouse",
             Self::LinearReading => "linearReading",
             Self::ReduceMotion => "reduceMotion",
+            Self::PrevSession => "previousSession",
+            Self::NextSession => "nextSession",
         }
     }
     fn from_id(id: &str) -> Option<Self> {
@@ -173,6 +179,8 @@ impl Action {
             Self::Mouse => Key::CmdMouse,
             Self::LinearReading => Key::PrefLinear,
             Self::ReduceMotion => Key::PrefMotion,
+            Self::PrevSession => Key::HelpKeyPrevSession,
+            Self::NextSession => Key::HelpKeyNextSession,
         }
     }
     pub fn default_key(self) -> &'static str {
@@ -192,6 +200,8 @@ impl Action {
             Self::Mouse => "f7",
             Self::LinearReading => "f8",
             Self::ReduceMotion => "f9",
+            Self::PrevSession => "shift+left",
+            Self::NextSession => "shift+right",
         }
     }
 }
@@ -290,7 +300,17 @@ fn validate_key(key: &str) -> Result<(), String> {
     let valid_named = valid_function_key
         || matches!(
             key,
-            "tab" | "escape" | "enter" | "home" | "end" | "pageUp" | "pageDown"
+            "tab"
+                | "escape"
+                | "enter"
+                | "home"
+                | "end"
+                | "pageUp"
+                | "pageDown"
+                | "shift+left"
+                | "shift+right"
+                | "shift+up"
+                | "shift+down"
         );
     let valid_chord = key
         .strip_prefix("ctrl+")

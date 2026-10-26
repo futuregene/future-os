@@ -158,6 +158,15 @@ pub enum Key {
     TabSessions,
     TabUsage,
     TabSkills,
+    TabRecent,
+    TabWorkspaces,
+    // ── the workspace tab's sections ──────────────────────────────────
+    SectionPinned,
+    SectionWorkspaces,
+    SectionChats,
+    SummaryWorkspaces,
+    SummaryUnitsSessions,
+    PanelEmptyWorkspaces,
     // ── the sidebar's panels ──────────────────────────────────────────
     SummaryTodo,
     SummaryJobs,
@@ -204,6 +213,7 @@ pub enum Key {
     ActivityTools,
     HintBackToChat,
     HintSidebar,
+    HintSessions,
     HintFocus,
     HintCommands,
     HintHelp,
@@ -358,12 +368,18 @@ pub enum Key {
     HelpKeyHelp,
     HelpKeyReplyDetail,
     HelpKeyReplyDetailSet,
+    HelpKeyPrevSession,
+    HelpKeyNextSession,
+    HelpKeyPin,
     HelpKeyClick,
     HelpKeyDrag,
     HelpKeyQuit,
     // ── the notice row ────────────────────────────────────────────────
     NoticeWorkspace,
     NoticeTranscript,
+    NoticePinned,
+    NoticeUnpinned,
+    NoticePinUnavailable,
     Unspecified,
     // ── the adapter (`live`, `local`, `widgets`) ──────────────────────
     InputHintLaunchpad,
@@ -389,6 +405,15 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         TabSessions => ("会话", "Sessions"),
         TabUsage => ("用量", "Usage"),
         TabSkills => ("技能", "Skills"),
+        TabRecent => ("最近", "Recent"),
+        TabWorkspaces => ("工作区", "Workspaces"),
+
+        SectionPinned => ("置顶", "Pinned"),
+        SectionWorkspaces => ("工作区", "Workspaces"),
+        SectionChats => ("对话会话", "Chats"),
+        SummaryWorkspaces => ("{} 个工作区", "{} workspaces"),
+        SummaryUnitsSessions => ("会话", "chats"),
+        PanelEmptyWorkspaces => ("没有工作区", "no workspaces"),
 
         SummaryTodo => ("{} 待办 / {} 合计", "{} open / {} total"),
         SummaryJobs => ("{} 个任务", "{} jobs"),
@@ -442,8 +467,8 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         LangSystem => ("跟随系统", "Follow system"),
 
         InputHintChat => (
-            "输入 · enter 发送 · alt+enter 换行 · / 命令",
-            "Message · enter sends · alt+enter newline · / commands",
+            "输入 · enter 发送 · alt+enter 换行",
+            "Message · enter sends · alt+enter newline",
         ),
         ChatOlder => ("↑ 更早", "↑ older"),
         ChatOlderHint => ("↑ 更早 · page up", "↑ older · page up"),
@@ -453,6 +478,7 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ActivityTools => (" · {}s · {} 工具", " · {}s · {} tools"),
         HintBackToChat => ("回到聊天", "Back to chat"),
         HintSidebar => ("侧栏", "Sidebar"),
+        HintSessions => ("会话", "Sessions"),
         HintFocus => ("焦点", "Focus"),
         HintCommands => ("命令", "Commands"),
         HintHelp => ("帮助", "Help"),
@@ -636,6 +662,9 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         HelpKeyHelp => ("这份帮助", "This help"),
         HelpKeyReplyDetail => ("最终输出 / 完整过程", "Final answer / full process"),
         HelpKeyReplyDetailSet => ("同上，直接设置", "The same, set directly"),
+        HelpKeyPrevSession => ("上一个会话（侧栏随之切换）", "Previous conversation (the chat follows)"),
+        HelpKeyNextSession => ("下一个会话（侧栏随之切换）", "Next conversation (the chat follows)"),
+        HelpKeyPin => ("置顶 / 取消置顶该工作区", "Pin / unpin this workspace"),
         HelpKeyClick => ("切页签、点行、点参数", "Tabs, rows and chips"),
         HelpKeyDrag => ("侧栏分隔条调宽", "Widen the sidebar at its divider"),
         HelpKeyQuit => ("退出", "Quit"),
@@ -648,6 +677,9 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "完整记录：/export 导出整份会话（HTML） · /reply-detail 在聊天里看完整过程",
             "The whole record: /export writes the session as HTML · /reply-detail shows the full process in the chat",
         ),
+        NoticePinned => ("已置顶 {} · 在 工作区 页签的 置顶 区", "Pinned {} · it leads the Workspaces tab"),
+        NoticeUnpinned => ("已取消置顶 {}", "Unpinned {}"),
+        NoticePinUnavailable => ("这条会话不属于工作区，无法置顶", "This conversation belongs to no workspace"),
         Unspecified => ("未指定", "unset"),
 
         InputHintLaunchpad => (
@@ -847,7 +879,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 211] = {
+    const ALL_KEYS: [Key; 226] = {
         use Key::*;
         [
             TabTodo,
@@ -855,6 +887,14 @@ mod tests {
             TabSessions,
             TabUsage,
             TabSkills,
+            TabRecent,
+            TabWorkspaces,
+            SectionPinned,
+            SectionWorkspaces,
+            SectionChats,
+            SummaryWorkspaces,
+            SummaryUnitsSessions,
+            PanelEmptyWorkspaces,
             SummaryTodo,
             SummaryJobs,
             SummarySessions,
@@ -898,6 +938,7 @@ mod tests {
             ActivityTools,
             HintBackToChat,
             HintSidebar,
+            HintSessions,
             HintFocus,
             HintCommands,
             HintHelp,
@@ -1047,11 +1088,17 @@ mod tests {
             HelpKeyHelp,
             HelpKeyReplyDetail,
             HelpKeyReplyDetailSet,
+            HelpKeyPrevSession,
+            HelpKeyNextSession,
+            HelpKeyPin,
             HelpKeyClick,
             HelpKeyDrag,
             HelpKeyQuit,
             NoticeWorkspace,
             NoticeTranscript,
+            NoticePinned,
+            NoticeUnpinned,
+            NoticePinUnavailable,
             Unspecified,
             InputHintLaunchpad,
             ApprovalWaiting,

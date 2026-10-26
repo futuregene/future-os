@@ -259,6 +259,9 @@ pub enum WbAction {
     SetLanguage(LanguagePreference),
     /// A layout preference changed; the driver persists the whole surface state.
     SetPreferences,
+    /// The reader pinned (or unpinned) a workspace in the rail; the app records
+    /// it and rebuilds the groups.
+    SetWorkspacePinned { path: String, pinned: bool },
     /// Persist the effective shortcut map after a rebind or reset.
     SetKeybindings,
     /// Explain an action that could not be applied in the notice row.
@@ -344,7 +347,12 @@ pub struct Workbench {
     /// language picker marks as current.
     pub language_pref: LanguagePreference,
     pub panel: PanelId,
+    /// Whether the rail (not the composer) takes `up`/`down`/`enter`.
     pub sidebar_focus: bool,
+    /// The row the rail's own cursor stands on, as an index into
+    /// [`panels::rows`] for the current panel. Only a conversation row can hold
+    /// it (see [`Workbench::select_row`]).
+    pub sidebar_index: usize,
     /// Is the sidebar allowed to show? `ctrl+b` toggles it; the width still
     /// decides whether it *can*.
     pub sidebar_visible: bool,
@@ -358,7 +366,7 @@ pub struct Workbench {
     pub preferences_index: usize,
     pub keybinding_index: usize,
     pub awaiting_keybinding: bool,
-    pub panel_scroll: [usize; 5],
+    pub panel_scroll: [usize; 2],
     pub overlay: Option<Overlay>,
     pub overlay_scroll: usize,
     pub palette_query: String,
@@ -420,8 +428,9 @@ impl Workbench {
             // text depend on the machine running it.
             lang: Language::default(),
             language_pref: LanguagePreference::default(),
-            panel: PanelId::Todo,
+            panel: PanelId::Recent,
             sidebar_focus: false,
+            sidebar_index: 0,
             sidebar_visible: true,
             sidebar_w: layout::SIDEBAR_DEFAULT,
             density: preferences::Density::Focused,
@@ -433,7 +442,7 @@ impl Workbench {
             preferences_index: 0,
             keybinding_index: 0,
             awaiting_keybinding: false,
-            panel_scroll: [0; 5],
+            panel_scroll: [0; 2],
             overlay: None,
             overlay_scroll: 0,
             palette_query: String::new(),
@@ -858,6 +867,11 @@ impl Workbench {
                 self.reduced_motion = !self.reduced_motion;
                 return vec![WbAction::SetPreferences];
             }
+            // One conversation either way, with the transcript following it: a
+            // rail whose highlight moved while the chat stayed put would name a
+            // conversation the screen is not showing.
+            Some(preferences::Action::PrevSession) => return self.step_session(-1, data),
+            Some(preferences::Action::NextSession) => return self.step_session(1, data),
             _ => {}
         }
         match key {
@@ -893,6 +907,12 @@ impl Workbench {
                     // A hidden rail cannot take the keys: focusing it would
                     // swallow up/down with nothing on screen to show for it.
                     self.sidebar_focus = !self.sidebar_focus;
+                    if self.sidebar_focus {
+                        // Arriving in the rail lands on the conversation that
+                        // is on screen, not on row 0 of an unrelated list.
+                        let row = self.current_row(data);
+                        self.select_row(row, data);
+                    }
                 }
                 vec![WbAction::Redraw]
             }
@@ -902,9 +922,14 @@ impl Workbench {
                 }
                 vec![WbAction::Redraw]
             }
+            "enter" if self.sidebar_focus => self.open_selected(data),
             "enter" => self.submit_draft(data),
-            "up" if self.sidebar_focus => self.scroll(-1, data),
-            "down" if self.sidebar_focus => self.scroll(1, data),
+            "up" if self.sidebar_focus => self.move_selection(-1, data),
+            "down" if self.sidebar_focus => self.move_selection(1, data),
+            // Pin the workspace the selected conversation belongs to, so the
+            // 置顶 section is reachable with the keyboard. Only a *focused* rail
+            // takes it: elsewhere `p` is a letter in the draft.
+            "p" if self.sidebar_focus => self.toggle_pin_selected(data),
             "ctrl+up" | "pageUp" => self.scroll(-10, data),
             "ctrl+down" | "pageDown" => self.scroll(10, data),
             "end" if self.scroll.following() && data.input.text.is_empty() => self.scroll(1, data),
@@ -1009,6 +1034,110 @@ impl Workbench {
             return vec![WbAction::LoadOlder];
         }
         vec![WbAction::Scroll(up)]
+    }
+
+    // ─── the rail's own cursor ───────────────────────────────────────
+
+    /// The panel's rows, as the renderer paints them.
+    fn panel_rows(&self, data: &WorkbenchData) -> Vec<panels::Row> {
+        panels::rows(self.panel, data)
+    }
+
+    /// The row the conversation on screen stands on, if the panel lists it.
+    fn current_row(&self, data: &WorkbenchData) -> Option<usize> {
+        let rows = self.panel_rows(data);
+        let current = data.sessions.iter().position(|row| row.current)?;
+        rows.iter().position(|row| row.session() == Some(current))
+    }
+
+    /// Put the rail's cursor on `row`, if that row holds a conversation.
+    fn select_row(&mut self, row: Option<usize>, data: &WorkbenchData) {
+        let rows = self.panel_rows(data);
+        if let Some(row) = row.filter(|row| rows.get(*row).is_some_and(|row| row.session().is_some()))
+        {
+            self.sidebar_index = row;
+        } else if let Some(first) = panels::first_session(&rows, 0) {
+            self.sidebar_index = first;
+        } else {
+            self.sidebar_index = 0;
+        }
+    }
+
+    /// Move the cursor one conversation up or down, keeping the window on it.
+    fn move_selection(&mut self, delta: i32, data: &WorkbenchData) -> Vec<WbAction> {
+        let rows = self.panel_rows(data);
+        if let Some(next) = panels::step_session(&rows, self.sidebar_index, delta) {
+            self.sidebar_index = next;
+            let index = self.panel.index();
+            // The renderer also scrolls to the cursor; this keeps the stored
+            // offset honest for the frame that follows.
+            if self.sidebar_index < self.panel_scroll[index] {
+                self.panel_scroll[index] = self.sidebar_index;
+            }
+        }
+        vec![WbAction::Redraw]
+    }
+
+    /// Open the conversation under the cursor.
+    fn open_selected(&mut self, data: &WorkbenchData) -> Vec<WbAction> {
+        let rows = self.panel_rows(data);
+        let Some(index) = rows.get(self.sidebar_index).and_then(|row| row.session()) else {
+            return Vec::new();
+        };
+        data.sessions
+            .get(index)
+            .map(|session| vec![WbAction::SwitchSession(session.id.clone())])
+            .unwrap_or_default()
+    }
+
+    /// The workspace the conversation under the cursor belongs to.
+    fn selected_workspace(&self, data: &WorkbenchData) -> Option<&state::WorkspaceGroup> {
+        let rows = self.panel_rows(data);
+        let session = rows.get(self.sidebar_index)?.session()?;
+        let id = &data.sessions.get(session)?.id;
+        data.workspaces
+            .iter()
+            .find(|workspace| workspace.session_ids.contains(id))
+    }
+
+    /// Pin or unpin the workspace the cursor's conversation belongs to.
+    fn toggle_pin_selected(&mut self, data: &WorkbenchData) -> Vec<WbAction> {
+        match self.selected_workspace(data) {
+            Some(workspace) => vec![WbAction::SetWorkspacePinned {
+                path: workspace.path.clone(),
+                pinned: !workspace.pinned,
+            }],
+            None => vec![WbAction::Notice(
+                t(self.lang, Key::NoticePinUnavailable).to_string(),
+            )],
+        }
+    }
+
+    /// Switch to the previous/next conversation as the *panel* lists it.
+    ///
+    /// The rail's order is the reader's order, so this walks the rows rather
+    /// than the raw session list: under 工作区 it follows the sections, in 最近 it
+    /// follows refresh time. The cursor is left where the switch went, so a
+    /// second press moves a second conversation.
+    fn step_session(&mut self, delta: i32, data: &WorkbenchData) -> Vec<WbAction> {
+        let rows = self.panel_rows(data);
+        // The cursor may stand on nothing yet (a fresh rail): start from the
+        // conversation on screen so the first press moves *one* step.
+        let from = match self.current_row(data) {
+            Some(current) if rows.get(self.sidebar_index).is_none_or(|row| row.session().is_none()) => {
+                current
+            }
+            _ => self.sidebar_index,
+        };
+        let Some(next) = panels::step_session(&rows, from, delta) else {
+            return Vec::new();
+        };
+        self.sidebar_index = next;
+        let index = self.panel.index();
+        if self.sidebar_index < self.panel_scroll[index] {
+            self.panel_scroll[index] = self.sidebar_index;
+        }
+        self.open_selected(data)
     }
 
     fn handle_overlay_key(
@@ -1965,8 +2094,12 @@ impl Workbench {
         if let Some(panel) = id.strip_prefix("sidebar.tab.").and_then(PanelId::parse) {
             self.panel = panel;
             // Clicking the sidebar means working in it; the same click that
-            // switches the panel therefore takes the keys.
+            // switches the panel therefore takes the keys, and the cursor lands
+            // on the conversation on screen rather than on whatever index the
+            // other panel held.
             self.sidebar_focus = true;
+            let row = self.current_row(data);
+            self.select_row(row, data);
             return vec![WbAction::SwitchPanel(panel)];
         }
         if let Some(index) = id
@@ -1974,20 +2107,22 @@ impl Workbench {
             .and_then(|rest| rest.parse::<usize>().ok())
         {
             self.sidebar_focus = true;
-            return match self.panel {
-                PanelId::Sessions => data
-                    .sessions
-                    .get(index)
-                    .map(|session: &state::SessionRow| {
-                        vec![WbAction::SwitchSession(session.id.clone())]
-                    })
-                    .unwrap_or_default(),
-                // A row of a read-only panel (a todo, a skill, a job) is not a
-                // verb yet: it takes the keys and nothing else. It used to
-                // return `panel.row.<n>` as a command, which the app had no
-                // handler for and answered `Unknown command /panel.row.3` — the
-                // same lie as the five dead palette entries, one click away.
-                _ => vec![WbAction::Redraw],
+            let rows = self.panel_rows(data);
+            return match rows.get(index) {
+                // A conversation opens on one click: the row was aimed at.
+                Some(panels::Row::Session(session)) => {
+                    self.sidebar_index = index;
+                    data.sessions
+                        .get(*session)
+                        .map(|session| vec![WbAction::SwitchSession(session.id.clone())])
+                        .unwrap_or_default()
+                }
+                // A heading is not a verb: the click takes the keys and stops.
+                Some(_) => {
+                    self.sidebar_index = index;
+                    vec![WbAction::Redraw]
+                }
+                None => vec![WbAction::Redraw],
             };
         }
         if let Some(index) = id
@@ -2041,9 +2176,14 @@ impl Workbench {
     /// room the panel takes the body, which is the same full-screen surface
     /// `ctrl+b` opens there. Focusing a panel a narrow terminal cannot paint
     /// would be a verb that answers with nothing.
-    fn focus_panel(&mut self, panel: PanelId) {
+    fn focus_panel(&mut self, panel: PanelId, data: &WorkbenchData) {
         self.panel = panel;
         self.sidebar_focus = true;
+        // The cursor is an index into *this* panel's rows: carry it to the
+        // conversation on screen instead of leaving it on whatever the other
+        // tab's row at that index happened to be.
+        let row = self.current_row(data);
+        self.select_row(row, data);
         if layout::sidebar_fits(self.last_frame.0) {
             self.sidebar_visible = true;
         } else {
@@ -2055,11 +2195,10 @@ impl Workbench {
     /// agent: naming a panel, or saying where a workspace comes from.
     ///
     /// The palette advertises these ([`COMMANDS`]), so a verb it offers has to
-    /// answer *something*. Five of them used to reach the agent, which has no
-    /// such commands and said so: `/usage`, `/skills`, `/workspace`, `/export`
-    /// and `/transcript` all printed `Unknown command`. The ones that are about
-    /// what is on screen are answered here; `/export` needs the session and
-    /// stays with the app (`VerbOutcome::Agent`).
+    /// answer *something*. The panels a reader can name are the rail's two, so
+    /// only those two focus something: the old `/usage`, `/skills` and `/todo`
+    /// names went with the panels they opened (the usage figures are on the
+    /// status bar, the skills are the palette's own).
     pub fn surface_command(&mut self, command: &str, data: &WorkbenchData) -> VerbOutcome {
         let name = command.trim_start_matches('/').trim();
         match name {
@@ -2069,23 +2208,18 @@ impl Workbench {
                 self.queue_index = self.queue_index.min(data.queue.len().saturating_sub(1));
                 VerbOutcome::Done { notice: None }
             }
-            "usage" => {
-                self.focus_panel(PanelId::Usage);
+            "recent" | "sessions" => {
+                self.focus_panel(PanelId::Recent, data);
                 VerbOutcome::Done { notice: None }
             }
-            "skills" => {
-                self.focus_panel(PanelId::Skills);
+            "workspaces" => {
+                self.focus_panel(PanelId::Workspaces, data);
                 VerbOutcome::Done { notice: None }
             }
-            "todo" => {
-                self.focus_panel(PanelId::Todo);
-                VerbOutcome::Done { notice: None }
-            }
-            // There is no workspace picker to open, and pretending there is
-            // would be the same lie as `Unknown command`. What is true: the
-            // directory is the session's own, chosen where the session was
-            // started, and the two verbs that move a reader between workspaces
-            // are named.
+            // `/workspace` with no argument answers where this session runs.
+            // There is no workspace picker, and pretending there is would be
+            // the same lie as `Unknown command`: the directory is the session's
+            // own, chosen where the session was started.
             "workspace" => {
                 let cwd = if data.session.cwd.is_empty() {
                     t(self.lang, Key::Unspecified).to_string()
@@ -2309,7 +2443,7 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
 /// The command palette's entries: `(command, description)`. Kept here rather
 /// than in the app so the palette, the help overlay and the tests share one
 /// list.
-pub const COMMANDS: [(&str, Key); 29] = [
+pub const COMMANDS: [(&str, Key); 26] = [
     ("/new", Key::CmdNew),
     ("/queue", Key::CmdQueue),
     ("/copy", Key::CmdCopy),
@@ -2332,9 +2466,6 @@ pub const COMMANDS: [(&str, Key); 29] = [
     ("/workspace", Key::CmdWorkspace),
     ("/theme", Key::CmdTheme),
     ("/preferences", Key::CmdPreferences),
-    ("/usage", Key::CmdUsage),
-    ("/skills", Key::CmdSkills),
-    ("/todo", Key::CmdTodo),
     ("/export", Key::CmdExport),
     ("/transcript", Key::CmdTranscript),
     ("/help", Key::CmdHelp),
@@ -2374,10 +2505,12 @@ fn known_command(text: &str) -> Option<TypedCommand> {
 }
 
 /// The help overlay's key table.
-pub const HELP_KEYS: [(&str, Key); 10] = [
+pub const HELP_KEYS: [(&str, Key); 12] = [
     ("tab", Key::HelpKeyFocus),
     ("↑↓", Key::HelpKeyScroll),
     ("pageUp / pageDown", Key::HelpKeyPage),
+    ("shift+← / →", Key::HelpKeyNextSession),
+    ("p", Key::HelpKeyPin),
     ("/", Key::HelpKeyPalette),
     ("@", Key::HelpKeyMentionFile),
     ("#", Key::HelpKeyMentionSession),
