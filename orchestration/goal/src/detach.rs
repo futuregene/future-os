@@ -42,6 +42,12 @@ pub const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
 
 /// `CreateProcess` answers a breakaway attempt from a job that does not grant
 /// `JOB_OBJECT_LIMIT_BREAKAWAY_OK` with this error.
+///
+/// Gated like its readers (`spawn_with_attempts`, `refuses_breakaway`, and the
+/// tests that exercise the fallback with a synthesised refusal): on Unix there
+/// is no job object to be refused and a plain build must not carry a constant
+/// nothing can read.
+#[cfg(any(windows, test))]
 const ERROR_ACCESS_DENIED: i32 = 5;
 
 /// The `creation_flags` to try, preferred first: breakaway and plain detachment
@@ -266,6 +272,10 @@ mod tests {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        // Never reaped on purpose: the driver below SIGKILLs this helper, and the
+        // child it spawned is what the test then finds alive in a group of its
+        // own and kills. Waiting here would defeat both halves.
+        #[allow(clippy::zombie_processes)]
         let child = spawn(&mut cmd).expect("spawn the detached child");
         std::fs::write(&out, format!("{},{}", child.id(), std::process::id()))
             .expect("report the pids");
