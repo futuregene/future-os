@@ -24,6 +24,7 @@
 | [Desktop Agent](guide/desktop-agent.md) ([zh](guide/desktop-agent.zh-CN.md)) | Embedded/external hosting, exit scope, CLI clients, development launchers, logs and update recovery |
 | [Host mode](guide/desktop-host.md) ([中文](guide/desktop-host.zh-CN.md)) | Foreground `future host` startup, platform login QR, pairing from `future remote devices add`, Ctrl+C, GUI-free server builds and troubleshooting |
 | [Self-hosted relay](guide/self-hosted-relay.md) ([中文](guide/self-hosted-relay.zh-CN.md)) | `future relay`: an account-free NATS relay for remote control, its threat model, coexistence with the official relay, and operator notes |
+| [Hostname resolution](guide/dns-resolution.md) ([中文](guide/dns-resolution.zh-CN.md)) | How the static musl CLI resolves names when `/etc/resolv.conf` is absent, the candidate paths, `FUTURE_DNS_SERVER` / `FUTURE_RESOLV_CONF`, the NSS limits, and the measured behaviour |
 | [Directory layout](guide/directory-layout.md) ([中文](guide/directory-layout.zh-CN.md)) | What lives where under `~/.future/` ((agent, channels, TUI, GUI, goal)) |
 | [Data backup and recovery](guide/data-backup.md) ([中文](guide/data-backup.zh-CN.md)) | `future data`: offline backup, verify, restore to the original home, resume/rollback after an interrupted restore, and the startup fence |
 | [Session history recall](guide/session-history.md) ([中文](guide/session-history.zh-CN.md)) | Read-only history search/entry reads, byte paging, and post-compaction model guidance |
