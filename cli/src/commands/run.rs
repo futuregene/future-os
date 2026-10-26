@@ -9,8 +9,16 @@ use crate::output::Output;
 use crate::rpc::RunConfig;
 use std::path::Path;
 
-pub(crate) const VALID_THINKING_LEVELS: &[&str] =
-    &["off", "minimal", "low", "medium", "high", "xhigh"];
+/// Level names `--thinking` / `--model id:level` accept.
+///
+/// `default` asks for the provider default (no thinking parameter);
+/// `max` is a wire value models may declare. A model can still offer any other
+/// string — the agent clamps a level it does not offer to `default`, and the
+/// pickers send the declared values verbatim — these are just the names a user
+/// can type on the command line.
+pub(crate) const VALID_THINKING_LEVELS: &[&str] = &[
+    "default", "off", "minimal", "low", "medium", "high", "xhigh", "max",
+];
 pub(crate) const VALID_PERMISSION_LEVELS: &[&str] = &["all", "workspace", "none"];
 /// Product approval modes; auto maps to tier sandbox plus reviewer model. The OS probe is the agent's job, not ours — a tier
 /// this list allows can still be refused at apply time.
@@ -69,8 +77,10 @@ Session options:
 
 Model & behavior:
   --model <id>             Model ID. Only affects this run; subsequent runs use the default.
-                           Supports model:thinking shorthand, e.g. "sonnet:high".
-  --thinking <level>       Thinking/reasoning level: off, minimal, low, medium, high, xhigh
+                           Supports model:thinking shorthand, e.g. "sonnet:high" or
+                           "sonnet:max".
+  --thinking <level>       Thinking/reasoning level: default (send no thinking
+                           parameter), off, minimal, low, medium, high, xhigh, max
   --permission <level>     Tool permission: all (unrestricted; fresh-session default),
                            workspace (approval-gated access), none (deny all tools).
                            Separate from the desktop OS sandbox policy.
@@ -442,6 +452,14 @@ mod tests {
         assert_eq!(parsed.model.as_deref(), Some("sonnet"));
         assert_eq!(parsed.thinking.as_deref(), Some("high"));
 
+        // `default` (provider default) and `max` (a wire value) split too.
+        let parsed = parse(&["--model", "sonnet:default", "hi"]).unwrap();
+        assert_eq!(parsed.model.as_deref(), Some("sonnet"));
+        assert_eq!(parsed.thinking.as_deref(), Some("default"));
+        let parsed = parse(&["--model", "sonnet:max", "hi"]).unwrap();
+        assert_eq!(parsed.model.as_deref(), Some("sonnet"));
+        assert_eq!(parsed.thinking.as_deref(), Some("max"));
+
         // unknown suffix → whole string is the model id
         let parsed = parse(&["--model", "sonnet:notathing", "hi"]).unwrap();
         assert_eq!(parsed.model.as_deref(), Some("sonnet:notathing"));
@@ -458,6 +476,10 @@ mod tests {
     fn parse_valid_thinking_and_permission_levels() {
         let parsed = parse(&["--thinking", "high", "hi"]).unwrap();
         assert_eq!(parsed.thinking.as_deref(), Some("high"));
+        for level in ["default", "max"] {
+            let parsed = parse(&["--thinking", level, "hi"]).unwrap();
+            assert_eq!(parsed.thinking.as_deref(), Some(level));
+        }
         let parsed = parse(&["--permission", "workspace", "hi"]).unwrap();
         assert_eq!(parsed.permission.as_deref(), Some("workspace"));
         // Trailing flags without values are ignored.

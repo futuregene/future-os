@@ -465,18 +465,24 @@ impl AgentClient {
         Ok(())
     }
 
-    /// Set thinking level.
-    pub async fn set_thinking_level(&mut self, session_id: &str, level: &str) -> Result<()> {
-        self.call(
-            "set_thinking_level",
-            session_id,
-            RpcCommand {
-                level: level.to_string(),
-                ..Default::default()
-            },
-        )
-        .await?;
-        Ok(())
+    /// Set thinking level; returns the level the agent actually took.
+    ///
+    /// The agent clamps a level the model does not offer to `default` and
+    /// answers with that effective level, so a caller that echoes the value back
+    /// to the user must print what ran rather than what was asked for. An older
+    /// agent answers without the field: the requested level is the best we know.
+    pub async fn set_thinking_level(&mut self, session_id: &str, level: &str) -> Result<String> {
+        let resp = self
+            .call(
+                "set_thinking_level",
+                session_id,
+                RpcCommand {
+                    level: level.to_string(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        Ok(resp["level"].as_str().unwrap_or(level).to_string())
     }
 
     /// Switch to an existing session.
@@ -1049,6 +1055,28 @@ mod tests {
         state.responses.insert("list_models".into(), "{}".into());
         let (mut c, _) = connect_to(state).await;
         assert!(c.get_available_models("sess").await.unwrap().is_empty());
+    }
+
+    /// The agent snaps a level the model does not offer to `default` and answers
+    /// with that effective level; a channel that echoes the request would claim
+    /// an effort that never ran.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn set_thinking_level_returns_the_agents_effective_level() {
+        let mut state = MockState::default();
+        state
+            .responses
+            .insert("set_thinking_level".into(), r#"{"level":"default"}"#.into());
+        let (mut c, _) = connect_to(state).await;
+        assert_eq!(
+            c.set_thinking_level("s", "max").await.unwrap(),
+            "default",
+            "the clamped level, not the request"
+        );
+
+        // An older agent answers without the field: the requested level is the
+        // best available answer.
+        let (mut c, _) = connect_to(MockState::default()).await;
+        assert_eq!(c.set_thinking_level("s", "high").await.unwrap(), "high");
     }
 
     #[tokio::test(flavor = "multi_thread")]

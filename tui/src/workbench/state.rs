@@ -93,23 +93,142 @@ pub struct ModelChoice {
     pub provider: String,
     /// Context window in tokens (0 when the agent reported none).
     pub context_window: u64,
-    /// The level the agent would run this model at by default.
+    /// The level the agent starts a conversation with on this model
+    /// (`thinkingLevel`; `"default"` on a current agent, the legacy
+    /// `"high"`/`"off"` on an older one).
     pub thinking_level: String,
+    /// The levels this model accepts, exactly as the agent declared them: the
+    /// implicit [`DEFAULT_THINKING_LEVEL_NAME`] first, then wire values sent
+    /// verbatim. `None` is an agent that predates the field entirely (an older
+    /// agent, whose models fall back to the legacy six levels); `Some([])` never
+    /// happens on a current agent, which always sends at least `["default"]`.
+    pub thinking_levels: Option<Vec<String>>,
+    /// The level the agent starts a conversation at on this model, already
+    /// clamped to [`Self::thinking_levels`]. `None` on an older agent.
+    pub default_thinking_level: Option<String>,
 }
 
-/// The reasoning levels a model can run at, weakest first.
-///
-/// One list for the whole crate: `index.rs` parses `--model sonnet:high`
-/// against the same six names, and the `/model` picker's slider walks them.
-pub const THINKING_LEVELS: [&str; 6] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+impl ModelChoice {
+    /// The levels the picker offers for this model, in display order.
+    ///
+    /// A current agent's declaration is taken as-is (it is already
+    /// default-first). An older agent never sent one, so the legacy six levels
+    /// are offered with the implicit `default` in front — the shape every
+    /// current model has. The empty list a current agent cannot send is
+    /// normalized to the implicit `default` alone.
+    pub fn effective_thinking_levels(&self) -> Vec<String> {
+        effective_thinking_levels(self.thinking_levels.as_deref())
+    }
 
-/// The position of `level` in [`THINKING_LEVELS`]; an unknown level is `off`, so
-/// a slider always has a defined place to stand.
-pub fn thinking_index(level: &str) -> usize {
-    THINKING_LEVELS
+    /// True for a model listed by an agent that predates `thinkingLevels`: the
+    /// level vocabulary is the legacy six, and `default` must not travel on the
+    /// wire (see [`legacy_wire_thinking_level`]).
+    pub fn is_legacy_thinking(&self) -> bool {
+        self.thinking_levels.is_none()
+    }
+
+    /// The level to actually send for this model. An older agent does not know
+    /// the reserved `default`, so it is mapped to the legacy fallback
+    /// (`medium`); a current agent receives the level verbatim.
+    pub fn wire_thinking_level(&self, level: &str) -> String {
+        if self.is_legacy_thinking() {
+            legacy_wire_thinking_level(level).to_string()
+        } else {
+            level.to_string()
+        }
+    }
+}
+
+/// The reserved level meaning "send no thinking/effort parameter at all".
+///
+/// It is implicit on a current agent: every model's declared list starts with
+/// it, it is never stored in `models.json`, and it is the fallback for a level
+/// the model does not offer.
+pub const DEFAULT_THINKING_LEVEL_NAME: &str = "default";
+
+/// Level names the product has translations for. Not a wire vocabulary: a model
+/// may declare any other string (`max` included) and it is sent verbatim. These
+/// six are the legacy fallback an older agent's models run on.
+pub const KNOWN_THINKING_LEVELS: [&str; 6] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+
+/// Level names the CLI accepts besides the legacy six: the reserved `default`
+/// (`--thinking default` asks for the provider default) and the wire value
+/// `max` (a model may declare it; the agent clamps anything it does not offer).
+pub const EXTRA_THINKING_LEVELS: [&str; 2] = [DEFAULT_THINKING_LEVEL_NAME, "max"];
+
+/// Whether `level` is a spelling `--thinking` / `--model id:level` accepts: the
+/// legacy six, the reserved `default`, or `max`. A model may declare any other
+/// string and the TUI sends it verbatim from a picker — this only governs what
+/// a user can type on the command line.
+pub fn is_valid_thinking_level(level: &str) -> bool {
+    EXTRA_THINKING_LEVELS.contains(&level) || KNOWN_THINKING_LEVELS.contains(&level)
+}
+
+/// The level vocabulary for a model that declared none (an agent that predates
+/// `thinkingLevels`): the implicit `default` followed by the legacy six.
+pub fn fallback_thinking_levels() -> Vec<String> {
+    std::iter::once(DEFAULT_THINKING_LEVEL_NAME.to_string())
+        .chain(KNOWN_THINKING_LEVELS.iter().map(|level| level.to_string()))
+        .collect()
+}
+
+/// The levels a model offers, from what the agent declared.
+///
+/// `None` — the field is absent, i.e. an older agent — falls back to
+/// [`fallback_thinking_levels`]. `Some([])` is normalized to the implicit
+/// `default` alone: a current agent always declares at least that, and a
+/// picker with an empty ring would have nowhere to stand.
+pub fn effective_thinking_levels(declared: Option<&[String]>) -> Vec<String> {
+    match declared {
+        None => fallback_thinking_levels(),
+        Some([]) => vec![DEFAULT_THINKING_LEVEL_NAME.to_string()],
+        Some(levels) => levels.to_vec(),
+    }
+}
+
+/// The position of `level` in `levels`, matched case-insensitively; an unknown
+/// level starts at the top of the ring (`default`), so a slider always has a
+/// defined place to stand.
+pub fn thinking_index_in(levels: &[String], level: &str) -> usize {
+    levels
         .iter()
-        .position(|known| known.eq_ignore_ascii_case(level))
+        .position(|known| known.eq_ignore_ascii_case(level.trim()))
         .unwrap_or(0)
+}
+
+/// The next level in a model's ring.
+///
+/// A level inside the ring advances to the one after it, wrapping; an unknown
+/// current level (nothing staged yet) starts the ring at its first entry, which
+/// is always `default`. `None` when the ring has no entries.
+pub fn next_thinking_level(levels: &[String], current: &str) -> Option<String> {
+    let current = current.trim();
+    if current.is_empty() {
+        return levels.first().cloned();
+    }
+    match levels
+        .iter()
+        .position(|level| level.eq_ignore_ascii_case(current))
+    {
+        Some(index) => Some(levels[(index + 1) % levels.len()].clone()),
+        None => levels.first().cloned(),
+    }
+}
+
+/// The wire value for `level` on a model from an older agent.
+///
+/// An older agent does not offer the reserved `default` and rejects (or
+/// misreads) it, so the contract's legacy fallback is sent instead: `medium`.
+pub fn legacy_wire_thinking_level(level: &str) -> &str {
+    if level
+        .trim()
+        .eq_ignore_ascii_case(DEFAULT_THINKING_LEVEL_NAME)
+    {
+        // `medium` is the legacy six's fallback (the contract's "default medium").
+        "medium"
+    } else {
+        level
+    }
 }
 
 /// One skill the `/` palette offers.
@@ -560,17 +679,103 @@ mod tests {
     }
 
     #[test]
-    fn the_reasoning_slider_walks_the_crates_own_levels() {
-        assert_eq!(THINKING_LEVELS.len(), 6);
-        assert_eq!(THINKING_LEVELS[0], "off");
-        assert_eq!(THINKING_LEVELS[5], "xhigh");
-        for (index, level) in THINKING_LEVELS.iter().enumerate() {
-            assert_eq!(thinking_index(level), index);
-            assert_eq!(thinking_index(&level.to_uppercase()), index);
+    fn the_thinking_levels_fallback_is_default_plus_the_legacy_six() {
+        assert_eq!(KNOWN_THINKING_LEVELS.len(), 6);
+        assert_eq!(KNOWN_THINKING_LEVELS[0], "off");
+        assert_eq!(KNOWN_THINKING_LEVELS[5], "xhigh");
+        let fallback = fallback_thinking_levels();
+        assert_eq!(fallback.len(), 7);
+        assert_eq!(fallback[0], DEFAULT_THINKING_LEVEL_NAME);
+        assert_eq!(
+            fallback[1..].iter().map(String::as_str).collect::<Vec<_>>(),
+            KNOWN_THINKING_LEVELS.to_vec()
+        );
+        // An absent declaration (an older agent) is the fallback…
+        assert_eq!(effective_thinking_levels(None), fallback);
+        // …a declared list is taken as-is…
+        let declared = vec![
+            DEFAULT_THINKING_LEVEL_NAME.to_string(),
+            "off".to_string(),
+            "max".to_string(),
+        ];
+        assert_eq!(effective_thinking_levels(Some(&declared)), declared);
+        // …and the empty list only a buggy agent could send becomes the
+        // implicit default alone, never an empty ring.
+        assert_eq!(
+            effective_thinking_levels(Some(&[])),
+            vec![DEFAULT_THINKING_LEVEL_NAME.to_string()]
+        );
+        for (index, level) in fallback.iter().enumerate() {
+            assert_eq!(thinking_index_in(&fallback, level), index);
+            assert_eq!(thinking_index_in(&fallback, &level.to_uppercase()), index);
         }
-        // A level an older agent invented has a defined place to stand.
-        assert_eq!(thinking_index(""), 0);
-        assert_eq!(thinking_index("galaxy-brain"), 0);
+        // A level an older agent invented starts at the top of the ring.
+        assert_eq!(thinking_index_in(&fallback, ""), 0);
+        assert_eq!(thinking_index_in(&fallback, "galaxy-brain"), 0);
+    }
+
+    #[test]
+    fn the_cli_accepts_default_and_max_on_top_of_the_legacy_six() {
+        for level in KNOWN_THINKING_LEVELS
+            .iter()
+            .copied()
+            .chain(["default", "max"])
+        {
+            assert!(is_valid_thinking_level(level), "{level}");
+        }
+        // Not a level name, so a model id containing a colon stays whole.
+        assert!(!is_valid_thinking_level("beta"));
+        assert!(!is_valid_thinking_level(""));
+        assert!(!is_valid_thinking_level("Default"), "the wire is lowercase");
+    }
+
+    #[test]
+    fn the_ring_walks_forward_and_wraps() {
+        let levels = fallback_thinking_levels();
+        assert_eq!(
+            next_thinking_level(&levels, DEFAULT_THINKING_LEVEL_NAME).as_deref(),
+            Some("off")
+        );
+        assert_eq!(
+            next_thinking_level(&levels, "medium").as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            next_thinking_level(&levels, "xhigh").as_deref(),
+            Some(DEFAULT_THINKING_LEVEL_NAME),
+            "the ring wraps"
+        );
+        // An unset or unknown level starts the ring at its first entry, which is
+        // `default`: that is the level a launchpad begins at.
+        assert_eq!(
+            next_thinking_level(&levels, "").as_deref(),
+            Some(DEFAULT_THINKING_LEVEL_NAME)
+        );
+        assert_eq!(
+            next_thinking_level(&levels, "galaxy-brain").as_deref(),
+            Some(DEFAULT_THINKING_LEVEL_NAME)
+        );
+        assert_eq!(next_thinking_level(&[], "medium"), None);
+    }
+
+    #[test]
+    fn the_reserved_default_never_travels_to_an_older_agent() {
+        let current = ModelChoice {
+            thinking_levels: Some(vec![
+                DEFAULT_THINKING_LEVEL_NAME.to_string(),
+                "high".to_string(),
+            ]),
+            ..ModelChoice::default()
+        };
+        assert_eq!(current.wire_thinking_level("default"), "default");
+        assert_eq!(current.wire_thinking_level("high"), "high");
+        assert!(!current.is_legacy_thinking());
+
+        let legacy = ModelChoice::default();
+        assert!(legacy.is_legacy_thinking());
+        assert_eq!(legacy.wire_thinking_level("default"), "medium");
+        assert_eq!(legacy.wire_thinking_level("high"), "high");
+        assert_eq!(legacy.wire_thinking_level("max"), "max");
     }
 
     #[test]

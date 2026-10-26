@@ -21,12 +21,13 @@ Options:
   --continue, -c        Continue the most recently active session
   --fork <id>           Fork from a session (print mode)
   --print, -p           Non-interactive mode: process prompt and exit
-  --model <model>       Model to use (supports model:thinking format)
+  --model <model>       Model to use (supports model:thinking format, e.g. sonnet:max)
   --models <patterns>   Model patterns for Ctrl+P cycling (comma-separated, supports globs)
   --provider <provider>  Provider to use
   --api-key <key>       API key (overrides env vars)
   --list-models [search] List available models (with optional search)
-  --thinking <level>    Thinking level: off, minimal, low, medium, high, xhigh
+  --thinking <level>    Thinking level: default (provider default), off, minimal,
+                        low, medium, high, xhigh, max
   --system-prompt <text> Set system prompt
   --append-system-prompt <text> Append to system prompt
   --tools, -t <tools>  Comma-separated tool names to enable

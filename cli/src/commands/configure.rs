@@ -93,10 +93,15 @@ struct ModelInput {
     id: String,
     name: String,
     supports_images: bool,
-    /// Whether thinking controls are sent. Carried through for kept models
+    /// Legacy "send thinking controls" flag. Carried through for kept models
     /// (the wizard does not prompt for it, and the loader defaults to true)
     /// so editing a provider never silently flips it.
     reasoning: bool,
+    /// The thinking levels this model declares (raw wire values, `default`
+    /// never listed). `None` means the persisted model has no declaration of
+    /// its own and inherits the provider-level list, so a rewrite must preserve
+    /// (not clear) it. The wizard does not prompt for it.
+    thinking_levels: Option<Vec<String>>,
     context_window: i32,
     max_tokens: i32,
     cost: ModelCostInput,
@@ -628,6 +633,9 @@ fn collect_model(
         name: model_name,
         supports_images,
         reasoning: current.map(|model| model.reasoning).unwrap_or(true),
+        // The wizard never prompts for thinking levels: an edited model keeps
+        // whatever it declared, and a new one has no declaration.
+        thinking_levels: current.and_then(|model| model.thinking_levels.clone()),
         context_window,
         max_tokens,
         cost,
@@ -747,6 +755,20 @@ fn parse_existing_model(entry: &serde_json::Value) -> Option<ModelInput> {
                 .and_then(serde_json::Value::as_i64)
         })
         .unwrap_or(0);
+    // A persisted model carries its own `thinkingLevels` when it declares one;
+    // an absent field is "inherit the provider list", so keep it absent on
+    // rewrite (the agent merges by model id and a cleared list would shadow the
+    // provider default).
+    let thinking_levels = object
+        .get("thinkingLevels")
+        .and_then(serde_json::Value::as_array)
+        .map(|levels| {
+            levels
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        });
     let mut model = ModelInput {
         id,
         name,
@@ -755,6 +777,7 @@ fn parse_existing_model(entry: &serde_json::Value) -> Option<ModelInput> {
             .get("reasoning")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true),
+        thinking_levels,
         context_window: i32::try_from(context_window).unwrap_or(0),
         max_tokens: i32::try_from(max_tokens).unwrap_or(0),
         cost: ModelCostInput::from_value(object.get("cost")),
@@ -818,6 +841,7 @@ fn provider_spec(input: &CustomProviderInput) -> ProviderUpsertSpec {
                 context_window: model.context_window,
                 max_tokens: model.max_tokens,
                 reasoning: model.reasoning,
+                thinking_levels: model.thinking_levels.clone(),
                 cost: ModelCostSpec {
                     input: model.cost.input,
                     output: model.cost.output,
@@ -853,6 +877,11 @@ fn provider_rpc(input: &CustomProviderInput) -> ProviderUpsert {
                 context_window: model.context_window,
                 max_tokens: model.max_tokens,
                 reasoning: Some(model.reasoning),
+                // The wizard owns the complete model list, so a model it keeps
+                // keeps its declaration and an absent one stays absent
+                // (preserve). A declared list replaces the stored one.
+                thinking_levels: model.thinking_levels.clone().unwrap_or_default(),
+                replace_thinking_levels: model.thinking_levels.is_some().then_some(true),
                 cost_input: model.cost.input,
                 cost_output: model.cost.output,
                 cost_cache_read: model.cost.cache_read,
@@ -954,6 +983,7 @@ mod tests {
                             "contextWindow": 200000,
                             "maxTokens": 32000,
                             "reasoning": true,
+                            "thinkingLevels": ["off", "low", "high", "max"],
                             "cost": { "input": 1.0, "output": 4.0, "cache_read": 0.02, "cache_write": 0.0 }
                         },
                         {
@@ -1438,6 +1468,17 @@ mod tests {
         assert_eq!(entries[0]["cost"]["input"], 1.0);
         assert_eq!(entries[0]["cost"]["cache_read"], 0.02);
         assert!(entries[1].get("cost").is_none(), "{models}");
+        // A kept model keeps its thinking levels (the wizard never prompts for
+        // them) and a model that inherited the provider list stays inheriting.
+        assert_eq!(
+            entries[0]["thinkingLevels"],
+            serde_json::json!(["off", "low", "high", "max"]),
+            "{models}"
+        );
+        assert!(
+            entries[1].get("thinkingLevels").is_none(),
+            "an undeclared list must not become an empty one: {models}"
+        );
         // A kept model keeps its thinking setting instead of being reset to
         // the wizard's default.
         assert_eq!(entries[1]["reasoning"], false, "{models}");
@@ -1890,6 +1931,7 @@ mod tests {
             name: id.to_string(),
             supports_images: false,
             reasoning: true,
+            thinking_levels: None,
             context_window,
             max_tokens,
             cost: ModelCostInput::default(),
@@ -1928,6 +1970,7 @@ mod tests {
             "name": "Flat",
             "modalities": ["text", "image"],
             "reasoning": false,
+            "thinkingLevels": ["off", "max"],
             "contextWindow": 128000,
             "maxTokens": 4096,
         }))
@@ -1938,6 +1981,10 @@ mod tests {
         assert!(!flat.reasoning);
         assert_eq!(flat.context_window, 128_000);
         assert_eq!(flat.max_tokens, 4_096);
+        assert_eq!(
+            flat.thinking_levels.as_deref(),
+            Some(["off".to_string(), "max".to_string()].as_slice())
+        );
 
         let nested = parse_existing_model(&serde_json::json!({
             "id": "m-nested",
@@ -1954,6 +2001,10 @@ mod tests {
         assert!(
             nested.reasoning,
             "reasoning defaults on, matching the loader"
+        );
+        assert_eq!(
+            nested.thinking_levels, None,
+            "no declaration is preserved, not cleared"
         );
 
         assert!(parse_existing_model(&serde_json::json!({"id": ""})).is_none());

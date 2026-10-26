@@ -1151,7 +1151,9 @@ Usage:
   future models refresh [--json]   Pull the Future platform catalogue
 
   --json    Output as JSON array with id, label, provider, contextWindow,
-            supportsImages, thinkingLevel, and isDefault fields.
+            supportsImages, thinkingLevels, and isDefault fields. `thinkingLevels`
+            is the model's declared list (always starting with "default", the
+            provider default); it is empty for a model that declares none.
   --help    Show this help.
 
 `refresh` is the same fetch the desktop's Settings -> Providers -> "Update model
