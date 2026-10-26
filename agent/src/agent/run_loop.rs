@@ -367,15 +367,10 @@ impl Loop {
                 let cache_read = self.cumulative_cache_read_tokens.clone();
                 let cache_write = self.cumulative_cache_write_tokens.clone();
                 move |reported: &crate::types::Usage| {
-                    use std::sync::atomic::Ordering;
-                    input.fetch_add(reported.prompt_tokens, Ordering::Relaxed);
-                    output.fetch_add(reported.completion_tokens, Ordering::Relaxed);
-                    if let Some(read) = reported.cache_read_tokens {
-                        cache_read.fetch_add(read, Ordering::Relaxed);
-                    }
-                    if let Some(write) = reported.cache_write_tokens {
-                        cache_write.fetch_add(write, Ordering::Relaxed);
-                    }
+                    // Called once per attempt with that attempt's final usage (a
+                    // billed request each), never per progressive chunk — the
+                    // same one-request-one-record rule the main loop follows.
+                    add_request_usage(&input, &output, &cache_read, &cache_write, reported);
                     // Keep only the final chunk: providers send progressive cost.
                     *usage.lock() = Some(reported.clone());
                 }
@@ -1153,18 +1148,17 @@ impl Loop {
                 );
             }
 
-            // Apply this LLM call's final cost to cumulative_cost, once per
-            // call (total_usage holds the LAST complete usage chunk — adding
-            // every intermediate chunk would inflate the total N×). Future
-            // providers report an authoritative `credit_cost`; when absent
-            // (most other providers), fall back to a token×price estimate so
-            // mixed-model sessions still account for every request.
+            // Apply this LLM call's usage to the session exactly once: tokens
+            // and cost, from `total_usage` — the call's merged final block, not
+            // any progressive chunk. Adding every chunk would inflate the
+            // totals N× (this is what reported a 99.8%-cached prompt as a 46%
+            // one, by counting a coarse synthesized frame plus the real block).
+            // A provider that reports an authoritative `credit_cost` (the
+            // Future platform) is charged that; otherwise the cost falls back to
+            // a token×price estimate so mixed-model sessions still account for
+            // every request.
             if let Some(ref u) = total_usage {
-                let cost = u.credit_cost.unwrap_or_else(|| self.estimate_usage_cost(u));
-                if cost > 0.0 {
-                    *self.cumulative_cost.lock() += cost;
-                }
-                self.charge_cost_split(u);
+                self.charge_request_usage(u);
             }
 
             // Build a partial assistant message from whatever was accumulated
@@ -1587,32 +1581,49 @@ impl Loop {
         }
     }
 
+    /// Fold one usage block from the model stream into this call's total.
+    ///
+    /// Nothing is added to the session counters here. A single request can
+    /// report its usage more than once — the Future gateway sends a coarse
+    /// synthesized frame and then the provider's real one (which also reaches
+    /// us twice: nested in the finish chunk, and again at top level in the
+    /// trailing empty-choices chunk) — so counting per block is what made one
+    /// request look like two. The call's counters are updated once, from the
+    /// merged total, when the stream ends (`charge_request_usage`).
     fn process_usage_event(
         &self,
         u: &crate::types::Usage,
         total_usage: &mut Option<crate::types::Usage>,
     ) {
         use std::sync::atomic::Ordering;
-        self.cumulative_input_tokens
-            .fetch_add(u.prompt_tokens, Ordering::Relaxed);
+        // The context size is a point-in-time gauge, not a cumulative counter:
+        // the latest block that reports a prompt (here, the real one, since a
+        // coarse frame's prompt is an estimate) describes what this call sent.
         self.last_prompt_tokens
             .store(u.prompt_tokens + u.completion_tokens, Ordering::Relaxed);
-        self.cumulative_output_tokens
-            .fetch_add(u.completion_tokens, Ordering::Relaxed);
-        if let Some(cache_r) = u.cache_read_tokens {
-            self.cumulative_cache_read_tokens
-                .fetch_add(cache_r, Ordering::Relaxed);
+        match total_usage {
+            Some(total) => total.merge_later_chunk(u),
+            None => *total_usage = Some(u.clone()),
         }
-        if let Some(cache_w) = u.cache_write_tokens {
-            self.cumulative_cache_write_tokens
-                .fetch_add(cache_w, Ordering::Relaxed);
+    }
+
+    /// Charge one model request: its tokens once, its cost once, both taken
+    /// from the call's final merged usage rather than from each progressive
+    /// chunk. This is the only place a call's tokens reach the session
+    /// counters, mirroring what `charge_cost_split` already did for cost.
+    fn charge_request_usage(&self, u: &crate::types::Usage) {
+        add_request_usage(
+            &self.cumulative_input_tokens,
+            &self.cumulative_output_tokens,
+            &self.cumulative_cache_read_tokens,
+            &self.cumulative_cache_write_tokens,
+            u,
+        );
+        let cost = u.credit_cost.unwrap_or_else(|| self.estimate_usage_cost(u));
+        if cost > 0.0 {
+            *self.cumulative_cost.lock() += cost;
         }
-        // NOTE: credit_cost is NOT accumulated here. The upstream API sends
-        // progressive credit_cost updates in each usage chunk (each value is
-        // the cumulative cost of the request so far). Adding every chunk
-        // inflates the total by N×. Instead, credit_cost is applied once at
-        // the end of the LLM call using the final value from total_usage.
-        *total_usage = Some(u.clone());
+        self.charge_cost_split(u);
     }
 
     /// Estimate the cost of a single request's final usage when the upstream
@@ -1646,6 +1657,50 @@ impl Loop {
         if parts.iter().any(|amount| *amount > 0.0) {
             self.cumulative_cost_split.lock().add(parts);
         }
+    }
+}
+
+/// Add one model request's usage to a session's cumulative counters.
+///
+/// `usage` must be the request's *final* usage — the block left after folding
+/// its progressive chunks with [`crate::types::Usage::merge_later_chunk`] — not
+/// one chunk on its own: the counters are the session's record of how much one
+/// request cost, and a request that reports its usage twice (or a coarse
+/// estimate before the real one) must still add up to itself.
+///
+/// Every caller therefore charges exactly one call: the run loop once per
+/// stream, the compaction summary observer once per attempt.
+pub(crate) fn add_request_usage(
+    input: &std::sync::atomic::AtomicI64,
+    output: &std::sync::atomic::AtomicI64,
+    cache_read: &std::sync::atomic::AtomicI64,
+    cache_write: &std::sync::atomic::AtomicI64,
+    usage: &crate::types::Usage,
+) {
+    use std::sync::atomic::Ordering;
+    input.fetch_add(usage.prompt_tokens, Ordering::Relaxed);
+    output.fetch_add(usage.completion_tokens, Ordering::Relaxed);
+    if let Some(read) = usage.cache_read_tokens {
+        cache_read.fetch_add(read, Ordering::Relaxed);
+    }
+    if let Some(write) = usage.cache_write_tokens {
+        cache_write.fetch_add(write, Ordering::Relaxed);
+    }
+    // `prompt_tokens` already contains the cached subset, so no single request
+    // can be served more cached bytes than it had prompt. A block that says
+    // otherwise mixed a coarse count with a detailed one, or was counted twice:
+    // report it rather than inflating the cache figures into a rate above 100%.
+    if usage.cached_tokens_exceed_prompt() {
+        tracing::warn!(
+            prompt_tokens = usage.prompt_tokens,
+            cache_read = usage.cache_read_tokens.unwrap_or(0),
+            cache_write = usage.cache_write_tokens.unwrap_or(0),
+            "usage reports more cached bytes than prompt tokens for one request"
+        );
+        debug_assert!(
+            !usage.cached_tokens_exceed_prompt(),
+            "cache_read + cache_write exceeds prompt_tokens for one request: {usage:?}"
+        );
     }
 }
 
@@ -5925,14 +5980,14 @@ mod tests {
                 ev_toolcall_end(),
                 ModelStreamEvent::Finish {
                     reason: FinishReason::ToolCalls,
-                    usage: Some(usage(3, 5, 7, 11)),
+                    usage: Some(usage(20, 5, 7, 11)),
                 },
             ]),
             Script::Events(vec![
                 ev_text("final"),
                 ModelStreamEvent::Finish {
                     reason: FinishReason::Stop,
-                    usage: Some(usage(13, 17, 19, 23)),
+                    usage: Some(usage(50, 17, 19, 23)),
                 },
             ]),
         ]);
@@ -5954,10 +6009,189 @@ mod tests {
             counter.load(std::sync::atomic::Ordering::Relaxed)
         };
         // Both turns are reported and accumulated, cache counters included.
-        assert_eq!(read(&loop_.cumulative_input_tokens), 3 + 13);
+        // (`prompt` must cover its own cache counters — no single request can be
+        // served more cached bytes than it had prompt, and the fixtures are
+        // shaped like a real report so that invariant is never faked away.)
+        assert_eq!(read(&loop_.cumulative_input_tokens), 20 + 50);
         assert_eq!(read(&loop_.cumulative_output_tokens), 5 + 17);
         assert_eq!(read(&loop_.cumulative_cache_read_tokens), 7 + 19);
         assert_eq!(read(&loop_.cumulative_cache_write_tokens), 11 + 23);
+    }
+
+    /// One request whose usage reaches the loop three times is one request and
+    /// must add one record.
+    ///
+    /// The numbers are the shape measured on `future/kimi-k3.1-pro`
+    /// (2026-10-26): a coarse frame without cache counters whose prompt is 15%
+    /// larger, then the provider's real block (delivered on the finish chunk and
+    /// repeated in the trailing empty-choices chunk — the chat adapter reads the
+    /// top-level copy, see `openai_chat::tests::the_future_gateway_reports_one_requests_usage_three_times`).
+    /// Counting the coarse frame as well is what reported a 99.9%-cached session
+    /// as a 46% one.
+    #[tokio::test(flavor = "current_thread")]
+    async fn one_request_reporting_usage_three_times_is_counted_once() {
+        let coarse = crate::types::Usage {
+            prompt_tokens: 607_162,
+            completion_tokens: 271,
+            total_tokens: 607_433,
+            credit_cost: Some(7.911_534),
+            ..Default::default()
+        };
+        let detailed = crate::types::Usage {
+            prompt_tokens: 526_759,
+            completion_tokens: 351,
+            total_tokens: 527_110,
+            cache_read_tokens: Some(526_336),
+            cache_write_tokens: Some(256),
+            reasoning_tokens: Some(1),
+            credit_cost: Some(0.713_603_8),
+            ..Default::default()
+        };
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            ev_text("answer"),
+            ModelStreamEvent::Usage(coarse.clone()),
+            ModelStreamEvent::Finish {
+                reason: FinishReason::Stop,
+                usage: Some(detailed.clone()),
+            },
+            // The trailing `choices: []` frame the gateway sends after the
+            // finish chunk carries the same block again.
+            ModelStreamEvent::Usage(detailed.clone()),
+        ])]);
+        let loop_ = Loop::new(provider, "mock");
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(text, "answer");
+        let read = |counter: &std::sync::atomic::AtomicI64| {
+            counter.load(std::sync::atomic::Ordering::Relaxed)
+        };
+        // The detailed block wins: it is the provider's own count and the only
+        // one that explains the request.
+        assert_eq!(read(&loop_.cumulative_input_tokens), 526_759);
+        assert_eq!(read(&loop_.cumulative_output_tokens), 351);
+        assert_eq!(read(&loop_.cumulative_cache_read_tokens), 526_336);
+        assert_eq!(read(&loop_.cumulative_cache_write_tokens), 256);
+        // One request, one cost — and the real one, not the coarse estimate.
+        assert!((*loop_.cumulative_cost.lock() - 0.713_603_8).abs() < f64::EPSILON);
+        let rate = crate::models::cache_hit_rate(
+            read(&loop_.cumulative_input_tokens),
+            read(&loop_.cumulative_cache_read_tokens),
+        )
+        .expect("a session with prompt tokens has a hit rate");
+        assert!(rate > 0.999, "the real cache hit rate is 99.9%, got {rate}");
+        // The invariant the double counting broke: cached bytes are part of the
+        // prompt, never a second prompt on top of it.
+        assert!(
+            read(&loop_.cumulative_cache_read_tokens) + read(&loop_.cumulative_cache_write_tokens)
+                <= read(&loop_.cumulative_input_tokens)
+        );
+    }
+
+    /// `Usage` and `Finish { usage }` are two deliveries of the same meter for
+    /// one request (a provider that reports usage both on a standalone chunk and
+    /// on its terminal frame): the call is charged once, not twice.
+    #[tokio::test(flavor = "current_thread")]
+    async fn usage_and_finish_usage_for_one_call_are_counted_once() {
+        let block = crate::types::Usage {
+            prompt_tokens: 1_000,
+            completion_tokens: 50,
+            total_tokens: 1_050,
+            cache_read_tokens: Some(900),
+            cache_write_tokens: Some(100),
+            credit_cost: Some(0.25),
+            ..Default::default()
+        };
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            ev_text("answer"),
+            ModelStreamEvent::Usage(block.clone()),
+            ModelStreamEvent::Finish {
+                reason: FinishReason::Stop,
+                usage: Some(block),
+            },
+        ])]);
+        let loop_ = Loop::new(provider, "mock");
+        loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+
+        let read = |counter: &std::sync::atomic::AtomicI64| {
+            counter.load(std::sync::atomic::Ordering::Relaxed)
+        };
+        assert_eq!(read(&loop_.cumulative_input_tokens), 1_000);
+        assert_eq!(read(&loop_.cumulative_output_tokens), 50);
+        assert_eq!(read(&loop_.cumulative_cache_read_tokens), 900);
+        assert_eq!(read(&loop_.cumulative_cache_write_tokens), 100);
+        assert!((*loop_.cumulative_cost.lock() - 0.25).abs() < f64::EPSILON);
+    }
+
+    /// The guard above must not collapse a *turn* into one record: two LLM calls
+    /// in one turn (a tool round-trip and its follow-up) are two requests and
+    /// two records.
+    #[tokio::test(flavor = "current_thread")]
+    async fn two_calls_in_one_turn_are_counted_twice() {
+        let block = |prompt: i64, cache_read: i64| crate::types::Usage {
+            prompt_tokens: prompt,
+            completion_tokens: 5,
+            total_tokens: prompt + 5,
+            cache_read_tokens: Some(cache_read),
+            cache_write_tokens: Some(0),
+            credit_cost: Some(0.5),
+            ..Default::default()
+        };
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                ev_text("working"),
+                ev_toolcall_start(0, "c1", "echo", "{}"),
+                ev_toolcall_end(),
+                ModelStreamEvent::Finish {
+                    reason: FinishReason::ToolCalls,
+                    usage: Some(block(400, 300)),
+                },
+            ]),
+            Script::Events(vec![
+                ev_text("final"),
+                ModelStreamEvent::Finish {
+                    reason: FinishReason::Stop,
+                    usage: Some(block(600, 500)),
+                },
+            ]),
+        ]);
+        let loop_ = Loop::new(provider, "mock").with_tools(vec![echo_tool()]);
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(text, "final");
+        let read = |counter: &std::sync::atomic::AtomicI64| {
+            counter.load(std::sync::atomic::Ordering::Relaxed)
+        };
+        assert_eq!(read(&loop_.cumulative_input_tokens), 400 + 600);
+        assert_eq!(read(&loop_.cumulative_output_tokens), 5 + 5);
+        assert_eq!(read(&loop_.cumulative_cache_read_tokens), 300 + 500);
+        assert!((*loop_.cumulative_cost.lock() - 1.0).abs() < 1e-12);
     }
 
     /// A mid-stream provider failure must log the accumulated prefix and record a

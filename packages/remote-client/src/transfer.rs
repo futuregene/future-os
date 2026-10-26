@@ -97,7 +97,14 @@ fn usable_chunk_size(chunk_bytes: u64) -> Result<usize, crate::Error> {
     Ok(usize::try_from(chunk_bytes).unwrap_or(usize::MAX))
 }
 
-const MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
+/// The most this client will assemble from one download.
+///
+/// It is also the host's desktop ceiling (`future_host`'s
+/// `DESKTOP_MAX_FILE_BYTES` re-exports it), deliberately rather than by
+/// coincidence: a host tier above this would prepare transfers the pulling half
+/// must then refuse, so one number keeps "the host says yes" and "the client can
+/// finish" the same statement.
+pub const MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
 pub enum TransferKind {

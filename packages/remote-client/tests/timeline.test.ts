@@ -2070,6 +2070,107 @@ describe("stream event edge cases", () => {
   });
 });
 
+describe("only one reply can be streaming", () => {
+  /** A reply whose run was written but whose `agent_end` never arrived. */
+  function abandonedRun(runId: string, idx = 0) {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "agent_start",
+      data: "{}",
+      runId,
+      idx,
+    });
+    state = applyStreamEvent(state, {
+      type: "text_chunk",
+      data: JSON.stringify({ text: `partial from ${runId}` }),
+      runId,
+      idx: idx + 1,
+    });
+    state = applyStreamEvent(state, {
+      type: "tool_start",
+      data: JSON.stringify({ tool_id: `call-${runId}`, tool_name: "shell" }),
+      runId,
+      idx: idx + 2,
+    });
+    return state;
+  }
+
+  /**
+   * Measured on a phone (2026-10-26): a stopped run's terminal never reached
+   * the client, and the next prompt's run then streamed alongside it — two
+   * generating dots, one of them counting past three hours. The Agent runs one
+   * turn per session, so the newer run's own events prove the older reply is
+   * over; leaving both flags set drew a reply that could not still be running.
+   */
+  test("a newer run settles the reply its predecessor left generating", () => {
+    let state = abandonedRun("run-old");
+    expect(state.streaming).toBe(true);
+
+    state = applyStreamEvent(state, {
+      type: "agent_start",
+      data: "{}",
+      runId: "run-new",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, {
+      type: "text_chunk",
+      data: JSON.stringify({ text: "next answer" }),
+      runId: "run-new",
+      idx: 1,
+    });
+
+    const replies = state.items.filter(item => item.kind === "message" && item.role === "assistant");
+    expect(replies.map(item => item.kind === "message" && item.runId)).toEqual(["run-old", "run-new"]);
+    expect(replies.filter(item => item.kind === "message" && item.streaming)).toHaveLength(1);
+    expect(replies[1]).toMatchObject({ streaming: true });
+    // The abandoned reply keeps its content, says it did not finish, and stops
+    // claiming a live clock.
+    expect(replies[0]).toMatchObject({
+      streaming: false,
+      failed: true,
+      text: "partial from run-old",
+      error: "[RESPONSE_UNCONFIRMED] response did not complete",
+    });
+    expect(replies[0]?.kind === "message" && replies[0].startedAt).toBeFalsy();
+    // The session itself is still streaming: the new run is.
+    expect(state.streaming).toBe(true);
+  });
+
+  test("a compaction frame carrying an old run id settles nothing", () => {
+    // Compaction frames are stamped with the surrounding run's identity and
+    // say nothing about whether a reply is in flight (see `applyLiveEvent`).
+    let state = abandonedRun("run-old");
+    state = applyStreamEvent(state, {
+      type: "agent_start",
+      data: "{}",
+      runId: "run-new",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, {
+      type: "compaction_started",
+      data: JSON.stringify({ operation_id: "cmp-1", trigger: "automatic", phase: "pre_turn" }),
+      runId: "run-old",
+      idx: 3,
+    });
+
+    const replies = state.items.filter(item => item.kind === "message" && item.role === "assistant");
+    const live = replies.find(item => item.kind === "message" && item.runId === "run-new");
+    expect(live).toMatchObject({ streaming: true });
+  });
+
+  test("the run's own events never settle its reply", () => {
+    let state = abandonedRun("run-1");
+    state = applyStreamEvent(state, {
+      type: "text_chunk",
+      data: JSON.stringify({ text: " more" }),
+      runId: "run-1",
+      idx: 3,
+    });
+    const reply = state.items.find(item => item.kind === "message" && item.role === "assistant");
+    expect(reply).toMatchObject({ streaming: true });
+    expect(reply?.kind === "message" && reply.failed).toBeFalsy();
+  });
+});
+
 describe("run failure parity with the desktop", () => {
   test("an error event settles the run and pins the raw error on the assistant bubble", () => {
     let state = applyStreamEvent(emptyTimeline(), {
