@@ -3134,6 +3134,99 @@ mod tests {
         assert_matches_fresh_render(&mut chat);
     }
 
+    /// One turn as the workbench builds it from the event stream: the empty
+    /// assistant a run opens with, its reasoning, a call and its result, and
+    /// the answer the turn settles on.
+    fn live_turn(chat: &mut ChatArea, turn: &str, prompt: &str, path: &str, answer: &str) {
+        let call = format!("call-{turn}");
+        chat.add_message(ChatMessage::new(
+            format!("u-{turn}"),
+            ChatRole::User,
+            prompt,
+        ));
+        chat.add_message(ChatMessage::new(
+            format!("a0-{turn}"),
+            ChatRole::Assistant,
+            "",
+        ));
+        chat.start_thinking();
+        chat.append_thinking_delta(&format!("reasoning about {turn}"));
+        chat.end_thinking();
+        chat.add_tool_start(&call, "read", Some(format!(r#"{{"path":"{path}"}}"#)));
+        chat.append_tool_delta(&call, "body\n");
+        chat.finish_tool(&call, None, false);
+        chat.append_to_last_message(answer);
+        chat.mark_last_message_complete();
+    }
+
+    /// A page of an older conversation in the shape the session store hands
+    /// back (see `tui/src/session_rows.rs`): the `tool_call` step that renders
+    /// nothing, the call's result, and the answer.
+    fn stored_page() -> Vec<ChatMessage> {
+        let rows = serde_json::json!([
+            {"id": "h-u", "role": "user", "blocks": [{"kind": "text", "text": "older prompt"}]},
+            {"id": "h-a0", "role": "assistant", "blocks": [{"kind": "reasoning", "text": "older reasoning"}]},
+            {"id": "h-step", "role": "assistant", "blocks": [{"kind": "tool_call", "toolCallId": "c-old", "name": "read", "arguments": "{\"path\":\"/src/old.rs\"}"}]},
+            {"id": "h-t", "role": "tool", "blocks": [{"kind": "tool_result", "toolCallId": "c-old", "text": "old body"}]},
+            {"id": "h-a1", "role": "assistant", "blocks": [{"kind": "text", "text": "Older answer."}]}
+        ]);
+        crate::session_rows::rows_to_messages(rows.as_array().unwrap())
+    }
+
+    /// The reading level applies to the *whole* transcript, not to whatever
+    /// arrived most recently: a page of history prepended from the session
+    /// store folds with the live turns already on screen, and `ctrl+e` at any
+    /// point leaves every settled reply as one summary row.
+    #[test]
+    fn the_reading_level_folds_history_loaded_from_the_store() {
+        const FOLDED_TURN: &str = "▸ 1 tool call · 1 thought";
+        fn assert_folded(chat: &mut ChatArea, turns: usize, stage: &str) {
+            let lines = compact_lines(chat);
+            assert_eq!(
+                lines.iter().filter(|line| **line == FOLDED_TURN).count(),
+                turns,
+                "{stage}: every settled reply needs one summary row — {lines:?}"
+            );
+            for gone in ["read /src/a.rs", "read /src/b.rs", "read /src/old.rs"] {
+                assert!(
+                    !lines.iter().any(|line| line.contains(gone)),
+                    "{stage}: {gone} must be folded — {lines:?}"
+                );
+            }
+            for kept in ["First done.", "Second done.", "Older answer."] {
+                assert!(
+                    lines.iter().any(|line| line.contains(kept)),
+                    "{stage}: the answer itself stays — {lines:?}"
+                );
+            }
+        }
+
+        let mut chat = new_chat();
+        chat.render(W);
+        live_turn(&mut chat, "1", "first prompt", "/src/a.rs", "First done.");
+        live_turn(&mut chat, "2", "second prompt", "/src/b.rs", "Second done.");
+        // An older page lands above the live turns, the way the workbench's
+        // `load_older` prepends it.
+        chat.prepend_messages(stored_page());
+        assert_folded(&mut chat, 3, "as loaded");
+
+        // `ctrl+e` round-trips: `default` has to come back from a transcript
+        // that was rendered unfolded.
+        assert_eq!(chat.toggle_reply_detail(), ReplyDetail::Detailed);
+        let open = compact_lines(&mut chat);
+        assert!(
+            open.iter().any(|line| line.contains("read /src/old.rs")),
+            "detail keeps the call — {open:?}"
+        );
+        assert_eq!(chat.toggle_reply_detail(), ReplyDetail::Default);
+        assert_folded(&mut chat, 3, "after a toggle round-trip");
+
+        // …and history arriving while the level is already folded.
+        chat.prepend_messages(stored_page());
+        assert_folded(&mut chat, 4, "after a later prepend");
+        assert_matches_fresh_render(&mut chat);
+    }
+
     /// `/transcript` shows every slice whatever the screen folds away, and the
     /// screen's own layout is intact when it returns.
     #[test]
