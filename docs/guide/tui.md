@@ -164,6 +164,9 @@ ASCII letter or digit, F1–F24, Tab, navigation keys and Enter/Escape.
 | Click anywhere in the input box | Focus it |
 | Wheel over the conversation | Scroll; at the top it asks for an older page |
 | Wheel over the sidebar | Scroll the panel |
+| Click a workflow row | Open the session, fork point or worktree; choose a Diff file |
+| Click a preference or shortcut row | Select it, open the shortcut editor or start key capture |
+| Click an approval action | Apply the same allow-once, allow-rule or deny decision as its key |
 
 Mouse reporting is SGR 1006 and starts with the persisted preference (enabled by default). `/mouse` releases and restores it at runtime and saves the choice; the terminal is always restored on exit. Draft text, cursor, folded pastes and image attachments are kept per session across overlays, launchpad visits and session switches (for the lifetime of this TUI process, not persisted to disk).
 
@@ -187,7 +190,7 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | Queue management | `/queue` reads `get_state.queuedRuns`; cancel and recall use the existing `cancel_queued_run`, with no second client-side queue |
 | Draft attachments | Reuses `components/input.rs` folded-paste and image-marker machinery; attachments travel with the prompt |
 | Approvals | A parked request opens a full card with tool, kind, risk, action/paths, requested action and sandbox boundary. `y` / `n` allow once or deny; `a` first adds the agent-suggested **this-run** workspace rule, then approves. A rule failure leaves the request pending. Escape closes the card without deciding |
-| Diff review | `/diff` lists tracked and untracked changes from the session workspace and shows the selected real git patch. Left/right changes files, up/down scrolls, `r` refreshes. This is the current uncommitted working tree, not per-turn attribution; patches are preview-bounded |
+| Diff review | `/diff` lists tracked and untracked changes from the session workspace and shows the selected real git patch. Wide terminals keep a fixed file navigator beside an independently scrolling patch. Narrow terminals switch between files and patch with `tab`; `up`/`down` operate the focused view and left/right choose a file. `r` refreshes. This is the current uncommitted working tree, not per-turn attribution; patches are preview-bounded |
 | History search and tree | `/history` filters the current `list_sessions` titles/first-message previews, workspaces and ids; `/tree` uses `parentSessionId`. Enter opens the selected session |
 | Fork | `/fork` lists real user-message points from `get_fork_messages`; enter calls `fork` and opens the child |
 | Worktrees | `/worktree` lists real git worktrees and enter sets the session cwd. `/worktree new <branch>` creates under `.worktrees/` and moves the session. No remove/prune/reset/clean operations |
@@ -210,8 +213,8 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
   and tool management is intentionally compact (`/providers` and `/tools`);
   `/skills` remains the installed-skills panel. Approval allow rules are
   runtime-only; persistent approval-rule file editing remains in the desktop.
-- P1 from the contract: timeline rail, two-column diff card, image preview,
-  full-screen session manager, full-screen draft editor.
+- Further enhancements: timeline rail, image preview, full-screen session
+  manager, full-screen draft editor.
 
 ## Where the code lives
 

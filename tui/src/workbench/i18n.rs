@@ -246,6 +246,10 @@ pub enum Key {
     DiffNoWorkspace,
     ApprovalTitle,
     ApprovalHint,
+    ApprovalAllowOnce,
+    ApprovalAllowRule,
+    ApprovalDeny,
+    DiffFiles,
     ApprovalNone,
     ApprovalAction,
     ApprovalRequested,
@@ -474,11 +478,15 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         CmdTools => ("设置工具列表，off 禁用全部", "Set the tool list; off disables all"),
         CmdProviders => ("列出模型提供商", "List model providers"),
         DiffTitle => ("Diff 审查 · 工作区未提交改动", "Diff review · uncommitted workspace changes"),
-        DiffHint => ("←→ 选择文件 · ↑↓ 滚动 · r 刷新 · esc 关闭", "←→ choose a file · ↑↓ scroll · r refreshes · esc closes"),
+        DiffHint => ("tab 文件/变更 · ↑↓ 操作 · ←→ 选择文件 · r 刷新 · esc 关闭", "tab files/patch · ↑↓ navigate · ←→ choose file · r refreshes · esc closes"),
         DiffClean => ("工作区没有未提交改动", "No uncommitted changes in this workspace"),
         DiffNoWorkspace => ("当前会话没有工作区", "The current session has no workspace"),
         ApprovalTitle => ("审批详情", "Approval details"),
-        ApprovalHint => ("y 允许一次 · n 拒绝 · a 添加本次运行工作区规则并允许 · ↑↓ 滚动 · esc 返回", "y allow once · n deny · a add this-run workspace rule and allow · ↑↓ scroll · esc back"),
+        ApprovalHint => ("↑↓ 滚动 · esc 返回", "↑↓ scroll · esc back"),
+        ApprovalAllowOnce => ("允许一次", "Allow once"),
+        ApprovalAllowRule => ("规则并允许", "Rule + allow"),
+        ApprovalDeny => ("拒绝", "Deny"),
+        DiffFiles => ("文件", "Files"),
         ApprovalNone => ("当前没有等待审批的请求", "No approval is waiting"),
         ApprovalAction => ("动作与路径", "Action and paths"),
         ApprovalRequested => ("模型原始请求", "Requested action"),
@@ -544,10 +552,10 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         PrefPosition => ("侧栏位置", "Sidebar position"),
         PrefWidth => ("侧栏宽度", "Sidebar width"),
         PrefMouse => ("启动与运行时使用鼠标", "Mouse capture"),
-        PrefNotifications => ("成功完成时通知（终端支持时）", "Successful-run notifications (terminal permitting)"),
+        PrefNotifications => ("完成时通知", "Completion notifications"),
         PrefNotificationBell => ("通知包含提示音", "Notification bell"),
         PrefMotion => ("减少动态", "Reduce motion"),
-        PrefLinear => ("线性阅读（单栏且静态）", "Linear reading (single column, static)"),
+        PrefLinear => ("线性阅读", "Linear reading"),
         PrefEnabled => ("开启", "On"),
         PrefDisabled => ("关闭", "Off"),
         PrefShortcuts => ("自定义快捷键", "Customize shortcuts"),
@@ -783,7 +791,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 193] = {
+    const ALL_KEYS: [Key; 197] = {
         use Key::*;
         [
             TabTodo,
@@ -873,6 +881,10 @@ mod tests {
             DiffNoWorkspace,
             ApprovalTitle,
             ApprovalHint,
+            ApprovalAllowOnce,
+            ApprovalAllowRule,
+            ApprovalDeny,
+            DiffFiles,
             ApprovalNone,
             ApprovalAction,
             ApprovalRequested,

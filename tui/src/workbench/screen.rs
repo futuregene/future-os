@@ -573,7 +573,15 @@ fn workflow_box(
     overlay: Overlay,
 ) -> Vec<String> {
     use crate::workbench::workflows;
-    let columns = (w as usize).clamp(1, 100);
+    let columns = (w as usize).clamp(
+        1,
+        if matches!(overlay, Overlay::Diff) {
+            132
+        } else {
+            100
+        },
+    );
+    let left = (w as usize).saturating_sub(columns) / 2;
     let (title_key, hint_key) = match overlay {
         Overlay::Approval => (Key::ApprovalTitle, Key::ApprovalHint),
         Overlay::Diff => (Key::DiffTitle, Key::DiffHint),
@@ -588,11 +596,18 @@ fn workflow_box(
         columns,
         t(workbench.lang, title_key),
     )];
-    rows.push(widgets::box_row(
-        palette,
-        t(workbench.lang, hint_key),
-        columns,
-    ));
+    if overlay == Overlay::Diff {
+        return diff_review_box(
+            workbench, data, palette, h, columns, title_key, hint_key, left,
+        );
+    }
+    if overlay != Overlay::Approval {
+        rows.push(widgets::box_row(
+            palette,
+            t(workbench.lang, hint_key),
+            columns,
+        ));
+    }
     if overlay == Overlay::History {
         rows.push(widgets::box_row(
             palette,
@@ -602,6 +617,10 @@ fn workflow_box(
     }
     let header = rows.len();
     let available = (h as usize).saturating_sub(header + 1);
+    if available == 0 {
+        rows.push(widgets::box_bottom(palette, columns));
+        return rows;
+    }
     let body = match overlay {
         Overlay::History => {
             let sessions = workflows::filtered_sessions(&data.sessions, &workbench.history_query);
@@ -667,7 +686,7 @@ fn workflow_box(
             }
         }
         Overlay::Approval => workflows::detail_lines(data, workbench.lang, "approval"),
-        Overlay::Diff => workflows::detail_lines(data, workbench.lang, "diff"),
+        Overlay::Diff => Vec::new(),
         Overlay::Worktree => workflows::detail_lines(data, workbench.lang, "worktree"),
         _ => Vec::new(),
     };
@@ -681,8 +700,68 @@ fn workflow_box(
             .saturating_add(1)
             .saturating_sub(available)
     };
-    for line in workflows::wrapped(&body, columns.saturating_sub(4), scroll, available) {
+    for (display, line) in workflows::wrapped(
+        &body,
+        columns.saturating_sub(4),
+        scroll,
+        available.saturating_sub(usize::from(overlay == Overlay::Approval)),
+    )
+    .into_iter()
+    .enumerate()
+    {
+        if matches!(
+            overlay,
+            Overlay::History | Overlay::Tree | Overlay::Fork | Overlay::Worktree
+        ) {
+            workbench.hit_map().push(
+                Rect::new(
+                    (left + 1) as u16,
+                    rows.len() as u16,
+                    columns.saturating_sub(2) as u16,
+                    1,
+                ),
+                format!("workflow.row.{}", scroll + display),
+            );
+        }
         rows.push(widgets::box_row(palette, &line, columns));
+    }
+    if overlay == Overlay::Approval {
+        let action_y = rows.len() as u16;
+        let has_rule = data.approval.as_ref().is_some_and(|a| !a.rules.is_empty());
+        let buttons = [
+            (
+                "y",
+                palette.green,
+                Key::ApprovalAllowOnce,
+                "approval.y",
+                true,
+            ),
+            (
+                "a",
+                palette.accent,
+                Key::ApprovalAllowRule,
+                "approval.a",
+                has_rule,
+            ),
+            ("n", palette.red, Key::ApprovalDeny, "approval.n", true),
+        ];
+        let mut actions = String::new();
+        let mut x = left + 1;
+        for (key, color, label, id, enabled) in buttons {
+            if !enabled {
+                continue;
+            }
+            let button = format!("[{key}] {}  ", t(workbench.lang, label));
+            let button_width = width(&button);
+            workbench.hit_map().push(
+                Rect::new(x as u16, action_y, button_width.saturating_sub(2) as u16, 1),
+                id,
+            );
+            actions.push_str(&palette.strong(color, &button));
+            x += button_width;
+        }
+        actions.push_str(&palette.dim(t(workbench.lang, Key::ApprovalHint)));
+        rows.push(widgets::box_row(palette, &actions, columns));
     }
     rows.push(widgets::box_bottom(palette, columns));
     while rows.len() < h as usize {
@@ -906,10 +985,9 @@ fn framed(
     content: Vec<String>,
     w: u16,
     h: u16,
-    min_width: u16,
+    geometry: &BoxGeometry,
 ) -> Vec<String> {
-    let geometry = box_geometry(w, h, min_width, content.len());
-    paint_box(palette, title, content, w, h, &geometry)
+    paint_box(palette, title, content, w, h, geometry)
 }
 
 /// Where a centred box lands. One struct for the painter and for anything that
@@ -988,6 +1066,141 @@ fn paint_box(
     lines
 }
 
+/// The review surface is two independent viewports. A patch scroll never moves
+/// the file navigator, and the current file is named above its own patch.
+fn diff_review_box(
+    workbench: &mut Workbench,
+    data: &WorkbenchData,
+    palette: &Palette,
+    h: u16,
+    columns: usize,
+    title_key: Key,
+    hint_key: Key,
+    left: usize,
+) -> Vec<String> {
+    use crate::workbench::workflows;
+    let mut rows = vec![widgets::box_top(
+        palette,
+        columns,
+        t(workbench.lang, title_key),
+    )];
+    rows.push(widgets::box_row(
+        palette,
+        t(workbench.lang, hint_key),
+        columns,
+    ));
+    let available = (h as usize).saturating_sub(3);
+
+    if available == 0 {
+        rows.push(widgets::box_bottom(palette, columns));
+        return rows;
+    }
+    let Some(diff) = &data.diff else {
+        rows.push(widgets::box_bottom(palette, columns));
+        return rows;
+    };
+    if let Some(error) = &diff.error {
+        rows.push(widgets::box_row(palette, error, columns));
+        rows.push(widgets::box_bottom(palette, columns));
+        return rows;
+    }
+    if diff.files.is_empty() {
+        rows.push(widgets::box_row(
+            palette,
+            t(workbench.lang, Key::DiffClean),
+            columns,
+        ));
+        rows.push(widgets::box_bottom(palette, columns));
+        return rows;
+    }
+    let selected = diff.selected.min(diff.files.len() - 1);
+    let file_rows: Vec<String> = diff
+        .files
+        .iter()
+        .enumerate()
+        .map(|(index, file)| {
+            let marker = if index == selected { "›" } else { " " };
+            format!("{marker} {} {}", file.status, file.path)
+        })
+        .collect();
+    let patch_rows = diff.patch.lines().map(str::to_string).collect::<Vec<_>>();
+    let split = columns >= 92;
+    let first_file = selected.saturating_add(1).saturating_sub(available);
+    let scroll = workbench.overlay_scroll_offset();
+    if split {
+        let left_w = ((columns - 5) / 3).clamp(24, 42);
+        let right_w = columns.saturating_sub(left_w + 3);
+        let patch = workflows::wrapped(&patch_rows, right_w.saturating_sub(2), scroll, available);
+        let file_title = if workbench.diff_patch_focus {
+            t(workbench.lang, Key::DiffFiles).to_string()
+        } else {
+            format!("› {}", t(workbench.lang, Key::DiffFiles))
+        };
+        for index in 0..available {
+            let left_text = if index == 0 {
+                file_title.clone()
+            } else {
+                file_rows
+                    .get(first_file + index - 1)
+                    .map(|line| fit(line, left_w.saturating_sub(2)))
+                    .unwrap_or_default()
+            };
+            let right = patch.get(index).map(String::as_str).unwrap_or("");
+            let y = rows.len() as u16;
+            rows.push(widgets::box_row(
+                palette,
+                &format!(
+                    " {} {} {}",
+                    fit(&left_text, left_w),
+                    palette.text(palette.border, "│"),
+                    fit(right, right_w)
+                ),
+                columns,
+            ));
+            if index > 0 && first_file + index - 1 < diff.files.len() {
+                workbench.hit_map().push(
+                    Rect::new((left + 1) as u16, y, (left_w + 1) as u16, 1),
+                    format!("diff.file.{}", first_file + index - 1),
+                );
+            }
+        }
+    } else if workbench.diff_patch_focus {
+        let patch = workflows::wrapped(&patch_rows, columns.saturating_sub(4), scroll, available);
+        for (index, line) in patch.iter().enumerate() {
+            rows.push(widgets::box_row(palette, line, columns));
+            if index == 0 {
+                workbench.hit_map().push(
+                    Rect::new((left + 1) as u16, 2, columns.saturating_sub(2) as u16, 1),
+                    "diff.patch",
+                );
+            }
+        }
+    } else {
+        for (index, line) in file_rows
+            .iter()
+            .skip(first_file)
+            .take(available)
+            .enumerate()
+        {
+            let y = rows.len() as u16;
+            rows.push(widgets::box_row(
+                palette,
+                &fit(line, columns.saturating_sub(4)),
+                columns,
+            ));
+            workbench.hit_map().push(
+                Rect::new((left + 1) as u16, y, columns.saturating_sub(2) as u16, 1),
+                format!("diff.file.{}", first_file + index),
+            );
+        }
+    }
+    rows.push(widgets::box_bottom(palette, columns));
+    while rows.len() < h as usize {
+        rows.push(fit("", columns));
+    }
+    rows
+}
+
 fn help_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec<String> {
     let lang = workbench.lang;
     let scroll = workbench.overlay_scroll_offset();
@@ -1024,8 +1237,9 @@ fn help_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec
     let max_scroll = content.len().saturating_sub(visible);
     let scroll = scroll.min(max_scroll);
     workbench.set_overlay_scroll(scroll);
-    let content = content.into_iter().skip(scroll).collect();
-    framed(palette, t(lang, Key::HelpTitle), content, w, h, 72)
+    let content: Vec<String> = content.into_iter().skip(scroll).collect();
+    let geometry = box_geometry(w, h, 72, content.len());
+    framed(palette, t(lang, Key::HelpTitle), content, w, h, &geometry)
 }
 
 fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec<String> {
@@ -1098,13 +1312,41 @@ fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
         .saturating_sub(visible)
         .min(preferences::PREFERENCE_ROWS.len().saturating_sub(visible));
     let tail = content.split_off(preferences::PREFERENCE_ROWS.len());
+    let content_len = visible + tail.len();
+    let geometry = box_geometry(w, h, 72, content_len);
+    for (display, index) in (first..first + visible).enumerate() {
+        let Some(row) = preferences::PREFERENCE_ROWS.get(index) else {
+            continue;
+        };
+        let id = match row {
+            PreferenceRow::Shortcuts => "preferences.shortcuts".to_string(),
+            PreferenceRow::Reset => "preferences.reset".to_string(),
+            _ => format!("preferences.row.{index}"),
+        };
+        workbench.hit_map().push(
+            Rect::new(
+                geometry.left + 1,
+                geometry.top + 1 + display as u16,
+                geometry.w.saturating_sub(2),
+                1,
+            ),
+            id,
+        );
+    }
     let content = content
         .into_iter()
         .skip(first)
         .take(visible)
         .chain(tail)
         .collect();
-    framed(palette, t(lang, Key::PreferencesTitle), content, w, h, 72)
+    framed(
+        palette,
+        t(lang, Key::PreferencesTitle),
+        content,
+        w,
+        h,
+        &geometry,
+    )
 }
 
 fn enabled(value: bool, lang: Language) -> &'static str {
@@ -1156,13 +1398,35 @@ fn keybindings_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
         .saturating_sub(visible)
         .min(preferences::ACTIONS.len().saturating_sub(visible));
     let tail = content.split_off(preferences::ACTIONS.len());
+    let content_len = visible + tail.len();
+    let geometry = box_geometry(w, h, 76, content_len);
+    for (display, index) in (first..first + visible).enumerate() {
+        if index < preferences::ACTIONS.len() {
+            workbench.hit_map().push(
+                Rect::new(
+                    geometry.left + 1,
+                    geometry.top + 1 + display as u16,
+                    geometry.w.saturating_sub(2),
+                    1,
+                ),
+                format!("keybinding.row.{index}"),
+            );
+        }
+    }
     let content = content
         .into_iter()
         .skip(first)
         .take(visible)
         .chain(tail)
         .collect();
-    framed(palette, t(lang, Key::KeybindingsTitle), content, w, h, 76)
+    framed(
+        palette,
+        t(lang, Key::KeybindingsTitle),
+        content,
+        w,
+        h,
+        &geometry,
+    )
 }
 
 fn palette_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec<String> {
@@ -1201,7 +1465,15 @@ fn palette_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> 
         });
     }
     let _ = w;
-    framed(palette, t(lang, Key::PaletteTitle), content, w, h, 64)
+    let geometry = box_geometry(w, h, 64, content.len());
+    framed(
+        palette,
+        t(lang, Key::PaletteTitle),
+        content,
+        w,
+        h,
+        &geometry,
+    )
 }
 
 /// The picker: title, the incremental-search line, the rows (a window when the
@@ -1319,7 +1591,8 @@ fn panel_box(
         workbench.hit_map(),
         lang,
     );
-    framed(palette, title, body, w, h, 56)
+    let geometry = box_geometry(w, h, 56, body.len());
+    framed(palette, title, body, w, h, &geometry)
 }
 
 /// Status-bar text for tests and for the app's window title: the same numbers
