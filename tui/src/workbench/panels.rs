@@ -81,17 +81,18 @@ pub fn rows(panel: PanelId, data: &WorkbenchData) -> Vec<Row> {
         PanelId::Recent => (0..data.sessions.len()).map(Row::Session).collect(),
         PanelId::Workspaces => {
             let mut rows: Vec<Row> = Vec::new();
-            let push_section = |rows: &mut Vec<Row>, kind: Section| {
-                if rows.last() != Some(&Row::Section(kind)) {
-                    rows.push(Row::Section(kind));
-                }
-            };
+            // One heading per section, not one per group inside it: the pinned
+            // workspaces share one 置顶 block however many there are.
             for (pinned, kind) in [(true, Section::Pinned), (false, Section::Workspaces)] {
+                let mut headed = false;
                 for index in 0..data.workspaces.len() {
                     if data.workspaces[index].pinned != pinned {
                         continue;
                     }
-                    push_section(&mut rows, kind);
+                    if !headed {
+                        rows.push(Row::Section(kind));
+                        headed = true;
+                    }
                     rows.push(Row::Workspace(index));
                     for id in &data.workspaces[index].session_ids {
                         if let Some(at) = data.sessions.iter().position(|row| &row.id == id) {
@@ -100,9 +101,13 @@ pub fn rows(panel: PanelId, data: &WorkbenchData) -> Vec<Row> {
                     }
                 }
             }
+            let mut headed = false;
             for id in &data.chats {
                 if let Some(at) = data.sessions.iter().position(|row| &row.id == id) {
-                    push_section(&mut rows, Section::Chats);
+                    if !headed {
+                        rows.push(Row::Section(Section::Chats));
+                        headed = true;
+                    }
                     rows.push(Row::Session(at));
                 }
             }
@@ -285,13 +290,16 @@ fn workspace_row(
     columns: usize,
     lang: Language,
 ) -> String {
-    let tail = format!(
+    let tail_text = format!(
         "{} {} · {}",
         workspace.session_ids.len(),
         t(lang, Key::SummaryUnitsSessions),
         workspace.age
     );
-    let tail = fit(&tail, (columns / 2).max(6));
+    let tail = fit(
+        &tail_text,
+        width(&tail_text).min(columns.saturating_sub(12).max(6)),
+    );
     let tail_width = width(&tail);
     let name = fit(&workspace.name, columns.saturating_sub(tail_width + 2));
     let pad = columns.saturating_sub(1 + width(&name) + tail_width);
@@ -316,7 +324,13 @@ fn session_row(
         PanelId::Recent => format!("{} · {}", session.workspace, session.age),
         PanelId::Workspaces => session.age.clone(),
     };
-    let tail = fit(&tail_text, (columns / 2).max(6));
+    // The tail keeps whatever it needs, up to the point where the title would
+    // have nothing left: a workspace name cut to one character names nothing,
+    // and the title is what the reader is scanning.
+    let tail = fit(
+        &tail_text,
+        width(&tail_text).min(columns.saturating_sub(10).max(6)),
+    );
     let tail_width = width(&tail);
     let indent = usize::from(panel == PanelId::Workspaces);
     let marker = if session.current { "▸" } else { " " };
@@ -400,7 +414,23 @@ mod tests {
     #[test]
     fn the_recent_panel_names_each_conversations_workspace_and_age() {
         let data = demo::chat();
-        let text = panel_text(PanelId::Recent, &data, Language::Zh);
+        // A wide rail, so the row has room for all three facts: title, the
+        // workspace it is filed under, and when it was refreshed.
+        let mut hit = HitMap::new();
+        let text: String = render(
+            PanelId::Recent,
+            &data,
+            &P,
+            Rect::new(0, 0, 60, 20),
+            0,
+            0,
+            &mut hit,
+            Language::Zh,
+        )
+        .iter()
+        .map(|line| crate::utils::strip_ansi_codes(line))
+        .collect::<Vec<_>>()
+        .join("\n");
         assert!(text.contains("最近"), "{text}");
         for session in &data.sessions {
             assert!(text.contains(&session.title), "{session:?}: {text}");
@@ -506,9 +536,19 @@ mod tests {
 
     #[test]
     fn the_selection_is_always_inside_the_window() {
-        let data = demo::chat();
+        let mut data = demo::chat();
+        data.sessions = (0..12)
+            .map(|index| crate::workbench::state::SessionRow {
+                id: format!("s{index}"),
+                title: format!("conversation {index}"),
+                workspace: "~/future-os".into(),
+                age: "1h".into(),
+                current: index == 0,
+                parent_id: None,
+            })
+            .collect();
         let total = rows(PanelId::Recent, &data).len();
-        assert!(total > 4);
+        assert!(total > 6);
         let mut hit = HitMap::new();
         let lines = render(PanelId::Recent, &data, &P, area(8), 0, total - 1, &mut hit, LANG);
         let text: String = lines

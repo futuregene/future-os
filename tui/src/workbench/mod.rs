@@ -2208,7 +2208,7 @@ impl Workbench {
                 self.queue_index = self.queue_index.min(data.queue.len().saturating_sub(1));
                 VerbOutcome::Done { notice: None }
             }
-            "recent" | "sessions" => {
+            "recent" => {
                 self.focus_panel(PanelId::Recent, data);
                 VerbOutcome::Done { notice: None }
             }
@@ -2849,7 +2849,7 @@ mod tests {
             .hits()
             .regions()
             .iter()
-            .find(|(_, id)| id == "sidebar.tab.todo")
+            .find(|(_, id)| id == "sidebar.tab.recent")
             .unwrap()
             .0;
         assert_eq!(rail.x, 0);
@@ -2911,8 +2911,8 @@ mod tests {
         assert!(text.contains("2 tool calls"), "{text}");
         assert!(text.contains("deepseek-flash"), "{text}");
         assert!(text.contains("ctx"), "{text}");
-        assert!(text.contains("待办"), "the sidebar's tabs: {text}");
-        assert!(text.contains("/ 命令"), "{text}");
+        assert!(text.contains("最近"), "the sidebar's tabs: {text}");
+        assert!(text.contains("命令"), "{text}");
         assert!(workbench.cursor().is_some(), "the prompt owns the cursor");
     }
 
@@ -2984,7 +2984,7 @@ mod tests {
         let (mut workbench, _rows) = frame(&data, 120, 38);
 
         assert_eq!(
-            workbench.surface_command("/sessions", &data),
+            workbench.surface_command("/recent", &data),
             VerbOutcome::Done { notice: None }
         );
         assert_eq!(workbench.panel, PanelId::Recent);
@@ -3007,7 +3007,7 @@ mod tests {
         // A hidden rail comes back rather than swallowing the request.
         workbench.sidebar_visible = false;
         workbench.sidebar_focus = false;
-        workbench.surface_command("/sessions", &data);
+        workbench.surface_command("/recent", &data);
         assert!(workbench.sidebar_visible && workbench.sidebar_focus);
     }
 
@@ -3103,7 +3103,7 @@ mod tests {
         let data = demo::chat();
         let (mut workbench, rows) = frame(&data, 120, 38);
         let text = plain(&rows);
-        assert!(text.contains("用量"), "{text}");
+        assert!(text.contains("最近"), "{text}");
 
         // The tab's own region is registered while drawing, so it cannot drift
         // from what is on screen.
@@ -3658,7 +3658,7 @@ mod tests {
         let data = demo::chat();
         let (mut workbench, rows) = frame(&data, 120, 38);
         assert!(workbench.sidebar_visible && !workbench.sidebar_focus);
-        assert!(plain(&rows).contains("待办"));
+        assert!(plain(&rows).contains("最近"));
 
         // open → focus
         workbench.handle(WbEvent::Key("ctrl+b".into()), &data);
@@ -3715,11 +3715,11 @@ mod tests {
 
         let actions = workbench.handle(WbEvent::Key("ctrl+b".into()), &data);
         assert_eq!(actions, vec![WbAction::Redraw]);
-        // The full-screen panel is now the surface: it carries the workspace
-        // groups (the fixture pins its two leading workspaces).
+        // The full-screen panel is now the surface: it carries the same two
+        // tabs the rail does, starting on 最近.
         let text = plain(&workbench.render(&data, 70, 24));
-        assert!(text.contains("工作区"), "{text}");
-        assert!(text.contains("置顶"), "{text}");
+        assert!(text.contains("最近"), "{text}");
+        assert!(text.contains("future-os"), "a workspace in the list: {text}");
     }
 
     #[test]
@@ -4226,14 +4226,14 @@ mod tests {
         let mut workbench = Workbench::new();
         workbench.set_language(LanguagePreference::Zh);
         let zh = plain(&workbench.render(&data, 120, 38));
-        assert!(zh.contains("待办"), "{zh}");
+        assert!(zh.contains("最近"), "{zh}");
         assert!(zh.contains("新会话"), "{zh}");
 
         workbench.set_language(LanguagePreference::En);
         let en = plain(&workbench.render(&data, 120, 38));
-        assert!(en.contains("To-do"), "{en}");
+        assert!(en.contains("Recent"), "{en}");
         assert!(en.contains("New Chat"), "{en}");
-        assert!(!en.contains("待办"), "no Chinese tab left: {en}");
+        assert!(!en.contains("最近"), "no Chinese tab left: {en}");
 
         // The demo's own session title is content, not chrome: it stays.
         assert!(zh.contains("修复 parser 的 off-by-one"));
