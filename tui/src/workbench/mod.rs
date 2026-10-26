@@ -1,9 +1,8 @@
 //! The workbench — the FutureOS terminal UI (`future tui`).
 //!
-//! It owns the whole screen, repaints absolute rows, and resolves mouse clicks
-//! against what it painted. The earlier inline UI — which appended rows into the
-//! terminal's own scrollback and diffed the tail — is gone; it is not a mode of
-//! this one, and nothing here renders into scrollback.
+//! It normally owns the whole screen, repaints absolute rows, and resolves mouse
+//! clicks against what it painted. Linear reading is the explicit exception:
+//! its plain transcript goes to native scrollback (see `accessibility`).
 //!
 //! So the split is:
 //!
@@ -25,6 +24,7 @@
 //! exactly `h` rows of exactly `w` display columns — for any data, at any size,
 //! including 1×1.
 
+pub mod accessibility;
 pub mod ansi;
 pub mod demo;
 pub mod diff_review;
@@ -220,6 +220,7 @@ pub enum VerbOutcome {
 /// One input event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WbEvent {
+    Focus(bool),
     /// A normalised key id (`keys::parse_key`).
     Key(String),
     Mouse(mouse::MouseEvent),
@@ -506,6 +507,7 @@ impl Workbench {
 
     pub fn handle(&mut self, event: WbEvent, data: &WorkbenchData) -> Vec<WbAction> {
         match event {
+            WbEvent::Focus(_) => Vec::new(),
             WbEvent::Tick => {
                 self.advance_tick();
                 Vec::new()

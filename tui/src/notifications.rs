@@ -203,6 +203,54 @@ impl NotifyEvent {
     }
 }
 
+/// Delivery policy and duplicate suppression at the event-loop boundary.
+/// Terminal focus is advisory (DECSET 1004): unknown means focused, which
+/// avoids ringing during a foreground approval on terminals without support.
+pub struct NotifyCenter {
+    focused: bool,
+    seen: std::collections::VecDeque<String>,
+}
+
+impl Default for NotifyCenter {
+    fn default() -> Self {
+        Self {
+            focused: true,
+            seen: std::collections::VecDeque::new(),
+        }
+    }
+}
+
+impl NotifyCenter {
+    pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    /// Completion is a background-only notification. Approval and failure are
+    /// attention alerts in either focus state. Unknown focus is treated as
+    /// focused. One id emits once, including reconnect replay.
+    pub fn push(
+        &mut self,
+        id: &str,
+        event: NotifyEvent,
+        config: &NotifyConfig,
+        is_tty: bool,
+    ) -> Vec<String> {
+        if id.is_empty() || self.seen.iter().any(|seen| seen == id) {
+            return Vec::new();
+        }
+        // A foreground completion is consumed, not delayed until focus-out.
+        self.seen.push_back(id.to_string());
+        if self.seen.len() > 128 {
+            self.seen.pop_front();
+        }
+        if event.kind == NotifyKind::Completed && self.focused {
+            Vec::new()
+        } else {
+            sequences_for(config, &event, is_tty)
+        }
+    }
+}
+
 // ─── Sequence builders ─────────────────────────────────────────────────────
 
 /// `BEL` — the plain bell.
@@ -640,6 +688,74 @@ mod tests {
         // Variation Selector Supplement (U+E0100..=U+E01EF), both ends of the
         // range: invisible even though they are not `char::is_control`.
         assert_eq!(sanitize_escape_text("a\u{E0100}b\u{E01EF}c"), "abc");
+    }
+
+    #[test]
+    fn attention_policy_and_reconnect_deduplication() {
+        let config = default_config();
+        let mut center = NotifyCenter::default();
+        assert!(center
+            .push(
+                "focused",
+                NotifyEvent::for_kind(NotifyKind::Completed),
+                &config,
+                true
+            )
+            .is_empty());
+        center.set_focused(false);
+        assert!(
+            center
+                .push(
+                    "focused",
+                    NotifyEvent::for_kind(NotifyKind::Completed),
+                    &config,
+                    true
+                )
+                .is_empty(),
+            "a foreground completion must not arrive late after focus-out"
+        );
+        assert!(!center
+            .push(
+                "background",
+                NotifyEvent::for_kind(NotifyKind::Completed),
+                &config,
+                true
+            )
+            .is_empty());
+        center.set_focused(true);
+        assert!(!center
+            .push(
+                "approval",
+                NotifyEvent::for_kind(NotifyKind::ApprovalNeeded),
+                &config,
+                true
+            )
+            .is_empty());
+        center.set_focused(false);
+        assert!(center
+            .push(
+                "approval",
+                NotifyEvent::for_kind(NotifyKind::ApprovalNeeded),
+                &config,
+                true
+            )
+            .is_empty());
+        assert!(!center
+            .push(
+                "failure",
+                NotifyEvent::for_kind(NotifyKind::Failed),
+                &config,
+                true
+            )
+            .is_empty());
+        assert!(center
+            .push(
+                "d",
+                NotifyEvent::for_kind(NotifyKind::Failed),
+                &config,
+                false
+            )
+            .is_empty());
     }
 
     #[test]

@@ -52,10 +52,64 @@ enum TerminalEvent {
     Resize,
 }
 
+struct InputIo<'a> {
+    terminal: &'a mut Terminal,
+    linear: &'a mut super::accessibility::LinearReader,
+    settings: &'a mut TuiSettings,
+    settings_path: &'a Path,
+    theme_explicit: &'a mut bool,
+}
+
+struct DriverIo<'a> {
+    terminal: &'a mut Terminal,
+    linear: &'a mut super::accessibility::LinearReader,
+    notifications: &'a mut crate::notifications::NotifyCenter,
+    input_tx: &'a mpsc::UnboundedSender<TerminalEvent>,
+    theme_explicit: &'a mut bool,
+}
+
+fn sync_mode(
+    terminal: &mut Terminal,
+    input_tx: &mpsc::UnboundedSender<TerminalEvent>,
+    workbench: &Workbench,
+) -> Result<(), String> {
+    let linear = workbench.linear_reading && workbench.overlay.is_none();
+    if terminal.alternate_screen() == !linear && terminal.started() {
+        return Ok(());
+    }
+    if terminal.started() {
+        terminal.stop();
+    }
+    terminal.set_mouse_mode(!linear && workbench.preferences().mouse_capture);
+    let data_tx = input_tx.clone();
+    let resize_tx = input_tx.clone();
+    let start = if linear {
+        Terminal::start_linear
+    } else {
+        Terminal::start
+    };
+    start(
+        terminal,
+        Box::new(move |data| {
+            let _ = data_tx.send(TerminalEvent::Data(data));
+        }),
+        Box::new(move || {
+            let _ = resize_tx.send(TerminalEvent::Resize);
+        }),
+    )
+    .map_err(|error| format!("terminal: {error}"))?;
+    let signal_tx = input_tx.clone();
+    terminal.set_exit_signal_callback(Some(Box::new(move || {
+        let _ = signal_tx.send(TerminalEvent::Data("\u{3}".into()));
+    })));
+    Ok(())
+}
+
 /// Run the workbench until the reader quits. Returns an error only for a
 /// failure that makes the surface impossible (no TTY, no agent).
 pub async fn run(options: Options) -> Result<(), String> {
     let mut settings = load_settings(&options.settings_path);
+    let mut theme_explicit = settings.theme_id.is_some();
     let (mut live, mut agent_events) = Live::attach(
         &options.addr,
         options.session.as_deref(),
@@ -115,20 +169,26 @@ pub async fn run(options: Options) -> Result<(), String> {
     // alternate screen is up: `start` writes the mode in, `stop` takes it out —
     // and both failures' paths (the exit failsafe and the crash hook) reset it
     // too, so the shell never inherits a captured mouse.
-    terminal.set_mouse_mode(mouse_capture);
+    terminal.set_mouse_mode(mouse_capture && !workbench.linear_reading);
+
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<TerminalEvent>();
     let data_tx = input_tx.clone();
     let resize_tx = input_tx.clone();
-    terminal
-        .start(
-            Box::new(move |data| {
-                let _ = data_tx.send(TerminalEvent::Data(data));
-            }),
-            Box::new(move || {
-                let _ = resize_tx.send(TerminalEvent::Resize);
-            }),
-        )
-        .map_err(|error| format!("terminal: {error}"))?;
+    let start = if workbench.linear_reading {
+        Terminal::start_linear
+    } else {
+        Terminal::start
+    };
+    start(
+        &mut terminal,
+        Box::new(move |data| {
+            let _ = data_tx.send(TerminalEvent::Data(data));
+        }),
+        Box::new(move || {
+            let _ = resize_tx.send(TerminalEvent::Resize);
+        }),
+    )
+    .map_err(|error| format!("terminal: {error}"))?;
     // SIGINT/SIGTERM take the same path as ctrl+c so the terminal is restored
     // by the loop's own exit rather than by the signal handler's re-raise.
     {
@@ -137,8 +197,25 @@ pub async fn run(options: Options) -> Result<(), String> {
             let _ = signal_tx.send(TerminalEvent::Data("\u{3}".into()));
         })));
     }
+    let mut linear = super::accessibility::LinearReader::default();
+    let mut notifications = crate::notifications::NotifyCenter::default();
+    if workbench.linear_reading {
+        let frame = frame_of(&terminal, &workbench);
+        let data = live.data(&frame);
+        let output = linear.sync_session(&data.session.id, &data.messages);
+        terminal.write(&linear.frame(&output, &data.input.text, frame.width));
+    }
+    if workbench.linear_reading {
+        terminal.write("\x1b[?25h");
+    }
     let outcome = event_loop(
-        &mut terminal,
+        &mut DriverIo {
+            terminal: &mut terminal,
+            linear: &mut linear,
+            notifications: &mut notifications,
+            input_tx: &input_tx,
+            theme_explicit: &mut theme_explicit,
+        },
         &mut workbench,
         &mut live,
         &mut agent_events,
@@ -150,9 +227,12 @@ pub async fn run(options: Options) -> Result<(), String> {
 
     // Leave the terminal exactly as it was found, whatever happened above.
     terminal.stop();
+    if workbench.linear_reading {
+        terminal.write("\r\n");
+    }
 
     // Persist what the reader chose, through the same file the inline TUI uses.
-    if workbench.palette.id != settings.theme_id.as_deref().unwrap_or_default() {
+    if theme_explicit && workbench.palette.id != settings.theme_id.as_deref().unwrap_or_default() {
         settings.theme_id = Some(workbench.palette.id.to_string());
     }
     if settings.language.as_deref() != Some(workbench.language_pref.as_wire()) {
@@ -171,7 +251,7 @@ pub async fn run(options: Options) -> Result<(), String> {
 }
 
 async fn event_loop(
-    terminal: &mut Terminal,
+    io: &mut DriverIo<'_>,
     workbench: &mut Workbench,
     live: &mut Live,
     agent_events: &mut mpsc::UnboundedReceiver<AgentEvent>,
@@ -179,6 +259,13 @@ async fn event_loop(
     settings: &mut TuiSettings,
     settings_path: &Path,
 ) -> Result<(), String> {
+    let DriverIo {
+        terminal,
+        linear,
+        notifications,
+        input_tx,
+        theme_explicit,
+    } = io;
     // The first frame is composed for the size the terminal has *now*. The
     // cached size dates from `Terminal::new()`/`start()`, and a pane a terminal
     // multiplexer resized while the agent was attaching is still stale there
@@ -201,7 +288,9 @@ async fn event_loop(
     // ticker that repaints an unchanged frame is not free: composing it means
     // rebuilding `WorkbenchData`, which asks the transcript for every row it
     // has rendered (see `Live::data`).
-    let mut paint = true;
+    let mut paint = !workbench.linear_reading;
+    let mut linear_dirty = workbench.linear_reading;
+    let mut linear_deferred = String::new();
 
     loop {
         // The frame's own metrics, computed once: the surface composes for
@@ -210,7 +299,13 @@ async fn event_loop(
         // field) makes `ChatArea` discard its rendered rows and re-wrap the
         // whole transcript on every event.
         let frame = frame_of(terminal, workbench);
-        if paint {
+        if workbench.linear_reading && workbench.overlay.is_none() {
+            if linear_dirty {
+                let data = live.data(&frame);
+                terminal.write(&linear.frame("", &data.input.text, frame.width));
+                linear_dirty = false;
+            }
+        } else if paint {
             draw(terminal, workbench, live, &frame)?;
             clock.painted(workbench.spinner_frame(), Instant::now());
         }
@@ -224,17 +319,50 @@ async fn event_loop(
                     TerminalEvent::Data(data) => events_of(data),
                 };
                 for event in events {
-                    if quit(workbench, live, event, &frame, terminal, settings, settings_path).await? {
+                    linear_dirty |= workbench.linear_reading;
+                    if let WbEvent::Focus(focused) = event {
+                        notifications.set_focused(focused);
+                        continue;
+                    }
+                    let was_linear = workbench.linear_reading && workbench.overlay.is_none();
+                    if quit(workbench, live, event, &frame, &mut InputIo { terminal, linear, settings, settings_path, theme_explicit }).await? {
                         return Ok(());
+                    }
+                    sync_mode(terminal, input_tx, workbench)?;
+                    let linear_now = workbench.linear_reading && workbench.overlay.is_none();
+                    if linear_now && !was_linear {
+                        let data = live.data(&frame);
+                        let mut output = linear.sync_session(&data.session.id, &data.messages);
+                        output.push_str(&std::mem::take(&mut linear_deferred));
+                        terminal.write(&linear.frame(&output, &data.input.text, frame.width));
+                    } else if !linear_now && was_linear {
+                        linear_deferred.push_str(&linear.take_partial());
                     }
                 }
                 paint = true;
             }
             Some(event) = agent_events.recv() => {
                 let was = live.activity_kind();
+                let mut linear_output = if workbench.linear_reading {
+                    linear.event(&event, live.language())
+                } else { String::new() };
                 // State refresh below re-reads the authoritative queue before
                 // this candidate can emit a notification.
-                let mut completion = live.take_completion_notification(&event);
+                let mut completion = if live.take_completion_notification(&event) {
+                    event.run_id.clone().unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                if let Some(alert) = live.alert_for(&event) {
+                    let id = alert_id(&event);
+                    notify(terminal, notifications, &workbench.notify, &id, alert);
+                }
+                if live.take_failure_notification(&event) {
+                    notify(terminal, notifications, &workbench.notify,
+                        &format!("failed:{}", event.run_id.as_deref().unwrap_or("")),
+                        crate::notifications::NotifyEvent::for_kind(
+                            crate::notifications::NotifyKind::Failed));
+                }
                 live.handle_event(event);
                 if live.approval().is_some() && workbench.overlay.is_none() {
                     workbench.overlay = Some(super::Overlay::Approval);
@@ -245,7 +373,22 @@ async fn event_loop(
                 // per second and a frame per token is work no one can see (the
                 // screen only ever shows the last one).
                 drain(agent_events, |event| {
-                    completion |= live.take_completion_notification(&event);
+                    if live.take_completion_notification(&event) {
+                        completion = event.run_id.clone().unwrap_or_default();
+                    }
+                    if let Some(alert) = live.alert_for(&event) {
+                        let id = alert_id(&event);
+                        notify(terminal, notifications, &workbench.notify, &id, alert);
+                    }
+                    if live.take_failure_notification(&event) {
+                        notify(terminal, notifications, &workbench.notify,
+                            &format!("failed:{}", event.run_id.as_deref().unwrap_or("")),
+                            crate::notifications::NotifyEvent::for_kind(
+                                crate::notifications::NotifyKind::Failed));
+                    }
+                    if workbench.linear_reading {
+                        linear_output.push_str(&linear.event(&event, live.language()));
+                    }
                     live.handle_event(event);
                 });
                 // A `usage` or `agent_end` event means the agent knows more
@@ -264,17 +407,33 @@ async fn event_loop(
                 if live.activity_kind() != was {
                     live.refresh_sessions().await;
                 }
-                if completion && live.queue_is_empty() {
+                sync_mode(terminal, input_tx, workbench)?;
+                if workbench.linear_reading && workbench.overlay.is_none() {
+                    let data = live.data(&frame);
+                    let replay = linear.sync_session(&data.session.id, &data.messages);
+                    if !replay.is_empty() {
+                        terminal.write(&linear.frame(&replay, &data.input.text, frame.width));
+                    }
+                }
+                if !completion.is_empty() && live.queue_is_empty() {
                     let event = live.completion_notification();
-                    for sequence in crate::notifications::sequences_for(
-                        &workbench.notify,
-                        &event,
-                        true,
-                    ) {
-                        terminal.write(&sequence);
+                    notify(terminal, notifications, &workbench.notify,
+                        &format!("complete:{completion}"), event);
+                }
+                if workbench.linear_reading {
+                    let data = live.data(&frame);
+                    linear_output.push_str(&linear.sync_session(&data.session.id, &data.messages));
+                }
+                if workbench.linear_reading {
+                    let visible = workbench.overlay.is_none();
+                    let output = emit_linear(linear_output, &mut linear_deferred, visible);
+                    if !output.is_empty() {
+                        let data = live.data(&frame);
+                        terminal.write(&linear.frame(&output, &data.input.text, frame.width));
                     }
                 }
                 paint = true;
+                linear_dirty = workbench.linear_reading;
             }
             _ = ticker.tick() => {
                 // The spinner is the only animation a tick owns; it advances
@@ -296,6 +455,19 @@ async fn event_loop(
                 );
             }
         }
+    }
+}
+
+/// Output produced while a full-screen overlay owns the terminal is not
+/// discarded: returning to linear mode flushes it into scrollback exactly once.
+pub(crate) fn emit_linear(output: String, deferred: &mut String, visible: bool) -> String {
+    if visible {
+        let mut combined = std::mem::take(deferred);
+        combined.push_str(&output);
+        combined
+    } else {
+        deferred.push_str(&output);
+        String::new()
     }
 }
 
@@ -417,10 +589,15 @@ async fn quit(
     live: &mut Live,
     event: WbEvent,
     frame: &Frame,
-    terminal: &mut Terminal,
-    settings: &mut TuiSettings,
-    settings_path: &Path,
+    io: &mut InputIo<'_>,
 ) -> Result<bool, String> {
+    let InputIo {
+        terminal,
+        linear,
+        settings,
+        settings_path,
+        theme_explicit,
+    } = io;
     // A parked approval owns y/n only on the base surface. Inside its card
     // these keys belong to the card, and other overlays never approve blindly.
     if let WbEvent::Key(key) = &event {
@@ -502,6 +679,14 @@ async fn quit(
     // The frame's own width, not a probe: see `Frame` and `Live::data`.
     let actions = workbench.handle(event, &live.data(frame));
     for action in actions {
+        if let WbAction::Submit(message) = &action {
+            if workbench.linear_reading && workbench.overlay.is_none() {
+                let message =
+                    super::i18n::render(live.language(), super::i18n::Key::LinearYou, &[message]);
+                let output = linear.committed(&message);
+                terminal.write(&linear.frame(&output, "", frame.width));
+            }
+        }
         // The three list menus belong to the surface: the app owns the agent,
         // not the picker. Opening it here (rather than in `live.command`) is
         // what lets the palette and the draft both reach it.
@@ -635,6 +820,7 @@ async fn quit(
             workbench.set_theme(id);
             live.theme_id = id.clone();
             settings.theme_id = Some(id.clone());
+            **theme_explicit = true;
             save_settings(settings_path, settings);
             continue;
         }
@@ -799,6 +985,11 @@ fn key_events(data: &str) -> Vec<WbEvent> {
     if data.is_empty() {
         return Vec::new();
     }
+    match data {
+        "\x1b[I" => return vec![WbEvent::Focus(true)],
+        "\x1b[O" => return vec![WbEvent::Focus(false)],
+        _ => {}
+    }
     if let Some(event) = mouse::parse(data) {
         return vec![WbEvent::Mouse(event)];
     }
@@ -872,6 +1063,31 @@ fn toggle_mouse(
         )
         .into(),
     );
+}
+
+fn alert_id(event: &AgentEvent) -> String {
+    let identity = if event.r#type == "approval_request" {
+        event
+            .data
+            .get("approval_request_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+    } else {
+        event.event_id.as_deref().unwrap_or("")
+    };
+    format!("{}:{identity}", event.r#type)
+}
+
+fn notify(
+    terminal: &Terminal,
+    center: &mut crate::notifications::NotifyCenter,
+    config: &crate::notifications::NotifyConfig,
+    id: &str,
+    event: crate::notifications::NotifyEvent,
+) {
+    for sequence in center.push(id, event, config, terminal.is_tty()) {
+        terminal.write(&sequence);
+    }
 }
 
 fn draw(
@@ -1094,6 +1310,25 @@ mod tests {
         let second = frame.find("second").unwrap();
         let third = frame.find("third").unwrap();
         assert!(first < second && second < third, "{frame:?}");
+    }
+
+    #[test]
+    fn overlay_linear_output_is_deferred_and_flushed_exactly_once() {
+        let mut deferred = String::new();
+        assert!(emit_linear("approval\n".into(), &mut deferred, false).is_empty());
+        assert_eq!(emit_linear("answer\n".into(), &mut deferred, false), "");
+        assert_eq!(
+            emit_linear("later\n".into(), &mut deferred, true),
+            "approval\nanswer\nlater\n"
+        );
+        assert!(deferred.is_empty());
+        assert!(emit_linear(String::new(), &mut deferred, true).is_empty());
+    }
+
+    #[test]
+    fn focus_reports_are_not_inserted_into_the_draft() {
+        assert_eq!(key_events("\x1b[I"), vec![WbEvent::Focus(true)]);
+        assert_eq!(key_events("\x1b[O"), vec![WbEvent::Focus(false)]);
     }
 
     #[test]
