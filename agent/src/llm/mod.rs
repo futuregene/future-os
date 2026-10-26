@@ -1794,6 +1794,98 @@ mod tests {
         assert_eq!(second["max_tokens"], 32_000);
     }
 
+    /// DeepSeek's thinking mode refuses a follow-up whose assistant turn lost
+    /// its `reasoning_content`: HTTP 400 "The `reasoning_content` in the
+    /// thinking mode must be passed back to the API". The fixture enforces
+    /// that contract on the wire, so the replay is proven through the same
+    /// `stream_model` path a real turn takes, not on `build_body` alone.
+    #[tokio::test]
+    async fn deepseek_thinking_replays_reasoning_or_the_request_is_refused() {
+        let server = mock_server(|body| {
+            let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let dropped = parsed["messages"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|message| {
+                    message["role"] == "assistant"
+                        && message.get("tool_calls").is_some()
+                        && message["reasoning_content"]
+                            .as_str()
+                            .unwrap_or("")
+                            .is_empty()
+                });
+            if dropped {
+                (
+                    400,
+                    "application/json",
+                    serde_json::json!({"error": {"message": "The `reasoning_content` in the thinking mode must be passed back to the API."}})
+                        .to_string(),
+                )
+            } else {
+                (
+                    200,
+                    "text/event-stream",
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+                        .to_string(),
+                )
+            }
+        });
+        // The registry shape the Future platform serves for `deepseek-flash`:
+        // compat carries `thinkingFormat` and nothing else.
+        let mut model = crate::models::Model {
+            id: "deepseek-flash".into(),
+            provider: "future".into(),
+            api: "openai-completions".into(),
+            base_url: server.base_url.clone(),
+            reasoning: true,
+            ..Default::default()
+        };
+        model
+            .compat
+            .insert("thinkingFormat".into(), serde_json::json!("deepseek"));
+        let target =
+            schema::ResolvedModelTarget::from_model(&model, "secret".into(), None, None).unwrap();
+        let client = Client::from_target(target);
+        let request = schema::ModelRequest {
+            model: "deepseek-flash".into(),
+            system_prompt: "system".into(),
+            messages: vec![
+                crate::types::AgentMessage {
+                    role: "assistant".into(),
+                    content: vec![
+                        crate::types::ContentBlock::reasoning("the thought", Default::default()),
+                        crate::types::ContentBlock::tool_call(
+                            "call_1",
+                            "shell",
+                            serde_json::json!({"command": "ls"}),
+                            Default::default(),
+                        ),
+                    ],
+                    ..Default::default()
+                },
+                crate::types::AgentMessage {
+                    role: "tool".into(),
+                    content: vec![crate::types::ContentBlock::tool_result(
+                        "call_1", "out", false,
+                    )],
+                    ..Default::default()
+                },
+            ],
+            tools: Vec::new(),
+        };
+        let events: Vec<_> = client
+            .stream_model(request)
+            .await
+            .expect("a deepseek thinking follow-up must replay the assistant's reasoning_content")
+            .collect()
+            .await;
+        assert!(events.iter().any(|event| matches!(
+            event,
+            schema::ModelStreamEvent::TextDelta { text, .. } if text == "ok"
+        )));
+    }
+
     #[tokio::test]
     async fn responses_transport_uses_native_endpoint_and_events() {
         let sse = concat!(
