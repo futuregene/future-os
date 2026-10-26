@@ -327,54 +327,13 @@ impl Live {
         }
     }
 
-    /// The 工作区 tab's filing: one group per workspace, newest activity first,
-    /// and the conversations that belong to no workspace at all.
-    ///
-    /// A conversation is a plain chat when its directory is one of the app's
-    /// own scratch roots — the agent's default workspace (a session started
-    /// without a directory) or the per-chat scratch tree the desktop hands out.
-    /// Everything else is filed under the directory it ran in, named by that
-    /// directory and identified by its path: two checkouts can share a name.
+    /// The 工作区 tab's filing, for the pins this client holds.
     fn file_sessions(
         &self,
         sessions: &[SessionSummary],
         rows: &[SessionRow],
     ) -> (Vec<WorkspaceGroup>, Vec<String>) {
-        let mut groups: Vec<WorkspaceGroup> = Vec::new();
-        let mut chats: Vec<String> = Vec::new();
-        for row in rows {
-            let Some(summary) = sessions.iter().find(|session| session.id == row.id) else {
-                continue;
-            };
-            if is_chat_directory(&summary.cwd) {
-                chats.push(row.id.clone());
-                continue;
-            }
-            let path = summary.cwd.trim_end_matches(['/', '\\']).to_string();
-            if path.is_empty() {
-                chats.push(row.id.clone());
-                continue;
-            }
-            // `rows` is newest-first, so the group keeps that order inside
-            // itself and the first time a path is seen is its newest activity.
-            match groups.iter_mut().find(|group| group.path == path) {
-                Some(group) => group.session_ids.push(row.id.clone()),
-                None => groups.push(WorkspaceGroup {
-                    name: workspace_name(&path),
-                    path,
-                    pinned: self
-                        .pinned_workspaces
-                        .iter()
-                        .any(|pinned| same_path(pinned, &summary.cwd)),
-                    age: row.age.clone(),
-                    session_ids: vec![row.id.clone()],
-                }),
-            }
-        }
-        // Pinned workspaces lead the list (the desktop's rail does the same);
-        // the rest keep the newest-activity order the rows already carry.
-        groups.sort_by_key(|group| !group.pinned);
-        (groups, chats)
+        file_sessions(sessions, rows, &self.pinned_workspaces)
     }
 
     /// Pin or unpin one workspace, and answer what belongs on the notice row.
@@ -1953,6 +1912,52 @@ fn token_field(usage: &Value, key: &str) -> i64 {
         .unwrap_or(0)
 }
 
+/// The 工作区 tab's filing: one group per workspace, pinned first, and the
+/// conversations that belong to no workspace at all.
+///
+/// A conversation is a plain chat when its directory is one of the app's own
+/// scratch roots — the agent's default workspace (a session started without a
+/// directory) or the per-chat scratch tree the desktop hands out. Everything
+/// else is filed under the directory it ran in, named by that directory and
+/// identified by its path: two checkouts can share a name.
+fn file_sessions(
+    sessions: &[SessionSummary],
+    rows: &[SessionRow],
+    pinned: &[String],
+) -> (Vec<WorkspaceGroup>, Vec<String>) {
+    let mut groups: Vec<WorkspaceGroup> = Vec::new();
+    let mut chats: Vec<String> = Vec::new();
+    // `rows` is newest-first, so a group keeps that order inside itself and the
+    // first time a path is seen is that workspace's newest activity.
+    for row in rows {
+        let Some(summary) = sessions.iter().find(|session| session.id == row.id) else {
+            continue;
+        };
+        let path = summary.cwd.trim_end_matches(['/', '\\']).to_string();
+        if path.is_empty() || is_chat_directory(&summary.cwd) {
+            chats.push(row.id.clone());
+            continue;
+        }
+        match groups
+            .iter_mut()
+            .find(|group| same_path(&group.path, &path))
+        {
+            Some(group) => group.session_ids.push(row.id.clone()),
+            None => groups.push(WorkspaceGroup {
+                name: workspace_name(&path),
+                pinned: pinned.iter().any(|pin| same_path(pin, &path)),
+                path,
+                age: row.age.clone(),
+                session_ids: vec![row.id.clone()],
+            }),
+        }
+    }
+    // Pinned workspaces lead (the desktop's rail does the same); the rest keep
+    // the newest-activity order the rows already carry.
+    groups.sort_by_key(|group| !group.pinned);
+    (groups, chats)
+}
+
 fn cache_percent(state: &RpcSessionState) -> u8 {
     let read = state.usage.cache_read_tokens.max(0) as u64;
     let input = state.usage.input_tokens.max(0) as u64;
@@ -2438,6 +2443,91 @@ mod tests {
         state.usage.cache_read_tokens = 96;
         state.usage.input_tokens = 4;
         assert_eq!(cache_percent(&state), 96);
+    }
+
+    /// The 工作区 tab's filing. A conversation is filed under the directory it
+    /// ran in; two checkouts that share a name are two groups (the path is the
+    /// identity); a scratch directory is a plain chat; a pinned workspace leads
+    /// even when it is not the freshest.
+    #[test]
+    fn conversations_are_filed_by_the_directory_they_ran_in() {
+        // The scratch tree belongs to *this* home, so the fixture builds it the
+        // way the app does rather than pasting another machine's path.
+        let scratch = crate::home::future_state_dir()
+            .join("workspaces")
+            .join("chat")
+            .join("abc")
+            .display()
+            .to_string();
+        let sessions = vec![
+            row("a", Some("newest in main"), "/work/future-os"),
+            row("b", Some("older in main"), "/work/future-os/"),
+            row("c", Some("a worktree"), "/work/future-os/.worktrees/rail"),
+            row("d", Some("a sibling checkout"), "/other/future-os"),
+            row("e", Some("scratch"), &scratch),
+        ];
+        let rows: Vec<SessionRow> = sessions
+            .iter()
+            .enumerate()
+            .map(|(index, session)| SessionRow {
+                id: session.id.clone(),
+                title: display_name(session),
+                workspace: shorten(&session.cwd),
+                age: format!("{index}h"),
+                ..SessionRow::default()
+            })
+            .collect();
+        let pinned = vec!["/other/future-os/".to_string()];
+        let (groups, chats) = file_sessions(&sessions, &rows, &pinned);
+
+        // The pinned checkout leads although it is not the freshest.
+        assert_eq!(groups[0].path, "/other/future-os");
+        assert!(groups[0].pinned);
+        assert_eq!(groups[0].session_ids, vec!["d".to_string()]);
+
+        // A trailing slash is not a different workspace: `a` and `b` are one
+        // group, newest first, and the group's age is that newest one.
+        let main = groups
+            .iter()
+            .find(|group| group.path == "/work/future-os")
+            .expect("the main checkout");
+        assert_eq!(main.session_ids, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(main.age, "0h");
+        assert!(!main.pinned);
+        assert_eq!(main.name, "future-os");
+
+        // A worktree is its own group, and so is a second checkout with the
+        // same name.
+        assert!(groups
+            .iter()
+            .any(|group| group.path == "/work/future-os/.worktrees/rail"));
+        assert_eq!(
+            groups
+                .iter()
+                .filter(|group| group.name == "future-os")
+                .count(),
+            2,
+            "two checkouts share a name and stay apart: {groups:?}"
+        );
+
+        // The scratch directory is a plain chat, not a workspace.
+        assert_eq!(chats, vec!["e".to_string()]);
+        assert!(!groups
+            .iter()
+            .any(|group| group.session_ids.contains(&"e".into())));
+    }
+
+    #[test]
+    fn a_workspace_is_named_by_its_last_segment() {
+        assert_eq!(workspace_name("/home/dev/future-os"), "future-os");
+        assert_eq!(workspace_name("/home/dev/future-os/"), "future-os");
+        assert_eq!(workspace_name("D:\\work\\future-os"), "future-os");
+        // Nothing to take: the path itself is the honest name.
+        assert_eq!(workspace_name("/"), "/");
+        for (left, right) in [("/a/b", "/a/b/"), ("D:\\a\\b", "D:/a/b"), ("/a/b/", "/a/b")] {
+            assert!(same_path(left, right), "{left:?} vs {right:?}");
+        }
+        assert!(!same_path("/a/b", "/a/bc"));
     }
 
     /// A `usage` event is the only thing that moves the footer's ctx gauge
