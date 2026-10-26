@@ -219,13 +219,109 @@ pub async fn get_agent_readiness(
 
 static CHANNEL_RUNTIME: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
 
+/// Outcome of installing the process-wide Agent channel driver runtime.
+///
+/// Both outcomes are successes. Installation is idempotent, and "somebody was
+/// already here" is an ordinary result — not an error a caller has to unwrap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeInstall {
+    /// This call registered the runtime; the shared channel now runs on its
+    /// driver.
+    Installed,
+    /// Another installer had already registered a runtime, so nothing was
+    /// changed: this call had no effect on the shared channel.
+    AlreadyInstalled,
+}
+
 /// The entry owns the channel driver runtime and installs it before service
 /// calls. A transient caller runtime must never own a cached tonic channel.
-pub fn configure_channel_runtime(handle: tokio::runtime::Handle) -> Result<(), crate::Error> {
-    CHANNEL_RUNTIME
-        .set(handle)
-        .map_err(|_| "Agent channel runtime already configured".into())
+///
+/// One process can hold more than one installer — the Desktop or CLI entry,
+/// and the shared test fixture that runs inside the same test binary — so this
+/// is idempotent by design: the first `set` wins and every later installer is
+/// told [`RuntimeInstall::AlreadyInstalled`]. Reporting that as an *error* is
+/// what used to break: each caller wrapped it in `expect` inside its own
+/// `Once`, so a losing installer panicked and poisoned that `Once`, and every
+/// later install in the process then failed for a reason unrelated to the
+/// first one (one run of the Desktop suite turned that into 38 failing tests).
+///
+/// `CHANNEL_RUNTIME` is the only arbiter on purpose. A consumer-side
+/// `Once`/flag in front of it is a second state machine that can disagree with
+/// this one, which is exactly how "already installed" became a panic.
+///
+/// Invariant this rests on: the winner's runtime is driven for the life of the
+/// process, so a loser discarding its own copy cannot tear down the shared
+/// channel's driver task. Every installer honours it by parking a thread on
+/// `block_on(pending())` — see [`provide_channel_runtime`], which pairs the
+/// keep and the discard so no caller has to get that pairing right by hand.
+pub fn install_channel_runtime(handle: tokio::runtime::Handle) -> RuntimeInstall {
+    install_into(&CHANNEL_RUNTIME, handle)
 }
+
+/// Has any installer registered the driver runtime yet?
+pub fn channel_runtime_installed() -> bool {
+    CHANNEL_RUNTIME.get().is_some()
+}
+
+/// The shape every installer uses: build a driver runtime only when nobody has
+/// registered one yet, and keep it running only when *this* call won.
+///
+/// Centralised rather than repeated in each entry because of the pairing it
+/// encodes: the winner parks its runtime forever, the loser shuts its own
+/// down. A loser cannot simply drop the runtime it built —
+/// [`install_channel_runtime`] is reachable from async code (Desktop's
+/// readiness probe), where dropping a multi-thread runtime panics — so the
+/// discard goes through `Runtime::shutdown_background`, which tokio documents
+/// as safe to call from such a context.
+pub fn provide_channel_runtime(
+    driver_thread: &str,
+    build: impl FnOnce() -> tokio::runtime::Runtime,
+) -> RuntimeInstall {
+    provide_into(&CHANNEL_RUNTIME, driver_thread, build)
+}
+
+/// The arbiter over an explicit slot. Production uses [`CHANNEL_RUNTIME`]; the
+/// slot parameter exists so a test can pin both outcomes of the race without
+/// deciding what the rest of a shared test binary sees.
+fn install_into(
+    slot: &std::sync::OnceLock<tokio::runtime::Handle>,
+    handle: tokio::runtime::Handle,
+) -> RuntimeInstall {
+    match slot.set(handle) {
+        Ok(()) => RuntimeInstall::Installed,
+        Err(_) => RuntimeInstall::AlreadyInstalled,
+    }
+}
+
+fn provide_into(
+    slot: &std::sync::OnceLock<tokio::runtime::Handle>,
+    driver_thread: &str,
+    build: impl FnOnce() -> tokio::runtime::Runtime,
+) -> RuntimeInstall {
+    // Fast path: do not even build a runtime when one is already installed.
+    if slot.get().is_some() {
+        return RuntimeInstall::AlreadyInstalled;
+    }
+    let runtime = build();
+    match install_into(slot, runtime.handle().clone()) {
+        RuntimeInstall::Installed => {
+            std::thread::Builder::new()
+                .name(driver_thread.to_string())
+                .spawn(move || {
+                    // Park forever: dropping the runtime would kill the shared
+                    // connection's driver task.
+                    runtime.block_on(std::future::pending::<()>());
+                })
+                .expect("spawn the Agent channel driver thread");
+            RuntimeInstall::Installed
+        }
+        loser => {
+            runtime.shutdown_background();
+            loser
+        }
+    }
+}
+
 pub(crate) fn agent_channel_runtime() -> Result<tokio::runtime::Handle, crate::Error> {
     CHANNEL_RUNTIME.get().cloned().ok_or_else(|| {
         "Entry must configure the Agent channel runtime before starting services".into()
@@ -250,6 +346,57 @@ mod tests {
             deadline.to_string(),
             "ctx: command timed out; its outcome may be unknown"
         );
+    }
+
+    /// A handle to a runtime that is never driven here: the tests below only
+    /// store and compare it, they never spawn on it.
+    fn unused_handle() -> tokio::runtime::Handle {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("unused test runtime")
+            .handle()
+            .clone()
+    }
+
+    /// Two installers in one process, first wins, second is told so.
+    ///
+    /// The old contract made the second install an `Err`, which every caller
+    /// `expect`ed — and a panic inside the caller's own `Once` poisoned it for
+    /// the rest of the process. The assertion is on the *outcome*, not on an
+    /// error: repeating the install is a normal path.
+    #[test]
+    fn the_first_install_wins_and_the_second_reports_already_installed() {
+        let slot: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
+        assert_eq!(
+            install_into(&slot, unused_handle()),
+            RuntimeInstall::Installed
+        );
+        assert_eq!(
+            install_into(&slot, unused_handle()),
+            RuntimeInstall::AlreadyInstalled
+        );
+        assert!(slot.get().is_some());
+    }
+
+    /// A losing installer does nothing at all — not even build a runtime.
+    ///
+    /// The build closure is the proof: it panics if it is ever reached, so this
+    /// pins both halves of the "已安装 → 什么也不做" contract (no build, no
+    /// parked driver thread, no second runtime to leak).
+    #[test]
+    fn a_losing_installer_neither_builds_nor_parks_a_runtime() {
+        let slot: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
+        let installed = provide_into(&slot, "test-channel-winner", || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("winner test runtime")
+        });
+        assert_eq!(installed, RuntimeInstall::Installed);
+        let loser = provide_into(&slot, "test-channel-loser", || {
+            panic!("a losing installer must not build a runtime")
+        });
+        assert_eq!(loser, RuntimeInstall::AlreadyInstalled);
     }
 }
 

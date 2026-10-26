@@ -323,22 +323,16 @@ impl FutureAgent for MockAgent {
 // This driver belongs only to the test harness. Production services require an
 // entry-provided runtime and never construct one as a fallback.
 pub(crate) fn install_channel_runtime() {
-    static INSTALLED: OnceLock<()> = OnceLock::new();
-    INSTALLED.get_or_init(|| {
-        if crate::agent_client::agent_channel_runtime().is_ok() {
-            return;
-        }
-        let runtime = tokio::runtime::Builder::new_multi_thread()
+    // Installation is idempotent, so this needs no `Once` of its own: when the
+    // Desktop entry (or another fixture) already registered a driver runtime,
+    // this returns `AlreadyInstalled` and nothing is built. An `expect` here
+    // used to turn that ordinary case into a panic.
+    crate::agent_client::provide_channel_runtime("fixture-agent-channel", || {
+        tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .worker_threads(1)
             .build()
-            .expect("fixture Agent channel runtime");
-        crate::agent_client::configure_channel_runtime(runtime.handle().clone())
-            .expect("fixture installs its channel runtime once");
-        std::thread::Builder::new()
-            .name("fixture-agent-channel".into())
-            .spawn(move || runtime.block_on(std::future::pending::<()>()))
-            .expect("fixture channel driver");
+            .expect("fixture Agent channel runtime")
     });
 }
 
