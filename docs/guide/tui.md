@@ -56,16 +56,21 @@ conversations, to see the rail's window and its `↓ N more` row).
 
 The rail is a *task* panel, in two tabs. **最近** (the default) lists every
 conversation — its name, then the workspace it is filed under and when it was
-last refreshed — newest first. **工作区** files the same conversations the way
-the desktop's rail does: 置顶 (the workspaces pinned with `p`), then 工作区 (one
+last refreshed — newest first. A row names its workspace by *name*
+(`future-os`), not by path: the rail is 36 columns wide and a clipped path says
+less than the word. **工作区** files the same conversations the way the
+desktop's rail does: 置顶 (the workspaces pinned with `p`), then 工作区 (one
 heading per workspace, its conversations beneath), then 对话会话 (conversations
 that belong to no workspace — the app's own scratch directories). Usage figures
-live on the status bar, so no panel repeats them; skills are the palette's.
+live on the status bar, so no panel repeats them; skills are the palette's. With
+the rail focused, `←`/`→` move between the two tabs.
 
 The launchpad is the *body*, not a dialog over the conversation: with no session
-attached the composer fills the surface (logo, wordmark, box, model / effort /
-mode / permission chips, shortcuts, recent sessions) and there is no second
-input band.
+attached the composer fills the surface (logo, wordmark, box, workspace / model
+/ effort / mode / permission chips, shortcuts) and there is no second input
+band. The conversations are the rail's — the launchpad does not repeat them.
+`tab` walks the prompt and the chips, `enter` cycles the chip under the cursor,
+and typing (or `escape`) hands the keys back to the prompt.
 
 Two breakpoints, both from the contract:
 
@@ -151,12 +156,12 @@ ASCII letter or digit, F1–F24, Tab, navigation keys and Enter/Escape.
 
 | Key | Action |
 |---|---|
-| `tab` / `shift+tab` | Launchpad: move between the prompt and the parameter chips. Conversation: take the keys into the rail (the cursor lands on the conversation on screen) and back |
-| `←` `→` | Move the draft cursor |
+| `tab` / `shift+tab` | Launchpad: move between the prompt and the parameter chips (`enter` cycles the chip under the cursor; `escape` or typing goes back to the prompt). Conversation: take the keys into the rail (the cursor lands on the conversation on screen) and back |
+| `←` `→` | Move the draft cursor; in a focused rail, switch between its two tabs (最近 ↔ 工作区) |
 | `↑` `↓` | Move through draft lines / submission history; in a focused rail, move to the previous / next conversation (headings are skipped) and `enter` opens it |
 | `shift+←` / `shift+→` | Switch to the previous / next conversation in the rail's order, wherever the keys are: the transcript follows, and so does the rail's cursor |
 | `p` | Rails: pin / unpin the workspace the selected conversation belongs to |
-| `shift+enter` / `alt+enter` | Insert a newline (`ctrl+j` is the terminal fallback; Shift+Enter requires an enhanced keyboard protocol) |
+| `ctrl+j` / `ctrl+enter` | Insert a newline. `ctrl+j` is the one every terminal delivers; `ctrl+enter` arrives when the terminal reports modifiers (kitty keyboard protocol, xterm `modifyOtherKeys`, or a Windows Terminal `sendInput` binding), and `shift+enter` needs one of those too. Windows Terminal keeps `alt+enter` for fullscreen and sends plain Enter for `ctrl+enter` unless the reader binds it, e.g. `{"keys": "ctrl+enter", "command": {"action": "sendInput", "input": "\u001b[13;5u"}}` |
 | `ctrl+w`, `alt+d`, `ctrl+u`, `ctrl+k`, `ctrl+y` | Delete a word, kill to line start/end, yank |
 | `ctrl+z` / `ctrl+shift+z` (or `alt+y`) | Undo / redo draft edits |
 | `pageUp` / `pageDown` or `ctrl+↑` / `ctrl+↓` | Scroll the conversation; `esc` returns to the latest output |
@@ -165,7 +170,7 @@ ASCII letter or digit, F1–F24, Tab, navigation keys and Enter/Escape.
 | `F7` or `/mouse` | Toggle and persist mouse capture off/on for native terminal selection |
 | `F8` | Toggle native-scrollback linear reading |
 | `F9` | Toggle reduced motion independently |
-| `ctrl+b` | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal |
+| `ctrl+b` | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal. The show/hide choice is written to `sidebarVisible` and is where the next start begins |
 | `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run |
 | `ctrl+r` | Session picker (name, workspace and age of each conversation; the footer names the key) |
 | `ctrl+o` | Preferences and shortcut editor |
@@ -176,7 +181,7 @@ ASCII letter or digit, F1–F24, Tab, navigation keys and Enter/Escape.
 
 | Mouse | Action |
 |---|---|
-| Click a sidebar tab | Switch panel |
+| Click a sidebar tab | Switch panel (`←`/`→` do the same while the rail has the keys) |
 | Click a session row | Open that conversation (a workspace heading only takes the keys) |
 | Drag the divider | Resize the sidebar (30–48 columns), persisted on release |
 | Click anywhere in the input box | Focus it |
@@ -221,7 +226,7 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | Sessions panel | `list_sessions`, newest first: 最近 as a flat list, 工作区 filed by directory with the pinned ones leading. Pins persist in `settings.json` (`pinnedWorkspaces`) |
 | Usage / context / cost | `get_state`'s usage block, refreshed on the same events |
 | `ctrl+n` / `/new`, `ctrl+x` stop, `F5` refresh | |
-| Launchpad chips | Click 模型 / 强度 / 权限 / 模式 to cycle them on the agent; the first message from the launchpad creates the session |
+| Launchpad chips | Click 工作区 / 模型 / 强度 / 权限 / 模式 to cycle them; on the launchpad the workspace and the model/effort choices are staged for the session the first message creates (the agent has no session to set them on yet), while permission and mode cycle the agent's own state. 工作区 cycles the directories this client has conversations in, and the notice row names the full path it chose |
 | Theme, reading level | Persisted in `~/.future/tui/settings.json` (`tui/src/settings.rs`) |
 
 ## What is not here yet

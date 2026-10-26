@@ -237,6 +237,7 @@ pub enum Key {
     MentionHintSession,
     MentionEmpty,
     // ── the launchpad ─────────────────────────────────────────────────
+    ChipWorkspace,
     ChipModel,
     ChipEffort,
     ChipMode,
@@ -248,7 +249,8 @@ pub enum Key {
     LaunchpadTagline,
     LaunchpadNewChat,
     LaunchpadNewChatIn,
-    LaunchpadRecent,
+    WorkspaceChosen,
+    WorkspaceNone,
     // ── the palette's verbs ───────────────────────────────────────────
     CmdNew,
     CmdDiff,
@@ -467,8 +469,8 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         LangSystem => ("跟随系统", "Follow system"),
 
         InputHintChat => (
-            "输入 · enter 发送 · alt+enter 换行",
-            "Message · enter sends · alt+enter newline",
+            "输入 · enter 发送 · ctrl+j 换行",
+            "Message · enter sends · ctrl+j newline",
         ),
         ChatOlder => ("↑ 更早", "↑ older"),
         ChatOlderHint => ("↑ 更早 · page up", "↑ older · page up"),
@@ -519,6 +521,7 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ),
         MentionEmpty => ("没有匹配", "no matches"),
 
+        ChipWorkspace => ("工作区", "Workspace"),
         ChipModel => ("模型", "Model"),
         ChipEffort => ("强度", "Effort"),
         ChipMode => ("模式", "Mode"),
@@ -533,7 +536,11 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ),
         LaunchpadNewChat => ("新会话", "New Chat"),
         LaunchpadNewChatIn => ("新会话 · {}", "New Chat · {}"),
-        LaunchpadRecent => ("最近会话", "Recent sessions"),
+        WorkspaceChosen => ("工作区 · {}", "Workspace · {}"),
+        WorkspaceNone => (
+            "没有其它工作区可切换",
+            "No other workspace to switch to",
+        ),
 
         CmdNew => ("新建会话", "New chat"),
         CmdDiff => ("审查工作区改动", "Review working-tree changes"),
@@ -882,7 +889,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 226] = {
+    const ALL_KEYS: [Key; 228] = {
         use Key::*;
         [
             TabTodo,
@@ -962,6 +969,7 @@ mod tests {
             MentionHintFile,
             MentionHintSession,
             MentionEmpty,
+            ChipWorkspace,
             ChipModel,
             ChipEffort,
             ChipMode,
@@ -973,7 +981,8 @@ mod tests {
             LaunchpadTagline,
             LaunchpadNewChat,
             LaunchpadNewChatIn,
-            LaunchpadRecent,
+            WorkspaceChosen,
+            WorkspaceNone,
             CmdNew,
             CmdDiff,
             CmdApproval,

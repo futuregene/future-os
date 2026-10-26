@@ -49,7 +49,9 @@ impl UsageData {
 pub struct SessionRow {
     pub id: String,
     pub title: String,
-    /// The workspace it is filed under (`~/future-os`).
+    /// The workspace it is filed under, by name (`future-os`) — the rail and
+    /// the session picker are too narrow for a path, and the path is the
+    /// group's identity rather than the row's label.
     pub workspace: String,
     pub parent_id: Option<String>,
     /// How long ago it was last active (`5m`, `3h`).

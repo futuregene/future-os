@@ -74,8 +74,15 @@ pub(crate) fn compose(
     };
     if data.on_launchpad() {
         let lang = workbench.lang;
-        let (lines, cursor) =
-            launchpad::render(data, &palette, frame.body, workbench.hit_map(), lang);
+        let focused = workbench.launch_field.chip_id();
+        let (lines, cursor) = launchpad::render(
+            data,
+            &palette,
+            frame.body,
+            workbench.hit_map(),
+            lang,
+            focused,
+        );
         paint(&mut rows, frame.body, lines);
         workbench.set_cursor(cursor);
     } else {

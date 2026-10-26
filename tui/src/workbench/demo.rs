@@ -77,7 +77,7 @@ fn base() -> WorkbenchData {
             SessionRow {
                 id: "s1".into(),
                 title: "修复 parser 的 off-by-one".into(),
-                workspace: "~/future-os".into(),
+                workspace: "future-os".into(),
                 age: "2m".into(),
                 current: true,
                 parent_id: None,
@@ -85,7 +85,7 @@ fn base() -> WorkbenchData {
             SessionRow {
                 id: "s2".into(),
                 title: "workbench 布局草图".into(),
-                workspace: "~/future-os".into(),
+                workspace: "future-os".into(),
                 age: "1h".into(),
                 current: false,
                 parent_id: None,
@@ -93,7 +93,7 @@ fn base() -> WorkbenchData {
             SessionRow {
                 id: "s3".into(),
                 title: "mobile 恢复会话".into(),
-                workspace: "~/future-os/.worktrees/mobile".into(),
+                workspace: "mobile".into(),
                 age: "3h".into(),
                 current: false,
                 parent_id: None,
@@ -101,7 +101,7 @@ fn base() -> WorkbenchData {
             SessionRow {
                 id: "s4".into(),
                 title: "blog: why one agent".into(),
-                workspace: "~/futureos-wechat-articles".into(),
+                workspace: "futureos-wechat-articles".into(),
                 age: "2d".into(),
                 current: false,
                 parent_id: None,
@@ -233,6 +233,8 @@ pub fn launchpad() -> WorkbenchData {
     let mut data = base();
     data.input.text.clear();
     data.sessions[0].current = false;
+    // The workspace chip names the directory the first message would run in.
+    data.session.cwd = "~/future-os".into();
     data
 }
 
