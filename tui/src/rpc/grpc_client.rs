@@ -1741,7 +1741,7 @@ fn spawn_heartbeat(inner: Arc<Inner>) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::rpc::provider_types::ProviderModelInput;
 
@@ -2084,13 +2084,13 @@ mod tests {
     }
 
     #[derive(Clone, Default)]
-    struct ApiMock {
-        data_by_type: Arc<std::sync::Mutex<StdHashMap<String, String>>>,
+    pub(crate) struct ApiMock {
+        pub(crate) data_by_type: Arc<std::sync::Mutex<StdHashMap<String, String>>>,
         /// Typed `payload` per command type — exercises the typed-first decode
         /// (`data` is usually left empty for these).
         payload_by_type: StdHashMap<String, ResponsePayload>,
         status_errors: StdHashMap<String, tonic::Status>,
-        seen: Arc<std::sync::Mutex<Vec<String>>>,
+        pub(crate) seen: Arc<std::sync::Mutex<Vec<String>>>,
         /// (type, session_id) of every command, for routing assertions.
         seen_sessions: Arc<std::sync::Mutex<Vec<(String, String)>>>,
         requests: Arc<std::sync::Mutex<Vec<RpcCommand>>>,
@@ -2727,7 +2727,26 @@ mod tests {
         client.disconnect();
     }
 
-    async fn spawn_api_mock(mock: ApiMock) -> String {
+    /// A mock that answers each `(type, json)` pair, plus the log of every
+    /// command type it was asked. Constructed here because the fields are
+    /// private to this module; a caller outside it only needs the answer table.
+    pub(crate) fn api_mock_answering(
+        pairs: &[(&str, &str)],
+    ) -> (ApiMock, Arc<std::sync::Mutex<Vec<String>>>) {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let data: StdHashMap<String, String> = pairs
+            .iter()
+            .map(|(kind, body)| ((*kind).to_string(), (*body).to_string()))
+            .collect();
+        let mock = ApiMock {
+            data_by_type: Arc::new(std::sync::Mutex::new(data)),
+            seen: seen.clone(),
+            ..Default::default()
+        };
+        (mock, seen)
+    }
+
+    pub(crate) async fn spawn_api_mock(mock: ApiMock) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let incoming = TcpIncoming::from_listener(listener, true, None).unwrap();

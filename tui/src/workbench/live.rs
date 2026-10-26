@@ -1120,9 +1120,21 @@ impl Live {
 
     /// Send the draft. A submission while a run is in flight queues behind it
     /// (the agent's coalescing policy), which is what the inline TUI does too.
-    async fn submit(&mut self, _text: &str) {
+    async fn submit(&mut self, text: &str) {
         self.draft.editor.record_submission();
-        let original_text = self.draft.editor.text().to_string();
+        // The draft is read first because it is what carries the folded pastes
+        // that `pending()` expands into the prompt. It is *not* the only source:
+        // the driver hands this action over after clearing the surface, and a
+        // `Submit` that found an empty draft used to return without ever
+        // reaching the agent — the launchpad's first message did nothing at all.
+        // The action's own text is the surface's reading of the prompt, so it
+        // stands in whenever the draft has already been reset.
+        let drafted = self.draft.editor.text().to_string();
+        let original_text = if drafted.trim().is_empty() {
+            text.to_string()
+        } else {
+            drafted
+        };
         // The draft is what the reader typed; the prompt is that draft with its
         // `@path` mentions inlined. The transcript keeps the draft (that is what
         // was said), the agent gets the files (that is what was meant).
@@ -2152,6 +2164,114 @@ impl Live {
 mod tests {
     use super::*;
     use crate::rpc::types::SessionSummary;
+
+    /// The launchpad's first message must create the session and send the
+    /// prompt.
+    ///
+    /// `Submit` carries the text the surface read, and it must stand on its own
+    /// without the draft: the driver used to clear the draft *before* handing
+    /// the action over, which made every submit read an empty draft and return
+    /// silently — the reported "type on the home screen, press enter, nothing
+    /// happens". The sequence below is that order, kept as the contract.
+    #[tokio::test]
+    async fn a_launchpad_submit_creates_the_session_and_sends_the_prompt() {
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("new_session", r#"{"sessionId":"s-new"}"#),
+            ("get_state", r#"{"sessionId":"s-new"}"#),
+            ("prompt", r#"{"runId":"r-1","acceptedState":"running"}"#),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        // The home screen: nothing attached, so the next message must create
+        // the session.
+        live.to_launchpad();
+        live.set_draft("hello there".into(), 11);
+
+        // …and the driver's own order, verbatim.
+        live.set_draft(String::new(), 0);
+        live.apply(WbAction::Submit("hello there".into())).await;
+
+        let commands = seen.lock().unwrap().clone();
+        assert!(
+            commands.iter().any(|command| command == "new_session"),
+            "the first message must create a session, saw {commands:?}"
+        );
+        assert!(
+            commands.iter().any(|command| command == "prompt"),
+            "the prompt must reach the agent, saw {commands:?}"
+        );
+        let painted = live.chat.render_all(80).join("\n");
+        assert!(
+            painted.contains("hello there"),
+            "the transcript keeps what was said:\n{painted}"
+        );
+    }
+
+    /// When no session can be started, the reader's text must survive: the
+    /// whole point of the launchpad's first message is that it can be retried
+    /// after whatever stopped the session is fixed.
+    #[tokio::test]
+    async fn a_submit_that_cannot_start_a_session_keeps_the_draft() {
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            // A `new_session` that hands back no id, and a state with none
+            // either: the adapter has nothing to send a prompt to.
+            ("new_session", "{}"),
+            ("get_state", r#"{"sessionId":""}"#),
+            ("prompt", r#"{"runId":"r-1"}"#),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        live.to_launchpad();
+        live.set_draft("do not lose this".into(), 16);
+        live.apply(WbAction::Submit("do not lose this".into()))
+            .await;
+
+        assert_eq!(
+            live.draft.text, "do not lose this",
+            "the reader's text must survive a session that could not start"
+        );
+        let commands = seen.lock().unwrap().clone();
+        assert!(
+            !commands.iter().any(|command| command == "prompt"),
+            "nothing is sent without a session, saw {commands:?}"
+        );
+    }
+
+    /// The same submission with the draft intact — the ordinary path once the
+    /// driver stops clearing it first — attaches the folded pastes it carries.
+    #[tokio::test]
+    async fn a_submit_still_sends_when_the_draft_holds_the_text() {
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("new_session", r#"{"sessionId":"s-new"}"#),
+            ("get_state", r#"{"sessionId":"s-new"}"#),
+            ("prompt", r#"{"runId":"r-1","acceptedState":"running"}"#),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        live.to_launchpad();
+        live.set_draft("second try".into(), 10);
+        live.apply(WbAction::Submit("second try".into())).await;
+
+        let commands = seen.lock().unwrap().clone();
+        assert!(
+            commands.iter().any(|command| command == "prompt"),
+            "{commands:?}"
+        );
+        let painted = live.chat.render_all(80).join("\n");
+        assert!(
+            painted.contains("second try"),
+            "the transcript keeps what was said:\n{painted}"
+        );
+    }
 
     fn row(id: &str, name: Option<&str>, cwd: &str) -> SessionSummary {
         SessionSummary {

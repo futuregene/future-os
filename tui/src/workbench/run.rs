@@ -905,10 +905,12 @@ async fn quit(
             live.notice = Some(notice.clone());
             continue;
         }
-        if matches!(action, WbAction::Submit(_)) {
-            // The surface clears nothing itself: the adapter owns the draft.
-            live.set_draft(String::new(), 0);
-        }
+        // The draft is *not* cleared here: `submit` reads the prompt, its folded
+        // pastes and its attachments out of it, and clears it itself once the
+        // prompt is actually on its way. Clearing first here made every submit
+        // read an empty draft and return without reaching the agent, and it also
+        // threw away the attachments — and when the session cannot be started
+        // the reader's text has to survive so it can be sent again.
         match live.apply(action).await {
             Outcome::Quit => return Ok(true),
             Outcome::Continue => {}
