@@ -347,6 +347,10 @@ pub(super) fn provider_upsert_message(
                 context_window: model.context_window,
                 max_tokens: model.max_tokens,
                 reasoning: Some(model.reasoning),
+                // The presence bit distinguishes "this client predates the field"
+                // (None → keep the stored list) from "clear it" (Some([])).
+                thinking_levels: model.thinking_levels.clone().unwrap_or_default(),
+                replace_thinking_levels: model.thinking_levels.as_ref().map(|_| true),
                 cost_input: model.cost.input,
                 cost_output: model.cost.output,
                 cost_cache_read: model.cost.cache_read,
@@ -365,13 +369,14 @@ pub(super) fn provider_upsert_message(
 /// …) is preserved across an edit — mirroring the agent's
 /// `apply_provider_upsert`, which the production RPC path uses.
 #[cfg(test)]
-const MANAGED_MODEL_FIELDS: [&str; 7] = [
+const MANAGED_MODEL_FIELDS: [&str; 8] = [
     "id",
     "name",
     "modalities",
     "contextWindow",
     "maxTokens",
     "reasoning",
+    "thinkingLevels",
     "cost",
 ];
 
@@ -459,14 +464,16 @@ fn apply_upsert_local(validated: &ValidatedCustomProvider) -> Result<(), AppErro
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
-        let mut models = model_json_values(&validated.models);
-        preserve_unmanaged_model_fields(
-            &mut models,
-            provider
-                .get("models")
-                .and_then(Value::as_array)
-                .map(Vec::as_slice),
-        );
+        // The stored `models` array serves two purposes here: unmanaged keys are
+        // merged back onto a same-id entry, and a model whose request omitted
+        // `thinkingLevels` keeps its stored list (mirroring the agent, which
+        // treats the absent proto presence bit as "preserve").
+        let previous_models = provider
+            .get("models")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice);
+        let mut models = model_json_values(&validated.models, previous_models);
+        preserve_unmanaged_model_fields(&mut models, previous_models);
         provider.insert("name".to_string(), Value::String(validated.name.clone()));
         provider.insert("api".to_string(), Value::String(validated.api.clone()));
         provider.insert(

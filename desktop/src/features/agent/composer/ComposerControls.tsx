@@ -4,7 +4,7 @@ import { ArrowUp, ChevronDown, Loader2, Paperclip, ShieldCheck, ShieldKeyhole, S
 import { useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../../components/ui/SelectMenu";
-import { localizedModelDescription, modelKey, modelLabel, modelOption, modelSupportsThinking, modelThinkingLevels, resolveThinkingLevel } from "../../../integrations/agent/agentClient";
+import { localizedModelDescription, modelKey, modelLabel, modelOption, modelThinkingLevels, resolveThinkingLevel } from "../../../integrations/agent/agentClient";
 import { automaticApprovalAvailable, effectiveApprovalTier } from "../../../integrations/agent/automaticApproval";
 import { requestModelCatalogRefresh } from "../../../integrations/agent/modelCatalogRefresh";
 import { useProviderNames } from "../../../integrations/agent/useProviderNames";
@@ -80,12 +80,12 @@ export function ComposerControls({ disabled, modelId, modelOptions, modelsEmptyR
   const providerNames = useProviderNames();
   const activeModelId = modelId || (modelOptions[0] ? modelKey(modelOptions[0]) : "");
   const activeModel = modelOption(activeModelId, modelOptions);
-  const supportsThinking = modelSupportsThinking(activeModelId, modelOptions);
-  // The levels this model offers: the ring and the menu both step through this
-  // one list, so a model that declares a subset cannot be stepped onto a level
-  // the agent would clamp away.
+  // The levels this model offers: the ring, the menu and the enabled state all
+  // read this one list, so a model offering exactly one level (`default` alone)
+  // is the only case with no choice to make.
   const thinkingRing = modelThinkingLevels(activeModelId, modelOptions);
-  const activeThinkingLevel = supportsThinking ? resolveThinkingLevel(thinkingLevel, activeModelId, modelOptions) : "off";
+  const supportsThinking = thinkingRing.length > 1;
+  const activeThinkingLevel = resolveThinkingLevel(thinkingLevel, activeModelId, modelOptions);
   // Localized thinking-level label; unknown levels fall back to the raw value.
   const thinkingLevelLabel = (level: string) => t(`composer.thinkingLevelLabels.${level}`, { defaultValue: level });
   /**

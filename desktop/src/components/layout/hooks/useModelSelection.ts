@@ -2,7 +2,7 @@ import type { AgentModelOption } from "../../../integrations/agent/agentClient";
 import type { StoredThread } from "../../../integrations/storage/threadStore";
 import { useEffect, useRef, useState } from "react";
 import i18n from "../../../i18n";
-import { defaultThinkingLevel, modelKey, modelOption, modelSupportsThinking, modelThinkingLevel, normalizeThinkingLevel, readLastUsedThinkingLevel, rememberLastUsedModel, rememberLastUsedThinkingLevel, resolveInitialModelId, resolveInitialThinkingLevel } from "../../../integrations/agent/agentClient";
+import { defaultThinkingLevel, modelKey, modelOption, modelThinkingLevel, normalizeThinkingLevel, readLastUsedThinkingLevel, rememberLastUsedModel, rememberLastUsedThinkingLevel, resolveInitialModelId, resolveInitialThinkingLevel, resolveThinkingLevel } from "../../../integrations/agent/agentClient";
 import { updateCachedAgentState, useCachedAgentState } from "../../../integrations/agent/agentStateCache";
 import { updateThreadModel, updateThreadThinkingLevel } from "../../../integrations/storage/threadStore";
 import { errorMessage } from "../../../lib/errors";
@@ -78,12 +78,17 @@ export function useModelSelection({
   const activeThreadModelId = activeThreadModel
     ? modelKey(activeThreadModel)
     : resolveInitialModelId(visibleModelOptions);
-  const effectiveDraftThinkingLevel = modelSupportsThinking(selectedModelId, visibleModelOptions) ? selectedThinkingLevel : "off";
-  const activeThinkingLevel = !modelSupportsThinking(activeThreadModelId, visibleModelOptions)
-    ? "off"
-    : activeThread
-      ? normalizeThinkingLevel(agentState?.thinkingLevel ?? modelThinkingLevel(activeThreadModelId, visibleModelOptions))
-      : effectiveDraftThinkingLevel;
+  // A stored level the model no longer offers (picked on another model, or a
+  // leftover from before the model narrowed its list) is displayed as the
+  // model's own starting level — the running agent clamps it the same way.
+  const effectiveDraftThinkingLevel = resolveThinkingLevel(selectedThinkingLevel, selectedModelId, visibleModelOptions);
+  const activeThinkingLevel = activeThread
+    ? resolveThinkingLevel(
+        agentState?.thinkingLevel ?? modelThinkingLevel(activeThreadModelId, visibleModelOptions),
+        activeThreadModelId,
+        visibleModelOptions,
+      )
+    : effectiveDraftThinkingLevel;
 
   useEffect(() => {
     if (activeThread || draftThinkingModelRef.current === selectedModelId)
