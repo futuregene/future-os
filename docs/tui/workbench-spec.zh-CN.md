@@ -19,6 +19,8 @@
 3. Launchpad 首屏：大字 logo、大输入框、参数行（工作区/模型/强度/审批，可点击）、
    快捷入口、最近会话。
 4. 侧栏 2 个真实面板：最近（会话名、所在工作区、刷新时间）、工作区（同一批会话按桌面端的方式归档：置顶 / 工作区 / 对话会话）。
+   第三个 **文件** 浏览会话工作区的目录树：一次一层、目录**打开时才读**，`↑`/`↓` 走行，`←`/`→` 收/开，
+   `enter` 在目录上展开、在文件上预览。它的行与其它面板一样注册进 `HitMap`，所以点哪行就开哪行。
 5. 状态栏真实指标：模型 · 强度 · cwd · git 分支 · 上下文占用条 · token · 费用/缓存。
 6. `/` 命令面板（带说明、Tab 补全）、`?` 帮助覆盖层、`/` 过滤、历史 ↑↓。
 7. 主题：内置六套 256 色——`dark` / `light` / `one-dark` / `one-light` /
@@ -55,6 +57,8 @@ tui/src/workbench/launchpad.rs  // 首屏
 tui/src/workbench/screen.rs     // 全屏合成：header/body/sidebar/input/status
 tui/src/workbench/panels.rs     // 侧栏 2 面板的渲染（纯函数，输入同一个行模型）
 tui/src/workbench/picker.rs     // /model、/thinking、/mode、/workspace、/theme、/sessions、/lang 的选择器覆盖层
+tui/src/workbench/files.rs      // 文件面板的目录树，以及一个路径能预览成什么
+tui/src/workbench/image_view.rs // 图片转半格：适配、缩放、平移
 tui/src/workbench/state.rs      // WorkbenchData / TodoItem / SessionRow / UsageData
 tui/src/workbench/demo.rs       // 演示数据（截图/自测用，不连 agent）
 tui/examples/workbench_demo.rs  // 打印任意尺寸的一帧 + 鼠标自测
@@ -161,7 +165,8 @@ TUI 不使用 logo 或图标。聊天页眉的字标 `FUTURE OS` 用 block 字�
 
 沿用现有全局键位；新增/覆盖：
 `ctrl+m` 模型选择器；`ctrl+t` 思考强度选择器；`ctrl+s` 审批模式选择器；`ctrl+l` 工作区选择器；
-`ctrl+1` / `ctrl+2` 侧栏两个页签；
+`ctrl+1` / `ctrl+2` / `ctrl+3` 侧栏三个页签；`ctrl+v` 读剪贴板（图片成为草稿附件，文字粘进草稿）；
+`alt+v` 预览草稿里最新那张图片；
 `ctrl+b` 侧栏开/聚焦/关（侧栏外沿的 `›` 按钮一键等效，收起后在**同一列**留一个 `‹` 把它叫回）；
 `tab` 面板内焦点；`shift+tab` 反向；
 `ctrl+q` 折叠待办；`alt+z` 放大侧栏；`/` 命令面板；`?` 帮助；`esc` 逐层关闭。
@@ -219,8 +224,19 @@ TUI 不使用 logo 或图标。聊天页眉的字标 `FUTURE OS` 用 block 字�
 
 ---
 
-## 5. 类型契约
+### 文本界面里的图片
 
+图片用**半格**画：每格一个 `▀`，前景是一对像素的上面那个，背景是下面那个。除了颜色不需要终端做
+任何事，所以任何 256 色终端都能显示（不需要 kitty graphics、iTerm2 图片或 sixel），终端上报真彩色
+时用 24 位色。它是**预览**：几百列宽对照片是缩略图，对截图则足够看清。
+
+解码在适配层（`image`，与 agent、host、桌面端同一个 crate），每个文件只做一次，长边缩到 1024 像素：
+缩放重画的是手上已有的像素。文本预览按 `MAX_TEXT_PREVIEW_BYTES` 有界读取，并在字符边界上切。
+读不了的文件会在框里说明原因，而不是开一个空框。
+
+---
+
+## 5. 类型契约
 ```rust
 pub struct WorkbenchData {
     pub app_name: String, pub version: String,
@@ -234,6 +250,8 @@ pub struct WorkbenchData {
     pub skills: Vec<SkillRow>,
     pub jobs: Vec<JobRow>,
     pub models: Vec<ModelChoice>,      // id/label/provider/context/thinking
+    pub tree: FileTree,                // 文件面板：可见行 + 哪些目录开着
+    pub preview: Option<PreviewView>,  // 预览框手里的东西（像素 / 文本 / 为什么不行）
     pub messages: Vec<String>,         // 已渲染 ANSI 行（由 live 层提供）
     pub input: InputView,              // text + cursor byte offset + placeholder
     pub activity: Activity,            // idle|thinking|tool|streaming + detail

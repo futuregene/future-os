@@ -479,7 +479,12 @@ fn audit(surface: &Surface, (w, h): (u16, u16), verbose: bool) -> Result<usize, 
                 continue;
             }
             let neighbour = (surface.token)(*other);
-            if !neighbour.is_empty() && painted.contains(&neighbour) {
+            // A *standalone* appearance: `/mode` is a prefix of `/model`, and a
+            // row that draws `/model` obviously contains the string `/mode`. The
+            // question this check asks is whether two records' names are drawn
+            // as two names, so an occurrence that continues into a longer word
+            // is the same name, not the neighbour.
+            if !neighbour.is_empty() && draws_apart(&painted, &neighbour) {
                 return Err(format!("row {y} draws both {token:?} and {neighbour:?}"));
             }
         }
@@ -720,6 +725,24 @@ fn cursor(wb: &Workbench, surface: &Surface) -> Option<usize> {
 }
 
 /// Rows that carry the selection arrow *and* belong to a record. The box's own
+/// Does `row` draw `token` as a word of its own?
+///
+/// The occurrence must not continue into a longer name: `/mode` sits inside
+/// `/model`, and a row that prints the longer model command has not printed the
+/// shorter mode command. The character after the token is what decides it.
+fn draws_apart(row: &str, token: &str) -> bool {
+    let mut from = 0;
+    while let Some(found) = row[from..].find(token) {
+        let start = from + found;
+        let after = row[start + token.len()..].chars().next();
+        if !after.is_some_and(|ch| ch.is_alphanumeric() || ch == '_' || ch == '-') {
+            return true;
+        }
+        from = start + token.len();
+    }
+    false
+}
+
 /// title line is not a record, so the diff navigator's header arrow is excluded
 /// by construction.
 fn marker_rows(rows: &[String], visible: &[(usize, u16)]) -> Vec<usize> {

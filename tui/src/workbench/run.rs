@@ -740,6 +740,9 @@ async fn quit(
                 Some(super::preferences::Action::Refresh) => {
                     live.refresh_sessions().await;
                     live.refresh_state().await;
+                    // The tree is a live view of a directory a build may have
+                    // written to since it was read.
+                    live.refresh_tree();
                     return Ok(false);
                 }
                 _ => {}
@@ -844,6 +847,13 @@ async fn quit(
                     copy_last(live).await;
                     continue;
                 }
+                "/paste" => {
+                    // The typed door to the clipboard, for terminals that take
+                    // `ctrl+v` for themselves (Windows Terminal pastes with it,
+                    // so the key never arrives here).
+                    live.paste_clipboard().await;
+                    continue;
+                }
                 "/mouse" => {
                     toggle_mouse(live, terminal, workbench, settings, settings_path);
                     continue;
@@ -926,6 +936,21 @@ async fn quit(
             live.notice = Some(live.set_workspace_pinned(path, *pinned));
             settings.pinned_workspaces = Some(live.pinned_workspaces().to_vec());
             save_settings(settings_path, settings);
+            continue;
+        }
+        // The preview box is the driver's to open: the adapter reads the bytes
+        // and the surface paints them, but only this loop knows both.
+        if let WbAction::PreviewFile(path) = &action {
+            live.load_preview(path).await;
+            workbench.reset_preview();
+            workbench.overlay = Some(super::Overlay::FilePreview);
+            continue;
+        }
+        if matches!(action, WbAction::PreviewAttachment) {
+            if live.load_attachment() {
+                workbench.reset_preview();
+                workbench.overlay = Some(super::Overlay::FilePreview);
+            }
             continue;
         }
         if matches!(action, WbAction::OpenQueue) {

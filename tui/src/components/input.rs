@@ -420,6 +420,17 @@ impl Input {
         self.image_support = supported;
     }
 
+    /// How many images this draft carries, for a composer title that says so.
+    ///
+    /// A count rather than the list: the title is drawn every frame, and the
+    /// attachment metadata (paths, names) is not what it needs.
+    pub fn image_attachment_count(&self) -> usize {
+        self.attachments
+            .iter()
+            .filter(|attachment| attachment.kind == "image")
+            .count()
+    }
+
     /// Attach an image (already sniffed as one) and put its marker at the
     /// cursor. The attachment is pushed before the marker so the undo snapshot
     /// `insert_at_cursor` takes describes the state without it; undoing the

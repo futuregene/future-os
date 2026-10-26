@@ -2189,6 +2189,7 @@ dependencies = [
  "future-rpc",
  "future-tasks",
  "futures-util",
+ "image",
  "libc",
  "parking_lot",
  "pulldown-cmark",

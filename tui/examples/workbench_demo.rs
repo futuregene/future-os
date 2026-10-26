@@ -147,6 +147,28 @@ fn main() {
                     _ => PanelId::Recent,
                 };
             }
+            "files" => {
+                workbench.panel = PanelId::Files;
+                workbench.sidebar_focus = true;
+            }
+            // `--overlay preview` shows the picture box at the same size a
+            // reader's `enter` on an image gives, with the demo gradient in it.
+            "preview" => {
+                data.preview = Some(demo::preview_image());
+                workbench.overlay = Some(Overlay::FilePreview);
+            }
+            "preview-text" => {
+                data.preview = Some(future_tui::workbench::state::PreviewView::Text {
+                    path: "docs/guide/tui.md".into(),
+                    lines: (1..=40)
+                        .map(|n| {
+                            format!("{n:>3} │ the quick brown fox jumps over the lazy dog ≈ {n}")
+                        })
+                        .collect(),
+                    truncated: true,
+                });
+                workbench.overlay = Some(Overlay::FilePreview);
+            }
             "help" | "palette" | "preferences" => {
                 workbench.surface_command(&format!("/{name}"), &data);
             }

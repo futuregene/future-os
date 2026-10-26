@@ -23,6 +23,7 @@ use std::time::Instant;
 use serde_json::Value;
 
 use crate::components::chat_area::{ChatArea, ChatMessage, ChatRole, ReplyDetail};
+use crate::paste;
 use crate::rpc::types::{
     AgentEvent, ModelInfo, PendingApprovalState, RpcSessionState, SessionEntriesPage,
     SessionSummary,
@@ -32,8 +33,8 @@ use crate::rpc::GrpcClient;
 use super::i18n::{self, t, Key, Language, LanguagePreference};
 use super::layout::Frame;
 use super::state::{
-    Activity, ActivityKind, InputView, ModelChoice, QueuedPrompt, SessionMeta, SessionRow,
-    SkillRow, UsageData, WorkbenchData, WorkspaceGroup, THINKING_LEVELS,
+    Activity, ActivityKind, InputView, ModelChoice, PreviewView, QueuedPrompt, SessionMeta,
+    SessionRow, SkillRow, UsageData, WorkbenchData, WorkspaceGroup, THINKING_LEVELS,
 };
 use super::WbAction;
 
@@ -74,12 +75,13 @@ struct Paging {
 /// ([`super::Workbench::surface_command`]) and this list have to account for
 /// every entry exactly once. That is the check whose absence let five entries
 /// advertise themselves and then answer `Unknown command`.
-pub const APP_COMMANDS: [&str; 15] = [
+pub const APP_COMMANDS: [&str; 16] = [
     "/new",
     "/reply-detail",
     "/export",
     "/quit",
     "/copy",
+    "/paste",
     "/mouse",
     "/compact",
     "/tools",
@@ -182,6 +184,14 @@ pub struct Live {
     files: Vec<String>,
     /// Which directory `files` describes, so a session that moved reloads them.
     files_for: String,
+    /// The 文件 panel's tree, rooted at the session workspace. Re-scanned when
+    /// the directory moves and when the reader asks for it — never per frame.
+    tree: crate::workbench::files::FileTree,
+    /// What the preview box is holding, if anything.
+    preview: Option<PreviewView>,
+    /// The clipboard reader. Holds the directory its temporary images go to; a
+    /// capture that finds no image leaves nothing behind.
+    clipboard: paste::ClipboardCapture,
 }
 
 impl Live {
@@ -256,6 +266,9 @@ impl Live {
                 .unwrap_or_default(),
             files: Vec::new(),
             files_for: String::new(),
+            tree: crate::workbench::files::FileTree::default(),
+            preview: None,
+            clipboard: paste::ClipboardCapture::default(),
         };
 
         if let Some(id) = session.filter(|id| !id.is_empty()) {
@@ -314,6 +327,9 @@ impl Live {
         if self.files_for != self.local_cwd {
             self.files = super::local::workspace_files(std::path::Path::new(&self.local_cwd));
             self.files_for = self.local_cwd.clone();
+            // The file panel's tree follows the workspace: a session that moved
+            // (a worktree switch, a new cwd) must not keep showing the old one.
+            self.tree = super::files::FileTree::scan(&self.local_cwd);
         }
         // The header's second line names the workspace *and its branch*. The
         // cache keys on the cwd, so this is a no-op on every refresh that did
@@ -966,6 +982,8 @@ impl Live {
                 tps: self.live_tps(),
             },
             files: self.files.clone(),
+            tree: self.tree.clone(),
+            preview: self.preview.clone(),
             sessions: rows,
             workspaces,
             chats,
@@ -1087,6 +1105,14 @@ impl Live {
             WbAction::Compact(instructions) => self.compact(instructions).await,
             WbAction::SetApproval(mode) => self.set_approval(&mode).await,
             WbAction::SelectWorkspace(path) => self.select_workspace(&path).await,
+            WbAction::ToggleFolder(path) => self.toggle_folder(&path),
+            WbAction::RefreshFiles => self.refresh_tree(),
+            // The preview itself is opened by the driver, which owns the
+            // overlay; loading the bytes is ours.
+            WbAction::PreviewFile(path) => self.load_preview(&path).await,
+            WbAction::PasteClipboard => self.paste_clipboard().await, // The box is the driver's to open (`run::quit`): this layer reads
+            // the bytes, the surface paints them.
+            WbAction::PreviewAttachment => {}
             WbAction::SetTools(tools) => match self.client.set_tools(&tools).await {
                 Ok(()) => self.notice = Some(t(self.lang, Key::ToolsDone).into()),
                 Err(error) => {
@@ -1249,6 +1275,7 @@ impl Live {
             "quit" => return Outcome::Quit,
             "queue" => self.refresh_state().await,
             "copy" | "mouse" => {}
+            "paste" => self.paste_clipboard().await,
             "new" => {
                 self.notice = None;
                 // `/new` is the launchpad, not an immediate session: the
@@ -1926,6 +1953,124 @@ impl Live {
         }
     }
 
+    // ─── the 文件 panel, the preview box and the clipboard ──────────────
+
+    /// Open or close a directory in the tree.
+    ///
+    /// The toggle is the *adapter's* because it reads the disk: the surface asked
+    /// for it by path (that is `WbAction::ToggleFolder`), and the next frame
+    /// paints whatever came back.
+    pub fn toggle_folder(&mut self, path: &str) {
+        let path = std::path::Path::new(path);
+        self.tree.toggle(path);
+        if let Some(error) = self.tree.error.clone() {
+            // A directory that cannot be read is worth a notice; the tree keeps
+            // the rest of its rows.
+            self.notice = Some(error);
+        }
+    }
+
+    /// Read a file for the preview box.
+    pub async fn load_preview(&mut self, path: &str) {
+        let path = path.to_string();
+        let kind = super::files::preview_kind(std::path::Path::new(&path));
+        let loaded = tokio::task::spawn_blocking(move || read_preview(&path, kind)).await;
+        match loaded {
+            Ok(view) => {
+                self.preview = Some(view);
+                self.notice = None;
+            }
+            Err(error) => {
+                self.preview = Some(PreviewView::Unavailable {
+                    path: String::new(),
+                    reason: error.to_string(),
+                });
+            }
+        }
+    }
+
+    /// Show the newest image already attached to the draft.
+    ///
+    /// Nothing is read from the clipboard here: the attachment's path came from
+    /// the paste (a capture's own file, or a path the reader pasted), and the
+    /// preview loader takes it from there. Returns whether a preview was set, so
+    /// the driver knows whether there is a box to open.
+    pub fn load_attachment(&mut self) -> bool {
+        let attachments = self.draft.editor.pending().attachments().to_vec();
+        match attachments
+            .iter()
+            .rev()
+            .find(|attachment| attachment.kind == "image")
+        {
+            Some(attachment) => {
+                let path = attachment.path.clone();
+                // The load is synchronous here so the key has one meaning: the
+                // box is about to open, and a preview that arrives a frame later
+                // would open empty. A picture that big is already capped by the
+                // decoder's own downscale.
+                let kind = super::files::preview_kind(std::path::Path::new(&path));
+                self.preview = Some(read_preview(&path, kind));
+                self.notice = None;
+                true
+            }
+            None => {
+                self.notice = Some(t(self.lang, Key::PreviewNothing).into());
+                false
+            }
+        }
+    }
+
+    /// Read the clipboard: an image becomes a draft attachment (the same
+    /// `[Image #N]` marker a pasted image path produces), text is pasted.
+    pub async fn paste_clipboard(&mut self) {
+        let capture = self.clipboard.clone();
+        let os = std::env::consts::OS;
+        let pid = std::process::id();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let outcome = tokio::task::spawn_blocking(move || capture.capture(os, pid, now)).await;
+        match outcome {
+            Ok(paste::ClipboardPaste::Image { path, .. }) => {
+                // `insert_text` on an image path is the existing attach road:
+                // one marker, one attachment, one entry in the attachment line.
+                let mut editor = self.draft.editor.clone();
+                editor.paste(&path);
+                self.draft = InputView::from_editor(editor, self.draft.placeholder.clone());
+                self.notice = None;
+            }
+            Ok(paste::ClipboardPaste::Text(text)) => {
+                let mut editor = self.draft.editor.clone();
+                editor.paste(&text);
+                self.draft = InputView::from_editor(editor, self.draft.placeholder.clone());
+                self.notice = None;
+            }
+            Ok(paste::ClipboardPaste::Unavailable(reason)) if reason.is_empty() => {
+                self.notice = Some(t(self.lang, Key::NoticeClipboardEmpty).into());
+            }
+            Ok(paste::ClipboardPaste::Unavailable(reason)) => {
+                self.notice = Some(i18n::render(
+                    self.lang,
+                    Key::NoticeClipboardUnavailable,
+                    &[&reason],
+                ));
+            }
+            Err(error) => {
+                self.notice = Some(i18n::render(
+                    self.lang,
+                    Key::NoticeClipboardUnavailable,
+                    &[&error.to_string()],
+                ));
+            }
+        }
+    }
+
+    /// Re-read the tree, keeping the open directories (`alt+r`).
+    pub fn refresh_tree(&mut self) {
+        self.tree.rescan();
+    }
+
     pub async fn create_worktree_with<F>(&mut self, create: F)
     where
         F: FnOnce() -> Result<crate::worktree::WorktreeCreated, String>,
@@ -2084,6 +2229,106 @@ fn file_sessions(
     // the newest-activity order the rows already carry.
     groups.sort_by_key(|group| !group.pinned);
     (groups, chats)
+}
+
+/// The longest side a preview image is decoded to, in pixels.
+///
+/// The renderer draws at most a couple of hundred cells wide, so anything past
+/// this is detail nobody can see — and a 4000×3000 photo kept at full size is
+/// 48 MB of RGBA in the surface's own state. One downscale at load time keeps a
+/// zoom cheap and the frame's memory flat.
+pub const MAX_PREVIEW_IMAGE_PX: u32 = 1024;
+
+/// Read `path` as the preview box will show it.
+///
+/// Runs on a blocking thread (see [`Live::load_preview`]): reading a file and
+/// decoding a picture are both disk/CPU work, and the event loop must keep
+/// painting while they happen.
+pub fn read_preview(path: &str, kind: super::files::PreviewKind) -> PreviewView {
+    use super::files::PreviewKind;
+    let preview = || -> Result<PreviewView, String> {
+        match kind {
+            PreviewKind::Image => {
+                let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+                let image = image::load_from_memory(&bytes).map_err(|error| error.to_string())?;
+                let image = if image.width() > MAX_PREVIEW_IMAGE_PX
+                    || image.height() > MAX_PREVIEW_IMAGE_PX
+                {
+                    image.resize(
+                        MAX_PREVIEW_IMAGE_PX,
+                        MAX_PREVIEW_IMAGE_PX,
+                        image::imageops::FilterType::Triangle,
+                    )
+                } else {
+                    image
+                };
+                let rgba = image.to_rgba8();
+                Ok(PreviewView::Image {
+                    path: path.to_string(),
+                    pixels: super::image_view::ImagePixels {
+                        width: rgba.width() as usize,
+                        height: rgba.height() as usize,
+                        rgba: rgba.into_raw(),
+                    },
+                })
+            }
+            PreviewKind::Markdown => {
+                let (text, _) = read_text(path)?;
+                Ok(PreviewView::Markdown {
+                    path: path.to_string(),
+                    text,
+                })
+            }
+            PreviewKind::Text => {
+                let (text, truncated) = read_text(path)?;
+                Ok(PreviewView::Text {
+                    path: path.to_string(),
+                    lines: text.lines().map(str::to_string).collect(),
+                    truncated,
+                })
+            }
+            PreviewKind::Opaque => Ok(PreviewView::Unavailable {
+                path: path.to_string(),
+                // Empty: the box's own "nothing to preview" line is the text,
+                // and it is drawn in the reader's language.
+                reason: String::new(),
+            }),
+        }
+    };
+    preview().unwrap_or_else(|reason| PreviewView::Unavailable {
+        path: path.to_string(),
+        reason,
+    })
+}
+
+/// Read at most [`files::MAX_TEXT_PREVIEW_BYTES`] of a file as text.
+///
+/// Bounded on the *read*, not after it: a 2 GB log is never in memory, and a
+/// preview is not a reason to build it.
+fn read_text(path: &str) -> Result<(String, bool), String> {
+    use std::io::Read;
+    let cap = super::files::MAX_TEXT_PREVIEW_BYTES as usize;
+    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut bytes: Vec<u8> = Vec::with_capacity(cap.min(64 * 1024));
+    file.take(cap as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    let truncated = bytes.len() > cap;
+    let text = String::from_utf8_lossy(&bytes[..bytes.len().min(cap)]).to_string();
+    let (text, cut) = bound(&text, cap);
+    Ok((text, truncated || cut))
+}
+
+/// Cut `text` at a character boundary at or below `limit` bytes.
+fn bound(text: &str, limit: usize) -> (String, bool) {
+    if text.len() <= limit {
+        return (text.to_string(), false);
+    }
+    let mut cut = limit;
+    while cut > 0 && !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    (text[..cut].to_string(), true)
 }
 
 fn cache_percent(state: &RpcSessionState) -> u8 {
@@ -2719,6 +2964,96 @@ mod tests {
         assert!(!groups
             .iter()
             .any(|group| group.session_ids.contains(&"e".into())));
+    }
+
+    /// The preview loader: pictures become pixels, documents become lines, and
+    /// nothing it cannot read panics.
+    #[test]
+    fn a_preview_loads_pictures_documents_and_refusals() {
+        use crate::workbench::files::{preview_kind, PreviewKind};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let png = dir.path().join("shot.png");
+        std::fs::write(&png, png_bytes()).unwrap();
+        let path = png.to_string_lossy().to_string();
+        let view = read_preview(&path, preview_kind(&png));
+        match view {
+            PreviewView::Image { pixels, .. } => {
+                assert_eq!((pixels.width, pixels.height), (2, 2));
+                assert_eq!(pixels.rgba.len(), 16);
+            }
+            other => panic!("a png must decode into pixels: {other:?}"),
+        }
+
+        // Text keeps its lines, and a long file says it is long.
+        let text = dir.path().join("notes.txt");
+        std::fs::write(&text, "one\ntwo\n").unwrap();
+        let view = read_preview(&text.to_string_lossy(), preview_kind(&text));
+        match view {
+            PreviewView::Text {
+                lines, truncated, ..
+            } => {
+                assert_eq!(lines, vec!["one".to_string(), "two".to_string()]);
+                assert!(!truncated);
+            }
+            other => panic!("text must stay text: {other:?}"),
+        }
+        let long = dir.path().join("long.log");
+        std::fs::write(
+            &long,
+            "x".repeat(crate::workbench::files::MAX_TEXT_PREVIEW_BYTES as usize + 16),
+        )
+        .unwrap();
+        let view = read_preview(&long.to_string_lossy(), PreviewKind::Text);
+        match view {
+            PreviewView::Text { truncated, .. } => assert!(truncated),
+            other => panic!("{other:?}"),
+        }
+
+        // Markdown is kept as its source, so the box can render it.
+        let md = dir.path().join("README.md");
+        std::fs::write(&md, "# title\n").unwrap();
+        assert!(matches!(
+            read_preview(&md.to_string_lossy(), preview_kind(&md)),
+            PreviewView::Markdown { .. }
+        ));
+
+        // A file that is not there, and bytes that are not text, are both an
+        // answer rather than a panic.
+        assert!(matches!(
+            read_preview("/definitely/not/here.png", PreviewKind::Image),
+            PreviewView::Unavailable { .. }
+        ));
+        let binary = dir.path().join("blob.bin");
+        std::fs::write(&binary, [0u8, 1, 2, 3]).unwrap();
+        assert!(matches!(
+            read_preview(&binary.to_string_lossy(), PreviewKind::Opaque),
+            PreviewView::Unavailable { .. }
+        ));
+    }
+
+    /// Cutting a long document never splits a character: a preview that ends in
+    /// half a `中` would render as a replacement glyph.
+    #[test]
+    fn a_bounded_text_cut_keeps_whole_characters() {
+        let text = "中".repeat(10);
+        let (cut, truncated) = bound(&text, 7);
+        assert!(truncated);
+        assert_eq!(cut.len(), 6, "two three-byte characters fit in seven bytes");
+        assert_eq!(cut.chars().count(), 2);
+        let (whole, truncated) = bound("short", 64);
+        assert_eq!((whole.as_str(), truncated), ("short", false));
+    }
+
+    /// A real 2×2 PNG, encoded here: it has to decode, not just sniff.
+    fn png_bytes() -> Vec<u8> {
+        let mut image = image::RgbaImage::new(2, 2);
+        image.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        image.put_pixel(1, 1, image::Rgba([0, 0, 255, 255]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(&mut out, image::ImageFormat::Png)
+            .expect("encode");
+        out.into_inner()
     }
 
     #[test]

@@ -37,6 +37,10 @@ future-host = { path = "../host" }
 # read-only listing is used — the tick loop belongs to the host.
 future-tasks = { path = "../orchestration/tasks" }
 chrono = { workspace = true, features = ["clock"] }
+# Decoding for the preview box's pictures (`workbench/image_view.rs` draws them as
+# half blocks). The same crate the agent, the host and the desktop already link,
+# with the same formats — no new codec family for one surface.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
 # Windows terminal backend (terminal_windows.rs): console API for raw mode,
 # VT input/output, window size and input waits. Target-gated — POSIX uses libc.
