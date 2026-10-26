@@ -881,8 +881,10 @@ fn sidebar_rows(
     }
     let content = Rect::new(area.x, area.y + 1, area.w, area.h - 1);
     let index = workbench.panel.index();
-    let scroll = workbench.panel_scroll[index];
-    let selected = workbench.sidebar_index;
+    let view = panels::PanelView {
+        scroll: workbench.panel_scroll[index],
+        selected: workbench.sidebar_index,
+    };
     let lang = workbench.lang;
     let panel = workbench.panel;
     let body = panels::render(
@@ -890,8 +892,7 @@ fn sidebar_rows(
         data,
         palette,
         content,
-        scroll,
-        selected,
+        view,
         workbench.hit_map(),
         lang,
     );
@@ -1870,24 +1871,27 @@ fn panel_box(
     let lang = workbench.lang;
     let title = workbench.panel.label(lang);
     let panel = workbench.panel;
-    let area = Rect::new(0, 0, w.saturating_sub(6), h.saturating_sub(4).max(3));
+    // The body is painted at the *box's* inner width, not at "a bit less than
+    // the terminal": a row wider than the frame it goes into is clipped by
+    // `box_row`, so every full-width row ended in an ellipsis (the workspace
+    // headings and their counts were the first to go).
+    let box_w = box_width(w, PANEL_WIDTH);
+    let area = Rect::new(0, 0, box_w.saturating_sub(2), h.saturating_sub(4).max(3));
     let index = workbench.panel.index();
-    let scroll = workbench.panel_scroll[index];
-    let selected = workbench.sidebar_index;
-    let body = panels::render(
-        panel,
-        data,
-        palette,
-        area,
-        scroll,
-        selected,
-        workbench.hit_map(),
-        lang,
-    );
-    let geometry = box_geometry(w, h, 56, body.len());
+    let view = panels::PanelView {
+        scroll: workbench.panel_scroll[index],
+        selected: workbench.sidebar_index,
+    };
+    let body = panels::render(panel, data, palette, area, view, workbench.hit_map(), lang);
+    let geometry = box_geometry(w, h, PANEL_WIDTH, body.len());
     claim_box(workbench, &geometry);
     framed(palette, title, body, w, h, &geometry)
 }
+
+/// Width the full-screen panel asks for (`ctrl+b` on a terminal too narrow for
+/// the rail): a conversation list is read one row at a time, so this is wider
+/// than the rail and narrower than the screen.
+const PANEL_WIDTH: u16 = 64;
 
 /// Status-bar text for tests and for the app's window title: the same numbers
 /// the status row prints, without the painting.

@@ -261,7 +261,10 @@ pub enum WbAction {
     SetPreferences,
     /// The reader pinned (or unpinned) a workspace in the rail; the app records
     /// it and rebuilds the groups.
-    SetWorkspacePinned { path: String, pinned: bool },
+    SetWorkspacePinned {
+        path: String,
+        pinned: bool,
+    },
     /// Persist the effective shortcut map after a rebind or reset.
     SetKeybindings,
     /// Explain an action that could not be applied in the notice row.
@@ -1053,7 +1056,8 @@ impl Workbench {
     /// Put the rail's cursor on `row`, if that row holds a conversation.
     fn select_row(&mut self, row: Option<usize>, data: &WorkbenchData) {
         let rows = self.panel_rows(data);
-        if let Some(row) = row.filter(|row| rows.get(*row).is_some_and(|row| row.session().is_some()))
+        if let Some(row) =
+            row.filter(|row| rows.get(*row).is_some_and(|row| row.session().is_some()))
         {
             self.sidebar_index = row;
         } else if let Some(first) = panels::first_session(&rows, 0) {
@@ -1091,7 +1095,10 @@ impl Workbench {
     }
 
     /// The workspace the conversation under the cursor belongs to.
-    fn selected_workspace<'a>(&'a self, data: &'a WorkbenchData) -> Option<&'a state::WorkspaceGroup> {
+    fn selected_workspace<'a>(
+        &'a self,
+        data: &'a WorkbenchData,
+    ) -> Option<&'a state::WorkspaceGroup> {
         let rows = self.panel_rows(data);
         let session = rows.get(self.sidebar_index)?.session()?;
         let id = &data.sessions.get(session)?.id;
@@ -1124,7 +1131,11 @@ impl Workbench {
         // The cursor may stand on nothing yet (a fresh rail): start from the
         // conversation on screen so the first press moves *one* step.
         let from = match self.current_row(data) {
-            Some(current) if rows.get(self.sidebar_index).is_none_or(|row| row.session().is_none()) => {
+            Some(current)
+                if rows
+                    .get(self.sidebar_index)
+                    .is_none_or(|row| row.session().is_none()) =>
+            {
                 current
             }
             _ => self.sidebar_index,
@@ -2991,7 +3002,10 @@ mod tests {
         assert!(workbench.sidebar_focus, "the panel it names takes the keys");
         assert!(workbench.sidebar_visible);
         let text = plain(&workbench.render(&data, 120, 38));
-        assert!(text.contains("最近"), "the recent panel is on screen: {text}");
+        assert!(
+            text.contains("最近"),
+            "the recent panel is on screen: {text}"
+        );
 
         assert_eq!(
             workbench.surface_command("/workspaces", &data),
@@ -3156,8 +3170,14 @@ mod tests {
     fn the_session_keys_walk_the_rail_and_switch() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
-        let next = workbench.keys.key(preferences::Action::NextSession).to_string();
-        let previous = workbench.keys.key(preferences::Action::PrevSession).to_string();
+        let next = workbench
+            .keys
+            .key(preferences::Action::NextSession)
+            .to_string();
+        let previous = workbench
+            .keys
+            .key(preferences::Action::PrevSession)
+            .to_string();
         assert_eq!(
             workbench.handle(WbEvent::Key(next.clone()), &data),
             vec![WbAction::SwitchSession(data.sessions[1].id.clone())]
@@ -3181,7 +3201,10 @@ mod tests {
         let (mut workbench, _rows) = frame(&data, 120, 38);
         // Not in the rail: a letter in the draft, as always.
         let typed = workbench.handle(WbEvent::Key("p".into()), &data);
-        assert!(matches!(typed.as_slice(), [WbAction::EditEditor(_)]), "{typed:?}");
+        assert!(
+            matches!(typed.as_slice(), [WbAction::EditEditor(_)]),
+            "{typed:?}"
+        );
 
         workbench.handle(WbEvent::Key("tab".into()), &data);
         workbench.sidebar_index = 0;
@@ -3277,7 +3300,8 @@ mod tests {
 
     /// Where the divider is painted, resolved from the hit map of the last frame
     /// — the same coordinate a click arrives in.
-    fn divider_x(workbench: &Workbench) -> u16 {        workbench
+    fn divider_x(workbench: &Workbench) -> u16 {
+        workbench
             .hits()
             .regions()
             .iter()
@@ -3839,7 +3863,10 @@ mod tests {
         // tabs the rail does, starting on 最近.
         let text = plain(&workbench.render(&data, 70, 24));
         assert!(text.contains("最近"), "{text}");
-        assert!(text.contains("future-os"), "a workspace in the list: {text}");
+        assert!(
+            text.contains("future-os"),
+            "a workspace in the list: {text}"
+        );
     }
 
     #[test]

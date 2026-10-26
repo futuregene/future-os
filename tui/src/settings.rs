@@ -125,7 +125,12 @@ impl TuiSettings {
         if let Some(pinned) = &self.pinned_workspaces {
             obj.insert(
                 "pinnedWorkspaces".into(),
-                Value::Array(pinned.iter().map(|path| Value::String(path.clone())).collect()),
+                Value::Array(
+                    pinned
+                        .iter()
+                        .map(|path| Value::String(path.clone()))
+                        .collect(),
+                ),
             );
         }
         Value::Object(obj)

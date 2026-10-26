@@ -150,16 +150,27 @@ pub fn step_session(rows: &[Row], from: usize, delta: i32) -> Option<usize> {
     }
 }
 
+/// Where the panel's window starts and which row its cursor stands on, in
+/// `rows(panel, data)` indices. One value because the two move together: the
+/// window follows the cursor, and a caller that could set one without the other
+/// could hide the row it just selected.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PanelView {
+    pub scroll: usize,
+    /// The row the rail's cursor is on; only a conversation row holds it.
+    pub selected: usize,
+}
+
 pub fn render(
     panel: PanelId,
     data: &WorkbenchData,
     palette: &Palette,
     area: Rect,
-    scroll: usize,
-    selected: usize,
+    view: PanelView,
     hit: &mut HitMap,
     lang: Language,
 ) -> Vec<String> {
+    let PanelView { scroll, selected } = view;
     if area.is_empty() {
         return Vec::new();
     }
@@ -178,31 +189,70 @@ pub fn render(
     let body_rows = rows.saturating_sub(HEADING_ROWS);
     let items = item_rows(panel, data, palette, columns, lang);
     let total = items.len();
-    // The window: `scroll` items in, and the last row is spent on an indicator
-    // when more remain below.
-    let mut visible = if total.saturating_sub(scroll) > body_rows {
-        body_rows.saturating_sub(1)
-    } else {
-        body_rows
-    };
+
+    // The window: `scroll` items in, filled a whole item at a time (a
+    // conversation's second row is never painted without its first), and the
+    // last blank row is spent on an indicator when more remain below.
+    let mut visible = 0usize;
+    let mut used = 0usize;
+    while scroll + visible < total {
+        let height = items[scroll + visible].len();
+        // Reserve one row for the "more" indicator when this is not the end.
+        let reserve = usize::from(scroll + visible + 1 < total);
+        if used + height + reserve > body_rows {
+            break;
+        }
+        used += height;
+        visible += 1;
+    }
     // A selection the window cannot hold scrolls the window, not the row: the
     // reader asked for a row, so the row is what has to be on screen.
-    let mut start = scroll.min(total.saturating_sub(visible.min(total)));
-    if visible > 0 && selected >= start + visible {
-        start = selected + 1 - visible;
-        visible = visible.min(total.saturating_sub(start));
+    let mut start = scroll;
+    if selected >= start + visible && visible > 0 {
+        // Walk back from the selection until it fits.
+        let mut begin = selected;
+        let mut needed = items[selected].len();
+        while begin > 0 {
+            let next = items[begin - 1].len();
+            if needed + next > body_rows {
+                break;
+            }
+            needed += next;
+            begin -= 1;
+        }
+        start = begin;
+        visible = 0;
+        used = 0;
+        while start + visible < total {
+            let height = items[start + visible].len();
+            let reserve = usize::from(start + visible + 1 < total);
+            if used + height + reserve > body_rows {
+                break;
+            }
+            used += height;
+            visible += 1;
+        }
+        // The selection must be inside the window it scrolled for.
+        while selected >= start + visible && !items.is_empty() {
+            start += 1;
+        }
     }
+
+    let mut painted = 0usize;
     for offset in 0..visible {
         let index = start + offset;
-        let Some(text) = items.get(index) else { break };
-        let y = area.y + (HEADING_ROWS + offset) as u16;
-        hit.push(
-            Rect::new(area.x, y, area.w, 1),
-            format!("sidebar.row.{index}"),
-        );
-        lines.push(palette.panel_row(&fit(text, columns), columns));
+        let Some(item) = items.get(index) else { break };
+        for text in item {
+            let y = area.y + (HEADING_ROWS + painted) as u16;
+            hit.push(
+                Rect::new(area.x, y, area.w, 1),
+                format!("sidebar.row.{index}"),
+            );
+            lines.push(palette.panel_row(&fit(text, columns), columns));
+            painted += 1;
+        }
     }
-    if visible < body_rows {
+    if painted < body_rows {
         if total > start + visible {
             let more = total - start - visible;
             lines.push(palette.panel_row(
@@ -233,17 +283,23 @@ fn summary(panel: PanelId, data: &WorkbenchData, lang: Language) -> String {
     }
 }
 
-/// One text row per item, already colourised, clipped to `columns`.
+/// Each item's painted rows, already colourised and clipped to `columns`.
+///
+/// An item is one row or two: 最近 prints the conversation's name and, beneath
+/// it, the workspace it is filed under and when it was refreshed — three facts
+/// that do not fit one 34-column row without shredding the name. Under a
+/// workspace heading the heading already names the workspace, so there the
+/// conversation is one row: its name and its age.
 fn item_rows(
     panel: PanelId,
     data: &WorkbenchData,
     palette: &Palette,
     columns: usize,
     lang: Language,
-) -> Vec<String> {
+) -> Vec<Vec<String>> {
     let model = rows(panel, data);
     if model.is_empty() {
-        return vec![palette.dim(&format!(
+        return vec![vec![palette.dim(&format!(
             "  {}",
             t(
                 lang,
@@ -252,19 +308,19 @@ fn item_rows(
                     PanelId::Workspaces => Key::PanelEmptyWorkspaces,
                 }
             )
-        ))];
+        ))]];
     }
     model
         .iter()
         .map(|row| match row {
-            Row::Section(section) => section_row(*section, palette, columns, lang),
+            Row::Section(section) => vec![section_row(*section, palette, columns, lang)],
             Row::Workspace(index) => match data.workspaces.get(*index) {
-                Some(workspace) => workspace_row(workspace, palette, columns, lang),
-                None => palette.panel_row("", columns),
+                Some(workspace) => vec![workspace_row(workspace, palette, columns, lang)],
+                None => vec![palette.panel_row("", columns)],
             },
             Row::Session(index) => match data.sessions.get(*index) {
-                Some(session) => session_row(panel, session, palette, columns),
-                None => palette.panel_row("", columns),
+                Some(session) => session_rows(panel, session, palette, columns),
+                None => vec![palette.panel_row("", columns)],
             },
         })
         .collect()
@@ -311,50 +367,63 @@ fn workspace_row(
     )
 }
 
-fn session_row(
+/// A conversation's rows: `▸ name` and, in 最近, `workspace · age` beneath it.
+fn session_rows(
     panel: PanelId,
     session: &SessionRow,
     palette: &Palette,
     columns: usize,
-) -> String {
-    // Under a workspace heading the workspace name would only repeat the
-    // heading; 最近 has no heading per conversation, so there it names the
-    // workspace the conversation is filed under.
-    let tail_text = match panel {
-        PanelId::Recent => format!("{} · {}", session.workspace, session.age),
-        PanelId::Workspaces => session.age.clone(),
-    };
-    // The tail keeps whatever it needs, up to the point where the title would
-    // have nothing left: a workspace name cut to one character names nothing,
-    // and the title is what the reader is scanning.
-    let tail = fit(
-        &tail_text,
-        width(&tail_text).min(columns.saturating_sub(10).max(6)),
-    );
-    let tail_width = width(&tail);
-    let indent = usize::from(panel == PanelId::Workspaces);
+) -> Vec<String> {
     let marker = if session.current { "▸" } else { " " };
-    let title = fit(
-        &session.title,
-        columns.saturating_sub(2 + indent + tail_width),
-    );
-    let pad = columns.saturating_sub(2 + indent + width(&title) + tail_width);
-    let title = if session.current {
-        palette.strong(palette.accent, &title)
-    } else {
-        palette.body(&title)
-    };
     let marker = if session.current {
         palette.text(palette.accent, marker)
     } else {
         palette.dim(marker)
     };
-    format!(
-        " {marker}{}{title}{}{}",
-        " ".repeat(indent),
-        " ".repeat(pad),
-        palette.dim(&tail)
-    )
+    let title = if session.current {
+        palette.strong(
+            palette.accent,
+            &fit(&session.title, columns.saturating_sub(2)),
+        )
+    } else {
+        palette.body(&fit(&session.title, columns.saturating_sub(2)))
+    };
+    match panel {
+        PanelId::Recent => {
+            // Three facts, two rows. The age is short and never worth cutting,
+            // so it is reserved and the *workspace* takes what is left; a path
+            // clipped at the end still reads as a path, a clipped age is `5`.
+            let room = columns.saturating_sub(3 + width(&session.age) + 3);
+            let workspace = fit(&session.workspace, room);
+            vec![
+                format!(" {marker}{title}"),
+                format!(
+                    "   {}",
+                    palette.dim(&fit(
+                        &format!("{workspace} · {}", session.age),
+                        columns.saturating_sub(3),
+                    ))
+                ),
+            ]
+        }
+        PanelId::Workspaces => {
+            let tail = fit(&session.age, (columns / 3).max(4));
+            let tail_width = width(&tail);
+            // ` marker ` is three cells (a space, the marker, a space).
+            let title = fit(&session.title, columns.saturating_sub(3 + tail_width));
+            let pad = columns.saturating_sub(3 + width(&title) + tail_width);
+            let title = if session.current {
+                palette.strong(palette.accent, &title)
+            } else {
+                palette.body(&title)
+            };
+            vec![format!(
+                " {marker} {title}{}{}",
+                " ".repeat(pad),
+                palette.dim(&tail)
+            )]
+        }
+    }
 }
 
 #[cfg(test)]
@@ -376,11 +445,19 @@ mod tests {
 
     fn panel_text(panel: PanelId, data: &WorkbenchData, lang: Language) -> String {
         let mut hit = HitMap::new();
-        render(panel, data, &P, area(20), 0, 0, &mut hit, lang)
-            .iter()
-            .map(|line| crate::utils::strip_ansi_codes(line))
-            .collect::<Vec<_>>()
-            .join("\n")
+        render(
+            panel,
+            data,
+            &P,
+            area(20),
+            PanelView::default(),
+            &mut hit,
+            lang,
+        )
+        .iter()
+        .map(|line| crate::utils::strip_ansi_codes(line))
+        .collect::<Vec<_>>()
+        .join("\n")
     }
 
     #[test]
@@ -389,7 +466,15 @@ mod tests {
         for panel in PanelId::ALL {
             for rows in [0u16, 1, 2, 3, 10, 30] {
                 let mut hit = HitMap::new();
-                let lines = render(panel, &data, &P, area(rows), 0, 0, &mut hit, LANG);
+                let lines = render(
+                    panel,
+                    &data,
+                    &P,
+                    area(rows),
+                    PanelView::default(),
+                    &mut hit,
+                    LANG,
+                );
                 assert_eq!(lines.len(), rows as usize, "{panel:?} at {rows} rows");
                 for line in &lines {
                     assert_eq!(width(line), 34, "{panel:?}: {line:?}");
@@ -403,7 +488,15 @@ mod tests {
         let data = demo::chat();
         for panel in PanelId::ALL {
             let mut hit = HitMap::new();
-            let lines = render(panel, &data, &P, Rect::new(0, 0, 1, 6), 0, 0, &mut hit, LANG);
+            let lines = render(
+                panel,
+                &data,
+                &P,
+                Rect::new(0, 0, 1, 6),
+                PanelView::default(),
+                &mut hit,
+                LANG,
+            );
             assert_eq!(lines.len(), 6);
             for line in &lines {
                 assert_eq!(width(line), 1, "{panel:?}: {line:?}");
@@ -422,8 +515,7 @@ mod tests {
             &data,
             &P,
             Rect::new(0, 0, 60, 20),
-            0,
-            0,
+            PanelView::default(),
             &mut hit,
             Language::Zh,
         )
@@ -485,15 +577,16 @@ mod tests {
             &data,
             &P,
             Rect::new(10, 4, 34, 12),
-            0,
-            0,
+            PanelView::default(),
             &mut hit,
             LANG,
         );
         assert!(!lines.is_empty());
-        // Heading occupies rows 4 and 5; the first item is row 6.
+        // Heading occupies rows 4 and 5. 最近 gives each conversation two rows,
+        // so both of the first one's rows answer as that one row.
         assert_eq!(hit.hit(12, 6), Some("sidebar.row.0"));
-        assert_eq!(hit.hit(12, 8), Some("sidebar.row.2"));
+        assert_eq!(hit.hit(12, 7), Some("sidebar.row.0"));
+        assert_eq!(hit.hit(12, 8), Some("sidebar.row.1"));
         assert_eq!(hit.hit(12, 5), None, "the blank heading row is not a row");
     }
 
@@ -513,7 +606,15 @@ mod tests {
             })
             .collect();
         let mut hit = HitMap::new();
-        let lines = render(PanelId::Recent, &data, &P, area(10), 0, 0, &mut hit, LANG);
+        let lines = render(
+            PanelId::Recent,
+            &data,
+            &P,
+            area(10),
+            PanelView::default(),
+            &mut hit,
+            LANG,
+        );
         let text: String = lines
             .iter()
             .map(|line| crate::utils::strip_ansi_codes(line))
@@ -524,7 +625,18 @@ mod tests {
 
         // Scrolled into the middle, the first row is no longer the first item.
         let mut hit = HitMap::new();
-        let lines = render(PanelId::Recent, &data, &P, area(10), 5, 0, &mut hit, LANG);
+        let lines = render(
+            PanelId::Recent,
+            &data,
+            &P,
+            area(10),
+            PanelView {
+                scroll: 5,
+                selected: 0,
+            },
+            &mut hit,
+            LANG,
+        );
         let text: String = lines
             .iter()
             .map(|line| crate::utils::strip_ansi_codes(line))
@@ -550,7 +662,18 @@ mod tests {
         let total = rows(PanelId::Recent, &data).len();
         assert!(total > 6);
         let mut hit = HitMap::new();
-        let lines = render(PanelId::Recent, &data, &P, area(8), 0, total - 1, &mut hit, LANG);
+        let lines = render(
+            PanelId::Recent,
+            &data,
+            &P,
+            area(8),
+            PanelView {
+                scroll: 0,
+                selected: total - 1,
+            },
+            &mut hit,
+            LANG,
+        );
         let text: String = lines
             .iter()
             .map(|line| crate::utils::strip_ansi_codes(line))

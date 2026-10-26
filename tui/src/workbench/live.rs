@@ -362,9 +362,10 @@ impl Live {
                 None => groups.push(WorkspaceGroup {
                     name: workspace_name(&path),
                     path,
-                    pinned: self.pinned_workspaces.iter().any(|pinned| {
-                        same_path(pinned, &summary.cwd)
-                    }),
+                    pinned: self
+                        .pinned_workspaces
+                        .iter()
+                        .any(|pinned| same_path(pinned, &summary.cwd)),
                     age: row.age.clone(),
                     session_ids: vec![row.id.clone()],
                 }),
@@ -378,7 +379,8 @@ impl Live {
 
     /// Pin or unpin one workspace, and answer what belongs on the notice row.
     pub fn set_workspace_pinned(&mut self, path: &str, pinned: bool) -> String {
-        self.pinned_workspaces.retain(|known| !same_path(known, path));
+        self.pinned_workspaces
+            .retain(|known| !same_path(known, path));
         if pinned {
             self.pinned_workspaces.push(path.to_string());
         }

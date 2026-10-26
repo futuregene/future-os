@@ -319,11 +319,7 @@ mod tests {
 
     #[test]
     fn every_scenario_is_reachable_by_name() {
-        for scenario in [
-            Scenario::Launchpad,
-            Scenario::Chat,
-            Scenario::Workspaces,
-        ] {
+        for scenario in [Scenario::Launchpad, Scenario::Chat, Scenario::Workspaces] {
             assert_eq!(Scenario::parse(scenario.name()), Some(scenario));
             assert_eq!(
                 Scenario::parse(&scenario.name().to_uppercase()),

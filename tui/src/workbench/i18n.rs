@@ -683,8 +683,11 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         Unspecified => ("未指定", "unset"),
 
         InputHintLaunchpad => (
-            "描述你要做的事 · @ 文件 · # 会话 · / 命令",
-            "Describe the task · @ files · # sessions · / commands",
+            // What the *draft* can hold that the box's own title does not say.
+            // `/ 命令` used to be here too, and then the title said it again one
+            // row above; the footer names the palette as well.
+            "描述你要做的事 · @ 文件 · # 会话",
+            "Describe the task · @ files · # sessions",
         ),
         ApprovalWaiting => (
             "等待批准：{}{} — y 允许 · n 拒绝",

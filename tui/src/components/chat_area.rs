@@ -1361,8 +1361,7 @@ impl ChatArea {
     /// The reading-level fold: in each settled reply, the work before its final
     /// answer — and the answer's own reasoning — is folded into one summary
     /// row. Heads point at the message that renders that row (the answer);
-    /// every other message of the folded stretch renders nothing.
-    ///
+    /// every other message of the folded stretch renders nothing.    ///
     /// A reply is the stretch of messages after a user or system row: the same
     /// unit the desktop and the phone call a reply, drawn from the transcript
     /// this client builds (one message per assistant/tool slice). Nothing
@@ -1393,6 +1392,14 @@ impl ChatArea {
 
     /// Fold one reply (`start..end`, exclusive) into its final answer, when it
     /// has settled and produced any prose at all.
+    ///
+    /// The whole reply folds — the work that produced the answer *and* whatever
+    /// ran after it. Before this, only the stretch above the answer folded, so a
+    /// reply whose last prose came before its last few calls (an interrupted
+    /// run, a turn that ended on a tool call) kept those rows: `ctrl+e` then read
+    /// as "only part of it folded", and scrolling up the unfolded calls were the
+    /// first thing in sight. A settled reply is one unit, and its summary row
+    /// counts all of the work.
     fn fold_reply_segment(
         messages: &[ChatMessage],
         start: usize,
@@ -1418,13 +1425,16 @@ impl ChatArea {
             .thinking
             .as_deref()
             .is_some_and(|text| !text.trim().is_empty());
-        if start == answer && !own_thoughts {
-            // Nothing was folded and the answer has no reasoning of its own:
-            // the reply is already just its output.
+        if answer == start && answer + 1 == end && !own_thoughts {
+            // The reply is already just its output: nothing to fold.
             return;
         }
         let mut summary = FoldSummary::default();
-        for (index, msg) in messages[start..answer].iter().enumerate() {
+        for index in start..end {
+            if index == answer {
+                continue;
+            }
+            let msg = &messages[index];
             match msg.role {
                 ChatRole::Tool => summary.tools += 1,
                 ChatRole::Assistant
@@ -1437,7 +1447,7 @@ impl ChatArea {
                 }
                 _ => {}
             }
-            heads[start + index] = answer;
+            heads[index] = answer;
         }
         if own_thoughts {
             summary.thoughts += 1;
@@ -3497,6 +3507,59 @@ mod tests {
         }
     }
 
+    /// A settled reply is one unit: the work *after* its last prose folds with
+    /// the work before it. A run that was interrupted (or that ended on a tool
+    /// call) leaves calls below its last answer, and folding only the stretch
+    /// above that answer is what made `ctrl+e` read as "only part of the
+    /// transcript collapsed" — scrolling up, those calls were the first rows in
+    /// sight. Measured on a real interrupted session (2026-10-26): 89 of a
+    /// reply's rows stayed while the other 296 folded.
+    #[test]
+    fn a_settled_reply_folds_the_work_that_follows_its_answer() {
+        let mut chat = new_chat();
+        chat.render(W);
+        set_messages(
+            &mut chat,
+            vec![
+                ChatMessage::new("u1".into(), ChatRole::User, "fix the parser"),
+                read_of("/src/parser.rs"),
+                ChatMessage::new("a1".into(), ChatRole::Assistant, "Fixed the off-by-one."),
+                // …and the run kept working, without producing any further prose.
+                read_of("/src/lib.rs"),
+                ChatMessage::new("a2".into(), ChatRole::Assistant, ""),
+                read_of("/tests/parser.rs"),
+            ],
+        );
+        assert_eq!(
+            compact_lines(&mut chat),
+            vec!["fix the parser", "▸ 3 tool calls", "Fixed the off-by-one.",]
+        );
+        assert_matches_fresh_render(&mut chat);
+
+        // The detailed level still keeps every row, including the trailing work.
+        chat.set_reply_detail(ReplyDetail::Detailed);
+        let open = compact_lines(&mut chat);
+        for path in ["/src/parser.rs", "/src/lib.rs", "/tests/parser.rs"] {
+            assert!(open.iter().any(|line| line.contains(path)), "{open:?}");
+        }
+    }
+
+    /// Just an answer with nothing around it folds nothing — there is no work to
+    /// stand in for, and a summary row counting zero calls would be noise.
+    #[test]
+    fn an_answer_with_no_work_around_it_gains_no_summary_row() {
+        let mut chat = new_chat();
+        chat.render(W);
+        set_messages(
+            &mut chat,
+            vec![
+                ChatMessage::new("u1".into(), ChatRole::User, "hello"),
+                ChatMessage::new("a1".into(), ChatRole::Assistant, "hi"),
+            ],
+        );
+        assert_eq!(compact_lines(&mut chat), vec!["hello", "hi"]);
+    }
+
     /// `/transcript` shows every slice whatever the screen folds away, and the
     /// screen's own layout is intact when it returns.
     #[test]
@@ -3800,6 +3863,11 @@ mod tests {
             ));
         }
         chat.render_all(W);
+        // The live turn starts the way a run does: the reader's prompt, then the
+        // assistant row its deltas land in. Without the prompt the new message
+        // would be the *tail* of the previous reply, and the first delta would
+        // legitimately re-fold that reply — a rebuild the steady state never sees.
+        chat.add_message(ChatMessage::new("u-live".into(), ChatRole::User, "next"));
         chat.add_message(ChatMessage::new("live".into(), ChatRole::Assistant, ""));
         let before = chat.full_renders();
 

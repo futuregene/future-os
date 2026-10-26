@@ -274,9 +274,7 @@ impl PanelId {
             // vocabulary is a way of asking for the file.
             .or(match id.to_ascii_lowercase().as_str() {
                 "sessions" | "session" => Some(Self::Recent),
-                "workspace" | "todo" | "jobs" | "usage" | "skills" => {
-                    Some(Self::Workspaces)
-                }
+                "workspace" | "todo" | "jobs" | "usage" | "skills" => Some(Self::Workspaces),
                 _ => None,
             })
     }
