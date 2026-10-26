@@ -27,6 +27,7 @@
 
 pub mod ansi;
 pub mod demo;
+pub mod diff_review;
 pub mod editor;
 pub mod git;
 pub mod i18n;
@@ -44,6 +45,7 @@ pub mod scroll;
 pub mod state;
 pub mod theme;
 pub mod widgets;
+pub mod workflows;
 
 use picker::{Picker, PickerKind, PickerRow};
 use state::{PanelId, WorkbenchData};
@@ -97,6 +99,12 @@ pub enum Overlay {
     /// `/model`, `/theme` or `/sessions`: the list picker.
     Picker(PickerKind),
     Queue,
+    Approval,
+    Diff,
+    History,
+    Tree,
+    Fork,
+    Worktree,
     /// Layout, density and the entry to the shortcut editor.
     Preferences,
     Keybindings,
@@ -125,6 +133,23 @@ pub enum WbAction {
     CopyLast,
     ToggleMouse,
     OpenQueue,
+    OpenApproval,
+    OpenDiff,
+    OpenHistory,
+    OpenTree,
+    OpenFork,
+    OpenWorktree,
+    ApprovalDecision {
+        approved: bool,
+        rule: bool,
+    },
+    SelectDiff(usize),
+    SelectWorktree(String),
+    ForkAt(String),
+    Compact(String),
+    SetPermission(String),
+    CycleSandbox,
+    SetTools(Vec<String>),
     CancelQueued(String),
     RecallQueued(String),
     /// `enter` on a non-empty draft.
@@ -250,6 +275,9 @@ pub struct Workbench {
     pub sidebar_w: u16,
     pub density: preferences::Density,
     pub sidebar_position: preferences::SidebarPosition,
+    pub reduced_motion: bool,
+    pub linear_reading: bool,
+    pub notify: crate::notifications::NotifyConfig,
     pub keys: preferences::Keybindings,
     pub preferences_index: usize,
     pub keybinding_index: usize,
@@ -270,6 +298,8 @@ pub struct Workbench {
     pub chat_scroll: usize,
     pub scroll: scroll::ScrollState,
     pub queue_index: usize,
+    pub workflow_index: usize,
+    pub history_query: String,
     session_key: String,
     pub mouse_capture: bool,
     pub(crate) composer_width: usize,
@@ -304,6 +334,9 @@ impl Workbench {
             sidebar_w: layout::SIDEBAR_DEFAULT,
             density: preferences::Density::Focused,
             sidebar_position: preferences::SidebarPosition::Right,
+            reduced_motion: false,
+            linear_reading: false,
+            notify: crate::notifications::NotifyConfig::default(),
             keys: preferences::Keybindings::default(),
             preferences_index: 0,
             keybinding_index: 0,
@@ -325,6 +358,8 @@ impl Workbench {
             chat_scroll: 0,
             scroll: scroll::ScrollState::default(),
             queue_index: 0,
+            workflow_index: 0,
+            history_query: String::new(),
             session_key: String::new(),
             mouse_capture: true,
             composer_width: 76,
@@ -344,6 +379,10 @@ impl Workbench {
             .sidebar_width
             .clamp(layout::SIDEBAR_MIN, layout::SIDEBAR_MAX);
         self.sidebar_visible = preferences.sidebar_visible;
+        self.mouse_capture = preferences.mouse_capture;
+        self.notify = preferences.notify;
+        self.reduced_motion = preferences.reduced_motion;
+        self.linear_reading = preferences.linear_reading;
     }
 
     pub fn preferences(&self) -> preferences::LayoutPreferences {
@@ -352,6 +391,10 @@ impl Workbench {
             sidebar_position: self.sidebar_position,
             sidebar_width: self.sidebar_w,
             sidebar_visible: self.sidebar_visible,
+            mouse_capture: self.mouse_capture,
+            notify: self.notify,
+            reduced_motion: self.reduced_motion,
+            linear_reading: self.linear_reading,
         }
     }
 
@@ -455,6 +498,12 @@ impl Workbench {
         self.tick / SPINNER_TICKS
     }
 
+    /// Linear reading is deliberately static too: no animated activity glyph
+    /// and no auxiliary rail, while streamed text still arrives immediately.
+    pub fn motion_enabled(&self) -> bool {
+        !self.reduced_motion && !self.linear_reading
+    }
+
     pub fn handle(&mut self, event: WbEvent, data: &WorkbenchData) -> Vec<WbAction> {
         match event {
             WbEvent::Tick => {
@@ -467,7 +516,8 @@ impl Workbench {
                 view.paste(&text);
                 vec![WbAction::EditEditor(Box::new(view))]
             }
-            WbEvent::Mouse(event) => self.handle_mouse(event, data),
+            WbEvent::Mouse(event) if data.mouse_capture => self.handle_mouse(event, data),
+            WbEvent::Mouse(_) => Vec::new(),
             WbEvent::Key(key) => self.handle_key(&key, data),
         }
     }
@@ -497,42 +547,37 @@ impl Workbench {
                 self.open_preferences();
                 return vec![WbAction::Redraw];
             }
+            Some(preferences::Action::Sidebar) => {
+                return self.toggle_sidebar();
+            }
+            Some(preferences::Action::Copy) => return vec![WbAction::CopyLast],
+            Some(preferences::Action::Queue) => return vec![WbAction::OpenQueue],
+            Some(preferences::Action::Mouse) => return vec![WbAction::ToggleMouse],
+            Some(preferences::Action::LinearReading) => {
+                self.linear_reading = !self.linear_reading;
+                self.sidebar_focus = false;
+                return vec![WbAction::SetPreferences];
+            }
+            Some(preferences::Action::ReduceMotion) => {
+                self.reduced_motion = !self.reduced_motion;
+                return vec![WbAction::SetPreferences];
+            }
             _ => {}
         }
         match key {
             "ctrl+q" => vec![WbAction::Quit],
             "f6" => vec![WbAction::CopyLast],
             "f7" => vec![WbAction::ToggleMouse],
-            "ctrl+g" => vec![WbAction::OpenQueue],
-            "ctrl+b" => {
-                // Hidden → shown and focused → shown and unfocused → hidden.
-                // Whether the sidebar *can* show is the terminal's width, not
-                // its current visibility: asking `layout` with a hidden sidebar
-                // reports "no sidebar", which used to open the full-screen
-                // overlay on a wide terminal right after the reader hid the
-                // rail. On a terminal too narrow for a rail the same key opens
-                // the panel full-screen instead, which is the only way to
-                // reach it there.
-                if !layout::sidebar_fits(self.last_frame.0) {
-                    self.overlay = match self.overlay {
-                        Some(Overlay::PanelFull) => None,
-                        _ => Some(Overlay::PanelFull),
-                    };
-                } else if !self.sidebar_visible {
-                    self.sidebar_visible = true;
-                    self.sidebar_focus = true;
-                } else if !self.sidebar_focus {
-                    self.sidebar_focus = true;
-                } else {
-                    self.sidebar_visible = false;
-                    self.sidebar_focus = false;
-                }
-                if layout::sidebar_fits(self.last_frame.0) {
-                    vec![WbAction::SetPreferences]
-                } else {
-                    vec![WbAction::Redraw]
-                }
+            "f8" => {
+                self.linear_reading = !self.linear_reading;
+                self.sidebar_focus = false;
+                vec![WbAction::SetPreferences]
             }
+            "f9" => {
+                self.reduced_motion = !self.reduced_motion;
+                vec![WbAction::SetPreferences]
+            }
+            "ctrl+g" => vec![WbAction::OpenQueue],
             "?" if data.input.text.is_empty() => {
                 self.overlay = Some(Overlay::Help);
                 self.overlay_scroll = 0;
@@ -545,7 +590,10 @@ impl Workbench {
             "tab" => {
                 if data.on_launchpad() {
                     self.launch_field = self.launch_field.next();
-                } else if self.sidebar_visible && layout::sidebar_fits(self.last_frame.0) {
+                } else if self.sidebar_visible
+                    && !self.linear_reading
+                    && layout::sidebar_fits(self.last_frame.0)
+                {
                     // A hidden rail cannot take the keys: focusing it would
                     // swallow up/down with nothing on screen to show for it.
                     self.sidebar_focus = !self.sidebar_focus;
@@ -636,6 +684,29 @@ impl Workbench {
         }
     }
 
+    fn toggle_sidebar(&mut self) -> Vec<WbAction> {
+        if self.linear_reading {
+            self.linear_reading = false;
+            self.sidebar_visible = true;
+            self.sidebar_focus = true;
+        } else if !layout::sidebar_fits(self.last_frame.0) {
+            self.overlay = Some(Overlay::PanelFull);
+        } else if !self.sidebar_visible {
+            self.sidebar_visible = true;
+            self.sidebar_focus = true;
+        } else if !self.sidebar_focus {
+            self.sidebar_focus = true;
+        } else {
+            self.sidebar_visible = false;
+            self.sidebar_focus = false;
+        }
+        if layout::sidebar_fits(self.last_frame.0) {
+            vec![WbAction::SetPreferences]
+        } else {
+            vec![WbAction::Redraw]
+        }
+    }
+
     fn open_palette(&mut self) {
         self.overlay = Some(Overlay::Palette);
         self.palette_query.clear();
@@ -675,6 +746,17 @@ impl Workbench {
         key: &str,
         data: &WorkbenchData,
     ) -> Vec<WbAction> {
+        if matches!(
+            overlay,
+            Overlay::Approval
+                | Overlay::Diff
+                | Overlay::History
+                | Overlay::Tree
+                | Overlay::Fork
+                | Overlay::Worktree
+        ) {
+            return self.handle_workflow_key(overlay, key, data);
+        }
         match overlay {
             Overlay::Queue => match key {
                 "escape" | "q" => {
@@ -730,6 +812,22 @@ impl Workbench {
                             self.sidebar_w = (self.sidebar_w as i32 + direction * 2)
                                 .clamp(layout::SIDEBAR_MIN as i32, layout::SIDEBAR_MAX as i32)
                                 as u16;
+                        }
+                        preferences::PreferenceRow::Mouse => {
+                            return vec![WbAction::ToggleMouse];
+                        }
+                        preferences::PreferenceRow::Notifications => {
+                            self.notify.enabled = !self.notify.enabled;
+                        }
+                        preferences::PreferenceRow::NotificationBell => {
+                            self.notify.bell = !self.notify.bell;
+                        }
+                        preferences::PreferenceRow::Motion => {
+                            self.reduced_motion = !self.reduced_motion;
+                        }
+                        preferences::PreferenceRow::Linear => {
+                            self.linear_reading = !self.linear_reading;
+                            self.sidebar_focus = false;
                         }
                         preferences::PreferenceRow::Shortcuts => {
                             if key != "enter" {
@@ -815,7 +913,7 @@ impl Workbench {
                 _ => Vec::new(),
             },
             Overlay::PanelFull => match key {
-                "escape" | "q" | "ctrl+b" => {
+                "escape" | "q" => {
                     self.overlay = None;
                     vec![WbAction::Redraw]
                 }
@@ -869,6 +967,12 @@ impl Workbench {
                 }
                 _ => Vec::new(),
             },
+            Overlay::Approval
+            | Overlay::Diff
+            | Overlay::History
+            | Overlay::Tree
+            | Overlay::Fork
+            | Overlay::Worktree => Vec::new(),
             Overlay::Picker(kind) => match key {
                 "escape" => self.dismiss_picker(kind),
                 "enter" => self.apply_picker(kind, data),
@@ -912,6 +1016,140 @@ impl Workbench {
                 _ => Vec::new(),
             },
         }
+    }
+
+    fn handle_workflow_key(
+        &mut self,
+        overlay: Overlay,
+        key: &str,
+        data: &WorkbenchData,
+    ) -> Vec<WbAction> {
+        if matches!(key, "escape" | "q") && !(overlay == Overlay::History && key == "q") {
+            self.overlay = None;
+            return vec![WbAction::Redraw];
+        }
+        let count = match overlay {
+            Overlay::History => {
+                workflows::filtered_sessions(&data.sessions, &self.history_query).len()
+            }
+            Overlay::Tree => data.sessions.len(),
+            Overlay::Fork => data.fork_points.len(),
+            Overlay::Worktree => data.worktrees.len(),
+            Overlay::Diff => data.diff.as_ref().map_or(0, |diff| diff.files.len()),
+            Overlay::Approval => 0,
+            _ => 0,
+        };
+        let detail = matches!(overlay, Overlay::Approval | Overlay::Diff);
+        match key {
+            "up" | "k" if key == "up" || overlay != Overlay::History => {
+                if detail {
+                    self.overlay_scroll = self.overlay_scroll.saturating_sub(1);
+                } else {
+                    self.workflow_index = self.workflow_index.saturating_sub(1);
+                }
+            }
+            "down" | "j" if key == "down" || overlay != Overlay::History => {
+                if detail {
+                    self.overlay_scroll += 1;
+                } else {
+                    self.workflow_index = (self.workflow_index + 1).min(count.saturating_sub(1));
+                }
+            }
+            "left" if overlay == Overlay::Diff => {
+                self.workflow_index = self.workflow_index.saturating_sub(1);
+            }
+            "right" if overlay == Overlay::Diff => {
+                self.workflow_index = (self.workflow_index + 1).min(count.saturating_sub(1));
+            }
+            "pageUp" => self.overlay_scroll = self.overlay_scroll.saturating_sub(10),
+            "pageDown" | "space" if overlay != Overlay::History => self.overlay_scroll += 10,
+            "backspace" if overlay == Overlay::History => {
+                self.history_query.pop();
+                self.workflow_index = 0;
+                self.overlay_scroll = 0;
+            }
+            "y" | "Y" if overlay == Overlay::Approval => {
+                self.overlay = None;
+                return vec![WbAction::ApprovalDecision {
+                    approved: true,
+                    rule: false,
+                }];
+            }
+            "n" | "N" if overlay == Overlay::Approval => {
+                self.overlay = None;
+                return vec![WbAction::ApprovalDecision {
+                    approved: false,
+                    rule: false,
+                }];
+            }
+            "a" | "A" if overlay == Overlay::Approval => {
+                self.overlay = None;
+                return vec![WbAction::ApprovalDecision {
+                    approved: true,
+                    rule: true,
+                }];
+            }
+            "r" if matches!(overlay, Overlay::Diff | Overlay::Worktree) => {
+                return vec![WbAction::Command(match overlay {
+                    Overlay::Diff => "/diff".into(),
+                    _ => "/worktree".into(),
+                })];
+            }
+            "enter" => {
+                if overlay != Overlay::Diff {
+                    self.overlay = None;
+                }
+                self.overlay_scroll = 0;
+                return match overlay {
+                    Overlay::Diff => data
+                        .diff
+                        .as_ref()
+                        .and_then(|diff| diff.files.get(self.workflow_index))
+                        .map(|_| vec![WbAction::SelectDiff(self.workflow_index)])
+                        .unwrap_or_default(),
+                    Overlay::History => {
+                        workflows::filtered_sessions(&data.sessions, &self.history_query)
+                            .get(self.workflow_index)
+                            .map(|row| vec![WbAction::SwitchSession(row.id.clone())])
+                            .unwrap_or_default()
+                    }
+                    Overlay::Tree => workflows::tree_sessions(&data.sessions)
+                        .get(self.workflow_index)
+                        .map(|(row, _)| vec![WbAction::SwitchSession(row.id.clone())])
+                        .unwrap_or_default(),
+                    Overlay::Fork => data
+                        .fork_points
+                        .get(self.workflow_index)
+                        .map(|point| vec![WbAction::ForkAt(point.id.clone())])
+                        .unwrap_or_default(),
+                    Overlay::Worktree => data
+                        .worktrees
+                        .get(self.workflow_index)
+                        .map(|row| vec![WbAction::SelectWorktree(row.path.clone())])
+                        .unwrap_or_default(),
+                    _ => vec![WbAction::Redraw],
+                };
+            }
+            other
+                if overlay == Overlay::History
+                    && other.chars().count() == 1
+                    && !other.starts_with("ctrl+") =>
+            {
+                self.history_query.push_str(other);
+                self.workflow_index = 0;
+                self.overlay_scroll = 0;
+            }
+            _ => {}
+        }
+        if overlay == Overlay::Diff && matches!(key, "left" | "right") {
+            return data
+                .diff
+                .as_ref()
+                .and_then(|diff| diff.files.get(self.workflow_index))
+                .map(|_| vec![WbAction::SelectDiff(self.workflow_index)])
+                .unwrap_or_default();
+        }
+        vec![WbAction::Redraw]
     }
 
     /// The palette the app considers *committed*.
@@ -1010,6 +1248,9 @@ impl Workbench {
     }
 
     fn handle_mouse(&mut self, event: mouse::MouseEvent, data: &WorkbenchData) -> Vec<WbAction> {
+        if !data.mouse_capture {
+            return Vec::new();
+        }
         // An open picker owns the pointer: its rows are the only live targets,
         // and a click anywhere else dismisses it rather than reaching the
         // conversation painted underneath.
@@ -1020,12 +1261,12 @@ impl Workbench {
         let frame = layout::layout_with_preferences(
             w,
             h,
-            if self.sidebar_visible {
+            if self.sidebar_visible && !self.linear_reading {
                 self.sidebar_w
             } else {
                 0
             },
-            self.density,
+            self.effective_density(),
             self.sidebar_position,
         );
         match event.kind {
@@ -1218,6 +1459,14 @@ impl Workbench {
         Vec::new()
     }
 
+    pub fn effective_density(&self) -> preferences::Density {
+        if self.linear_reading {
+            preferences::Density::Focused
+        } else {
+            self.density
+        }
+    }
+
     /// The frame size of the last render — mouse coordinates are resolved
     /// against it, so a click that arrives between resize and repaint lands
     /// somewhere defined instead of against a stale layout.
@@ -1265,6 +1514,7 @@ impl Workbench {
     pub fn surface_command(&mut self, command: &str, data: &WorkbenchData) -> VerbOutcome {
         let name = command.trim_start_matches('/').trim();
         match name {
+            "approval" | "diff" | "history" | "tree" | "fork" | "worktree" => VerbOutcome::Agent,
             "queue" => {
                 self.overlay = Some(Overlay::Queue);
                 self.queue_index = self.queue_index.min(data.queue.len().saturating_sub(1));
@@ -1359,11 +1609,22 @@ impl Workbench {
 /// The command palette's entries: `(command, description)`. Kept here rather
 /// than in the app so the palette, the help overlay and the tests share one
 /// list.
-pub const COMMANDS: [(&str, Key); 17] = [
+pub const COMMANDS: [(&str, Key); 28] = [
     ("/new", Key::CmdNew),
     ("/queue", Key::CmdQueue),
     ("/copy", Key::CmdCopy),
     ("/mouse", Key::CmdMouse),
+    ("/diff", Key::CmdDiff),
+    ("/approval", Key::CmdApproval),
+    ("/history", Key::CmdHistory),
+    ("/tree", Key::CmdTree),
+    ("/fork", Key::CmdFork),
+    ("/worktree", Key::CmdWorktree),
+    ("/sandbox", Key::CmdSandbox),
+    ("/permission", Key::CmdPermission),
+    ("/compact", Key::CmdCompact),
+    ("/tools", Key::CmdTools),
+    ("/providers", Key::CmdProviders),
     ("/sessions", Key::CmdSessions),
     ("/model", Key::CmdModel),
     ("/lang", Key::CmdLanguage),
@@ -1476,6 +1737,65 @@ mod tests {
             ctrl: false,
         };
         workbench.handle(WbEvent::Mouse(press), data)
+    }
+
+    #[test]
+    fn workflow_keys_search_history_choose_forks_and_never_deny_on_escape() {
+        let mut data = demo::chat();
+        data.fork_points = vec![state::ForkPoint {
+            id: "entry-1".into(),
+            text: "start".into(),
+        }];
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::History);
+        wb.handle(WbEvent::Key("q".into()), &data);
+        assert_eq!(wb.history_query, "q");
+        assert_eq!(wb.overlay, Some(Overlay::History));
+        wb.handle(WbEvent::Key("backspace".into()), &data);
+        wb.handle(WbEvent::Key("down".into()), &data);
+        assert_eq!(wb.workflow_index, 1);
+        wb.handle(WbEvent::Key("escape".into()), &data);
+        assert_eq!(wb.overlay, None);
+
+        wb.overlay = Some(Overlay::Fork);
+        wb.workflow_index = 0;
+        assert_eq!(
+            wb.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::ForkAt("entry-1".into())]
+        );
+        wb.overlay = Some(Overlay::Approval);
+        assert_eq!(
+            wb.handle(WbEvent::Key("escape".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(wb.overlay, None);
+    }
+
+    #[test]
+    fn diff_file_navigation_is_separate_from_patch_scrolling() {
+        let mut data = demo::chat();
+        data.diff = Some(state::DiffView {
+            files: vec![
+                diff_review::DiffFile {
+                    path: "a".into(),
+                    status: "M".into(),
+                },
+                diff_review::DiffFile {
+                    path: "b".into(),
+                    status: "M".into(),
+                },
+            ],
+            ..state::DiffView::default()
+        });
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Diff);
+        wb.handle(WbEvent::Key("down".into()), &data);
+        assert_eq!(wb.overlay_scroll, 1);
+        assert_eq!(wb.workflow_index, 0);
+        assert_eq!(
+            wb.handle(WbEvent::Key("right".into()), &data),
+            vec![WbAction::SelectDiff(1)]
+        );
     }
 
     #[test]
@@ -2258,6 +2578,7 @@ mod tests {
             workspace: "~/x".into(),
             age: "4d".into(),
             current: false,
+            parent_id: None,
         });
         let (mut workbench, _rows) = frame(&data, 120, 38);
         workbench.panel = PanelId::Sessions;
@@ -2760,6 +3081,77 @@ mod tests {
             vec![WbAction::SetLanguage(LanguagePreference::En)]
         );
         assert_eq!(workbench.overlay, None, "applying closes the box");
+    }
+
+    #[test]
+    fn accessibility_preferences_change_layout_motion_and_context_keys() {
+        let mut data = demo::chat();
+        let mut workbench = Workbench::new();
+        workbench.render(&data, 120, 38);
+        assert!(workbench
+            .hits()
+            .regions()
+            .iter()
+            .any(|(_, id)| id.starts_with("sidebar.tab.")));
+
+        assert_eq!(
+            workbench.handle(WbEvent::Key("f8".into()), &data),
+            vec![WbAction::SetPreferences]
+        );
+        assert!(workbench.linear_reading);
+        assert!(!workbench.motion_enabled());
+        assert_eq!(workbench.effective_density(), preferences::Density::Focused);
+        workbench.render(&data, 120, 38);
+        assert!(
+            !workbench
+                .hits()
+                .regions()
+                .iter()
+                .any(|(_, id)| id.starts_with("sidebar.tab.")),
+            "linear mode paints no rail"
+        );
+
+        workbench
+            .keys
+            .bind(preferences::Action::LinearReading, "alt+l")
+            .unwrap();
+        workbench.handle(WbEvent::Key("alt+l".into()), &data);
+        assert!(!workbench.linear_reading);
+        workbench
+            .keys
+            .bind(preferences::Action::Queue, "alt+q")
+            .unwrap();
+        assert_eq!(
+            workbench.handle(WbEvent::Key("alt+q".into()), &data),
+            vec![WbAction::OpenQueue]
+        );
+
+        data.mouse_capture = false;
+        let before = workbench.scroll.offset;
+        assert!(workbench
+            .handle(
+                WbEvent::Mouse(mouse_at(mouse::MouseKind::WheelUp, 20)),
+                &data
+            )
+            .is_empty());
+        assert_eq!(workbench.scroll.offset, before);
+    }
+
+    #[test]
+    fn reduced_motion_is_independent_and_linear_mode_restores_the_sidebar() {
+        let mut workbench = Workbench::new();
+        let data = demo::chat();
+        workbench.render(&data, 120, 38);
+        workbench.handle(WbEvent::Key("f9".into()), &data);
+        assert!(workbench.reduced_motion && !workbench.motion_enabled());
+        workbench.handle(WbEvent::Key("f8".into()), &data);
+        workbench.handle(WbEvent::Key("ctrl+b".into()), &data);
+        assert!(!workbench.linear_reading);
+        assert!(workbench.sidebar_visible && workbench.sidebar_focus);
+        assert!(
+            workbench.reduced_motion,
+            "sidebar navigation does not reset accessibility choices"
+        );
     }
 
     /// The picker marks the preference in force, not the bundle it resolved to:

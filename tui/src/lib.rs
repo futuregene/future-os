@@ -35,11 +35,13 @@ pub mod help;
 pub mod home;
 pub mod index;
 pub mod keys;
+pub mod notifications;
 pub mod paste;
 pub mod paste_burst;
 pub mod rpc;
 pub mod session_rows;
 pub mod settings;
+pub mod skills_cli;
 pub mod stderr_log;
 pub mod stdin_buffer;
 pub mod subprocess;
@@ -52,6 +54,7 @@ mod update;
 pub mod utils;
 pub mod version;
 pub mod workbench;
+pub mod worktree;
 
 /// Shared lock for tests that mutate process-global state (env vars), so
 /// parallel `cargo test` threads cannot race each other. Same pattern as

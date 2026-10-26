@@ -75,6 +75,10 @@ pub struct LayoutPreferences {
     pub sidebar_position: SidebarPosition,
     pub sidebar_width: u16,
     pub sidebar_visible: bool,
+    pub mouse_capture: bool,
+    pub notify: crate::notifications::NotifyConfig,
+    pub reduced_motion: bool,
+    pub linear_reading: bool,
 }
 
 impl Default for LayoutPreferences {
@@ -84,6 +88,10 @@ impl Default for LayoutPreferences {
             sidebar_position: SidebarPosition::Right,
             sidebar_width: layout::SIDEBAR_DEFAULT,
             sidebar_visible: true,
+            mouse_capture: true,
+            notify: crate::notifications::NotifyConfig::default(),
+            reduced_motion: false,
+            linear_reading: false,
         }
     }
 }
@@ -100,9 +108,14 @@ pub enum Action {
     Refresh,
     ReplyDetail,
     Stop,
+    Copy,
+    Queue,
+    Mouse,
+    LinearReading,
+    ReduceMotion,
 }
 
-pub const ACTIONS: [Action; 10] = [
+pub const ACTIONS: [Action; 15] = [
     Action::Palette,
     Action::NewSession,
     Action::Sessions,
@@ -112,6 +125,11 @@ pub const ACTIONS: [Action; 10] = [
     Action::Refresh,
     Action::ReplyDetail,
     Action::Stop,
+    Action::Copy,
+    Action::Queue,
+    Action::Mouse,
+    Action::LinearReading,
+    Action::ReduceMotion,
     Action::Quit,
 ];
 
@@ -128,6 +146,11 @@ impl Action {
             Self::Refresh => "refresh",
             Self::ReplyDetail => "replyDetail",
             Self::Stop => "stop",
+            Self::Copy => "copy",
+            Self::Queue => "queue",
+            Self::Mouse => "mouse",
+            Self::LinearReading => "linearReading",
+            Self::ReduceMotion => "reduceMotion",
         }
     }
     fn from_id(id: &str) -> Option<Self> {
@@ -145,6 +168,11 @@ impl Action {
             Self::Refresh => Key::ShortcutRefresh,
             Self::ReplyDetail => Key::HelpKeyReplyDetail,
             Self::Stop => Key::ShortcutStop,
+            Self::Copy => Key::CmdCopy,
+            Self::Queue => Key::CmdQueue,
+            Self::Mouse => Key::CmdMouse,
+            Self::LinearReading => Key::PrefLinear,
+            Self::ReduceMotion => Key::PrefMotion,
         }
     }
     pub fn default_key(self) -> &'static str {
@@ -159,6 +187,11 @@ impl Action {
             Self::Refresh => "f5",
             Self::ReplyDetail => "ctrl+e",
             Self::Stop => "ctrl+x",
+            Self::Copy => "f6",
+            Self::Queue => "ctrl+g",
+            Self::Mouse => "f7",
+            Self::LinearReading => "f8",
+            Self::ReduceMotion => "f9",
         }
     }
 }
@@ -250,10 +283,15 @@ fn validate_key(key: &str) -> Result<(), String> {
     if key.is_empty() || key.len() > 32 || key.chars().any(char::is_whitespace) {
         return Err("shortcut".into());
     }
-    let valid_named = matches!(
-        key,
-        "f1" | "tab" | "escape" | "enter" | "home" | "end" | "pageUp" | "pageDown"
-    );
+    let valid_function_key = key
+        .strip_prefix('f')
+        .and_then(|number| number.parse::<u8>().ok())
+        .is_some_and(|number| (1..=24).contains(&number));
+    let valid_named = valid_function_key
+        || matches!(
+            key,
+            "tab" | "escape" | "enter" | "home" | "end" | "pageUp" | "pageDown"
+        );
     let valid_chord = key
         .strip_prefix("ctrl+")
         .is_some_and(|key| key.len() == 1 && key.chars().all(|c| c.is_ascii_alphanumeric()))
@@ -272,14 +310,24 @@ pub enum PreferenceRow {
     Density,
     Position,
     Width,
+    Mouse,
+    Notifications,
+    NotificationBell,
+    Motion,
+    Linear,
     Shortcuts,
     Reset,
 }
 
-pub const PREFERENCE_ROWS: [PreferenceRow; 5] = [
+pub const PREFERENCE_ROWS: [PreferenceRow; 10] = [
     PreferenceRow::Density,
     PreferenceRow::Position,
     PreferenceRow::Width,
+    PreferenceRow::Mouse,
+    PreferenceRow::Notifications,
+    PreferenceRow::NotificationBell,
+    PreferenceRow::Motion,
+    PreferenceRow::Linear,
     PreferenceRow::Shortcuts,
     PreferenceRow::Reset,
 ];
@@ -291,6 +339,11 @@ pub fn preference_label(row: PreferenceRow, lang: Language) -> &'static str {
             PreferenceRow::Density => Key::PrefDensity,
             PreferenceRow::Position => Key::PrefPosition,
             PreferenceRow::Width => Key::PrefWidth,
+            PreferenceRow::Mouse => Key::PrefMouse,
+            PreferenceRow::Notifications => Key::PrefNotifications,
+            PreferenceRow::NotificationBell => Key::PrefNotificationBell,
+            PreferenceRow::Motion => Key::PrefMotion,
+            PreferenceRow::Linear => Key::PrefLinear,
             PreferenceRow::Shortcuts => Key::PrefShortcuts,
             PreferenceRow::Reset => Key::PrefReset,
         },
@@ -321,6 +374,8 @@ mod tests {
         let mut keys = Keybindings::default();
         assert!(keys.bind(Action::Palette, "not a chord").is_err());
         assert!(keys.bind(Action::Palette, "ctrl+space").is_err());
+        assert!(keys.bind(Action::Help, "f24").is_ok());
+        assert!(keys.bind(Action::Help, "f25").is_err());
         assert_eq!(keys.key(Action::Palette), "ctrl+p");
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -330,7 +385,7 @@ mod tests {
         .unwrap();
         let loaded = Keybindings::load(&dir.path().join("keys.json"));
         assert_eq!(loaded.key(Action::Palette), "ctrl+p");
-        assert_eq!(loaded.key(Action::Help), "f1");
+        assert_eq!(loaded.key(Action::Help), "f2");
     }
 
     #[test]

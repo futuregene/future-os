@@ -69,7 +69,8 @@ async fn a_desktop_client_pairs_with_a_real_host_and_reads_its_catalog() {
             session::COMMAND_TIMEOUT,
         )
         .await
-        .expect("list_sessions");
+        .expect("list_sessions")
+        .into_data();
     let sessions = data["sessions"].as_array().expect("sessions array");
     let row = sessions
         .iter()
@@ -120,7 +121,8 @@ async fn a_second_connection_reconnects_with_ik_after_the_secret_is_cleared() {
             session::COMMAND_TIMEOUT,
         )
         .await
-        .expect("list_sessions after reconnect");
+        .expect("list_sessions after reconnect")
+        .into_data();
     assert!(data["sessions"].is_array());
 
     stop();

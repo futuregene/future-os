@@ -95,7 +95,38 @@ pub struct MemoryServerHost {
     chunk_delay: Duration,
     upload_chunks: AtomicU64,
     chunk_gate: ChunkGate,
+    /// One immutable paged read, as the desktop's own paging transport keeps it:
+    /// a snapshot fixed by the first reply, served by index afterwards.
+    paged: Mutex<Option<PagedRead>>,
+    /// How that snapshot's chunks are answered.
+    page_encoding: Mutex<PageEncoding>,
 }
+
+/// A paged read the fixture serves, and how its chunks are carried.
+struct PagedRead {
+    id: String,
+    bytes: Vec<u8>,
+}
+
+/// Which carrier the fixture answers a paged read with.
+///
+/// The two arms of the page-encoding measurement differ *only* here: everything
+/// else — the client, the broker, the sealed channel, the snapshot, the chunk
+/// size — is the same run, which is what makes the byte and wall-clock numbers
+/// comparable.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PageEncoding {
+    /// base64 inside the JSON reply: what a desktop that never negotiated
+    /// `read_binary_v1` sends, byte for byte.
+    Base64,
+    /// The chunk's bytes behind the JSON header (`ReplySink::send_binary`), which
+    /// is what the same host sends once the client declares the capability.
+    Binary,
+}
+
+/// The desktop's own chunk size, so the client's offsets line up with the
+/// snapshot it is paging.
+const PAGE_CHUNK_BYTES: usize = 192 * 1024;
 impl MemoryServerHost {
     pub fn new(creds: PairingCreds, file_bytes: Vec<u8>) -> Self {
         let active = creds.pair_id.clone();
@@ -113,6 +144,8 @@ impl MemoryServerHost {
             chunk_delay: Duration::ZERO,
             upload_chunks: AtomicU64::new(0),
             chunk_gate: ChunkGate::default(),
+            paged: Mutex::default(),
+            page_encoding: Mutex::new(PageEncoding::Base64),
         }
     }
     pub fn with_chunk_bytes(mut self, chunk_bytes: usize) -> Self {
@@ -122,6 +155,84 @@ impl MemoryServerHost {
     pub fn with_chunk_delay(mut self, delay: Duration) -> Self {
         self.chunk_delay = delay;
         self
+    }
+    /// Serve `bytes` as one immutable paged read.
+    ///
+    /// The first `get_session_entries` pins it and answers offset 0; every later
+    /// `get_read_chunk` for the same id answers its own offset, which is the
+    /// desktop's own shape (`remote_host::read_pages`). A snapshot rather than a
+    /// live read is the point: a page must not change under a client that is
+    /// still collecting it.
+    pub fn install_page(&self, bytes: Vec<u8>) {
+        *self.paged.lock().unwrap() = Some(PagedRead {
+            id: format!(
+                "read_fixture_{}",
+                self.sequence.fetch_add(1, Ordering::Relaxed)
+            ),
+            bytes,
+        });
+    }
+    /// Which carrier a paged read's chunks are answered with.
+    pub fn set_page_encoding(&self, encoding: PageEncoding) {
+        *self.page_encoding.lock().unwrap() = encoding;
+    }
+    pub fn page_bytes(&self) -> Vec<u8> {
+        self.paged
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|page| page.bytes.clone())
+            .unwrap_or_default()
+    }
+    /// The chunk the command asks for, when this fixture is serving a page.
+    ///
+    /// `None` means "not a paged read": the fixture then behaves exactly as it
+    /// did before pages existed, which is what keeps the other interop tests
+    /// unaffected by a page being installed.
+    fn page_chunk(&self, command: &IncomingCmd) -> Option<Result<(Value, Vec<u8>, usize), String>> {
+        let paged = self.paged.lock().unwrap();
+        let page = paged.as_ref()?;
+        let offset = match command.cmd_type.as_str() {
+            "get_session_entries" => 0,
+            "get_read_chunk" => {
+                if command.reply_id != page.id {
+                    return Some(Err("remote_read_expired".into()));
+                }
+                match usize::try_from(command.offset) {
+                    Ok(offset) => offset,
+                    Err(_) => return Some(Err("remote_read_invalid_offset".into())),
+                }
+            }
+            _ => return None,
+        };
+        if offset >= page.bytes.len() || !offset.is_multiple_of(PAGE_CHUNK_BYTES) {
+            return Some(Err("remote_read_invalid_offset".into()));
+        }
+        let end = offset
+            .saturating_add(PAGE_CHUNK_BYTES)
+            .min(page.bytes.len());
+        Some(Ok((
+            json!({ "readChunk": {
+                "id": page.id, "offset": offset, "nextOffset": end,
+                "totalBytes": page.bytes.len(),
+            }}),
+            page.bytes[offset..end].to_vec(),
+            page.bytes.len(),
+        )))
+    }
+    /// Answer one page chunk on the carrier this fixture is configured for.
+    async fn send_page(&self, reply: &dyn ReplySink, header: Value, body: Vec<u8>) {
+        let encoding = *self.page_encoding.lock().unwrap();
+        match encoding {
+            PageEncoding::Base64 => {
+                // The pre-negotiation reply, produced by the same helper the
+                // negotiated fallback uses, so the legacy arm is byte-identical
+                // to what a host without the capability sends.
+                let data = future_remote_server::reply::with_base64_page(header, &body);
+                reply.send(true, data, None).await;
+            }
+            PageEncoding::Binary => reply.send_binary(header, body).await,
+        }
     }
     pub fn download_ids(&self) -> Vec<String> {
         self.downloads.lock().unwrap().keys().cloned().collect()
@@ -213,6 +324,12 @@ impl MemoryServerHost {
 impl BusinessHost for MemoryServerHost {
     fn execute<'a>(&'a self, command: IncomingCmd, reply: &'a dyn ReplySink) -> BoxFuture<'a, ()> {
         Box::pin(async move {
+            if let Some(chunk) = self.page_chunk(&command) {
+                return match chunk {
+                    Ok((header, body, _total)) => self.send_page(reply, header, body).await,
+                    Err(error) => reply.send(false, Value::Null, Some(error)).await,
+                };
+            }
             match self.execute_command(&command) {
                 Ok(data) => reply.send(true, data, None).await,
                 Err(error) => reply.send(false, Value::Null, Some(error)).await,

@@ -6,6 +6,21 @@ use serde_json::Value;
 
 pub trait ReplySink: Send + Sync {
     fn send<'a>(&'a self, success: bool, data: Value, error: Option<String>) -> BoxFuture<'a, ()>;
+    /// Send one chunked read page: the JSON that addresses the page, plus the
+    /// chunk's bytes.
+    ///
+    /// The two are passed apart rather than pre-encoded because *carrying* the
+    /// bytes is what a capability negotiates, and only the sink knows which
+    /// side of that negotiation this connection is on. The default is the
+    /// legacy carrier — base64 inside the same JSON envelope `send` would get —
+    /// so a sink with no connection behind it (a test double, an embedder that
+    /// never negotiates) produces exactly the bytes it produced before this
+    /// method existed, and a host reaches `send_binary` for every page without
+    /// knowing which shape the wire ends up in.
+    fn send_binary<'a>(&'a self, header: Value, body: Vec<u8>) -> BoxFuture<'a, ()> {
+        let data = super::reply::with_base64_page(header, &body);
+        self.send(true, data, None)
+    }
 }
 pub trait BusinessHost: Send + Sync {
     fn execute<'a>(&'a self, command: IncomingCmd, reply: &'a dyn ReplySink) -> BoxFuture<'a, ()>;

@@ -273,7 +273,7 @@ pub const SELECTIVE_EVENTS_FEATURE: &str = "selective_events_v1";
 ///   `sessions_activity`). The packet is then the only writer of a remote row's
 ///   ordering timestamp on this side: a live event moves no row, because a
 ///   client clock in that value is a row the next packet moves back.
-pub const DECLARED_FEATURES: [&str; 6] = [
+pub const DECLARED_FEATURES: [&str; 7] = [
     "event_coalescing_v1",
     "reply_gzip_v1",
     SELECTIVE_EVENTS_FEATURE,
@@ -284,7 +284,45 @@ pub const DECLARED_FEATURES: [&str; 6] = [
     // gone when the beats lapse, which is what keeps the Remote page from saying
     // "in control" about a machine whose client was closed.
     future_remote_protocol::CLIENT_PRESENCE_FEATURE,
+    // A paged read's chunk bytes as raw bytes behind a JSON header instead of
+    // base64 inside it. This is the one entry that is *conditional* — see
+    // [`declared_features`]: the encoding it selects is the host's answer to it,
+    // so it is only declared once the host has said it implements the frame.
+    future_remote_protocol::READ_BINARY_FEATURE,
 ];
+
+/// What this connection actually declares on `secure_ready`.
+///
+/// Everything in [`DECLARED_FEATURES`] except the negotiated ones, whose
+/// declaration is itself the offer a host has to have answered first.
+///
+/// `read_binary_v1` is the only one today. It changes the *encoding* of a reply,
+/// which is not something either end can fall back from at the last moment: a
+/// declaration sent to a host that advertises the flag but chose not to honour
+/// it (a build that disabled it, a future version serving a different carrier)
+/// would put the host in the position of answering in a shape only this client's
+/// node expects — and, symmetrically, of depending on this client's decoder
+/// supporting a frame it never offered. Reading the confirmation first is what
+/// makes each side's behaviour a function of the other's stated capability
+/// rather than of a guess.
+///
+/// `selective_events_v1` is *not* filtered here: it is already declared
+/// unconditionally and its effect is gated on the confirmation at the point of
+/// use ([`PeerSession::selective_events`]), which is the same guarantee one step
+/// later. There is no such point for the frame — the reply is decoded before any
+/// caller can weigh it — so the gate has to be here.
+fn declared_features(confirmed: &[String]) -> Vec<&'static str> {
+    let binary_confirmed = confirmed
+        .iter()
+        .any(|feature| feature == future_remote_protocol::READ_BINARY_FEATURE);
+    DECLARED_FEATURES
+        .iter()
+        .copied()
+        .filter(|feature| {
+            binary_confirmed || *feature != future_remote_protocol::READ_BINARY_FEATURE
+        })
+        .collect()
+}
 
 /// How often a connected client tells its host it is still there.
 ///
@@ -743,7 +781,7 @@ impl PeerSession {
         subject: &str,
         payload: Value,
         timeout: Duration,
-    ) -> Result<Value, crate::Error> {
+    ) -> Result<Reply, crate::Error> {
         // Read before the envelope fields are added: the whitelist is a property
         // of the command, not of the lane it is sent on.
         let retryable = retryable_for_features(&payload, &self.features);
@@ -756,7 +794,7 @@ impl PeerSession {
         }
     }
 
-    /// Send arbitrary bytes and decode the JSON reply.
+    /// Send arbitrary bytes and decode the reply.
     ///
     /// Split out because not every request body is a command document: an
     /// upload chunk *is* its payload, and wrapping it in JSON would both inflate
@@ -769,7 +807,7 @@ impl PeerSession {
         subject: &str,
         plaintext: &[u8],
         timeout: Duration,
-    ) -> Result<Value, crate::Error> {
+    ) -> Result<Reply, crate::Error> {
         self.exchange(subject, plaintext, timeout).await
     }
 
@@ -790,7 +828,7 @@ impl PeerSession {
         plaintext: &[u8],
         timeout: Duration,
         attempts: usize,
-    ) -> Result<Value, crate::Error> {
+    ) -> Result<Reply, crate::Error> {
         retry_request(plaintext, attempts, |body| {
             self.exchange(subject, body, timeout)
         })
@@ -798,12 +836,19 @@ impl PeerSession {
     }
 
     /// Seal a request, await its reply, and unwrap the host's envelope.
+    ///
+    /// The reply is decoded by *shape*, not by what this client asked for: a
+    /// body that starts with the binary frame's magic is a page carrying its
+    /// bytes outside its JSON, and anything else is a JSON document. That is
+    /// what lets one client read both carriers — a host that never learned the
+    /// negotiation keeps sending base64 pages, and this reader is the same code
+    /// path for both.
     async fn exchange(
         &self,
         subject: &str,
         plaintext: &[u8],
         timeout: Duration,
-    ) -> Result<Value, crate::Error> {
+    ) -> Result<Reply, crate::Error> {
         let wire = self
             .channel
             .lock()
@@ -828,16 +873,104 @@ impl PeerSession {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .open(&context, &response.payload)
             .map_err(|_| crate::Error::Message("remote_secure_channel_invalid".into()))?;
-        let reply: Value = super::codec::decode_reply(&opened)
+        let plain = super::codec::plain_json_bytes(&opened)
             .map_err(|error| crate::Error::Message(format!("decode reply: {error}")))?;
-        if reply.get("success").and_then(Value::as_bool) != Some(true) {
-            let detail = reply
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("command_failed");
-            return Err(crate::Error::Message(detail.to_string()));
+        let frame = super::codec::split_binary_frame(&plain)
+            .map_err(|error| crate::Error::Message(format!("decode reply: {error}")))?;
+        let reply = match frame {
+            Some(frame) => {
+                let header: Value = serde_json::from_slice(frame.header)
+                    .map_err(|error| crate::Error::Message(format!("decode reply: {error}")))?;
+                check_reply_success(&header)?;
+                Reply::Page {
+                    data: header.get("data").cloned().unwrap_or(Value::Null),
+                    body: frame.body.to_vec(),
+                }
+            }
+            None => {
+                let document: Value = serde_json::from_slice(&plain)
+                    .map_err(|error| crate::Error::Message(format!("decode reply: {error}")))?;
+                check_reply_success(&document)?;
+                Reply::Data(document.get("data").cloned().unwrap_or(Value::Null))
+            }
+        };
+        Ok(reply)
+    }
+}
+
+/// The host's answer, as far as the body tells us.
+///
+/// Both carriers wrap the same envelope, so the refusal test lives once: a
+/// business failure is the host's *answer* and is reported as the message the
+/// caller can act on, never as a decode fault.
+fn check_reply_success(envelope: &Value) -> Result<(), crate::Error> {
+    if envelope.get("success").and_then(Value::as_bool) == Some(true) {
+        return Ok(());
+    }
+    let detail = envelope
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or("command_failed");
+    Err(crate::Error::Message(detail.to_string()))
+}
+
+/// One decoded reply.
+///
+/// Two shapes because the wire has two, and the difference is not a detail a
+/// caller can ignore: a page's bytes exist only in [`Reply::Page`], while every
+/// other reply's `data` is the whole answer. The envelope's `data` is available
+/// from either, so code that only inspects *what* the host said (the paging
+/// address, a catalogue snapshot) does not have to match on the carrier.
+pub enum Reply {
+    /// The `data` of an ordinary JSON reply.
+    Data(Value),
+    /// A negotiated binary page: the same `data` a JSON reply would carry
+    /// (`{"readChunk": {…}}`) plus the bytes that travelled outside it.
+    Page { data: Value, body: Vec<u8> },
+}
+
+impl Reply {
+    /// The envelope's `data`, whichever carrier it arrived on.
+    pub fn data(&self) -> &Value {
+        match self {
+            Reply::Data(data) => data,
+            Reply::Page { data, .. } => data,
         }
-        Ok(reply.get("data").cloned().unwrap_or(Value::Null))
+    }
+
+    /// The envelope's `data`, dropping any carried bytes.
+    pub fn into_data(self) -> Value {
+        match self {
+            Reply::Data(data) => data,
+            Reply::Page { data, .. } => data,
+        }
+    }
+
+    /// The page's bytes, when this reply carried them outside its JSON.
+    ///
+    /// `None` is not an error: it is the base64 carrier, where the bytes are
+    /// inside `data` and a reader decodes them from there.
+    pub fn into_page(self) -> (Value, Option<Vec<u8>>) {
+        match self {
+            Reply::Data(data) => (data, None),
+            Reply::Page { data, body } => (data, Some(body)),
+        }
+    }
+}
+
+/// A page's body is up to a whole chunk, so it is described by its length: a
+/// `Debug` that printed it would put 192 KiB of ciphertext-adjacent bytes into
+/// every failure message and every test's `expect_err`.
+impl std::fmt::Debug for Reply {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = formatter.debug_struct("Reply");
+        match self {
+            Reply::Data(data) => debug.field("data", data).finish(),
+            Reply::Page { data, body } => debug
+                .field("data", data)
+                .field("bodyBytes", &body.len())
+                .finish(),
+        }
     }
 }
 
@@ -1357,7 +1490,7 @@ async fn handshake(
             &session.command_subject("handshake"),
             json!({
                 "type": "secure_ready",
-                "features": DECLARED_FEATURES,
+                "features": declared_features(&session.features),
                 "deviceName": environment.device_name,
                 "deviceKind": environment.device_kind,
             }),
@@ -1467,6 +1600,12 @@ mod tests {
     /// `spawn_presence_beats` is actually beating on this connection. A client
     /// that declared it and then went quiet would be reported gone while it was
     /// sitting there.
+    ///
+    /// `read_binary_v1` is the only *negotiated* entry: it is declared only when
+    /// the host's confirmation advertised it ([`declared_features`]), because it
+    /// changes how a reply is encoded rather than what it contains. The
+    /// fallback is the base64 page this client has always read, and it is what
+    /// every host that does not advertise the flag keeps sending.
     #[test]
     fn the_client_declares_the_lanes_its_decoders_expect() {
         for expected in [
@@ -1476,21 +1615,47 @@ mod tests {
             future_remote_protocol::LEAN_EVENTS_FEATURE,
             CATALOG_ACTIVITY_FEATURE,
             future_remote_protocol::CLIENT_PRESENCE_FEATURE,
+            future_remote_protocol::READ_BINARY_FEATURE,
         ] {
             assert!(
                 DECLARED_FEATURES.contains(&expected),
                 "the handshake must declare {expected}: {DECLARED_FEATURES:?}"
             );
         }
+        let legacy = [
+            "event_coalescing_v1",
+            "reply_gzip_v1",
+            "selective_events_v1",
+            "lean_events_v1",
+            "catalog_activity_v1",
+            "client_presence_v1",
+        ];
+        let binary = future_remote_protocol::READ_BINARY_FEATURE;
+        // A host that does not advertise the frame gets exactly the declaration
+        // this client sent before the capability existed: no new entry, no
+        // silently dropped old one.
         assert_eq!(
-            json!({ "features": DECLARED_FEATURES })["features"],
+            json!({ "features": declared_features(&[]) })["features"],
+            json!(legacy)
+        );
+        // An unrelated capability in the confirmation does not enable it either.
+        assert_eq!(
+            json!({ "features": declared_features(&[SELECTIVE_EVENTS_FEATURE.to_string()]) })
+                ["features"],
+            json!(legacy)
+        );
+        let mut confirmed = vec![binary.to_string()];
+        confirmed.extend(legacy.iter().map(|feature| feature.to_string()));
+        assert_eq!(
+            json!({ "features": declared_features(&confirmed) })["features"],
             json!([
                 "event_coalescing_v1",
                 "reply_gzip_v1",
                 "selective_events_v1",
                 "lean_events_v1",
                 "catalog_activity_v1",
-                "client_presence_v1"
+                "client_presence_v1",
+                "read_binary_v1"
             ])
         );
     }

@@ -64,6 +64,8 @@ pub async fn run(options: Options) -> Result<(), String> {
     )
     .await?;
     let mut workbench = Workbench::new();
+    let mouse_capture = settings.mouse_capture.unwrap_or(true);
+    live.set_mouse_capture(mouse_capture);
     workbench.set_theme(&live.theme_id);
     workbench.set_language(live::persisted_language(&settings));
     workbench.set_preferences(super::preferences::LayoutPreferences {
@@ -79,6 +81,10 @@ pub async fn run(options: Options) -> Result<(), String> {
             .unwrap_or_default(),
         sidebar_width: settings.sidebar_width.unwrap_or(layout::SIDEBAR_DEFAULT),
         sidebar_visible: settings.sidebar_visible.unwrap_or(true),
+        mouse_capture,
+        notify: settings.notify.unwrap_or_default(),
+        reduced_motion: settings.reduced_motion.unwrap_or(false),
+        linear_reading: settings.linear_reading.unwrap_or(false),
     });
     workbench.keys = super::preferences::Keybindings::load(&super::preferences::keybindings_path(
         &options.settings_path,
@@ -109,7 +115,7 @@ pub async fn run(options: Options) -> Result<(), String> {
     // alternate screen is up: `start` writes the mode in, `stop` takes it out —
     // and both failures' paths (the exit failsafe and the crash hook) reset it
     // too, so the shell never inherits a captured mouse.
-    terminal.set_mouse_mode(true);
+    terminal.set_mouse_mode(mouse_capture);
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<TerminalEvent>();
     let data_tx = input_tx.clone();
     let resize_tx = input_tx.clone();
@@ -226,23 +232,47 @@ async fn event_loop(
             }
             Some(event) = agent_events.recv() => {
                 let was = live.activity_kind();
+                // State refresh below re-reads the authoritative queue before
+                // this candidate can emit a notification.
+                let mut completion = live.take_completion_notification(&event);
                 live.handle_event(event);
+                if live.approval().is_some() && workbench.overlay.is_none() {
+                    workbench.overlay = Some(super::Overlay::Approval);
+                    workbench.overlay_scroll = 0;
+                }
                 // What arrived while this event was being applied is applied
                 // now, before the frame: a streaming turn emits deltas at tens
                 // per second and a frame per token is work no one can see (the
                 // screen only ever shows the last one).
-                drain(agent_events, |event| live.handle_event(event));
+                drain(agent_events, |event| {
+                    completion |= live.take_completion_notification(&event);
+                    live.handle_event(event);
+                });
                 // A `usage` or `agent_end` event means the agent knows more
                 // about what the turn spent than the deltas do: ask it, so the
                 // footer's ctx/cost/cache move at the end of a turn instead of
                 // only when someone presses ctrl+k.
                 if live.take_state_refresh() {
                     live.refresh_state().await;
+                    if live.approval().is_some() && workbench.overlay.is_none() {
+                        workbench.overlay = Some(super::Overlay::Approval);
+                        workbench.overlay_scroll = 0;
+                    }
                 }
                 // A run that started or stopped changes what the lists show
                 // (a session's age, a title from its first message).
                 if live.activity_kind() != was {
                     live.refresh_sessions().await;
+                }
+                if completion && live.queue_is_empty() {
+                    let event = live.completion_notification();
+                    for sequence in crate::notifications::sequences_for(
+                        &workbench.notify,
+                        &event,
+                        true,
+                    ) {
+                        terminal.write(&sequence);
+                    }
                 }
                 paint = true;
             }
@@ -252,7 +282,9 @@ async fn event_loop(
                 // changes. Nothing else in the frame is finer than a minute.
                 // A short terminal lays out no activity row at all
                 // (`compact`), so there is nothing on screen to animate.
-                let animating = live.activity_animating() && frame.layout.activity.is_some();
+                let animating = workbench.motion_enabled()
+                    && live.activity_animating()
+                    && frame.layout.activity.is_some();
                 if animating {
                     workbench.advance_tick();
                 }
@@ -389,16 +421,21 @@ async fn quit(
     settings: &mut TuiSettings,
     settings_path: &Path,
 ) -> Result<bool, String> {
-    // A parked approval owns `y` and `n`: the run is stopped until someone
-    // answers, and the activity row is telling the reader exactly that.
+    // A parked approval owns y/n only on the base surface. Inside its card
+    // these keys belong to the card, and other overlays never approve blindly.
     if let WbEvent::Key(key) = &event {
-        if live.approval().is_some() {
+        if live.approval().is_some() && workbench.overlay.is_none() {
             if matches!(key.as_str(), "y" | "Y") {
                 live.decide(true).await;
                 return Ok(false);
             }
             if matches!(key.as_str(), "n" | "N") {
                 live.decide(false).await;
+                return Ok(false);
+            }
+            if matches!(key.as_str(), "enter") {
+                workbench.overlay = Some(super::Overlay::Approval);
+                workbench.overlay_scroll = 0;
                 return Ok(false);
             }
         }
@@ -411,23 +448,30 @@ async fn quit(
     // the surface. Overlay keys still belong to the overlay.
     if let WbEvent::Key(key) = &event {
         if workbench.overlay.is_none() {
-            match key.as_str() {
-                "f6" => {
+            match workbench.keys.action(key) {
+                Some(super::preferences::Action::Copy) => {
                     copy_last(live).await;
                     return Ok(false);
                 }
-                "f7" => {
-                    toggle_mouse(live, terminal);
+                Some(super::preferences::Action::Mouse) => {
+                    toggle_mouse(live, terminal, workbench, settings, settings_path);
                     return Ok(false);
                 }
-                "ctrl+g" => {
+                Some(super::preferences::Action::Queue) => {
                     live.refresh_state().await;
                     let _ = workbench.surface_command("/queue", &live.data(frame));
                     return Ok(false);
                 }
-                _ => {}
-            }
-            match workbench.keys.action(key) {
+                Some(super::preferences::Action::LinearReading) => {
+                    let _ = workbench.handle(WbEvent::Key(key.clone()), &live.data(frame));
+                    persist_preferences(workbench, settings, settings_path);
+                    return Ok(false);
+                }
+                Some(super::preferences::Action::ReduceMotion) => {
+                    let _ = workbench.handle(WbEvent::Key(key.clone()), &live.data(frame));
+                    persist_preferences(workbench, settings, settings_path);
+                    return Ok(false);
+                }
                 Some(super::preferences::Action::Stop) => {
                     live.abort().await;
                     return Ok(false);
@@ -463,15 +507,111 @@ async fn quit(
         // what lets the palette and the draft both reach it.
         if let WbAction::Command(command) = &action {
             match command.trim() {
+                "/approval" => {
+                    live.refresh_state().await;
+                    workbench.overlay = Some(super::Overlay::Approval);
+                    workbench.overlay_scroll = 0;
+                    continue;
+                }
+                "/diff" => {
+                    let selected = workbench.workflow_index;
+                    let cwd = live.data(frame).session.cwd;
+                    let previous = live.selected_diff_path(selected);
+                    let result = tokio::task::spawn_blocking(move || {
+                        let mut view = super::state::DiffView::default();
+                        match super::diff_review::load(std::path::Path::new(&cwd), &previous) {
+                            Ok(review) => {
+                                view.selected = review
+                                    .files
+                                    .iter()
+                                    .position(|file| file.path == previous)
+                                    .unwrap_or(0);
+                                view.files = review.files;
+                                view.patch = super::diff_review::bounded_patch(&review.patch);
+                            }
+                            Err(error) => view.error = Some(error),
+                        }
+                        view
+                    })
+                    .await;
+                    match result {
+                        Ok(view) => live.set_diff(view),
+                        Err(error) => live.notice = Some(error.to_string()),
+                    }
+                    workbench.overlay = Some(super::Overlay::Diff);
+                    workbench.workflow_index = selected;
+                    workbench.overlay_scroll = 0;
+                    continue;
+                }
+                "/history" | "/tree" => {
+                    live.refresh_sessions().await;
+                    workbench.overlay = Some(if command.trim() == "/history" {
+                        super::Overlay::History
+                    } else {
+                        super::Overlay::Tree
+                    });
+                    workbench.workflow_index = 0;
+                    workbench.overlay_scroll = 0;
+                    continue;
+                }
+                "/fork" => {
+                    live.load_fork_points().await;
+                    workbench.overlay = Some(super::Overlay::Fork);
+                    workbench.workflow_index = 0;
+                    continue;
+                }
+                "/worktree" | "/worktree " => {
+                    let cwd = live.data(frame).session.cwd;
+                    let result = tokio::task::spawn_blocking(move || {
+                        crate::worktree::probe_repo(
+                            &crate::worktree::GitCli::default(),
+                            &cwd,
+                            std::env::current_dir().ok().as_deref(),
+                        )
+                    })
+                    .await;
+                    match result {
+                        Ok(Ok(rows)) => live.set_worktrees(rows),
+                        Ok(Err(error)) => {
+                            live.notice = Some(super::i18n::render(
+                                live.language(),
+                                super::i18n::Key::WorkflowFailed,
+                                &[&error],
+                            ))
+                        }
+                        Err(error) => live.notice = Some(error.to_string()),
+                    }
+                    workbench.overlay = Some(super::Overlay::Worktree);
+                    workbench.workflow_index = 0;
+                    continue;
+                }
                 "/copy" => {
                     copy_last(live).await;
                     continue;
                 }
                 "/mouse" => {
-                    toggle_mouse(live, terminal);
+                    toggle_mouse(live, terminal, workbench, settings, settings_path);
                     continue;
                 }
                 _ => {}
+            }
+            if let Some(branch) = command.trim().strip_prefix("/worktree new ") {
+                let cwd = live.data(frame).session.cwd;
+                let branch = branch.to_string();
+                let created = tokio::task::spawn_blocking(move || {
+                    crate::worktree::create_worktree(
+                        &crate::worktree::GitCli::default(),
+                        &cwd,
+                        std::env::current_dir().ok().as_deref(),
+                        &branch,
+                    )
+                })
+                .await;
+                match created {
+                    Ok(created) => live.create_worktree_with(|| created).await,
+                    Err(error) => live.notice = Some(error.to_string()),
+                }
+                continue;
             }
             if let Some(kind) = PickerKind::from_command(command) {
                 let data = live.data(frame);
@@ -511,6 +651,11 @@ async fn quit(
             action,
             WbAction::SetPreferences | WbAction::ResizeSidebar(_) | WbAction::PersistSidebar
         ) {
+            let mouse = workbench.preferences().mouse_capture;
+            if live.mouse_capture() != mouse {
+                live.set_mouse_capture(mouse);
+                terminal.set_mouse_mode(mouse);
+            }
             persist_preferences(workbench, settings, settings_path);
         }
         if matches!(action, WbAction::SetKeybindings) {
@@ -527,12 +672,47 @@ async fn quit(
             }
             continue;
         }
+        if matches!(action, WbAction::SelectDiff(_)) {
+            let selected = match action {
+                WbAction::SelectDiff(index) => index,
+                _ => 0,
+            };
+            let data = live.data(frame);
+            let path = data
+                .diff
+                .as_ref()
+                .and_then(|diff| diff.files.get(selected))
+                .map(|file| file.path.clone());
+            if let Some(path) = path {
+                let cwd = data.session.cwd;
+                let result = tokio::task::spawn_blocking(move || {
+                    super::diff_review::load(std::path::Path::new(&cwd), &path)
+                })
+                .await;
+                match result {
+                    Ok(Ok(review)) => live.set_diff(super::state::DiffView {
+                        files: review.files,
+                        selected,
+                        patch: super::diff_review::bounded_patch(&review.patch),
+                        error: None,
+                    }),
+                    Ok(Err(error)) => live.notice = Some(error),
+                    Err(error) => live.notice = Some(error.to_string()),
+                }
+            }
+            workbench.overlay = Some(super::Overlay::Diff);
+            continue;
+        }
+        if matches!(action, WbAction::OpenApproval) {
+            workbench.overlay = Some(super::Overlay::Approval);
+            continue;
+        }
         if matches!(action, WbAction::CopyLast) {
             copy_last(live).await;
             continue;
         }
         if matches!(action, WbAction::ToggleMouse) {
-            toggle_mouse(live, terminal);
+            toggle_mouse(live, terminal, workbench, settings, settings_path);
             continue;
         }
         if let WbAction::Notice(notice) = &action {
@@ -640,12 +820,12 @@ fn frame_of(terminal: &Terminal, workbench: &Workbench) -> Frame {
     Frame::new(
         terminal.columns(),
         terminal.rows(),
-        if workbench.sidebar_visible {
+        if workbench.sidebar_visible && !workbench.linear_reading {
             workbench.sidebar_w
         } else {
             0
         },
-        workbench.density,
+        workbench.effective_density(),
         workbench.sidebar_position,
     )
 }
@@ -669,9 +849,18 @@ async fn copy_last(live: &mut Live) {
     }
 }
 
-fn toggle_mouse(live: &mut Live, terminal: &mut Terminal) {
+fn toggle_mouse(
+    live: &mut Live,
+    terminal: &mut Terminal,
+    workbench: &mut Workbench,
+    settings: &mut TuiSettings,
+    settings_path: &Path,
+) {
     let enabled = live.toggle_mouse();
+    workbench.mouse_capture = enabled;
     terminal.set_mouse_mode(enabled);
+    settings.mouse_capture = Some(enabled);
+    save_settings(settings_path, settings);
     live.notice = Some(
         super::i18n::t(
             live.language(),
@@ -736,6 +925,10 @@ fn persist_preferences(workbench: &Workbench, settings: &mut TuiSettings, path: 
     settings.sidebar_position = Some(preferences.sidebar_position.as_wire().into());
     settings.sidebar_width = Some(preferences.sidebar_width);
     settings.sidebar_visible = Some(preferences.sidebar_visible);
+    settings.mouse_capture = Some(preferences.mouse_capture);
+    settings.notify = Some(preferences.notify);
+    settings.reduced_motion = Some(preferences.reduced_motion);
+    settings.linear_reading = Some(preferences.linear_reading);
     save_settings(path, settings);
 }
 

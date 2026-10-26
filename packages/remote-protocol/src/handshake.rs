@@ -15,6 +15,11 @@ pub struct HandshakeRequest {
 }
 
 /// Capabilities advertised by the existing v2 controlled endpoint, in wire order.
+///
+/// The `*_v1` flags are not a compatibility version: each names one negotiated
+/// increment, and a client enables an increment only after finding its flag
+/// here (see `remote-client`'s `DECLARED_FEATURES`). Adding one is additive for
+/// every client that does not look for it.
 pub const SERVER_FEATURES: &[&str] = &[
     "e2ee_v2",
     "file_transfer_v1",
@@ -35,6 +40,11 @@ pub const SERVER_FEATURES: &[&str] = &[
     "fork_v1",
     "tasks_v1",
     "task_deps_v1",
+    // A chunk's bytes may travel outside the JSON reply, behind a length-prefixed
+    // header, instead of base64 inside it. Advertised rather than merely honoured
+    // because the client gates its declaration on this list: the two ends have to
+    // agree before either changes its encoding.
+    crate::READ_BINARY_FEATURE,
 ];
 
 /// The authenticated body sealed under the existing `handshake-confirm` context.

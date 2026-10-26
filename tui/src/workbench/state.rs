@@ -101,6 +101,7 @@ pub struct SessionRow {
     pub title: String,
     /// The workspace it is filed under (`~/future-os`).
     pub workspace: String,
+    pub parent_id: Option<String>,
     /// How long ago it was last active (`5m`, `3h`).
     pub age: String,
     /// The session the workbench is attached to.
@@ -377,6 +378,57 @@ pub struct WorkbenchData {
     pub revision: u64,
     /// Mouse capture can be released for native selection/copy.
     pub mouse_capture: bool,
+    /// The pending approval, including the agent's curated risk/action data.
+    pub approval: Option<ApprovalView>,
+    /// Read-only git working-tree review.
+    pub diff: Option<DiffView>,
+    /// Real user-message fork points from `get_fork_messages`.
+    pub fork_points: Vec<ForkPoint>,
+    /// Read-only git worktree list.
+    pub worktrees: Vec<WorktreeView>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ApprovalView {
+    pub request_id: String,
+    pub tool: String,
+    pub kind: String,
+    pub risk: String,
+    pub title: String,
+    pub summary: String,
+    pub action: String,
+    pub requested_action: String,
+    pub sandbox_boundary: String,
+    /// Agent-suggested path/access rules for this run's workspace.
+    pub rules: Vec<AllowRule>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AllowRule {
+    pub path: String,
+    pub access: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DiffView {
+    pub files: Vec<super::diff_review::DiffFile>,
+    pub selected: usize,
+    pub patch: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ForkPoint {
+    pub id: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorktreeView {
+    pub path: String,
+    pub label: String,
+    pub description: String,
+    pub current: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

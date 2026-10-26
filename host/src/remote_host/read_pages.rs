@@ -1,7 +1,6 @@
 //! Lossless transport pages for oversized history/replay results. Snapshots are
 //! immutable and scoped to the authenticated bridge/session/run, never refetched
 //! from a moving Agent projection while a phone is paging them.
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use future_remote_protocol::IncomingCmd;
 use future_remote_server::services::ReplySink;
 use futures::future::BoxFuture;
@@ -47,7 +46,7 @@ impl Cache {
         self.snapshots
             .retain(|_, value| value.created.elapsed() < TTL);
     }
-    fn insert(&mut self, owner: Owner, bytes: Vec<u8>) -> Result<Value, String> {
+    fn insert(&mut self, owner: Owner, bytes: Vec<u8>) -> Result<Page, String> {
         if bytes.len() > MAX_SNAPSHOT_BYTES {
             return Err("remote_read_too_large".into());
         }
@@ -81,7 +80,7 @@ impl Cache {
         self.snapshots.insert(id, snapshot);
         Ok(page)
     }
-    fn read(&mut self, cmd: &IncomingCmd) -> Result<Value, String> {
+    fn read(&mut self, cmd: &IncomingCmd) -> Result<Page, String> {
         self.prune();
         let snapshot = self
             .snapshots
@@ -94,16 +93,28 @@ impl Cache {
         chunk(&cmd.reply_id, snapshot, offset)
     }
 }
-fn chunk(id: &str, snapshot: &Snapshot, offset: usize) -> Result<Value, String> {
+fn chunk(id: &str, snapshot: &Snapshot, offset: usize) -> Result<Page, String> {
     if offset >= snapshot.bytes.len() || !offset.is_multiple_of(CHUNK_BYTES) {
         return Err("remote_read_invalid_offset".into());
     }
     let end = offset.saturating_add(CHUNK_BYTES).min(snapshot.bytes.len());
-    Ok(json!({"readChunk": {
-        "id": id, "offset": offset, "nextOffset": end,
-        "totalBytes": snapshot.bytes.len(),
-        "data": URL_SAFE_NO_PAD.encode(&snapshot.bytes[offset..end])
-    }}))
+    Ok(Page {
+        // The address of the chunk, and the snapshot facts the reader pins from
+        // the first reply. The chunk's bytes are *not* in here: whether they are
+        // base64 inside this JSON or raw behind it is what the connection
+        // negotiated, and that is the sink's decision, not the page's.
+        header: json!({"readChunk": {
+            "id": id, "offset": offset, "nextOffset": end,
+            "totalBytes": snapshot.bytes.len(),
+        }}),
+        body: snapshot.bytes[offset..end].to_vec(),
+    })
+}
+/// One page of a snapshot: the JSON that addresses it, and its bytes.
+#[derive(Debug)]
+pub(super) struct Page {
+    pub(super) header: Value,
+    pub(super) body: Vec<u8>,
 }
 static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(Default::default);
 pub(super) fn prune() {
@@ -112,7 +123,7 @@ pub(super) fn prune() {
 pub(super) fn clear() {
     CACHE.lock().unwrap().snapshots.clear();
 }
-pub(super) fn read(cmd: &IncomingCmd) -> Result<Value, String> {
+pub(super) fn read(cmd: &IncomingCmd) -> Result<Page, String> {
     CACHE.lock().unwrap().read(cmd)
 }
 
@@ -149,7 +160,7 @@ impl ReplySink for PagedReply<'_> {
                 if bytes.len() > PAGE_THRESHOLD {
                     let page = CACHE.lock().unwrap().insert(self.owner.clone(), bytes);
                     match page {
-                        Ok(page) => self.sink.send(true, page, None).await,
+                        Ok(page) => self.sink.send_binary(page.header, page.body).await,
                         Err(error) => self.sink.send(false, Value::Null, Some(error)).await,
                     }
                     return;
@@ -163,6 +174,7 @@ impl ReplySink for PagedReply<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     fn command() -> IncomingCmd {
         IncomingCmd {
             bridge_instance_id: "bridge".into(),
@@ -179,23 +191,18 @@ mod tests {
         let value = json!({"projection": {"cursor": 123, "events": [{"data": "中文\\\"".repeat(400_000)}]}, "events": []});
         let bytes = serde_json::to_vec(&value).unwrap();
         let first = cache.insert(Owner::from(&cmd), bytes.clone()).unwrap();
-        cmd.reply_id = first["readChunk"]["id"].as_str().unwrap().into();
+        cmd.reply_id = first.header["readChunk"]["id"].as_str().unwrap().into();
         let mut page = first;
         let mut restored = Vec::new();
         loop {
             assert!(
-                serde_json::to_vec(&json!({"success": true, "data": page}))
+                serde_json::to_vec(&json!({"success": true, "data": page.header}))
                     .unwrap()
                     .len()
                     < PAGE_THRESHOLD
             );
-            let part = &page["readChunk"];
-            restored.extend(
-                URL_SAFE_NO_PAD
-                    .decode(part["data"].as_str().unwrap())
-                    .unwrap(),
-            );
-            let next = part["nextOffset"].as_i64().unwrap();
+            restored.extend_from_slice(&page.body);
+            let next = page.header["readChunk"]["nextOffset"].as_i64().unwrap();
             if next as usize == bytes.len() {
                 break;
             }
@@ -213,7 +220,7 @@ mod tests {
         let page = cache
             .insert(Owner::from(&cmd), vec![0; MAX_SNAPSHOT_BYTES])
             .unwrap();
-        cmd.reply_id = page["readChunk"]["id"].as_str().unwrap().into();
+        cmd.reply_id = page.header["readChunk"]["id"].as_str().unwrap().into();
         cmd.offset = 1;
         assert_eq!(cache.read(&cmd).unwrap_err(), "remote_read_invalid_offset");
         cmd.offset = -1;
@@ -311,6 +318,74 @@ mod tests {
             .unwrap();
         assert_eq!(decoded, bytes[..CHUNK_BYTES]);
         clear();
+    }
+
+    /// The page reaches the sink with its bytes *apart* from its address, which
+    /// is what lets one sink base64 them and another frame them. The address
+    /// itself carries no `data` key: a JSON carrier is the sink's decision, so
+    /// the page must not pre-decide it by putting an empty one there.
+    #[tokio::test]
+    async fn a_page_hands_its_bytes_to_the_sink_outside_the_json() {
+        let sink = BinaryRecordingSink::default();
+        let cmd = IncomingCmd {
+            cmd_type: "list_providers".into(),
+            chunked_read: true,
+            ..command()
+        };
+        let payload = json!({ "blob": "x".repeat(PAGE_THRESHOLD + 1) });
+        let bytes = serde_json::to_vec(&payload).unwrap();
+        PagedReply::new(&cmd, &sink).send(true, payload, None).await;
+        let (header, body) = sink.only();
+        let chunk = &header["readChunk"];
+        assert!(chunk.get("data").is_none(), "the carrier is the sink's");
+        assert_eq!(chunk["offset"], json!(0));
+        assert_eq!(chunk["nextOffset"], json!(CHUNK_BYTES));
+        assert_eq!(body, bytes[..CHUNK_BYTES]);
+        clear();
+    }
+
+    /// A sink that overrides nothing still produces the legacy page: the trait's
+    /// default carrier is base64 inside the same JSON key, so an undeclared
+    /// client sees no difference at all.
+    #[tokio::test]
+    async fn the_default_carrier_is_the_legacy_base64_page() {
+        let header = json!({ "readChunk": {
+            "id": "read_a", "offset": 0, "nextOffset": 3, "totalBytes": 3
+        }});
+        let inner = crate::remote::test_support::RecordingSink::default();
+        inner.send_binary(header, vec![0xfb, 0xff, 0x00]).await;
+        let (success, page, error) = inner.only();
+        assert!(success, "{error:?}");
+        assert_eq!(page["readChunk"]["data"], json!("-_8A"));
+    }
+
+    #[derive(Default)]
+    struct BinaryRecordingSink {
+        captured: Mutex<Option<(Value, Vec<u8>)>>,
+    }
+    impl BinaryRecordingSink {
+        fn only(&self) -> (Value, Vec<u8>) {
+            self.captured
+                .lock()
+                .unwrap()
+                .take()
+                .expect("one page was sent")
+        }
+    }
+    impl ReplySink for BinaryRecordingSink {
+        fn send<'a>(
+            &'a self,
+            _success: bool,
+            _data: Value,
+            _error: Option<String>,
+        ) -> BoxFuture<'a, ()> {
+            Box::pin(async move { panic!("a page must use the binary carrier") })
+        }
+        fn send_binary<'a>(&'a self, header: Value, body: Vec<u8>) -> BoxFuture<'a, ()> {
+            Box::pin(async move {
+                *self.captured.lock().unwrap() = Some((header, body));
+            })
+        }
     }
 
     /// A reply too large to snapshot is refused with an error rather than

@@ -218,6 +218,10 @@ pub struct PendingApprovalState {
     pub action: Option<serde_json::Value>,
     #[serde(default, alias = "requested_action")]
     pub requested_action: Option<serde_json::Value>,
+    #[serde(default, alias = "sandbox_boundary")]
+    pub sandbox_boundary: Option<serde_json::Value>,
+    #[serde(default, alias = "save_suggestion")]
+    pub save_suggestion: Option<serde_json::Value>,
 }
 
 /// `RecentTerminalAck` — camelCase wire keys on the wire today: the #384

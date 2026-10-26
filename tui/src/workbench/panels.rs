@@ -412,6 +412,7 @@ mod tests {
                 workspace: "~/future-os".into(),
                 age: "1h".into(),
                 current: index == 0,
+                parent_id: None,
             })
             .collect();
         let mut hit = HitMap::new();

@@ -50,6 +50,8 @@ pub struct ApprovalPrompt {
     pub request_id: String,
     pub title: String,
     pub summary: String,
+    /// Full agent payload: risk, action, boundary and suggested allow rules.
+    pub raw: Value,
 }
 
 /// Which session this adapter is attached to, and how much history is loaded.
@@ -72,13 +74,24 @@ struct Paging {
 /// ([`super::Workbench::surface_command`]) and this list have to account for
 /// every entry exactly once. That is the check whose absence let five entries
 /// advertise themselves and then answer `Unknown command`.
-pub const APP_COMMANDS: [&str; 6] = [
+pub const APP_COMMANDS: [&str; 17] = [
     "/new",
     "/reply-detail",
     "/export",
     "/quit",
     "/copy",
     "/mouse",
+    "/compact",
+    "/sandbox",
+    "/permission",
+    "/tools",
+    "/providers",
+    "/diff",
+    "/approval",
+    "/history",
+    "/tree",
+    "/fork",
+    "/worktree",
 ];
 
 #[derive(Clone)]
@@ -96,6 +109,9 @@ pub struct Live {
     sessions: Vec<SessionSummary>,
     models: Vec<ModelInfo>,
     approval: Option<ApprovalPrompt>,
+    diff: Option<super::state::DiffView>,
+    fork_points: Vec<super::state::ForkPoint>,
+    worktrees: Vec<super::state::WorktreeView>,
     /// A failed request or command, shown above the status bar until the next
     /// successful action replaces it.
     pub notice: Option<String>,
@@ -107,6 +123,9 @@ pub struct Live {
     drafts: HashMap<String, DraftSnapshot>,
     revision: u64,
     mouse_capture: bool,
+    /// Recent runs this client submitted, awaiting a terminal state. Bounded
+    /// because cancellation and incomplete streams need not produce agent_end.
+    completion_candidates: std::collections::VecDeque<String>,
     detail: ReplyDetail,
     /// Palette id, so a `/theme` cycle does not need the surface's own state.
     pub theme_id: String,
@@ -178,6 +197,7 @@ impl Live {
         let theme = settings
             .map(persisted_palette)
             .unwrap_or(super::theme::FUTURE_DARK);
+        let mouse_capture = settings.and_then(|s| s.mouse_capture).unwrap_or(true);
         let mut chat = ChatArea::new(80, None);
         chat.set_reply_detail(detail);
 
@@ -189,6 +209,9 @@ impl Live {
             sessions: Vec::new(),
             models: Vec::new(),
             approval: None,
+            diff: None,
+            fork_points: Vec::new(),
+            worktrees: Vec::new(),
             notice: None,
             activity: Activity::default(),
             activity_start: None,
@@ -199,7 +222,8 @@ impl Live {
             ),
             drafts: HashMap::new(),
             revision: 0,
-            mouse_capture: true,
+            mouse_capture,
+            completion_candidates: std::collections::VecDeque::new(),
             detail,
             theme_id: theme.id.to_string(),
             lang,
@@ -480,6 +504,7 @@ impl Live {
                         }
                     },
                     summary: str_field(&event.data, "summary"),
+                    raw: event.data.clone(),
                 });
             }
             "approval_decision" => {
@@ -705,6 +730,54 @@ impl Live {
         self.mouse_capture
     }
 
+    pub fn set_mouse_capture(&mut self, enabled: bool) {
+        self.mouse_capture = enabled;
+    }
+
+    pub fn mouse_capture(&self) -> bool {
+        self.mouse_capture
+    }
+
+    /// A completion belongs on the terminal only when this client requested
+    /// the run, it succeeded, and no queued follow-up remains.
+    pub fn take_completion_notification(&mut self, event: &AgentEvent) -> bool {
+        if event.r#type != "agent_end" {
+            return false;
+        }
+        let Some(run_id) = event.run_id.as_deref().filter(|id| !id.is_empty()) else {
+            return false;
+        };
+        let own = self
+            .completion_candidates
+            .iter()
+            .position(|id| id == run_id)
+            .and_then(|index| self.completion_candidates.remove(index))
+            .is_some();
+        // The driver checks the queue after its state refresh; the state here
+        // may still predate the agent_end event and must not reject early.
+        own && crate::notifications::should_notify(
+            true,
+            event.data.get("state").and_then(Value::as_str),
+            true,
+        )
+    }
+
+    pub fn completion_notification(&self) -> crate::notifications::NotifyEvent {
+        crate::notifications::NotifyEvent::new(
+            crate::notifications::NotifyKind::Completed,
+            t(self.lang, Key::NotificationTitle),
+            self.chat
+                .last_assistant_text()
+                .map(|text| crate::clipboard::clean_assistant_text(&text))
+                .filter(|text| !text.trim().is_empty())
+                .unwrap_or_else(|| t(self.lang, Key::NotificationBody).into()),
+        )
+    }
+
+    pub fn queue_is_empty(&self) -> bool {
+        self.state.queued_runs.is_empty()
+    }
+
     pub fn data(&mut self, frame: &Frame) -> WorkbenchData {
         let state = self.state.clone();
         let messages = self.chat.render_all(frame.inner);
@@ -725,6 +798,7 @@ impl Live {
                 id: session.id.clone(),
                 title: display_name(session),
                 workspace: shorten(&session.cwd),
+                parent_id: session.parent_session_id.clone(),
                 age: age(session.updated_at_ms),
                 // On the launchpad nothing is attached, so no row claims to be
                 // the current one.
@@ -827,6 +901,13 @@ impl Live {
                 .collect(),
             revision: self.revision,
             mouse_capture: self.mouse_capture,
+            approval: self
+                .approval
+                .as_ref()
+                .map(|prompt| super::workflows::approval_of(&prompt.raw)),
+            diff: self.diff.clone(),
+            fork_points: self.fork_points.clone(),
+            worktrees: self.worktrees.clone(),
         }
     }
 
@@ -886,7 +967,37 @@ impl Live {
             WbAction::EditEditor(editor) => {
                 self.draft = InputView::from_editor(*editor, self.draft.placeholder.clone())
             }
-            WbAction::CopyLast | WbAction::ToggleMouse | WbAction::OpenQueue => {}
+            WbAction::CopyLast
+            | WbAction::ToggleMouse
+            | WbAction::OpenQueue
+            | WbAction::OpenApproval
+            | WbAction::OpenDiff
+            | WbAction::OpenHistory
+            | WbAction::OpenTree
+            | WbAction::OpenFork
+            | WbAction::OpenWorktree => {}
+            WbAction::ApprovalDecision { approved, rule } => {
+                self.decide_with_rule(approved, rule).await
+            }
+            WbAction::SelectDiff(_) => {}
+            WbAction::SelectWorktree(path) => self.select_worktree(&path).await,
+            WbAction::ForkAt(id) => self.fork_at(&id).await,
+            WbAction::Compact(instructions) => self.compact(instructions).await,
+            WbAction::SetPermission(level) => {
+                match self.client.set_permission_level(&level).await {
+                    Ok(()) => self.refresh_state().await,
+                    Err(error) => {
+                        self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
+                    }
+                }
+            }
+            WbAction::CycleSandbox => self.cycle_mode().await,
+            WbAction::SetTools(tools) => match self.client.set_tools(&tools).await {
+                Ok(()) => self.notice = Some(t(self.lang, Key::ToolsDone).into()),
+                Err(error) => {
+                    self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
+                }
+            },
             WbAction::CancelQueued(id) => self.cancel_queued(&id).await,
             WbAction::RecallQueued(id) => self.recall_queued(&id).await,
             WbAction::Submit(text) => self.submit(&text).await,
@@ -917,6 +1028,23 @@ impl Live {
             WbAction::Redraw => {}
         }
         Outcome::Continue
+    }
+
+    async fn compact(&mut self, instructions: String) {
+        match self
+            .client
+            .compact((!instructions.is_empty()).then_some(instructions.as_str()))
+            .await
+        {
+            Ok(_) => {
+                self.notice = Some(t(self.lang, Key::CompactDone).into());
+                self.refresh_state().await;
+                self.load_tail().await;
+            }
+            Err(error) => {
+                self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
+            }
+        }
     }
 
     /// Send the draft. A submission while a run is in flight queues behind it
@@ -968,6 +1096,12 @@ impl Live {
             .await
         {
             Ok(ack) => {
+                if !ack.run_id.is_empty() {
+                    if self.completion_candidates.len() == 32 {
+                        self.completion_candidates.pop_front();
+                    }
+                    self.completion_candidates.push_back(ack.run_id);
+                }
                 if ack.accepted_state == "queued" {
                     self.refresh_state().await;
                 }
@@ -1008,6 +1142,72 @@ impl Live {
                 self.to_launchpad();
             }
             "sessions" => self.refresh_sessions().await,
+            "compact" => {
+                self.compact(arg).await;
+            }
+            "sandbox" => self.cycle_mode().await,
+            "diff" | "history" | "fork" => {}
+            "worktree" if !arg.is_empty() => {
+                if arg.strip_prefix("new ").is_some() {
+                    self.notice = Some(t(self.lang, Key::WorktreeCreating).into());
+                } else {
+                    self.notice = Some(crate::worktree::WORKTREE_USAGE.into());
+                }
+            }
+            "permission" => {
+                if ["all", "workspace", "none"].contains(&arg.as_str()) {
+                    match self.client.set_permission_level(&arg).await {
+                        Ok(()) => self.refresh_state().await,
+                        Err(error) => {
+                            self.notice =
+                                Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
+                        }
+                    }
+                } else {
+                    self.cycle_permission().await;
+                }
+            }
+            "tools" => {
+                if arg.is_empty() {
+                    self.notice = Some(t(self.lang, Key::ToolsUsage).into());
+                } else if arg == "off" {
+                    match self.client.disable_tools().await {
+                        Ok(()) => self.notice = Some(t(self.lang, Key::ToolsDone).into()),
+                        Err(error) => {
+                            self.notice =
+                                Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
+                        }
+                    }
+                } else {
+                    let tools: Vec<String> = arg
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                        .collect();
+                    match self.client.set_tools(&tools).await {
+                        Ok(()) => self.notice = Some(t(self.lang, Key::ToolsDone).into()),
+                        Err(error) => {
+                            self.notice =
+                                Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
+                        }
+                    }
+                }
+            }
+            "providers" => match self.client.list_providers().await {
+                Ok(providers) => {
+                    self.notice = Some(
+                        providers
+                            .iter()
+                            .map(|provider| format!("{} ({})", provider.id, provider.model_count))
+                            .collect::<Vec<_>>()
+                            .join(" · "),
+                    );
+                }
+                Err(error) => {
+                    self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
+                }
+            },
             // A model named in the command line is a choice like any other, so
             // it takes the launchpad road too when nothing is attached.
             "model" if !arg.is_empty() && self.detached() => self.set_pending_model(&arg),
@@ -1335,19 +1535,186 @@ impl Live {
         }
     }
 
-    /// Answer the parked approval (`y` / `n` on the surface).
+    /// Answer the parked approval. Rules are installed first; any failure
+    /// leaves the request pending rather than silently degrading to allow-once.
     pub async fn decide(&mut self, approved: bool) {
+        self.decide_with_rule(approved, false).await;
+    }
+
+    pub async fn decide_with_rule(&mut self, approved: bool, with_rule: bool) {
         let Some(prompt) = self.approval.clone() else {
             return;
         };
-        self.approval = None;
+        if with_rule {
+            let rules = super::workflows::approval_of(&prompt.raw).rules;
+            if rules.is_empty() {
+                self.notice = Some(t(self.lang, Key::ApprovalNoRule).into());
+                return;
+            }
+            for rule in rules {
+                if let Err(error) = self.client.add_session_rule(&rule.path, &rule.access).await {
+                    self.notice = Some(i18n::render(self.lang, Key::ApprovalRuleFailed, &[&error]));
+                    return;
+                }
+            }
+        }
         if let Err(error) = self
             .client
             .approval_decision(&prompt.request_id, approved, "")
             .await
         {
             self.notice = Some(format!("Could not answer the approval: {error}"));
+            return;
         }
+        self.approval = None;
+        self.notice = if with_rule {
+            Some(t(self.lang, Key::ApprovalRuleAdded).into())
+        } else {
+            None
+        };
+    }
+
+    pub fn selected_diff_path(&self, selected: usize) -> String {
+        self.diff
+            .as_ref()
+            .and_then(|diff| diff.files.get(selected).or_else(|| diff.files.first()))
+            .map(|file| file.path.clone())
+            .unwrap_or_default()
+    }
+
+    pub async fn load_fork_points(&mut self) {
+        let session_id = self.state.session_id.clone();
+        match self.client.fork_messages_for(&session_id).await {
+            Ok(value) => {
+                self.fork_points = value
+                    .get("messages")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|message| {
+                        let id = message.get("id")?.as_str()?.to_string();
+                        let text = message
+                            .get("blocks")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .find_map(|block| block.get("text").and_then(Value::as_str))
+                            .or_else(|| message.get("content").and_then(Value::as_str))
+                            .unwrap_or("")
+                            .to_string();
+                        Some(super::state::ForkPoint { id, text })
+                    })
+                    .collect();
+            }
+            Err(error) => {
+                self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
+            }
+        }
+    }
+
+    pub async fn fork_at(&mut self, entry_id: &str) {
+        let parent = self.state.session_id.clone();
+        self.save_draft();
+        match self.client.fork_from(&parent, entry_id).await {
+            Ok(value) => {
+                self.launchpad = false;
+                self.notice = None;
+                self.refresh_state().await;
+                self.refresh_sessions().await;
+                self.load_tail().await;
+                self.restore_draft();
+                if value.get("sessionId").and_then(Value::as_str).is_none() {
+                    self.notice = Some(t(self.lang, Key::ForkEmptyId).into());
+                }
+            }
+            Err(error) => {
+                self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
+            }
+        }
+    }
+
+    pub fn set_diff(&mut self, diff: super::state::DiffView) {
+        self.diff = Some(diff);
+    }
+
+    pub fn set_worktrees(&mut self, rows: Vec<crate::worktree::WorktreeInfo>) {
+        let cwd = self.state.cwd.clone().unwrap_or_default();
+        self.worktrees = rows
+            .iter()
+            .map(|row| super::state::WorktreeView {
+                path: row.path.clone(),
+                label: row.name(),
+                description: row.describe(),
+                current: row.is_current(&cwd),
+            })
+            .collect();
+    }
+
+    pub fn refresh_worktrees(&mut self) {
+        let cwd = self.state.cwd.clone().unwrap_or_default();
+        let result = match crate::worktree::probe_repo(
+            &crate::worktree::GitCli::default(),
+            &cwd,
+            std::env::current_dir().ok().as_deref(),
+        ) {
+            Ok(rows) => {
+                self.worktrees = rows
+                    .iter()
+                    .map(|row| super::state::WorktreeView {
+                        path: row.path.clone(),
+                        label: row.name(),
+                        description: row.describe(),
+                        current: row.is_current(&cwd),
+                    })
+                    .collect();
+                Ok(())
+            }
+            Err(error) => Err(error),
+        };
+        if let Err(error) = result {
+            self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]));
+        }
+    }
+
+    pub async fn select_worktree(&mut self, path: &str) {
+        if path == self.state.cwd.clone().unwrap_or_default() {
+            return;
+        }
+        match self.client.set_cwd(path).await {
+            Ok(()) => {
+                self.refresh_state().await;
+                self.refresh_worktrees();
+                self.diff = None;
+            }
+            Err(error) => {
+                self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
+            }
+        }
+    }
+
+    pub async fn create_worktree_with<F>(&mut self, create: F)
+    where
+        F: FnOnce() -> Result<crate::worktree::WorktreeCreated, String>,
+    {
+        let result = match create() {
+            Ok(created) => match self
+                .client
+                .set_cwd(&created.plan.path.to_string_lossy())
+                .await
+            {
+                Ok(()) => {
+                    self.refresh_state().await;
+                    self.refresh_worktrees();
+                    Ok(created.summary())
+                }
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        };
+        self.notice = Some(match result {
+            Ok(summary) => summary,
+            Err(error) => i18n::render(self.lang, Key::WorkflowFailed, &[&error]),
+        });
     }
 
     /// Interrupt the run in flight (`ctrl+x`).
@@ -1375,6 +1742,7 @@ fn prompt_of(pending: &PendingApprovalState) -> ApprovalPrompt {
             pending.title.clone()
         },
         summary: pending.summary.clone(),
+        raw: serde_json::to_value(pending).unwrap_or_default(),
     }
 }
 

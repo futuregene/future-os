@@ -5,10 +5,8 @@
 //! stops using stays readable for a build that still uses it (an unknown key is
 //! ignored on load, never an error).
 //!
-//! What is left here is what the workbench actually honours. The previous inline
-//! UI also stored notification channels, a terminal-bell flag and a
-//! skill-recommendation toggle; those features went with it, and their keys are
-//! no longer written. A file that still carries them loads fine.
+//! What is left here is what the workbench actually honours. Unknown keys from
+//! other clients are ignored on load, never an error.
 
 use std::path::PathBuf;
 
@@ -50,6 +48,14 @@ pub struct TuiSettings {
     pub sidebar_position: Option<String>,
     pub sidebar_width: Option<u16>,
     pub sidebar_visible: Option<bool>,
+    /// Capture the mouse from startup. Runtime `/mouse` changes are saved too.
+    pub mouse_capture: Option<bool>,
+    /// Successful-run terminal notifications (BEL and OSC 9 independently).
+    pub notify: Option<crate::notifications::NotifyConfig>,
+    /// Keep the activity indicator still; streaming itself is never delayed.
+    pub reduced_motion: Option<bool>,
+    /// Single-column, focused, static reading without the auxiliary sidebar.
+    pub linear_reading: Option<bool>,
 }
 
 impl TuiSettings {
@@ -99,6 +105,20 @@ impl TuiSettings {
         if let Some(visible) = self.sidebar_visible {
             obj.insert("sidebarVisible".into(), Value::Bool(visible));
         }
+        if let Some(capture) = self.mouse_capture {
+            obj.insert("mouseCapture".into(), Value::Bool(capture));
+        }
+        if let Some(notify) = self.notify {
+            if let Ok(value) = serde_json::to_value(notify) {
+                obj.insert("notify".into(), value);
+            }
+        }
+        if let Some(reduced) = self.reduced_motion {
+            obj.insert("reducedMotion".into(), Value::Bool(reduced));
+        }
+        if let Some(linear) = self.linear_reading {
+            obj.insert("linearReading".into(), Value::Bool(linear));
+        }
         Value::Object(obj)
     }
 
@@ -129,6 +149,12 @@ impl TuiSettings {
                 .and_then(|width| u16::try_from(width).ok())
                 .map(|width| width.clamp(30, 48)),
             sidebar_visible: value.get("sidebarVisible").and_then(Value::as_bool),
+            mouse_capture: value.get("mouseCapture").and_then(Value::as_bool),
+            notify: value
+                .get("notify")
+                .and_then(|value| serde_json::from_value(value.clone()).ok()),
+            reduced_motion: value.get("reducedMotion").and_then(Value::as_bool),
+            linear_reading: value.get("linearReading").and_then(Value::as_bool),
         }
     }
 }
@@ -153,6 +179,15 @@ mod tests {
             sidebar_position: Some("left".into()),
             sidebar_width: Some(42),
             sidebar_visible: Some(false),
+            mouse_capture: Some(false),
+            notify: Some(crate::notifications::NotifyConfig {
+                enabled: true,
+                bell: false,
+                osc9: true,
+                title: false,
+            }),
+            reduced_motion: Some(true),
+            linear_reading: Some(true),
         };
         let back = TuiSettings::from_json(&settings.to_json());
         assert_eq!(back.default_model.as_deref(), Some("future/deepseek-flash"));
@@ -167,6 +202,10 @@ mod tests {
         assert_eq!(back.sidebar_position.as_deref(), Some("left"));
         assert_eq!(back.sidebar_width, Some(42));
         assert_eq!(back.sidebar_visible, Some(false));
+        assert_eq!(back.mouse_capture, Some(false));
+        assert!(!back.notify.unwrap().bell);
+        assert_eq!(back.reduced_motion, Some(true));
+        assert_eq!(back.linear_reading, Some(true));
     }
 
     #[test]
@@ -197,9 +236,10 @@ mod tests {
         assert_eq!(settings.default_model.as_deref(), Some("m"));
         assert_eq!(settings.theme_id.as_deref(), Some("future-dark"));
         assert_eq!(settings.reply_detail.as_deref(), Some("detailed"));
-        // …and writing it back does not resurrect them.
+        // The notification object is honoured again; the retired independent
+        // bell key remains ignored rather than overriding its channel choice.
         let written = settings.to_json();
-        assert!(written.get("notify").is_none());
+        assert_eq!(written["notify"]["bell"], false);
         assert!(written.get("bellOnComplete").is_none());
     }
 
