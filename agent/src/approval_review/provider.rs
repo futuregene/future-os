@@ -115,6 +115,8 @@ pub(super) fn decode(value: Value) -> Result<ProviderAssessment, &'static str> {
     })
 }
 
+// async-trait adds must_use to methods returning already-must-use boxed futures.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait ApprovalReviewerClient: Send + Sync {
     async fn assess(

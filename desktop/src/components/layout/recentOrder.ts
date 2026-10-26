@@ -5,7 +5,7 @@
  * The rail's tree answers "where does this conversation live" — a workspace, or
  * the chats section — and the tree is the product's primary shape, so it stays
  * the default. This is the second view: it ignores the tree and pinning for its
- * *order*, on one question, "what did I last touch". A pinned conversation
+ * ordering, on one question, "what did I last touch". A pinned conversation
  * keeps its marker but not its place.
  *
  * - A conversation that has children is **one row here**, not several. A fork,

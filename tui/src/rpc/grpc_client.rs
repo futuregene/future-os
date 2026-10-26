@@ -2763,7 +2763,7 @@ mod tests {
             .filter(|cmd| !matches!(cmd.r#type.as_str(), "list_models" | "get_agent_readiness"))
             .collect();
         assert_eq!(relevant.len(), 12);
-        for (pair, session_id) in relevant.chunks_exact(2).zip([
+        for (pair, session_id) in relevant.as_chunks::<2>().0.iter().zip([
             "first-session",
             "first-session",
             "first-session",

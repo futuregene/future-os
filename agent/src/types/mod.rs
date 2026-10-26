@@ -1025,6 +1025,8 @@ pub struct ModelCost {
 
 // ─── LLMProvider trait ─────────────────────────────────────────────────────
 
+// async-trait adds must_use to methods returning already-must-use boxed futures.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait LLMProvider: Send + Sync {
     async fn stream_model(
