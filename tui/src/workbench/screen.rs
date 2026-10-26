@@ -597,9 +597,7 @@ fn workflow_box(
         t(workbench.lang, title_key),
     )];
     if overlay == Overlay::Diff {
-        return diff_review_box(
-            workbench, data, palette, h, columns, title_key, hint_key, left,
-        );
+        return diff_review_box(workbench, data, palette, h, columns, left);
     }
     if overlay != Overlay::Approval {
         rows.push(widgets::box_row(
@@ -1074,19 +1072,17 @@ fn diff_review_box(
     palette: &Palette,
     h: u16,
     columns: usize,
-    title_key: Key,
-    hint_key: Key,
     left: usize,
 ) -> Vec<String> {
     use crate::workbench::workflows;
     let mut rows = vec![widgets::box_top(
         palette,
         columns,
-        t(workbench.lang, title_key),
+        t(workbench.lang, Key::DiffTitle),
     )];
     rows.push(widgets::box_row(
         palette,
-        t(workbench.lang, hint_key),
+        t(workbench.lang, Key::DiffHint),
         columns,
     ));
     let available = (h as usize).saturating_sub(3);
@@ -1312,7 +1308,7 @@ fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
         .saturating_sub(visible)
         .min(preferences::PREFERENCE_ROWS.len().saturating_sub(visible));
     let tail = content.split_off(preferences::PREFERENCE_ROWS.len());
-    let content_len = visible + tail.len();
+    let content_len = visible.min(preferences::PREFERENCE_ROWS.len()) + tail.len();
     let geometry = box_geometry(w, h, 72, content_len);
     for (display, index) in (first..first + visible).enumerate() {
         let Some(row) = preferences::PREFERENCE_ROWS.get(index) else {
@@ -1398,7 +1394,7 @@ fn keybindings_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
         .saturating_sub(visible)
         .min(preferences::ACTIONS.len().saturating_sub(visible));
     let tail = content.split_off(preferences::ACTIONS.len());
-    let content_len = visible + tail.len();
+    let content_len = visible.min(preferences::ACTIONS.len()) + tail.len();
     let geometry = box_geometry(w, h, 76, content_len);
     for (display, index) in (first..first + visible).enumerate() {
         if index < preferences::ACTIONS.len() {
@@ -1636,6 +1632,43 @@ mod tests {
             connected: true,
             ..WorkbenchData::default()
         }
+    }
+
+    #[test]
+    fn a_tall_terminal_does_not_stretch_the_preference_box_to_the_frame() {
+        let mut workbench = Workbench::new();
+        let data = crate::workbench::demo::chat();
+        workbench.set_language(crate::workbench::i18n::LanguagePreference::En);
+        workbench.open_preferences();
+        let rows = workbench
+            .render(&data, 120, 38)
+            .iter()
+            .map(|row| plain(row))
+            .collect::<Vec<_>>();
+        let top = rows
+            .iter()
+            .position(|row| row.contains('╭'))
+            .expect("the box has a top border");
+        let bottom = rows
+            .iter()
+            .position(|row| row.contains('╰'))
+            .expect("the box has a bottom border");
+        // The box is content-sized and centred, not blown up to the frame.
+        assert!(
+            top > 0,
+            "the box starts at the first row:\n{}",
+            rows.join("\n")
+        );
+        assert!(
+            bottom - top < 20,
+            "the box is {} rows tall:\n{}",
+            bottom - top + 1,
+            rows.join("\n")
+        );
+        // ... and every preference row, plus its footer, is inside it.
+        let inner = rows[top..=bottom].join("\n");
+        assert!(inner.contains("Sidebar width"), "{inner}");
+        assert!(inner.contains("choose"), "{inner}");
     }
 
     #[test]
