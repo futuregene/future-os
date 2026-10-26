@@ -91,10 +91,28 @@ fn git_toplevel(cwd: &Path) -> Option<PathBuf> {
 /// empty list is the honest answer for a workspace with no goal — the panel
 /// says `no todos` rather than inventing them.
 pub fn goal_todos(cwd: &Path) -> Vec<TodoItem> {
+    goal_board(cwd).todos
+}
+
+/// One goal's identity and its todos: what the 待办 panel prints.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GoalBoard {
+    /// The goal's own objective, one line. Empty when there is no goal.
+    pub objective: String,
+    pub todos: Vec<TodoItem>,
+}
+
+/// The board the 待办 panel shows, with the goal it belongs to named.
+///
+/// The panel used to print a bare list, and a list of `✔ P0 收敛两份实现` with no
+/// title reads as "something about this repository" — which is exactly the
+/// question a reader asked. The objective comes from the same registry the
+/// control plane keeps, so the title is the goal's own words and not a guess.
+pub fn goal_board(cwd: &Path) -> GoalBoard {
     let Some(root) = goal_root(cwd) else {
-        return Vec::new();
+        return GoalBoard::default();
     };
-    let mut best: Option<Folded> = None;
+    let mut best: Option<(String, Folded)> = None;
     for id in goal_ids(&root) {
         let events = root.join("goals").join(&id).join("events.jsonl");
         let Ok(text) = std::fs::read_to_string(&events) else {
@@ -106,12 +124,130 @@ pub fn goal_todos(cwd: &Path) -> Vec<TodoItem> {
         }
         if best
             .as_ref()
-            .is_none_or(|current| folded.last_ts >= current.last_ts)
+            .is_none_or(|(_, current)| folded.last_ts >= current.last_ts)
         {
-            best = Some(folded);
+            best = Some((id, folded));
         }
     }
-    best.map(|folded| folded.todos).unwrap_or_default()
+    let Some((id, folded)) = best else {
+        return GoalBoard::default();
+    };
+    GoalBoard {
+        objective: registry_objective(&root, &id),
+        todos: folded.todos,
+    }
+}
+
+/// A goal's `objective` from `registry.json`, or its id when the registry does
+/// not carry one (a store written by an older control plane).
+fn registry_objective(root: &Path, id: &str) -> String {
+    let Ok(text) = std::fs::read_to_string(root.join("registry.json")) else {
+        return id.to_string();
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&text) else {
+        return id.to_string();
+    };
+    value
+        .as_array()
+        .and_then(|entries| {
+            entries
+                .iter()
+                .find(|entry| entry.get("goal_id").and_then(Value::as_str) == Some(id))
+        })
+        .and_then(|entry| entry.get("objective").and_then(Value::as_str))
+        .map(str::to_string)
+        .filter(|objective| !objective.trim().is_empty())
+        .unwrap_or_else(|| id.to_string())
+}
+
+/// A bounded list of files under `cwd`, for the `@` menu.
+///
+/// `git ls-files` when the directory is a repository — it is the fastest honest
+/// answer and it already honours `.gitignore`, which is what keeps a menu of
+/// candidates from filling with build output. Anything else (or a git that is
+/// missing, or a listing too slow to be worth it) falls back to a short walk that
+/// prunes the directories every project has.
+pub fn workspace_files(cwd: &Path) -> Vec<String> {
+    const FILE_LIMIT: usize = 4000;
+    if cwd.as_os_str().is_empty() || !cwd.is_dir() {
+        return Vec::new();
+    }
+    let args = vec![
+        "-C".to_string(),
+        cwd.display().to_string(),
+        "ls-files".to_string(),
+        "--cached".to_string(),
+        "--others".to_string(),
+        "--exclude-standard".to_string(),
+    ];
+    if let Ok((0, stdout, _)) = crate::subprocess::spawn_with_timeout(
+        Path::new("git"),
+        &args,
+        std::time::Duration::from_secs(2),
+    ) {
+        let mut files: Vec<String> = stdout
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .take(FILE_LIMIT)
+            .map(str::to_string)
+            .collect();
+        if !files.is_empty() {
+            files.sort();
+            files.dedup();
+            return files;
+        }
+    }
+    let mut files = Vec::new();
+    walk(cwd, cwd, 0, &mut files, FILE_LIMIT);
+    files.sort();
+    files
+}
+
+/// Directories a file menu never needs: version control, build output, package
+/// caches. Pruned rather than listed and filtered, so the walk stays cheap.
+const SKIP_DIRS: [&str; 10] = [
+    ".git",
+    "target",
+    "node_modules",
+    "dist",
+    "build",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".next",
+    "coverage",
+];
+
+fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<String>, limit: usize) {
+    if depth > 8 || out.len() >= limit {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut children: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+    children.sort();
+    for path in children {
+        if out.len() >= limit {
+            return;
+        }
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        if name.starts_with('.') {
+            continue;
+        }
+        if path.is_dir() {
+            if SKIP_DIRS.contains(&name) {
+                continue;
+            }
+            walk(root, &path, depth + 1, out, limit);
+        } else if let Ok(relative) = path.strip_prefix(root) {
+            out.push(relative.display().to_string());
+        }
+    }
 }
 
 fn goal_ids(root: &Path) -> Vec<String> {
@@ -437,6 +573,43 @@ mod tests {
         std::fs::write(path, text).unwrap();
     }
 
+    /// The board carries the goal it belongs to, in the goal's own words, so the
+    /// 待办 panel can say what the list *is*.
+    #[test]
+    fn the_board_names_its_goal_from_the_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join(".future/goal");
+        write(
+            &root.join("goals/goal_a/events.jsonl"),
+            concat!(
+                r#"{"kind":"goal_started","ts":10}"#,
+                "\n",
+                r#"{"kind":"todo_added","ts":11,"todo":{"id":"t1","text":"first","priority":"P0","status":"open"}}"#,
+                "\n",
+            ),
+        );
+        write(
+            &root.join("registry.json"),
+            r#"[{"goal_id":"goal_a","objective":"把工作台做成能用的东西","status":"active"}]"#,
+        );
+        let board = goal_board(dir.path());
+        assert_eq!(board.objective, "把工作台做成能用的东西");
+        assert_eq!(board.todos.len(), 1);
+        // A store whose registry was never written still gets a board: the id is
+        // the honest name when there is no objective to quote.
+        std::fs::remove_file(root.join("registry.json")).unwrap();
+        assert_eq!(goal_board(dir.path()).objective, "goal_a");
+        // And an objective recorded as blank is not a name either.
+        write(
+            &root.join("registry.json"),
+            r#"[{"goal_id":"goal_a","objective":"   "}]"#,
+        );
+        assert_eq!(goal_board(dir.path()).objective, "goal_a");
+        // No store at all: an empty board, and nothing created.
+        let elsewhere = tempfile::tempdir().unwrap();
+        assert_eq!(goal_board(elsewhere.path()), GoalBoard::default());
+    }
+
     #[test]
     fn a_goal_is_folded_from_its_ledger() {
         let dir = tempfile::tempdir().unwrap();
@@ -553,6 +726,89 @@ mod tests {
         assert!(
             !dir.path().join(".future").exists(),
             "a reader created a store"
+        );
+    }
+
+    /// The `@` menu's candidates come from the working directory: a bounded
+    /// list, the same one for every reader of the same tree, and the directories
+    /// every project has (build output, caches) are never in it.
+    #[test]
+    fn workspace_files_lists_the_tree_and_prunes_build_output() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join("README.md"), "x");
+        write(&dir.path().join("src/main.rs"), "x");
+        write(&dir.path().join("src/nested/deep.rs"), "x");
+        write(&dir.path().join("target/debug/junk"), "x");
+        write(&dir.path().join("node_modules/pkg/index.js"), "x");
+        write(&dir.path().join(".hidden"), "x");
+        let files = workspace_files(dir.path());
+        // `workspace_files` reports each file relative to `cwd` in the platform's
+        // own form (`src\main.rs` on Windows), because that is what the menu
+        // hands back to the reader to type. Join the expectation the same way
+        // rather than pasting a `/` the walk never produces.
+        let relative = |parts: &[&str]| {
+            let mut path = std::path::PathBuf::new();
+            for part in parts {
+                path.push(part);
+            }
+            path.display().to_string()
+        };
+        assert!(files.contains(&relative(&["README.md"])), "{files:?}");
+        assert!(files.contains(&relative(&["src", "main.rs"])), "{files:?}");
+        assert!(
+            files.contains(&relative(&["src", "nested", "deep.rs"])),
+            "the walk descends: {files:?}"
+        );
+        // Compared by path components, so this is not a vacuous pass on Windows
+        // (where `target\debug\junk`.starts_with("target/") is false because of
+        // the separator, not because the directory was pruned).
+        assert!(
+            !files
+                .iter()
+                .any(|file| std::path::Path::new(file).starts_with("target")),
+            "build output is pruned: {files:?}"
+        );
+        assert!(
+            !files
+                .iter()
+                .any(|file| std::path::Path::new(file).starts_with("node_modules")),
+            "{files:?}"
+        );
+        assert!(
+            !files.iter().any(|file| file.starts_with('.')),
+            "dotfiles stay out: {files:?}"
+        );
+        // Sorted, so the menu's order does not depend on the filesystem.
+        let mut sorted = files.clone();
+        sorted.sort();
+        assert_eq!(files, sorted);
+        // A directory that is not there is an empty list, not a panic.
+        assert!(workspace_files(&dir.path().join("missing")).is_empty());
+        assert!(workspace_files(Path::new("")).is_empty());
+    }
+
+    /// The fallback is only the fallback: inside a real repository the answer is
+    /// `git ls-files`, so an ignored file never reaches the menu.
+    #[test]
+    fn a_repository_answers_with_its_tracked_and_unignored_files() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join(".gitignore"), "ignored.txt\n");
+        write(&dir.path().join("kept.txt"), "x");
+        write(&dir.path().join("ignored.txt"), "x");
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .expect("run git")
+        };
+        let ok = git(&["init", "--quiet"]).status.success();
+        assert!(ok, "git init failed");
+        let files = workspace_files(dir.path());
+        assert!(files.contains(&"kept.txt".to_string()), "{files:?}");
+        assert!(
+            !files.contains(&"ignored.txt".to_string()),
+            "the ignore rules are what keep build output out: {files:?}"
         );
     }
 

@@ -168,6 +168,10 @@ pub enum Key {
     UsageCache,
     UsageOutput,
     PanelEmptyTodo,
+    PanelGoalLabel,
+    PanelNoGoal,
+    PanelNoGoalHint,
+    PanelEmptyGoalTodo,
     PanelEmptyJobs,
     PanelEmptySessions,
     PanelEmptySkills,
@@ -214,6 +218,14 @@ pub enum Key {
     PaletteTitle,
     PaletteFilter,
     PaletteEmpty,
+    PaletteCommandsHeading,
+    PaletteSkillsHeading,
+    // ── the `@` / `#` mention menu ────────────────────────────────────
+    MentionTitleFile,
+    MentionTitleSession,
+    MentionHintFile,
+    MentionHintSession,
+    MentionEmpty,
     // ── the launchpad ─────────────────────────────────────────────────
     ChipModel,
     ChipEffort,
@@ -306,6 +318,7 @@ pub enum Key {
     CmdTheme,
     CmdUsage,
     CmdSkills,
+    CmdTodo,
     CmdExport,
     CmdTranscript,
     CmdHelp,
@@ -340,6 +353,8 @@ pub enum Key {
     HelpKeyScroll,
     HelpKeyPage,
     HelpKeyPalette,
+    HelpKeyMentionFile,
+    HelpKeyMentionSession,
     HelpKeyHelp,
     HelpKeyReplyDetail,
     HelpKeyReplyDetailSet,
@@ -384,6 +399,13 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         UsageCache => ("缓存命中", "Cache hit"),
         UsageOutput => ("输出", "Output"),
         PanelEmptyTodo => ("没有待办", "no todos"),
+        PanelGoalLabel => ("目标", "goal"),
+        PanelNoGoal => (
+            "本仓库没有进行中的目标",
+            "no goal in progress in this repository",
+        ),
+        PanelNoGoalHint => ("future goal init 创建一个", "future goal init creates one"),
+        PanelEmptyGoalTodo => ("这个目标还没有待办", "this goal has no todos yet"),
         PanelEmptyJobs => ("没有定时任务", "no scheduled jobs"),
         PanelEmptySessions => ("没有会话", "no sessions"),
         PanelEmptySkills => ("没有技能", "no skills"),
@@ -446,8 +468,30 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ),
         PalettePanelTitle => (" 命令面板（/）", " Command palette (/)"),
         PaletteTitle => ("命令", "Commands"),
-        PaletteFilter => ("输入以过滤命令", "Type to filter commands"),
-        PaletteEmpty => (" 没有匹配的命令", " No matching command"),
+        PaletteFilter => (
+            "输入以过滤命令与技能 · tab 补全 · ⏎ 运行",
+            "Type to filter commands and skills · tab completes · enter runs",
+        ),
+        PaletteEmpty => (" 没有匹配的命令或技能", " No matching command or skill"),
+        PaletteCommandsHeading => (" 命令", " Commands"),
+        PaletteSkillsHeading => (
+            " 技能（进草稿后由 agent 展开）",
+            " Skills (a prompt token the agent expands)",
+        ),
+
+        // The menu completes a token the reader is typing, so its own copy is
+        // chrome: what the sigil means, and which keys do what while it is up.
+        MentionTitleFile => ("文件", "Files"),
+        MentionTitleSession => ("会话", "Sessions"),
+        MentionHintFile => (
+            "↑↓ 选择 · ⏎ / tab 插入 · esc 关闭（不带 @ 提交则原样发送）",
+            "↑↓ select · enter / tab insert · esc close",
+        ),
+        MentionHintSession => (
+            "↑↓ 选择 · ⏎ / tab 插入会话链接 · esc 关闭",
+            "↑↓ select · enter / tab insert a link · esc close",
+        ),
+        MentionEmpty => ("没有匹配", "no matches"),
 
         ChipModel => ("模型", "Model"),
         ChipEffort => ("强度", "Effort"),
@@ -542,6 +586,10 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         CmdWorkspace => ("workspace 目录", "Workspace directory"),
         CmdTheme => ("切换主题", "Switch theme"),
         CmdUsage => ("用量与成本", "Usage and cost"),
+        CmdTodo => (
+            "侧栏的待办面板（这个仓库的目标看板）",
+            "The sidebar's to-do panel (this repository's goal board)",
+        ),
         CmdSkills => ("技能列表", "Installed skills"),
         CmdExport => ("导出会话", "Export the session"),
         CmdTranscript => ("完整记录", "The whole record"),
@@ -577,6 +625,14 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         HelpKeyScroll => ("滚动聊天，或侧栏列表", "Scroll the chat, or the sidebar's list"),
         HelpKeyPage => ("整页滚动聊天", "Scroll the chat a page at a time"),
         HelpKeyPalette => ("命令面板", "Command palette"),
+        HelpKeyMentionFile => (
+            "引用文件（插入 @path，提交时带内容）",
+            "Reference a file (@path, sent with its content)",
+        ),
+        HelpKeyMentionSession => (
+            "引用会话（插入会话链接）",
+            "Reference a conversation (inserts its link)",
+        ),
         HelpKeyHelp => ("这份帮助", "This help"),
         HelpKeyReplyDetail => ("最终输出 / 完整过程", "Final answer / full process"),
         HelpKeyReplyDetailSet => ("同上，直接设置", "The same, set directly"),
@@ -791,7 +847,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 197] = {
+    const ALL_KEYS: [Key; 211] = {
         use Key::*;
         [
             TabTodo,
@@ -808,6 +864,10 @@ mod tests {
             UsageCache,
             UsageOutput,
             PanelEmptyTodo,
+            PanelGoalLabel,
+            PanelNoGoal,
+            PanelNoGoalHint,
+            PanelEmptyGoalTodo,
             PanelEmptyJobs,
             PanelEmptySessions,
             PanelEmptySkills,
@@ -851,6 +911,13 @@ mod tests {
             PaletteTitle,
             PaletteFilter,
             PaletteEmpty,
+            PaletteCommandsHeading,
+            PaletteSkillsHeading,
+            MentionTitleFile,
+            MentionTitleSession,
+            MentionHintFile,
+            MentionHintSession,
+            MentionEmpty,
             ChipModel,
             ChipEffort,
             ChipMode,
@@ -941,6 +1008,7 @@ mod tests {
             CmdTheme,
             CmdUsage,
             CmdSkills,
+            CmdTodo,
             CmdExport,
             CmdTranscript,
             CmdHelp,
@@ -974,6 +1042,8 @@ mod tests {
             HelpKeyScroll,
             HelpKeyPage,
             HelpKeyPalette,
+            HelpKeyMentionFile,
+            HelpKeyMentionSession,
             HelpKeyHelp,
             HelpKeyReplyDetail,
             HelpKeyReplyDetailSet,

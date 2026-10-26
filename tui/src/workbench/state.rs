@@ -354,6 +354,10 @@ pub struct WorkbenchData {
     pub mode: String,
     pub permission: String,
     pub usage: UsageData,
+    /// The goal the todo board belongs to, in the goal's own words. Empty when
+    /// this workspace has no goal in progress — the panel then says so instead
+    /// of printing a list of unexplained rows.
+    pub goal_label: String,
     pub todos: Vec<TodoItem>,
     pub sessions: Vec<SessionRow>,
     /// Every model the agent offers, in the agent's order. The `/model` picker
@@ -386,6 +390,10 @@ pub struct WorkbenchData {
     pub fork_points: Vec<ForkPoint>,
     /// Read-only git worktree list.
     pub worktrees: Vec<WorktreeView>,
+    /// Files a `@` mention can name, relative to the session's working
+    /// directory. Filled by the adapter once per directory; empty disables the
+    /// menu's file half rather than suggesting nothing.
+    pub files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]

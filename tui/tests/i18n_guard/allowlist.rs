@@ -262,4 +262,8 @@ pub const FILES: &[FileExempt] = &[FileExempt {
 /// is a gap worth freezing; lower it whenever one is closed. The test fails on
 /// a mismatch in either direction, so the number cannot drift away from what
 /// the tree actually skips.
-pub const BUDGET: usize = 35;
+///
+/// 35 → 37: the two `@path` inlining notes in `workbench/live.rs`. They are the
+/// prompt text the model reads in place of a file it was not given — never
+/// drawn — so they stay in the language the prompt is written in.
+pub const BUDGET: usize = 37;

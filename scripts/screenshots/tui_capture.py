@@ -60,6 +60,22 @@ QUERY_ANSWERS: list[tuple[bytes, bytes]] = [
 ]
 
 
+def write_all(fd: int, payload: bytes) -> None:
+    """Write `payload` completely.
+
+    A pty accepts a bounded number of bytes at a time: `os.write` on the master
+    side returns a *short* count once the child's input queue is full, and the
+    caller that ignores the return value silently loses the tail. Measured on a
+    19-byte scripted line: 12 bytes arrived, so the frame showed a truncated
+    draft — a capture bug that looks exactly like a typing bug in the program
+    under test.
+    """
+    view = memoryview(payload)
+    while view:
+        written = os.write(fd, view)
+        view = view[written:]
+
+
 def answer_queries(since: bytes) -> bytes:
     """Answers for the interrogations in the newest output, if any.
 
@@ -134,7 +150,7 @@ def run(
             payload = action(b"".join(chunks).decode("utf-8", "replace")) if callable(action) else action
             if payload:
                 try:
-                    os.write(master, payload)
+                    write_all(master, payload)
                 except OSError:
                     break
             last = time.time()
@@ -153,7 +169,7 @@ def run(
             replies = answer_queries(data)
             if replies:
                 try:
-                    os.write(master, replies)
+                    write_all(master, replies)
                 except OSError:
                     break
             # A step may have come due while we were blocked; keep it exact by

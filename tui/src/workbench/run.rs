@@ -999,9 +999,64 @@ fn key_events(data: &str) -> Vec<WbEvent> {
     if let Some(key) = crate::keys::parse_key(data) {
         return vec![WbEvent::Key(key)];
     }
-    // Anything the key parser did not name (a multi-byte character, for
-    // instance) is text, and belongs in the draft as-is.
+    // A chunk the parser does not recognise as one key is one of two things:
+    // several control chords arriving in the same read (a held key, a fast
+    // `ctrl+y ctrl+y`), or text. The parser folds a trailing control byte into a
+    // chord even when text precedes it — `b\x13` parses as `ctrl+s` — so the
+    // split is only made for a chunk that is *entirely* control bytes. That keeps
+    // both halves working: two chords become two keys, and a run of text is never
+    // re-split into characters the parser would misread.
+    let control_only = data
+        .chars()
+        .all(|ch| (ch as u32) < 0x20 || ch as u32 == 0x7f);
+    if control_only {
+        let keys: Vec<WbEvent> = data
+            .chars()
+            .filter_map(|ch| crate::keys::parse_key(&ch.to_string()).map(WbEvent::Key))
+            .collect();
+        if keys.len() == data.chars().count() {
+            return keys;
+        }
+    }
+    // The same read can hold several *escape* sequences — holding `↓` in a list,
+    // or an arrow arriving in the same read as a chord. Each one is a complete
+    // key on its own; the chunk is not, and pasting it would put `\x1b[B` in the
+    // draft. Split only when every segment parses, so an unfinished sequence (a
+    // truncated `\x1b[1;5A`, a lone trailing `\x1b`) stays whole for the next
+    // read rather than being guessed at.
+    if let Some(keys) = split_escape_keys(data) {
+        return keys;
+    }
+    // Anything else is text, and belongs in the draft as it stands.
     vec![WbEvent::Paste(data.to_string())]
+}
+
+/// Split a chunk of several complete escape sequences into one key each.
+///
+/// `None` when the chunk is not a run of complete sequences: the caller then
+/// treats it as text, which is the honest answer for anything this does not
+/// recognise. A trailing bare `\x1b` is the start of a sequence whose rest has
+/// not arrived, so it is not split either — a guess there would turn half of one
+/// key into an `escape`.
+fn split_escape_keys(data: &str) -> Option<Vec<WbEvent>> {
+    if !data.starts_with('\x1b') || data.len() < 2 {
+        return None;
+    }
+    let mut keys = Vec::new();
+    let mut rest = data;
+    while !rest.is_empty() {
+        let end = rest[1..]
+            .find('\x1b')
+            .map(|at| at + 1)
+            .unwrap_or(rest.len());
+        let segment = &rest[..end];
+        if segment == "\x1b" {
+            return None;
+        }
+        keys.push(WbEvent::Key(crate::keys::parse_key(segment)?));
+        rest = &rest[end..];
+    }
+    (keys.len() > 1).then_some(keys)
 }
 
 /// The frame the surface is composed for right now, computed once per loop
@@ -1374,6 +1429,52 @@ mod tests {
     #[test]
     fn a_multibyte_character_is_text() {
         assert_eq!(events_of("中"), vec![WbEvent::Paste("中".into())]);
+    }
+
+    /// Two control chords in one read are two events, not one paste: the raw
+    /// bytes must never reach the draft, and neither chord may be swallowed.
+    #[test]
+    fn a_chunk_of_several_keys_is_split_into_events() {
+        let events = events_of("\u{19}\u{19}");
+        assert_eq!(events, vec![WbEvent::Key("ctrl+y".into()); 2], "{events:?}");
+        let arrows = events_of("\x1b[B\x1b[B");
+        assert_eq!(arrows, vec![WbEvent::Key("down".into()); 2], "{arrows:?}");
+    }
+
+    /// A run of real text stays one paste even when a control byte follows it:
+    /// the parser folds a trailing byte into a chord (`b\x13` reads as
+    /// `ctrl+s`), so re-splitting text would corrupt it.
+    #[test]
+    fn a_text_run_is_never_split_into_chords() {
+        let events = events_of("ab\u{13}");
+        assert_eq!(
+            events,
+            vec![WbEvent::Paste("ab\u{13}".into())],
+            "{events:?}"
+        );
+        let mixed = events_of("ab\tcd");
+        assert_eq!(
+            mixed,
+            vec![WbEvent::Paste("ab\tcd".into())],
+            "a tab between letters is text the draft keeps: {mixed:?}"
+        );
+    }
+
+    /// An unfinished sequence is not guessed at: half an escape sequence must
+    /// wait for the rest of its bytes rather than becoming an `escape` key now.
+    #[test]
+    fn an_incomplete_sequence_is_not_split() {
+        // A lone trailing `\x1b` after a complete sequence: the next read
+        // finishes it, so this one stays whole.
+        assert_eq!(
+            events_of("\x1b[B\x1b"),
+            vec![WbEvent::Paste("\x1b[B\x1b".into())]
+        );
+        // A truncated CSI likewise: it parses as nothing, so it is not a key.
+        assert_eq!(
+            events_of("\x1b[1;5"),
+            vec![WbEvent::Paste("\x1b[1;5".into())]
+        );
     }
 
     /// The old shape wrote rows with `\r\n` and only kept the *last* one free

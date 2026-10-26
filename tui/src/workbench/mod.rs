@@ -1,4 +1,4 @@
-﻿//! The workbench — the FutureOS terminal UI (`future tui`).
+//! The workbench — the FutureOS terminal UI (`future tui`).
 //!
 //! It normally owns the whole screen, repaints absolute rows, and resolves mouse
 //! clicks against what it painted. Linear reading is the explicit exception:
@@ -116,6 +116,81 @@ pub enum PaneId {
     Input,
     Chat,
     Sidebar,
+}
+
+/// Which token the `@` / `#` menu completes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MentionKind {
+    /// `@` — a file under the session's working directory.
+    File,
+    /// `#` — a conversation, inserted as a `futureos://session/<id>` link, the
+    /// same form a conversation link travels as everywhere else.
+    Session,
+}
+
+impl MentionKind {
+    pub fn sigil(self) -> char {
+        match self {
+            Self::File => '@',
+            Self::Session => '#',
+        }
+    }
+
+    /// The box's title.
+    pub fn title(self, lang: Language) -> &'static str {
+        t(
+            lang,
+            match self {
+                Self::File => Key::MentionTitleFile,
+                Self::Session => Key::MentionTitleSession,
+            },
+        )
+    }
+
+    /// The footer: what the keys do *here*.
+    pub fn hint(self, lang: Language) -> &'static str {
+        t(
+            lang,
+            match self {
+                Self::File => Key::MentionHintFile,
+                Self::Session => Key::MentionHintSession,
+            },
+        )
+    }
+}
+
+/// The `@` / `#` menu's own state: which token it completes, where that token
+/// starts in the draft, the query typed after the sigil, and the highlight.
+///
+/// It is *derived* from the draft on every event (see
+/// [`Workbench::sync_mention`]) rather than owned by the menu: the query is the
+/// text after the sigil, so the menu and the draft cannot disagree.
+pub struct Mention {
+    pub kind: MentionKind,
+    /// Byte offset of the sigil in the draft; an insert replaces `start..cursor`.
+    pub start: usize,
+    pub query: String,
+    pub index: usize,
+}
+
+impl std::fmt::Debug for Mention {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Mention")
+            .field("kind", &self.kind)
+            .field("start", &self.start)
+            .field("query", &self.query)
+            .field("index", &self.index)
+            .finish()
+    }
+}
+
+/// One row of the `@` / `#` menu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MentionRow {
+    /// What replaces the token — `@path ` or a conversation link.
+    pub insert: String,
+    pub label: String,
+    pub detail: String,
 }
 
 /// What the app has to do about a key or click. The workbench never mutates the
@@ -300,6 +375,9 @@ pub struct Workbench {
     pub scroll: scroll::ScrollState,
     pub queue_index: usize,
     pub workflow_index: usize,
+    /// How many list rows the last frame showed. Only the renderer knows,
+    /// and `pageUp`/`pageDown` need it to move the cursor by a page.
+    pub list_page: usize,
     /// Diff navigator focus: files or the patch. The narrow layout uses the
     /// same distinction so file selection cannot eat the patch's scroll keys.
     pub diff_patch_focus: bool,
@@ -308,6 +386,13 @@ pub struct Workbench {
     pub mouse_capture: bool,
     pub(crate) composer_width: usize,
     pub tick: usize,
+    /// The `@` / `#` completion menu, while the draft's current token carries a
+    /// sigil. Derived from the draft on every event, never owned by the menu
+    /// (see [`Self::sync_mention`]).
+    pub mention: Option<Mention>,
+    /// The token an `esc` dismissed, so the menu does not reopen on the same
+    /// keystroke that closed it. Cleared as soon as the token changes.
+    mention_dismissed: Option<(usize, String)>,
     /// The frame size of the last render; mouse coordinates are resolved
     /// against it.
     last_frame: (u16, u16),
@@ -366,12 +451,15 @@ impl Workbench {
             scroll: scroll::ScrollState::default(),
             queue_index: 0,
             workflow_index: 0,
+            list_page: 10,
             diff_patch_focus: true,
             history_query: String::new(),
             session_key: String::new(),
             mouse_capture: true,
             composer_width: 76,
             tick: 0,
+            mention: None,
+            mention_dismissed: None,
             last_frame: (0, 0),
             hit: layout::HitMap::new(),
             overlay_mark: 0,
@@ -443,6 +531,11 @@ impl Workbench {
         }
         self.scroll.observe(data.revision);
         self.mouse_capture = data.mouse_capture;
+        // The menu is a reading of the draft, and a frame is the moment the
+        // draft is as fresh as it will get in this iteration: a paste inserts a
+        // whole token with no keystroke after it, so painting is what opens the
+        // menu for it.
+        self.sync_mention(data);
         let rows = screen::compose(self, data, w, h);
         debug_assert_eq!(
             rows.len(),
@@ -474,27 +567,50 @@ impl Workbench {
         self.drag.is_some()
     }
 
-    /// `/` palette entries that match the current query: `(command, description)`.
-    pub fn palette_entries(&self) -> Vec<(&'static str, &'static str)> {
-        let needle = self.palette_query.to_lowercase();
-        COMMANDS
+    /// `/` palette rows that match the current query: the surface's verbs first,
+    /// then the skills the agent has installed.
+    ///
+    /// One list, not two menus: a skill is written `/name` in the draft exactly
+    /// like a command is, so a reader who opens `/` and types `web` should see
+    /// both the verb and the skill that spell that way. The skills come last
+    /// because a slash menu is opened *for* a command far more often than for a
+    /// skill, and their rows are marked as skills so the two cannot be confused
+    /// (a skill's `<name>` is a prompt token the agent expands; a command never
+    /// reaches the model).
+    pub fn palette_rows(&self, data: &WorkbenchData) -> Vec<PaletteRow> {
+        let needle = self.palette_query.trim_start_matches('/').to_lowercase();
+        let matches = |values: &[&str]| {
+            needle.is_empty()
+                || values
+                    .iter()
+                    .any(|value| value.to_lowercase().contains(&needle))
+        };
+        let mut rows: Vec<PaletteRow> = COMMANDS
             .iter()
-            .copied()
-            .map(|(command, key)| (command, t(self.lang, key)))
-            .filter(|(command, description)| {
-                needle.is_empty()
-                    || command.to_lowercase().contains(&needle)
-                    || description.to_lowercase().contains(&needle)
+            .filter(|(command, key)| matches(&[command, t(self.lang, *key)]))
+            .map(|(command, key)| PaletteRow::Command {
+                command,
+                description: t(self.lang, *key),
             })
-            .collect()
+            .collect();
+        rows.extend(
+            data.skills
+                .iter()
+                .filter(|skill| matches(&[skill.name.as_str(), skill.description.as_str()]))
+                .take(PALETTE_SKILL_LIMIT)
+                .map(|skill| PaletteRow::Skill {
+                    name: skill.name.clone(),
+                    description: skill.description.clone(),
+                }),
+        );
+        rows
     }
 
-    /// The highlighted palette entry, if the palette is open.
-    pub fn palette_selection(&self) -> Option<(&'static str, &'static str)> {
-        let entries = self.palette_entries();
-        entries
-            .get(self.palette_index.min(entries.len().saturating_sub(1)))
-            .copied()
+    /// The highlighted palette row, if the palette is open.
+    pub fn palette_selection(&self, data: &WorkbenchData) -> Option<PaletteRow> {
+        let rows = self.palette_rows(data);
+        rows.get(self.palette_index.min(rows.len().saturating_sub(1)))
+            .cloned()
     }
 
     /// One animation step: advance the clock the spinner and the elapsed-time
@@ -521,6 +637,11 @@ impl Workbench {
     }
 
     pub fn handle(&mut self, event: WbEvent, data: &WorkbenchData) -> Vec<WbAction> {
+        // The `@` / `#` menu is a reading of the draft, so it is re-derived
+        // before the event is interpreted: a keystroke that just became the
+        // sigil opens it, and one that made the token stop looking like a
+        // mention closes it.
+        self.sync_mention(data);
         match event {
             WbEvent::Focus(_) => Vec::new(),
             WbEvent::Tick => {
@@ -539,7 +660,165 @@ impl Workbench {
         }
     }
 
+    /// Rebuild [`Self::mention`] from the draft's current token.
+    ///
+    /// The token is the run of non-space characters ending at the caret; it
+    /// becomes a mention when it *starts* with `@` (files) or `#`
+    /// (conversations). A token that merely contains the sigil (`me@example.com`,
+    /// `x#y`) is not one, which is what keeps an e-mail address in a prompt from
+    /// opening a menu.
+    fn sync_mention(&mut self, data: &WorkbenchData) {
+        if self.overlay.is_some() {
+            self.mention = None;
+            return;
+        }
+        let Some((kind, start, query)) = mention_token(&data.input) else {
+            self.mention = None;
+            return;
+        };
+        if self
+            .mention_dismissed
+            .as_ref()
+            .is_some_and(|(at, text)| *at == start && *text == query)
+        {
+            self.mention = None;
+            return;
+        }
+        match &mut self.mention {
+            Some(current) if current.kind == kind && current.start == start => {
+                if current.query != query {
+                    current.query = query;
+                    // A narrower query is a different list, so the highlight
+                    // starts over at its top: keeping the old ordinal would
+                    // silently move the selection to an unrelated row.
+                    current.index = 0;
+                }
+            }
+            _ => {
+                self.mention = Some(Mention {
+                    kind,
+                    start,
+                    query,
+                    index: 0,
+                });
+            }
+        }
+    }
+
+    /// The rows the open mention menu offers, filtered by what was typed after
+    /// the sigil.
+    pub fn mention_rows(&self, data: &WorkbenchData) -> Vec<MentionRow> {
+        let Some(mention) = &self.mention else {
+            return Vec::new();
+        };
+        let needle = mention.query.to_lowercase();
+        let matches = |values: &[&str]| {
+            needle.is_empty()
+                || values
+                    .iter()
+                    .any(|value| value.to_lowercase().contains(&needle))
+        };
+        match mention.kind {
+            MentionKind::File => data
+                .files
+                .iter()
+                .filter(|path| matches(&[path.as_str()]))
+                // A bounded window: the menu is a picker, not a file browser.
+                .take(60)
+                .map(|path| MentionRow {
+                    insert: format!("@{path} "),
+                    label: path.clone(),
+                    detail: String::new(),
+                })
+                .collect(),
+            MentionKind::Session => data
+                .sessions
+                .iter()
+                .filter(|session| {
+                    matches(&[
+                        session.title.as_str(),
+                        session.id.as_str(),
+                        session.workspace.as_str(),
+                    ])
+                })
+                .take(60)
+                .map(|session| MentionRow {
+                    insert: session_reference(&session.title, &session.id),
+                    label: if session.title.is_empty() {
+                        session.id.clone()
+                    } else {
+                        session.title.clone()
+                    },
+                    detail: session.workspace.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Replace the mention token with `insert`, leaving the caret after it.
+    fn insert_mention(&mut self, data: &WorkbenchData, insert: &str) -> Vec<WbAction> {
+        let Some(mention) = self.mention.take() else {
+            return Vec::new();
+        };
+        let text = data.input.text.as_str();
+        let at = floor_char_boundary(text, mention.start.min(text.len()));
+        let end = floor_char_boundary(text, data.input.cursor.min(text.len()));
+        let end = end.max(at);
+        let mut filled = String::with_capacity(text.len() + insert.len());
+        filled.push_str(&text[..at]);
+        filled.push_str(insert);
+        filled.push_str(&text[end..]);
+        let cursor = at + insert.len();
+        self.mention_dismissed = Some((at, insert.to_string()));
+        vec![WbAction::EditInput {
+            text: filled,
+            cursor,
+        }]
+    }
+
     fn handle_key(&mut self, key: &str, data: &WorkbenchData) -> Vec<WbAction> {
+        // The mention menu answers the navigation keys while it is up, and
+        // nothing else: every other key still edits the draft, which is what
+        // keeps the query and the menu from disagreeing.
+        if self.mention.is_some() {
+            match key {
+                "escape" => {
+                    if let Some(mention) = self.mention.take() {
+                        self.mention_dismissed = Some((mention.start, mention.query));
+                    }
+                    return vec![WbAction::Redraw];
+                }
+                "up" | "down" => {
+                    let rows = self.mention_rows(data).len();
+                    let index = self.mention.as_ref().map(|m| m.index).unwrap_or(0);
+                    let next = if key == "up" {
+                        index.saturating_sub(1)
+                    } else {
+                        (index + 1).min(rows.saturating_sub(1))
+                    };
+                    if let Some(mention) = self.mention.as_mut() {
+                        mention.index = next;
+                    }
+                    return vec![WbAction::Redraw];
+                }
+                "enter" | "tab" => {
+                    let rows = self.mention_rows(data);
+                    let index = self.mention.as_ref().map(|m| m.index).unwrap_or(0);
+                    let Some(row) = rows.get(index.min(rows.len().saturating_sub(1))) else {
+                        // Nothing matches: `enter` must not eat the submission,
+                        // and `tab` must not insert a token that names nothing.
+                        if key == "tab" {
+                            return Vec::new();
+                        }
+                        self.mention = None;
+                        return self.submit_draft(data);
+                    };
+                    let insert = row.insert.clone();
+                    return self.insert_mention(data, &insert);
+                }
+                _ => {}
+            }
+        }
         if let Some(overlay) = self.overlay {
             return self.handle_overlay_key(overlay, key, data);
         }
@@ -623,32 +902,7 @@ impl Workbench {
                 }
                 vec![WbAction::Redraw]
             }
-            "enter" => {
-                let text = data.input.text.trim().to_string();
-                if text.is_empty() {
-                    return Vec::new();
-                }
-                // A typed command is a command, never a prompt: `/model` in the
-                // draft used to be sent to the agent as text, which is why no
-                // picker ever opened from the input box. Only the surface's own
-                // verbs are claimed — `/something else` still reaches the agent,
-                // and a verb with arguments keeps them (`/model <id>`).
-                if let Some(command) = known_command(&text) {
-                    let mut actions = vec![WbAction::EditInput {
-                        text: String::new(),
-                        cursor: 0,
-                    }];
-                    match (command.arg.is_empty())
-                        .then(|| PickerKind::from_command(&command.name))
-                        .flatten()
-                    {
-                        Some(kind) => actions.extend(self.open_picker(kind, data)),
-                        None => actions.push(WbAction::Command(command.raw)),
-                    }
-                    return actions;
-                }
-                vec![WbAction::Submit(text)]
-            }
+            "enter" => self.submit_draft(data),
             "up" if self.sidebar_focus => self.scroll(-1, data),
             "down" if self.sidebar_focus => self.scroll(1, data),
             "ctrl+up" | "pageUp" => self.scroll(-10, data),
@@ -780,6 +1034,15 @@ impl Workbench {
                     self.overlay = None;
                     vec![WbAction::Redraw]
                 }
+                "pageUp" => {
+                    self.queue_index = self.queue_index.saturating_sub(self.list_page.max(1));
+                    vec![WbAction::Redraw]
+                }
+                "pageDown" => {
+                    self.queue_index = (self.queue_index + self.list_page.max(1))
+                        .min(data.queue.len().saturating_sub(1));
+                    vec![WbAction::Redraw]
+                }
                 "up" => {
                     self.queue_index = self.queue_index.saturating_sub(1);
                     vec![WbAction::Redraw]
@@ -804,6 +1067,16 @@ impl Workbench {
                 _ => Vec::new(),
             },
             Overlay::Preferences => match key {
+                "pageUp" => {
+                    self.preferences_index =
+                        self.preferences_index.saturating_sub(self.list_page.max(1));
+                    vec![WbAction::Redraw]
+                }
+                "pageDown" => {
+                    self.preferences_index = (self.preferences_index + self.list_page.max(1))
+                        .min(preferences::PREFERENCE_ROWS.len() - 1);
+                    vec![WbAction::Redraw]
+                }
                 "escape" | "q" => {
                     self.overlay = None;
                     vec![WbAction::Redraw]
@@ -866,6 +1139,21 @@ impl Workbench {
                 _ => Vec::new(),
             },
             Overlay::Keybindings => {
+                if !self.awaiting_keybinding {
+                    match key {
+                        "pageUp" => {
+                            self.keybinding_index =
+                                self.keybinding_index.saturating_sub(self.list_page.max(1));
+                            return vec![WbAction::Redraw];
+                        }
+                        "pageDown" => {
+                            self.keybinding_index = (self.keybinding_index + self.list_page.max(1))
+                                .min(preferences::ACTIONS.len() - 1);
+                            return vec![WbAction::Redraw];
+                        }
+                        _ => {}
+                    }
+                }
                 if self.awaiting_keybinding {
                     if key == "escape" {
                         self.awaiting_keybinding = false;
@@ -952,24 +1240,54 @@ impl Workbench {
                     vec![WbAction::Redraw]
                 }
                 "enter" => {
-                    let chosen = self
-                        .palette_selection()
-                        .map(|(command, _)| command.to_string());
+                    let chosen = self.palette_selection(data);
                     self.overlay = None;
                     match chosen {
-                        Some(command) => vec![WbAction::Command(command)],
+                        // A skill is a prompt token, not a verb the surface
+                        // answers: running it here would be a command the agent
+                        // never sees, so it fills the draft instead and the
+                        // reader's next `enter` sends it.
+                        Some(row) if row.is_skill() => vec![WbAction::EditInput {
+                            text: row.fill(),
+                            cursor: row.fill().len(),
+                        }],
+                        Some(row) => vec![WbAction::Command(row.command())],
                         None => vec![WbAction::Redraw],
                     }
                 }
+                // `tab` completes into the draft without leaving the palette's
+                // meaning behind: the reader can then add arguments, exactly
+                // like the desktop's composer.
+                "tab" => match self.palette_selection(data) {
+                    Some(row) => {
+                        let fill = row.fill();
+                        self.overlay = None;
+                        vec![WbAction::EditInput {
+                            text: fill.clone(),
+                            cursor: fill.len(),
+                        }]
+                    }
+                    None => Vec::new(),
+                },
                 "up" => {
                     self.palette_index = self.palette_index.saturating_sub(1);
                     vec![WbAction::Redraw]
                 }
                 "down" => {
-                    let count = self.palette_entries().len();
+                    let count = self.palette_rows(data).len();
                     if self.palette_index + 1 < count {
                         self.palette_index += 1;
                     }
+                    vec![WbAction::Redraw]
+                }
+                "pageUp" => {
+                    self.palette_index = self.palette_index.saturating_sub(self.list_page.max(1));
+                    vec![WbAction::Redraw]
+                }
+                "pageDown" => {
+                    let count = self.palette_rows(data).len();
+                    self.palette_index =
+                        (self.palette_index + self.list_page.max(1)).min(count.saturating_sub(1));
                     vec![WbAction::Redraw]
                 }
                 "backspace" => {
@@ -1095,8 +1413,29 @@ impl Workbench {
                 self.diff_patch_focus = false;
                 self.workflow_index = (self.workflow_index + 1).min(count.saturating_sub(1));
             }
-            "pageUp" => self.overlay_scroll = self.overlay_scroll.saturating_sub(10),
-            "pageDown" | "space" if overlay != Overlay::History => self.overlay_scroll += 10,
+            // `space` types into history's filter, so only the two named page
+            // keys page there; everywhere else it is the same verb. A detail
+            // view (an approval, a patch) scrolls; every list moves its cursor
+            // — the diff is both, so whichever pane has the keys decides.
+            "pageUp" | "pageDown" | "space" if key != "space" || overlay != Overlay::History => {
+                let page = self.list_page.max(1);
+                let back = key == "pageUp";
+                // A detail view (an approval, a patch) scrolls; every list moves
+                // its cursor. The diff is both, so the pane with the keys decides.
+                let scrolls = overlay == Overlay::Approval
+                    || (overlay == Overlay::Diff && self.diff_patch_focus);
+                if scrolls {
+                    if back {
+                        self.overlay_scroll = self.overlay_scroll.saturating_sub(page);
+                    } else {
+                        self.overlay_scroll += page;
+                    }
+                } else if back {
+                    self.workflow_index = self.workflow_index.saturating_sub(page);
+                } else {
+                    self.workflow_index = (self.workflow_index + page).min(count.saturating_sub(1));
+                }
+            }
             "backspace" if overlay == Overlay::History => {
                 self.history_query.pop();
                 self.workflow_index = 0;
@@ -1457,16 +1796,22 @@ impl Workbench {
                     .and_then(|v| v.parse::<usize>().ok())
                 {
                     // The palette is a menu: a click on an entry runs it, which
-                    // is what `enter` does on the highlighted one.
+                    // is what `enter` does on the highlighted one. A skill fills
+                    // the draft for the same reason `enter` does.
                     self.palette_index = index;
-                    let chosen = self
-                        .palette_entries()
-                        .get(index)
-                        .map(|(command, _)| command.to_string());
+                    let chosen = self.palette_selection(data);
                     self.overlay = None;
-                    return chosen
-                        .map(|command| vec![WbAction::Command(command)])
-                        .unwrap_or_else(|| vec![WbAction::Redraw]);
+                    return match chosen {
+                        Some(row) if row.is_skill() => {
+                            let fill = row.fill();
+                            vec![WbAction::EditInput {
+                                text: fill.clone(),
+                                cursor: fill.len(),
+                            }]
+                        }
+                        Some(row) => vec![WbAction::Command(row.command())],
+                        None => vec![WbAction::Redraw],
+                    };
                 }
                 if let Some(index) = id
                     .strip_prefix("diff.file.")
@@ -1552,6 +1897,30 @@ impl Workbench {
     }
 
     fn click(&mut self, id: &str, event: mouse::MouseEvent, data: &WorkbenchData) -> Vec<WbAction> {
+        // The mention menu owns its rows before anything underneath them: a
+        // click on a candidate inserts it, and a click on the box's own frame is
+        // not a dismissal (the reader aimed at the list).
+        if self.mention.is_some() {
+            if let Some(index) = id
+                .strip_prefix("mention.row.")
+                .and_then(|rest| rest.parse::<usize>().ok())
+            {
+                if let Some(mention) = self.mention.as_mut() {
+                    mention.index = index;
+                }
+                let rows = self.mention_rows(data);
+                if let Some(row) = rows.get(index.min(rows.len().saturating_sub(1))) {
+                    let insert = row.insert.clone();
+                    return self.insert_mention(data, &insert);
+                }
+            }
+            if id == "mention.body" {
+                return Vec::new();
+            }
+            // A click anywhere else closes the menu and then takes effect
+            // normally: the reader aimed past it.
+            self.mention = None;
+        }
         if id == "chat.latest" {
             self.scroll.latest();
             self.chat_scroll = 0;
@@ -1708,6 +2077,10 @@ impl Workbench {
                 self.focus_panel(PanelId::Skills);
                 VerbOutcome::Done { notice: None }
             }
+            "todo" => {
+                self.focus_panel(PanelId::Todo);
+                VerbOutcome::Done { notice: None }
+            }
             // There is no workspace picker to open, and pretending there is
             // would be the same lie as `Unknown command`. What is true: the
             // directory is the session's own, chosen where the session was
@@ -1757,6 +2130,12 @@ impl Workbench {
         &mut self.hit
     }
 
+    /// Record how many list rows this frame shows; the page keys move the
+    /// cursor by exactly that many.
+    pub(crate) fn set_list_page(&mut self, rows: usize) {
+        self.list_page = rows.max(1);
+    }
+
     /// The first region this frame's overlay painted — set by the compositor so
     /// a pointer is resolved against the overlay and not the page under it.
     pub(crate) fn set_overlay_mark(&mut self, mark: usize) {
@@ -1790,12 +2169,147 @@ impl Workbench {
     pub(crate) fn overlay_scroll_offset(&self) -> usize {
         self.overlay_scroll
     }
+
+    /// `enter` on the draft: a surface verb when the line names one, a prompt
+    /// otherwise.
+    fn submit_draft(&mut self, data: &WorkbenchData) -> Vec<WbAction> {
+        let text = data.input.text.trim().to_string();
+        if text.is_empty() {
+            return Vec::new();
+        }
+        // A typed command is a command, never a prompt: `/model` in the draft
+        // used to be sent to the agent as text, which is why no picker ever
+        // opened from the input box. Only the surface's own verbs are claimed —
+        // `/something else` (a skill, a path) still reaches the agent, and a
+        // verb with arguments keeps them (`/model <id>`).
+        if let Some(command) = known_command(&text) {
+            let mut actions = vec![WbAction::EditInput {
+                text: String::new(),
+                cursor: 0,
+            }];
+            match (command.arg.is_empty())
+                .then(|| PickerKind::from_command(&command.name))
+                .flatten()
+            {
+                Some(kind) => actions.extend(self.open_picker(kind, data)),
+                None => actions.push(WbAction::Command(command.raw)),
+            }
+            return actions;
+        }
+        vec![WbAction::Submit(text)]
+    }
+}
+
+/// One row of the `/` palette: a verb the surface answers, or an installed skill
+/// the *agent* answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaletteRow {
+    Command {
+        command: &'static str,
+        description: &'static str,
+    },
+    /// A skill, offered as `/<name>`; it is a prompt token, not a surface verb.
+    Skill { name: String, description: String },
+}
+
+/// How many skills the palette lists. A machine with a hundred installed skills
+/// must not turn `/` into a scroll through all of them; the query narrows it and
+/// a typed `/name` still reaches the agent either way.
+const PALETTE_SKILL_LIMIT: usize = 40;
+
+impl PaletteRow {
+    /// What pressing `enter` on this row reports.
+    pub fn command(&self) -> String {
+        match self {
+            Self::Command { command, .. } => (*command).to_string(),
+            Self::Skill { name, .. } => format!("/{name}"),
+        }
+    }
+
+    /// The text `tab` puts in the draft — a *command* whole, so the reader can
+    /// add arguments before running it.
+    pub fn fill(&self) -> String {
+        format!("{} ", self.command())
+    }
+
+    /// Does this row name a skill (a prompt token) rather than a surface verb?
+    pub fn is_skill(&self) -> bool {
+        matches!(self, Self::Skill { .. })
+    }
+
+    /// The row's name, without the slash.
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Command { command, .. } => command,
+            Self::Skill { name, .. } => name,
+        }
+    }
+
+    pub fn description(&self) -> &str {
+        match self {
+            Self::Command { description, .. } => description,
+            Self::Skill { description, .. } => description,
+        }
+    }
+}
+
+/// The token the caret is at the end of, when it is a mention: `(kind, byte
+/// offset of the sigil, text after the sigil)`.
+///
+/// A mention starts at a **word boundary**: the sigil must be the first
+/// character of the token, so `me@example.com` and a URL fragment are text, not
+/// a request for a menu.
+pub fn mention_token(input: &state::InputView) -> Option<(MentionKind, usize, String)> {
+    let text = &input.text;
+    let cursor = floor_char_boundary(text, input.cursor);
+    let head = &text[..cursor];
+    let start = head
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| ch.is_whitespace())
+        .map(|(index, ch)| index + ch.len_utf8())
+        .unwrap_or(0);
+    let token = &text[start..cursor];
+    let kind = match token.chars().next()? {
+        '@' => MentionKind::File,
+        '#' => MentionKind::Session,
+        _ => return None,
+    };
+    Some((kind, start, token[1..].to_string()))
+}
+
+/// How a picked conversation is written into the draft: the same
+/// `futureos://session/<id>` link the desktop, the phone and this very
+/// conversation use, so any client (and this TUI itself) can follow it back to
+/// the conversation it names.
+pub fn session_reference(title: &str, id: &str) -> String {
+    // Brackets would close the label early and push the id out of the link.
+    let label: String = title
+        .chars()
+        .filter(|ch| *ch != '[' && *ch != ']')
+        .collect();
+    let label = label.split_whitespace().collect::<Vec<_>>().join(" ");
+    let label = if label.is_empty() {
+        id.to_string()
+    } else {
+        label
+    };
+    format!("[{label}](futureos://session/{id}) ")
+}
+
+/// The largest byte offset at or below `at` that is a character boundary.
+fn floor_char_boundary(text: &str, at: usize) -> usize {
+    let mut at = at.min(text.len());
+    while at > 0 && !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
 }
 
 /// The command palette's entries: `(command, description)`. Kept here rather
 /// than in the app so the palette, the help overlay and the tests share one
 /// list.
-pub const COMMANDS: [(&str, Key); 28] = [
+pub const COMMANDS: [(&str, Key); 29] = [
     ("/new", Key::CmdNew),
     ("/queue", Key::CmdQueue),
     ("/copy", Key::CmdCopy),
@@ -1820,6 +2334,7 @@ pub const COMMANDS: [(&str, Key); 28] = [
     ("/preferences", Key::CmdPreferences),
     ("/usage", Key::CmdUsage),
     ("/skills", Key::CmdSkills),
+    ("/todo", Key::CmdTodo),
     ("/export", Key::CmdExport),
     ("/transcript", Key::CmdTranscript),
     ("/help", Key::CmdHelp),
@@ -1859,11 +2374,13 @@ fn known_command(text: &str) -> Option<TypedCommand> {
 }
 
 /// The help overlay's key table.
-pub const HELP_KEYS: [(&str, Key); 8] = [
+pub const HELP_KEYS: [(&str, Key); 10] = [
     ("tab", Key::HelpKeyFocus),
     ("↑↓", Key::HelpKeyScroll),
     ("pageUp / pageDown", Key::HelpKeyPage),
     ("/", Key::HelpKeyPalette),
+    ("@", Key::HelpKeyMentionFile),
+    ("#", Key::HelpKeyMentionSession),
     ("?", Key::HelpKeyHelp),
     ("click", Key::HelpKeyClick),
     ("drag", Key::HelpKeyDrag),
@@ -2713,21 +3230,280 @@ mod tests {
         for key in ["m", "o", "d"] {
             workbench.handle(WbEvent::Key(key.into()), &data);
         }
-        let entries = workbench.palette_entries();
+        let rows = workbench.palette_rows(&data);
+        assert!(rows.iter().any(|row| row.command() == "/model"), "{rows:?}");
         assert!(
-            entries.iter().any(|(command, _)| *command == "/model"),
-            "{entries:?}"
+            rows.iter().all(|row| row.label().contains("mod")
+                || row.description().to_lowercase().contains("mod")),
+            "only matches are listed: {rows:?}"
         );
-        assert!(
-            entries.iter().all(|(command, _)| command.contains("mod")),
-            "only matches are listed: {entries:?}"
-        );
-        let chosen = workbench.palette_selection().expect("a selection");
+        let chosen = workbench.palette_selection(&data).expect("a selection");
         assert_eq!(
             workbench.handle(WbEvent::Key("enter".into()), &data),
-            vec![WbAction::Command(chosen.0.to_string())]
+            vec![WbAction::Command(chosen.command())]
         );
         assert_eq!(workbench.overlay, None);
+    }
+
+    /// The palette is one list of two kinds of thing: a verb the surface answers
+    /// and a skill the agent expands. A skill must not be *run* as a verb — the
+    /// agent would never see it — so it fills the draft instead.
+    #[test]
+    fn the_palette_lists_skills_after_the_commands_and_fills_the_draft() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        let rows = workbench.palette_rows(&data);
+        let commands = rows.iter().filter(|row| !row.is_skill()).count();
+        let skills = rows.iter().filter(|row| row.is_skill()).count();
+        assert_eq!(commands, COMMANDS.len());
+        assert_eq!(
+            skills,
+            data.skills.len(),
+            "every installed skill is offered"
+        );
+        assert!(
+            rows[..commands].iter().all(|row| !row.is_skill()),
+            "commands first, skills after"
+        );
+        // Filtering reaches a skill by its name.
+        for key in ["f", "u", "t", "u", "r", "e", "-", "p"] {
+            workbench.handle(WbEvent::Key(key.into()), &data);
+        }
+        let filtered = workbench.palette_rows(&data);
+        assert!(
+            filtered
+                .iter()
+                .any(|row| row.label() == "future-peer-review"),
+            "{filtered:?}"
+        );
+        // Enter on a skill fills the draft: the skill is a prompt token the agent
+        // expands, so running it as a surface command would be a lie.
+        let selection = workbench.palette_selection(&data).expect("a row");
+        assert!(selection.is_skill());
+        let actions = workbench.handle(WbEvent::Key("enter".into()), &data);
+        assert!(
+            matches!(actions.as_slice(), [WbAction::EditInput { text, .. }] if *text == selection.fill()),
+            "{actions:?}"
+        );
+        assert_eq!(workbench.overlay, None);
+    }
+
+    /// `tab` completes the row into the draft and leaves the palette: the reader
+    /// can then add arguments to a command, or type the sentence a skill starts.
+    #[test]
+    fn tab_completes_the_highlighted_row_into_the_draft() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        for key in ["m", "o", "d", "e", "l"] {
+            workbench.handle(WbEvent::Key(key.into()), &data);
+        }
+        let chosen = workbench.palette_selection(&data).expect("a row");
+        let actions = workbench.handle(WbEvent::Key("tab".into()), &data);
+        let [WbAction::EditInput { text, cursor }] = actions.as_slice() else {
+            panic!("{actions:?}");
+        };
+        assert_eq!(text, &chosen.fill());
+        assert_eq!(*cursor, text.len(), "the caret is after the command");
+        assert_eq!(workbench.overlay, None);
+    }
+
+    /// The painted palette says which rows are which, exactly once per kind, and
+    /// a click still lands on the row it was painted on with the headings there.
+    #[test]
+    fn the_palette_paints_a_heading_once_per_kind_and_keeps_clicks_aligned() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        let text = plain(&workbench.render(&data, 120, 38));
+        let headings = text.matches(" 命令").count() + text.matches(" 技能").count();
+        assert!(headings >= 2, "both kinds are named: {text}");
+        assert!(text.contains("/future-web"), "a skill is listed: {text}");
+        // The last command's target is on the line the last command was drawn on:
+        // click it and the action names that command, not its neighbour.
+        let last = COMMANDS.len() - 1;
+        let expected = workbench.palette_rows(&data)[last].command();
+        assert_eq!(
+            click_region(
+                &mut workbench,
+                &data,
+                120,
+                38,
+                &format!("palette.row.{last}")
+            ),
+            vec![WbAction::Command(expected)]
+        );
+    }
+
+    /// A copy of `data` whose draft holds `typed`, caret at the end.
+    fn with_input(data: &WorkbenchData, typed: &str) -> WorkbenchData {
+        let mut data = data.clone();
+        let mut editor = data.input.editor.clone();
+        editor.set(typed, typed.len());
+        data.input = state::InputView::from_editor(editor, String::new());
+        data
+    }
+
+    /// The `@` menu is *derived* from the draft, so the assertions here are
+    /// about one token: what opens it, what it offers, and what an insert
+    /// replaces.
+    #[test]
+    fn at_opens_a_file_menu_from_the_token_the_caret_is_in() {
+        let mut data = demo::chat();
+        data.files = vec![
+            "tui/src/workbench/mod.rs".into(),
+            "tui/src/workbench/screen.rs".into(),
+            "docs/tui/workbench-spec.md".into(),
+        ];
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        data = with_input(&data, "看 @scr");
+        // One frame is enough: the menu is a reading of the draft, taken when
+        // the frame is composed.
+        workbench.render(&data, 120, 38);
+        let mention = workbench.mention.as_ref().expect("@ opens the menu");
+        assert_eq!(mention.kind, MentionKind::File);
+        assert_eq!(
+            mention.start,
+            "看 ".len(),
+            "the sigil is where the token starts"
+        );
+        assert_eq!(mention.query, "scr");
+        let rows = workbench.mention_rows(&data);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].label, "tui/src/workbench/screen.rs");
+        // Enter replaces the token and nothing else.
+        let actions = workbench.handle(WbEvent::Key("enter".into()), &data);
+        let [WbAction::EditInput { text, cursor }] = actions.as_slice() else {
+            panic!("{actions:?}");
+        };
+        assert_eq!(text, "看 @tui/src/workbench/screen.rs ");
+        assert_eq!(*cursor, text.len());
+        assert!(workbench.mention.is_none(), "inserting closes the menu");
+    }
+
+    #[test]
+    fn a_sigil_inside_a_word_is_not_a_mention() {
+        // An e-mail address and a channel name are text, not requests for a
+        // menu — the menu is for a token that *starts* with the sigil.
+        for typed in ["mail me@example.com", "x#y", "a/b"] {
+            let data = with_input(&demo::chat(), typed);
+            let (mut workbench, _rows) = frame(&data, 120, 38);
+            workbench.render(&data, 120, 38);
+            assert!(workbench.mention.is_none(), "{typed}");
+        }
+        // A bare `#` is one, with an empty query: the reader has typed the
+        // sigil and nothing else yet.
+        let data = with_input(&demo::chat(), "#");
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.render(&data, 120, 38);
+        assert_eq!(
+            workbench.mention.as_ref().map(|m| m.kind),
+            Some(MentionKind::Session)
+        );
+    }
+
+    #[test]
+    fn hash_offers_conversations_and_inserts_the_link_the_rest_of_the_app_uses() {
+        let data = with_input(&demo::chat(), "#");
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.render(&data, 120, 38);
+        let rows = workbench.mention_rows(&data);
+        assert!(!rows.is_empty(), "the demo has conversations");
+        assert!(rows[0].insert.contains("futureos://session/"), "{rows:?}");
+        let actions = workbench.handle(WbEvent::Key("tab".into()), &data);
+        let [WbAction::EditInput { text, .. }] = actions.as_slice() else {
+            panic!("{actions:?}");
+        };
+        assert!(
+            text.starts_with(&format!(
+                "[{}](futureos://session/{})",
+                demo::chat().sessions[0].title,
+                demo::chat().sessions[0].id
+            )),
+            "{text}"
+        );
+        // Brackets in a title would close the label early and push the id out of
+        // the link, so they are dropped rather than escaped.
+        assert_eq!(
+            session_reference("[a] b", "s1"),
+            "[a b](futureos://session/s1) "
+        );
+        assert_eq!(
+            session_reference("   ", "s2"),
+            "[s2](futureos://session/s2) "
+        );
+    }
+
+    #[test]
+    fn escape_closes_the_mention_menu_without_touching_the_draft() {
+        let data = with_input(&demo::chat(), "看 @t");
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.render(&data, 120, 38);
+        assert!(workbench.mention.is_some());
+        let actions = workbench.handle(WbEvent::Key("escape".into()), &data);
+        assert_eq!(actions, vec![WbAction::Redraw]);
+        assert!(workbench.mention.is_none());
+        // The same token does not reopen the menu on the next frame…
+        workbench.render(&data, 120, 38);
+        assert!(workbench.mention.is_none());
+        // …but typing on does.
+        let typed = with_input(&demo::chat(), "看 @tu");
+        workbench.render(&typed, 120, 38);
+        assert!(workbench.mention.is_some());
+    }
+
+    #[test]
+    fn a_draft_with_no_mention_sends_its_at_sign_as_text() {
+        // `@` with nothing after it is a mention with an empty query, so `enter`
+        // on an unmatched list must still submit rather than swallow the key.
+        let mut data = with_input(&demo::chat(), "@");
+        data.files.clear();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.render(&data, 120, 38);
+        let actions = workbench.handle(WbEvent::Key("enter".into()), &data);
+        assert!(
+            matches!(actions.as_slice(), [WbAction::Submit(text)] if text == "@"),
+            "{actions:?}"
+        );
+    }
+
+    /// The menu is drawn, not just computed: the box is on screen with the
+    /// query and the highlighted candidate, and the draft under it still shows.
+    #[test]
+    fn the_mention_menu_is_painted_above_the_composer() {
+        let mut data = demo::chat();
+        data.files = vec!["src/main.rs".into(), "src/lib.rs".into()];
+        data = with_input(&data, "read @src");
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let text = plain(&workbench.render(&data, 120, 38));
+        assert!(text.contains("src/main.rs"), "{text}");
+        assert!(
+            text.contains("read @src"),
+            "the draft stays visible: {text}"
+        );
+        // The box is above the composer, never over it.
+        let rows = workbench
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "mention.row.0")
+            .map(|(rect, _)| rect.y)
+            .expect("the first candidate is a target");
+        let input_top = workbench
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "input")
+            .map(|(rect, _)| rect.y)
+            .expect("the composer is a target");
+        assert!(rows < input_top, "{rows} < {input_top}");
+        // A click on a candidate inserts it, the way `enter` does.
+        let actions = click_region(&mut workbench, &data, 120, 38, "mention.row.1");
+        let [WbAction::EditInput { text, .. }] = actions.as_slice() else {
+            panic!("{actions:?}");
+        };
+        assert_eq!(text, "read @src/lib.rs ");
     }
 
     #[test]
@@ -3363,8 +4139,8 @@ mod tests {
             workbench.handle(WbEvent::Key(ch.to_string()), &data);
         }
         assert!(workbench
-            .palette_selection()
-            .is_some_and(|(command, _)| command == "/lang"));
+            .palette_selection(&data)
+            .is_some_and(|row| row.command() == "/lang"));
 
         workbench.open_picker(PickerKind::Language, &data);
         let text = plain(&workbench.render(&data, 120, 38));
@@ -3642,6 +4418,155 @@ mod tests {
         }
     }
 
+    /// A list longer than its box must page. `pageDown` used to add to
+    /// `overlay_scroll`, which list overlays never read — the key was inert on
+    /// every one of them while the help table advertised a page key.
+    #[test]
+    fn page_keys_move_any_list_cursor_by_a_page() {
+        let mut data = demo::chat();
+        data.sessions = (0..30)
+            .map(|index| state::SessionRow {
+                id: format!("page-{index:03}"),
+                title: format!("第 {index} 个会话 · 标题足够长，长到必须被截断才放得下"),
+                workspace: format!("D:/future-os/.worktrees/page-{index}"),
+                ..SessionRow::default()
+            })
+            .collect();
+        data.fork_points = (0..30)
+            .map(|index| state::ForkPoint {
+                id: format!("e{index}"),
+                text: format!("第 {index} 条用户消息，同样很长，长到占不下一行"),
+            })
+            .collect();
+        data.worktrees = (0..30)
+            .map(|index| state::WorktreeView {
+                path: format!("D:/future-os/.worktrees/page-branch-{index}"),
+                label: format!("feat/page-{index}"),
+                description: format!("第 {index} 个工作区"),
+                current: index == 0,
+            })
+            .collect();
+
+        for overlay in [
+            Overlay::History,
+            Overlay::Tree,
+            Overlay::Fork,
+            Overlay::Worktree,
+        ] {
+            let mut wb = workbench();
+            wb.overlay = Some(overlay);
+            wb.render(&data, 100, 30);
+            let page = wb.list_page;
+            assert!(page > 1, "{overlay:?}: the list shows one row");
+            assert_eq!(wb.workflow_index, 0);
+
+            wb.handle(WbEvent::Key("pageDown".into()), &data);
+            let rows = wb.render(&data, 100, 30);
+            assert_eq!(
+                wb.workflow_index,
+                page.min(29),
+                "{overlay:?}: pageDown should land a page down"
+            );
+            // …and the cursor is still on screen, with its arrow.
+            let (rect, _) = wb
+                .hits()
+                .regions()
+                .iter()
+                .find(|(_, id)| *id == format!("workflow.row.{}", wb.workflow_index))
+                .cloned()
+                .unwrap_or_else(|| panic!("{overlay:?}: the selection is not painted"));
+            assert!(
+                crate::utils::strip_ansi_codes(&rows[rect.y as usize]).contains('\u{203a}'),
+                "{overlay:?}: row {} has no arrow",
+                rect.y
+            );
+
+            wb.handle(WbEvent::Key("pageUp".into()), &data);
+            assert_eq!(wb.workflow_index, 0, "{overlay:?}: pageUp should come back");
+        }
+
+        // The diff is a list *and* a detail view: whichever pane has the keys
+        // decides whether the page key moves the cursor or the patch.
+        data.diff = Some(state::DiffView {
+            files: (0..30)
+                .map(|index| diff_review::DiffFile {
+                    path: format!("src/page_{index}.rs"),
+                    status: "M".into(),
+                })
+                .collect(),
+            ..state::DiffView::default()
+        });
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Diff);
+        wb.diff_patch_focus = false;
+        wb.render(&data, 100, 30);
+        let page = wb.list_page;
+        wb.handle(WbEvent::Key("pageDown".into()), &data);
+        assert_eq!(
+            wb.workflow_index,
+            page.min(29),
+            "the file navigator pages its own cursor"
+        );
+        assert_eq!(wb.overlay_scroll, 0, "and leaves the patch where it was");
+        wb.diff_patch_focus = true;
+        wb.handle(WbEvent::Key("pageDown".into()), &data);
+        assert_eq!(wb.overlay_scroll, page, "the patch scrolls a page");
+    }
+
+    /// The cursor menus keep their own field, so they page too — a long list on
+    /// a short screen cannot be crossed with `down` alone in reasonable time.
+    #[test]
+    fn page_keys_move_the_menu_cursors_too() {
+        let data = demo::chat();
+
+        let mut wb = workbench();
+        wb.open_preferences();
+        wb.render(&data, 100, 30);
+        let page = wb.list_page;
+        wb.handle(WbEvent::Key("pageDown".into()), &data);
+        assert_eq!(
+            wb.preferences_index,
+            page.min(crate::workbench::preferences::PREFERENCE_ROWS.len() - 1)
+        );
+        wb.handle(WbEvent::Key("pageUp".into()), &data);
+        assert_eq!(wb.preferences_index, 0);
+
+        let mut wb = workbench();
+        wb.open_preferences();
+        wb.overlay = Some(Overlay::Keybindings);
+        wb.render(&data, 100, 30);
+        let page = wb.list_page;
+        wb.handle(WbEvent::Key("pageDown".into()), &data);
+        assert_eq!(
+            wb.keybinding_index,
+            page.min(crate::workbench::preferences::ACTIONS.len() - 1)
+        );
+
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Palette);
+        wb.render(&data, 100, 30);
+        let page = wb.list_page;
+        wb.handle(WbEvent::Key("pageDown".into()), &data);
+        assert_eq!(
+            wb.palette_index,
+            page.min(wb.palette_rows(&data).len().saturating_sub(1))
+        );
+
+        let mut data = demo::chat();
+        data.queue = (0..30)
+            .map(|index| state::QueuedPrompt {
+                run_id: format!("run-{index}"),
+                text: format!("第 {index} 条排队消息"),
+            })
+            .collect();
+        let mut wb = workbench();
+        wb.surface_command("/queue", &data);
+        wb.render(&data, 100, 30);
+        let page = wb.list_page;
+        wb.handle(WbEvent::Key("pageDown".into()), &data);
+        assert_eq!(wb.queue_index, page.min(29));
+    }
+
     fn workbench_surface(wb: &Workbench) -> crate::workbench::layout::Rect {
         wb.hits()
             .regions()
@@ -3662,7 +4587,7 @@ mod tests {
             wb.handle(WbEvent::Key(ch.to_string()), &data);
         }
         wb.render(&data, 120, 38);
-        let expected = wb.palette_entries()[0].0.to_string();
+        let expected = wb.palette_rows(&data)[0].command();
         assert_eq!(
             click_region(&mut wb, &data, 120, 38, "palette.row.0"),
             vec![WbAction::Command(expected)]
