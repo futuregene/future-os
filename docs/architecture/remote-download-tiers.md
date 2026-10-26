@@ -111,10 +111,24 @@ real chunk pull, the client's own hash check:
 **Not measured here:** two real machines over a real relay with a file near the
 512 MiB ceiling. No host was deployed — replacing the serving binary is a separate,
 approved step — so the numbers above are one process, not a network. Two costs are
-inherent to the existing design and worth knowing before that test: the host copies
-the file into its transfer directory for the transfer's lifetime (30-minute TTL), and
-the pulling client assembles the whole file in memory before writing it, so a
-full-ceiling save costs 512 MiB of RAM on the desktop.
+inherent to the existing design and worth knowing before that test: the host stages
+a full copy of the file while the transfer runs (released when the client cancels,
+which a completed save does; a failed or abandoned transfer waits for the 30-minute
+TTL), and the pulling client assembles the whole file in memory before writing it,
+so a full-ceiling save costs 512 MiB of RAM on the desktop plus 512 MiB of
+temporary disk on the host.
+
+### Across a process boundary and a real broker, 2026-10-26
+
+A second run puts the host bridge in one OS process and the desktop's client half
+(`remote_peer::transfer::download_for_desktop` + `write_to_path`, the functions the
+Tauri command calls) in another, with a real `nats-server` over TCP between them:
+the 12.5 MiB installer saves with a matching `shasum` in 94 ms (release), a 64 MiB
+file in 437 ms, 600 MiB and 512 MiB + 1 byte are refused with the desktop's
+sentence, the phone's mode and type rule still refuse their cases word for word,
+and a host built from `b594ac2bc` really does answer `Unsupported download variant.`
+and get asked again. Numbers, the exact strings and what remains unmeasured are in
+[`docs/testing/remote-download-tiers-live-2026-10-26.md`](../testing/remote-download-tiers-live-2026-10-26.md).
 
 ## Reproducing
 

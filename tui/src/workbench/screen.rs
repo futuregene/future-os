@@ -168,6 +168,11 @@ pub(crate) fn compose(
     }
 
     // ── overlays ──────────────────────────────────────────────────────
+    // Everything pushed from here on belongs to the overlay: the pointer is
+    // resolved against this mark, so a control the overlay covers can never
+    // answer a click meant for it (see `Workbench::overlay_mark`).
+    let mark = workbench.hit_map().mark();
+    workbench.set_overlay_mark(mark);
     match workbench.overlay {
         Some(Overlay::Help) => {
             let lines = help_box(workbench, &palette, w, h);
@@ -517,6 +522,11 @@ fn queue_box(
     h: u16,
 ) -> Vec<String> {
     let columns = (w as usize).min(76);
+    // The queue is drawn at the left edge and padded to the full height, so its
+    // surface is the whole box — claimed before any row so a row click wins.
+    workbench
+        .hit_map()
+        .push(Rect::new(0, 0, columns as u16, h), "overlay.surface");
     let mut rows = vec![widgets::box_top(
         palette,
         columns,
@@ -582,6 +592,12 @@ fn workflow_box(
         },
     );
     let left = (w as usize).saturating_sub(columns) / 2;
+    // Claim the box before anything inside it: a click on the title rule or a
+    // blank row belongs to the overlay, not to the page behind it.
+    workbench.hit_map().push(
+        Rect::new(left as u16, 0, columns as u16, h),
+        "overlay.surface",
+    );
     let (title_key, hint_key) = match overlay {
         Overlay::Approval => (Key::ApprovalTitle, Key::ApprovalHint),
         Overlay::Diff => (Key::DiffTitle, Key::DiffHint),
@@ -597,7 +613,7 @@ fn workflow_box(
         t(workbench.lang, title_key),
     )];
     if overlay == Overlay::Diff {
-        return diff_review_box(workbench, data, palette, h, columns, left);
+        return diff_review_box(workbench, data, palette, h, w, columns);
     }
     if overlay != Overlay::Approval {
         rows.push(widgets::box_row(
@@ -617,7 +633,7 @@ fn workflow_box(
     let available = (h as usize).saturating_sub(header + 1);
     if available == 0 {
         rows.push(widgets::box_bottom(palette, columns));
-        return rows;
+        return indent(rows, left, w as usize);
     }
     let body = match overlay {
         Overlay::History => {
@@ -745,16 +761,24 @@ fn workflow_box(
         ];
         let mut actions = String::new();
         let mut x = left + 1;
+        // The buttons are placed as they are appended, so a box too narrow to
+        // hold one must not register a target for text `box_row` clipped away:
+        // an invisible button that still answers a click is a trap.
+        let inner_right = left + columns.saturating_sub(1);
         for (key, color, label, id, enabled) in buttons {
             if !enabled {
                 continue;
             }
             let button = format!("[{key}] {}  ", t(workbench.lang, label));
             let button_width = width(&button);
-            workbench.hit_map().push(
-                Rect::new(x as u16, action_y, button_width.saturating_sub(2) as u16, 1),
-                id,
-            );
+            if x < inner_right {
+                let visible = button_width.saturating_sub(2).min(inner_right - x);
+                if visible > 0 {
+                    workbench
+                        .hit_map()
+                        .push(Rect::new(x as u16, action_y, visible as u16, 1), id);
+                }
+            }
             actions.push_str(&palette.strong(color, &button));
             x += button_width;
         }
@@ -765,7 +789,7 @@ fn workflow_box(
     while rows.len() < h as usize {
         rows.push(fit("", columns));
     }
-    rows
+    indent(rows, left, w as usize)
 }
 
 // ─── sidebar ───────────────────────────────────────────────────────────────
@@ -1017,6 +1041,31 @@ fn box_geometry(w: u16, h: u16, min_width: u16, content_len: usize) -> BoxGeomet
     }
 }
 
+/// Claim a centred box for the overlay that is about to paint into it.
+///
+/// The hit map is a stack painted in order, so this must be pushed **before**
+/// the box's own rows: a row registered later still wins at its own cells, and
+/// everything else in the box (its title rule, its padding, its hints) answers
+/// as the overlay instead of leaking through to the page underneath.
+fn claim_box(workbench: &mut Workbench, geometry: &BoxGeometry) {
+    workbench.hit_map().push(
+        Rect::new(geometry.left, geometry.top, geometry.w, geometry.h),
+        "overlay.surface",
+    );
+}
+
+/// Shift an overlay's rows right by `left` so the box is *drawn* where its hit
+/// regions say it is. A centred hit region over a left-aligned box is a click
+/// offset by half the margin — invisible at 120 columns, wrong at 160.
+fn indent(rows: Vec<String>, left: usize, w: usize) -> Vec<String> {
+    if left == 0 {
+        return rows;
+    }
+    rows.into_iter()
+        .map(|row| fit(&format!("{}{row}", " ".repeat(left)), w))
+        .collect()
+}
+
 fn paint_box(
     palette: &Palette,
     title: &str,
@@ -1071,10 +1120,11 @@ fn diff_review_box(
     data: &WorkbenchData,
     palette: &Palette,
     h: u16,
+    w: u16,
     columns: usize,
-    left: usize,
 ) -> Vec<String> {
     use crate::workbench::workflows;
+    let left = (w as usize).saturating_sub(columns) / 2;
     let mut rows = vec![widgets::box_top(
         palette,
         columns,
@@ -1093,12 +1143,12 @@ fn diff_review_box(
     }
     let Some(diff) = &data.diff else {
         rows.push(widgets::box_bottom(palette, columns));
-        return rows;
+        return indent(rows, left, w as usize);
     };
     if let Some(error) = &diff.error {
         rows.push(widgets::box_row(palette, error, columns));
         rows.push(widgets::box_bottom(palette, columns));
-        return rows;
+        return indent(rows, left, w as usize);
     }
     if diff.files.is_empty() {
         rows.push(widgets::box_row(
@@ -1107,7 +1157,7 @@ fn diff_review_box(
             columns,
         ));
         rows.push(widgets::box_bottom(palette, columns));
-        return rows;
+        return indent(rows, left, w as usize);
     }
     let selected = diff.selected.min(diff.files.len() - 1);
     let file_rows: Vec<String> = diff
@@ -1194,7 +1244,7 @@ fn diff_review_box(
     while rows.len() < h as usize {
         rows.push(fit("", columns));
     }
-    rows
+    indent(rows, left, w as usize)
 }
 
 fn help_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec<String> {
@@ -1235,6 +1285,7 @@ fn help_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec
     workbench.set_overlay_scroll(scroll);
     let content: Vec<String> = content.into_iter().skip(scroll).collect();
     let geometry = box_geometry(w, h, 72, content.len());
+    claim_box(workbench, &geometry);
     framed(palette, t(lang, Key::HelpTitle), content, w, h, &geometry)
 }
 
@@ -1310,6 +1361,7 @@ fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
     let tail = content.split_off(preferences::PREFERENCE_ROWS.len());
     let content_len = visible.min(preferences::PREFERENCE_ROWS.len()) + tail.len();
     let geometry = box_geometry(w, h, 72, content_len);
+    claim_box(workbench, &geometry);
     for (display, index) in (first..first + visible).enumerate() {
         let Some(row) = preferences::PREFERENCE_ROWS.get(index) else {
             continue;
@@ -1396,6 +1448,7 @@ fn keybindings_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
     let tail = content.split_off(preferences::ACTIONS.len());
     let content_len = visible.min(preferences::ACTIONS.len()) + tail.len();
     let geometry = box_geometry(w, h, 76, content_len);
+    claim_box(workbench, &geometry);
     for (display, index) in (first..first + visible).enumerate() {
         if index < preferences::ACTIONS.len() {
             workbench.hit_map().push(
@@ -1425,11 +1478,30 @@ fn keybindings_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
     )
 }
 
+/// The command palette: a filter line and the matching verbs.
+///
+/// Every visible verb is a click target — the palette's whole point is not
+/// having to know a chord, so an entry a pointer cannot press would leave the
+/// menu open to the keyboard alone.
 fn palette_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec<String> {
     let lang = workbench.lang;
     let entries = workbench.palette_entries();
     let query = workbench.palette_query.clone();
     let selection = workbench.palette_index.min(entries.len().saturating_sub(1));
+    let room = h.saturating_sub(6) as usize;
+    // Keep the highlighted entry inside the window.
+    let start = selection.saturating_sub(room.saturating_sub(1));
+    let shown = entries.len().saturating_sub(start).min(room);
+    // The box is sized before its rows exist, because a row's click target is
+    // placed with the same geometry that frames it: two filter lines above the
+    // window, one rule below.
+    let mut content_len = 2 + shown;
+    if entries.is_empty() {
+        content_len += 1;
+    }
+    let geometry = box_geometry(w, h, 64, content_len);
+    claim_box(workbench, &geometry);
+
     let mut content: Vec<String> = Vec::new();
     content.push(format!(
         " {} {}",
@@ -1444,10 +1516,7 @@ fn palette_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> 
     if entries.is_empty() {
         content.push(palette.dim(t(lang, Key::PaletteEmpty)));
     }
-    let room = h.saturating_sub(6) as usize;
-    // Keep the highlighted entry inside the window.
-    let start = selection.saturating_sub(room.saturating_sub(1));
-    for (index, (command, description)) in entries.iter().enumerate().skip(start).take(room) {
+    for (index, (command, description)) in entries.iter().enumerate().skip(start).take(shown) {
         let marker = if index == selection { "›" } else { " " };
         let row = format!(
             " {marker} {}  {}",
@@ -1459,9 +1528,18 @@ fn palette_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> 
         } else {
             row
         });
+        // Filter line, blank line, then the rows: the first entry sits on the
+        // box's fourth row.
+        workbench.hit_map().push(
+            Rect::new(
+                geometry.left + 1,
+                geometry.top + 3 + (index - start) as u16,
+                geometry.w.saturating_sub(2),
+                1,
+            ),
+            format!("palette.row.{index}"),
+        );
     }
-    let _ = w;
-    let geometry = box_geometry(w, h, 64, content.len());
     framed(
         palette,
         t(lang, Key::PaletteTitle),
@@ -1471,13 +1549,6 @@ fn palette_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> 
         &geometry,
     )
 }
-
-/// The picker: title, the incremental-search line, the rows (a window when the
-/// list is longer than the box) and the key hints.
-///
-/// The rows' hit regions are registered from the same `start..end` window and
-/// the same geometry the rows were painted with, which is what makes a click
-/// land on the row under the pointer instead of one beside it.
 fn picker_box(
     workbench: &mut Workbench,
     data: &WorkbenchData,
@@ -1588,6 +1659,7 @@ fn panel_box(
         lang,
     );
     let geometry = box_geometry(w, h, 56, body.len());
+    claim_box(workbench, &geometry);
     framed(palette, title, body, w, h, &geometry)
 }
 

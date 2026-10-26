@@ -326,6 +326,31 @@ impl HitMap {
             .map(|(_, id)| id.as_str())
     }
 
+    /// Where the next `push` will land.
+    ///
+    /// Hand it to [`Self::hit_after`] to resolve a pointer against only what
+    /// was painted later — which is how a modal keeps its own surface separate
+    /// from the page it covers.
+    pub fn mark(&self) -> usize {
+        self.regions.len()
+    }
+
+    /// The id painted last at `(x, y)` at or after `from`.
+    ///
+    /// `hit_after(x, y, mark())` is `hit(x, y)`; `hit_after(x, y, 0)` is the
+    /// same answer over the whole frame. The one that matters is the mark taken
+    /// before an overlay was painted: a region *under* the overlay must not
+    /// answer a click that landed on the overlay.
+    pub fn hit_after(&self, x: u16, y: u16, from: usize) -> Option<&str> {
+        self.regions
+            .get(from..)
+            .unwrap_or_default()
+            .iter()
+            .rev()
+            .find(|(rect, _)| rect.contains(x, y))
+            .map(|(_, id)| id.as_str())
+    }
+
     /// Every region, for tests and diagnostics.
     pub fn regions(&self) -> &[(Rect, String)] {
         &self.regions
