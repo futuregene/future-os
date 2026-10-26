@@ -16,7 +16,7 @@ pub enum Density {
     /// A focused conversation: two context rows, generous body.
     #[default]
     Focused,
-    /// A roomier identity header with the product icon and wordmark.
+    /// A roomier identity header with the wordmark and session details.
     Comfortable,
 }
 

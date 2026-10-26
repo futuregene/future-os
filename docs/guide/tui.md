@@ -42,7 +42,7 @@ conversations, to see the rail's window and its `↓ N more` row).
 
 ```
  focused header (2 rows: session · workspace · backend dot, then hairline)
- comfortable header (optional 6 rows: FutureOS icon and full identity)
+ comfortable header (optional 6 rows: wordmark and full identity)
  ──────────────────────────────────────────┬──────────────────────
  conversation (bottom-anchored, ↑ 更早)     │ rail: 最近 工作区
                                             │ ▸ the conversation's name

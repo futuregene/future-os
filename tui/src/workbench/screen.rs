@@ -353,7 +353,7 @@ fn header(
         let workspace = if data.session.branch.is_empty() {
             data.session.cwd.clone()
         } else {
-            format!("{} · ⎇ {}", data.session.cwd, data.session.branch)
+            format!("{} · @{}", data.session.cwd, data.session.branch)
         };
         let left = format!(
             " {} {}",
@@ -370,7 +370,6 @@ fn header(
             widgets::rule(palette, columns),
         ];
     }
-    let logo = widgets::logo_rows(palette);
     let wordmark = widgets::wordmark_rows(palette);
     let title = if data.session.title.is_empty() {
         "workbench".to_string()
@@ -390,13 +389,13 @@ fn header(
         identity.push(String::new());
         identity.push(String::new());
     }
-    // Five identity rows beside the logo, then the hairline. Five is
+    // Five identity rows, then the hairline. Five is
     // `wordmark_rows`' height: drawing four dropped the bottom stroke of every
     // letter in `FUTURE OS`. The launchpad's separate four-row hero does not
     // change the chat header's five-row identity block.
     let detail = [
         format!(" · {title}"),
-        // The workspace, then the branch it is on. `⎇` names *what* the second
+        // The workspace, then the branch it is on. `@` names *what* the second
         // word is: `dev-x` alone beside a path reads as one more path segment,
         // and a detached HEAD named `@sha` needs it even more.
         if data.session.cwd.is_empty() {
@@ -404,7 +403,7 @@ fn header(
         } else if data.session.branch.is_empty() {
             data.session.cwd.clone()
         } else {
-            format!("{} · ⎇ {}", data.session.cwd, data.session.branch)
+            format!("{} · @{}", data.session.cwd, data.session.branch)
         },
         format!("{} · {} · {}", data.model, data.effort, data.mode),
         String::new(),
@@ -412,12 +411,6 @@ fn header(
     ];
     for index in 0..5 {
         let mut row = String::new();
-        row.push_str(
-            logo.get(index)
-                .map(String::as_str)
-                .unwrap_or("             "),
-        );
-        row.push_str("  ");
         if show_wordmark {
             row.push_str(&identity.get(index).cloned().unwrap_or_default());
             // The wordmark is the block; the session detail goes beside it so
@@ -429,11 +422,7 @@ fn header(
             if index == 0 {
                 row.push_str(&palette.dim(&detail[0]));
             } else if index < detail.len() {
-                // Line the details up under the wordmark instead of under the
-                // logo, where they would read as part of the logo.
-                row.push_str(
-                    &palette.dim(&format!("              {}", detail[index].trim_start())),
-                );
+                row.push_str(&palette.dim(&format!(" {}", detail[index].trim_start())));
             }
         }
         if index == 0 {
@@ -2121,11 +2110,9 @@ mod tests {
         let rows = workbench.render(&launchpad, 120, 38);
         let header_rows: Vec<String> = rows[..5].iter().map(|row| plain(row)).collect();
         for (index, row) in header_rows.iter().enumerate() {
-            // The product icon lives in the first thirteen cells; the name
-            // beside it is text, not the block wordmark used by the chat header.
-            let tail: String = row.chars().skip(13).collect();
+            // The name is text, not the block wordmark used by the chat header.
             assert!(
-                !tail.contains('█'),
+                !row.contains('█'),
                 "header row {index} still carries the block wordmark: {row:?}"
             );
         }
@@ -2135,8 +2122,7 @@ mod tests {
             .map(|row| plain(row))
             .collect::<Vec<_>>()
             .join("\n");
-        let mark = plain(&widgets::logo_rows(&FUTURE_DARK)[1]);
-        assert!(body.contains(&mark), "the hero's FutureOS icon is missing");
+        assert!(!body.contains('▀'), "the launchpad has no icon");
         assert!(
             body.contains("F U T U R E   O S"),
             "the hero's name is missing"
