@@ -307,8 +307,12 @@ pub struct WorkbenchData {
     pub session: SessionMeta,
     pub model: String,
     pub effort: String,
+    /// The approval mode the session runs under, as the agent spells it
+    /// (`manual` | `sandbox` | `auto` | `off`) — the desktop composer's own four
+    /// chips, not a fifth TUI-only vocabulary. There is no separate "permission
+    /// level" here: the desktop exposes none either, and a control nobody else
+    /// has is an invented option.
     pub mode: String,
-    pub permission: String,
     pub usage: UsageData,
     /// The conversations, most recently refreshed first. Both panels read this
     /// one list; 工作区 only adds the filing.

@@ -122,6 +122,9 @@ const PAGES: &[&str] = &[
     "help",
     "palette",
     "picker-model",
+    "picker-thinking",
+    "picker-mode",
+    "picker-workspace",
     "picker-theme",
     "picker-sessions",
     "picker-language",
@@ -257,6 +260,15 @@ fn fixture(name: &str) -> (WorkbenchData, fn(&mut Workbench, &WorkbenchData)) {
         "palette" => (chat(), |wb, _| wb.overlay = Some(Overlay::Palette)),
         "picker-model" => (chat(), |wb, data| {
             wb.open_picker(PickerKind::Model, data);
+        }),
+        "picker-thinking" => (chat(), |wb, data| {
+            wb.open_picker(PickerKind::Thinking, data);
+        }),
+        "picker-mode" => (chat(), |wb, data| {
+            wb.open_picker(PickerKind::Approval, data);
+        }),
+        "picker-workspace" => (chat(), |wb, data| {
+            wb.open_picker(PickerKind::Workspace, data);
         }),
         "picker-theme" => (chat(), |wb, data| {
             wb.open_picker(PickerKind::Theme, data);

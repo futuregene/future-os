@@ -13,6 +13,7 @@ use crate::workbench::ansi::{self, fit, width};
 use crate::workbench::i18n::{self, t, Key, Language};
 use crate::workbench::layout::{self, Layout, Rect};
 use crate::workbench::picker::{self, PickerKind};
+use crate::workbench::preferences;
 use crate::workbench::state::{ActivityKind, PanelId, WorkbenchData};
 use crate::workbench::theme::Palette;
 use crate::workbench::widgets;
@@ -75,6 +76,10 @@ pub(crate) fn compose(
     if data.on_launchpad() {
         let lang = workbench.lang;
         let focused = workbench.launch_field.chip_id();
+        // The launchpad teaches the *bound* keys, and the hit map is a `&mut`
+        // borrow of the same struct that owns them: one clone of the (tiny)
+        // binding map buys both.
+        let keys = workbench.keys.clone();
         let (lines, cursor) = launchpad::render(
             data,
             &palette,
@@ -82,6 +87,7 @@ pub(crate) fn compose(
             workbench.hit_map(),
             lang,
             focused,
+            &keys,
         );
         paint(&mut rows, frame.body, lines);
         workbench.set_cursor(cursor);
@@ -118,6 +124,25 @@ pub(crate) fn compose(
             sidebar,
             sidebar_rows(workbench, data, &palette, sidebar),
         );
+    } else if !workbench.linear_reading && layout::sidebar_fits(w) {
+        // The reader closed the rail: leave its edge behind as a one-column
+        // button that brings it back. A screen with no trace of the rail at all
+        // makes `ctrl+b` the only way to find it, and a key nobody knows is the
+        // same as no rail. The glyph sits in the same column as the collapse
+        // arrow inside the rail, so one aim serves both directions.
+        let left = workbench.sidebar_position == preferences::SidebarPosition::Left;
+        let x = if left {
+            frame.body.x
+        } else {
+            frame.body.right().saturating_sub(1)
+        };
+        let edge = Rect::new(x, frame.body.y, 1, frame.body.h);
+        let mut lines: Vec<String> = vec![palette.text(palette.border, "│"); edge.h as usize];
+        if let Some(first) = lines.first_mut() {
+            *first = palette.text(palette.border, if left { "›" } else { "‹" });
+        }
+        paint(&mut rows, edge, lines);
+        workbench.hit_map().push(edge, "sidebar.toggle");
     }
 
     // The input band. On the launchpad there is no band: the composer *is* the
@@ -162,11 +187,21 @@ pub(crate) fn compose(
             activity_row(workbench, data, &palette, columns),
         );
     }
-    paint(&mut rows, frame.status, status_row(data, &palette, columns));
+    paint(
+        &mut rows,
+        frame.status,
+        status_row(data, &palette, columns, workbench.lang),
+    );
     if let Some(hint) = frame.hint {
+        // A notice is "what the last action did" — a workspace chosen, a
+        // preference saved — as much as it is a failure. Painting the whole row
+        // in the error red made a successful choice look like a crash (the
+        // reader asked why a red line followed a workspace switch); amber is the
+        // attention colour the activity row already uses for "something is going
+        // on", and the words themselves say which of the two it was.
         let row = match data.notice.as_deref() {
             Some(notice) => vec![fit(
-                &palette.text(palette.red, &format!(" {notice}")),
+                &palette.text(palette.amber, &format!(" {notice}")),
                 columns,
             )],
             None => hint_row(workbench, &palette, columns, frame.compact),
@@ -870,6 +905,28 @@ fn sidebar_rows(
         workbench.sidebar_focus,
         columns,
     ));
+    // The rail's own collapse button, on the edge it will leave from: one column
+    // at the outer edge, in the same place whether the rail is here or gone (see
+    // the spine `compose` paints). A reader who aims at the arrow twice — once
+    // to close, once to reopen — aims at the same cell.
+    if columns >= 8 {
+        let glyph = if workbench.sidebar_position == preferences::SidebarPosition::Left {
+            "‹"
+        } else {
+            "›"
+        };
+        let at = if workbench.sidebar_position == preferences::SidebarPosition::Left {
+            0
+        } else {
+            columns - 1
+        };
+        let strip = lines.pop().unwrap_or_default();
+        lines.push(splice(&strip, &palette.text(palette.border, glyph), at, 1));
+        workbench.hit_map().push(
+            Rect::new(area.x + at as u16, area.y, 1, 1),
+            "sidebar.toggle",
+        );
+    }
     // Each tab registers its own click region; tab labels are ` label ` wide.
     let mut x: u16 = if workbench.sidebar_focus { 1 } else { 0 };
     for panel in PanelId::ALL {
@@ -880,7 +937,12 @@ fn sidebar_rows(
         );
         x = x.saturating_add(tab_width + 1);
     }
-    let content = Rect::new(area.x, area.y + 1, area.w, area.h - 1);
+    // A focused rail says which keys it answers — the one place a reader who
+    // clicked a row (or pressed `tab`) finds out that `↑↓` walks the list and
+    // `⏎` opens the row. It costs one row of the list and saves the guesswork,
+    // so it is only shown while the rail actually owns the keys.
+    let footer = usize::from(workbench.sidebar_focus && area.h >= 4);
+    let content = Rect::new(area.x, area.y + 1, area.w, area.h - 1 - footer as u16);
     let index = workbench.panel.index();
     let view = panels::PanelView {
         scroll: workbench.panel_scroll[index],
@@ -898,6 +960,10 @@ fn sidebar_rows(
         lang,
     );
     lines.extend(body);
+    if footer == 1 {
+        let hint = fit(t(lang, Key::RailHint), columns);
+        lines.push(palette.panel_row(&palette.dim(&hint), columns));
+    }
     lines.truncate(area.h as usize);
     // The panel background runs to the bottom of the band even when the panel's
     // own rows stopped early.
@@ -959,12 +1025,26 @@ fn activity_row(
     vec![fit(&format!("{left}{}{right}", " ".repeat(pad)), columns)]
 }
 
-fn status_row(data: &WorkbenchData, palette: &Palette, columns: usize) -> Vec<String> {
+fn status_row(
+    data: &WorkbenchData,
+    palette: &Palette,
+    columns: usize,
+    lang: Language,
+) -> Vec<String> {
     let usage = data.usage;
     let model = if data.model.is_empty() {
         "no model".to_string()
     } else {
         data.model.clone()
+    };
+    // `model · effort · approval mode`: the desktop composer's three choices, in
+    // its order. The file-permission level that used to sit here is gone with
+    // the chip that set it — the desktop has no such control, and a setting no
+    // other client shows is not worth a column of the status bar.
+    let mode = match crate::approval_mode::ApprovalMode::from_wire(&data.mode) {
+        Some(mode) => picker::approval_label(mode, lang),
+        None if data.mode.trim().is_empty() => "—",
+        None => data.mode.as_str(),
     };
     let left = format!(
         " {}{}",
@@ -976,11 +1056,7 @@ fn status_row(data: &WorkbenchData, palette: &Palette, columns: usize) -> Vec<St
             } else {
                 &data.effort
             },
-            if data.permission.is_empty() {
-                "all"
-            } else {
-                &data.permission
-            }
+            mode
         ))
     );
     let bar_width = 12.min(columns / 6).max(4);
@@ -1820,6 +1896,7 @@ fn picker_box(
             selected,
             inner,
             workbench.picker.lang,
+            view.detail_column,
         ));
     }
     content.push(String::new());

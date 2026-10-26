@@ -62,8 +62,10 @@ pub enum LaunchField {
     Workspace,
     Model,
     Effort,
-    Mode,
-    Permission,
+    /// The approval mode — the desktop composer's fourth chip. The old separate
+    /// `Permission` field is gone: the desktop has no such control, so the TUI
+    /// does not invent one.
+    Approval,
 }
 
 impl LaunchField {
@@ -72,20 +74,18 @@ impl LaunchField {
             Self::Prompt => Self::Workspace,
             Self::Workspace => Self::Model,
             Self::Model => Self::Effort,
-            Self::Effort => Self::Mode,
-            Self::Mode => Self::Permission,
-            Self::Permission => Self::Prompt,
+            Self::Effort => Self::Approval,
+            Self::Approval => Self::Prompt,
         }
     }
 
     fn previous(self) -> Self {
         match self {
-            Self::Prompt => Self::Permission,
+            Self::Prompt => Self::Approval,
             Self::Workspace => Self::Prompt,
             Self::Model => Self::Workspace,
             Self::Effort => Self::Model,
-            Self::Mode => Self::Effort,
-            Self::Permission => Self::Mode,
+            Self::Approval => Self::Effort,
         }
     }
 
@@ -96,8 +96,7 @@ impl LaunchField {
             Self::Workspace => Some("launchpad.workspace"),
             Self::Model => Some("launchpad.model"),
             Self::Effort => Some("launchpad.effort"),
-            Self::Mode => Some("launchpad.mode"),
-            Self::Permission => Some("launchpad.permission"),
+            Self::Approval => Some("launchpad.approval"),
         }
     }
 
@@ -108,8 +107,7 @@ impl LaunchField {
             "launchpad.workspace" => "/launchpad.workspace",
             "launchpad.model" => "/launchpad.model",
             "launchpad.effort" => "/launchpad.effort",
-            "launchpad.mode" => "/launchpad.mode",
-            _ => "/launchpad.permission",
+            _ => "/launchpad.approval",
         })
     }
 }
@@ -249,8 +247,13 @@ pub enum WbAction {
     SelectWorktree(String),
     ForkAt(String),
     Compact(String),
-    SetPermission(String),
-    CycleSandbox,
+    /// The approval-mode menu chose a tier: apply it to the session, or stage it
+    /// while nothing is attached (`manual` | `sandbox` | `auto` | `off`).
+    SetApproval(String),
+    /// The workspace menu chose a directory — an existing workspace or one just
+    /// typed into its search line. The app moves the session there, or stages it
+    /// for the session the next message creates.
+    SelectWorkspace(String),
     SetTools(Vec<String>),
     CancelQueued(String),
     RecallQueued(String),
@@ -881,6 +884,18 @@ impl Workbench {
             Some(preferences::Action::Preferences) => {
                 self.open_preferences();
                 return vec![WbAction::Redraw];
+            }
+            // The three choosers reachable without leaving the keyboard. Each
+            // opens its picker through the same command a typed line would run
+            // (`PickerKind::from_command`), so the key, the palette and the
+            // draft share one implementation — and a chooser is what these keys
+            // get, not a silent cycle: a cycle has no `esc`.
+            Some(preferences::Action::Thinking) => {
+                return vec![WbAction::Command("/thinking".into())]
+            }
+            Some(preferences::Action::Approval) => return vec![WbAction::Command("/mode".into())],
+            Some(preferences::Action::Workspaces) => {
+                return vec![WbAction::Command("/workspace".into())]
             }
             Some(preferences::Action::Sidebar) => {
                 return self.toggle_sidebar();
@@ -1830,6 +1845,24 @@ impl Workbench {
             (PickerKind::Language, Some(PickerRow::Item { key, .. })) => {
                 vec![WbAction::SetLanguage(LanguagePreference::from_wire(&key))]
             }
+            // Staged while nothing is attached, applied once a session exists:
+            // the agent answers both setters with "session not found" otherwise.
+            (PickerKind::Thinking, Some(PickerRow::Item { key, .. })) => {
+                if launchpad {
+                    vec![WbAction::SetPendingThinking(key)]
+                } else {
+                    vec![WbAction::SetThinking(key)]
+                }
+            }
+            (PickerKind::Approval, Some(PickerRow::Item { key, .. })) => {
+                vec![WbAction::SetApproval(key)]
+            }
+            // The first row of the workspace menu is a directory typed into the
+            // search line; an existing workspace is the same action, so "switch"
+            // and "create" cannot take two different roads.
+            (PickerKind::Workspace, Some(PickerRow::Item { key, .. })) => {
+                vec![WbAction::SelectWorkspace(key)]
+            }
             _ => vec![WbAction::Redraw],
         }
     }
@@ -2166,6 +2199,22 @@ impl Workbench {
             });
             return Vec::new();
         }
+        // The rail's collapse/expand button — one control, two states: the
+        // arrow inside the rail hides it, the arrow it leaves behind brings it
+        // back. Unlike `ctrl+b` (which cycles show → focus → hide), a click only
+        // ever means "the other state": a pointer has no third intent.
+        if id == "sidebar.toggle" {
+            self.sidebar_visible = !self.sidebar_visible;
+            if self.sidebar_visible {
+                self.linear_reading = false;
+                self.sidebar_focus = true;
+                let row = self.current_row(data);
+                self.select_row(row, data);
+            } else {
+                self.sidebar_focus = false;
+            }
+            return vec![WbAction::SetPreferences];
+        }
         if let Some(panel) = id.strip_prefix("sidebar.tab.").and_then(PanelId::parse) {
             self.panel = panel;
             // Clicking the sidebar means working in it; the same click that
@@ -2198,6 +2247,24 @@ impl Workbench {
                     vec![WbAction::Redraw]
                 }
                 None => vec![WbAction::Redraw],
+            };
+        }
+        // The launchpad's own shortcut entries: the pointer runs the same verb
+        // the key beside them does. `palette`, `help` and `sidebar` are surface
+        // gestures; the rest are commands, dispatched exactly like a typed one.
+        if let Some(name) = id.strip_prefix("launchpad.command.") {
+            return match name {
+                "palette" => {
+                    self.open_palette();
+                    vec![WbAction::Redraw]
+                }
+                "help" => {
+                    self.overlay = Some(Overlay::Help);
+                    self.overlay_scroll = 0;
+                    vec![WbAction::Redraw]
+                }
+                "sidebar" => self.toggle_sidebar(),
+                other => vec![WbAction::Command(format!("/{other}"))],
             };
         }
         if id.starts_with("launchpad.") {
@@ -2297,20 +2364,10 @@ impl Workbench {
                 self.focus_panel(PanelId::Workspaces, data);
                 VerbOutcome::Done { notice: None }
             }
-            // `/workspace` with no argument answers where this session runs.
-            // There is no workspace picker, and pretending there is would be
-            // the same lie as `Unknown command`: the directory is the session's
-            // own, chosen where the session was started.
-            "workspace" => {
-                let cwd = if data.session.cwd.is_empty() {
-                    t(self.lang, Key::Unspecified).to_string()
-                } else {
-                    data.session.cwd.clone()
-                };
-                VerbOutcome::Done {
-                    notice: Some(i18n::render(self.lang, Key::NoticeWorkspace, &[&cwd])),
-                }
-            }
+            // `/workspace` never lands here: it is the workspace chooser, and
+            // `PickerKind::from_command` opens it the way `/model` and `/theme`
+            // are opened, so the rows, the filter and the hit regions are one
+            // implementation.
             // `future tui` has no transcript dump of its own: the two real
             // doors to the whole record are named instead.
             "transcript" => VerbOutcome::Done {
@@ -2524,7 +2581,7 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
 /// The command palette's entries: `(command, description)`. Kept here rather
 /// than in the app so the palette, the help overlay and the tests share one
 /// list.
-pub const COMMANDS: [(&str, Key); 26] = [
+pub const COMMANDS: [(&str, Key); 27] = [
     ("/new", Key::CmdNew),
     ("/queue", Key::CmdQueue),
     ("/copy", Key::CmdCopy),
@@ -2535,13 +2592,14 @@ pub const COMMANDS: [(&str, Key); 26] = [
     ("/tree", Key::CmdTree),
     ("/fork", Key::CmdFork),
     ("/worktree", Key::CmdWorktree),
+    ("/mode", Key::CmdMode),
     ("/sandbox", Key::CmdSandbox),
-    ("/permission", Key::CmdPermission),
     ("/compact", Key::CmdCompact),
     ("/tools", Key::CmdTools),
     ("/providers", Key::CmdProviders),
     ("/sessions", Key::CmdSessions),
     ("/model", Key::CmdModel),
+    ("/thinking", Key::CmdThinking),
     ("/lang", Key::CmdLanguage),
     ("/reply-detail", Key::CmdReplyDetail),
     ("/workspace", Key::CmdWorkspace),
@@ -3125,21 +3183,29 @@ mod tests {
     fn workspace_and_transcript_explain_themselves() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
-        match workbench.surface_command("/workspace", &data) {
-            VerbOutcome::Done {
-                notice: Some(notice),
-            } => {
-                assert!(
-                    notice.contains(&data.session.cwd),
-                    "names the workspace: {notice}"
-                );
-                assert!(
-                    notice.contains("/sessions"),
-                    "names a verb that moves: {notice}"
-                );
-            }
-            other => panic!("/workspace must explain itself: {other:?}"),
-        }
+        // `/workspace` is the workspace chooser now: the directory the session
+        // runs in is the row ticked `✓` in it, and that row is where "where am
+        // I" is answered.
+        assert_eq!(
+            PickerKind::from_command("/workspace"),
+            Some(PickerKind::Workspace)
+        );
+        workbench.open_picker(PickerKind::Workspace, &data);
+        let view = workbench.picker.view(&data, "");
+        let current: Vec<&str> = view
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                PickerRow::Item {
+                    label,
+                    current: true,
+                    ..
+                } => Some(label.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(current.len(), 1, "{:?}", view.rows);
+        workbench.overlay = None;
         match workbench.surface_command("/transcript", &data) {
             VerbOutcome::Done {
                 notice: Some(notice),
@@ -3976,11 +4042,22 @@ mod tests {
             "the rail is gone: {}",
             plain(&rows)
         );
-        assert!(workbench
+        // …and the one thing the frame keeps is the button that brings it back:
+        // the closed rail's edge, not a panel row.
+        let ids: Vec<&str> = workbench
             .hits()
             .regions()
             .iter()
-            .all(|(_, id)| !id.starts_with("sidebar.")));
+            .map(|(_, id)| id.as_str())
+            .collect();
+        assert_eq!(
+            ids.iter()
+                .filter(|id| id.starts_with("sidebar."))
+                .copied()
+                .collect::<Vec<_>>(),
+            vec!["sidebar.toggle"],
+            "{ids:?}"
+        );
         assert!(
             workbench.overlay.is_none(),
             "hiding the rail is not the full-screen panel"
@@ -4002,6 +4079,143 @@ mod tests {
         assert!(!workbench.sidebar_visible);
         workbench.handle(WbEvent::Key("tab".into()), &data);
         assert!(!workbench.sidebar_focus);
+    }
+
+    /// Press the middle of a painted region: the same path a real click takes,
+    /// resolved against the hit map the last frame registered. One cell is
+    /// enough — a one-column target (the rail's edge) is aimed at, not rounded
+    /// off.
+    fn press_region(
+        workbench: &mut Workbench,
+        data: &WorkbenchData,
+        w: u16,
+        h: u16,
+        id: &str,
+    ) -> Vec<WbAction> {
+        workbench.render(data, w, h);
+        let (rect, _) = workbench
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, region)| region == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("no region {id}"));
+        let press = mouse::MouseEvent {
+            kind: mouse::MouseKind::Press,
+            x: rect.x + rect.w.saturating_sub(1) / 2,
+            y: rect.y + rect.h.saturating_sub(1) / 2,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        workbench.handle(WbEvent::Mouse(press), data)
+    }
+
+    #[test]
+    fn the_rail_button_collapses_and_reopens_from_the_edge() {
+        let data = demo::chat();
+        let (mut workbench, rows) = frame(&data, 120, 38);
+        // The rail is up and its own edge carries the collapse arrow, on the
+        // row the tabs are painted on.
+        assert!(workbench.sidebar_visible);
+        assert!(plain(&rows).contains("最近"));
+        let (rect, _) = workbench
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "sidebar.toggle")
+            .expect("the collapse button");
+        assert_eq!(rect.x + rect.w, 120, "it sits on the rail's outer edge");
+        assert_eq!((rect.y, rect.h), (3, 1), "on the tab-strip row");
+        assert!(
+            crate::utils::strip_ansi_codes(&rows[3]).ends_with('›'),
+            "{}",
+            crate::utils::strip_ansi_codes(&rows[3])
+        );
+
+        // One click closes it, and it asks the driver to remember that.
+        let actions = press_region(&mut workbench, &data, 120, 38, "sidebar.toggle");
+        assert_eq!(actions, vec![WbAction::SetPreferences]);
+        assert!(!workbench.sidebar_visible && !workbench.sidebar_focus);
+        let rows = workbench.render(&data, 120, 38);
+        assert!(!plain(&rows).contains("最近"), "{}", plain(&rows));
+        // …and the closed rail leaves its edge behind: the way back is a target
+        // in the same column the arrow was in.
+        let (rect, _) = workbench
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "sidebar.toggle")
+            .expect("the expand button");
+        assert_eq!(rect.x + rect.w, 120);
+        // The edge runs the body's rows: from under the header to the input box.
+        assert_eq!((rect.y, rect.h), (3, 28), "{rect:?}");
+        assert!(plain(&rows).contains('‹'), "{}", plain(&rows));
+
+        // A second click brings it back, focused, with the cursor on the
+        // conversation on screen.
+        press_region(&mut workbench, &data, 120, 38, "sidebar.toggle");
+        assert!(workbench.sidebar_visible && workbench.sidebar_focus);
+        let rows = workbench.render(&data, 120, 38);
+        assert!(plain(&rows).contains("最近"), "{}", plain(&rows));
+
+        // A left-positioned rail keeps the same bargain: the button is on the
+        // rail's own outer edge (column 0) and stays there when it closes.
+        workbench.sidebar_position = preferences::SidebarPosition::Left;
+        let (rect, _) = {
+            workbench.render(&data, 120, 38);
+            workbench
+                .hits()
+                .regions()
+                .iter()
+                .find(|(_, id)| id == "sidebar.toggle")
+                .cloned()
+                .expect("the collapse button")
+        };
+        assert_eq!((rect.x, rect.w), (0, 1), "{rect:?}");
+        press_region(&mut workbench, &data, 120, 38, "sidebar.toggle");
+        assert!(!workbench.sidebar_visible);
+        let rows = workbench.render(&data, 120, 38);
+        let (rect, _) = workbench
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "sidebar.toggle")
+            .cloned()
+            .expect("the expand button");
+        assert_eq!((rect.x, rect.w), (0, 1), "{rect:?}");
+        assert!(
+            crate::utils::strip_ansi_codes(&rows[3]).starts_with('›'),
+            "{}",
+            crate::utils::strip_ansi_codes(&rows[3])
+        );
+    }
+
+    #[test]
+    fn a_focused_rail_names_the_keys_it_answers() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let unfocused = plain(&workbench.render(&data, 120, 38));
+        assert!(!unfocused.contains("⏎ 打开"), "{unfocused}");
+        workbench.sidebar_focus = true;
+        let rows = workbench.render(&data, 120, 38);
+        let text = plain(&rows);
+        // The footer is the rail's own last row, and it is not a click target:
+        // a reader aiming at a hint must not open the conversation that used to
+        // be painted there.
+        assert!(text.contains("↑↓ 选择"), "{text}");
+        let footer = rows
+            .iter()
+            .position(|row| crate::utils::strip_ansi_codes(row).contains("页签"))
+            .expect("the rail's footer");
+        assert!(
+            workbench
+                .hits()
+                .regions()
+                .iter()
+                .all(|(rect, _)| rect.y as usize != footer),
+            "nothing is clickable on the hint row"
+        );
     }
 
     #[test]
