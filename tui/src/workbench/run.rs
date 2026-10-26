@@ -924,9 +924,17 @@ async fn quit(
         // read an empty draft and return without reaching the agent, and it also
         // threw away the attachments — and when the session cannot be started
         // the reader's text has to survive so it can be sent again.
+        let switched = matches!(action, WbAction::SwitchSession(_));
         match live.apply(action).await {
             Outcome::Quit => return Ok(true),
             Outcome::Continue => {}
+        }
+        // A switch the rail did not make itself (a click on the launchpad's
+        // recents, a `ctrl+r` pick) still has to move its cursor: the rail would
+        // otherwise highlight a conversation the transcript is not showing.
+        if switched {
+            let data = live.data(frame);
+            workbench.follow_current(&data);
         }
         // A model or level chosen with no session attached is nothing the agent
         // can hold: `live.apply` staged it on the adapter, which asks for it

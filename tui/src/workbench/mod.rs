@@ -1012,6 +1012,17 @@ impl Workbench {
         self.palette_index = 0;
     }
 
+    /// Put the rail's cursor on the conversation on screen.
+    ///
+    /// The app calls this after a switch it did not make through the rail (the
+    /// `ctrl+r` picker, a click on the launchpad's recents): the transcript moved,
+    /// so the highlighted row has to move with it, or the rail names a
+    /// conversation the screen is not showing.
+    pub fn follow_current(&mut self, data: &WorkbenchData) {
+        let row = self.current_row(data);
+        self.select_row(row, data);
+    }
+
     /// Move the conversation (`up` negative = towards the tail) or the focused
     /// panel's list, and ask for an older page when the top is reached.
     ///
