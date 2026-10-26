@@ -50,8 +50,12 @@ pub struct ProviderModelSpec {
     pub context_window: i32,
     /// Maximum tokens generated in one response.
     pub max_tokens: i32,
-    /// Whether to send thinking controls; resolved to true for older RPC clients.
+    /// Legacy: kept for older clients/agents, no runtime effect.
     pub reasoning: bool,
+    /// The thinking levels this model accepts (wire values). `None` means the
+    /// client predates the field: an edit preserves the entry's existing list.
+    /// `Some(list)` replaces it, including `Some(vec![])` = explicitly none.
+    pub thinking_levels: Option<Vec<String>>,
     /// Per-1M-token prices (`models.json` `cost` object) for providers that do
     /// not report an authoritative `credit_cost`. 0 = unpriced, which lets the
     /// registry inherit a matching built-in catalog price.
@@ -109,13 +113,14 @@ pub struct ProviderUpsertSpec {
 /// legacy `limit`, and anything a future version adds) is preserved across an
 /// edit, because this RPC cannot express it and dropping it would silently
 /// change how the model behaves.
-const MANAGED_MODEL_FIELDS: [&str; 7] = [
+const MANAGED_MODEL_FIELDS: [&str; 8] = [
     "id",
     "name",
     "modalities",
     "contextWindow",
     "maxTokens",
     "reasoning",
+    "thinkingLevels",
     "cost",
 ];
 
@@ -223,6 +228,13 @@ pub fn validate_provider_upsert(spec: &ProviderUpsertSpec) -> Result<(), String>
         }
         if model.max_tokens > model.context_window {
             return Err("provider model max tokens cannot exceed its context window".to_string());
+        }
+        if let Some(levels) = model.thinking_levels.as_ref() {
+            let normalized =
+                crate::llm::schema::normalize_thinking_levels(&spec.id, &model.id, levels.clone());
+            if normalized.len() > crate::llm::schema::MAX_THINKING_LEVELS {
+                return Err("provider model has too many thinking levels".to_string());
+            }
         }
     }
     Ok(())
@@ -531,6 +543,15 @@ pub fn apply_provider_upsert(
                         "cache_write": model.cost.cache_write,
                     });
                 }
+                if let Some(levels) = model.thinking_levels.as_ref() {
+                    // Entries are wire values, stored in declaration order. The
+                    // reserved `default` is implicit and never persisted.
+                    entry["thinkingLevels"] = json!(crate::llm::schema::normalize_thinking_levels(
+                        &spec.id,
+                        &model.id,
+                        levels.clone()
+                    ));
+                }
                 if let Some(existing) = existing_models
                     .iter()
                     .find(|existing| {
@@ -544,6 +565,13 @@ pub fn apply_provider_upsert(
                     for (key, value) in existing {
                         if !MANAGED_MODEL_FIELDS.contains(&key.as_str()) {
                             entry.insert(key.clone(), value.clone());
+                        }
+                    }
+                    // The wire field is presence-based: an older client that
+                    // cannot express the list must not silently clear it.
+                    if model.thinking_levels.is_none() {
+                        if let Some(existing_levels) = existing.get("thinkingLevels") {
+                            entry.insert("thinkingLevels".into(), existing_levels.clone());
                         }
                     }
                 }
@@ -939,6 +967,52 @@ mod tests {
         assert_eq!(
             kept["supportedParameters"],
             json!(["max_completion_tokens"])
+        );
+    }
+
+    #[test]
+    fn upsert_thinking_levels_replaces_when_offered_and_preserves_when_absent() {
+        // Proto repeated fields cannot express absence, so the presence bit
+        // becomes `None` (preserve) vs `Some(list)` (replace). An old client
+        // must never wipe a hand-written list by editing the provider.
+        let mut root: Map<String, Value> = serde_json::from_str(
+            r#"{"providers":{"acme":{"models":[{"id":"keep","thinkingLevels":["low","high"]}]}}}"#,
+        )
+        .unwrap();
+        let base = |levels: Option<Vec<String>>| ProviderUpsertSpec {
+            id: "acme".to_string(),
+            replace_models: true,
+            models: vec![ProviderModelSpec {
+                id: "keep".to_string(),
+                name: "Keep".to_string(),
+                modalities: vec!["text".to_string()],
+                context_window: 4096,
+                max_tokens: 1024,
+                reasoning: true,
+                thinking_levels: levels,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        apply_provider_upsert(&mut root, &base(None)).unwrap();
+        assert_eq!(
+            root["providers"]["acme"]["models"][0]["thinkingLevels"],
+            json!(["low", "high"]),
+            "an absent list preserves the stored one"
+        );
+
+        apply_provider_upsert(&mut root, &base(Some(vec!["max".to_string()]))).unwrap();
+        assert_eq!(
+            root["providers"]["acme"]["models"][0]["thinkingLevels"],
+            json!(["max"])
+        );
+
+        // Explicitly empty clears the declaration (only the implicit default).
+        apply_provider_upsert(&mut root, &base(Some(Vec::new()))).unwrap();
+        assert_eq!(
+            root["providers"]["acme"]["models"][0]["thinkingLevels"],
+            json!([])
         );
     }
 

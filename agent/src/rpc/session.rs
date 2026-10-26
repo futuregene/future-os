@@ -29,27 +29,29 @@ const DEFAULT_PERMISSION_LEVEL: &str = "all";
 
 /// Default thinking level for a session that never chose one.
 ///
-/// Defined once because two places need it — the [`ServerSession`] constructor
-/// and the `new_session` handler — and when each carried its own `"xhigh"`
-/// literal they could drift apart silently. "medium" matches the desktop's own
-/// default (`defaultThinkingLevel`), so "the app default" means one thing: a
-/// task or conversation that leaves the level unset does not quietly run at a
-/// different effort than the desktop would pick.
-pub const DEFAULT_THINKING_LEVEL: &str = "medium";
+/// `default` means "send no thinking/effort parameter at all": the provider's
+/// own default applies. Defined once because the [`ServerSession`] constructor,
+/// the `new_session` handler and the model list all publish it.
+pub const DEFAULT_THINKING_LEVEL: &str = crate::llm::schema::DEFAULT_THINKING_LEVEL;
 
-/// Thinking budget (in tokens) an internal level implies. `off` and unknown
-/// levels budget nothing.
+/// Thinking budget (in tokens) a level implies for protocols that take a budget
+/// instead of an effort value (Anthropic manual thinking).
+///
+/// `default`/`off` budget nothing. A wire value the map does not know still
+/// enables thinking at a mid budget rather than silently disabling it: the
+/// model declared the level, so the user asked for depth.
 ///
 /// One definition because both `set_thinking_level` and `set_model` (which
 /// re-derives the budget when a model switch clamps the level) need it.
 pub fn thinking_budget_for(level: &str) -> i32 {
     match level {
+        crate::llm::schema::DEFAULT_THINKING_LEVEL | "off" | "" => 0,
         "minimal" => 2000,
         "low" => 4000,
         "medium" => 8000,
         "high" => 16000,
-        "xhigh" => 24000,
-        _ => 0,
+        "xhigh" | "max" => 24000,
+        _ => 8000,
     }
 }
 
@@ -80,7 +82,9 @@ pub struct ServerSession {
     /// Canonical model identifier for this session (e.g. "deepseek-v4-pro").
     /// Updated by `set_model`; read by prompt construction and compaction.
     pub model: String,
-    /// Thinking/effort level: "off", "minimal", "low", "medium", "high", "xhigh".
+    /// Thinking/effort level. `default` sends no thinking/effort parameter
+    /// (the provider default applies); `off` explicitly disables thinking; any
+    /// other value is the model's wire value, sent verbatim.
     pub thinking_level: String,
     /// Whether auto-compaction is enabled for this session.
     pub auto_compaction: bool,
@@ -867,10 +871,13 @@ impl ServerSession {
             .resolve(&self.model)
             .map(|model| model.cycling_thinking_levels())
             .unwrap_or_else(|| {
-                crate::llm::schema::THINKING_LEVELS
-                    .iter()
-                    .map(|level| level.to_string())
-                    .collect()
+                let mut levels = vec![crate::llm::schema::DEFAULT_THINKING_LEVEL.to_string()];
+                levels.extend(
+                    crate::llm::schema::KNOWN_THINKING_LEVELS
+                        .iter()
+                        .map(|level| level.to_string()),
+                );
+                levels
             })
     }
 
@@ -1082,7 +1089,7 @@ impl ServerSession {
         let journal = (!self.ephemeral).then(|| crate::compaction::CompactionJournal::new(
             self.session_manager.clone(), self.persistence.clone(), self.session_id.clone(),
             serde_json::json!({"model":self.model,"thinking":self.thinking_level,"cwd":self.cwd,"tools":tool_defs,
-                "protocol":self.model_registry.read().resolve(&self.model).map(|m| serde_json::json!({"api":m.api,"baseUrl":m.base_url,"compat":m.compat,"thinkingMap":m.thinking_level_map}))}),
+                "protocol":self.model_registry.read().resolve(&self.model).map(|m| serde_json::json!({"api":m.api,"baseUrl":m.base_url,"compat":m.compat}))}),
         ));
         let projected_messages_before = prompt.messages.len();
         let manager = crate::compaction::ContextManager {
@@ -2294,10 +2301,10 @@ mod tests {
     }
 
     #[test]
-    fn default_thinking_level_is_medium() {
+    fn default_thinking_level_is_default() {
         let session = make_test_session("s1");
         assert_eq!(session.thinking_level, DEFAULT_THINKING_LEVEL);
-        assert_eq!(session.thinking_level, "medium");
+        assert_eq!(session.thinking_level, "default");
     }
 
     #[test]
@@ -2673,13 +2680,13 @@ mod tests {
     }
 
     #[test]
-    fn set_model_applies_thinking_budget_on_rebuild() {
+    fn set_model_clamps_the_level_onto_the_new_models_list() {
         let mut session = make_test_session("think-budget");
-        // A non-default thinking level pins a positive budget on the loop
-        // config; the provider rebuild then applies it.
+        // gpt-4o declares no thinking levels, so the stored `low` is not on its
+        // effective list and the switch falls back to the provider default.
         session.set_thinking_level("low");
         session.set_model("gpt-4o").unwrap();
-        assert_eq!(session.thinking_level, "low");
+        assert_eq!(session.thinking_level, "default");
     }
 
     #[test]
@@ -3680,15 +3687,17 @@ mod tests {
         // budget is what actually reaches the provider, so assert the live
         // loop config rather than only the echoed string.
         for (level, budget) in [
+            ("default", 0),
             ("off", 0),
             ("minimal", 2000),
             ("low", 4000),
             ("medium", 8000),
             ("high", 16000),
             ("xhigh", 24000),
-            // An unknown level is stored verbatim but must disable thinking
-            // instead of inheriting the previous budget.
-            ("bogus", 0),
+            ("max", 24000),
+            // A declared wire value the budget map does not know must still
+            // enable thinking at a mid budget instead of silently disabling it.
+            ("bogus", 8000),
         ] {
             let mut session = make_test_session("s1");
             session.set_thinking_level("high");
@@ -4980,7 +4989,9 @@ mod tests {
         session.switch_session("rich").unwrap();
         assert_eq!(session.model, "deepseek/deepseek-chat");
         assert_eq!(session.session_name, "restored name");
-        assert_eq!(session.thinking_level, "low");
+        // The restored model declares no levels, so the stored `low` clamps to
+        // the provider default.
+        assert_eq!(session.thinking_level, "default");
         assert_eq!(session.created_by, "desktop");
         assert_eq!(session.creator_id, "desktop-device-1");
         assert_eq!(session.source_meta["threadId"], "thread-1");

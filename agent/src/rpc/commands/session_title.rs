@@ -192,7 +192,10 @@ pub(super) fn handle(state: &AppState, cmd: &RpcCommand) -> String {
             let max_output_tokens = crate::models::effective_max_tokens(&model);
             ResolvedModelTarget::from_model(&model, key, None, Some(max_output_tokens))?
         };
-        let provider = crate::llm::Client::from_target(target).with_thinking_level("low");
+        // A title is an extra call outside the user's chosen effort: send no
+        // thinking parameter and let the provider's default apply.
+        let provider = crate::llm::Client::from_target(target)
+            .with_thinking_level(crate::llm::schema::DEFAULT_THINKING_LEVEL);
         // ExecuteCommand dispatches on spawn_blocking; no session lock is held while awaiting.
         let title = tokio::runtime::Handle::current().block_on(async {
             tokio::time::timeout(

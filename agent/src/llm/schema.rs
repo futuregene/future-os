@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use crate::types::{AgentMessage, ProviderMetadata, ToolDef, Usage};
@@ -90,15 +90,6 @@ pub enum ChatReasoningFormat {
 #[derive(Debug, Clone, Default)]
 pub struct OpenAiChatConfig {
     pub reasoning: ChatReasoningFormat,
-    pub supports_reasoning_effort: bool,
-    /// The provider refuses to disable thinking (`compat.thinkingRequired`).
-    ///
-    /// Sending `thinking: {"type": "disabled"}` (or `enable_thinking: false`)
-    /// to such a model is a hard 400 — "this model always thinks; disabling
-    /// thinking is not supported" — so the request says *enabled* whatever the
-    /// product level is, and `off` degrades to "no depth hint" rather than a
-    /// switch the provider will reject.
-    pub thinking_required: bool,
     /// Echo the assistant turn's `reasoning_content` back in history
     /// (`compat.requiresReasoningContentOnAssistantMessages`).
     ///
@@ -174,279 +165,109 @@ impl ProtocolConfig {
     }
 }
 
-/// Wire values a provider accepts for `reasoning_effort`, in ascending depth
-/// order.
+/// The reserved level meaning "send no thinking/effort parameter at all".
 ///
-/// Providers do not share one effort enum: OpenAI-compatible servers may accept
-/// the standard `minimal/low/medium/high`, a subset of it, extra levels
-/// (`xhigh`/`max`), or numeric values. Declaring the vocabulary keeps the
-/// internal thinking level (a product-level concept) separate from the value
-/// actually sent on the wire.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub enum ReasoningEffortValues {
-    /// `compat.reasoningEffortValues` is absent: map internal levels onto the
-    /// standard `minimal/low/medium/high` enum. Deeper levels clamp to `high`.
-    #[default]
-    Default,
-    /// Explicitly `null` or an empty array: never send `reasoning_effort`.
-    Disabled,
-    /// Explicit ascending vocabulary. The requested level snaps to the closest
-    /// allowed value.
-    Values(Vec<Value>),
-}
+/// It is implicit: every model offers it, it is never stored in a configured
+/// list, and it is always shown first.
+pub const DEFAULT_THINKING_LEVEL: &str = "default";
+
+/// Level names the product ships translations for.
+///
+/// This is not a wire vocabulary: a model's `thinkingLevels` may contain any
+/// other string and it is sent verbatim. The list exists for pickers' fallback
+/// text, CLI validation and the custom-provider checkbox UI.
+pub const KNOWN_THINKING_LEVELS: [&str; 7] =
+    ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// Maximum configured levels per model, and maximum length of one level name.
+pub const MAX_THINKING_LEVELS: usize = 16;
+pub const MAX_THINKING_LEVEL_LEN: usize = 32;
 
 #[derive(Debug, Clone, Default)]
 pub struct ReasoningCapabilities {
+    /// True when the model declares at least one level other than `off`.
+    /// Derived from `Model::thinking_levels`; `Model::reasoning` is no longer
+    /// consulted anywhere.
     pub supported: bool,
-    pub levels: BTreeMap<String, Value>,
-    pub effort_values: ReasoningEffortValues,
 }
 
-/// The product-level thinking vocabulary, shallowest first.
-///
-/// This is a product concept (what the pickers offer), not a wire enum: see
-/// [`ReasoningEffortValues`] for the values a provider actually accepts. A model
-/// that declares none of its own offers all of these.
-pub const THINKING_LEVELS: [&str; 6] = ["off", "minimal", "low", "medium", "high", "xhigh"];
-
-/// Depth position of every internal level, deeper is larger.
-///
-/// Unlike [`effort_rank`] this covers `off` (the shallowest state, below
-/// `minimal`), because a model may declare a subset that has to be ordered as a
-/// whole.
-pub fn thinking_level_rank(name: &str) -> Option<i32> {
-    Some(match name {
-        "off" => 0,
-        "minimal" => 1,
-        "low" => 2,
-        "medium" => 3,
-        "high" => 4,
-        "xhigh" => 5,
-        _ => return None,
-    })
-}
-
-/// Rewrite a declared level list into canonical order, dropping unknown names.
-///
-/// Order is canonical rather than declared so the pickers, the keyboard ring and
-/// the cycle command all walk the same scale; a hand-written list is a set, not a
-/// sequence. Unknown names are returned in `unknown` so the caller can report
-/// them against the provider/model that declared them, instead of silently
-/// turning a typo into "this level does not exist".
-pub fn normalize_declared_levels<'a>(
-    declared: impl IntoIterator<Item = &'a str>,
-) -> (Vec<String>, Vec<String>) {
-    let declared: Vec<&str> = declared.into_iter().collect();
-    let levels = THINKING_LEVELS
-        .iter()
-        .filter(|canonical| declared.contains(canonical))
-        .map(|canonical| canonical.to_string())
-        .collect();
-    let mut unknown: Vec<String> = Vec::new();
-    for name in declared {
-        if thinking_level_rank(name).is_none() && !unknown.iter().any(|seen| seen == name) {
-            unknown.push(name.to_string());
-        }
-    }
-    (levels, unknown)
-}
-
-/// Snap `level` onto the levels this model allows.
-///
-/// `allowed` is the model's effective list (never empty for a registered model).
-/// A level the model declares is returned untouched; one it does not is snapped
-/// to the nearest declared level **by depth**, and a tie goes to the shallower
-/// one.
-///
-/// Ties go down because of where the unmatched value comes from: the user could
-/// not have picked it for this model (it is absent from the picker), so it is a
-/// stored level from another model, a scheduled task, or a default applied
-/// without asking — `settings.json` and `DEFAULT_THINKING_LEVEL` both say
-/// `medium`. Spending *more* of the user's tokens and waiting longer than the
-/// value they actually see would be the one direction the agent must not take on
-/// its own.
-///
-/// A name that is not on the scale at all is returned unchanged: it is not a
-/// level this build knows, and the request path already forwards unknown names
-/// verbatim (see [`resolve_effort`]), so rewriting it would be a second, silent
-/// translation of a value nobody asked us to interpret.
-pub fn clamp_thinking_level(level: &str, allowed: &[String]) -> String {
-    if level.is_empty() || allowed.is_empty() || allowed.iter().any(|name| name == level) {
-        return level.to_string();
-    }
-    let Some(rank) = thinking_level_rank(level) else {
-        return level.to_string();
-    };
-    let mut best: Option<(i32, i32, &str)> = None;
-    for name in allowed {
-        let Some(candidate) = thinking_level_rank(name) else {
+/// Normalize a configured level list: trim, drop empties and the reserved
+/// `default`, dedupe preserving declared order, cap the count and each name's
+/// length. A dropped entry is logged against the provider/model so a typo is
+/// visible without failing the whole model.
+pub fn normalize_thinking_levels(
+    provider: &str,
+    model: &str,
+    declared: impl IntoIterator<Item = String>,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut dropped_reserved = false;
+    let mut truncated = false;
+    for raw in declared {
+        let level = raw.trim().to_string();
+        if level.is_empty() {
             continue;
-        };
-        let distance = (candidate - rank).abs();
-        let better = match best {
-            None => true,
-            // Strictly closer wins; an equal distance keeps the shallower one.
-            Some((best_distance, best_candidate, _)) => {
-                distance < best_distance
-                    || (distance == best_distance && candidate < best_candidate)
-            }
-        };
-        if better {
-            best = Some((distance, candidate, name));
         }
+        if level == DEFAULT_THINKING_LEVEL {
+            dropped_reserved = true;
+            continue;
+        }
+        if level.chars().count() > MAX_THINKING_LEVEL_LEN {
+            truncated = true;
+            continue;
+        }
+        if out.iter().any(|known| known == &level) {
+            continue;
+        }
+        if out.len() >= MAX_THINKING_LEVELS {
+            truncated = true;
+            break;
+        }
+        out.push(level);
     }
-    match best {
-        Some((_, _, name)) => name.to_string(),
-        None => level.to_string(),
+    if dropped_reserved {
+        tracing::warn!(
+            provider,
+            model,
+            "[models] thinkingLevels must not list the reserved `default`; it is implicit and always first"
+        );
     }
+    if truncated {
+        tracing::warn!(
+            provider,
+            model,
+            "[models] ignoring thinkingLevels entries beyond {MAX_THINKING_LEVELS} levels / {MAX_THINKING_LEVEL_LEN} chars"
+        );
+    }
+    out
 }
 
-/// Depth rank for the internal thinking levels and the standard enum names.
-/// Returns `None` for names the built-in scale does not know.
-fn effort_rank(name: &str) -> Option<f64> {
-    Some(match name {
-        "minimal" => 0.0,
-        "low" => 1.0,
-        "medium" => 2.0,
-        "high" => 3.0,
-        "xhigh" => 4.0,
-        "max" => 5.0,
-        _ => return None,
-    })
-}
-
-/// Collapse an internal level into the standard enum every provider accepts.
-fn standard_effort(level: &str) -> &str {
-    match level {
-        "minimal" | "low" | "medium" | "high" => level,
-        // Deeper-than-standard levels clamp to the strongest standard value.
-        "xhigh" | "max" => "high",
-        other => other,
+/// Clamp `level` onto a model's effective list (which always contains
+/// `default`). A level the model does not offer becomes `default`: the value is
+/// inert there, and falling back to the provider default is the only option
+/// that cannot silently spend more than the user sees.
+pub fn clamp_thinking_level(level: &str, allowed: &[String]) -> String {
+    let level = level.trim();
+    if level.is_empty() || level == DEFAULT_THINKING_LEVEL {
+        return DEFAULT_THINKING_LEVEL.to_string();
     }
+    if allowed.iter().any(|name| name == level) {
+        return level.to_string();
+    }
+    DEFAULT_THINKING_LEVEL.to_string()
 }
 
-/// Resolve the value to send for `reasoning_effort` (or `reasoning.effort`).
+/// The value to put on the wire for a level.
 ///
-/// Precedence:
-/// 1. `thinkingLevelMap[level]` — an exact per-level value (string or number).
-///    A JSON `null` there opts that level out of being sent.
-/// 2. `compat.reasoningEffortValues` — the declared vocabulary; the level snaps
-///    to the closest allowed value, ties going to the deeper one.
-/// 3. Default — the standard `minimal/low/medium/high` enum.
-///
-/// Returns `None` when nothing should be sent (`off`, a disabled vocabulary, or
-/// a level mapped to `null`).
-pub fn resolve_effort(
-    level: &str,
-    levels: &BTreeMap<String, Value>,
-    values: &ReasoningEffortValues,
-) -> Option<Value> {
-    if level.is_empty() || level == "off" {
-        return None;
-    }
-    if let Some(value) = levels.get(level) {
-        return if value.is_null() {
-            None
-        } else {
-            Some(value.clone())
-        };
-    }
-    match values {
-        ReasoningEffortValues::Disabled => None,
-        ReasoningEffortValues::Default => Some(Value::String(standard_effort(level).to_string())),
-        ReasoningEffortValues::Values(values) => {
-            if values.is_empty() {
-                return None;
-            }
-            if let Some(exact) = values.iter().find(|value| value.as_str() == Some(level)) {
-                return Some(exact.clone());
-            }
-            let Some(rank) = effort_rank(level) else {
-                // Non-standard level names are assumed to be wire values.
-                return Some(Value::String(level.to_string()));
-            };
-            let mut best: Option<(f64, f64, &Value)> = None;
-            for (index, value) in values.iter().enumerate() {
-                if value.is_null() {
-                    continue;
-                }
-                let candidate = value.as_str().and_then(effort_rank).unwrap_or_else(|| {
-                    // Unnamed values (for example a numeric range) are ordered by
-                    // their position in the ascending list, spread across the
-                    // standard scale.
-                    if values.len() > 1 {
-                        index as f64 * 5.0 / (values.len() - 1) as f64
-                    } else {
-                        rank
-                    }
-                });
-                let distance = (candidate - rank).abs();
-                let better = match best {
-                    None => true,
-                    Some((best_distance, best_candidate, _)) => {
-                        distance < best_distance
-                            || (distance == best_distance && candidate > best_candidate)
-                    }
-                };
-                if better {
-                    best = Some((distance, candidate, value));
-                }
-            }
-            best.map(|(_, _, value)| value.clone())
-        }
-    }
-}
-
-/// Parse `compat.reasoningEffortValues` from a model definition.
-pub fn parse_reasoning_effort_values(
-    model: &crate::models::Model,
-) -> Result<ReasoningEffortValues> {
-    match model.compat.get("reasoningEffortValues") {
-        None => Ok(ReasoningEffortValues::Default),
-        Some(Value::Null) => Ok(ReasoningEffortValues::Disabled),
-        Some(Value::Array(items)) => {
-            if items.is_empty() {
-                return Ok(ReasoningEffortValues::Disabled);
-            }
-            for item in items {
-                if !matches!(item, Value::String(_) | Value::Number(_)) {
-                    bail!(
-                        "provider `{}` model `{}` compat.reasoningEffortValues must be an array of strings or numbers",
-                        model.provider,
-                        model.id
-                    );
-                }
-            }
-            // The list is declared ascending because snapping walks it as a
-            // depth scale. Known level names can be judged statically: their
-            // ranks must strictly increase. Numbers and unknown names are
-            // ordered by list position instead, so they are skipped here.
-            let mut previous: Option<(&str, f64)> = None;
-            for item in items {
-                let Value::String(name) = item else {
-                    continue;
-                };
-                let Some(rank) = effort_rank(name) else {
-                    continue;
-                };
-                if let Some((previous_name, previous_rank)) = previous {
-                    if rank <= previous_rank {
-                        bail!(
-                            "provider `{}` model `{}` compat.reasoningEffortValues must list known levels in ascending order (minimal < low < medium < high < xhigh < max), found `{previous_name}` before `{name}`",
-                            model.provider,
-                            model.id
-                        );
-                    }
-                }
-                previous = Some((name.as_str(), rank));
-            }
-            Ok(ReasoningEffortValues::Values(items.clone()))
-        }
-        Some(_) => bail!(
-            "provider `{}` model `{}` compat.reasoningEffortValues must be an array of strings or numbers, or null",
-            model.provider,
-            model.id
-        ),
+/// `default` sends nothing at all; `off` sends nothing here (each adapter turns
+/// it into its protocol's explicit "disabled" spelling, when it has one); any
+/// other value is the model's wire value and travels verbatim.
+pub fn effort_value(level: &str) -> Option<&str> {
+    let level = level.trim();
+    if level.is_empty() || level == DEFAULT_THINKING_LEVEL || level == "off" {
+        None
+    } else {
+        Some(level)
     }
 }
 
@@ -603,25 +424,6 @@ impl ResolvedModelTarget {
             ApiProtocol::AnthropicMessages => AuthScheme::AnthropicApiKey,
             _ => AuthScheme::Bearer,
         };
-        // thinkingLevelMap values go on the wire verbatim (resolve_effort sends
-        // strings, numbers, and the "opt this level out" null), so anything
-        // else is a configuration typo and must fail here rather than reach
-        // the provider.
-        let levels: BTreeMap<String, Value> = model
-            .thinking_level_map
-            .iter()
-            .map(|(key, value)| {
-                if !(value.is_string() || value.is_number() || value.is_null()) {
-                    bail!(
-                        "provider `{}` model `{}` thinkingLevelMap value for `{key}` must be a string, number, or null",
-                        model.provider,
-                        model.id
-                    );
-                }
-                Ok((key.clone(), value.clone()))
-            })
-            .collect::<Result<_>>()?;
-
         Ok(Self {
             model_id: model.id.clone(),
             route: ProviderRoute {
@@ -642,9 +444,13 @@ impl ResolvedModelTarget {
                 supports_tools: true,
                 supports_parallel_tools: true,
                 reasoning: ReasoningCapabilities {
-                    supported: model.reasoning,
-                    levels,
-                    effort_values: parse_reasoning_effort_values(model)?,
+                    // Derived from the declared wire values, never from the
+                    // legacy `reasoning` flag (which is kept for older clients
+                    // but has no runtime meaning).
+                    supported: model
+                        .thinking_levels
+                        .iter()
+                        .any(|level| level.as_str() != "off"),
                 },
                 context_window: model.context_window,
                 max_output_tokens: model.max_tokens,
@@ -880,19 +686,10 @@ fn parse_chat_config(model: &crate::models::Model) -> Result<OpenAiChatConfig> {
 
     Ok(OpenAiChatConfig {
         reasoning,
-        supports_reasoning_effort: boolean("supportsReasoningEffort")?,
-        thinking_required: boolean("thinkingRequired")?,
         replay_assistant_reasoning,
         max_tokens_field,
         tool_stream: boolean("toolStream")? || model.provider == "zai",
     })
-}
-
-pub fn string_level_map(values: &HashMap<String, Value>) -> HashMap<String, String> {
-    values
-        .iter()
-        .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string())))
-        .collect()
 }
 
 #[cfg(test)]
@@ -1172,13 +969,13 @@ mod tests {
             ..Default::default()
         };
         model.compat.insert(
-            "supportsReasoningEffort".into(),
+            "requiresReasoningContentOnAssistantMessages".into(),
             Value::String("yes".into()),
         );
         let error = ResolvedModelTarget::from_model(&model, "key".into(), None, None).unwrap_err();
         assert!(error
             .to_string()
-            .contains("supportsReasoningEffort must be a boolean"));
+            .contains("requiresReasoningContentOnAssistantMessages must be a boolean"));
     }
 
     #[test]
@@ -1241,18 +1038,6 @@ mod tests {
         assert!(error
             .to_string()
             .contains("unsupported compat.maxTokensField"));
-    }
-
-    #[test]
-    fn string_level_map_keeps_strings_and_drops_non_strings() {
-        let mut values = HashMap::new();
-        values.insert("a".into(), Value::String("1".into()));
-        values.insert("b".into(), Value::Bool(true));
-        values.insert("c".into(), Value::Null);
-        let out = string_level_map(&values);
-        assert_eq!(out.get("a"), Some(&"1".to_string()));
-        assert!(!out.contains_key("b"));
-        assert!(!out.contains_key("c"));
     }
 
     #[test]

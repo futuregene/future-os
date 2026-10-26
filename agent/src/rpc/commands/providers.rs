@@ -210,15 +210,11 @@ pub(crate) fn list_models_response(
             } else {
                 model.name.clone()
             };
-            let thinking_level = if model.reasoning { "high" } else { "off" };
-            // The levels this model offers (empty declaration → the full six, a
-            // model without thinking controls → `off` alone). Sent resolved so
-            // clients do not each re-derive the same rules, and so the pickers
-            // can drop levels this model would only clamp away.
+            // The effective list clients may offer: the implicit `default` first,
+            // then the model's declared wire values. Always non-empty.
             let thinking_levels = model.allowed_thinking_levels();
             // The level a conversation starts at for this model, already clamped
-            // to that list: clients pick their initial value from here instead of
-            // carrying a copy of the snapping rule.
+            // to that list (`default` on a current agent).
             let default_thinking_level = crate::llm::schema::clamp_thinking_level(
                 crate::rpc::session::DEFAULT_THINKING_LEVEL,
                 &thinking_levels,
@@ -228,7 +224,7 @@ pub(crate) fn list_models_response(
                 "label": label,
                 "provider": model.provider.clone(),
                 "supportsImages": model.input.iter().any(|input| input == "image"),
-                "thinkingLevel": thinking_level.to_string(),
+                "thinkingLevel": default_thinking_level.clone(),
                 "thinkingLevels": thinking_levels,
                 "defaultThinkingLevel": default_thinking_level,
                 "reasoning": model.reasoning,
@@ -362,7 +358,22 @@ fn provider_view(state: &AppState) -> Result<serde_json::Value, String> {
                             .and_then(serde_json::Value::as_f64)
                             .unwrap_or(0.0)
                     };
-                    Some(serde_json::json!({
+                    // The declaration the editor should show: the model-level
+                    // list when it has one, else the provider-level list it
+                    // inherits. Raw wire values (never default-prefixed); the
+                    // key is omitted when neither level declares anything.
+                    let thinking_levels = model
+                        .get("thinkingLevels")
+                        .or_else(|| config.get("thinkingLevels"))
+                        .and_then(serde_json::Value::as_array)
+                        .map(|levels| {
+                            levels
+                                .iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .map(str::to_string)
+                                .collect::<Vec<_>>()
+                        });
+                    let mut entry = serde_json::json!({
                         "id": model_id,
                         "name": model_name,
                         "supportsImages": supports_images,
@@ -373,7 +384,13 @@ fn provider_view(state: &AppState) -> Result<serde_json::Value, String> {
                         "outputCost": price("output"),
                         "cacheReadCost": price("cache_read"),
                         "cacheWriteCost": price("cache_write"),
-                    }))
+                    });
+                    if let Some(levels) = thinking_levels {
+                        if let Some(object) = entry.as_object_mut() {
+                            object.insert("thinkingLevels".into(), serde_json::json!(levels));
+                        }
+                    }
+                    Some(entry)
                 })
                 .collect::<Vec<_>>();
             serde_json::json!({

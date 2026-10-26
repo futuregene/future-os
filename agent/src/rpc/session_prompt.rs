@@ -649,14 +649,7 @@ impl ServerSession {
             // Apply session-level settings at the run boundary. Updates made
             // after this snapshot are intentionally deferred to the next run
             // and cannot partially affect the accepted run.
-            let thinking_budget = match self.thinking_level.as_str() {
-                "minimal" => 2_000,
-                "low" => 4_000,
-                "medium" => 8_000,
-                "high" => 16_000,
-                "xhigh" => 24_000,
-                _ => 0,
-            };
+            let thinking_budget = crate::rpc::session::thinking_budget_for(&self.thinking_level);
             shared.config.thinking_budget = thinking_budget;
             shared
                 .provider
@@ -1007,7 +1000,7 @@ impl ServerSession {
                 self.session_manager.clone(),self.persistence.clone(),self.session_id.clone(),
                 serde_json::json!({"model":run_model,"thinking":run_thinking_level,"cwd":session_cwd,
                     "tools":run_loop.tools.iter().map(|t|t.def.clone()).collect::<Vec<_>>(),
-                    "protocol":self.model_registry.read().resolve(&run_model).map(|m|serde_json::json!({"api":m.api,"baseUrl":m.base_url,"compat":m.compat,"thinkingMap":m.thinking_level_map}))}),
+                    "protocol":self.model_registry.read().resolve(&run_model).map(|m|serde_json::json!({"api":m.api,"baseUrl":m.base_url,"compat":m.compat}))}),
             )),
         };
 
