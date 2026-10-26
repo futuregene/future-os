@@ -97,8 +97,7 @@ Content — a conversation, a session title, a path — is never translated.
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ row 0..4   HEADER (5)                                                        │
-│   x0..13   FutureOS icon (4 rows, 13 cells per row)                          │
-│   x10..    FUTURE OS  (bold, accent)  ·  workbench                           │
+│   x0..     FUTURE OS  (bold, accent)  ·  workbench                           │
 │            session title (dim) · branch/workspace                            │
 │   right    ⌘ future-tui vX · backend status dot (●connected)                 │
 │ row 4      hairline separator (dim, ─)                                       │
@@ -146,13 +145,10 @@ workbench's own, because a full-screen canvas paints an explicit background
 step where the inline theme inherits the terminal's. Ids older workbench builds
 wrote (`future-dark`, `future-light`) still resolve, to `dark` and `light`.
 
-Logo: a 13x4 half-block rendering sampled from the official FutureOS icon at
-https://future-os.cn/logo.png (byte-identical to `desktop/src-tauri/icons/icon.png`).
-It is static; the retired whale and its animation belonged to dsh, not FutureOS.
-The chat header's wordmark `FUTURE OS` uses the 5-row block font and is shown
-only at width ≥ 96; otherwise it is single-line text. The launchpad instead
-uses a four-row hero: the product icon beside the letterspaced name, with `OS`
-in the accent colour and the tagline below it.
+There is no logo or icon in the TUI. The chat header's wordmark `FUTURE OS`
+uses the 5-row block font and is shown only at width ≥ 96; otherwise it is
+single-line text. The launchpad instead centres a two-row, letterspaced name
+and tagline in the conversation column, keeping the input as the visual focus.
 
 ---
 
@@ -368,7 +364,7 @@ nothing here is ever clipped mid-value.
 
 | File | Size | What it proves |
 |---|---|---|
-| `workbench-chat.png` | 120×38 | the full frame: header (wordmark, plus `cwd · ⎇ branch` on line 2), sidebar with tabs, divider, framed input box, activity, status, hint |
+| `workbench-chat.png` | 120×38 | the full frame: header (wordmark, plus `cwd · @branch` on line 2), sidebar with tabs, divider, framed input box, activity, status, hint |
 | `workbench-90x24.png` | 90×24 | still two columns; the header falls back to its text brand; the hairline spans the whole width |
 | `workbench-60x20.png` | 60×20 | `< 88`: no sidebar and no dead rail; `< 24`: one-row header, the input box keeps a frame (top edge + sides), the hint row drops whole entries |
 | `workbench-panel-todo.png` | 120×38 | 待办 lists the repo's real goal todos (`✔/◉/○/✖`, priority, text) |

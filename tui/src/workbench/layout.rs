@@ -255,7 +255,7 @@ pub fn layout_with_preferences(
     // row, the body, then the input block, activity, status and hint.
     //
     // Six, not five: the header's identity block is the 5-row `FUTURE OS` block
-    // font beside the 4-row icon, so a 5-row header drew only the top four rows
+    // font, so a 5-row header drew only the top four rows
     // of every letter — the bottom stroke of F, U, E and S was cut off, which
     // reads as clipped art rather than as a frame. The launchpad's separate
     // four-row hero does not change the chat header's five-row identity block.
