@@ -204,38 +204,8 @@ CREATE TABLE IF NOT EXISTS artifacts (
 -- platform-catalogue + filesystem model (see `crate::skills`), not the DB.
 -- `apply_schema` drops them from pre-existing databases via `DROPPED_TABLES`.
 
-CREATE TABLE IF NOT EXISTS workspace_files (
-    id TEXT PRIMARY KEY,
-    workspace_id TEXT NOT NULL REFERENCES workspaces(id),
-    path TEXT NOT NULL,
-    name TEXT NOT NULL,
-    mime_type TEXT,
-    size INTEGER,
-    last_seen_at INTEGER,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS reference_targets (
-    id TEXT PRIMARY KEY,
-    target_type TEXT NOT NULL,
-    target_id TEXT NOT NULL,
-    scope TEXT NOT NULL,
-    workspace_id TEXT REFERENCES workspaces(id),
-    title TEXT NOT NULL,
-    subtitle TEXT,
-    search_text TEXT,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS object_references (
-    id TEXT PRIMARY KEY,
-    source_type TEXT NOT NULL,
-    source_id TEXT NOT NULL,
-    reference_target_id TEXT NOT NULL REFERENCES reference_targets(id),
-    created_at INTEGER NOT NULL
-);
+-- Workspace-file and object-reference caches were retired by contract 4.
+-- File search walks disk; explicit references resolve live business objects.
 
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
@@ -275,8 +245,7 @@ CREATE INDEX IF NOT EXISTS idx_threads_recent ON threads(status, pinned, last_me
 -- idx_messages_thread removed with messages table
 CREATE INDEX IF NOT EXISTS idx_runs_thread ON runs(thread_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_runs_trigger_message ON runs(trigger_message_id);
-CREATE INDEX IF NOT EXISTS idx_reference_targets_scope ON reference_targets(scope, workspace_id, target_type);
-CREATE INDEX IF NOT EXISTS idx_review_snapshots_run ON review_snapshots(run_id, phase);
+-- UNIQUE(run_id, phase) already provides the review snapshot lookup index.
 CREATE INDEX IF NOT EXISTS idx_review_snapshots_workspace ON review_snapshots(workspace_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_review_changesets_run ON review_changesets(run_id);
 -- FK columns used by hot list/join/cleanup queries (B-12).

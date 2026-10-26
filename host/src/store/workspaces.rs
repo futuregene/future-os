@@ -240,14 +240,6 @@ pub(super) fn delete_workspace_in(conn: &Connection, workspace_id: &str) -> rusq
     // 2. Workspace-scoped rows, FK-safe (children before parents).
     const DELETE_ARTIFACTS_SQL: &str = "DELETE FROM artifacts WHERE workspace_id = ?1";
     conn.execute(DELETE_ARTIFACTS_SQL, params![workspace_id])?;
-    const DELETE_LINKS_SQL: &str = "DELETE FROM object_references WHERE reference_target_id IN (
-             SELECT id FROM reference_targets WHERE workspace_id = ?1
-         )";
-    conn.execute(DELETE_LINKS_SQL, params![workspace_id])?;
-    const DELETE_TARGETS_SQL: &str = "DELETE FROM reference_targets WHERE workspace_id = ?1";
-    conn.execute(DELETE_TARGETS_SQL, params![workspace_id])?;
-    const DELETE_FILES_SQL: &str = "DELETE FROM workspace_files WHERE workspace_id = ?1";
-    conn.execute(DELETE_FILES_SQL, params![workspace_id])?;
 
     // 3. The workspace row.
     const DELETE_WORKSPACE_SQL: &str = "DELETE FROM workspaces WHERE id = ?1";
@@ -319,29 +311,13 @@ mod tests {
                  VALUES ('{ws}_r', '{ws}_t', 'completed', 1, 1);
              INSERT INTO artifacts (id, workspace_id, thread_id, run_id, title,
                  artifact_type, created_at, updated_at)
-                 VALUES ('{ws}_a', '{ws}', '{ws}_t', '{ws}_r', 'A', 'markdown', 1, 1);
-             INSERT INTO workspace_files (id, workspace_id, path, name, created_at,
-                 updated_at) VALUES ('{ws}_f', '{ws}', '/p', 'f', 1, 1);
-             INSERT INTO reference_targets (id, target_type, target_id, scope,
-                 workspace_id, title, created_at, updated_at)
-                 VALUES ('{ws}_rt', 'artifact', '{ws}_a', 'workspace', '{ws}', 'T', 1, 1);
-             INSERT INTO object_references (id, source_type, source_id,
-                 reference_target_id, created_at)
-                 VALUES ('{ws}_or', 'message', '{ws}_m', '{ws}_rt', 1);",
+                 VALUES ('{ws}_a', '{ws}', '{ws}_t', '{ws}_r', 'A', 'markdown', 1, 1);",
         ))
         .expect("seed workspace graph");
     }
 
     fn total(conn: &Connection) -> i64 {
-        let tables = [
-            "workspaces",
-            "threads",
-            "runs",
-            "artifacts",
-            "workspace_files",
-            "reference_targets",
-            "object_references",
-        ];
+        let tables = ["workspaces", "threads", "runs", "artifacts"];
         tables
             .iter()
             .map(|t| {
