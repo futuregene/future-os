@@ -21,6 +21,7 @@ pub mod completion;
 pub mod console;
 pub mod contract;
 pub mod decision;
+pub mod detach;
 pub mod executor;
 pub mod heartbeat;
 pub mod migration;
