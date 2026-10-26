@@ -300,6 +300,9 @@ pub struct Workbench {
     pub scroll: scroll::ScrollState,
     pub queue_index: usize,
     pub workflow_index: usize,
+    /// Diff navigator focus: files or the patch. The narrow layout uses the
+    /// same distinction so file selection cannot eat the patch's scroll keys.
+    pub diff_patch_focus: bool,
     pub history_query: String,
     session_key: String,
     pub mouse_capture: bool,
@@ -360,6 +363,7 @@ impl Workbench {
             scroll: scroll::ScrollState::default(),
             queue_index: 0,
             workflow_index: 0,
+            diff_patch_focus: true,
             history_query: String::new(),
             session_key: String::new(),
             mouse_capture: true,
@@ -1043,14 +1047,29 @@ impl Workbench {
         };
         let detail = matches!(overlay, Overlay::Approval | Overlay::Diff);
         match key {
-            "up" | "k" if key == "up" || overlay != Overlay::History => {
+            "tab" if overlay == Overlay::Diff => {
+                self.diff_patch_focus = !self.diff_patch_focus;
+            }
+            "up" | "k" if overlay == Overlay::Diff && !self.diff_patch_focus => {
+                self.workflow_index = self.workflow_index.saturating_sub(1);
+            }
+            "down" | "j" if overlay == Overlay::Diff && !self.diff_patch_focus => {
+                self.workflow_index = (self.workflow_index + 1).min(count.saturating_sub(1));
+            }
+            "up" | "k"
+                if (key == "up" || overlay != Overlay::History)
+                    && (overlay != Overlay::Diff || self.diff_patch_focus) =>
+            {
                 if detail {
                     self.overlay_scroll = self.overlay_scroll.saturating_sub(1);
                 } else {
                     self.workflow_index = self.workflow_index.saturating_sub(1);
                 }
             }
-            "down" | "j" if key == "down" || overlay != Overlay::History => {
+            "down" | "j"
+                if (key == "down" || overlay != Overlay::History)
+                    && (overlay != Overlay::Diff || self.diff_patch_focus) =>
+            {
                 if detail {
                     self.overlay_scroll += 1;
                 } else {
@@ -1058,9 +1077,11 @@ impl Workbench {
                 }
             }
             "left" if overlay == Overlay::Diff => {
+                self.diff_patch_focus = false;
                 self.workflow_index = self.workflow_index.saturating_sub(1);
             }
             "right" if overlay == Overlay::Diff => {
+                self.diff_patch_focus = false;
                 self.workflow_index = (self.workflow_index + 1).min(count.saturating_sub(1));
             }
             "pageUp" => self.overlay_scroll = self.overlay_scroll.saturating_sub(10),
@@ -1085,6 +1106,13 @@ impl Workbench {
                 }];
             }
             "a" | "A" if overlay == Overlay::Approval => {
+                if data
+                    .approval
+                    .as_ref()
+                    .is_none_or(|approval| approval.rules.is_empty())
+                {
+                    return Vec::new();
+                }
                 self.overlay = None;
                 return vec![WbAction::ApprovalDecision {
                     approved: true,
@@ -1143,7 +1171,10 @@ impl Workbench {
             }
             _ => {}
         }
-        if overlay == Overlay::Diff && matches!(key, "left" | "right") {
+        if overlay == Overlay::Diff
+            && matches!(key, "up" | "down" | "k" | "j" | "left" | "right")
+            && !self.diff_patch_focus
+        {
             return data
                 .diff
                 .as_ref()
@@ -1271,6 +1302,9 @@ impl Workbench {
             self.effective_density(),
             self.sidebar_position,
         );
+        if self.overlay.is_some() && !matches!(self.overlay, Some(Overlay::Picker(_))) {
+            return self.handle_surface_mouse(event, data);
+        }
         match event.kind {
             mouse::MouseKind::WheelUp | mouse::MouseKind::WheelDown => {
                 let delta = if event.kind == mouse::MouseKind::WheelUp {
@@ -1333,6 +1367,92 @@ impl Workbench {
     /// The `enter` on a picker row, expressed with a pointer: the click moves
     /// the highlight to the row it landed on and then applies it, because a
     /// mouse has no second `enter`. The wheel walks the list.
+    fn handle_surface_mouse(
+        &mut self,
+        event: mouse::MouseEvent,
+        data: &WorkbenchData,
+    ) -> Vec<WbAction> {
+        let Some(overlay) = self.overlay else {
+            return Vec::new();
+        };
+        if matches!(
+            event.kind,
+            mouse::MouseKind::WheelUp | mouse::MouseKind::WheelDown
+        ) {
+            if overlay == Overlay::Diff && self.diff_patch_focus {
+                self.overlay_scroll = self.overlay_scroll.saturating_sub(3);
+                return vec![WbAction::Redraw];
+            }
+            return self.handle_overlay_key(
+                overlay,
+                if event.kind == mouse::MouseKind::WheelUp {
+                    "up"
+                } else {
+                    "down"
+                },
+                data,
+            );
+        }
+        if event.kind != mouse::MouseKind::Press {
+            return Vec::new();
+        }
+        let Some(id) = self.hit.hit(event.x, event.y).map(str::to_string) else {
+            self.overlay = None;
+            return vec![WbAction::Redraw];
+        };
+        match id.as_str() {
+            "approval.y" => self.handle_overlay_key(overlay, "y", data),
+            "approval.n" => self.handle_overlay_key(overlay, "n", data),
+            "approval.a" => self.handle_overlay_key(overlay, "a", data),
+            "diff.patch" => {
+                self.diff_patch_focus = true;
+                vec![WbAction::Redraw]
+            }
+            "preferences.shortcuts" => {
+                self.overlay = Some(Overlay::Keybindings);
+                vec![WbAction::Redraw]
+            }
+            "preferences.reset" => self.handle_overlay_key(Overlay::Preferences, "enter", data),
+            _ => {
+                if let Some(index) = id
+                    .strip_prefix("diff.file.")
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
+                    self.workflow_index = index;
+                    self.diff_patch_focus = false;
+                    return data
+                        .diff
+                        .as_ref()
+                        .map(|_| vec![WbAction::SelectDiff(index)])
+                        .unwrap_or_default();
+                }
+                if let Some(index) = id
+                    .strip_prefix("preferences.row.")
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
+                    self.preferences_index = index;
+                    return vec![WbAction::Redraw];
+                }
+                if let Some(index) = id
+                    .strip_prefix("keybinding.row.")
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
+                    self.keybinding_index = index;
+                    self.awaiting_keybinding = true;
+                    return vec![WbAction::Redraw];
+                }
+                if let Some(index) = id
+                    .strip_prefix("workflow.row.")
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
+                    self.workflow_index = index;
+                    return self.handle_overlay_key(overlay, "enter", data);
+                }
+                Vec::new()
+            }
+        }
+    }
+
     fn handle_picker_mouse(
         &mut self,
         kind: PickerKind,
@@ -1798,6 +1918,120 @@ mod tests {
             wb.handle(WbEvent::Key("right".into()), &data),
             vec![WbAction::SelectDiff(1)]
         );
+    }
+
+    #[test]
+    fn diff_mouse_selects_a_file_and_approval_buttons_do_not_hide_in_scroll() {
+        let mut data = demo::chat();
+        data.diff = Some(state::DiffView {
+            files: (0..4)
+                .map(|index| diff_review::DiffFile {
+                    path: format!("src/{index}.rs"),
+                    status: "M".into(),
+                })
+                .collect(),
+            patch: (0..40)
+                .map(|index| format!("+line {index}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            ..state::DiffView::default()
+        });
+        data.approval = Some(state::ApprovalView {
+            request_id: "a".into(),
+            ..state::ApprovalView::default()
+        });
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Diff);
+        wb.render(&data, 120, 38);
+        let region = wb
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "diff.file.1")
+            .unwrap()
+            .0;
+        let event = mouse::MouseEvent {
+            kind: mouse::MouseKind::Press,
+            x: region.x + 1,
+            y: region.y,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        assert_eq!(
+            wb.handle(WbEvent::Mouse(event), &data),
+            vec![WbAction::SelectDiff(1)]
+        );
+        wb.workflow_index = 1;
+        data.diff.as_mut().unwrap().selected = 1;
+        wb.diff_patch_focus = false;
+        wb.handle(WbEvent::Key("tab".into()), &data);
+        assert!(wb.diff_patch_focus);
+        wb.handle(WbEvent::Key("up".into()), &data);
+        assert_eq!(wb.workflow_index, 1);
+        assert_eq!(wb.overlay_scroll, 0);
+        wb.handle(WbEvent::Key("tab".into()), &data);
+        assert!(!wb.diff_patch_focus);
+        wb.handle(WbEvent::Key("up".into()), &data);
+        assert_eq!(wb.workflow_index, 0);
+        wb.overlay = Some(Overlay::Approval);
+        let text = plain(&wb.render(&data, 80, 12));
+        assert!(text.contains("[y]") && text.contains("[n]"), "{text}");
+        assert_eq!(
+            click_region(&mut wb, &data, 120, 38, "approval.n"),
+            vec![WbAction::ApprovalDecision {
+                approved: false,
+                rule: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn centred_preference_and_narrow_diff_clicks_use_the_painted_geometry() {
+        let mut data = demo::chat();
+        let mut wb = workbench();
+        wb.open_preferences();
+        assert_eq!(
+            click_region(&mut wb, &data, 120, 38, "preferences.shortcuts"),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(wb.overlay, Some(Overlay::Keybindings));
+        wb.keybinding_index = 4;
+        wb.awaiting_keybinding = false;
+        assert_eq!(
+            click_region(&mut wb, &data, 120, 38, "keybinding.row.4"),
+            vec![WbAction::Redraw]
+        );
+        assert!(wb.awaiting_keybinding);
+
+        data.diff = Some(state::DiffView {
+            files: (0..3)
+                .map(|index| diff_review::DiffFile {
+                    path: format!("src/{index}.rs"),
+                    status: "M".into(),
+                })
+                .collect(),
+            ..state::DiffView::default()
+        });
+        wb.overlay = Some(Overlay::Diff);
+        wb.diff_patch_focus = true;
+        let text = plain(&wb.render(&data, 80, 24));
+        assert!(!text.contains("src/0.rs"), "{text}");
+        wb.diff_patch_focus = false;
+        let text = plain(&wb.render(&data, 80, 24));
+        assert!(text.contains("src/0.rs"), "{text}");
+        assert_eq!(
+            click_region(&mut wb, &data, 80, 24, "diff.file.1"),
+            vec![WbAction::SelectDiff(1)]
+        );
+        wb.workflow_index = 1;
+        data.diff.as_mut().unwrap().selected = 1;
+        wb.diff_patch_focus = true;
+        assert_eq!(
+            wb.handle(WbEvent::Key("down".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(wb.overlay_scroll, 1);
     }
 
     #[test]
