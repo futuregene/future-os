@@ -47,6 +47,7 @@
 | [共享包](architecture/packages.zh-CN.md)（[en](architecture/packages.md)） | `packages/` 约定：npm/workspace 包与 crate 边界 |
 | [通道测试覆盖率](architecture/channels-test-coverage.zh-CN.md)（[en](architecture/channels-test-coverage.md)） | 通道框架的测试承诺什么，以及有意不覆盖的那几行代码及每行的原因 |
 | [RPC crate](architecture/rpc.zh-CN.md)（[en](architecture/rpc.md)） | `packages/rpc` — protobuf 线上契约（唯一事实来源） |
+| [远程下载分档](architecture/remote-download-tiers.zh-CN.md)（[en](architecture/remote-download-tiers.md)） | 桌面保存副本不是手机下载：按客户端分档（手机 10 MiB、桌面 512 MiB）、桌面档去掉了什么、旧 host 的受匹配拒绝文案及其验收证据 |
 
 ## 内部文档（`internals/`）
 

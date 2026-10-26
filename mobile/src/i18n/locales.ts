@@ -435,6 +435,10 @@ export const resources = {
         readFailed: "Read failed",
         writeFailed: "Write failed",
         editFailed: "Edit failed",
+        // A call left unfinished when its reply stopped (the run ended, or the
+        // user stopped it, before the result arrived). Not `runFailed`: the
+        // command did not report a failure, it never reported anything.
+        toolInterrupted: "Interrupted",
         // Folded summary: a glyph per kind plus this count — the wording below
         // is spent on the row's accessibility label, not painted.
         stepCount: "×{{count}}",
@@ -1418,6 +1422,10 @@ export const resources = {
         readFailed: "读取失败",
         writeFailed: "写入失败",
         editFailed: "编辑失败",
+        // A call left unfinished when its reply stopped (the run ended, or the
+        // user stopped it, before the result arrived). Not `runFailed`: the
+        // command did not report a failure, it never reported anything.
+        toolInterrupted: "已中断",
         // 折叠摘要：图标 + 次数。下面这些文字只用于无障碍标签，不画在界面上；
         // 展开后的批次行用短动词（步骤下方的 stepRun/stepRead 等）。
         stepCount: "×{{count}}",

@@ -21,6 +21,22 @@ use std::{
 use crate::agent_bridge::AttachmentInput;
 
 pub const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
+
+/// The most a **desktop** client may pull in one save-as.
+///
+/// The phone's [`MAX_FILE_BYTES`] is not a property of file transfer, it is a
+/// property of a phone: a preview is decoded in a 10 MiB budget, the client's own
+/// reader decides which types it can act on, and one tap can happen on a metered
+/// link. A desktop has none of those reasons — and inheriting them meant a
+/// 12.5 MB installer was refused to a machine that had asked to save it.
+///
+/// 512 MiB is not a new number. [`future_remote_client::transfer::MAX_DOWNLOAD_BYTES`]
+/// already refuses to assemble more than that on the pulling side, so a host tier
+/// above it would advertise downloads the client must then fail, and one below it
+/// would refuse files the client could have completed. 512 MiB covers an
+/// installer, a log bundle or a database dump, which is what a remote desktop is
+/// asked for; it still stops a mis-click on a directory-sized artefact or a video.
+pub const DESKTOP_MAX_FILE_BYTES: u64 = future_remote_client::transfer::MAX_DOWNLOAD_BYTES;
 const MAX_JSON_RICH_PREVIEW_BYTES: u64 = 1024 * 1024;
 pub const MAX_MESSAGE_BYTES: u64 = 20 * 1024 * 1024;
 pub const MAX_ATTACHMENTS: usize = 10;
@@ -34,6 +50,9 @@ const MAX_PREVIEW_CACHE_BYTES: u64 = 100 * 1024 * 1024;
 pub const CHUNK_BYTES: u64 = 512 * 1024;
 const TRANSFER_TTL: Duration = Duration::from_secs(30 * 60);
 
+use future_remote_protocol::files::{
+    UNSUPPORTED_VARIANT, VARIANT_DESKTOP_DOWNLOAD, VARIANT_ORIGINAL, VARIANT_PREVIEW,
+};
 pub(crate) use future_remote_protocol::UploadReference;
 
 #[derive(Debug, Clone)]
@@ -566,20 +585,33 @@ pub(crate) async fn prepare_download_variant(
     // behind the same credential-file boundary as desktop preview/open, even
     // for canonical paths reached through `..` or a symlink.
     crate::files::ensure_path_allowed(&source)?;
+    // Regular files only: a directory, a device node, a socket or a FIFO has no
+    // size a client can stream and no meaning as a "copy". This is the one
+    // refusal that survives the desktop tier, which drops the phone's type list.
     if !source.is_file() {
         return Err("The attachment is no longer available.".to_string().into());
     }
-    if let Some(refusal) = download_refusal(&display_name, std::fs::metadata(&source)?.len()) {
+    // An unimplemented mode is refused before the file is judged at all: a client
+    // that asked for something this host does not implement must not have its
+    // request measured against a tier it never chose (which is how a 12.5 MB
+    // installer once drew an answer about the phone's limit).
+    let Some(tier) = DownloadTier::for_variant(requested_variant) else {
+        return Err(UNSUPPORTED_VARIANT.to_string().into());
+    };
+    if let Some(refusal) = tier.refusal(&display_name, std::fs::metadata(&source)?.len()) {
         return Err(refusal.into());
     }
     let source_for_prepare = source.clone();
     let display_name_for_prepare = display_name.clone();
-    let variant_for_prepare = requested_variant.to_string();
-    let prepared = crate::runtime::run_blocking(move || match variant_for_prepare.as_str() {
-        "original" => prepare_original(&source_for_prepare, &display_name_for_prepare),
-        "" | "preview" => prepare_preview_cached(&source_for_prepare, &display_name_for_prepare)
-            .or_else(|_| prepare_original(&source_for_prepare, &display_name_for_prepare)),
-        _ => Err("Unsupported download variant.".to_string().into()),
+    // Two axes, not one enum: *which client* (the tier) and *whether to resize*
+    // (the phone's preview variant, which is the only one that gets a preview).
+    let preview = matches!(requested_variant, "" | VARIANT_PREVIEW);
+    let prepared = crate::runtime::run_blocking(move || {
+        if !preview {
+            return prepare_original(&source_for_prepare, &display_name_for_prepare, tier);
+        }
+        prepare_preview_cached(&source_for_prepare, &display_name_for_prepare)
+            .or_else(|_| prepare_original(&source_for_prepare, &display_name_for_prepare, tier))
     })
     .await
     .map_err(|error| format!("Preview preparation task failed: {error}"))??;
@@ -893,41 +925,85 @@ fn is_mobile_download_allowed(name: &str) -> bool {
     mime_type_for_name(name) != "application/octet-stream"
 }
 
-/// What a file over [`MAX_FILE_BYTES`] is refused with.
+/// Which client's limits apply to a `download_prepare`, decided by its variant.
 ///
-/// It names the limit rather than repeating the file's own size: the row the
-/// reader clicked is already showing that, and this string is also what the
-/// phone matches on to pick its localised wording.
-fn oversized_message() -> String {
-    format!(
-        "The file is over the {} MB download limit.",
-        MAX_FILE_BYTES / (1024 * 1024)
-    )
+/// The variant is the only thing the host knows about the caller that is worth
+/// acting on: it says what will happen to the bytes (be decoded in a phone's
+/// preview budget, or be written to a path the user picked).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum DownloadTier {
+    /// A phone: 10 MiB, and only the types its own reader can act on.
+    Mobile,
+    /// A desktop saving a copy: its own ceiling, and no type list.
+    Desktop,
 }
 
-/// Why a file cannot be prepared for a remote client, or `None` when it can.
-///
-/// Size is decided before type, because naming the wrong one sends the reader
-/// after the wrong fix. A 12.5 MB `.apk` is refused by both rules, and "this
-/// type is unavailable" would have them converting or renaming a file when the
-/// bytes are what will not travel.
-fn download_refusal(name: &str, size: u64) -> Option<String> {
-    if size > MAX_FILE_BYTES {
-        return Some(oversized_message());
+impl DownloadTier {
+    /// The tier a mode names, or `None` for a mode this host does not implement.
+    fn for_variant(variant: &str) -> Option<Self> {
+        Some(match variant {
+            VARIANT_DESKTOP_DOWNLOAD => Self::Desktop,
+            // `original`, `preview` and an empty mode are all the phone's dialect
+            // (an older phone sends nothing at all).
+            VARIANT_ORIGINAL | VARIANT_PREVIEW | "" => Self::Mobile,
+            _ => return None,
+        })
     }
-    if !is_mobile_download_allowed(name) {
-        return Some("This file type is not available on mobile; view it on desktop.".to_string());
+
+    fn limit(self) -> u64 {
+        match self {
+            Self::Mobile => MAX_FILE_BYTES,
+            Self::Desktop => DESKTOP_MAX_FILE_BYTES,
+        }
     }
-    None
+
+    /// What a file over [`Self::limit`] is refused with.
+    ///
+    /// It names the limit rather than repeating the file's own size: the row the
+    /// reader clicked is already showing that. The two tiers word it differently
+    /// because they are different problems — one is "this phone cannot take it",
+    /// the other is the desktop's own ceiling — and the phone also matches
+    /// `download limit` to pick its localised wording.
+    fn oversized_message(self) -> String {
+        let megabytes = self.limit() / (1024 * 1024);
+        match self {
+            Self::Mobile => format!("The file is over the {megabytes} MB download limit."),
+            Self::Desktop => {
+                format!("The file is over the {megabytes} MB desktop download limit.")
+            }
+        }
+    }
+
+    /// Why this tier cannot prepare the file, or `None` when it can.
+    ///
+    /// Size is decided before type, because naming the wrong one sends the reader
+    /// after the wrong fix: a 12.5 MB `.apk` breaks both of the phone's rules, and
+    /// "this type is unavailable" would have them rename a file when the bytes are
+    /// what will not travel.
+    fn refusal(self, name: &str, size: u64) -> Option<String> {
+        if size > self.limit() {
+            return Some(self.oversized_message());
+        }
+        match self {
+            Self::Mobile if !is_mobile_download_allowed(name) => {
+                Some("This file type is not available on mobile; view it on desktop.".to_string())
+            }
+            // A desktop writes the bytes to a path the user chose. Whether its
+            // applications can open them afterwards is not this transfer's
+            // question, and it is not the host's to answer.
+            _ => None,
+        }
+    }
 }
 
 fn prepare_original(
     source: &Path,
     requested_display_name: &str,
+    tier: DownloadTier,
 ) -> Result<PreparedPreview, crate::Error> {
     let size = std::fs::metadata(source)?.len();
-    if size > MAX_FILE_BYTES {
-        return Err(oversized_message().into());
+    if size > tier.limit() {
+        return Err(tier.oversized_message().into());
     }
     let original_name = display_name(requested_display_name, "attachment");
     let dir = transfer_root().join("download");
@@ -1079,7 +1155,7 @@ fn prepare_preview(
     }
     let size = std::fs::metadata(source)?.len();
     if size > MAX_FILE_BYTES {
-        return Err(oversized_message().into());
+        return Err(DownloadTier::Mobile.oversized_message().into());
     }
     let markdown = matches!(ext.as_str(), "md" | "markdown");
     let json = matches!(ext.as_str(), "json" | "ipynb");
@@ -1362,9 +1438,9 @@ mod tests {
     #[cfg(unix)]
     use super::ensure_private_dir;
     use super::{
-        attachment_is_in_session, display_name, download_refusal, is_animated_image,
-        is_mobile_download_allowed, mime_type_for_name, oversized_message, prepare_preview,
-        safe_disk_name, validate_mobile_image, MAX_FILE_BYTES, MAX_JSON_RICH_PREVIEW_BYTES,
+        attachment_is_in_session, display_name, is_animated_image, is_mobile_download_allowed,
+        mime_type_for_name, prepare_preview, safe_disk_name, validate_mobile_image, DownloadTier,
+        DESKTOP_MAX_FILE_BYTES, MAX_FILE_BYTES, MAX_JSON_RICH_PREVIEW_BYTES,
     };
     use serde_json::json;
 
@@ -1611,21 +1687,91 @@ mod tests {
         assert!(!is_mobile_download_allowed("makefile-list.bin"));
     }
 
-    /// A file that breaks both rules is reported by its size, and one that breaks
-    /// only the type rule keeps the type message. The version of this that named
-    /// the type for a 12.5 MB `.apk` sent the reader after the wrong fix, and told
-    /// someone already looking at the desktop panel to view it on the desktop.
+    /// The tier is chosen by the variant, and nothing else can reach the desktop
+    /// ceiling: every phone spelling is `Mobile`, and an unimplemented one is no
+    /// tier at all rather than a free upgrade.
     #[test]
-    fn a_refusal_names_the_limit_that_actually_blocks_the_file() {
+    fn only_the_desktop_variant_gets_the_desktop_tier() {
+        use future_remote_protocol::files::{
+            VARIANT_DESKTOP_DOWNLOAD, VARIANT_ORIGINAL, VARIANT_PREVIEW,
+        };
         assert_eq!(
-            download_refusal("app-debug.apk", MAX_FILE_BYTES + 1).as_deref(),
-            Some(oversized_message().as_str()),
+            DownloadTier::for_variant(VARIANT_DESKTOP_DOWNLOAD),
+            Some(DownloadTier::Desktop)
         );
-        assert!(oversized_message().starts_with("The file is over the 10 MB"));
-        // The size is not the reason here, so the type message is unchanged.
-        assert!(download_refusal("app-debug.apk", MAX_FILE_BYTES)
+        for variant in [VARIANT_ORIGINAL, VARIANT_PREVIEW, ""] {
+            assert_eq!(
+                DownloadTier::for_variant(variant),
+                Some(DownloadTier::Mobile),
+                "{variant:?} must keep the phone's limits"
+            );
+        }
+        for variant in ["desktop", "Download", "weird"] {
+            assert_eq!(DownloadTier::for_variant(variant), None, "{variant:?}");
+        }
+    }
+
+    /// The desktop ceiling is the client's own assembly limit, not a second guess
+    /// at it: a host tier above that would prepare transfers the pulling half must
+    /// refuse, and one below would refuse what the client could have completed.
+    #[test]
+    fn the_desktop_ceiling_is_the_one_the_puller_enforces() {
+        assert_eq!(
+            DESKTOP_MAX_FILE_BYTES,
+            future_remote_client::transfer::MAX_DOWNLOAD_BYTES
+        );
+        assert_eq!(DESKTOP_MAX_FILE_BYTES, 512 * 1024 * 1024);
+    }
+
+    /// The installer that started this: 12.5 MB, a type the phone cannot read.
+    /// The phone refuses it twice over; a desktop saving a copy takes it as-is.
+    #[test]
+    fn a_desktop_download_is_not_held_to_the_phones_rules() {
+        let installer = MAX_FILE_BYTES + (5 * 1024 * 1024) / 2;
+        assert!(DownloadTier::Mobile
+            .refusal("app-debug.apk", installer)
+            .is_some());
+        assert_eq!(
+            DownloadTier::Desktop.refusal("app-debug.apk", installer),
+            None
+        );
+        // And the type list is not replaced by a different one: a desktop writes
+        // bytes to a path the user chose, whatever they turn out to be.
+        for name in ["dataset.h5", "no-extension", "app-debug.apk"] {
+            assert_eq!(DownloadTier::Desktop.refusal(name, 1024), None);
+        }
+    }
+
+    /// A file over the desktop ceiling is refused in the desktop's own words, and
+    /// a phone's oversized file still gets byte-identical wording to before.
+    #[test]
+    fn each_tier_names_its_own_limit() {
+        assert_eq!(
+            DownloadTier::Mobile.oversized_message(),
+            "The file is over the 10 MB download limit."
+        );
+        assert_eq!(
+            DownloadTier::Desktop.oversized_message(),
+            "The file is over the 512 MB desktop download limit."
+        );
+        // Exactly at the ceiling is allowed on both sides; the cost was a phone
+        // being refused a file it could have taken.
+        assert_eq!(
+            DownloadTier::Desktop.refusal("installer.apk", DESKTOP_MAX_FILE_BYTES),
+            None
+        );
+        assert!(DownloadTier::Desktop
+            .refusal("installer.apk", DESKTOP_MAX_FILE_BYTES + 1)
+            .is_some_and(|message| message.contains("512 MB desktop")));
+        // Size before type, so a phone is told the thing it can act on.
+        assert_eq!(
+            DownloadTier::Mobile.refusal("app-debug.apk", MAX_FILE_BYTES + 1),
+            Some(DownloadTier::Mobile.oversized_message())
+        );
+        assert!(DownloadTier::Mobile
+            .refusal("app-debug.apk", MAX_FILE_BYTES)
             .is_some_and(|message| message.contains("not available on mobile")));
-        assert!(download_refusal("notes.txt", 1024).is_none());
+        assert_eq!(DownloadTier::Mobile.refusal("notes.txt", 1024), None);
     }
 }
 
@@ -2587,8 +2733,8 @@ mod flow_tests {
             .unwrap()
             .set_len(MAX_FILE_BYTES + 1)
             .unwrap();
-        let error = prepare_original(&big, "big.bin").unwrap_err();
-        assert_eq!(error.to_string(), oversized_message());
+        let error = prepare_original(&big, "big.bin", DownloadTier::Mobile).unwrap_err();
+        assert_eq!(error.to_string(), DownloadTier::Mobile.oversized_message());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -2776,7 +2922,8 @@ mod flow_tests {
             .unwrap_err();
         assert!(error.to_string().contains("not available on mobile"));
 
-        // An unknown variant is rejected before any preparation work.
+        // An unknown variant is rejected before any preparation work, and with
+        // the exact string a newer client matches to fall back to `original`.
         let notes = dir.join("notes.txt");
         std::fs::write(&notes, b"hi").unwrap();
         agent.set_session_entries(
@@ -2786,7 +2933,80 @@ mod flow_tests {
         let error = prepare_download_variant(&session, &notes.to_string_lossy(), "weird", None)
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("Unsupported download variant"));
+        assert_eq!(
+            error.to_string(),
+            future_remote_protocol::files::UNSUPPORTED_VARIANT
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The desktop tier is reached over the real command path, and its ceiling is
+    /// the desktop's own: the same file the phone refuses for size is refused here
+    /// with the desktop limit named, so the two refusals cannot be mistaken for
+    /// each other.
+    #[tokio::test]
+    async fn a_desktop_download_has_its_own_ceiling_and_says_so() {
+        use future_remote_protocol::files::{VARIANT_DESKTOP_DOWNLOAD, VARIANT_ORIGINAL};
+        let _lock = mock_agent_lock();
+        let _home = HomeGuard::new("xfer-desktop-ceiling");
+        crate::remote::test_support::init_store();
+        let agent = ensure_mock_agent();
+        let session = unique("sess");
+        let dir = std::env::temp_dir().join(unique("futureos-dl-desktop-ceiling"));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Sparse, so a 512 MiB + 1 file costs no disk and no time: the refusal is
+        // decided from the metadata before anything is copied.
+        let huge = dir.join("disk-image.iso");
+        std::fs::File::create(&huge)
+            .unwrap()
+            .set_len(DESKTOP_MAX_FILE_BYTES + 1)
+            .unwrap();
+        agent.set_session_entries(
+            &session,
+            json!({"entries":[{"metadata":{"attachments":[{"path": huge.to_string_lossy(),"name":"disk-image.iso"}]}}]}),
+        );
+        let error = prepare_download_variant(
+            &session,
+            &huge.to_string_lossy(),
+            VARIANT_DESKTOP_DOWNLOAD,
+            Some("disk-image.iso"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "The file is over the 512 MB desktop download limit.",
+            "a desktop over its own ceiling must hear its own limit, not the phone's"
+        );
+        // The phone asked for the same file is refused by the phone's rule.
+        let error = prepare_download_variant(
+            &session,
+            &huge.to_string_lossy(),
+            VARIANT_ORIGINAL,
+            Some("disk-image.iso"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "The file is over the 10 MB download limit."
+        );
+
+        // A directory is not a file under either tier: the one refusal the desktop
+        // tier keeps.
+        for variant in [VARIANT_DESKTOP_DOWNLOAD, VARIANT_ORIGINAL] {
+            let error = prepare_download_variant(
+                &session,
+                &dir.to_string_lossy(),
+                variant,
+                Some("a-directory"),
+            )
+            .await
+            .unwrap_err();
+            assert!(error.to_string().contains("no longer available"), "{error}");
+        }
 
         std::fs::remove_dir_all(dir).unwrap();
     }

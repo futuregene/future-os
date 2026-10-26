@@ -1,4 +1,4 @@
-//! The workbench — the FutureOS terminal UI (`future tui`).
+﻿//! The workbench — the FutureOS terminal UI (`future tui`).
 //!
 //! It normally owns the whole screen, repaints absolute rows, and resolves mouse
 //! clicks against what it painted. Linear reading is the explicit exception:
@@ -300,6 +300,9 @@ pub struct Workbench {
     pub scroll: scroll::ScrollState,
     pub queue_index: usize,
     pub workflow_index: usize,
+    /// Diff navigator focus: files or the patch. The narrow layout uses the
+    /// same distinction so file selection cannot eat the patch's scroll keys.
+    pub diff_patch_focus: bool,
     pub history_query: String,
     session_key: String,
     pub mouse_capture: bool,
@@ -309,6 +312,9 @@ pub struct Workbench {
     /// against it.
     last_frame: (u16, u16),
     hit: layout::HitMap,
+    /// The hit map's length when the overlay started painting — see
+    /// [`Self::overlay_mark`].
+    overlay_mark: usize,
     cursor: Option<(u16, u16)>,
     drag: Option<Drag>,
 }
@@ -360,6 +366,7 @@ impl Workbench {
             scroll: scroll::ScrollState::default(),
             queue_index: 0,
             workflow_index: 0,
+            diff_patch_focus: true,
             history_query: String::new(),
             session_key: String::new(),
             mouse_capture: true,
@@ -367,6 +374,7 @@ impl Workbench {
             tick: 0,
             last_frame: (0, 0),
             hit: layout::HitMap::new(),
+            overlay_mark: 0,
             cursor: None,
             drag: None,
         }
@@ -457,6 +465,13 @@ impl Workbench {
     /// The hit map of the last frame (tests, diagnostics).
     pub fn hits(&self) -> &layout::HitMap {
         &self.hit
+    }
+
+    /// Whether a divider grab is in flight. The driver needs it to know a drag
+    /// is its own rather than a new press, and a pointer test needs it to tell
+    /// "the press started a drag" from "the press did nothing".
+    pub fn dragging(&self) -> bool {
+        self.drag.is_some()
     }
 
     /// `/` palette entries that match the current query: `(command, description)`.
@@ -1043,14 +1058,29 @@ impl Workbench {
         };
         let detail = matches!(overlay, Overlay::Approval | Overlay::Diff);
         match key {
-            "up" | "k" if key == "up" || overlay != Overlay::History => {
+            "tab" if overlay == Overlay::Diff => {
+                self.diff_patch_focus = !self.diff_patch_focus;
+            }
+            "up" | "k" if overlay == Overlay::Diff && !self.diff_patch_focus => {
+                self.workflow_index = self.workflow_index.saturating_sub(1);
+            }
+            "down" | "j" if overlay == Overlay::Diff && !self.diff_patch_focus => {
+                self.workflow_index = (self.workflow_index + 1).min(count.saturating_sub(1));
+            }
+            "up" | "k"
+                if (key == "up" || overlay != Overlay::History)
+                    && (overlay != Overlay::Diff || self.diff_patch_focus) =>
+            {
                 if detail {
                     self.overlay_scroll = self.overlay_scroll.saturating_sub(1);
                 } else {
                     self.workflow_index = self.workflow_index.saturating_sub(1);
                 }
             }
-            "down" | "j" if key == "down" || overlay != Overlay::History => {
+            "down" | "j"
+                if (key == "down" || overlay != Overlay::History)
+                    && (overlay != Overlay::Diff || self.diff_patch_focus) =>
+            {
                 if detail {
                     self.overlay_scroll += 1;
                 } else {
@@ -1058,9 +1088,11 @@ impl Workbench {
                 }
             }
             "left" if overlay == Overlay::Diff => {
+                self.diff_patch_focus = false;
                 self.workflow_index = self.workflow_index.saturating_sub(1);
             }
             "right" if overlay == Overlay::Diff => {
+                self.diff_patch_focus = false;
                 self.workflow_index = (self.workflow_index + 1).min(count.saturating_sub(1));
             }
             "pageUp" => self.overlay_scroll = self.overlay_scroll.saturating_sub(10),
@@ -1085,6 +1117,13 @@ impl Workbench {
                 }];
             }
             "a" | "A" if overlay == Overlay::Approval => {
+                if data
+                    .approval
+                    .as_ref()
+                    .is_none_or(|approval| approval.rules.is_empty())
+                {
+                    return Vec::new();
+                }
                 self.overlay = None;
                 return vec![WbAction::ApprovalDecision {
                     approved: true,
@@ -1143,7 +1182,10 @@ impl Workbench {
             }
             _ => {}
         }
-        if overlay == Overlay::Diff && matches!(key, "left" | "right") {
+        if overlay == Overlay::Diff
+            && matches!(key, "up" | "down" | "k" | "j" | "left" | "right")
+            && !self.diff_patch_focus
+        {
             return data
                 .diff
                 .as_ref()
@@ -1271,6 +1313,9 @@ impl Workbench {
             self.effective_density(),
             self.sidebar_position,
         );
+        if self.overlay.is_some() && !matches!(self.overlay, Some(Overlay::Picker(_))) {
+            return self.handle_surface_mouse(event, data);
+        }
         match event.kind {
             mouse::MouseKind::WheelUp | mouse::MouseKind::WheelDown => {
                 let delta = if event.kind == mouse::MouseKind::WheelUp {
@@ -1333,6 +1378,135 @@ impl Workbench {
     /// The `enter` on a picker row, expressed with a pointer: the click moves
     /// the highlight to the row it landed on and then applies it, because a
     /// mouse has no second `enter`. The wheel walks the list.
+    fn handle_surface_mouse(
+        &mut self,
+        event: mouse::MouseEvent,
+        data: &WorkbenchData,
+    ) -> Vec<WbAction> {
+        let Some(overlay) = self.overlay else {
+            return Vec::new();
+        };
+        if matches!(
+            event.kind,
+            mouse::MouseKind::WheelUp | mouse::MouseKind::WheelDown
+        ) {
+            if overlay == Overlay::Diff && self.diff_patch_focus {
+                self.overlay_scroll = self.overlay_scroll.saturating_sub(3);
+                return vec![WbAction::Redraw];
+            }
+            return self.handle_overlay_key(
+                overlay,
+                if event.kind == mouse::MouseKind::WheelUp {
+                    "up"
+                } else {
+                    "down"
+                },
+                data,
+            );
+        }
+        if event.kind != mouse::MouseKind::Press {
+            return Vec::new();
+        }
+        // Resolve against what the *overlay* painted, not the page under it. A
+        // modal that leaves the frame beneath in the hit map would let a click
+        // on its own padding reach a sidebar tab and switch the panel behind it.
+        let mark = self.overlay_mark;
+        let Some(id) = self
+            .hit
+            .hit_after(event.x, event.y, mark)
+            .map(str::to_string)
+        else {
+            // Nothing of the overlay is here: the reader clicked the dimmed page,
+            // which is the plain way out of every overlay.
+            self.overlay = None;
+            return vec![WbAction::Redraw];
+        };
+        match id.as_str() {
+            // The box's own padding, its title rule, its hints: part of the
+            // overlay, so a click there is absorbed rather than dismissing it.
+            "overlay.surface" => Vec::new(),
+            "approval.y" => self.handle_overlay_key(overlay, "y", data),
+            "approval.n" => self.handle_overlay_key(overlay, "n", data),
+            "approval.a" => self.handle_overlay_key(overlay, "a", data),
+            "diff.patch" => {
+                self.diff_patch_focus = true;
+                vec![WbAction::Redraw]
+            }
+            "preferences.shortcuts" => {
+                self.overlay = Some(Overlay::Keybindings);
+                vec![WbAction::Redraw]
+            }
+            "preferences.reset" => self.handle_overlay_key(Overlay::Preferences, "enter", data),
+            _ => {
+                if let Some(index) = id
+                    .strip_prefix("queue.row.")
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
+                    // A queued prompt is a real verb (`recall`, the same one
+                    // `enter` runs); under the overlay the page's own click
+                    // handler is never reached, so it has to be repeated here.
+                    self.queue_index = index;
+                    return data
+                        .queue
+                        .get(index)
+                        .map(|row| vec![WbAction::RecallQueued(row.run_id.clone())])
+                        .unwrap_or_default();
+                }
+                if let Some(index) = id
+                    .strip_prefix("palette.row.")
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
+                    // The palette is a menu: a click on an entry runs it, which
+                    // is what `enter` does on the highlighted one.
+                    self.palette_index = index;
+                    let chosen = self
+                        .palette_entries()
+                        .get(index)
+                        .map(|(command, _)| command.to_string());
+                    self.overlay = None;
+                    return chosen
+                        .map(|command| vec![WbAction::Command(command)])
+                        .unwrap_or_else(|| vec![WbAction::Redraw]);
+                }
+                if let Some(index) = id
+                    .strip_prefix("diff.file.")
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
+                    self.workflow_index = index;
+                    self.diff_patch_focus = false;
+                    return data
+                        .diff
+                        .as_ref()
+                        .map(|_| vec![WbAction::SelectDiff(index)])
+                        .unwrap_or_default();
+                }
+                if let Some(index) = id
+                    .strip_prefix("preferences.row.")
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
+                    self.preferences_index = index;
+                    return vec![WbAction::Redraw];
+                }
+                if let Some(index) = id
+                    .strip_prefix("keybinding.row.")
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
+                    self.keybinding_index = index;
+                    self.awaiting_keybinding = true;
+                    return vec![WbAction::Redraw];
+                }
+                if let Some(index) = id
+                    .strip_prefix("workflow.row.")
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
+                    self.workflow_index = index;
+                    return self.handle_overlay_key(overlay, "enter", data);
+                }
+                Vec::new()
+            }
+        }
+    }
+
     fn handle_picker_mouse(
         &mut self,
         kind: PickerKind,
@@ -1351,7 +1525,11 @@ impl Workbench {
                 vec![WbAction::Redraw]
             }
             mouse::MouseKind::Press => {
-                let id = self.hit.hit(event.x, event.y).map(str::to_string);
+                let mark = self.overlay_mark;
+                let id = self
+                    .hit
+                    .hit_after(event.x, event.y, mark)
+                    .map(str::to_string);
                 match id.as_deref() {
                     Some(id) if id.strip_prefix("picker.row.").is_some() => {
                         if let Some(ordinal) = id
@@ -1579,6 +1757,12 @@ impl Workbench {
         &mut self.hit
     }
 
+    /// The first region this frame's overlay painted — set by the compositor so
+    /// a pointer is resolved against the overlay and not the page under it.
+    pub(crate) fn set_overlay_mark(&mut self, mark: usize) {
+        self.overlay_mark = mark;
+    }
+
     pub(crate) fn clear_hits(&mut self) {
         self.hit.clear();
     }
@@ -1798,6 +1982,120 @@ mod tests {
             wb.handle(WbEvent::Key("right".into()), &data),
             vec![WbAction::SelectDiff(1)]
         );
+    }
+
+    #[test]
+    fn diff_mouse_selects_a_file_and_approval_buttons_do_not_hide_in_scroll() {
+        let mut data = demo::chat();
+        data.diff = Some(state::DiffView {
+            files: (0..4)
+                .map(|index| diff_review::DiffFile {
+                    path: format!("src/{index}.rs"),
+                    status: "M".into(),
+                })
+                .collect(),
+            patch: (0..40)
+                .map(|index| format!("+line {index}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            ..state::DiffView::default()
+        });
+        data.approval = Some(state::ApprovalView {
+            request_id: "a".into(),
+            ..state::ApprovalView::default()
+        });
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Diff);
+        wb.render(&data, 120, 38);
+        let region = wb
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "diff.file.1")
+            .unwrap()
+            .0;
+        let event = mouse::MouseEvent {
+            kind: mouse::MouseKind::Press,
+            x: region.x + 1,
+            y: region.y,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        assert_eq!(
+            wb.handle(WbEvent::Mouse(event), &data),
+            vec![WbAction::SelectDiff(1)]
+        );
+        wb.workflow_index = 1;
+        data.diff.as_mut().unwrap().selected = 1;
+        wb.diff_patch_focus = false;
+        wb.handle(WbEvent::Key("tab".into()), &data);
+        assert!(wb.diff_patch_focus);
+        wb.handle(WbEvent::Key("up".into()), &data);
+        assert_eq!(wb.workflow_index, 1);
+        assert_eq!(wb.overlay_scroll, 0);
+        wb.handle(WbEvent::Key("tab".into()), &data);
+        assert!(!wb.diff_patch_focus);
+        wb.handle(WbEvent::Key("up".into()), &data);
+        assert_eq!(wb.workflow_index, 0);
+        wb.overlay = Some(Overlay::Approval);
+        let text = plain(&wb.render(&data, 80, 12));
+        assert!(text.contains("[y]") && text.contains("[n]"), "{text}");
+        assert_eq!(
+            click_region(&mut wb, &data, 120, 38, "approval.n"),
+            vec![WbAction::ApprovalDecision {
+                approved: false,
+                rule: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn centred_preference_and_narrow_diff_clicks_use_the_painted_geometry() {
+        let mut data = demo::chat();
+        let mut wb = workbench();
+        wb.open_preferences();
+        assert_eq!(
+            click_region(&mut wb, &data, 120, 38, "preferences.shortcuts"),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(wb.overlay, Some(Overlay::Keybindings));
+        wb.keybinding_index = 4;
+        wb.awaiting_keybinding = false;
+        assert_eq!(
+            click_region(&mut wb, &data, 120, 38, "keybinding.row.4"),
+            vec![WbAction::Redraw]
+        );
+        assert!(wb.awaiting_keybinding);
+
+        data.diff = Some(state::DiffView {
+            files: (0..3)
+                .map(|index| diff_review::DiffFile {
+                    path: format!("src/{index}.rs"),
+                    status: "M".into(),
+                })
+                .collect(),
+            ..state::DiffView::default()
+        });
+        wb.overlay = Some(Overlay::Diff);
+        wb.diff_patch_focus = true;
+        let text = plain(&wb.render(&data, 80, 24));
+        assert!(!text.contains("src/0.rs"), "{text}");
+        wb.diff_patch_focus = false;
+        let text = plain(&wb.render(&data, 80, 24));
+        assert!(text.contains("src/0.rs"), "{text}");
+        assert_eq!(
+            click_region(&mut wb, &data, 80, 24, "diff.file.1"),
+            vec![WbAction::SelectDiff(1)]
+        );
+        wb.workflow_index = 1;
+        data.diff.as_mut().unwrap().selected = 1;
+        wb.diff_patch_focus = true;
+        assert_eq!(
+            wb.handle(WbEvent::Key("down".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(wb.overlay_scroll, 1);
     }
 
     #[test]
@@ -3178,5 +3476,299 @@ mod tests {
         assert_eq!(current, vec!["zh"]);
         // …and it opens on that row rather than on the first one.
         assert_eq!(workbench.picker.index, 1);
+    }
+
+    /// A point that no region claims, so a click there is the page itself.
+    fn empty_point(workbench: &Workbench, w: u16, h: u16) -> Option<(u16, u16)> {
+        (0..h)
+            .flat_map(|y| (0..w).map(move |x| (x, y)))
+            .find(|&(x, y)| workbench.hits().hit(x, y).is_none())
+    }
+
+    /// An overlay is a modal surface, not a painting over live controls: a
+    /// click on the box is the box's, and a click on the page beyond it closes
+    /// it. Before this, the overlay registered nothing of its own, so a click
+    /// on its padding reached the sidebar tab beneath (and, because the
+    /// overlay's own handler did not know that id, silently did nothing at all).
+    #[test]
+    fn an_overlay_absorbs_clicks_on_its_own_surface_and_closes_on_the_page() {
+        for overlay in [
+            Overlay::Help,
+            Overlay::Palette,
+            Overlay::History,
+            Overlay::Tree,
+            Overlay::Fork,
+            Overlay::Worktree,
+            Overlay::Preferences,
+        ] {
+            let data = demo::chat();
+            let mut wb = workbench();
+            wb.overlay = Some(overlay);
+            wb.render(&data, 120, 38);
+            let Some((x, y)) = empty_point(&wb, 120, 38) else {
+                continue;
+            };
+            wb.handle(
+                WbEvent::Mouse(mouse::MouseEvent {
+                    kind: mouse::MouseKind::Press,
+                    x,
+                    y,
+                    shift: false,
+                    alt: false,
+                    ctrl: false,
+                }),
+                &data,
+            );
+            assert_eq!(
+                wb.overlay, None,
+                "{overlay:?}: clicking the page at ({x},{y}) must close it"
+            );
+        }
+
+        let data = demo::chat();
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Help);
+        wb.render(&data, 120, 38);
+        let surface = workbench_surface(&wb);
+        wb.handle(
+            WbEvent::Mouse(mouse::MouseEvent {
+                kind: mouse::MouseKind::Press,
+                x: surface.x + surface.w / 2,
+                y: surface.y + surface.h / 2,
+                shift: false,
+                alt: false,
+                ctrl: false,
+            }),
+            &data,
+        );
+        assert_eq!(
+            wb.overlay,
+            Some(Overlay::Help),
+            "a click on the box itself must not dismiss it"
+        );
+    }
+
+    /// `down` moves the highlight one *row down the screen*, not one record.
+    ///
+    /// A record is one line of data, but the box wraps by width: a real
+    /// session title (title · workspace · id) does not fit on one row, so one
+    /// index step moved the marker two rows and the entries looked skipped.
+    /// The same shape had two more traps: the worktree list marked the
+    /// *current* checkout with the arrow (so it had no visible selection at
+    /// all), and the diff navigator drew its arrow from the file whose patch
+    /// had loaded rather than from the cursor, so `down` looked dead until
+    /// the reload came back.
+    #[test]
+    fn an_overlay_moves_the_highlight_one_visible_row_per_step() {
+        fn row_of(wb: &Workbench, id: &str) -> Option<u16> {
+            wb.hits()
+                .regions()
+                .iter()
+                .find(|(_, known)| known == id)
+                .map(|(rect, _)| rect.y)
+        }
+
+        // A realistic session list: long titles, long worktrees, long ids.
+        let mut data = demo::chat();
+        data.sessions = (0..8)
+            .map(|index| state::SessionRow {
+                id: format!("20261026-{index:06}-ebfc7c89507d4867b57705bd7789cf70"),
+                title: format!("第 {index} 个会话 · 重构整理 TUI 的浮层布局与鼠标命中区域"),
+                workspace: format!("D:/future-os/.worktrees/tui-overlay-layout-{index}"),
+                ..SessionRow::default()
+            })
+            .collect();
+        data.fork_points = (0..6)
+            .map(|index| state::ForkPoint {
+                id: format!("e{index}"),
+                text: format!(
+                    "第 {index} 条用户消息：把浮层的上下键改成一次一行，并把列表裁成一行"
+                ),
+            })
+            .collect();
+        data.worktrees = (0..6)
+            .map(|index| state::WorktreeView {
+                path: format!("D:/future-os/.worktrees/a-rather-long-worktree-name-{index}"),
+                label: format!("feat/a-rather-long-branch-name-{index}"),
+                description: format!("第 {index} 个工作区，描述也很长，长到需要换行"),
+                current: index == 0,
+            })
+            .collect();
+        data.diff = Some(state::DiffView {
+            files: (0..6)
+                .map(|index| diff_review::DiffFile {
+                    path: format!("tui/src/workbench/a/deeply/nested/module_name_{index}.rs"),
+                    status: "M".into(),
+                })
+                .collect(),
+            ..state::DiffView::default()
+        });
+
+        for overlay in [
+            Overlay::History,
+            Overlay::Tree,
+            Overlay::Fork,
+            Overlay::Worktree,
+            Overlay::Diff,
+        ] {
+            let mut wb = workbench();
+            wb.overlay = Some(overlay);
+            // Files first in the diff, so the marker is the file navigator.
+            wb.diff_patch_focus = false;
+            let mut painted = Vec::new();
+            for _ in 0..4 {
+                wb.handle(WbEvent::Key("down".into()), &data);
+                let index = wb.workflow_index;
+                let rows = wb.render(&data, 100, 30);
+                let y = row_of(&wb, &format!("workflow.row.{index}"))
+                    .or_else(|| row_of(&wb, &format!("diff.file.{index}")))
+                    .unwrap_or_else(|| panic!("{overlay:?}: no row for record {index}"));
+                let marked = crate::utils::strip_ansi_codes(&rows[y as usize]).contains('›');
+                assert!(
+                    marked,
+                    "{overlay:?}: record {index} sits on row {y} without the marker:\n{}",
+                    plain(&rows)
+                );
+                painted.push(y);
+            }
+            for pair in painted.windows(2) {
+                assert_eq!(
+                    pair[1] - pair[0],
+                    1,
+                    "{overlay:?}: one `down` moved the highlight {} rows (rows {painted:?})",
+                    pair[1] - pair[0]
+                );
+            }
+        }
+    }
+
+    fn workbench_surface(wb: &Workbench) -> crate::workbench::layout::Rect {
+        wb.hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "overlay.surface")
+            .map(|(rect, _)| *rect)
+            .expect("the overlay claims a surface")
+    }
+
+    /// The palette is a menu: an entry a pointer cannot press leaves the whole
+    /// `ctrl+p` road open to the keyboard alone.
+    #[test]
+    fn the_command_palette_runs_the_entry_under_the_pointer() {
+        let data = demo::chat();
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Palette);
+        for ch in "diff".chars() {
+            wb.handle(WbEvent::Key(ch.to_string()), &data);
+        }
+        wb.render(&data, 120, 38);
+        let expected = wb.palette_entries()[0].0.to_string();
+        assert_eq!(
+            click_region(&mut wb, &data, 120, 38, "palette.row.0"),
+            vec![WbAction::Command(expected)]
+        );
+        assert_eq!(wb.overlay, None);
+    }
+
+    /// A queued prompt is a verb under the overlay too: the page's own click
+    /// handler is never reached while a card is up.
+    #[test]
+    fn a_queued_prompt_is_clickable_inside_its_overlay() {
+        let mut data = demo::chat();
+        data.queue = vec![state::QueuedPrompt {
+            run_id: "run-1".into(),
+            text: "first".into(),
+        }];
+        let mut wb = workbench();
+        wb.surface_command("/queue", &data);
+        assert_eq!(
+            click_region(&mut wb, &data, 120, 38, "queue.row.0"),
+            vec![WbAction::RecallQueued("run-1".into())]
+        );
+    }
+
+    /// A box is drawn where its hit regions say it is. The workflow overlays are
+    /// painted at the left edge when the terminal is narrower than the box, and
+    /// A box is drawn where its hit regions say it is. The workflow overlays are
+    /// painted at the left edge when the terminal is narrower than the box, and
+    /// centred when it is wider; a rect that assumed one of those on a frame
+    /// that got the other was a whole margin out — invisible at 120 columns, and
+    /// at 160 a click on a file name closed the card instead of opening it.
+    #[test]
+    fn a_wide_terminal_paints_the_review_box_where_its_hit_regions_are() {
+        let mut data = demo::chat();
+        data.diff = Some(state::DiffView {
+            files: (0..4)
+                .map(|index| diff_review::DiffFile {
+                    path: format!("src/{index}.rs"),
+                    status: "M".into(),
+                })
+                .collect(),
+            ..state::DiffView::default()
+        });
+        for width in [120u16, 160, 200] {
+            let mut wb = workbench();
+            wb.overlay = Some(Overlay::Diff);
+            let rows = wb.render(&data, width, 44);
+            // Where the file name is actually drawn, not where a rect claims it
+            // is: the painted cell is what a reader points at.
+            let (y, x) = rows
+                .iter()
+                .enumerate()
+                .find_map(|(y, row)| {
+                    let painted = crate::utils::strip_ansi_codes(row);
+                    painted
+                        .find("src/1.rs")
+                        .map(|byte| (y, painted[..byte].chars().count().saturating_sub(2)))
+                })
+                .unwrap_or_else(|| panic!("{width}: the file row is not painted"));
+            assert_eq!(
+                wb.handle(
+                    WbEvent::Mouse(mouse::MouseEvent {
+                        kind: mouse::MouseKind::Press,
+                        x: x as u16,
+                        y: y as u16,
+                        shift: false,
+                        alt: false,
+                        ctrl: false,
+                    }),
+                    &data
+                ),
+                vec![WbAction::SelectDiff(1)],
+                "{width}: clicking the painted file name at ({x},{y}) must open it"
+            );
+            assert_eq!(wb.overlay, Some(Overlay::Diff), "{width}: the card closed");
+        }
+    }
+
+    /// A button the box had to clip is not clickable: a target for text nobody
+    /// can see is a trap, and at 12 columns the approval row does not fit.
+    #[test]
+    fn clipped_approval_buttons_leave_no_target_outside_the_frame() {
+        let mut data = demo::chat();
+        data.approval = Some(state::ApprovalView {
+            request_id: "req".into(),
+            title: "run the tests".into(),
+            rules: vec![state::AllowRule {
+                path: "target/**".into(),
+                access: "write".into(),
+            }],
+            ..state::ApprovalView::default()
+        });
+        for (w, h) in [(12u16, 6u16), (16, 8), (40, 12)] {
+            let mut wb = workbench();
+            wb.overlay = Some(Overlay::Approval);
+            wb.render(&data, w, h);
+            for (rect, id) in wb.hits().regions() {
+                assert!(
+                    rect.right() <= w && rect.bottom() <= h,
+                    "{w}x{h}: {id} at ({},{}) {}x{} runs past the frame",
+                    rect.x,
+                    rect.y,
+                    rect.w,
+                    rect.h
+                );
+            }
+        }
     }
 }

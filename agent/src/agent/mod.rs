@@ -7,7 +7,7 @@ use crate::types::{AgentMessage, AgentTool, ContentBlock, LLMProvider, ToolCall}
 use anyhow::{anyhow, Result};
 pub use events::RunEvent;
 use parking_lot::Mutex;
-pub(crate) use run_loop::{estimate_usage_cost_with, usage_cost_split_with};
+pub(crate) use run_loop::{add_request_usage, estimate_usage_cost_with, usage_cost_split_with};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
