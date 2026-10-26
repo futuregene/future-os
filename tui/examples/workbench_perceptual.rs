@@ -269,26 +269,9 @@ fn surfaces() -> Vec<Surface> {
         count: 10,
     });
 
-    let mut data = demo::data(demo::Scenario::Launchpad);
-    data.sessions = (0..6)
-        .map(|index| SessionRow {
-            id: format!("L{index:02}-identifier-long-enough-to-overflow"),
-            title: format!("L{index:02} 最近会话的标题，写得长一点，看看它会不会折行"),
-            workspace: format!("D:/future-os/.worktrees/launch-{index}"),
-            ..SessionRow::default()
-        })
-        .collect();
-    out.push(Surface {
-        name: "launchpad recents",
-        data,
-        open: Box::new(|_, _| {}),
-        id: |index| format!("launchpad.session.{index}"),
-        token: |index| format!("L{index:02} "),
-        marker: false,
-        selection: Selection::None,
-        down: "down",
-        count: 6,
-    });
+    // The launchpad is not a list any more: its conversations are the rail's,
+    // which "sidebar sessions" above already audits. What is left there is the
+    // prompt, the parameter chips and the shortcuts row.
 
     out.push(Surface {
         name: "palette",

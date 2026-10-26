@@ -59,6 +59,7 @@ use i18n::{t, Key, Language, LanguagePreference};
 pub enum LaunchField {
     #[default]
     Prompt,
+    Workspace,
     Model,
     Effort,
     Mode,
@@ -68,7 +69,8 @@ pub enum LaunchField {
 impl LaunchField {
     fn next(self) -> Self {
         match self {
-            Self::Prompt => Self::Model,
+            Self::Prompt => Self::Workspace,
+            Self::Workspace => Self::Model,
             Self::Model => Self::Effort,
             Self::Effort => Self::Mode,
             Self::Mode => Self::Permission,
@@ -79,11 +81,36 @@ impl LaunchField {
     fn previous(self) -> Self {
         match self {
             Self::Prompt => Self::Permission,
-            Self::Model => Self::Prompt,
+            Self::Workspace => Self::Prompt,
+            Self::Model => Self::Workspace,
             Self::Effort => Self::Model,
             Self::Mode => Self::Effort,
             Self::Permission => Self::Mode,
         }
+    }
+
+    /// The chip this field stands on, as the launchpad's hit map names it.
+    pub fn chip_id(self) -> Option<&'static str> {
+        match self {
+            Self::Prompt => None,
+            Self::Workspace => Some("launchpad.workspace"),
+            Self::Model => Some("launchpad.model"),
+            Self::Effort => Some("launchpad.effort"),
+            Self::Mode => Some("launchpad.mode"),
+            Self::Permission => Some("launchpad.permission"),
+        }
+    }
+
+    /// The verb that cycles this chip — the same one a click on it runs, so the
+    /// key and the pointer cannot drift apart.
+    fn command(self) -> Option<&'static str> {
+        self.chip_id().map(|id| match id {
+            "launchpad.workspace" => "/launchpad.workspace",
+            "launchpad.model" => "/launchpad.model",
+            "launchpad.effort" => "/launchpad.effort",
+            "launchpad.mode" => "/launchpad.mode",
+            _ => "/launchpad.permission",
+        })
     }
 }
 
@@ -925,10 +952,31 @@ impl Workbench {
                 }
                 vec![WbAction::Redraw]
             }
+            // On the launchpad a focused chip answers `enter`: it cycles the
+            // choice it names, which is what clicking it does. Without a chip,
+            // `enter` is the submission — the same key, two intents decided by
+            // where `tab` left the cursor.
+            "enter" if data.on_launchpad() && self.launch_field != LaunchField::Prompt => self
+                .launch_field
+                .command()
+                .map(|command| vec![WbAction::Command(command.into())])
+                .unwrap_or_default(),
+            // Back to the prompt, so a reader who tabbed into the chips is not
+            // stuck in them with `enter` unable to send.
+            "escape" if data.on_launchpad() && self.launch_field != LaunchField::Prompt => {
+                self.launch_field = LaunchField::Prompt;
+                vec![WbAction::Redraw]
+            }
             "enter" if self.sidebar_focus => self.open_selected(data),
             "enter" => self.submit_draft(data),
             "up" if self.sidebar_focus => self.move_selection(-1, data),
             "down" if self.sidebar_focus => self.move_selection(1, data),
+            // The rail's two tabs, from the rail itself: a focused panel answers
+            // left/right with its neighbour the way a tab strip does with a
+            // click. The cursor lands on the conversation on screen, exactly as
+            // the click on a tab leaves it.
+            "left" if self.sidebar_focus => self.switch_panel(-1, data),
+            "right" if self.sidebar_focus => self.switch_panel(1, data),
             // Pin the workspace the selected conversation belongs to, so the
             // 置顶 section is reachable with the keyboard. Only a *focused* rail
             // takes it: elsewhere `p` is a letter in the draft.
@@ -973,6 +1021,11 @@ impl Workbench {
                     && !other.starts_with("ctrl+")
                     && !other.starts_with("alt+")
                 {
+                    // Typing takes the cursor back to the prompt: a chip stays
+                    // focused only while the keys are still naming choices.
+                    if data.on_launchpad() {
+                        self.launch_field = LaunchField::Prompt;
+                    }
                     let mut view = data.input.editor.clone();
                     view.paste(other);
                     vec![WbAction::EditEditor(Box::new(view))]
@@ -2147,18 +2200,6 @@ impl Workbench {
                 None => vec![WbAction::Redraw],
             };
         }
-        if let Some(index) = id
-            .strip_prefix("launchpad.session.")
-            .and_then(|rest| rest.parse::<usize>().ok())
-        {
-            return data
-                .sessions
-                .get(index)
-                .map(|session: &state::SessionRow| {
-                    vec![WbAction::SwitchSession(session.id.clone())]
-                })
-                .unwrap_or_default();
-        }
         if id.starts_with("launchpad.") {
             return vec![WbAction::Command(format!("/{id}"))];
         }
@@ -2211,6 +2252,24 @@ impl Workbench {
         } else {
             self.overlay = Some(Overlay::PanelFull);
         }
+    }
+
+    /// The rail's neighbouring tab: `←`/`→` while the rail has the keys, which
+    /// is the keyboard spelling of a click on the tab strip.
+    fn switch_panel(&mut self, delta: i32, data: &WorkbenchData) -> Vec<WbAction> {
+        let panel = if delta < 0 {
+            self.panel.previous()
+        } else {
+            self.panel.next()
+        };
+        self.panel = panel;
+        self.sidebar_focus = true;
+        // The cursor is an index into *this* panel's rows: carry it to the
+        // conversation on screen rather than leaving it on whatever the other
+        // tab's row at that index happened to be.
+        let row = self.current_row(data);
+        self.select_row(row, data);
+        vec![WbAction::SwitchPanel(panel)]
     }
 
     /// Carry out a `/…` verb that belongs to the *surface* rather than to the
@@ -3175,6 +3234,50 @@ mod tests {
         );
     }
 
+    /// The rail's two tabs answer `←`/`→` while the rail has the keys: the
+    /// keyboard spelling of a click on the tab strip, and the cursor follows
+    /// the switch to the conversation on screen.
+    #[test]
+    fn left_and_right_move_the_rail_between_its_two_tabs() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        assert!(workbench.sidebar_focus);
+        assert_eq!(workbench.panel, PanelId::Recent);
+
+        assert_eq!(
+            workbench.handle(WbEvent::Key("right".into()), &data),
+            vec![WbAction::SwitchPanel(PanelId::Workspaces)]
+        );
+        assert_eq!(workbench.panel, PanelId::Workspaces);
+        assert!(workbench.sidebar_focus, "the rail keeps the keys");
+        // The cursor is an index into *this* panel's rows, and it landed on the
+        // conversation the transcript shows.
+        let rows = panels::rows(PanelId::Workspaces, &data);
+        let current = data
+            .sessions
+            .iter()
+            .position(|session| session.current)
+            .expect("the fixture marks one conversation current");
+        assert_eq!(rows[workbench.sidebar_index].session(), Some(current));
+
+        // …and back the other way, wrapping to 最近 from 最近's neighbour.
+        assert_eq!(
+            workbench.handle(WbEvent::Key("left".into()), &data),
+            vec![WbAction::SwitchPanel(PanelId::Recent)]
+        );
+        assert_eq!(workbench.panel, PanelId::Recent);
+
+        // The keys belong to the focused rail only: from the composer `left`
+        // is still the caret.
+        workbench.sidebar_focus = false;
+        let actions = workbench.handle(WbEvent::Key("right".into()), &data);
+        assert!(
+            !actions.contains(&WbAction::SwitchPanel(PanelId::Workspaces)),
+            "{actions:?}"
+        );
+    }
+
     /// The previous/next keys switch the conversation *and* leave the cursor on
     /// it, so the chat and the rail never name different conversations.
     #[test]
@@ -3502,6 +3605,44 @@ mod tests {
             .is_empty());
     }
 
+    /// On the launchpad `tab` walks the prompt and the parameter chips, `enter`
+    /// cycles the chip under the cursor instead of submitting, and typing or
+    /// `escape` hands the keys back to the prompt — the chips are reachable
+    /// without a mouse, and a chip cannot swallow the send key.
+    #[test]
+    fn the_launchpad_chips_answer_tab_and_enter_and_give_the_keys_back() {
+        let data = demo::launchpad();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        assert_eq!(workbench.launch_field, LaunchField::Prompt);
+
+        // tab → the first chip is the workspace, then the model.
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        assert_eq!(workbench.launch_field, LaunchField::Workspace);
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        assert_eq!(workbench.launch_field, LaunchField::Model);
+        workbench.handle(WbEvent::Key("shift+tab".into()), &data);
+        assert_eq!(workbench.launch_field, LaunchField::Workspace);
+
+        // …the focused chip is the one the command names, and `enter` runs it.
+        let actions = workbench.handle(WbEvent::Key("enter".into()), &data);
+        assert_eq!(
+            actions,
+            vec![WbAction::Command("/launchpad.workspace".into())]
+        );
+
+        // `escape` puts the cursor back in the prompt, so `enter` sends again.
+        workbench.handle(WbEvent::Key("escape".into()), &data);
+        assert_eq!(workbench.launch_field, LaunchField::Prompt);
+
+        // Typing does the same: a letter belongs in the draft, and the chip it
+        // would have been typed into stops claiming the keys.
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        assert_ne!(workbench.launch_field, LaunchField::Prompt);
+        let actions = workbench.handle(WbEvent::Key("h".into()), &data);
+        assert!(matches!(actions.as_slice(), [WbAction::EditEditor(_)]));
+        assert_eq!(workbench.launch_field, LaunchField::Prompt);
+    }
+
     #[test]
     fn the_palette_filters_and_runs_a_command() {
         let data = demo::chat();
@@ -3819,9 +3960,16 @@ mod tests {
         workbench.handle(WbEvent::Key("ctrl+b".into()), &data);
         assert!(workbench.sidebar_visible && workbench.sidebar_focus);
 
-        // focus → closed
-        workbench.handle(WbEvent::Key("ctrl+b".into()), &data);
+        // focus → closed. Closing is a *preference*, not a transient view
+        // state: the action asks the driver to write it, so the next start opens
+        // the way the reader left it.
+        let actions = workbench.handle(WbEvent::Key("ctrl+b".into()), &data);
+        assert!(actions.contains(&WbAction::SetPreferences), "{actions:?}");
         assert!(!workbench.sidebar_visible && !workbench.sidebar_focus);
+        assert!(
+            !workbench.preferences().sidebar_visible,
+            "the choice is the state"
+        );
         let rows = workbench.render(&data, 120, 38);
         assert!(
             !plain(&rows).contains("待办"),
@@ -4227,7 +4375,7 @@ mod tests {
         workbench.open_picker(PickerKind::Sessions, &data);
         let text = plain(&workbench.render(&data, 120, 38));
         assert!(text.contains("修复 parser 的 off-by-one"), "{text}");
-        assert!(text.contains("~/future-os"), "the workspace column: {text}");
+        assert!(text.contains("future-os"), "the workspace column: {text}");
         assert!(text.contains("2m"), "the relative age: {text}");
         assert_eq!(workbench.picker.index, 0, "opens on the current session");
         workbench.handle(WbEvent::Key("down".into()), &data);
