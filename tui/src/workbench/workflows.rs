@@ -215,7 +215,7 @@ pub fn detail_lines(data: &WorkbenchData, lang: Language, overlay: &str) -> Vec<
                 .map(|row| {
                     format!(
                         "{}{} · {} · {}",
-                        if row.current { "› " } else { "  " },
+                        if row.current { "● " } else { "  " },
                         row.label,
                         row.description,
                         row.path
@@ -225,6 +225,38 @@ pub fn detail_lines(data: &WorkbenchData, lang: Language, overlay: &str) -> Vec<
         }
         _ => Vec::new(),
     }
+}
+
+/// One selectable record, on exactly one screen row.
+///
+/// A list overlay is navigated with the arrow keys, so what a reader counts is
+/// *rows*, not records: a title long enough to fold into two rows makes one
+/// `down` move the marker two rows down the screen and the entries appear to
+/// skip. Every record therefore owns one row by construction.
+///
+/// The pieces after the first are dropped **whole** when they no longer fit,
+/// the same rule the usage panel follows: a workspace truncated mid-path reads
+/// as a different directory, and half an id reads as a different id. Only the
+/// first piece (the title, or the fork point's text) is shortened, and it ends
+/// in an ellipsis so the cut is visible.
+pub fn record_line(marker_on: bool, prefix: &str, pieces: &[&str], width: usize) -> String {
+    let width = width.max(1);
+    let marker = if marker_on { "› " } else { "  " };
+    let first = pieces.first().copied().unwrap_or("").replace('\n', " ↵ ");
+    let mut line = format!("{marker}{prefix}{first}");
+    if crate::workbench::ansi::width(&line) > width {
+        // The lead piece alone is too wide: shorten it, and keep the ellipsis
+        // inside the row so the marker and its number stay put.
+        return crate::workbench::ansi::fit(&line, width);
+    }
+    for piece in &pieces[1..] {
+        let candidate = format!("{line} · {piece}");
+        if crate::workbench::ansi::width(&candidate) > width {
+            break;
+        }
+        line = candidate;
+    }
+    line
 }
 
 /// Soft-wrap by display cells and clamp the horizontal window to a byte
@@ -265,6 +297,41 @@ mod tests {
             parent_id: parent.map(str::to_string),
             ..SessionRow::default()
         }
+    }
+
+    #[test]
+    fn a_record_is_one_row_and_drops_whole_pieces_before_shortening_one() {
+        use crate::workbench::ansi::width;
+        let pieces = [
+            "refactor the overlay layout",
+            "D:/future-os/.worktrees/tui-overlay",
+            "20261026-000342-ebfc7c89507d4867b57705bd",
+        ];
+        let wide = record_line(true, "", &pieces, 200);
+        assert_eq!(
+            wide,
+            "\u{203a} refactor the overlay layout \u{00b7} D:/future-os/.worktrees/tui-overlay \u{00b7} 20261026-000342-ebfc7c89507d4867b57705bd"
+        );
+        assert_eq!(width(&wide), wide.chars().count());
+
+        // Tight: the workspace survives, the id is dropped whole — never half.
+        let tight = record_line(false, "", &pieces, 80);
+        assert!(tight.contains("tui-overlay"), "{tight}");
+        assert!(!tight.contains("20261026"), "the id must go whole: {tight}");
+        assert!(width(&tight) <= 80, "{tight}");
+        assert!(
+            tight.starts_with("  "),
+            "an unselected row keeps its gutter"
+        );
+
+        // Tighter still: only the title, shortened with a visible ellipsis.
+        let narrow = record_line(true, "", &pieces, 20);
+        assert!(width(&narrow) <= 20, "{narrow}");
+        assert!(narrow.contains('\u{2026}'), "the cut is visible: {narrow}");
+
+        // A prefix (a fork number, a tree indent, a badge) is kept.
+        let numbered = record_line(true, "12. ", &["short text"], 40);
+        assert_eq!(numbered, "\u{203a} 12. short text");
     }
 
     #[test]

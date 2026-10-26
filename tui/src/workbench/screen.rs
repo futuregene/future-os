@@ -645,16 +645,11 @@ fn workflow_box(
                     .iter()
                     .enumerate()
                     .map(|(index, row)| {
-                        format!(
-                            "{}{} · {} · {}",
-                            if index == workbench.workflow_index {
-                                "› "
-                            } else {
-                                "  "
-                            },
-                            row.title,
-                            row.workspace,
-                            row.id
+                        workflows::record_line(
+                            index == workbench.workflow_index,
+                            "",
+                            &[&row.title, &row.workspace, &row.id],
+                            columns.saturating_sub(4),
                         )
                     })
                     .collect()
@@ -664,16 +659,12 @@ fn workflow_box(
             .iter()
             .enumerate()
             .map(|(index, (row, depth))| {
-                format!(
-                    "{}{}{} · {}",
-                    if index == workbench.workflow_index {
-                        "› "
-                    } else {
-                        "  "
-                    },
-                    "  ".repeat(*depth),
-                    row.title,
-                    row.id
+                let indent = "  ".repeat(*depth);
+                workflows::record_line(
+                    index == workbench.workflow_index,
+                    &indent,
+                    &[&row.title, &row.id],
+                    columns.saturating_sub(4),
                 )
             })
             .collect(),
@@ -685,15 +676,13 @@ fn workflow_box(
                     .iter()
                     .enumerate()
                     .map(|(index, point)| {
-                        format!(
-                            "{}{}. {}",
-                            if index == workbench.workflow_index {
-                                "› "
-                            } else {
-                                "  "
-                            },
-                            index + 1,
-                            point.text.replace('\n', " ↵ ")
+                        let number = format!("{}. ", index + 1);
+                        let text = point.text.replace('\n', " ↵ ");
+                        workflows::record_line(
+                            index == workbench.workflow_index,
+                            &number,
+                            &[&text],
+                            columns.saturating_sub(4),
                         )
                     })
                     .collect()
@@ -701,8 +690,45 @@ fn workflow_box(
         }
         Overlay::Approval => workflows::detail_lines(data, workbench.lang, "approval"),
         Overlay::Diff => Vec::new(),
-        Overlay::Worktree => workflows::detail_lines(data, workbench.lang, "worktree"),
+        Overlay::Worktree => {
+            if data.worktrees.is_empty() {
+                vec![t(workbench.lang, Key::WorktreeEmpty).into()]
+            } else {
+                data.worktrees
+                    .iter()
+                    .enumerate()
+                    .map(|(index, row)| {
+                        // The arrow is the selection and nothing else: it used
+                        // to mark the *current* worktree, so the overlay had no
+                        // visible highlight at all and `down` looked dead.
+                        // Which one the session is already in is a badge.
+                        let badge = if row.current { "● " } else { "" };
+                        workflows::record_line(
+                            index == workbench.workflow_index,
+                            badge,
+                            &[&row.label, &row.description, &row.path],
+                            columns.saturating_sub(4),
+                        )
+                    })
+                    .collect()
+            }
+        }
         _ => Vec::new(),
+    };
+    // One record is one screen row, which is what makes `down` move the
+    // highlight one row. A list body that reaches this point unwrapped is data,
+    // and a long title would otherwise fold into two rows — the marker then
+    // jumps two rows per press and the entries seem to skip. The detail
+    // overlays are prose and keep wrapping.
+    let body = if matches!(
+        overlay,
+        Overlay::History | Overlay::Tree | Overlay::Fork | Overlay::Worktree
+    ) {
+        body.into_iter()
+            .map(|line| fit(&line, columns.saturating_sub(4)))
+            .collect()
+    } else {
+        body
     };
     // Selection follows the highlight; detail overlays use an independent
     // scroll, so moving a file selection does not discard its patch position.
@@ -1159,19 +1185,26 @@ fn diff_review_box(
         rows.push(widgets::box_bottom(palette, columns));
         return indent(rows, left, w as usize);
     }
+    // The cursor is the reader's position and moves with the key; the patch
+    // on the right catches up only once the driver has reloaded it, so the
+    // arrow must follow the cursor or `down` looks dead for a round trip.
+    let cursor = workbench.workflow_index.min(diff.files.len() - 1);
     let selected = diff.selected.min(diff.files.len() - 1);
     let file_rows: Vec<String> = diff
         .files
         .iter()
         .enumerate()
         .map(|(index, file)| {
-            let marker = if index == selected { "›" } else { " " };
-            format!("{marker} {} {}", file.status, file.path)
+            let marker = if index == cursor { "›" } else { " " };
+            // A dot marks the file whose patch is on the right right now,
+            // which is a beat behind the cursor while a reload is in flight.
+            let loaded = if index == selected { "·" } else { " " };
+            format!("{marker}{loaded} {} {}", file.status, file.path)
         })
         .collect();
     let patch_rows = diff.patch.lines().map(str::to_string).collect::<Vec<_>>();
     let split = columns >= 92;
-    let first_file = selected.saturating_add(1).saturating_sub(available);
+    let first_file = cursor.saturating_add(1).saturating_sub(available);
     let scroll = workbench.overlay_scroll_offset();
     if split {
         let left_w = ((columns - 5) / 3).clamp(24, 42);
