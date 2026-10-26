@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { DeviceFilter, MergedConversation, RemoteWorkspaceTarget } from "../../features/remote-peer/mergeConversations";
+import type { DeviceFilter, MergedConversation, RemoteWorkspaceRow, RemoteWorkspaceTarget } from "../../features/remote-peer/mergeConversations";
 import type { RemotePeer } from "../../features/remote-peer/remotePeerClient";
 import type { StoredThread } from "../../integrations/storage/threadStore";
 import type { RecentSection, RecentSectionKind } from "./recentOrder";
@@ -77,6 +77,7 @@ export function MergedRows({
   expandedRemoteRows,
   view = "tree",
   workspaceSectionCollapsed,
+  workspaces: hostWorkspaces,
 }: {
   activeKey: string | null;
   /** The age label to draw on a row, by row key (the recent view only). */
@@ -243,12 +244,22 @@ export function MergedRows({
    */
   view?: "tree" | "recent";
   workspaceSectionCollapsed: boolean;
+  /**
+   * The shown hosts' workspaces, by desktop id.
+   *
+   * The headings of folders nobody has written in yet: a group is built from the
+   * rows under it, so a workspace created a moment ago — from this list's own
+   * "＋" — has nothing to be built from and went unlisted on this machine while
+   * existing on that one. This machine's own empty workspaces are drawn from its
+   * workspace store for the same reason.
+   */
+  workspaces?: ReadonlyMap<string, readonly RemoteWorkspaceRow[]>;
 }) {
   const { t } = useTranslation("layout");
   // The sections and their order: a fork is a conversation's, so the rows are
   // ranked by the conversation each one hangs under, and a fork lands in that
   // conversation's section rather than one its own fields would pick.
-  const { chats, pinned, workspaces } = groupMergedRows(rows, rowRoots);
+  const { chats, pinned, workspaces: workspaceGroups } = groupMergedRows(rows, rowRoots, hostWorkspaces);
 
   // The chat section's menu is the rail's own control, which owns its open state
   // through props — so the state lives here, next to the header that draws it.
@@ -345,7 +356,7 @@ export function MergedRows({
     );
   }
 
-  if (rows.length === 0) {
+  if (rows.length === 0 && workspaceGroups.length === 0) {
     return <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noChats")}</div>;
   }
 
@@ -449,12 +460,12 @@ export function MergedRows({
         >
           {t("activityRail.workspace")}
         </RailSectionHeader>
-        {!workspaceSectionCollapsed && workspaces.length === 0
+        {!workspaceSectionCollapsed && workspaceGroups.length === 0
           ? <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noWorkspaceThreads")}</div>
           : null}
         {workspaceSectionCollapsed
           ? null
-          : workspaces.map((group) => {
+          : workspaceGroups.map((group) => {
               // A group of this machine's rows is this machine's workspace, and
               // the rail already renders that heading — with its menu, its
               // click-to-select and its pin marker. Using it here is what makes

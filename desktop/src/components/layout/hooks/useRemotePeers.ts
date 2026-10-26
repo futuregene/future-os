@@ -1,5 +1,5 @@
 import type { SnapshotVersion } from "../../../features/remote-peer/catalogVersion";
-import type { RemoteCatalog, RemoteSessionRow } from "../../../features/remote-peer/mergeConversations";
+import type { RemoteCatalog, RemoteSessionRow, RemoteWorkspaceRow } from "../../../features/remote-peer/mergeConversations";
 import type { RemotePeer, RemotePeerEvent } from "../../../features/remote-peer/remotePeerClient";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -10,7 +10,9 @@ import {
   connectAllRemotePeers,
   connectRemotePeer,
   fetchRemoteSessions,
+  hostWorkspaceRows,
   listRemotePeers,
+  listRemoteWorkspaces,
   normalizeRemoteSessionRows,
   unpairRemotePeer,
 } from "../../../features/remote-peer/remotePeerClient";
@@ -172,18 +174,42 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
       // answer that can only be a refusal. What the reader needs instead is the
       // machine's own state, which is why `control` rides on the peer summary.
       const asked = connected.filter(peer => peer.control !== "standby");
-      const results = await Promise.all(asked.map(async (peer) => {
-        try {
-          return await fetchRemoteSessions(peer.desktopId);
-        }
-        catch {
-          // One unreachable host must not blank the others' rows, and it must
-          // not blank *its own* either: see `keepUnanswered`.
-          return null;
-        }
-      }));
+      // Both halves of what the merged list draws, and neither on the other's
+      // behalf: a host's *sessions* are the rows, and its *workspaces* are the
+      // headings that have no rows yet — the folder a user just created from the
+      // "＋" on the list's own workspace section, which until now appeared on that
+      // host and nowhere on this one. Reading them together also means one
+      // interval of lag for both, instead of a heading that arrives a poll later
+      // than the conversation that proves it.
+      const [results, workspaceResults] = await Promise.all([
+        Promise.all(asked.map(async (peer) => {
+          try {
+            return await fetchRemoteSessions(peer.desktopId);
+          }
+          catch {
+            // One unreachable host must not blank the others' rows, and it must
+            // not blank *its own* either: see `keepUnanswered`.
+            return null;
+          }
+        })),
+        Promise.all(asked.map(async (peer) => {
+          try {
+            return await listRemoteWorkspaces(peer.desktopId);
+          }
+          catch {
+            // Same rule as the sessions above: a read that failed says nothing
+            // about the host's workspaces, and `withHostWorkspaces` keeps the
+            // last list rather than emptying every heading it belongs to.
+            return null;
+          }
+        })),
+      ]);
       const answered = results.filter((catalog): catalog is RemoteCatalog => catalog !== null);
-      setCatalogs(current => keepUnanswered(current, answered, asked.map(peer => peer.desktopId)));
+      setCatalogs(current => withHostWorkspaces(
+        keepUnanswered(current, answered, asked.map(peer => peer.desktopId)),
+        current,
+        asked.map((peer, index) => [peer.desktopId, workspaceResults[index] ?? null] as const),
+      ));
     }
     catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -504,6 +530,37 @@ function keepUnanswered(
   return next;
 }
 
+/**
+ * This round's sessions, with each host's workspaces attached.
+ *
+ * The two reads answer separately, so each keeps its own last answer: a host
+ * whose sessions answered but whose workspace read failed must not lose the
+ * headings it already had (they are the only way to reach a folder with nothing
+ * in it), and one whose workspace read answered but whose sessions did not keeps
+ * the sessions `keepUnanswered` preserved. `null` means "not answered this
+ * round", never "empty" — an empty list is a host saying it has no workspaces at
+ * all, which is a different fact and is applied as one.
+ */
+function withHostWorkspaces(
+  catalogs: RemoteCatalog[],
+  previous: readonly RemoteCatalog[],
+  reads: readonly (readonly [string, RemoteWorkspaceRow[] | null])[],
+): RemoteCatalog[] {
+  const answered = new Map<string, RemoteWorkspaceRow[]>();
+  for (const [desktopId, rows] of reads) {
+    if (rows)
+      answered.set(desktopId, rows);
+  }
+  const before = new Map(previous.map(catalog => [catalog.desktopId, catalog] as const));
+  return catalogs.map((catalog) => {
+    const rows = answered.get(catalog.desktopId);
+    if (rows)
+      return { ...catalog, workspaces: rows };
+    const kept = before.get(catalog.desktopId)?.workspaces;
+    return kept ? { ...catalog, workspaces: kept } : catalog;
+  });
+}
+
 function readVersion(value: unknown): SnapshotVersion | undefined {
   if (typeof value !== "object" || value === null)
     return undefined;
@@ -603,9 +660,9 @@ function handlePresence(
 /**
  * Apply a pushed catalog snapshot if the version gate accepts it.
  *
- * Workspaces snapshots are tracked by the gate but not stored by this hook yet
- * (desktop currently only renders session catalogues); sessions snapshots are
- * applied to the merged list state.
+ * Workspaces snapshots are applied to the same catalogue, as the other half of
+ * it: a host's workspaces are what draw the headings of folders with nothing in
+ * them, and a session snapshot carries none.
  */
 function handleCatalog(
   desktopId: string,
@@ -683,8 +740,36 @@ function handleCatalog(
       // keeps a host field from reaching one path and not the other.
       sessions: normalizeRemoteSessionRows(obj.sessions),
     };
-    setCatalogs(current => current.map(catalog => (catalog.desktopId === desktopId ? next : catalog)));
+    // A sessions snapshot says nothing about workspaces, so the host's list —
+    // and with it the headings of its empty folders — is carried over rather
+    // than dropped with the row set it was attached to.
+    setCatalogs(current => current.map(catalog => (catalog.desktopId === desktopId ? { ...next, ...(catalog.workspaces ? { workspaces: catalog.workspaces } : {}) } : catalog)));
+    return;
   }
+
+  // A workspaces snapshot: the headings, and the one thing a create on that host
+  // changes. It names no sessions, so the row set is carried over untouched — it
+  // is the other half of the same catalogue (`read_workspaces` on the host is what
+  // a polled `list_workspaces` answers too), which is why the same version gate
+  // covers both domains separately. A list that is not a list is a payload this
+  // client cannot read, and is dropped rather than applied as "no workspaces":
+  // the one reading of it that would erase every heading at once.
+  if (!Array.isArray(obj.workspaces))
+    return;
+  const workspaces = hostWorkspaceRows(obj.workspaces);
+  setCatalogs((current) => {
+    let found = false;
+    const next = current.map((catalog) => {
+      if (catalog.desktopId !== desktopId)
+        return catalog;
+      found = true;
+      return { ...catalog, workspaces };
+    });
+    // A snapshot can arrive before this machine has read that host's sessions —
+    // a create pushed the moment control was established. Introducing the host
+    // with no rows is honest: its empty headings are exactly what it has to say.
+    return found ? next : [...next, { desktopId, sessions: [], workspaces }];
+  });
 }
 
 function ensureGate(desktopId: string, epoch: string): CatalogVersionGate {

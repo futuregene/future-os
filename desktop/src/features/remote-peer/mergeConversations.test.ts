@@ -2,6 +2,7 @@ import type {
   DeviceFilter,
   LocalThreadLike,
   RemoteCatalog,
+  RemoteWorkspaceRow,
 } from "./mergeConversations";
 import { describe, expect, it } from "vitest";
 import {
@@ -665,6 +666,93 @@ describe("mergeConversations", () => {
         [],
       ));
       expect(mixed.workspaces.map(group => group.key)).toEqual(["ws_local", "ws_new"]);
+    });
+
+    /**
+     * A workspace with nothing in it yet still has a heading.
+     *
+     * This is the "+" on the list's own workspace section: it registers a folder
+     * on that machine, and the folder then exists with no conversation in it. A
+     * group is built from the rows under it, so there was nothing to build one
+     * from — the workspace was created, the host could list it, and the list went
+     * on showing nothing. This machine's own empty folders were always drawn,
+     * from its own workspace store.
+     */
+    it("gives a host's workspace a heading when nothing has been said in it", () => {
+      const grouped = groupMergedRows(
+        rows([], [catalog("desktop_a", [])]),
+        new Map(),
+        new Map<string, RemoteWorkspaceRow[]>([["desktop_a", [
+          { id: "ws_new", name: "charts", path: "/Users/me/charts", pinned: false, orderedAt: 900 },
+        ]]]),
+      );
+
+      expect(grouped.workspaces).toHaveLength(1);
+      const [group] = grouped.workspaces;
+      expect(group!.key).toBe("desktop_a::ws_new");
+      expect(group!.label).toBe("charts");
+      expect(group!.desktopId).toBe("desktop_a");
+      expect(group!.orderedAt).toBe(900);
+      // Nothing under it: the heading is the whole of what the list has to say.
+      expect(group!.rows).toEqual([]);
+      // ...and it is not a chat — a folder is a place, not a conversation.
+      expect(grouped.chats).toEqual([]);
+    });
+
+    it("gives one heading to a workspace that has rows, not two", () => {
+      const merged = rows([], [catalog("desktop_a", [
+        {
+          sessionId: "sess_a",
+          title: "already here",
+          mode: "workspace",
+          workspaceId: "ws_old",
+          workspaceName: "charts",
+        },
+      ])]);
+      const grouped = groupMergedRows(
+        merged,
+        new Map(),
+        new Map<string, RemoteWorkspaceRow[]>([["desktop_a", [
+          { id: "ws_old", name: "charts", path: "/Users/me/charts", pinned: false, orderedAt: 900 },
+        ]]]),
+      );
+
+      expect(grouped.workspaces.map(group => group.key)).toEqual(["desktop_a::ws_old"]);
+      expect(grouped.workspaces[0]!.rows.map(row => row.id)).toEqual(["sess_a"]);
+    });
+
+    /**
+     * A temporary workspace is chat scratch, and its conversations are drawn in
+     * the chats section — so a heading for it would be a heading no row can be
+     * filed under. This machine's own list makes the same call.
+     */
+    it("does not give a temporary workspace a heading of its own", () => {
+      const grouped = groupMergedRows(
+        rows([], []),
+        new Map(),
+        new Map<string, RemoteWorkspaceRow[]>([["desktop_a", [
+          { id: "ws_tmp", name: "Scratch", path: "/tmp/scratch", pinned: false, kind: "temporary" },
+        ]]]),
+      );
+
+      expect(grouped.workspaces).toEqual([]);
+    });
+
+    it("places a host's empty workspace by that workspace's own clock", () => {
+      const grouped = groupMergedRows(
+        rows([thread({ id: "ws_local_row", mode: "workspace", workspaceId: "ws_local", updatedAt: 500 })], []),
+        new Map(),
+        new Map<string, RemoteWorkspaceRow[]>([["desktop_a", [
+          { id: "ws_old", name: "older", path: "/a", pinned: false, orderedAt: 100 },
+          { id: "ws_new", name: "newer", path: "/b", pinned: false, orderedAt: 900 },
+        ]]]),
+      );
+
+      // A group's place is the workspace's own, never its rows': the host's two
+      // are ranked by the timestamps that host reports, and this machine's group
+      // — whose workspace place is unknown to this call — sorts after them.
+      expect(grouped.workspaces.map(group => group.key))
+        .toEqual(["desktop_a::ws_new", "desktop_a::ws_old", "ws_local"]);
     });
   });
 });
