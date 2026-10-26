@@ -24,6 +24,13 @@ cargo run -p future-tui --example workbench_demo -- --scenario chat --plain     
 
 # 鼠标验收（120x38 与 90x24 两档命中区域）
 cargo run -p future-tui --example workbench_demo -- --self-test
+
+# 逐页用真实按键与鼠标事件驱动（命中区、帧尺寸、可达状态）
+cargo run -p future-tui --example workbench_interaction -- --size 120x38
+cargo run -p future-tui --example workbench_interaction -- --size 40x12
+
+# 以及行为层：指针下面的那一行，打开的真的是那一行吗
+cargo run -p future-tui --example workbench_semantics
 ```
 
 场景：`launchpad`（还没有会话）、`chat`（一轮对话，过程折叠成一行汇总）、`todo`
@@ -108,6 +115,9 @@ launchpad 是**正文**，不是盖在对话上的弹窗：没有会话时整块
 | 对话区滚轮 | 滚动；到顶时请求更早一页 |
 | 侧栏滚轮 | 滚动面板 |
 | 点工作流行 | 打开会话、fork 节点或 worktree；选择 Diff 文件 |
+| 点命令面板条目 | 执行该命令（点不动的列表等于把 `ctrl+p` 让给键盘） |
+| 点排队消息 | 取消并取回草稿，与在那里按 `enter` 一致 |
+| 点浮层外的界面 | 关闭浮层；点在浮框本身上则被吸收，不会穿透到背后的控件 |
 | 点偏好或快捷键行 | 选中该行、打开快捷键编辑器或开始键位捕获 |
 | 点审批操作 | 执行与按键相同的允许一次、规则并允许或拒绝操作 |
 

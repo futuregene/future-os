@@ -25,6 +25,13 @@ cargo run -p future-tui --example workbench_demo -- --scenario chat --plain     
 
 # the mouse acceptance check (hit regions at 120x38 and 90x24)
 cargo run -p future-tui --example workbench_demo -- --self-test
+
+# every page driven by real key and pointer events (regions, frames, states)
+cargo run -p future-tui --example workbench_interaction -- --size 120x38
+cargo run -p future-tui --example workbench_interaction -- --size 40x12
+
+# …and the behavioural half: does the row under the pointer open *that* row?
+cargo run -p future-tui --example workbench_semantics
 ```
 
 Scenarios: `launchpad` (no session yet), `chat` (a conversation with the work
@@ -167,6 +174,9 @@ ASCII letter or digit, F1–F24, Tab, navigation keys and Enter/Escape.
 | Click a workflow row | Open the session, fork point or worktree; choose a Diff file |
 | Click a preference or shortcut row | Select it, open the shortcut editor or start key capture |
 | Click an approval action | Apply the same allow-once, allow-rule or deny decision as its key |
+| Click a palette entry | Run that command (the list a pointer cannot press leaves `ctrl+p` to the keyboard alone) |
+| Click a queued prompt | Recall it into the draft, exactly as `enter` does there |
+| Click the page around an overlay | Close it; a click on the box itself is absorbed, never passed to the control behind it |
 
 Mouse reporting is SGR 1006 and starts with the persisted preference (enabled by default). `/mouse` releases and restores it at runtime and saves the choice; the terminal is always restored on exit. Draft text, cursor, folded pastes and image attachments are kept per session across overlays, launchpad visits and session switches (for the lifetime of this TUI process, not persisted to disk).
 

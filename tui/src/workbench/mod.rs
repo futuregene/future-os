@@ -312,6 +312,9 @@ pub struct Workbench {
     /// against it.
     last_frame: (u16, u16),
     hit: layout::HitMap,
+    /// The hit map's length when the overlay started painting — see
+    /// [`Self::overlay_mark`].
+    overlay_mark: usize,
     cursor: Option<(u16, u16)>,
     drag: Option<Drag>,
 }
@@ -371,6 +374,7 @@ impl Workbench {
             tick: 0,
             last_frame: (0, 0),
             hit: layout::HitMap::new(),
+            overlay_mark: 0,
             cursor: None,
             drag: None,
         }
@@ -461,6 +465,13 @@ impl Workbench {
     /// The hit map of the last frame (tests, diagnostics).
     pub fn hits(&self) -> &layout::HitMap {
         &self.hit
+    }
+
+    /// Whether a divider grab is in flight. The driver needs it to know a drag
+    /// is its own rather than a new press, and a pointer test needs it to tell
+    /// "the press started a drag" from "the press did nothing".
+    pub fn dragging(&self) -> bool {
+        self.drag.is_some()
     }
 
     /// `/` palette entries that match the current query: `(command, description)`.
@@ -1396,11 +1407,24 @@ impl Workbench {
         if event.kind != mouse::MouseKind::Press {
             return Vec::new();
         }
-        let Some(id) = self.hit.hit(event.x, event.y).map(str::to_string) else {
+        // Resolve against what the *overlay* painted, not the page under it. A
+        // modal that leaves the frame beneath in the hit map would let a click
+        // on its own padding reach a sidebar tab and switch the panel behind it.
+        let mark = self.overlay_mark;
+        let Some(id) = self
+            .hit
+            .hit_after(event.x, event.y, mark)
+            .map(str::to_string)
+        else {
+            // Nothing of the overlay is here: the reader clicked the dimmed page,
+            // which is the plain way out of every overlay.
             self.overlay = None;
             return vec![WbAction::Redraw];
         };
         match id.as_str() {
+            // The box's own padding, its title rule, its hints: part of the
+            // overlay, so a click there is absorbed rather than dismissing it.
+            "overlay.surface" => Vec::new(),
             "approval.y" => self.handle_overlay_key(overlay, "y", data),
             "approval.n" => self.handle_overlay_key(overlay, "n", data),
             "approval.a" => self.handle_overlay_key(overlay, "a", data),
@@ -1414,6 +1438,36 @@ impl Workbench {
             }
             "preferences.reset" => self.handle_overlay_key(Overlay::Preferences, "enter", data),
             _ => {
+                if let Some(index) = id
+                    .strip_prefix("queue.row.")
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
+                    // A queued prompt is a real verb (`recall`, the same one
+                    // `enter` runs); under the overlay the page's own click
+                    // handler is never reached, so it has to be repeated here.
+                    self.queue_index = index;
+                    return data
+                        .queue
+                        .get(index)
+                        .map(|row| vec![WbAction::RecallQueued(row.run_id.clone())])
+                        .unwrap_or_default();
+                }
+                if let Some(index) = id
+                    .strip_prefix("palette.row.")
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
+                    // The palette is a menu: a click on an entry runs it, which
+                    // is what `enter` does on the highlighted one.
+                    self.palette_index = index;
+                    let chosen = self
+                        .palette_entries()
+                        .get(index)
+                        .map(|(command, _)| command.to_string());
+                    self.overlay = None;
+                    return chosen
+                        .map(|command| vec![WbAction::Command(command)])
+                        .unwrap_or_else(|| vec![WbAction::Redraw]);
+                }
                 if let Some(index) = id
                     .strip_prefix("diff.file.")
                     .and_then(|v| v.parse::<usize>().ok())
@@ -1471,7 +1525,11 @@ impl Workbench {
                 vec![WbAction::Redraw]
             }
             mouse::MouseKind::Press => {
-                let id = self.hit.hit(event.x, event.y).map(str::to_string);
+                let mark = self.overlay_mark;
+                let id = self
+                    .hit
+                    .hit_after(event.x, event.y, mark)
+                    .map(str::to_string);
                 match id.as_deref() {
                     Some(id) if id.strip_prefix("picker.row.").is_some() => {
                         if let Some(ordinal) = id
@@ -1697,6 +1755,12 @@ impl Workbench {
 
     pub(crate) fn hit_map(&mut self) -> &mut layout::HitMap {
         &mut self.hit
+    }
+
+    /// The first region this frame's overlay painted — set by the compositor so
+    /// a pointer is resolved against the overlay and not the page under it.
+    pub(crate) fn set_overlay_mark(&mut self, mark: usize) {
+        self.overlay_mark = mark;
     }
 
     pub(crate) fn clear_hits(&mut self) {
@@ -3412,5 +3476,205 @@ mod tests {
         assert_eq!(current, vec!["zh"]);
         // …and it opens on that row rather than on the first one.
         assert_eq!(workbench.picker.index, 1);
+    }
+
+    /// A point that no region claims, so a click there is the page itself.
+    fn empty_point(workbench: &Workbench, w: u16, h: u16) -> Option<(u16, u16)> {
+        (0..h)
+            .flat_map(|y| (0..w).map(move |x| (x, y)))
+            .find(|&(x, y)| workbench.hits().hit(x, y).is_none())
+    }
+
+    /// An overlay is a modal surface, not a painting over live controls: a
+    /// click on the box is the box's, and a click on the page beyond it closes
+    /// it. Before this, the overlay registered nothing of its own, so a click
+    /// on its padding reached the sidebar tab beneath (and, because the
+    /// overlay's own handler did not know that id, silently did nothing at all).
+    #[test]
+    fn an_overlay_absorbs_clicks_on_its_own_surface_and_closes_on_the_page() {
+        for overlay in [
+            Overlay::Help,
+            Overlay::Palette,
+            Overlay::History,
+            Overlay::Tree,
+            Overlay::Fork,
+            Overlay::Worktree,
+            Overlay::Preferences,
+        ] {
+            let data = demo::chat();
+            let mut wb = workbench();
+            wb.overlay = Some(overlay);
+            wb.render(&data, 120, 38);
+            let Some((x, y)) = empty_point(&wb, 120, 38) else {
+                continue;
+            };
+            wb.handle(
+                WbEvent::Mouse(mouse::MouseEvent {
+                    kind: mouse::MouseKind::Press,
+                    x,
+                    y,
+                    shift: false,
+                    alt: false,
+                    ctrl: false,
+                }),
+                &data,
+            );
+            assert_eq!(
+                wb.overlay, None,
+                "{overlay:?}: clicking the page at ({x},{y}) must close it"
+            );
+        }
+
+        let data = demo::chat();
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Help);
+        wb.render(&data, 120, 38);
+        let surface = workbench_surface(&wb);
+        wb.handle(
+            WbEvent::Mouse(mouse::MouseEvent {
+                kind: mouse::MouseKind::Press,
+                x: surface.x + surface.w / 2,
+                y: surface.y + surface.h / 2,
+                shift: false,
+                alt: false,
+                ctrl: false,
+            }),
+            &data,
+        );
+        assert_eq!(
+            wb.overlay,
+            Some(Overlay::Help),
+            "a click on the box itself must not dismiss it"
+        );
+    }
+
+    fn workbench_surface(wb: &Workbench) -> crate::workbench::layout::Rect {
+        wb.hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "overlay.surface")
+            .map(|(rect, _)| *rect)
+            .expect("the overlay claims a surface")
+    }
+
+    /// The palette is a menu: an entry a pointer cannot press leaves the whole
+    /// `ctrl+p` road open to the keyboard alone.
+    #[test]
+    fn the_command_palette_runs_the_entry_under_the_pointer() {
+        let data = demo::chat();
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Palette);
+        for ch in "diff".chars() {
+            wb.handle(WbEvent::Key(ch.to_string()), &data);
+        }
+        wb.render(&data, 120, 38);
+        let expected = wb.palette_entries()[0].0.to_string();
+        assert_eq!(
+            click_region(&mut wb, &data, 120, 38, "palette.row.0"),
+            vec![WbAction::Command(expected)]
+        );
+        assert_eq!(wb.overlay, None);
+    }
+
+    /// A queued prompt is a verb under the overlay too: the page's own click
+    /// handler is never reached while a card is up.
+    #[test]
+    fn a_queued_prompt_is_clickable_inside_its_overlay() {
+        let mut data = demo::chat();
+        data.queue = vec![state::QueuedPrompt {
+            run_id: "run-1".into(),
+            text: "first".into(),
+        }];
+        let mut wb = workbench();
+        wb.surface_command("/queue", &data);
+        assert_eq!(
+            click_region(&mut wb, &data, 120, 38, "queue.row.0"),
+            vec![WbAction::RecallQueued("run-1".into())]
+        );
+    }
+
+    /// A box is drawn where its hit regions say it is. The workflow overlays are
+    /// painted at the left edge when the terminal is narrower than the box, and
+    /// A box is drawn where its hit regions say it is. The workflow overlays are
+    /// painted at the left edge when the terminal is narrower than the box, and
+    /// centred when it is wider; a rect that assumed one of those on a frame
+    /// that got the other was a whole margin out — invisible at 120 columns, and
+    /// at 160 a click on a file name closed the card instead of opening it.
+    #[test]
+    fn a_wide_terminal_paints_the_review_box_where_its_hit_regions_are() {
+        let mut data = demo::chat();
+        data.diff = Some(state::DiffView {
+            files: (0..4)
+                .map(|index| diff_review::DiffFile {
+                    path: format!("src/{index}.rs"),
+                    status: "M".into(),
+                })
+                .collect(),
+            ..state::DiffView::default()
+        });
+        for width in [120u16, 160, 200] {
+            let mut wb = workbench();
+            wb.overlay = Some(Overlay::Diff);
+            let rows = wb.render(&data, width, 44);
+            // Where the file name is actually drawn, not where a rect claims it
+            // is: the painted cell is what a reader points at.
+            let (y, x) = rows
+                .iter()
+                .enumerate()
+                .find_map(|(y, row)| {
+                    let painted = crate::utils::strip_ansi_codes(row);
+                    painted
+                        .find("src/1.rs")
+                        .map(|byte| (y, painted[..byte].chars().count().saturating_sub(2)))
+                })
+                .unwrap_or_else(|| panic!("{width}: the file row is not painted"));
+            assert_eq!(
+                wb.handle(
+                    WbEvent::Mouse(mouse::MouseEvent {
+                        kind: mouse::MouseKind::Press,
+                        x: x as u16,
+                        y: y as u16,
+                        shift: false,
+                        alt: false,
+                        ctrl: false,
+                    }),
+                    &data
+                ),
+                vec![WbAction::SelectDiff(1)],
+                "{width}: clicking the painted file name at ({x},{y}) must open it"
+            );
+            assert_eq!(wb.overlay, Some(Overlay::Diff), "{width}: the card closed");
+        }
+    }
+
+    /// A button the box had to clip is not clickable: a target for text nobody
+    /// can see is a trap, and at 12 columns the approval row does not fit.
+    #[test]
+    fn clipped_approval_buttons_leave_no_target_outside_the_frame() {
+        let mut data = demo::chat();
+        data.approval = Some(state::ApprovalView {
+            request_id: "req".into(),
+            title: "run the tests".into(),
+            rules: vec![state::AllowRule {
+                path: "target/**".into(),
+                access: "write".into(),
+            }],
+            ..state::ApprovalView::default()
+        });
+        for (w, h) in [(12u16, 6u16), (16, 8), (40, 12)] {
+            let mut wb = workbench();
+            wb.overlay = Some(Overlay::Approval);
+            wb.render(&data, w, h);
+            for (rect, id) in wb.hits().regions() {
+                assert!(
+                    rect.right() <= w && rect.bottom() <= h,
+                    "{w}x{h}: {id} at ({},{}) {}x{} runs past the frame",
+                    rect.x,
+                    rect.y,
+                    rect.w,
+                    rect.h
+                );
+            }
+        }
     }
 }
