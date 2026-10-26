@@ -1,5 +1,6 @@
 import { createElement } from "react";
-import { AppState, StyleSheet, type AppStateStatus } from "react-native";
+import { applyStreamEvent, emptyTimeline } from "@future-os/remote-client/timeline";
+import { AppState, StyleSheet, View, type AppStateStatus } from "react-native";
 import { lightColors, layout } from "../../theme/tokens";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { TimelineCard } from "../TimelineCard";
@@ -57,6 +58,12 @@ function render(item: TimelineItem, props: Partial<TimelineCardProps> = {}) {
 }
 function hasText(text: string) {
   return tree.root.findAll(node => node.props.children === text).length > 0;
+}
+/** The live clock's dot — the one glyph only a streaming reply paints. */
+function dots() {
+  return tree.root.findAll(node =>
+    typeof node.type === "string"
+    && StyleSheet.flatten(node.props.style)?.backgroundColor === lightColors.generating).length;
 }
 // One rendered row carries each label, but a React Native <Text> contributes a
 // composite and a host instance — count host nodes so a row counts once.
@@ -498,6 +505,22 @@ test("the slice a streaming reply is still on stays visible", () => {
   expect(hasText("chat.thoughtCompleted")).toBe(false);
 });
 
+// A call whose result never arrives keeps `status: "running"` in the projection
+// — no event will ever say otherwise. What settles it is the reply: once the
+// reply has stopped, nothing is running any more, and a row that still claimed
+// it was would read as live work in a reply the reader just watched end.
+test("a settled reply's unfinished call reads as interrupted, not running", () => {
+  render(reply({ segments: [tool("c1", { complete: false, status: "running" })] }));
+  expect(hasText("chat.toolInterrupted")).toBe(true);
+  expect(hasText("chat.runningCommand")).toBe(false);
+});
+
+test("a streaming reply's unfinished call is the one that is running", () => {
+  render(reply({ streaming: true, segments: [tool("c1", { complete: false, status: "running" })] }));
+  expect(hasText("chat.runningCommand")).toBe(true);
+  expect(hasText("chat.toolInterrupted")).toBe(false);
+});
+
 test("a mid-run history preview has a generating footer even before the start timestamp arrives", () => {
   render(reply({ streaming: true }));
   expect(hasText("chat.generating")).toBe(true);
@@ -514,6 +537,45 @@ test("terminal update replaces the timer with copy and authoritative duration", 
 test("legacy history without timing metadata shows completed instead of a blank footer", () => {
   render(reply({}));
   expect(hasText("chat.responseCompleted")).toBe(true);
+});
+
+// The whole report, end to end: a run whose terminal never arrived, then the
+// next prompt's run on the same session. The phone used to draw two generating
+// dots here — one of them still counting hours after the run that owned it had
+// been replaced. At most one reply can be streaming, and the projection (not
+// this row) is what knows it.
+test("two runs in one session leave one live indicator, not two", () => {
+  type Event = Parameters<typeof applyStreamEvent>[1];
+  const stream = (state: ReturnType<typeof emptyTimeline>, event: Event) =>
+    applyStreamEvent(state, event);
+  let timeline = stream(emptyTimeline(), {
+    type: "agent_start", data: "{}", runId: "run-old", idx: 0,
+  });
+  timeline = stream(timeline, {
+    type: "text_chunk", data: JSON.stringify({ text: "older reply" }), runId: "run-old", idx: 1,
+  });
+  timeline = stream(timeline, {
+    type: "tool_start", data: JSON.stringify({ tool_id: "c1", tool_name: "shell" }), runId: "run-old", idx: 2,
+  });
+  // `agent_end` for run-old never arrives; the next prompt starts a new run.
+  timeline = stream(timeline, {
+    type: "agent_start", data: "{}", runId: "run-new", idx: 0,
+  });
+  timeline = stream(timeline, {
+    type: "text_chunk", data: JSON.stringify({ text: "newer reply" }), runId: "run-new", idx: 1,
+  });
+
+  const replies = timeline.items.filter(item => item.kind === "message" && item.role === "assistant");
+  expect(replies).toHaveLength(2);
+  act(() => {
+    tree = create(createElement(View, null,
+      replies.map(item => createElement(TimelineCard, { item, key: item.id }))));
+  });
+  // One live clock, and no claim that the abandoned call is still running.
+  expect(dots()).toBe(1);
+  expect(countText("chat.toolInterrupted")).toBe(1);
+  expect(countText("chat.runningCommand")).toBe(0);
+  expect(countText("chat.runCompleted")).toBe(0);
 });
 
 const compaction = (fields: Partial<Extract<TimelineSegment, { kind: "compaction" }>> = {}): TimelineSegment => ({
