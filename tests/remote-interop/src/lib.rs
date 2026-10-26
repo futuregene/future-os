@@ -58,8 +58,33 @@ impl Fixture {
         chunk_bytes: usize,
         chunk_delay: Duration,
     ) -> anyhow::Result<Self> {
-        Self::start_transfer_with_ids(
+        Self::start_transfer_routed(
             nats_url,
+            nats_url,
+            websocket_url,
+            file_bytes,
+            chunk_bytes,
+            chunk_delay,
+        )
+        .await
+    }
+    /// Serve the client through a different NATS endpoint than the host's.
+    ///
+    /// A weak-network fixture puts only one leg on the bad link — the client's,
+    /// like a phone on a mobile network talking to a host on a good one — so the
+    /// host must reach the broker directly. Both endpoints are still loopback,
+    /// and both must be, or the fixture would be measuring a real relay.
+    pub async fn start_transfer_routed(
+        host_nats_url: &str,
+        client_nats_url: &str,
+        websocket_url: &str,
+        file_bytes: Vec<u8>,
+        chunk_bytes: usize,
+        chunk_delay: Duration,
+    ) -> anyhow::Result<Self> {
+        Self::start_split(
+            host_nats_url,
+            client_nats_url,
             websocket_url,
             DESKTOP,
             PAIR,
@@ -75,7 +100,8 @@ impl Fixture {
         desktop: &str,
         pair: &str,
     ) -> anyhow::Result<Self> {
-        Self::start_transfer_with_ids(
+        Self::start_split(
+            nats_url,
             nats_url,
             websocket_url,
             desktop,
@@ -86,8 +112,10 @@ impl Fixture {
         )
         .await
     }
-    async fn start_transfer_with_ids(
-        nats_url: &str,
+    #[allow(clippy::too_many_arguments)]
+    async fn start_split(
+        host_nats_url: &str,
+        client_nats_url: &str,
         websocket_url: &str,
         desktop: &str,
         pair: &str,
@@ -95,7 +123,7 @@ impl Fixture {
         chunk_bytes: usize,
         chunk_delay: Duration,
     ) -> anyhow::Result<Self> {
-        for endpoint in [nats_url, websocket_url] {
+        for endpoint in [host_nats_url, client_nats_url, websocket_url] {
             let parsed = url::Url::parse(endpoint)?;
             anyhow::ensure!(
                 parsed.host_str() == Some("127.0.0.1"),
@@ -120,7 +148,7 @@ impl Fixture {
             nkey_seed: client_key.seed()?,
             user_jwt: jwt.clone(),
             refresh_token: "fixture_refresh".into(),
-            nats_url: nats_url.into(),
+            nats_url: client_nats_url.into(),
             nats_ws_url: websocket_url.into(),
             jwt_expires_at: expires,
             token_url: "https://fixture.invalid/auth/token".into(),
@@ -138,7 +166,7 @@ impl Fixture {
             desktop_id: desktop.into(),
             nkey_seed: desktop_key.seed()?,
             user_jwt: jwt,
-            nats_url: nats_url.into(),
+            nats_url: host_nats_url.into(),
             nats_ws_url: websocket_url.into(),
             jwt_expires_at: expires,
             control_url: None,

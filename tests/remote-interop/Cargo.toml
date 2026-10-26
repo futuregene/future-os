@@ -41,6 +41,11 @@ path = "tests/rust_client_server.rs"
 required-features = ["network-tests"]
 
 [[test]]
+name = "weak_network"
+path = "tests/weak_network.rs"
+required-features = ["network-tests"]
+
+[[test]]
 name = "page_encoding"
 path = "tests/page_encoding.rs"
 required-features = ["network-tests"]
