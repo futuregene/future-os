@@ -434,6 +434,49 @@ describe("live events", () => {
   });
 
   /**
+   * A conversation's *settings* are not a run.
+   *
+   * The Agent clears `runId` on everything session-scoped — `model_changed`,
+   * `session_name_changed`, a standalone compaction — and the host replays that
+   * journal whenever it creates a conversation's observer
+   * (`agent_bridge::observer::replay_session_events`), which is precisely what
+   * opening a conversation does. Read as "an event arrived, so the run is in
+   * flight" (the guess that is right for a run's own events, whose types are
+   * open-ended), a `model_changed` from days ago put the row the reader had just
+   * clicked into the recent view's "active" stretch, and the next catalogue read
+   * moved it back out — the reported session that jumped to active and back
+   * without ever running.
+   */
+  it("does not read a conversations settings event as a run", async () => {
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+
+    pushKind("catalog", "desktop_a", {
+      domain: "sessions",
+      version: { epoch: "epoch_1", revision: 1 },
+      sessions: [{ sessionId: "sess_1", title: "One", lastMessageAt: 1_000 }],
+    });
+    pushKind("event", "desktop_a", {
+      sessionId: "sess_1",
+      runId: "",
+      type: "model_changed",
+      data: "{\"modelId\":\"m\"}",
+    });
+    await settle();
+    expect(hook.current.catalogs[0]!.sessions[0]!.streaming).toBe(false);
+
+    // And the guard leaves the flag alone rather than clearing it: a
+    // conversation that *is* running keeps its dot through a settings change,
+    // which is the case a conservative "unknown event means stopped" would lose.
+    pushKind("event", "desktop_a", { sessionId: "sess_1", runId: "run_1", type: "text_chunk", data: "{}" });
+    await settle();
+    pushKind("event", "desktop_a", { sessionId: "sess_1", runId: "", type: "session_name_changed", data: "{}" });
+    await settle();
+    expect(hook.current.catalogs[0]!.sessions[0]!.streaming).toBe(true);
+    hook.unmount();
+  });
+
+  /**
    * The same rule as the user sees it, over the merged list: a host's row cannot
    * overtake this machine's conversation by *speaking*, only by the host saying
    * it moved. The phone's list never could — it draws the host's rows in the
