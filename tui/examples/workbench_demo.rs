@@ -141,12 +141,10 @@ fn main() {
                     _ => Overlay::Worktree,
                 });
             }
-            "usage" | "skills" | "sessions" | "jobs" => {
+            "recent" | "workspaces" => {
                 workbench.panel = match name {
-                    "usage" => PanelId::Usage,
-                    "skills" => PanelId::Skills,
-                    "sessions" => PanelId::Sessions,
-                    _ => PanelId::Jobs,
+                    "workspaces" => PanelId::Workspaces,
+                    _ => PanelId::Recent,
                 };
             }
             "help" | "palette" | "preferences" => {
@@ -207,9 +205,9 @@ fn run_self_test() -> Result<(), String> {
                 .map(|(rect, _)| *rect)
                 .ok_or_else(|| format!("{width}x{height}: no {id} region"))
         };
-        let tab = region(&workbench, "sidebar.tab.usage")?;
+        let tab = region(&workbench, "sidebar.tab.workspaces")?;
         if workbench.handle(WbEvent::Mouse(press(tab.x, tab.y)), &data)
-            != vec![WbAction::SwitchPanel(PanelId::Usage)]
+            != vec![WbAction::SwitchPanel(PanelId::Workspaces)]
         {
             return Err("sidebar tab".into());
         }

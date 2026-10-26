@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import type { RemotePeer } from "../../../features/remote-peer/remotePeerClient";
+import type { RemotePeer, RemoteWorkspaceRow } from "../../../features/remote-peer/remotePeerClient";
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mergeConversations, rowKey } from "../../../features/remote-peer/mergeConversations";
@@ -15,6 +15,7 @@ import { useRemotePeers } from "./useRemotePeers";
  */
 
 const listRemotePeers = vi.fn<() => Promise<RemotePeer[]>>();
+const listRemoteWorkspaces = vi.fn<(desktopId: string) => Promise<RemoteWorkspaceRow[]>>();
 const fetchRemoteSessions = vi.fn<(desktopId: string) => Promise<unknown>>();
 const connectAllRemotePeers = vi.fn<() => Promise<RemotePeer[]>>();
 const connectRemotePeer = vi.fn<(desktopId: string) => Promise<RemotePeer>>();
@@ -40,7 +41,7 @@ vi.mock("../../../features/remote-peer/remotePeerClient", async (importOriginal)
     listRemoteInstalledSkills: () => Promise.resolve([]),
     listRemoteModels: () => listRemoteModels(),
     listRemotePeers: () => listRemotePeers(),
-    listRemoteWorkspaces: () => Promise.resolve([]),
+    listRemoteWorkspaces: (...args: Parameters<typeof listRemoteWorkspaces>) => listRemoteWorkspaces(...args),
     unpairRemotePeer: (...args: Parameters<typeof unpairRemotePeer>) => unpairRemotePeer(...args),
   };
 });
@@ -86,6 +87,7 @@ beforeEach(() => {
   listeners = [];
   listRemotePeers.mockReset().mockResolvedValue([peer()]);
   fetchRemoteSessions.mockReset().mockResolvedValue({ desktopId: "desktop_a", sessions: [] });
+  listRemoteWorkspaces.mockReset().mockResolvedValue([]);
   connectAllRemotePeers.mockReset().mockResolvedValue([]);
   connectRemotePeer.mockReset().mockResolvedValue(peer());
   unpairRemotePeer.mockReset().mockResolvedValue(null);
@@ -1119,7 +1121,7 @@ describe("a push the hook cannot read", () => {
     ["a catalog for a domain this hook does not model", "catalog", { domain: "settings", version: version(1) }],
     ["a catalog whose version is not an object", "catalog", { domain: "sessions", version: null, sessions: [] }],
     ["a catalog whose version lacks a revision", "catalog", { domain: "sessions", version: { epoch: EPOCH }, sessions: [] }],
-    ["a workspaces snapshot (tracked, not rendered)", "catalog", { domain: "workspaces", version: version(1), workspaces: [] }],
+    ["a workspaces snapshot whose workspaces are not a list", "catalog", { domain: "workspaces", version: version(1), workspaces: "nope" }],
     ["an activity packet whose rows are not a list", "catalog", { domain: "sessions_activity", version: version(1), activity: "nope" }],
     ["an activity packet of rows that are not objects", "catalog", { domain: "sessions_activity", version: version(1), activity: [null, 7] }],
     ["an activity packet that names no session", "catalog", { domain: "sessions_activity", version: version(1), activity: [{ lastMessageAt: 5 }] }],
@@ -1201,6 +1203,80 @@ describe("a push the hook cannot read", () => {
     const byId = new Map(hook.current.catalogs.map(catalog => [catalog.desktopId, catalog]));
     expect(byId.get("desktop_a")!.sessions[0]!.lastMessageAt).toBe(4_000);
     expect(byId.get("desktop_b")!.sessions[0]!.lastMessageAt).toBe(1_000);
+    hook.unmount();
+  });
+});
+
+/**
+ * A host's workspaces: the headings the merged list draws for a folder that has
+ * no conversations in it yet.
+ *
+ * A workspace group is built from the rows under it, so this read is the only
+ * way a folder created on that machine appears here before anything is said in
+ * it — the "＋" on the list's own workspace section, a create from that machine's
+ * settings, or one made from the phone. It is read beside the sessions, on the
+ * same cadence, and carried by the same catalogue.
+ */
+describe("a host's workspaces", () => {
+  it("reads them beside its sessions, so an empty folder has a heading", async () => {
+    const created: RemoteWorkspaceRow[] = [
+      { id: "ws_new", name: "charts", path: "/Users/me/charts", pinned: false, kind: "user", orderedAt: 900 },
+    ];
+    listRemoteWorkspaces.mockResolvedValue(created);
+
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+
+    expect(listRemoteWorkspaces).toHaveBeenCalledWith("desktop_a");
+    expect(hook.current.catalogs[0]!.workspaces).toEqual(created);
+    hook.unmount();
+  });
+
+  it("keeps the last list when that read fails, rather than emptying every heading", async () => {
+    listRemoteWorkspaces.mockResolvedValue([
+      { id: "ws_1", name: "one", path: "/a", pinned: false },
+    ]);
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+    expect(hook.current.catalogs[0]!.workspaces).toHaveLength(1);
+
+    // A read that fails says nothing about the host's workspaces — and the
+    // headings are how a folder with nothing in it is reached at all, so they
+    // stay until the host answers again.
+    listRemoteWorkspaces.mockRejectedValue(new Error("peer busy"));
+    await act(async () => {
+      await hook.current.refresh();
+    });
+    await settle();
+
+    expect(hook.current.catalogs[0]!.workspaces?.map(workspace => workspace.id)).toEqual(["ws_1"]);
+    hook.unmount();
+  });
+
+  it("applies a pushed workspaces snapshot, and a sessions snapshot does not drop it", async () => {
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+
+    // What a create on that host publishes: the new folder, and nothing else.
+    pushKind("catalog", "desktop_a", {
+      domain: "workspaces",
+      version: { epoch: "epoch_1", revision: 1 },
+      workspaces: [{ id: "ws_new", name: "charts", path: "/c", pinned: false }],
+    });
+    await settle();
+    expect(hook.current.catalogs[0]!.workspaces?.map(workspace => workspace.id)).toEqual(["ws_new"]);
+
+    // The two domains are two halves of one catalogue: a sessions snapshot says
+    // nothing about workspaces, so it must not take them with it.
+    pushKind("catalog", "desktop_a", {
+      domain: "sessions",
+      version: { epoch: "epoch_1", revision: 2 },
+      sessions: [{ sessionId: "sess_1", title: "One", lastMessageAt: 1 }],
+    });
+    await settle();
+
+    expect(hook.current.catalogs[0]!.workspaces?.map(workspace => workspace.id)).toEqual(["ws_new"]);
+    expect(hook.current.catalogs[0]!.sessions.map(session => session.sessionId)).toEqual(["sess_1"]);
     hook.unmount();
   });
 });

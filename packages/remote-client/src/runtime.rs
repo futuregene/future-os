@@ -288,6 +288,62 @@ pub fn should_retry_connect(
     matches!(error, crate::Error::RemoteTransport(_)) && !user_stopped && !already_retrying
 }
 
+/// What a failed reconnect attempt says, with identical repeats folded.
+///
+/// A peer that is merely not running answers every attempt the same way, and
+/// the supervisor keeps retrying — with backoff, and for as long as the pairing
+/// exists — because a host that comes back should recover without the user
+/// doing anything. Printing each attempt therefore put one
+/// `remote_peer: reconnect attempt … failed` line on every backoff step: in the
+/// desktop log that was eighteen identical lines per retry window, a window
+/// every few minutes. The question a reader actually has ("is this still
+/// failing, and how hard?") drowned in its own repetition.
+///
+/// So the first failure of a window prints in full, an identical repeat is
+/// counted instead of printed, and the count is said as one line when the
+/// message changes or the window closes. A *different* error always prints —
+/// that is news, and it carries the count of the run it interrupted.
+///
+/// The lines are returned rather than printed here so the folding is assertable
+/// without capturing the process's stderr.
+#[derive(Default)]
+struct ReconnectLog {
+    last: Option<String>,
+    folded: usize,
+}
+
+impl ReconnectLog {
+    /// Report one failed attempt: the failure itself when it is new (after the
+    /// folded count of the run before it), nothing while it repeats.
+    fn note(&mut self, desktop_id: &str, message: &str) -> Vec<String> {
+        if self.last.as_deref() == Some(message) {
+            self.folded += 1;
+            return Vec::new();
+        }
+        let mut lines: Vec<String> = self.close(desktop_id).into_iter().collect();
+        lines.push(format!(
+            "remote_peer: reconnect attempt for {desktop_id} failed: {message}"
+        ));
+        self.last = Some(message.to_owned());
+        lines
+    }
+
+    /// The line that reports the folded repeats, if there were any, and the end
+    /// of this run: the next failure prints in full again, so each retry window
+    /// starts with its own copy of the error rather than inheriting a count from
+    /// minutes ago.
+    fn close(&mut self, desktop_id: &str) -> Option<String> {
+        let last = self.last.take()?;
+        let folded = std::mem::take(&mut self.folded);
+        if folded == 0 {
+            return None;
+        }
+        Some(format!(
+            "remote_peer: {desktop_id} still failing {folded} further attempts: {last}"
+        ))
+    }
+}
+
 /// The stream half of a connection: the traffic-key handle, the subscriptions
 /// the event task drains and the sink they go to. Bundled rather than returned
 /// as a tuple now that a fourth lane (the host-wide `state.>`) is among them.
@@ -1979,6 +2035,8 @@ impl Client {
         let client = self.clone();
         self.spawn(async move {
             let mut attempt = 0usize;
+            // One window's worth of failures, folded: see [`ReconnectLog`].
+            let mut log = ReconnectLog::default();
             loop {
                 tokio::time::sleep(reconnect_delay(attempt)).await;
                 if client.is_stopped()
@@ -2041,9 +2099,9 @@ impl Client {
                         return;
                     }
                     Err(error) => {
-                        eprintln!(
-                            "remote_peer: reconnect attempt for {desktop_id} failed: {error}"
-                        );
+                        for line in log.note(&desktop_id, &error.to_string()) {
+                            eprintln!("{line}");
+                        }
                         // A refused credential is not a network fault. The same
                         // grant cannot authenticate however often it is presented,
                         // and retrying it is exactly the loop this supervisor was
@@ -2060,6 +2118,12 @@ impl Client {
                 // caps the wait, and a clock here would need a monotonic source the
                 // tests would have to fake.
                 if attempt >= reconnect_attempt_budget() {
+                    // Say how many attempts this window folded before the long
+                    // sleep, otherwise the count would surface minutes later,
+                    // next to a failure it no longer describes.
+                    if let Some(line) = log.close(&desktop_id) {
+                        eprintln!("{line}");
+                    }
                     // Network outages are not crash loops. Keep one cancellable
                     // owner asleep, then retry; never resend business commands.
                     tokio::time::sleep(delay_unit() * 300).await;
@@ -3137,6 +3201,58 @@ mod tests {
     fn the_attempt_budget_is_bounded() {
         assert_eq!(reconnect_attempt_budget(), RECONNECT_DELAYS_SECS.len() * 3);
         assert!(reconnect_attempt_budget() > 0);
+    }
+    /// A host that stays away must not cost one log line per attempt.
+    #[test]
+    fn a_persistent_failure_is_printed_once_per_window() {
+        let mut log = ReconnectLog::default();
+        let first = log.note("desk", "no responders: no responders");
+        assert_eq!(first.len(), 1, "the first failure of a window is said");
+        assert!(first[0].contains("no responders"), "{first:?}");
+        for attempt in 0..reconnect_attempt_budget() - 1 {
+            assert!(
+                log.note("desk", "no responders: no responders").is_empty(),
+                "attempt {attempt} repeated the same error and must be counted, not printed"
+            );
+        }
+        let summary = log
+            .close("desk")
+            .expect("the window reports the attempts it folded");
+        assert!(
+            summary.contains(&format!(
+                "still failing {} further attempts",
+                reconnect_attempt_budget() - 1
+            )),
+            "{summary}"
+        );
+        // The next window starts from the error itself again, so no count is
+        // ever read against a failure it does not describe.
+        let next = log.note("desk", "no responders: no responders");
+        assert_eq!(next.len(), 1, "{next:?}");
+        assert!(next[0].contains("reconnect attempt for desk failed"));
+    }
+    /// A different error is news, and it carries the count of the run before it.
+    #[test]
+    fn a_changed_failure_reports_the_folded_run_before_it() {
+        let mut log = ReconnectLog::default();
+        assert_eq!(log.note("desk", "no responders").len(), 1);
+        assert!(log.note("desk", "no responders").is_empty());
+        assert!(log.note("desk", "no responders").is_empty());
+        let lines = log.note("desk", "connection refused");
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines[0].contains("still failing 2 further attempts: no responders"),
+            "{lines:?}"
+        );
+        assert!(lines[1].contains("failed: connection refused"), "{lines:?}");
+    }
+    /// One failure is not a folded run, and closing an empty log says nothing.
+    #[test]
+    fn closing_a_log_reports_nothing_without_a_folded_repeat() {
+        let mut log = ReconnectLog::default();
+        assert!(log.close("desk").is_none());
+        assert_eq!(log.note("desk", "no responders").len(), 1);
+        assert!(log.close("desk").is_none(), "nothing was folded");
     }
     /// The rotation deadline is the grant's own expiry, not a fixed cadence.
     ///

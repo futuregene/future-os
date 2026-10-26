@@ -56,6 +56,9 @@ pub struct TuiSettings {
     pub reduced_motion: Option<bool>,
     /// Single-column, focused, static reading without the auxiliary sidebar.
     pub linear_reading: Option<bool>,
+    /// Workspace paths pinned in the rail's 置顶 section (`pinnedWorkspaces`),
+    /// in the order they were pinned.
+    pub pinned_workspaces: Option<Vec<String>>,
 }
 
 impl TuiSettings {
@@ -119,6 +122,17 @@ impl TuiSettings {
         if let Some(linear) = self.linear_reading {
             obj.insert("linearReading".into(), Value::Bool(linear));
         }
+        if let Some(pinned) = &self.pinned_workspaces {
+            obj.insert(
+                "pinnedWorkspaces".into(),
+                Value::Array(
+                    pinned
+                        .iter()
+                        .map(|path| Value::String(path.clone()))
+                        .collect(),
+                ),
+            );
+        }
         Value::Object(obj)
     }
 
@@ -155,6 +169,15 @@ impl TuiSettings {
                 .and_then(|value| serde_json::from_value(value.clone()).ok()),
             reduced_motion: value.get("reducedMotion").and_then(Value::as_bool),
             linear_reading: value.get("linearReading").and_then(Value::as_bool),
+            pinned_workspaces: value.get("pinnedWorkspaces").and_then(Value::as_array).map(
+                |paths| {
+                    paths
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                },
+            ),
         }
     }
 }
@@ -188,6 +211,7 @@ mod tests {
             }),
             reduced_motion: Some(true),
             linear_reading: Some(true),
+            pinned_workspaces: Some(vec!["/src/future-os".into()]),
         };
         let back = TuiSettings::from_json(&settings.to_json());
         assert_eq!(back.default_model.as_deref(), Some("future/deepseek-flash"));
@@ -206,6 +230,7 @@ mod tests {
         assert!(!back.notify.unwrap().bell);
         assert_eq!(back.reduced_motion, Some(true));
         assert_eq!(back.linear_reading, Some(true));
+        assert_eq!(back.pinned_workspaces, Some(vec!["/src/future-os".into()]));
     }
 
     #[test]

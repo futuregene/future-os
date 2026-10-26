@@ -44,56 +44,6 @@ impl UsageData {
     }
 }
 
-/// How far a goal todo has got, as the panel's one-cell marker says it.
-///
-/// The four states are the goal control plane's own vocabulary folded down to
-/// what fits beside a line of text: `✔` finished, `◉` claimed and running, `○`
-/// waiting, `✖` blocked or superseded.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum TodoState {
-    #[default]
-    Open,
-    /// Claimed by an agent (a live lease) right now.
-    Active,
-    Done,
-    /// Blocked by a gate or a failed dependency.
-    Blocked,
-    /// Superseded or cancelled: it will not happen.
-    Cancelled,
-}
-
-impl TodoState {
-    /// The one-cell marker the panel prints before the text.
-    pub fn glyph(self) -> &'static str {
-        match self {
-            Self::Open => "○",
-            Self::Active => "◉",
-            Self::Done => "✔",
-            Self::Blocked | Self::Cancelled => "✖",
-        }
-    }
-
-    pub fn is_done(self) -> bool {
-        self == Self::Done
-    }
-
-    /// Still worth counting as outstanding (`○` and `◉`).
-    pub fn is_open(self) -> bool {
-        matches!(self, Self::Open | Self::Active)
-    }
-}
-
-/// One goal todo, as the sidebar shows it.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct TodoItem {
-    /// The control plane's todo id (empty for a fixture that names none).
-    pub id: String,
-    pub text: String,
-    /// `P0`…`P3`, or empty when the store recorded none.
-    pub priority: String,
-    pub state: TodoState,
-}
-
 /// One conversation in the sidebar's session panel.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionRow {
@@ -106,6 +56,23 @@ pub struct SessionRow {
     pub age: String,
     /// The session the workbench is attached to.
     pub current: bool,
+}
+
+/// One workspace in the 工作区 tab: a directory several conversations are filed
+/// under, as the desktop's rail groups them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkspaceGroup {
+    /// The heading's text (the directory's own name).
+    pub name: String,
+    /// The directory, which is the group's identity — two checkouts can share a
+    /// name.
+    pub path: String,
+    /// Above the unpinned workspaces, in the 置顶 section.
+    pub pinned: bool,
+    /// How long ago anything in it was refreshed (`5m`, `3h`).
+    pub age: String,
+    /// The conversations filed under it, most recently refreshed first.
+    pub session_ids: Vec<String>,
 }
 
 /// One model the `/model` picker offers.
@@ -141,18 +108,11 @@ pub fn thinking_index(level: &str) -> usize {
         .unwrap_or(0)
 }
 
-/// One skill in the sidebar's skills panel.
+/// One skill the `/` palette offers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SkillRow {
     pub name: String,
     pub description: String,
-}
-
-/// One scheduled job in the sidebar's jobs panel.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct JobRow {
-    pub name: String,
-    pub state: String,
 }
 
 /// What the input box holds. The editor itself lives in `Live`; this snapshot
@@ -273,49 +233,35 @@ impl Activity {
     }
 }
 
-/// The sidebar's five panels, in tab order.
+/// The sidebar's two panels, in tab order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PanelId {
+    /// Every conversation by when it was refreshed — the default landing panel.
     #[default]
-    Todo,
-    Jobs,
-    Sessions,
-    Usage,
-    Skills,
+    Recent,
+    /// The same conversations filed the way the desktop's rail files them.
+    Workspaces,
 }
 
 impl PanelId {
-    pub const ALL: [PanelId; 5] = [
-        PanelId::Todo,
-        PanelId::Jobs,
-        PanelId::Sessions,
-        PanelId::Usage,
-        PanelId::Skills,
-    ];
+    pub const ALL: [PanelId; 2] = [PanelId::Recent, PanelId::Workspaces];
 
-    /// The tab label (the contract's `待办 任务 会话 用量 技能`, and its English
-    /// reading).
+    /// The tab label.
     pub fn label(self, lang: Language) -> &'static str {
         t(
             lang,
             match self {
-                Self::Todo => Key::TabTodo,
-                Self::Jobs => Key::TabJobs,
-                Self::Sessions => Key::TabSessions,
-                Self::Usage => Key::TabUsage,
-                Self::Skills => Key::TabSkills,
+                Self::Recent => Key::TabRecent,
+                Self::Workspaces => Key::TabWorkspaces,
             },
         )
     }
 
-    /// The stable id used in key bindings, hit regions and `/panel` arguments.
+    /// The stable id used in hit regions and `/panel` arguments.
     pub fn id(self) -> &'static str {
         match self {
-            Self::Todo => "todo",
-            Self::Jobs => "jobs",
-            Self::Sessions => "sessions",
-            Self::Usage => "usage",
-            Self::Skills => "skills",
+            Self::Recent => "recent",
+            Self::Workspaces => "workspaces",
         }
     }
 
@@ -323,6 +269,14 @@ impl PanelId {
         Self::ALL
             .into_iter()
             .find(|panel| panel.id().eq_ignore_ascii_case(id))
+            // The old panel names keep working where they still mean something:
+            // `sessions` is the list 最近 shows, and the rest of the five-panel
+            // vocabulary is a way of asking for the file.
+            .or(match id.to_ascii_lowercase().as_str() {
+                "sessions" | "session" => Some(Self::Recent),
+                "workspace" | "todo" | "jobs" | "usage" | "skills" => Some(Self::Workspaces),
+                _ => None,
+            })
     }
 
     pub fn index(self) -> usize {
@@ -354,17 +308,19 @@ pub struct WorkbenchData {
     pub mode: String,
     pub permission: String,
     pub usage: UsageData,
-    /// The goal the todo board belongs to, in the goal's own words. Empty when
-    /// this workspace has no goal in progress — the panel then says so instead
-    /// of printing a list of unexplained rows.
-    pub goal_label: String,
-    pub todos: Vec<TodoItem>,
+    /// The conversations, most recently refreshed first. Both panels read this
+    /// one list; 工作区 only adds the filing.
     pub sessions: Vec<SessionRow>,
+    /// The workspace groups 工作区 files them under, pinned first.
+    pub workspaces: Vec<WorkspaceGroup>,
+    /// Conversations that belong to no workspace — the desktop's plain chats.
+    /// Session ids, in the same order as `sessions`.
+    pub chats: Vec<String>,
     /// Every model the agent offers, in the agent's order. The `/model` picker
     /// groups them by provider; an empty list is a picker that says so.
     pub models: Vec<ModelChoice>,
+    /// The installed skills, for the `/` palette's skill half.
     pub skills: Vec<SkillRow>,
-    pub jobs: Vec<JobRow>,
     /// Already-rendered ANSI rows of the conversation (see `ChatArea`). The
     /// workbench never parses markdown itself: the same renderer the inline TUI
     /// uses produces these, so a reply looks the same in both.
@@ -511,14 +467,18 @@ mod tests {
 
     #[test]
     fn panels_cycle_in_the_contracts_order() {
-        assert_eq!(PanelId::ALL.len(), 5);
-        assert_eq!(PanelId::Todo.next(), PanelId::Jobs);
-        assert_eq!(PanelId::Skills.next(), PanelId::Todo);
-        assert_eq!(PanelId::Todo.previous(), PanelId::Skills);
+        assert_eq!(PanelId::ALL.len(), 2);
+        assert_eq!(PanelId::Recent.next(), PanelId::Workspaces);
+        assert_eq!(PanelId::Workspaces.next(), PanelId::Recent);
+        assert_eq!(PanelId::Recent.previous(), PanelId::Workspaces);
         for panel in PanelId::ALL {
             assert_eq!(PanelId::parse(panel.id()), Some(panel));
             assert_eq!(PanelId::parse(&panel.id().to_uppercase()), Some(panel));
         }
+        // The panel names the surface used to have still resolve: a `/panel
+        // sessions` from habit lands somewhere real rather than nowhere.
+        assert_eq!(PanelId::parse("sessions"), Some(PanelId::Recent));
+        assert_eq!(PanelId::parse("workspace"), Some(PanelId::Workspaces));
         assert_eq!(PanelId::parse("nope"), None);
     }
 

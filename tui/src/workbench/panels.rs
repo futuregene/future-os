@@ -1,30 +1,176 @@
-//! The sidebar's five panels, as pure renderers.
+//! The sidebar's two panels, as pure renderers.
+//!
+//! The rail is a *task* panel: 最近 lists every conversation by when it was
+//! last refreshed, and 工作区 files the same conversations the way the desktop
+//! does — pinned workspaces first, then the workspaces themselves, then the
+//! plain chats. Nothing else lives here: the usage figures are on the status
+//! bar, and skills are the palette's business.
 //!
 //! Each `render` receives an area, the shared data and the palette, and returns
 //! exactly as many rows as the area is tall (padded), each exactly as wide as
 //! the area — while registering a hit region per interactive row. Keeping them
 //! pure is what lets the same code serve the sidebar and the `ctrl+b`
 //! full-screen panel: only the area changes.
+//!
+//! [`rows`] is the *model* behind those rows: the same list, without paint or a
+//! width. The keyboard needs it (to know which rows hold a conversation) and so
+//! does the pointer (a click names a row index), so both read one definition
+//! instead of re-deriving "what is selectable" beside it.
 
-use crate::workbench::ansi::{align_right, fit, width};
+use crate::workbench::ansi::{fit, width};
 use crate::workbench::i18n::{self, t, Key, Language};
 use crate::workbench::layout::{HitMap, Rect};
-use crate::workbench::state::{PanelId, TodoState, WorkbenchData};
+use crate::workbench::state::{PanelId, SessionRow, WorkbenchData};
 use crate::workbench::theme::Palette;
-use crate::workbench::widgets;
 
 /// Rows the panel uses for its heading (a title plus a blank line).
 const HEADING_ROWS: usize = 2;
+
+/// One row of the sidebar, in paint order.
+///
+/// The panel is a list of *typed* rows rather than a list of sessions, because
+/// the 工作区 tab needs headings between them — and because a heading must never
+/// answer `up`/`down` as if it were a conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Row {
+    /// A section heading (置顶 / 工作区 / 对话会话).
+    Section(Section),
+    /// A workspace's own heading; the index is into `data.workspaces`.
+    Workspace(usize),
+    /// A conversation; the index is into `data.sessions`.
+    Session(usize),
+}
+
+impl Row {
+    /// The conversation this row opens, if it is one.
+    pub fn session(self) -> Option<usize> {
+        match self {
+            Self::Session(index) => Some(index),
+            _ => None,
+        }
+    }
+}
+
+/// The 工作区 tab's three sections, in the desktop's order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Section {
+    /// Conversations of the workspaces the reader pinned.
+    Pinned,
+    /// Every other workspace, newest activity first.
+    Workspaces,
+    /// Conversations that belong to no workspace at all.
+    Chats,
+}
+
+impl Section {
+    fn label(self, lang: Language) -> &'static str {
+        t(
+            lang,
+            match self {
+                Self::Pinned => Key::SectionPinned,
+                Self::Workspaces => Key::SectionWorkspaces,
+                Self::Chats => Key::SectionChats,
+            },
+        )
+    }
+}
+
+/// The panel's rows, in paint order.
+pub fn rows(panel: PanelId, data: &WorkbenchData) -> Vec<Row> {
+    match panel {
+        PanelId::Recent => (0..data.sessions.len()).map(Row::Session).collect(),
+        PanelId::Workspaces => {
+            let mut rows: Vec<Row> = Vec::new();
+            // One heading per section, not one per group inside it: the pinned
+            // workspaces share one 置顶 block however many there are.
+            for (pinned, kind) in [(true, Section::Pinned), (false, Section::Workspaces)] {
+                let mut headed = false;
+                for index in 0..data.workspaces.len() {
+                    if data.workspaces[index].pinned != pinned {
+                        continue;
+                    }
+                    if !headed {
+                        rows.push(Row::Section(kind));
+                        headed = true;
+                    }
+                    rows.push(Row::Workspace(index));
+                    for id in &data.workspaces[index].session_ids {
+                        if let Some(at) = data.sessions.iter().position(|row| &row.id == id) {
+                            rows.push(Row::Session(at));
+                        }
+                    }
+                }
+            }
+            let mut headed = false;
+            for id in &data.chats {
+                if let Some(at) = data.sessions.iter().position(|row| &row.id == id) {
+                    if !headed {
+                        rows.push(Row::Section(Section::Chats));
+                        headed = true;
+                    }
+                    rows.push(Row::Session(at));
+                }
+            }
+            rows
+        }
+    }
+}
+
+/// The first row holding a conversation, starting at `from` and wrapping; `None`
+/// when the panel has nothing to select.
+pub fn first_session(rows: &[Row], from: usize) -> Option<usize> {
+    if rows.is_empty() {
+        return None;
+    }
+    (0..rows.len())
+        .map(|offset| (from + offset) % rows.len())
+        .find(|index| rows[*index].session().is_some())
+}
+
+/// The next row holding a conversation in `delta`'s direction, stopping (not
+/// wrapping) at either end: a list that jumps from its last row back to its
+/// first is a list the reader cannot tell the ends of.
+pub fn step_session(rows: &[Row], from: usize, delta: i32) -> Option<usize> {
+    let mut index = from;
+    loop {
+        if delta < 0 {
+            if index == 0 {
+                return None;
+            }
+            index -= 1;
+        } else {
+            index += 1;
+            if index >= rows.len() {
+                return None;
+            }
+        }
+        if rows[index].session().is_some() {
+            return Some(index);
+        }
+    }
+}
+
+/// Where the panel's window starts and which row its cursor stands on, in
+/// `rows(panel, data)` indices. One value because the two move together: the
+/// window follows the cursor, and a caller that could set one without the other
+/// could hide the row it just selected.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PanelView {
+    pub scroll: usize,
+    /// The row the rail's cursor is on; only a conversation row holds it.
+    pub selected: usize,
+}
 
 pub fn render(
     panel: PanelId,
     data: &WorkbenchData,
     palette: &Palette,
     area: Rect,
-    scroll: usize,
+    view: PanelView,
     hit: &mut HitMap,
     lang: Language,
 ) -> Vec<String> {
+    let PanelView { scroll, selected } = view;
     if area.is_empty() {
         return Vec::new();
     }
@@ -43,26 +189,72 @@ pub fn render(
     let body_rows = rows.saturating_sub(HEADING_ROWS);
     let items = item_rows(panel, data, palette, columns, lang);
     let total = items.len();
-    // The window: `scroll` items in, and the last row is spent on an indicator
-    // when more remain below.
-    let visible = if total.saturating_sub(scroll) > body_rows {
-        body_rows.saturating_sub(1)
-    } else {
-        body_rows
-    };
-    for offset in 0..visible {
-        let index = scroll + offset;
-        let Some(text) = items.get(index) else { break };
-        let y = area.y + (HEADING_ROWS + offset) as u16;
-        hit.push(
-            Rect::new(area.x, y, area.w, 1),
-            format!("sidebar.row.{index}"),
-        );
-        lines.push(palette.panel_row(&fit(text, columns), columns));
+
+    // The window: `scroll` items in, filled a whole item at a time (a
+    // conversation's second row is never painted without its first), and the
+    // last blank row is spent on an indicator when more remain below.
+    let mut visible = 0usize;
+    let mut used = 0usize;
+    while scroll + visible < total {
+        let height = items[scroll + visible].len();
+        // Reserve one row for the "more" indicator when this is not the end.
+        let reserve = usize::from(scroll + visible + 1 < total);
+        if used + height + reserve > body_rows {
+            break;
+        }
+        used += height;
+        visible += 1;
     }
-    if visible < body_rows {
-        if total > scroll + visible {
-            let more = total - scroll - visible;
+    // A selection the window cannot hold scrolls the window, not the row: the
+    // reader asked for a row, so the row is what has to be on screen.
+    let mut start = scroll;
+    if selected >= start + visible && visible > 0 {
+        // Walk back from the selection until it fits.
+        let mut begin = selected;
+        let mut needed = items[selected].len();
+        while begin > 0 {
+            let next = items[begin - 1].len();
+            if needed + next > body_rows {
+                break;
+            }
+            needed += next;
+            begin -= 1;
+        }
+        start = begin;
+        visible = 0;
+        used = 0;
+        while start + visible < total {
+            let height = items[start + visible].len();
+            let reserve = usize::from(start + visible + 1 < total);
+            if used + height + reserve > body_rows {
+                break;
+            }
+            used += height;
+            visible += 1;
+        }
+        // The selection must be inside the window it scrolled for.
+        while selected >= start + visible && !items.is_empty() {
+            start += 1;
+        }
+    }
+
+    let mut painted = 0usize;
+    for offset in 0..visible {
+        let index = start + offset;
+        let Some(item) = items.get(index) else { break };
+        for text in item {
+            let y = area.y + (HEADING_ROWS + painted) as u16;
+            hit.push(
+                Rect::new(area.x, y, area.w, 1),
+                format!("sidebar.row.{index}"),
+            );
+            lines.push(palette.panel_row(&fit(text, columns), columns));
+            painted += 1;
+        }
+    }
+    if painted < body_rows {
+        if total > start + visible {
+            let more = total - start - visible;
             lines.push(palette.panel_row(
                 &palette.dim(&fit(&format!("  ↓ {more} more"), columns)),
                 columns,
@@ -84,269 +276,154 @@ pub fn render(
 /// The one-line counts beside the panel title.
 fn summary(panel: PanelId, data: &WorkbenchData, lang: Language) -> String {
     match panel {
-        PanelId::Todo => {
-            let open = data
-                .todos
-                .iter()
-                .filter(|todo| todo.state.is_open())
-                .count();
-            i18n::render(lang, Key::SummaryTodo, &[&open, &data.todos.len()])
+        PanelId::Recent => i18n::render(lang, Key::SummarySessions, &[&data.sessions.len()]),
+        PanelId::Workspaces => {
+            i18n::render(lang, Key::SummaryWorkspaces, &[&data.workspaces.len()])
         }
-        PanelId::Jobs => i18n::render(lang, Key::SummaryJobs, &[&data.jobs.len()]),
-        PanelId::Sessions => i18n::render(lang, Key::SummarySessions, &[&data.sessions.len()]),
-        PanelId::Usage => String::new(),
-        PanelId::Skills => i18n::render(lang, Key::SummarySkills, &[&data.skills.len()]),
     }
 }
 
-/// One text row per item, already colourised, clipped to `columns`.
+/// Each item's painted rows, already colourised and clipped to `columns`.
+///
+/// An item is one row or two: 最近 prints the conversation's name and, beneath
+/// it, the workspace it is filed under and when it was refreshed — three facts
+/// that do not fit one 34-column row without shredding the name. Under a
+/// workspace heading the heading already names the workspace, so there the
+/// conversation is one row: its name and its age.
 fn item_rows(
     panel: PanelId,
     data: &WorkbenchData,
     palette: &Palette,
     columns: usize,
     lang: Language,
-) -> Vec<String> {
-    match panel {
-        PanelId::Todo => {
-            // The board names itself first: a bare list of `✔ P0 …` rows is what
-            // made a reader ask "what is this 待办?". The goal's own objective is
-            // the answer, and without a goal the panel says what would create
-            // one instead of showing an unexplained empty list.
-            let mut rows: Vec<String> = Vec::new();
-            if data.goal_label.is_empty() {
-                rows.push(palette.dim(&format!("  {}", t(lang, Key::PanelNoGoal))));
-                rows.push(palette.dim(&format!("  {}", t(lang, Key::PanelNoGoalHint))));
-                if data.todos.is_empty() {
-                    return rows;
+) -> Vec<Vec<String>> {
+    let model = rows(panel, data);
+    if model.is_empty() {
+        return vec![vec![palette.dim(&format!(
+            "  {}",
+            t(
+                lang,
+                match panel {
+                    PanelId::Recent => Key::PanelEmptySessions,
+                    PanelId::Workspaces => Key::PanelEmptyWorkspaces,
                 }
-            } else {
-                rows.push(format!(
-                    " {} {}",
-                    palette.text(palette.iris, t(lang, Key::PanelGoalLabel)),
-                    palette.dim(&fit(&data.goal_label, columns.saturating_sub(4)))
-                ));
-            }
-            if data.todos.is_empty() {
-                rows.push(palette.dim(&format!("  {}", t(lang, Key::PanelEmptyGoalTodo))));
-                return rows;
-            }
-            let items: Vec<String> = data
-                .todos
-                .iter()
-                .map(|todo| {
-                    let glyph = palette.text(glyph_color(todo.state, palette), todo.state.glyph());
-                    let priority = if todo.priority.is_empty() {
-                        String::new()
-                    } else {
-                        format!("{} ", palette.dim(&todo.priority))
-                    };
-                    let text = format!(" {glyph} {priority}{}", todo.text);
-                    if todo.state == TodoState::Active {
-                        palette.strong(palette.accent, &fit(&text, columns))
-                    } else if todo.state.is_done() || todo.state == TodoState::Cancelled {
-                        palette.dim(&fit(&text, columns))
-                    } else {
-                        palette.body(&fit(&text, columns))
-                    }
-                })
-                .collect();
-            rows.extend(items);
-            rows
-        }
-        PanelId::Jobs => {
-            if data.jobs.is_empty() {
-                return empty(t(lang, Key::PanelEmptyJobs), palette);
-            }
-            data.jobs
-                .iter()
-                .map(|job| {
-                    let state = align_right(&job.state, 10.min(columns / 3).max(4));
-                    let tail_width = width(&state);
-                    let name = fit(&job.name, columns.saturating_sub(tail_width + 1));
-                    format!(
-                        "{}{} {}",
-                        palette.body(&name),
-                        " ".repeat(columns.saturating_sub(width(&name) + tail_width + 1)),
-                        palette.dim(&state)
-                    )
-                })
-                .collect()
-        }
-        PanelId::Sessions => {
-            if data.sessions.is_empty() {
-                return empty(t(lang, Key::PanelEmptySessions), palette);
-            }
-            data.sessions
-                .iter()
-                .map(|session| {
-                    let marker = if session.current {
-                        palette.text(palette.accent, "▸")
-                    } else {
-                        palette.dim("·")
-                    };
-                    let tail = format!("{} · {}", session.workspace, session.age);
-                    let tail = fit(&tail, (columns / 2).max(8));
-                    let tail_width = width(&tail);
-                    let title = fit(&session.title, columns.saturating_sub(tail_width + 3));
-                    let pad = columns.saturating_sub(2 + width(&title) + tail_width);
-                    format!(
-                        "{marker} {}{}{}",
-                        if session.current {
-                            palette.strong(palette.fg, &title)
-                        } else {
-                            palette.body(&title)
-                        },
-                        " ".repeat(pad),
-                        palette.dim(&tail)
-                    )
-                })
-                .collect()
-        }
-        PanelId::Usage => usage_rows(data, palette, columns, lang),
-        PanelId::Skills => {
-            if data.skills.is_empty() {
-                return empty(t(lang, Key::PanelEmptySkills), palette);
-            }
-            data.skills
-                .iter()
-                .map(|skill| {
-                    let name =
-                        palette.text(palette.purple, &fit(&format!("/{}", skill.name), columns));
-                    if skill.description.is_empty() {
-                        name
-                    } else {
-                        // The description is a second, dimmer line under the
-                        // name: a name column and a description column would
-                        // clip both at 36 cells.
-                        vec![name]
-                            .into_iter()
-                            .chain(std::iter::once(
-                                palette.dim(&fit(&format!("  {}", skill.description), columns)),
-                            ))
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    }
-                })
-                .flat_map(|entry| {
-                    entry
-                        .split('\n')
-                        .map(str::to_string)
-                        .collect::<Vec<String>>()
-                })
-                .collect()
-        }
+            )
+        ))]];
     }
+    model
+        .iter()
+        .map(|row| match row {
+            Row::Section(section) => vec![section_row(*section, palette, columns, lang)],
+            Row::Workspace(index) => match data.workspaces.get(*index) {
+                Some(workspace) => vec![workspace_row(workspace, palette, columns, lang)],
+                None => vec![palette.panel_row("", columns)],
+            },
+            Row::Session(index) => match data.sessions.get(*index) {
+                Some(session) => session_rows(panel, session, palette, columns),
+                None => vec![palette.panel_row("", columns)],
+            },
+        })
+        .collect()
 }
 
-fn glyph_color(state: TodoState, palette: &Palette) -> u8 {
-    match state {
-        TodoState::Done => palette.green,
-        TodoState::Active => palette.accent,
-        TodoState::Blocked | TodoState::Cancelled => palette.red,
-        TodoState::Open => palette.muted,
-    }
+/// A section heading with a dim rule to the edge, so the three blocks read as
+/// blocks rather than as more rows.
+fn section_row(section: Section, palette: &Palette, columns: usize, lang: Language) -> String {
+    let label = format!(" {} ", section.label(lang));
+    let rule = "─".repeat(columns.saturating_sub(width(&label)));
+    let painted = format!(
+        "{}{}",
+        palette.text(palette.muted, &label),
+        palette.text(palette.border, &rule)
+    );
+    fit(&painted, columns)
 }
 
-fn usage_rows(
-    data: &WorkbenchData,
+/// A workspace's heading: its name, and how many conversations sit under it.
+fn workspace_row(
+    workspace: &crate::workbench::state::WorkspaceGroup,
     palette: &Palette,
     columns: usize,
     lang: Language,
-) -> Vec<String> {
-    let usage = data.usage;
-    let mut rows = Vec::new();
-    // Every value is composed from whole pieces and dropped whole when it does
-    // not fit: a `…` in the middle of `18.8k/1.0M` reads as a different number,
-    // and half a digit is worse than none.
-    let percent = format!("{:.1}%", usage.context_fraction() * 100.0);
-    let numbers = widgets::context_text(usage.ctx_used, usage.ctx_total);
-    let candidates = [
-        format!("{numbers} {percent}"),
-        numbers,
-        widgets::short_count(usage.ctx_used),
-    ];
-    rows.push(labelled_row(
-        t(lang, Key::UsageContext),
-        &candidates,
-        Palette::body,
-        Palette::dim,
-        palette,
-        columns,
-    ));
-    let bar_width = columns.saturating_sub(2).max(4);
-    rows.push(format!(
-        " {}",
-        widgets::progress(palette, usage.context_fraction(), bar_width, palette.accent)
-    ));
-
-    let cost = [widgets::cost_text(usage.cost)];
-    rows.push(labelled_row(
-        t(lang, Key::UsageCost),
-        &cost,
-        Palette::dim,
-        Palette::body,
-        palette,
-        columns,
-    ));
-    let cache = [format!("{}%", usage.cache_pct)];
-    rows.push(labelled_row(
-        t(lang, Key::UsageCache),
-        &cache,
-        Palette::dim,
-        Palette::body,
-        palette,
-        columns,
-    ));
-    let tps = [if usage.tps > 0.0 {
-        format!("{:.0} tok/s", usage.tps)
-    } else {
-        "—".to_string()
-    }];
-    rows.push(labelled_row(
-        t(lang, Key::UsageOutput),
-        &tps,
-        Palette::dim,
-        Palette::body,
-        palette,
-        columns,
-    ));
-    rows
+) -> String {
+    let tail_text = format!(
+        "{} {} · {}",
+        workspace.session_ids.len(),
+        t(lang, Key::SummaryUnitsSessions),
+        workspace.age
+    );
+    let tail = fit(
+        &tail_text,
+        width(&tail_text).min(columns.saturating_sub(12).max(6)),
+    );
+    let tail_width = width(&tail);
+    let name = fit(&workspace.name, columns.saturating_sub(tail_width + 2));
+    let pad = columns.saturating_sub(1 + width(&name) + tail_width);
+    format!(
+        " {}{}{}",
+        palette.strong(palette.fg, &name),
+        " ".repeat(pad),
+        palette.dim(&tail)
+    )
 }
 
-/// A `label … value` row: the widest candidate that fits beside the label wins,
-/// separated by at least one space, and the value is dropped rather than cut.
-fn labelled_row(
-    label: &str,
-    candidates: &[String],
-    label_style: fn(&Palette, &str) -> String,
-    value_style: fn(&Palette, &str) -> String,
+/// A conversation's rows: `▸ name` and, in 最近, `workspace · age` beneath it.
+fn session_rows(
+    panel: PanelId,
+    session: &SessionRow,
     palette: &Palette,
     columns: usize,
-) -> String {
-    // A label that does not fit is dropped, not ellipsized: `缓存命…` is
-    // half a word, and at that width the row has nothing to say anyway.
-    if 1 + width(label) > columns {
-        return " ".repeat(columns);
-    }
-    let painted_label = label_style(palette, label);
-    let room = columns.saturating_sub(1 + width(label) + 1);
-    match candidates.iter().find(|candidate| width(candidate) <= room) {
-        Some(value) => {
-            let pad = columns.saturating_sub(1 + width(label) + 1 + width(value));
-            format!(
-                " {}{}{}",
-                painted_label,
-                " ".repeat(1 + pad),
-                value_style(palette, value)
-            )
+) -> Vec<String> {
+    let marker = if session.current { "▸" } else { " " };
+    let marker = if session.current {
+        palette.text(palette.accent, marker)
+    } else {
+        palette.dim(marker)
+    };
+    let title = if session.current {
+        palette.strong(
+            palette.accent,
+            &fit(&session.title, columns.saturating_sub(2)),
+        )
+    } else {
+        palette.body(&fit(&session.title, columns.saturating_sub(2)))
+    };
+    match panel {
+        PanelId::Recent => {
+            // Three facts, two rows. The age is short and never worth cutting,
+            // so it is reserved and the *workspace* takes what is left; a path
+            // clipped at the end still reads as a path, a clipped age is `5`.
+            let room = columns.saturating_sub(3 + width(&session.age) + 3);
+            let workspace = fit(&session.workspace, room);
+            vec![
+                format!(" {marker}{title}"),
+                format!(
+                    "   {}",
+                    palette.dim(&fit(
+                        &format!("{workspace} · {}", session.age),
+                        columns.saturating_sub(3),
+                    ))
+                ),
+            ]
         }
-        None => fit(&format!(" {}", painted_label), columns),
+        PanelId::Workspaces => {
+            let tail = fit(&session.age, (columns / 3).max(4));
+            let tail_width = width(&tail);
+            // ` marker ` is three cells (a space, the marker, a space).
+            let title = fit(&session.title, columns.saturating_sub(3 + tail_width));
+            let pad = columns.saturating_sub(3 + width(&title) + tail_width);
+            let title = if session.current {
+                palette.strong(palette.accent, &title)
+            } else {
+                palette.body(&title)
+            };
+            vec![format!(
+                " {marker} {title}{}{}",
+                " ".repeat(pad),
+                palette.dim(&tail)
+            )]
+        }
     }
-}
-
-fn empty(text: &str, palette: &Palette) -> Vec<String> {
-    vec![palette.dim(&format!("  {text}"))]
 }
 
 #[cfg(test)]
@@ -358,7 +435,6 @@ mod tests {
     /// machine running the suite.
     const LANG: Language = Language::Zh;
     use crate::workbench::demo;
-    use crate::workbench::state::TodoItem;
     use crate::workbench::theme::FUTURE_DARK;
 
     const P: Palette = FUTURE_DARK;
@@ -367,13 +443,38 @@ mod tests {
         Rect::new(0, 0, 34, rows)
     }
 
+    fn panel_text(panel: PanelId, data: &WorkbenchData, lang: Language) -> String {
+        let mut hit = HitMap::new();
+        render(
+            panel,
+            data,
+            &P,
+            area(20),
+            PanelView::default(),
+            &mut hit,
+            lang,
+        )
+        .iter()
+        .map(|line| crate::utils::strip_ansi_codes(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+    }
+
     #[test]
     fn every_panel_fills_its_area_exactly() {
         let data = demo::chat();
         for panel in PanelId::ALL {
             for rows in [0u16, 1, 2, 3, 10, 30] {
                 let mut hit = HitMap::new();
-                let lines = render(panel, &data, &P, area(rows), 0, &mut hit, LANG);
+                let lines = render(
+                    panel,
+                    &data,
+                    &P,
+                    area(rows),
+                    PanelView::default(),
+                    &mut hit,
+                    LANG,
+                );
                 assert_eq!(lines.len(), rows as usize, "{panel:?} at {rows} rows");
                 for line in &lines {
                     assert_eq!(width(line), 34, "{panel:?}: {line:?}");
@@ -387,7 +488,15 @@ mod tests {
         let data = demo::chat();
         for panel in PanelId::ALL {
             let mut hit = HitMap::new();
-            let lines = render(panel, &data, &P, Rect::new(0, 0, 1, 6), 0, &mut hit, LANG);
+            let lines = render(
+                panel,
+                &data,
+                &P,
+                Rect::new(0, 0, 1, 6),
+                PanelView::default(),
+                &mut hit,
+                LANG,
+            );
             assert_eq!(lines.len(), 6);
             for line in &lines {
                 assert_eq!(width(line), 1, "{panel:?}: {line:?}");
@@ -396,38 +505,96 @@ mod tests {
     }
 
     #[test]
-    fn the_panels_show_their_own_content() {
+    fn the_recent_panel_names_each_conversations_workspace_and_age() {
+        let data = demo::chat();
+        // A wide rail, so the row has room for all three facts: title, the
+        // workspace it is filed under, and when it was refreshed.
+        let mut hit = HitMap::new();
+        let text: String = render(
+            PanelId::Recent,
+            &data,
+            &P,
+            Rect::new(0, 0, 60, 20),
+            PanelView::default(),
+            &mut hit,
+            Language::Zh,
+        )
+        .iter()
+        .map(|line| crate::utils::strip_ansi_codes(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+        assert!(text.contains("最近"), "{text}");
+        for session in &data.sessions {
+            assert!(text.contains(&session.title), "{session:?}: {text}");
+            assert!(text.contains(&session.workspace), "{session:?}: {text}");
+            assert!(text.contains(&session.age), "{session:?}: {text}");
+        }
+    }
+
+    #[test]
+    fn the_workspace_panel_files_pinned_then_workspaces_then_chats() {
+        let data = demo::chat();
+        let model = rows(PanelId::Workspaces, &data);
+        let labels: Vec<String> = model
+            .iter()
+            .filter_map(|row| match row {
+                Row::Section(section) => Some(section.label(Language::Zh).to_string()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                "置顶".to_string(),
+                "工作区".to_string(),
+                "对话会话".to_string()
+            ],
+            "{labels:?}"
+        );
+        // Every conversation is filed exactly once.
+        let sessions: Vec<usize> = model.iter().filter_map(|row| row.session()).collect();
+        let mut unique = sessions.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), sessions.len(), "a conversation listed twice");
+        assert!(data.workspaces[0].pinned, "the fixture pins one workspace");
+        // …and the pinned one leads.
+        assert_eq!(
+            model.iter().find_map(|row| match row {
+                Row::Workspace(index) => Some(*index),
+                _ => None,
+            }),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn a_click_lands_on_the_row_it_was_drawn_on() {
         let data = demo::chat();
         let mut hit = HitMap::new();
-        let todo: String = render(PanelId::Todo, &data, &P, area(14), 0, &mut hit, LANG)
-            .iter()
-            .map(|line| crate::utils::strip_ansi_codes(line))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(todo.contains("待办"), "{todo}");
-        assert!(todo.contains("✔"), "{todo}");
-        assert!(todo.contains("P0"), "{todo}");
-
-        let sessions: String = render(PanelId::Sessions, &data, &P, area(14), 0, &mut hit, LANG)
-            .iter()
-            .map(|line| crate::utils::strip_ansi_codes(line))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(sessions.contains("会话"), "{sessions}");
-        assert!(sessions.contains("future-os"), "{sessions}");
-
-        let usage: String = render(PanelId::Usage, &data, &P, area(14), 0, &mut hit, LANG)
-            .iter()
-            .map(|line| crate::utils::strip_ansi_codes(line))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(usage.contains("上下文"), "{usage}");
-        assert!(usage.contains("成本"), "{usage}");
+        let lines = render(
+            PanelId::Recent,
+            &data,
+            &P,
+            Rect::new(10, 4, 34, 12),
+            PanelView::default(),
+            &mut hit,
+            LANG,
+        );
+        assert!(!lines.is_empty());
+        // Heading occupies rows 4 and 5. 最近 gives each conversation two rows,
+        // so both of the first one's rows answer as that one row.
+        assert_eq!(hit.hit(12, 6), Some("sidebar.row.0"));
+        assert_eq!(hit.hit(12, 7), Some("sidebar.row.0"));
+        assert_eq!(hit.hit(12, 8), Some("sidebar.row.1"));
+        assert_eq!(hit.hit(12, 5), None, "the blank heading row is not a row");
     }
 
     #[test]
     fn a_long_list_scrolls_and_says_how_much_is_left() {
         let mut data = demo::chat();
+        data.chats.clear();
+        data.workspaces.clear();
         data.sessions = (0..40)
             .map(|index| crate::workbench::state::SessionRow {
                 id: format!("s{index}"),
@@ -439,7 +606,15 @@ mod tests {
             })
             .collect();
         let mut hit = HitMap::new();
-        let lines = render(PanelId::Sessions, &data, &P, area(10), 0, &mut hit, LANG);
+        let lines = render(
+            PanelId::Recent,
+            &data,
+            &P,
+            area(10),
+            PanelView::default(),
+            &mut hit,
+            LANG,
+        );
         let text: String = lines
             .iter()
             .map(|line| crate::utils::strip_ansi_codes(line))
@@ -448,10 +623,20 @@ mod tests {
         assert!(text.contains("conversation 0"), "{text}");
         assert!(text.contains("more"), "the tail says more are left: {text}");
 
-        // Scrolled into the middle, the last row is the last visible item, not
-        // the first.
+        // Scrolled into the middle, the first row is no longer the first item.
         let mut hit = HitMap::new();
-        let lines = render(PanelId::Sessions, &data, &P, area(10), 5, &mut hit, LANG);
+        let lines = render(
+            PanelId::Recent,
+            &data,
+            &P,
+            area(10),
+            PanelView {
+                scroll: 5,
+                selected: 0,
+            },
+            &mut hit,
+            LANG,
+        );
         let text: String = lines
             .iter()
             .map(|line| crate::utils::strip_ansi_codes(line))
@@ -462,148 +647,73 @@ mod tests {
     }
 
     #[test]
-    fn each_item_row_is_clickable_under_its_own_index() {
-        let data = demo::chat();
+    fn the_selection_is_always_inside_the_window() {
+        let mut data = demo::chat();
+        data.sessions = (0..12)
+            .map(|index| crate::workbench::state::SessionRow {
+                id: format!("s{index}"),
+                title: format!("conversation {index}"),
+                workspace: "~/future-os".into(),
+                age: "1h".into(),
+                current: index == 0,
+                parent_id: None,
+            })
+            .collect();
+        let total = rows(PanelId::Recent, &data).len();
+        assert!(total > 6);
         let mut hit = HitMap::new();
         let lines = render(
-            PanelId::Sessions,
+            PanelId::Recent,
             &data,
             &P,
-            Rect::new(10, 4, 34, 12),
-            0,
+            area(8),
+            PanelView {
+                scroll: 0,
+                selected: total - 1,
+            },
             &mut hit,
             LANG,
         );
-        assert!(!lines.is_empty());
-        // Heading occupies rows 4 and 5; the first item is row 6, column 10..44.
-        assert_eq!(hit.hit(12, 6), Some("sidebar.row.0"));
-        assert_eq!(hit.hit(12, 8), Some("sidebar.row.2"));
-        assert_eq!(hit.hit(12, 5), None, "the blank heading row is not a row");
-    }
-
-    #[test]
-    fn the_usage_panel_drops_numbers_whole_instead_of_cutting_them() {
-        let data = demo::chat();
-        for columns in [34usize, 30, 24, 18, 12, 8] {
-            let mut hit = HitMap::new();
-            let lines = render(
-                PanelId::Usage,
-                &data,
-                &P,
-                Rect::new(0, 0, columns as u16, 8),
-                0,
-                &mut hit,
-                LANG,
-            );
-            for line in &lines {
-                assert_eq!(width(line), columns, "{columns}: {line:?}");
-                let text = crate::utils::strip_ansi_codes(line);
-                assert!(
-                    !text.contains('…'),
-                    "{columns}: a value was cut instead of dropped: {text:?}"
-                );
-            }
-            let context = crate::utils::strip_ansi_codes(&lines[2]);
-            if columns >= 20 {
-                // The label and its value are two pieces, separated by a space
-                // (never `上下文6.9k`).
-                assert!(context.contains("上下文 "), "{columns}: {context:?}");
-                assert!(!context.contains("上下文…"), "{columns}: {context:?}");
-            }
-        }
-        // Wide enough: the full count and the percentage both survive.
-        let wide = crate::utils::strip_ansi_codes(&usage_rows(&data, &P, 34, LANG)[0]);
-        assert!(wide.contains("6.9k/1.0M"), "{wide:?}");
-        assert!(wide.contains("0.7%"), "{wide:?}");
+        let text: String = lines
+            .iter()
+            .map(|line| crate::utils::strip_ansi_codes(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains(&data.sessions[total - 1].title),
+            "the selected row must be on screen: {text}"
+        );
     }
 
     #[test]
     fn an_empty_panel_says_so_instead_of_showing_nothing() {
         let mut data = demo::chat();
-        data.todos.clear();
-        data.skills.clear();
-        data.jobs.clear();
-        // Both spellings: an empty panel that says nothing, or says it in the
-        // wrong language, is the same bug from the reader's seat.
-        for (panel, zh, en) in [
-            (PanelId::Skills, "没有技能", "no skills"),
-            (PanelId::Jobs, "没有定时任务", "no scheduled jobs"),
+        data.sessions.clear();
+        data.workspaces.clear();
+        data.chats.clear();
+        for (panel, needle) in [
+            (PanelId::Recent, "没有会话"),
+            (PanelId::Workspaces, "没有工作区"),
         ] {
-            for (lang, needle) in [(Language::Zh, zh), (Language::En, en)] {
-                let mut hit = HitMap::new();
-                let lines = render(panel, &data, &P, area(8), 0, &mut hit, lang);
-                let text: String = lines
-                    .iter()
-                    .map(|line| crate::utils::strip_ansi_codes(line))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                assert!(text.contains(needle), "{panel:?}: {text}");
-            }
+            let text = panel_text(panel, &data, LANG);
+            assert!(text.contains(needle), "{panel:?}: {text}");
         }
     }
 
-    /// The 待办 panel names the board: a bare list of `✔ P0 …` rows is what made
-    /// a reader ask "what is this 待办?".
     #[test]
-    fn the_todo_panel_names_the_goal_it_belongs_to() {
-        let mut data = demo::chat();
-        data.todos.clear();
-        for (lang, needle) in [
-            (Language::Zh, "这个目标还没有待办"),
-            (Language::En, "no todos yet"),
-        ] {
-            let text = panel_text(PanelId::Todo, &data, lang);
-            assert!(text.contains(&data.goal_label), "{lang:?}: {text}");
-            assert!(text.contains(needle), "{lang:?}: {text}");
+    fn only_conversations_are_selectable() {
+        let data = demo::chat();
+        let model = rows(PanelId::Workspaces, &data);
+        assert!(model.iter().any(|row| row.session().is_none()));
+        let first = first_session(&model, 0).expect("a conversation");
+        assert!(model[first].session().is_some());
+        // Stepping never lands on a heading, and it stops at the ends.
+        let mut index = first;
+        while let Some(next) = step_session(&model, index, 1) {
+            assert!(model[next].session().is_some());
+            index = next;
         }
-        // With a board, the goal's own words sit above its rows.
-        let mut data = demo::chat();
-        data.todos = vec![TodoItem {
-            id: String::new(),
-            text: "one open row".into(),
-            priority: "P2".into(),
-            state: TodoState::Open,
-        }];
-        let text = panel_text(PanelId::Todo, &data, Language::Zh);
-        assert!(text.contains(&data.goal_label), "{text}");
-        assert!(text.contains("one open row"), "{text}");
-    }
-
-    /// A workspace with no goal says so, and says what would create one, instead
-    /// of printing an empty list with no explanation.
-    #[test]
-    fn a_workspace_without_a_goal_explains_the_empty_board() {
-        let mut data = demo::chat();
-        data.goal_label.clear();
-        data.todos.clear();
-        for (lang, needle) in [
-            (Language::Zh, "本仓库没有进行中的目标"),
-            (Language::En, "no goal in progress"),
-        ] {
-            let text = panel_text(PanelId::Todo, &data, lang);
-            assert!(text.contains(needle), "{lang:?}: {text}");
-        }
-        // A goal's todos without a goal name (an older store) still list.
-        let mut data = demo::chat();
-        data.goal_label.clear();
-        data.todos = vec![TodoItem {
-            id: String::new(),
-            text: "orphan row".into(),
-            priority: String::new(),
-            state: TodoState::Open,
-        }];
-        let text = panel_text(PanelId::Todo, &data, Language::Zh);
-        assert!(text.contains("本仓库没有进行中的目标"), "{text}");
-        assert!(text.contains("orphan row"), "the rows still list: {text}");
-    }
-
-    /// One panel's painted rows, as one string with the styling stripped.
-    fn panel_text(panel: PanelId, data: &WorkbenchData, lang: Language) -> String {
-        let mut hit = HitMap::new();
-        render(panel, data, &P, area(10), 0, &mut hit, lang)
-            .iter()
-            .map(|line| crate::utils::strip_ansi_codes(line))
-            .collect::<Vec<_>>()
-            .join("\n")
+        assert_eq!(step_session(&model, index, 1), None);
+        assert_eq!(step_session(&model, 0, -1), None);
     }
 }

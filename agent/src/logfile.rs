@@ -249,14 +249,24 @@ macro_rules! eprintln_log {
     };
 }
 
+/// What a host logs when `RUST_LOG` says nothing.
+///
+/// `info` for the host's own rows, with the libraries that narrate their own
+/// plumbing pinned to WARN: HTTP/2 frames (`h2`), TLS records (`rustls`), gRPC
+/// and middleware chatter, and `async_nats`, which logs every library-level
+/// connect, reconnect and close at INFO — `connected successfully …`,
+/// `event: connected`, `event: closed`. A remote peer that is switched off makes
+/// the client retry on its own backoff, so those three arrived once per attempt
+/// and buried the host's rows. What fails still shows; the churn does not.
+const EMBEDDED_LOG_FILTER: &str = "info,h2=warn,rustls=warn,tonic=warn,tower=warn,async_nats=warn";
+
 /// Hosts install tracing before runtime/GUI threads. A file mirror is installed
 /// separately, only after winning the Desktop instance lock. The host log is
 /// distinct from standalone Agent logs; external attachment never opens them.
 pub fn init_embedded_tracing() {
     use tracing_subscriber::{fmt::MakeWriter, prelude::*};
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        tracing_subscriber::EnvFilter::new("info,h2=warn,rustls=warn,tonic=warn,tower=warn")
-    });
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(EMBEDDED_LOG_FILTER));
     let file_writer = || -> Box<dyn std::io::Write> {
         match get() {
             Some(mirror) => Box::new(mirror.make_writer()),
@@ -282,6 +292,38 @@ pub fn init_embedded_tracing() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The host log keeps its own rows and drops the broker library's.
+    ///
+    /// `async_nats` prints its three lifecycle lines at INFO once per connect
+    /// attempt, which for a peer that is switched off is a retry loop's worth of
+    /// them. They must not reach the host log, and a WARN from the same library
+    /// must: what fails is exactly what this log is for.
+    #[test]
+    fn the_embedded_filter_silences_broker_churn_but_not_its_failures() {
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new(EMBEDDED_LOG_FILTER))
+            .with_writer(std::io::sink)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            // The two targets `async-nats` logs those lines from.
+            assert!(!tracing::enabled!(
+                target: "async_nats::connector",
+                tracing::Level::INFO
+            ));
+            assert!(!tracing::enabled!(
+                target: "async_nats::lib",
+                tracing::Level::INFO
+            ));
+            assert!(tracing::enabled!(
+                target: "async_nats::connector",
+                tracing::Level::WARN
+            ));
+            // The host's own INFO rows are untouched.
+            assert!(tracing::enabled!(tracing::Level::INFO));
+            assert!(tracing::enabled!(target: "future_host::remote_peer", tracing::Level::INFO));
+        });
+    }
 
     #[test]
     fn strip_ansi_removes_sgr_codes() {

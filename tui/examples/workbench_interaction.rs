@@ -103,12 +103,9 @@ fn parse_size(text: &str) -> (u16, u16) {
 const PAGES: &[&str] = &[
     "launchpad",
     "chat",
-    "todo",
-    "panel-todo",
-    "panel-usage",
-    "panel-skills",
-    "panel-sessions",
-    "panel-jobs",
+    "workspaces",
+    "panel-recent",
+    "panel-workspaces",
     "queue",
     "approval",
     "approval-norule",
@@ -137,12 +134,9 @@ fn fixture(name: &str) -> (WorkbenchData, fn(&mut Workbench, &WorkbenchData)) {
     match name {
         "launchpad" => (demo::data(demo::Scenario::Launchpad), noop),
         "chat" => (chat(), noop),
-        "todo" => (demo::data(demo::Scenario::Todo), noop),
-        "panel-todo" => (chat(), |wb, _| wb.panel = PanelId::Todo),
-        "panel-usage" => (chat(), |wb, _| wb.panel = PanelId::Usage),
-        "panel-skills" => (chat(), |wb, _| wb.panel = PanelId::Skills),
-        "panel-sessions" => (chat(), |wb, _| wb.panel = PanelId::Sessions),
-        "panel-jobs" => (chat(), |wb, _| wb.panel = PanelId::Jobs),
+        "workspaces" => (demo::data(demo::Scenario::Workspaces), noop),
+        "panel-recent" => (chat(), |wb, _| wb.panel = PanelId::Recent),
+        "panel-workspaces" => (chat(), |wb, _| wb.panel = PanelId::Workspaces),
         "queue" => (
             {
                 let mut data = chat();
