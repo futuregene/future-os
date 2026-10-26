@@ -3098,6 +3098,127 @@ mod tests {
         );
     }
 
+    /// `tab` takes the keys into the rail and lands the cursor on the
+    /// conversation that is on screen: a cursor left at row 0 of a list the
+    /// reader never looked at would answer `enter` with someone else's session.
+    #[test]
+    fn tab_focuses_the_rail_on_the_conversation_on_screen() {
+        let mut data = demo::chat();
+        // Put the conversation on screen second in the list, so "row 0" and
+        // "the current conversation" are different answers.
+        data.sessions.swap(0, 1);
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        assert!(!workbench.sidebar_focus);
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        assert!(workbench.sidebar_focus);
+        let rows = panels::rows(PanelId::Recent, &data);
+        let current = data
+            .sessions
+            .iter()
+            .position(|session| session.current)
+            .expect("the fixture marks one conversation current");
+        assert_eq!(current, 1, "the fixture moved it off row 0");
+        assert_eq!(workbench.sidebar_index, 1, "the cursor lands on the chat");
+        assert_eq!(rows[workbench.sidebar_index].session(), Some(current));
+    }
+
+    /// `up`/`down` walk the rail's conversations (never its headings) and
+    /// `enter` opens the one under the cursor.
+    #[test]
+    fn up_and_down_move_the_rail_cursor_and_enter_opens_it() {
+        let data = demo::workspaces();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        workbench.panel = PanelId::Workspaces;
+        workbench.sidebar_index = 0;
+
+        // The first rows are a section heading and a workspace heading, which
+        // `down` steps over.
+        let rows = panels::rows(PanelId::Workspaces, &data);
+        assert!(rows[0].session().is_none());
+        assert!(rows[1].session().is_none());
+        assert_eq!(rows[2].session(), Some(0));
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        assert_eq!(workbench.sidebar_index, 2, "the first conversation");
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        let index = workbench.sidebar_index;
+        assert_ne!(index, 2, "the second press moves again");
+        let session = rows[index].session().expect("a conversation row");
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::SwitchSession(data.sessions[session].id.clone())]
+        );
+    }
+
+    /// The previous/next keys switch the conversation *and* leave the cursor on
+    /// it, so the chat and the rail never name different conversations.
+    #[test]
+    fn the_session_keys_walk_the_rail_and_switch() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let next = workbench.keys.key(preferences::Action::NextSession).to_string();
+        let previous = workbench.keys.key(preferences::Action::PrevSession).to_string();
+        assert_eq!(
+            workbench.handle(WbEvent::Key(next.clone()), &data),
+            vec![WbAction::SwitchSession(data.sessions[1].id.clone())]
+        );
+        assert_eq!(workbench.sidebar_index, 1);
+        // …and back, from the conversation it just named.
+        assert_eq!(
+            workbench.handle(WbEvent::Key(previous.clone()), &data),
+            vec![WbAction::SwitchSession(data.sessions[0].id.clone())]
+        );
+        assert_eq!(workbench.sidebar_index, 0);
+        // At either end the key does nothing rather than wrapping around.
+        assert!(workbench.handle(WbEvent::Key(previous), &data).is_empty());
+    }
+
+    /// `p` in the rail pins the workspace the cursor's conversation belongs to,
+    /// and does nothing but type a `p` anywhere else.
+    #[test]
+    fn p_pins_the_selected_conversations_workspace() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        // Not in the rail: a letter in the draft, as always.
+        let typed = workbench.handle(WbEvent::Key("p".into()), &data);
+        assert!(matches!(typed.as_slice(), [WbAction::EditEditor(_)]), "{typed:?}");
+
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        workbench.sidebar_index = 0;
+        let workspace = &data.workspaces[0];
+        assert!(workspace.pinned);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("p".into()), &data),
+            vec![WbAction::SetWorkspacePinned {
+                path: workspace.path.clone(),
+                pinned: false,
+            }]
+        );
+
+        // A conversation that belongs to no workspace says why it cannot be
+        // pinned instead of pinning something else.
+        workbench.panel = PanelId::Workspaces;
+        workbench.sidebar_index = 0;
+        while workbench
+            .panel_rows(&data)
+            .get(workbench.sidebar_index)
+            .is_some_and(|row| row.session().is_some())
+        {
+            workbench.sidebar_index += 1;
+        }
+        let rows = workbench.panel_rows(&data);
+        if let Some(index) = rows.iter().position(|row| {
+            row.session()
+                .is_some_and(|session| data.chats.contains(&data.sessions[session].id))
+        }) {
+            workbench.sidebar_index = index;
+            match workbench.handle(WbEvent::Key("p".into()), &data).as_slice() {
+                [WbAction::Notice(_)] => {}
+                other => panic!("a chat cannot be pinned: {other:?}"),
+            }
+        }
+    }
+
     #[test]
     fn the_sidebar_tabs_switch_the_panel_by_click() {
         let data = demo::chat();
@@ -3156,8 +3277,7 @@ mod tests {
 
     /// Where the divider is painted, resolved from the hit map of the last frame
     /// — the same coordinate a click arrives in.
-    fn divider_x(workbench: &Workbench) -> u16 {
-        workbench
+    fn divider_x(workbench: &Workbench) -> u16 {        workbench
             .hits()
             .regions()
             .iter()
