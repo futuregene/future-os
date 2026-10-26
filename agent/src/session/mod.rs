@@ -33,6 +33,7 @@ pub use database_backup::create_database_snapshot;
 pub(crate) mod history;
 pub(crate) mod journal_compaction;
 mod journal_compactor;
+pub(crate) mod journal_reclaim;
 pub(crate) use history::{HISTORY_DEFAULT_BYTES, HISTORY_DEFAULT_SESSIONS};
 mod legacy_import;
 pub use legacy_import::ImportRecord;

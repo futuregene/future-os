@@ -79,6 +79,46 @@ pub(crate) fn cmd_storage_health(state: &AppState, id: &str) -> String {
     }
 }
 
+/// Database-wide run-journal cost and reclamation evidence. Sessionless on
+/// purpose: the journal spans every session, and the question it answers ("is
+/// this database growing?") is not about one conversation.
+pub(crate) fn cmd_journal_stats(state: &AppState, id: &str) -> String {
+    let result = state
+        .session_manager
+        .storage()
+        .and_then(|store| store.journal_stats());
+    match result {
+        Ok(data) => RpcResponse::ok(id, "get_journal_stats", data),
+        Err(error) => RpcResponse::build_fail(id, "get_journal_stats", &error.to_string()),
+    }
+}
+
+/// One bounded step of the explicit reclaim sweep. `custom_instructions`
+/// carries `dryRun` (any other value is rejected rather than guessed at, since
+/// this command deletes rows), so the CLI controls it without a new field.
+pub(crate) fn cmd_reclaim_run_journals(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
+    let dry_run = match cmd.custom_instructions.as_str() {
+        "" => false,
+        "dryRun" => true,
+        _ => {
+            return RpcResponse::build_fail_code(
+                id,
+                "reclaim_run_journals",
+                "invalid_request",
+                "reclaim_run_journals accepts only the `dryRun` mode marker",
+                serde_json::json!({}),
+            )
+        }
+    };
+    let result = state.session_manager.storage().and_then(|store| {
+        store.reclaim_settled_journals(crate::session::journal_reclaim::SWEEP_WORK_BUDGET, dry_run)
+    });
+    match result {
+        Ok(data) => RpcResponse::ok(id, "reclaim_run_journals", data),
+        Err(error) => RpcResponse::build_fail(id, "reclaim_run_journals", &error.to_string()),
+    }
+}
+
 pub(crate) fn cmd_session_presence(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
     match state.session_manager.session_presence(&cmd.session_ids) {
         Ok(data) => RpcResponse::ok(id, "get_session_presence", data),

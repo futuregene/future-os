@@ -24,6 +24,7 @@ pub mod session;
 mod session_compact;
 mod session_control;
 mod session_history;
+mod session_journal;
 mod session_prune;
 mod session_reset;
 mod session_status;
