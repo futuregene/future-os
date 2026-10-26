@@ -141,7 +141,7 @@ $ shasum -a 256 /tmp/dltiers/final/source/app-debug.apk /tmp/dltiers/final/saved
 
 `docs/architecture/remote-download-tiers.md` 原先写 host 把文件"复制进传输目录保留到传输结束
 （30 分钟 TTL）"。实测：TTL 是**失败**路径，不是常态。`download_cancel` 会删掉暂存副本，而客户端
-在一次成功拉取之后**会**发 `download_cancel`（`Transfer::with_release`）。本机八次成功下载之后，
+在一次成功拉取之后**会**发 `download_cancel`（`Transfer::with_release`）。这些运行里 21 次成功下载之后，
 暂存目录里**没有**任何 `original_*` 文件、也没有任何超过 1 MB 的文件——运行之前那里只有旧的预览
 文件。架构页已改成：host 只在传输期间持有副本，取消（成功的另存为就会取消）即释放，失败或放弃的
 传输才等 30 分钟 TTL。
@@ -217,7 +217,7 @@ AEAD，这些在 debug 构建里都没有优化。13 MiB 的环回字节两边�
 | `cargo test -p future-host --lib remote_peer::transfer` | 通过（34） |
 | `cargo fmt -p future-host --check` | 干净 |
 | `cargo clippy -p future-host --all-targets -- -D warnings` | 干净 |
-| `make check-docs` | 见合并报告；本页按 `remote-page-encoding-2026-10-26` 的同款结构写了中英配对 |
+| `make check-docs` | 通过——检查 343 篇文档、0 对双语待补、provider 矩阵与代码一致 |
 
 release 构建会打一条与本改动无关的警告：
 `stripping debug info with rust-objcopy failed … Library not loaded: @rpath/libLLVM.dylib`

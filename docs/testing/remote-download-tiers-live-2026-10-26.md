@@ -164,7 +164,7 @@ with the sentence it used to.
 its transfer directory for the transfer's lifetime (30-minute TTL)". Measured, the
 TTL is the *failure* path, not the normal one: `download_cancel` deletes the
 staged copy, and the client sends `download_cancel` after a successful pull
-(`Transfer::with_release`). After eight successful downloads on this machine the
+(`Transfer::with_release`). After the 21 successful downloads across these runs the
 staging directory held **no** `original_*` file and nothing over 1 MB — before
 the runs it held only old preview files. The corrected sentence is now in the
 architecture page: the host holds a copy for the transfer, releases it on cancel
@@ -258,7 +258,7 @@ mattered.
 | `cargo test -p future-host --lib remote_peer::transfer` | pass (34) |
 | `cargo fmt -p future-host --check` | clean |
 | `cargo clippy -p future-host --all-targets -- -D warnings` | clean |
-| `make check-docs` | see the merge report; the pair is written to the same shape as `remote-page-encoding-2026-10-26` |
+| `make check-docs` | pass — 343 docs checked, 0 pairs pending bilingualisation, provider matrix matches the code |
 
 The release build prints one warning of its own, unrelated to this change:
 `stripping debug info with rust-objcopy failed … Library not loaded: @rpath/libLLVM.dylib`
