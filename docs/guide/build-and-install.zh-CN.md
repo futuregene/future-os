@@ -13,12 +13,17 @@
 
 完整构建（agent + TUI + CLI + GUI）在所有平台都需要的：
 
-- **Rust** 1.97+（由 `rust-toolchain.toml` 固定版本）
+- **Rust** 1.99.1（由 `rust-toolchain.toml` 固定，本地构建与 GitHub Actions 共用）
 - **Node.js** 24+（见 `.nvmrc`）—— 用于 GUI 前端
 - 可选：**Python 3** —— 用于手动/文档类目标（`make generate-models`、`make check-docs` / `make test-docs-check`、`make test-cli-diff` / `make test-tui-tmux` 差分装置）以及 profiling 目标（`make profile-agent` / `profile-quick` / `profile-heap`）
 - 可选：**protoc**（Protocol Buffers 编译器）—— 仅用于 `make generate-proto`；生成代码已入库，正常构建不需要
 
 TUI 与 CLI 均为 Rust（`cargo build`），不再需要 Bun 或 Node。
+
+桌面端使用 Tauri 2.12.5、`tauri-build` 2.7.4，以及根 `Cargo.lock` 锁定的
+稳定 2.x 插件。JavaScript API 与 CLI 为 2.12.4，dialog 绑定为 2.8.3，
+由 `package-lock.json` 锁定。这些包独立编号。Tauri 2.12 要求 Rust 1.90
+或更新版本，并且不再官方支持 Windows 7。
 
 ## 克隆
 
@@ -132,7 +137,7 @@ curl -fsSL https://dl.future-os.cn/install.sh | bash
 sudo apt update
 sudo apt install -y build-essential mold libssl-dev \
   libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust（rust-toolchain.toml 锁定 1.97.0）
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust（rust-toolchain.toml 锁定 1.99.1）
 source "$HOME/.cargo/env"                                         # 使 cargo/rustc 在当前 shell 中可用
 sudo apt install -y protobuf-compiler                             # 可选 —— 仅用于 make generate-proto
 ```

@@ -56,7 +56,7 @@ tokio-tungstenite = { version = "0.30", default-features = false, features = [
 
 [build-dependencies]
 serde_json = "1"
-tauri-build = { version = "2", features = [], optional = true }
+tauri-build = { version = "2.7.4", features = [], optional = true }
 
 # Tauri's `test` feature enables existing mock IPC tests. Keep it on the
 # optional dependency, not an unconditional dev-dependency: server tests must
@@ -81,9 +81,9 @@ future-app-workspaces = { path = "../../packages/app-workspaces" }
 # Task kernel/store shared with the CLI and headless desktop (the tick loop
 # is the single executor; this host wires it to the sidecar agent).
 future-tasks = { path = "../../orchestration/tasks" }
-tauri = { version = "2", features = ["protocol-asset", "test"], optional = true }
-tauri-plugin-shell = { version = "2", optional = true }
-tauri-plugin-updater = { version = "2", optional = true }
+tauri = { version = "2.12.5", features = ["protocol-asset", "test"], optional = true }
+tauri-plugin-shell = { version = "2.5.0", optional = true }
+tauri-plugin-updater = { version = "2.14.0", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 semver = "1"
@@ -98,8 +98,8 @@ fs2 = "0.4"
 async-nats = "0.50"
 nkeys = "0.4"
 futures = "0.3"
-tauri-plugin-dialog = { version = "2", optional = true }
-tauri-plugin-single-instance = { version = "2", optional = true }
+tauri-plugin-dialog = { version = "2.8.3", optional = true }
+tauri-plugin-single-instance = { version = "2.5.4", optional = true }
 # System opener for paths/URLs (ShellExecuteW on Windows — never `cmd /C start`,
 # whose re-parsing of `&`/`^`/`%VAR%` in arguments is an injection vector).
 open = "5"

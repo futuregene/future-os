@@ -81,14 +81,19 @@ source_files() {
 # and any third-party source configuration are preserved - only the hostname
 # changes.
 switch_to_public_archive() {
-  local file changed=0
+  local file changed=0 backup_suffix=".future-archive-$$"
   while IFS= read -r file; do
     if [[ ! -f $file ]]; then continue; fi
     if ! grep -qE 'azure\.(archive|ports)\.ubuntu\.com' "$file"; then continue; fi
-    as_root sed -i \
+    # Both GNU sed and BSD sed accept a suffix attached to -i. Bare -i has
+    # incompatible argument parsing on macOS and could leave the file intact.
+    if ! as_root sed -i"$backup_suffix" \
       -e 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' \
       -e 's|azure\.ports\.ubuntu\.com|ports\.ubuntu.com|g' \
-      "$file"
+      "$file"; then
+      return 1
+    fi
+    as_root rm -f "$file$backup_suffix"
     echo "APT mirror: rewrote ${file} (Azure mirror -> Ubuntu public archive)" >&2
     changed=1
   done < <(source_files)
@@ -302,6 +307,10 @@ EOF
     status=1
   fi
   expect_resolved 'http://archive.ubuntu.com/ubuntu/pool/main/f/foo/foo_1.0_amd64.deb'
+  if [[ -e $root/apt-mirrors.txt.future-archive-$$ ]]; then
+    echo "self-test: the rewrite left a backup behind" >&2
+    status=1
+  fi
   # Second call has nothing left to move and must say so rather than claim a switch.
   if switch_to_public_archive > /dev/null 2>&1; then
     echo "self-test: an already-public mirror list reported a rewrite" >&2

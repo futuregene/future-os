@@ -220,9 +220,9 @@ test('Host tests always expand to exactly remote/core while checks stay crate sc
   }
 });
 
-test('the apt installer moves the runner mirror list, not only its sources', {
-  // The installer is a Linux CI helper; the Windows runners never call it.
-  skip: process.platform === 'win32' ? 'bash installer runs on Linux runners' : false,
+test('the apt installer rewrites offline fixtures on Unix hosts', {
+  // Windows does not use APT and must not require Bash to run this suite.
+  skip: process.platform === 'win32' ? 'APT self-test requires a Unix host' : false,
 }, () => {
   // GitHub's Ubuntu images name no hostname in their apt sources: the sources
   // defer to /etc/apt/apt-mirrors.txt, so a rewrite that only edits the sources

@@ -35,6 +35,9 @@ pub mod proto {
     // SessionState) with small ack messages; the size spread is inherent to a
     // wire oneof, so silence the lint here rather than boxing generated code.
     #![allow(clippy::large_enum_variant)]
+    // Tonic fixes the error type to Status; async-trait emits must_use on its
+    // boxed futures. Both are generated upstream APIs, not editable wire code.
+    #![allow(clippy::result_large_err, clippy::double_must_use)]
     include!("generated/proto.rs");
 }
 

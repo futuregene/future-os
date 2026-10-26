@@ -122,6 +122,8 @@ pub struct ApprovalPrompt {
 ///
 /// Exactly one of [`ReplySink::finish`] or [`ReplySink::superseded`] is called
 /// at the end of a turn; everything else is optional.
+// async-trait adds must_use to methods returning already-must-use boxed futures.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait ReplySink: Send + Sync {
     /// Whether the sink can rewrite text it already sent.

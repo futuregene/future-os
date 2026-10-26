@@ -313,6 +313,7 @@ impl VerifiedAgentClient {
         bind_request(request, &self.readiness, &self.requirements.version)
     }
 
+    #[allow(clippy::result_large_err)] // Tonic request APIs expose Status directly.
     pub async fn execute_command(
         &mut self,
         request: impl tonic::IntoRequest<proto::RpcCommand>,
@@ -322,6 +323,7 @@ impl VerifiedAgentClient {
         self.inner.execute_command(request).await
     }
 
+    #[allow(clippy::result_large_err)] // Tonic request APIs expose Status directly.
     pub async fn stream_events(
         &mut self,
         request: impl tonic::IntoRequest<proto::StreamRequest>,

@@ -258,6 +258,17 @@ fn quit_decision(
     }
 }
 pub fn confirm_quit<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
+    prepare_quit_confirmation(&app).show(move |confirmed| {
+        QUIT_DIALOG_OPEN.store(false, Ordering::Release);
+        if confirmed {
+            request_quit(app, true);
+        }
+    });
+}
+
+pub(crate) fn prepare_quit_confirmation<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> tauri_plugin_dialog::MessageDialogBuilder<R> {
     QUIT_DIALOG_OPEN.store(true, Ordering::Release);
     let message = if crate::agent_host::host().owns_agent() {
         "Agent work is still active or cannot be checked. Quitting stops all connected clients' work, including CLI conversations. Quit anyway?"
@@ -276,12 +287,7 @@ pub fn confirm_quit<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
         dialog = dialog.parent(&window);
     }
-    dialog.show(move |confirmed| {
-        QUIT_DIALOG_OPEN.store(false, Ordering::Release);
-        if confirmed {
-            request_quit(app, true);
-        }
-    });
+    dialog
 }
 
 static QUIT_PENDING: AtomicBool = AtomicBool::new(false);
