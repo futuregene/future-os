@@ -460,7 +460,7 @@ async fn event_loop(
 
 /// Output produced while a full-screen overlay owns the terminal is not
 /// discarded: returning to linear mode flushes it into scrollback exactly once.
-pub(crate) pub(crate) fn emit_linear(output: String, deferred: &mut String, visible: bool) -> String {
+pub(crate) fn emit_linear(output: String, deferred: &mut String, visible: bool) -> String {
     if visible {
         let mut combined = std::mem::take(deferred);
         combined.push_str(&output);
