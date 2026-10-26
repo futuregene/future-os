@@ -69,9 +69,11 @@ pub(crate) fn compose(
             .editor
             .clone()
             .rows(frame.input.w.saturating_sub(6) as usize);
+        // A draft that grew past the box takes rows from the conversation — but
+        // never so many that the chat has nothing left.
         cursor_row
             .min(7)
-            .min(frame.body.h.saturating_sub(4) as usize) as u16
+            .min(frame.body.h.saturating_sub(3) as usize) as u16
     };
     if data.on_launchpad() {
         let lang = workbench.lang;
@@ -171,10 +173,13 @@ pub(crate) fn compose(
         workbench.hit_map().push(input_rect, "input");
         paint(&mut rows, input_rect, input_lines);
         if workbench.overlay.is_none() {
+            // The box is drawn at `frame.input.x`; the cursor has to be offset
+            // by the same column or it lands in the rail's cells (the bug that
+            // only showed once the rail was on the left, where `x` is not 0).
             let column =
                 (cursor_column as usize).min(frame.input.w.saturating_sub(1) as usize) as u16;
             workbench.set_cursor(Some((
-                column,
+                frame.input.x.saturating_add(column),
                 frame.prompt_row.saturating_sub(composer_extra),
             )));
         }
@@ -184,15 +189,16 @@ pub(crate) fn compose(
         paint(
             &mut rows,
             activity,
-            activity_row(workbench, data, &palette, columns),
+            activity_row(workbench, data, &palette, activity.w as usize),
         );
     }
     paint(
         &mut rows,
         frame.status,
-        status_row(data, &palette, columns, workbench.lang),
+        status_row(data, &palette, frame.status.w as usize, workbench.lang),
     );
     if let Some(hint) = frame.hint {
+        let columns = hint.w as usize;
         // A notice is "what the last action did" — a workspace chosen, a
         // preference saved — as much as it is a failure. Painting the whole row
         // in the error red made a successful choice look like a crash (the
@@ -1380,32 +1386,55 @@ fn diff_review_box(
 }
 
 fn help_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec<String> {
+    use super::preferences::ACTIONS;
     let lang = workbench.lang;
     let scroll = workbench.overlay_scroll_offset();
     let mut content: Vec<String> = Vec::new();
     content.push(palette.dim(t(lang, Key::HelpFooter)));
-    content.push(String::new());
-    for action in super::preferences::ACTIONS {
-        content.push(format!(
-            " {}  {}",
-            palette.text(palette.accent, &fit(workbench.keys.key(action), 18)),
-            palette.body(t(lang, action.description()))
-        ));
-    }
-    content.push(String::new());
-    for (key, description) in HELP_KEYS {
-        content.push(format!(
-            " {}  {}",
+
+    // Grouped, not flat: the list is longer than one screen, and a reader
+    // looking for "how do I change the model" should not have to read the
+    // theme, copy and quit rows to find it.
+    let row = |key: &str, description: &str, palette: &Palette| {
+        format!(
+            "   {}  {}",
             palette.text(palette.accent, &fit(key, 18)),
-            palette.body(t(lang, description))
+            palette.body(description)
+        )
+    };
+    let mut group = None;
+    for action in ACTIONS {
+        if group != Some(action.group()) {
+            if group.is_some() {
+                content.push(String::new());
+            }
+            group = Some(action.group());
+            content.push(format!(
+                " {}",
+                palette.strong(palette.iris, t(lang, action.group().title()))
+            ));
+        }
+        content.push(row(
+            workbench.keys.key(action),
+            t(lang, action.description()),
+            palette,
         ));
     }
+    // The keys that are not actions: they are spelled inside the composer or on
+    // the pointer, so a rebind has nothing to bind.
     content.push(String::new());
-    content.push(palette.dim(t(lang, Key::PalettePanelTitle)));
+    content.push(format!(
+        " {}",
+        palette.strong(palette.iris, t(lang, Key::HelpGroupInline))
+    ));
+    for (key, description) in HELP_KEYS {
+        content.push(row(key, t(lang, description), palette));
+    }
     content.push(String::new());
+    content.push(palette.strong(palette.iris, t(lang, Key::PalettePanelTitle)));
     for (command, description) in COMMANDS {
         content.push(format!(
-            " {}  {}",
+            "   {}  {}",
             palette.text(palette.iris, &fit(command, 18)),
             palette.body(t(lang, description))
         ));

@@ -102,14 +102,15 @@ Content — a conversation, a session title, a path — is never translated.
 │   right    ⌘ future-tui vX · backend status dot (●connected)                 │
 │ row 4      hairline separator (dim, ─)                                       │
 ├───────────────────────────────────────────────┬──────────────────────────────┤
-│ rows 6..h-8   BODY                            │ SIDEBAR_W = 36 (30..48)      │
+│ rows 6..h-4   BODY                            │ SIDEBAR_W = 36 (30..48)      │
 │   chat width = W - SIDEBAR_W - 1              │ row 6 tabs: 最近 工作区      │
 │   x = SIDEBAR_W+1 .. W-1                      │ divider x = SIDEBAR_W (│)    │
-├───────────────────────────────────────────────┴──────────────────────────────┤
-│ rows h-7..h-4  INPUT (4): top border / prompt line / bottom border           │
+│                                               │ …and the rail runs on down   │
+│ rows h-6..h-4  INPUT (3): border / prompt / border, beside the rail          │
 │   ❯ <draft>                                   right ⛶                        │
+├───────────────────────────────────────────────┴──────────────────────────────┤
 │ row h-3        ACTIVITY: ⠋ 思考 3s · 2 工具 · 42 tok/s · 缓存 96%            │
-│ row h-2        STATUS: model · effort · ctx bar 6.9k/1.0M 0.7% · ≈¥0.01      │
+│ row h-2        STATUS: model · effort · 审批模式 · ctx bar · ≈¥0.01          │
 │ row h-1        HINT: Esc 聊天 · ctrl+b 侧栏 · / 命令 · ? 帮助                │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -253,13 +254,25 @@ the row under the pointer rather than one beside it.
 ### Keyboard
 
 Keep the existing global bindings; add/override:
+`ctrl+m` model chooser; `ctrl+t` thinking-effort chooser; `ctrl+s` approval-mode
+chooser; `ctrl+l` workspace chooser; `ctrl+1` / `ctrl+2` the rail's two tabs;
 `ctrl+b` sidebar open/focus/close (the rail's own `›` edge button does the same
 with one click, and leaves a `‹` in the same column when the rail is closed);
-`ctrl+t` thinking-effort chooser; `ctrl+s` approval-mode chooser; `ctrl+l`
-workspace chooser; `tab` focus within a panel; `shift+tab`
+`tab` focus within a panel; `shift+tab`
 reverse; `ctrl+q` collapse todos; `alt+z` enlarge the sidebar; `/` command
 palette; `?` help; `esc` close one layer at a time. A focused rail spends its
 last row on the keys it answers (`↑↓ 选择 · ⏎ 打开 · ←→ 页签`).
+
+No **default** is a function key: `F1`–`F12` need an `Fn` modifier on a laptop
+and are absent on a compact keyboard, so those actions default to `alt` + a
+letter (`alt+h` help, `alt+r` refresh, `alt+c` copy, `alt+m` mouse, `alt+l`
+linear reading, `alt+a` reduced motion). Rebinding to an F key stays supported.
+The help overlay lists `ACTIONS` **grouped** (chats / choices / panels /
+interface), then the non-rebindable inline keys, then the commands.
+
+A held `shift+←`/`shift+→` is one switch, not one per key repeat: the key returns
+`WbAction::SessionStep(delta)`, the driver reads the whole input burst and
+applies the net step once through `Workbench::step_session`.
 
 ---
 

@@ -236,12 +236,18 @@ pub fn layout_with_preferences(
         let body_h = input_y.saturating_sub(1);
         let body = Rect::new(chat_x, 1, chat_w, body_h);
         let input = Rect::new(chat_x, input_y, chat_w, 2.min(h.saturating_sub(input_y)));
+        // The rail (and its divider) run down to the footer: they cover the
+        // composer band as well as the body, so the column beside the box is the
+        // rail's own background rather than canvas. The three footer rows
+        // (activity / status / hint) stay full width — they are a footer, and a
+        // footer that starts a third of the way across reads as a mistake.
+        let rail_h = h.saturating_sub(3).saturating_sub(1);
         return Layout {
             compact,
             header,
             body,
-            divider: divider.map(|rect| Rect::new(rect.x, 1, 1, body_h)),
-            sidebar: sidebar.map(|rect| Rect::new(rect.x, 1, rect.w, body_h)),
+            divider: divider.map(|rect| Rect::new(rect.x, 1, 1, rail_h)),
+            sidebar: sidebar.map(|rect| Rect::new(rect.x, 1, rect.w, rail_h)),
             input,
             prompt_row: input_y.saturating_add(1),
             activity: None,
@@ -266,15 +272,22 @@ pub fn layout_with_preferences(
     };
     let header = Rect::new(0, 0, w, header_h);
     let body_y = header_h + 1;
-    let input_y = h.saturating_sub(7);
+    // The composer band is exactly the box it draws: a top rule, the prompt
+    // row, the closing rule. It used to reserve four rows for three, and the
+    // spare one stayed canvas — a blank line between the box and the activity
+    // row that read as a gap in the frame.
+    let input_y = h.saturating_sub(6);
     let body_h = input_y.saturating_sub(body_y);
+    // Down to the footer: the rail covers the composer band too (see the
+    // compact branch).
+    let rail_h = h.saturating_sub(3).saturating_sub(body_y);
     Layout {
         compact,
         header,
         body: Rect::new(chat_x, body_y, chat_w, body_h),
-        divider: divider.map(|rect| Rect::new(rect.x, body_y, 1, body_h)),
-        sidebar: sidebar.map(|rect| Rect::new(rect.x, body_y, rect.w, body_h)),
-        input: Rect::new(chat_x, input_y, chat_w, 4.min(h.saturating_sub(input_y))),
+        divider: divider.map(|rect| Rect::new(rect.x, body_y, 1, rail_h)),
+        sidebar: sidebar.map(|rect| Rect::new(rect.x, body_y, rect.w, rail_h)),
+        input: Rect::new(chat_x, input_y, chat_w, 3.min(h.saturating_sub(input_y))),
         prompt_row: input_y.saturating_add(1),
         activity: Some(Rect::new(0, h.saturating_sub(3), w, 1)),
         status: Rect::new(0, h.saturating_sub(2), w, 1),
@@ -372,7 +385,7 @@ mod tests {
         assert_eq!(tall.sidebar.map(|rect| rect.w), Some(SIDEBAR_DEFAULT));
         assert!(tall.activity.is_some());
         assert_eq!(tall.header.h, 2);
-        assert_eq!(tall.input.h, 4);
+        assert_eq!(tall.input.h, 3, "the box's own rows, and no spare");
 
         // Narrow: the sidebar goes, the chat takes the whole width.
         let narrow = layout(80, 38, SIDEBAR_DEFAULT);
