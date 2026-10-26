@@ -89,15 +89,35 @@ the same line: a key added in one language only does not compile.
 The default **focused density** uses a two-row context header, reclaiming four
 rows for the conversation. `Ctrl+O` or `/preferences` opens the preference
 panel: switch to the comfortable identity header, move the sidebar left or
-right, adjust its 30–48-column width, and rebind global shortcuts. Choices
-persist in `~/.future/tui/settings.json` as `density`, `sidebarPosition`,
-`sidebarWidth` and `sidebarVisible`; incremental shortcut overrides live beside
-it in `keybindings.json`.
+right, adjust its 30–48-column width, control mouse capture and completion
+notifications, enable reduced motion or linear reading, and rebind global
+shortcuts. The panel keeps the selected row and help visible on short terminals.
+Choices persist in `~/.future/tui/settings.json` as `density`, `sidebarPosition`,
+`sidebarWidth`, `sidebarVisible`, `mouseCapture`, `notify`, `reducedMotion` and
+`linearReading`; incremental shortcut overrides live beside it in
+`keybindings.json`.
+
+`/theme` retains the six-theme picker, including `high-contrast`; choosing a
+theme persists `themeId`. `F8` toggles **linear reading**: a focused single
+column without the auxiliary sidebar, with a static activity indicator. `F9`
+independently toggles **reduced motion**. Neither delays streamed content or
+changes agent behavior. `Ctrl+B` leaves linear mode when explicitly reopening
+the sidebar. These bindings, plus copy, queue and mouse, are contextual global
+actions and can be rebound; overlays keep their local keys so a global shortcut
+never submits an approval or edits history search accidentally.
+
+Notifications are emitted only for a successful run submitted by this TUI when
+no queued follow-up remains. Failures, cancellations, replays and other
+clients' runs do not notify. `notify.enabled` is the master switch;
+`notify.bell` independently controls BEL and `notify.osc9` controls the
+terminal's desktop-notification escape. Delivery is best-effort and depends on
+the terminal; notification payloads are sanitized, flattened and bounded.
 
 `Ctrl+P` opens the command palette, `Ctrl+R` sessions, and `F1` help. Help and
 footer hints show the effective bindings, not stale defaults. In the shortcut
 editor, press Enter and then a chord; conflicts swap owners, `r` restores
-defaults, and Escape cancels capture.
+defaults, and Escape cancels capture. Supported chords include Ctrl/Alt plus an
+ASCII letter or digit, F1–F24, Tab, navigation keys and Enter/Escape.
 
 ## Keys and mouse
 
@@ -112,7 +132,9 @@ defaults, and Escape cancels capture.
 | `pageUp` / `pageDown` or `ctrl+↑` / `ctrl+↓` | Scroll the conversation; `esc` returns to the latest output |
 | `ctrl+g` or `/queue` | List queued prompts; `x` cancels, `r` / `enter` cancels and recalls into the draft (`ctrl+x` stops the active run, not the queue) |
 | `F6` or `/copy` | Copy the last assistant answer as clean content, without terminal chrome |
-| `F7` or `/mouse` | Toggle mouse capture off/on for native terminal selection |
+| `F7` or `/mouse` | Toggle and persist mouse capture off/on for native terminal selection |
+| `F8` | Toggle single-column, static linear reading |
+| `F9` | Toggle reduced motion independently |
 | `ctrl+b` | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal |
 | `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run |
 | `ctrl+r` | Session picker |
@@ -131,11 +153,11 @@ defaults, and Escape cancels capture.
 | Wheel over the conversation | Scroll; at the top it asks for an older page |
 | Wheel over the sidebar | Scroll the panel |
 
-Mouse reporting is SGR 1006 and starts enabled. `/mouse` releases and restores it at runtime; the terminal is always restored on exit. Draft text, cursor, folded pastes and image attachments are kept per session across overlays, launchpad visits and session switches (for the lifetime of this TUI process, not persisted to disk).
+Mouse reporting is SGR 1006 and starts with the persisted preference (enabled by default). `/mouse` releases and restores it at runtime and saves the choice; the terminal is always restored on exit. Draft text, cursor, folded pastes and image attachments are kept per session across overlays, launchpad visits and session switches (for the lifetime of this TUI process, not persisted to disk).
 
 The conversation follows new output by default. Scrolling up detaches from the tail; further output leaves the reading position unchanged and shows a new-output badge. Scroll back to the bottom or press `esc` to follow again.
 
-The driver only repaints dirty frames: there is no idle 120ms repaint timer. Streaming and spinner updates coalesce at 80ms, input and resize repaint immediately, and transcript rendering is cached by width/content revision.
+The driver only repaints dirty frames: there is no idle 120ms repaint timer. Streaming and spinner updates coalesce at 80ms, input and resize repaint immediately, and transcript rendering is cached by width/content revision. Reduced-motion and linear-reading modes do not schedule animation repaints; actual stream and state changes still repaint.
 
 ## What is wired to the agent
 
