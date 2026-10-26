@@ -14,6 +14,7 @@ const STEPS: &[(i64, &str)] = &[
     (1, CONTRACT_SQL),
     (2, include_str!("thread_sources.sql")),
     (3, include_str!("delete_sources.sql")),
+    (4, include_str!("retire_reference_caches.sql")),
 ];
 
 fn checksum(version: i64) -> String {
@@ -252,6 +253,126 @@ mod tests {
     use std::fs;
 
     #[test]
+    fn reference_cache_retirement_is_atomic_retryable_and_preserves_live_history() {
+        let conn = Connection::open_in_memory().unwrap();
+        legacy(&conn);
+        initialize(&conn).unwrap();
+        // Reinstall the exact retired DDL to reconstruct the contract-3 boundary.
+        conn.execute_batch(include_str!("fixtures/retired-reference-tables.sql"))
+            .unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;
+            INSERT INTO workspace_files VALUES('file','w','/file','file',NULL,1,1,1,1);
+            INSERT INTO reference_targets VALUES('target','artifact','artifact','workspace','w','Cached',NULL,NULL,1,1);
+            INSERT INTO object_references VALUES('reference','message','u','target',1);
+            INSERT INTO runs(id,thread_id,status,created_at,updated_at) VALUES('run','t','completed',1,1);
+            INSERT INTO review_snapshots(id,workspace_id,thread_id,run_id,phase,status,created_at) VALUES('snapshot','w','t','run','before','complete',1);
+            INSERT INTO artifacts(id,workspace_id,thread_id,title,artifact_type,content,created_at,updated_at) VALUES('artifact','w','t','Keep','markdown','original artifact',1,1);
+            DELETE FROM app_schema_migrations WHERE version=4; PRAGMA user_version=3;
+            CREATE TRIGGER refuse_v4 BEFORE INSERT ON app_schema_migrations WHEN NEW.version=4 BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+        let identity: String = conn
+            .query_row("SELECT database_id FROM app_database_identity", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(initialize(&conn).is_err());
+        assert_eq!(admit(&conn).unwrap(), 3);
+        for table in ["workspace_files", "reference_targets", "object_references"] {
+            assert_eq!(
+                conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+        }
+        assert!(conn
+            .prepare("SELECT 1 FROM sqlite_schema WHERE name='idx_review_snapshots_run'")
+            .unwrap()
+            .exists([])
+            .unwrap());
+        conn.execute_batch("DROP TRIGGER refuse_v4").unwrap();
+        initialize(&conn).unwrap();
+        initialize(&conn).unwrap();
+        assert_eq!(
+            admit(&conn).unwrap(),
+            future_app_settings::APP_DB_SCHEMA_VERSION
+        );
+        for table in ["workspace_files", "reference_targets", "object_references"] {
+            assert!(!table_names(&conn).unwrap().contains(table));
+        }
+        for (sql, expected) in [
+            (
+                "SELECT content FROM legacy_messages WHERE id='u'",
+                "保留历史",
+            ),
+            (
+                "SELECT content FROM artifacts WHERE id='artifact'",
+                "original artifact",
+            ),
+            ("SELECT status FROM runs WHERE id='run'", "completed"),
+            (
+                "SELECT status FROM review_snapshots WHERE id='snapshot'",
+                "complete",
+            ),
+        ] {
+            assert_eq!(
+                conn.query_row(sql, [], |r| r.get::<_, String>(0)).unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            conn.query_row("SELECT database_id FROM app_database_identity", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+            identity
+        );
+        assert!(!conn
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .exists([])
+            .unwrap());
+        let plan: String = conn.query_row(
+            "EXPLAIN QUERY PLAN SELECT id FROM review_snapshots WHERE run_id='run' AND phase='before'", [], |r| r.get(3),
+        ).unwrap();
+        assert!(
+            plan.contains("sqlite_autoindex_review_snapshots_"),
+            "{plan}"
+        );
+        assert!(!conn
+            .prepare("SELECT 1 FROM sqlite_schema WHERE name='idx_review_snapshots_run'")
+            .unwrap()
+            .exists([])
+            .unwrap());
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM app_schema_migrations WHERE version=4",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn fresh_schema_has_no_retired_caches_and_current_open_does_not_replay_retirement() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+        for table in ["workspace_files", "reference_targets", "object_references"] {
+            assert!(!table_names(&conn).unwrap().contains(table));
+        }
+        // A later restore must not make every pooled open repeat destructive SQL.
+        conn.execute_batch("CREATE TABLE workspace_files(restored TEXT); INSERT INTO workspace_files VALUES('keep');").unwrap();
+        initialize(&conn).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT restored FROM workspace_files", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "keep"
+        );
+    }
+
+    #[test]
     fn version_two_qualifies_only_proven_deletion_sources() {
         let conn = Connection::open_in_memory().unwrap();
         legacy(&conn);
@@ -260,7 +381,7 @@ mod tests {
             INSERT INTO thread_sources VALUES('t','session','original-agent','generation');
             INSERT INTO agent_delete_outbox(session_id,requested_at) VALUES('session',1),('unknown',2);
             DROP TABLE agent_delete_sources;
-            DELETE FROM app_schema_migrations WHERE version=3; PRAGMA user_version=2;
+            DELETE FROM app_schema_migrations WHERE version>=3; PRAGMA user_version=2;
             CREATE TRIGGER refuse_v3 BEFORE INSERT ON app_schema_migrations WHEN NEW.version=3 BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
         assert!(initialize(&conn).is_err());
         assert_eq!(admit(&conn).unwrap(), 2);
@@ -283,7 +404,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(archive, "保留历史");
-        assert_eq!(admit(&conn).unwrap(), 3);
+        assert_eq!(
+            admit(&conn).unwrap(),
+            future_app_settings::APP_DB_SCHEMA_VERSION
+        );
     }
 
     #[test]

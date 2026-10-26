@@ -132,16 +132,20 @@ Restoring an older app.db never authorizes deleting newer files. Unowned images,
 
 ## Database admission and upgrade contract
 
-Desktop now uses application_id `0x46554150` and user_version `3`. Known legacy
+Desktop now uses application_id `0x46554150` and user_version `4`. Known legacy
 Desktop layouts and CLI settings/workspace bootstrap databases are adopted through
 the existing release migrations. `app_schema_migrations` records the new contract
 checksum; `app_database_identity` persists database and restore identities. The
-historical migration identities remain unchanged. A current contract checks core
+historical migration identities remain unchanged. Contract 4 transactionally retires
+`workspace_files`, `reference_targets`, `object_references` and the duplicate
+`idx_review_snapshots_run` index. Live object resolution, disk file search, review
+data and legacy conversation archives remain supported. It adds no historical
+compaction or `VACUUM`. A current contract checks core
 columns, foreign-key targets and the conversation binding index before serving.
 It does not replay historical destructive cleanup. Row-level orphan runs remain
 addressable for reconciliation and cancellation.
 
-Before upgrading a populated unversioned Desktop database, a verified SQLite
+Before upgrading a populated recognized older Desktop database, a verified SQLite
 snapshot is published under `app/backups/`. Before upgrading a recognized older
 Agent schema, a snapshot is published under `agent/backups/`. Snapshots contain
 committed WAL contents, use unique names, retain original tables and are never
