@@ -32,8 +32,8 @@ use crate::rpc::GrpcClient;
 use super::i18n::{self, t, Key, Language, LanguagePreference};
 use super::layout::Frame;
 use super::state::{
-    Activity, ActivityKind, InputView, JobRow, ModelChoice, QueuedPrompt, SessionMeta, SessionRow,
-    SkillRow, TodoItem, UsageData, WorkbenchData, THINKING_LEVELS,
+    Activity, ActivityKind, InputView, ModelChoice, QueuedPrompt, SessionMeta, SessionRow,
+    SkillRow, UsageData, WorkbenchData, WorkspaceGroup, THINKING_LEVELS,
 };
 use super::WbAction;
 
@@ -157,21 +157,19 @@ pub struct Live {
     /// instead of only when someone presses ctrl+k.
     state_refresh_pending: bool,
     /// The workspace the local facts below were read for. A worktree move is the
-    /// one thing that has to re-read the goal store, so the panel follows the
-    /// session instead of the process's own directory.
+    /// one thing that has to re-read the working directory's files, so the menu
+    /// follows the session instead of the process's own directory.
     local_cwd: String,
     /// The git branch of `local_cwd`, read once per workspace (see
     /// [`super::git`]): the header names it after the cwd, and a per-frame
     /// `git` spawn would be a stutter on a large repository.
     branch: super::git::BranchCache,
-    /// The goal store's todos for `local_cwd` (see [`super::local`]).
-    todos: Vec<TodoItem>,
-    /// The goal's own one-line identity, printed above its todos.
-    goal_label: String,
-    /// Installed skills and scheduled jobs are machine-wide: read once, then
-    /// reused for every frame.
+    /// The installed skills (machine-wide: read once, then reused for every
+    /// frame), which the `/` palette offers beside its commands.
     local_skills: Option<Vec<SkillRow>>,
-    local_jobs: Option<Vec<JobRow>>,
+    /// Workspace paths the reader pinned in the rail (the 置顶 section), as
+    /// `~/.future/tui/settings.json` last recorded them.
+    pinned_workspaces: Vec<String>,
     /// The `@` menu's candidates for `local_cwd`, read once per directory: a
     /// listing per keystroke would be a `git ls-files` per keystroke.
     files: Vec<String>,
@@ -243,10 +241,10 @@ impl Live {
             state_refresh_pending: false,
             local_cwd: String::new(),
             branch: super::git::BranchCache::new(),
-            todos: Vec::new(),
-            goal_label: String::new(),
             local_skills: None,
-            local_jobs: None,
+            pinned_workspaces: settings
+                .and_then(|settings| settings.pinned_workspaces.clone())
+                .unwrap_or_default(),
             files: Vec::new(),
             files_for: String::new(),
         };
@@ -301,19 +299,7 @@ impl Live {
     /// workspace must re-read rather than keep painting the old one's list.
     fn refresh_local(&mut self) {
         let cwd = self.state.cwd.clone().unwrap_or_default();
-        if cwd != self.local_cwd {
-            // One read of the goal store: the panel needs both the board and the
-            // goal it belongs to, and asking twice would read the same file
-            // twice.
-            let board = if cwd.is_empty() {
-                super::local::GoalBoard::default()
-            } else {
-                super::local::goal_board(std::path::Path::new(&cwd))
-            };
-            self.todos = board.todos;
-            self.goal_label = board.objective;
-            self.local_cwd = cwd;
-        }
+        self.local_cwd = cwd;
         // The `@` menu's candidates belong to the directory, not to the session:
         // read them when the directory changes and not once per keystroke.
         if self.files_for != self.local_cwd {
@@ -327,9 +313,6 @@ impl Live {
         if self.local_skills.is_none() {
             self.local_skills = Some(super::local::installed_skills());
         }
-        if self.local_jobs.is_none() {
-            self.local_jobs = Some(super::local::scheduled_jobs(self.lang));
-        }
     }
 
     pub async fn refresh_sessions(&mut self) {
@@ -342,6 +325,35 @@ impl Live {
         if let Ok(models) = self.client.list_models().await {
             self.models = models;
         }
+    }
+
+    /// The 工作区 tab's filing, for the pins this client holds.
+    fn file_sessions(
+        &self,
+        sessions: &[SessionSummary],
+        rows: &[SessionRow],
+    ) -> (Vec<WorkspaceGroup>, Vec<String>) {
+        file_sessions(sessions, rows, &self.pinned_workspaces)
+    }
+
+    /// Pin or unpin one workspace, and answer what belongs on the notice row.
+    pub fn set_workspace_pinned(&mut self, path: &str, pinned: bool) -> String {
+        self.pinned_workspaces
+            .retain(|known| !same_path(known, path));
+        if pinned {
+            self.pinned_workspaces.push(path.to_string());
+        }
+        let name = workspace_name(path);
+        if pinned {
+            i18n::render(self.lang, Key::NoticePinned, &[&name])
+        } else {
+            i18n::render(self.lang, Key::NoticeUnpinned, &[&name])
+        }
+    }
+
+    /// The workspace paths the rail currently pins, for the settings file.
+    pub fn pinned_workspaces(&self) -> &[String] {
+        &self.pinned_workspaces
     }
 
     /// `--continue`: attach to the most recently active session.
@@ -884,6 +896,10 @@ impl Live {
             };
             at(b).cmp(&at(a))
         });
+        // The 工作区 tab: the same rows, filed the way the desktop's rail files
+        // them. A conversation that ran in one of the app's own scratch
+        // directories belongs to no workspace, so it is a plain chat.
+        let (workspaces, chats) = self.file_sessions(&sessions, &rows);
         let skill_names = state.skills.clone();
         // The agent names the skills it discovered; the sidebar's local read adds
         // the descriptions (and is the fallback when an older agent reports
@@ -936,10 +952,10 @@ impl Live {
                 cache_pct: cache_percent(&state),
                 tps: self.live_tps(),
             },
-            todos: self.todos.clone(),
-            goal_label: self.goal_label.clone(),
             files: self.files.clone(),
             sessions: rows,
+            workspaces,
+            chats,
             models: self
                 .models
                 .iter()
@@ -956,7 +972,6 @@ impl Live {
                 })
                 .collect(),
             skills,
-            jobs: self.local_jobs.clone().unwrap_or_default(),
             messages,
             input,
             activity,
@@ -1092,6 +1107,10 @@ impl Live {
             // Surface-only state: the driver owns persistence, the agent does
             // not need a round trip for a rectangle or a local shortcut.
             WbAction::SetPreferences | WbAction::SetKeybindings => {}
+            // The rail's pin lands in this client's settings file; the driver
+            // applies it through [`Live::set_workspace_pinned`], so here it is
+            // only a shape the agent never sees.
+            WbAction::SetWorkspacePinned { .. } => {}
             // The driver displays local notices; a demo adapter has no notice
             // dispatch of its own to perform.
             WbAction::Notice(_) => {}
@@ -1893,6 +1912,52 @@ fn token_field(usage: &Value, key: &str) -> i64 {
         .unwrap_or(0)
 }
 
+/// The 工作区 tab's filing: one group per workspace, pinned first, and the
+/// conversations that belong to no workspace at all.
+///
+/// A conversation is a plain chat when its directory is one of the app's own
+/// scratch roots — the agent's default workspace (a session started without a
+/// directory) or the per-chat scratch tree the desktop hands out. Everything
+/// else is filed under the directory it ran in, named by that directory and
+/// identified by its path: two checkouts can share a name.
+fn file_sessions(
+    sessions: &[SessionSummary],
+    rows: &[SessionRow],
+    pinned: &[String],
+) -> (Vec<WorkspaceGroup>, Vec<String>) {
+    let mut groups: Vec<WorkspaceGroup> = Vec::new();
+    let mut chats: Vec<String> = Vec::new();
+    // `rows` is newest-first, so a group keeps that order inside itself and the
+    // first time a path is seen is that workspace's newest activity.
+    for row in rows {
+        let Some(summary) = sessions.iter().find(|session| session.id == row.id) else {
+            continue;
+        };
+        let path = summary.cwd.trim_end_matches(['/', '\\']).to_string();
+        if path.is_empty() || is_chat_directory(&summary.cwd) {
+            chats.push(row.id.clone());
+            continue;
+        }
+        match groups
+            .iter_mut()
+            .find(|group| same_path(&group.path, &path))
+        {
+            Some(group) => group.session_ids.push(row.id.clone()),
+            None => groups.push(WorkspaceGroup {
+                name: workspace_name(&path),
+                pinned: pinned.iter().any(|pin| same_path(pin, &path)),
+                path,
+                age: row.age.clone(),
+                session_ids: vec![row.id.clone()],
+            }),
+        }
+    }
+    // Pinned workspaces lead (the desktop's rail does the same); the rest keep
+    // the newest-activity order the rows already carry.
+    groups.sort_by_key(|group| !group.pinned);
+    (groups, chats)
+}
+
 fn cache_percent(state: &RpcSessionState) -> u8 {
     let read = state.usage.cache_read_tokens.max(0) as u64;
     let input = state.usage.input_tokens.max(0) as u64;
@@ -1924,6 +1989,52 @@ fn shorten(cwd: &str) -> String {
     } else {
         cwd.to_string()
     }
+}
+
+/// A workspace's heading name: the directory's own name, or the whole path
+/// when there is no last segment to take (`/`).
+fn workspace_name(path: &str) -> String {
+    let trimmed = path.trim_end_matches(['/', '\\']);
+    let name = trimmed
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(trimmed)
+        .to_string();
+    if name.is_empty() {
+        path.to_string()
+    } else {
+        name
+    }
+}
+
+/// Do two spellings name the same directory? Trailing separators and the two
+/// separator characters are the only differences a pin has to survive; a
+/// case-insensitive filesystem is not assumed (this is not a filesystem check).
+fn same_path(left: &str, right: &str) -> bool {
+    let normalise = |path: &str| path.replace('\\', "/").trim_end_matches('/').to_string();
+    normalise(left) == normalise(right)
+}
+
+/// Is `cwd` one of the app's own scratch directories — a conversation with no
+/// workspace of its own?
+///
+/// Two of them exist: the agent's default workspace (a session started without
+/// a directory lands there) and the per-chat scratch tree the desktop creates.
+/// A directory the reader chose is never one of these, so a project's
+/// conversation is always filed.
+fn is_chat_directory(cwd: &str) -> bool {
+    let cwd = cwd.trim_end_matches(['/', '\\']);
+    if cwd.is_empty() {
+        return true;
+    }
+    let normalized = cwd.replace('\\', "/");
+    let root = crate::home::future_state_dir()
+        .display()
+        .to_string()
+        .replace('\\', "/");
+    let root = root.trim_end_matches('/');
+    normalized == format!("{root}/agent/workspace")
+        || normalized.starts_with(&format!("{root}/workspaces/chat/"))
 }
 
 fn age(updated_at_ms: i64) -> String {
@@ -2148,14 +2259,9 @@ impl Live {
     /// Adopt a language preference: the adapter's own sentences (the input hint,
     /// an approval prompt) and the panels' local facts are re-read in it, and the
     /// resolved bundle is returned for the surface.
-    ///
-    /// The scheduled jobs are read from `tasks.db` with their state already
-    /// spelled out, so the cache is dropped rather than patched; the next frame
-    /// refills it. Skills and todos carry no chrome, so they are untouched.
     pub fn set_language(&mut self, preference: LanguagePreference) -> Language {
         self.lang = preference.resolve();
         self.draft.placeholder = t(self.lang, Key::InputHintLaunchpad).into();
-        self.local_jobs = None;
         self.lang
     }
 }
@@ -2337,6 +2443,91 @@ mod tests {
         state.usage.cache_read_tokens = 96;
         state.usage.input_tokens = 4;
         assert_eq!(cache_percent(&state), 96);
+    }
+
+    /// The 工作区 tab's filing. A conversation is filed under the directory it
+    /// ran in; two checkouts that share a name are two groups (the path is the
+    /// identity); a scratch directory is a plain chat; a pinned workspace leads
+    /// even when it is not the freshest.
+    #[test]
+    fn conversations_are_filed_by_the_directory_they_ran_in() {
+        // The scratch tree belongs to *this* home, so the fixture builds it the
+        // way the app does rather than pasting another machine's path.
+        let scratch = crate::home::future_state_dir()
+            .join("workspaces")
+            .join("chat")
+            .join("abc")
+            .display()
+            .to_string();
+        let sessions = vec![
+            row("a", Some("newest in main"), "/work/future-os"),
+            row("b", Some("older in main"), "/work/future-os/"),
+            row("c", Some("a worktree"), "/work/future-os/.worktrees/rail"),
+            row("d", Some("a sibling checkout"), "/other/future-os"),
+            row("e", Some("scratch"), &scratch),
+        ];
+        let rows: Vec<SessionRow> = sessions
+            .iter()
+            .enumerate()
+            .map(|(index, session)| SessionRow {
+                id: session.id.clone(),
+                title: display_name(session),
+                workspace: shorten(&session.cwd),
+                age: format!("{index}h"),
+                ..SessionRow::default()
+            })
+            .collect();
+        let pinned = vec!["/other/future-os/".to_string()];
+        let (groups, chats) = file_sessions(&sessions, &rows, &pinned);
+
+        // The pinned checkout leads although it is not the freshest.
+        assert_eq!(groups[0].path, "/other/future-os");
+        assert!(groups[0].pinned);
+        assert_eq!(groups[0].session_ids, vec!["d".to_string()]);
+
+        // A trailing slash is not a different workspace: `a` and `b` are one
+        // group, newest first, and the group's age is that newest one.
+        let main = groups
+            .iter()
+            .find(|group| group.path == "/work/future-os")
+            .expect("the main checkout");
+        assert_eq!(main.session_ids, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(main.age, "0h");
+        assert!(!main.pinned);
+        assert_eq!(main.name, "future-os");
+
+        // A worktree is its own group, and so is a second checkout with the
+        // same name.
+        assert!(groups
+            .iter()
+            .any(|group| group.path == "/work/future-os/.worktrees/rail"));
+        assert_eq!(
+            groups
+                .iter()
+                .filter(|group| group.name == "future-os")
+                .count(),
+            2,
+            "two checkouts share a name and stay apart: {groups:?}"
+        );
+
+        // The scratch directory is a plain chat, not a workspace.
+        assert_eq!(chats, vec!["e".to_string()]);
+        assert!(!groups
+            .iter()
+            .any(|group| group.session_ids.contains(&"e".into())));
+    }
+
+    #[test]
+    fn a_workspace_is_named_by_its_last_segment() {
+        assert_eq!(workspace_name("/home/dev/future-os"), "future-os");
+        assert_eq!(workspace_name("/home/dev/future-os/"), "future-os");
+        assert_eq!(workspace_name("D:\\work\\future-os"), "future-os");
+        // Nothing to take: the path itself is the honest name.
+        assert_eq!(workspace_name("/"), "/");
+        for (left, right) in [("/a/b", "/a/b/"), ("D:\\a\\b", "D:/a/b"), ("/a/b/", "/a/b")] {
+            assert!(same_path(left, right), "{left:?} vs {right:?}");
+        }
+        assert!(!same_path("/a/b", "/a/bc"));
     }
 
     /// A `usage` event is the only thing that moves the footer's ctx gauge

@@ -258,7 +258,7 @@ fn surfaces() -> Vec<Surface> {
         name: "sidebar sessions",
         data,
         open: Box::new(|wb, _| {
-            wb.panel = PanelId::Sessions;
+            wb.panel = PanelId::Recent;
             wb.sidebar_focus = true;
         }),
         id: |index| format!("sidebar.row.{index}"),
@@ -453,6 +453,18 @@ fn audit(surface: &Surface, (w, h): (u16, u16), verbose: bool) -> Result<usize, 
     for pair in visible.windows(2) {
         let step = pair[1].1 - pair[0].1;
         if step == 1 {
+            continue;
+        }
+        // A *tall* record paints a second row of its own — the rail's 最近 list
+        // puts a conversation's workspace and age under its name. That row is
+        // claimed by the same id, which is what tells it apart from a heading.
+        let tall = step == 2
+            && wb
+                .hits()
+                .regions()
+                .iter()
+                .any(|(rect, id)| rect.y == pair[0].1 + 1 && *id == (surface.id)(pair[0].0));
+        if tall {
             continue;
         }
         let heading_ok = step == 2 && {
@@ -690,6 +702,11 @@ fn visible_records(wb: &Workbench, surface: &Surface) -> Vec<(usize, u16)> {
         })
         .collect();
     out.sort_by_key(|(_, y)| *y);
+    // A record may paint more than one row (the rail's 最近 list does), and every
+    // row answers as the record: the audit reads the record once, from its first
+    // row, where its own name is.
+    let mut seen = std::collections::BTreeSet::new();
+    out.retain(|(index, _)| seen.insert(*index));
     out
 }
 

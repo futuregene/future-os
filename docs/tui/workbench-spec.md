@@ -24,7 +24,8 @@ implementation may extend it, but may not change its meaning.
 3. Launchpad first screen: large logo, large input box, parameter row
    (model / effort / mode / permission, clickable), shortcut entries, recent
    sessions.
-4. Sidebar with 4 real panels: todos (goal), sessions, usage, skills.
+4. Sidebar with 2 real panels: recent conversations (name, workspace, age) and
+   the same conversations filed by workspace (pinned / workspaces / chats).
 5. Real metrics in the status bar: model · effort · cwd · git branch · context
    gauge · tokens · cost / cache.
 6. `/` command palette (with descriptions, Tab completion), `?` help overlay,
@@ -67,7 +68,7 @@ tui/src/workbench/layout.rs     // Rect, Panes, hit regions (HitMap)
 tui/src/workbench/mouse.rs      // SGR 1006 parsing, MouseEvent, wheel/drag state machine
 tui/src/workbench/launchpad.rs  // first screen
 tui/src/workbench/screen.rs     // full-screen composition: header/body/sidebar/input/status
-tui/src/workbench/panels.rs     // rendering of the 4 sidebar panels (pure functions over PanelData)
+tui/src/workbench/panels.rs     // rendering of the 2 sidebar panels (pure functions over a row model)
 tui/src/workbench/picker.rs     // the /model, /theme and /sessions list overlay
 tui/src/workbench/state.rs      // WorkbenchData / TodoItem / SessionRow / UsageData
 tui/src/workbench/demo.rs       // demo data (for screenshots/self-tests; does not connect to the agent)
@@ -103,9 +104,8 @@ Content — a conversation, a session title, a path — is never translated.
 │ row 4      hairline separator (dim, ─)                                       │
 ├───────────────────────────────────────────────┬──────────────────────────────┤
 │ rows 6..h-8   BODY                            │ SIDEBAR_W = 36 (30..48)      │
-│   chat width = W - SIDEBAR_W - 1              │ row 6 tabs: 待办 任务 会话   │
-│   x = SIDEBAR_W+1 .. W-1                      │        用量 技能             │
-│   2 columns of padding on each side           │ divider x = SIDEBAR_W (│)    │
+│   chat width = W - SIDEBAR_W - 1              │ row 6 tabs: 最近 工作区      │
+│   x = SIDEBAR_W+1 .. W-1                      │ divider x = SIDEBAR_W (│)    │
 ├───────────────────────────────────────────────┴──────────────────────────────┤
 │ rows h-7..h-4  INPUT (4): top border / prompt line / bottom border           │
 │   ❯ <draft>                                   right ⛶                        │

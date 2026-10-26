@@ -230,17 +230,20 @@ pub fn render(
         push(&mut lines, palette.dim(t(lang, Key::LaunchpadRecent)));
         let room = rows.saturating_sub(lines.len());
         for (index, session) in data.sessions.iter().take(room).enumerate() {
-            let age = align_right(&session.age, 6.min(content_width / 3));
+            // The same three facts the rail and the `ctrl+r` list show: what the
+            // conversation is called, where it is filed and how fresh it is.
+            let tail = format!("{} · {}", session.workspace, session.age);
+            let tail = align_right(&tail, (content_width / 2).max(6));
             let title = fit(
                 &session.title,
-                content_width.saturating_sub(width(&age) + 1),
+                content_width.saturating_sub(width(&tail) + 1),
             );
-            let pad = content_width.saturating_sub(1 + width(&title) + width(&age));
+            let pad = content_width.saturating_sub(1 + width(&title) + width(&tail));
             let row = format!(
                 " {}{}{}",
                 palette.body(&title),
                 " ".repeat(pad),
-                palette.dim(&age)
+                palette.dim(&tail)
             );
             let y = area.y + lines.len() as u16;
             hit.push(

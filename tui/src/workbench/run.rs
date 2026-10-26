@@ -26,7 +26,6 @@ use super::layout::{self, Frame};
 use super::live::{self, Live, Outcome};
 use super::mouse;
 use super::picker::PickerKind;
-use super::state::PanelId;
 use super::{VerbOutcome, WbAction, WbEvent, Workbench};
 
 /// What a run of the workbench needs to know before it starts.
@@ -450,7 +449,7 @@ async fn event_loop(
                 paint = clock.tick(
                     animating,
                     workbench.spinner_frame(),
-                    ages_on_screen(workbench, &frame),
+                    ages_on_screen(&frame),
                     Instant::now(),
                 );
             }
@@ -516,13 +515,13 @@ fn drain(
     applied
 }
 
-/// Whether the sidebar is showing the one panel that reads the clock: the
-/// session list's ages. Any other panel is static while nothing happens.
-fn ages_on_screen(workbench: &Workbench, frame: &Frame) -> bool {
+/// Whether the sidebar is showing the clock at all: both tabs print how fresh a
+/// conversation is (`5m`, `3h`), so a rail on screen is a rail that ages.
+fn ages_on_screen(frame: &Frame) -> bool {
     // The frame's own layout says whether a rail was drawn (a hidden or
     // too-narrow sidebar has none), so this asks what is on screen rather than
     // what the reader would like to be.
-    frame.layout.sidebar.is_some() && workbench.panel == PanelId::Sessions
+    frame.layout.sidebar.is_some()
 }
 
 /// Whether a 120 ms tick owes the screen a frame.
@@ -659,6 +658,11 @@ async fn quit(
                         ReplyDetail::Detailed => ReplyDetail::Default,
                     };
                     live.set_detail(next);
+                    // A key the reader pressed is a choice like any other: it
+                    // goes to `settings.json` now, so the level survives the
+                    // terminal (the `/reply-detail` verb does the same).
+                    settings.reply_detail = Some(next.as_wire().to_string());
+                    save_settings(settings_path, settings);
                     return Ok(false);
                 }
                 Some(super::preferences::Action::NewSession) => {
@@ -849,6 +853,15 @@ async fn quit(
                 .keys
                 .save(&super::preferences::keybindings_path(settings_path));
         }
+        // A pinned workspace is a preference of this client's rail, so the
+        // surface's pin lands in `settings.json` beside the layout — and the
+        // rail's groups are rebuilt from it on the next frame.
+        if let WbAction::SetWorkspacePinned { path, pinned } = &action {
+            live.notice = Some(live.set_workspace_pinned(path, *pinned));
+            settings.pinned_workspaces = Some(live.pinned_workspaces().to_vec());
+            save_settings(settings_path, settings);
+            continue;
+        }
         if matches!(action, WbAction::OpenQueue) {
             live.refresh_state().await;
             if let VerbOutcome::Done { notice } =
@@ -911,9 +924,17 @@ async fn quit(
         // read an empty draft and return without reaching the agent, and it also
         // threw away the attachments — and when the session cannot be started
         // the reader's text has to survive so it can be sent again.
+        let switched = matches!(action, WbAction::SwitchSession(_));
         match live.apply(action).await {
             Outcome::Quit => return Ok(true),
             Outcome::Continue => {}
+        }
+        // A switch the rail did not make itself (a click on the launchpad's
+        // recents, a `ctrl+r` pick) still has to move its cursor: the rail would
+        // otherwise highlight a conversation the transcript is not showing.
+        if switched {
+            let data = live.data(frame);
+            workbench.follow_current(&data);
         }
         // A model or level chosen with no session attached is nothing the agent
         // can hold: `live.apply` staged it on the adapter, which asks for it

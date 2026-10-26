@@ -18,7 +18,7 @@
    拖拽（分栏分隔条）、悬停高亮（可选，能力允许时）。
 3. Launchpad 首屏：大字 logo、大输入框、参数行（模型/强度/模式/权限，可点击）、
    快捷入口、最近会话。
-4. 侧栏 4 个真实面板：待办（goal）、会话（sessions）、用量（usage）、技能（skills）。
+4. 侧栏 2 个真实面板：最近（会话名、所在工作区、刷新时间）、工作区（同一批会话按桌面端的方式归档：置顶 / 工作区 / 对话会话）。
 5. 状态栏真实指标：模型 · 强度 · cwd · git 分支 · 上下文占用条 · token · 费用/缓存。
 6. `/` 命令面板（带说明、Tab 补全）、`?` 帮助覆盖层、`/` 过滤、历史 ↑↓。
 7. 主题：内置六套 256 色——`dark` / `light` / `one-dark` / `one-light` /
@@ -53,7 +53,7 @@ tui/src/workbench/layout.rs     // Rect、Panes、命中区域（HitMap）
 tui/src/workbench/mouse.rs      // SGR 1006 解析、MouseEvent、滚轮/拖拽状态机
 tui/src/workbench/launchpad.rs  // 首屏
 tui/src/workbench/screen.rs     // 全屏合成：header/body/sidebar/input/status
-tui/src/workbench/panels.rs     // 侧栏 4 面板的渲染（纯函数，输入 PanelData）
+tui/src/workbench/panels.rs     // 侧栏 2 面板的渲染（纯函数，输入同一个行模型）
 tui/src/workbench/picker.rs     // /model、/theme、/sessions 的列表选择器覆盖层
 tui/src/workbench/state.rs      // WorkbenchData / TodoItem / SessionRow / UsageData
 tui/src/workbench/demo.rs       // 演示数据（截图/自测用，不连 agent）
@@ -93,7 +93,7 @@ live 接入只允许改：`tui/src/workbench/live.rs`、`tui/src/workbench/state
 │ row 4      细分隔线 (dim, ─)                                                  │
 ├───────────────────────────────────────────────┬──────────────────────────────┤
 │ rows 6..h-8   BODY                            │ SIDEBAR_W = 36 (30..48)      │
-│   chat 区域宽 = W - SIDEBAR_W - 1             │ row 6 页签条: 待办 任务 会话 │
+│   chat 区域宽 = W - SIDEBAR_W - 1             │ row 6 页签条: 最近 工作区    │
 │   x = SIDEBAR_W+1 .. W-1                      │        用量 技能            │
 │   左右各留 2 列内边距                          │ 分隔列 x = SIDEBAR_W (│)     │
 ├───────────────────────────────────────────────┴──────────────────────────────┤
