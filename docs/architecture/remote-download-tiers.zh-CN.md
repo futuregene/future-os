@@ -67,7 +67,11 @@ macOS arm64、仓库固定工具链（1.97），对进程内的 host 桥接（�
 | 旧 host（无 `download` 变体） | 回退到 `original`；两侧都钉住——host 精确输出 `UNSUPPORTED_VARIANT`，客户端只对该串重试（`only_a_missing_variant_falls_back`） |
 | 上限单一来源 | `DESKTOP_MAX_FILE_BYTES == MAX_DOWNLOAD_BYTES`（`the_desktop_ceiling_is_the_one_the_puller_enforces`） |
 
-**未在此验证**：两台真实机器经真实中继、拉取接近 512 MiB 上限的文件。没有部署任何 host——替换现役二进制是另一道需审批的步骤——所以上面的数字是一个进程内的结果，不是网络上的结果。该设计本身有两项成本，值得在那次测试前知道：host 会在传输有效期内（TTL 30 分钟）把文件复制到传输目录；拉取端会在落盘前把整个文件组装进内存，因此一次满上限的保存会在桌面占用 512 MiB 内存。
+**未在此验证**：两台真实机器经真实中继、拉取接近 512 MiB 上限的文件。没有部署任何 host——替换现役二进制是另一道需审批的步骤——所以上面的数字是一个进程内的结果，不是网络上的结果。该设计本身有两项成本，值得在那次测试前知道：host 在传输进行期间会暂存一份完整副本（客户端取消即释放，成功的保存就会取消；失败或放弃的传输才等 30 分钟 TTL），拉取端会在落盘前把整个文件组装进内存，因此一次满上限的保存是桌面 512 MiB 内存加上 host 512 MiB 临时磁盘。
+
+### 跨进程、跨真实 broker，2026-10-26
+
+第二次运行把 host 桥放进一个 OS 进程，把桌面的客户端半边（`remote_peer::transfer::download_for_desktop` 与 `write_to_path`，也就是 Tauri 命令调用的两个函数）放进另一个，中间是走 TCP 的真实 `nats-server`：12.5 MiB 安装包保存成功且 `shasum` 一致，release 构建 94 ms；64 MiB 文件 437 ms；600 MiB 与 512 MiB + 1 字节都用桌面自己的句子拒绝；手机的模式与类型规则仍逐字拒绝各自的用例；用 `b594ac2bc` 构建的 host 确实回 `Unsupported download variant.` 并被再问一次。具体数字、原文串以及仍未测量的项见 [`docs/testing/remote-download-tiers-live-2026-10-26.zh-CN.md`](../testing/remote-download-tiers-live-2026-10-26.zh-CN.md)。
 
 ## 复现
 
