@@ -35,6 +35,7 @@ pub(crate) mod history;
 pub(crate) mod journal_compaction;
 #[cfg(test)]
 mod journal_compactor;
+pub(crate) mod journal_reclaim;
 pub(crate) use history::{HISTORY_DEFAULT_BYTES, HISTORY_DEFAULT_SESSIONS};
 mod legacy_import;
 pub use legacy_import::ImportRecord;

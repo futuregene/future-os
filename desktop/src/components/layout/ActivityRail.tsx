@@ -1,6 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
-import type { DeviceFilter, MergedConversation, RemoteWorkspaceTarget } from "../../features/remote-peer/mergeConversations";
+import type { DeviceFilter, MergedConversation, RemoteWorkspaceRow, RemoteWorkspaceTarget } from "../../features/remote-peer/mergeConversations";
 import type { RemotePeer } from "../../features/remote-peer/remotePeerClient";
 import type { StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { FutureSessionStatus } from "./hooks/useFutureAccount";
@@ -495,6 +495,32 @@ export function ActivityRail({
    */
   const mergedMode = hasRemoteRows || (deviceFilter.kind === "device" && deviceFilter.desktopId !== null);
 
+  /**
+   * The shown hosts' workspaces, for the headings that have no rows under them.
+   *
+   * Only the machines the picker names are here — a workspace belongs to the
+   * machine that holds the folder, and drawing another machine's empty heading
+   * under this one's filter is the same mistake as drawing its conversations.
+   *
+   * The search narrows it the way it narrows this machine's own groups: a
+   * workspace whose name matches stays (its rows are filtered separately), and
+   * one that does not is left out — otherwise a query would keep every empty
+   * heading on screen, which reads as "nothing matched, but here is everything
+   * else".
+   */
+  const mergedWorkspaces = useMemo(() => {
+    const shown = new Map<string, RemoteWorkspaceRow[]>();
+    for (const catalog of remoteCatalogs) {
+      if (deviceFilter.kind === "device" && deviceFilter.desktopId !== catalog.desktopId)
+        continue;
+      const rows = catalog.workspaces?.filter(workspace =>
+        !queryActive || workspace.name.toLowerCase().includes(normalizedQuery));
+      if (rows && rows.length > 0)
+        shown.set(catalog.desktopId, rows);
+    }
+    return shown;
+  }, [deviceFilter, normalizedQuery, queryActive, remoteCatalogs]);
+
   // Filtering: include a row if its title or its workspace name matches.
   const rowMatchesQuery = useCallback((row: MergedConversation): boolean => {
     if (!queryActive)
@@ -809,8 +835,12 @@ export function ActivityRail({
     // folds away is still a row here.
     if (railView === "recent")
       return recent.rows.length > 0;
-    if (mergedMode)
-      return filteredRemoteRows.length > 0;
+    if (mergedMode) {
+      return filteredRemoteRows.length > 0
+        // An empty workspace heading is a hit too: its name matched, and the
+        // heading is the whole of what this list has to show for it.
+        || [...mergedWorkspaces.values()].some(rows => rows.length > 0);
+    }
     return filteredPinnedThreads.length > 0
       || filteredChatThreads.length > 0
       || workspaceGroups.some(group => group.rows.length > 0);
@@ -822,6 +852,7 @@ export function ActivityRail({
     filteredRemoteRows,
     filteredPinnedThreads,
     filteredChatThreads,
+    mergedWorkspaces,
     workspaceGroups,
   ]);
 
@@ -1439,6 +1470,7 @@ export function ActivityRail({
                                 threadById={threadById}
                                 view={railView === "recent" ? "recent" : "tree"}
                                 workspaceSectionCollapsed={workspaceSectionCollapsed}
+                                workspaces={mergedWorkspaces}
                                 onShowMoreRecent={() => setRecentLimit(current => current + RECENT_PAGE_SIZE)}
                               />
                             )

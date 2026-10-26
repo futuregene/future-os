@@ -20,11 +20,11 @@ describe("panel visibility thresholds", () => {
     expect(canShowLeftPanel(1440)).toBe(true);
   });
 
-  it("only opens the right panel when all three columns fit", () => {
+  it("only hosts the right panel as a column when all three columns fit", () => {
     expect(canShowRightPanel(RIGHT_FITS)).toBe(true);
     expect(canShowRightPanel(RIGHT_FITS - 1)).toBe(false);
     // The rail still fits here, but the right panel must not steal the center's
-    // floor to open.
+    // floor to open — the shell draws it as an overlay instead.
     expect(canShowLeftPanel(RIGHT_FITS - 1)).toBe(true);
   });
 });

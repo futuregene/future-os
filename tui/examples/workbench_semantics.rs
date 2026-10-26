@@ -449,11 +449,11 @@ fn palette_row() -> Result<(), String> {
         wb.handle(WbEvent::Key(ch.to_string()), &data);
     }
     wb.render(&data, 120, 38);
-    let shown = wb.palette_entries();
+    let shown = wb.palette_rows(&data);
     if shown.is_empty() {
         return Err("the filter left no commands".into());
     }
-    let expected = shown[0].0.to_string();
+    let expected = shown[0].command();
     let row = region(&wb, "palette.row.0")?;
     let (x, y) = centre(row);
     match wb.handle(WbEvent::Mouse(press(x, y)), &data).as_slice() {
@@ -651,16 +651,16 @@ fn sidebar_tab() -> Result<(), String> {
     let data = demo::chat();
     let mut wb = wb();
     wb.render(&data, 120, 38);
-    let tab = region(&wb, "sidebar.tab.usage")?;
+    let tab = region(&wb, "sidebar.tab.workspaces")?;
     let (x, y) = centre(tab);
     match wb.handle(WbEvent::Mouse(press(x, y)), &data).as_slice() {
-        [WbAction::SwitchPanel(PanelId::Usage)] => {
+        [WbAction::SwitchPanel(PanelId::Workspaces)] => {
             if !wb.sidebar_focus {
                 return Err("the tab did not take the keys".into());
             }
             Ok(())
         }
-        other => Err(format!("usage tab gave {other:?}")),
+        other => Err(format!("workspaces tab gave {other:?}")),
     }
 }
 

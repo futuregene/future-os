@@ -96,7 +96,6 @@ with `t(lang, …)`, deleting its row and lowering `BUDGET` by one.
 | `workbench/live.rs:1030` | `Could not cycle the model: {error}` | notice: the model cycle failed |
 | `workbench/live.rs:1045` | `Could not cycle thinking: {error}` | notice: cycling the effort failed |
 | `workbench/live.rs:1063` | `No models to choose from yet` | notice: the model picker has nothing to list |
-| `workbench/live.rs:1109` | `Could not set the permission: {error}` | notice: the permission chip failed |
 | `workbench/live.rs:1128` | `Could not set the approval mode: {error}` | notice: the mode chip failed |
 | `workbench/live.rs:1143` | `Could not answer the approval: {error}` | notice: the approval answer failed to send |
 | `workbench/live.rs:1150` | `Could not stop the run: {error}` | notice: the stop request failed |

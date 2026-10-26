@@ -1841,7 +1841,8 @@ mod tests {
         /// `tools/call boom` answers `isError: true`; anything else succeeds.
         const FAKE_SERVER: &str = r#"
 while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  id=${line#*\"id\":}
+  id=${id%%,*}
   case "$line" in
     *notifications/initialized*) ;;
     *'"initialize"'*)
@@ -2167,7 +2168,8 @@ done
         /// unknown name, but still answers `tools/list`.
         const REJECTING_SERVER: &str = r#"
 while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  id=${line#*\"id\":}
+  id=${id%%,*}
   case "$line" in
     *notifications/initialized*) ;;
     *'"initialize"'*)
@@ -2184,7 +2186,8 @@ done
         /// far larger than a deliberately tiny cap.
         const BIG_FRAME_SERVER: &str = r#"
 while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  id=${line#*\"id\":}
+  id=${id%%,*}
   case "$line" in
     *notifications/initialized*) ;;
     *'"initialize"'*)
@@ -2205,7 +2208,8 @@ done
         /// other name is a protocol-level error.
         const COUNTING_SERVER: &str = r#"
 while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  id=${line#*\"id\":}
+  id=${id%%,*}
   case "$line" in
     *notifications/initialized*) ;;
     *'"initialize"'*)
@@ -2906,7 +2910,8 @@ done
         /// request stops being answered.
         const HANDSHAKE_ONLY_SERVER: &str = r#"
 while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  id=${line#*\"id\":}
+  id=${id%%,*}
   case "$line" in
     *notifications/initialized*) ;;
     *'"initialize"'*)
@@ -2919,7 +2924,8 @@ done
         /// `full` has a description and an input schema; `bare` has neither.
         const DESCRIBE_SERVER: &str = r#"
 while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  id=${line#*\"id\":}
+  id=${id%%,*}
   case "$line" in
     *notifications/initialized*) ;;
     *'"initialize"'*)
@@ -2936,7 +2942,8 @@ done
         /// see what actually reached the server.
         const ECHO_PATH_SERVER: &str = r#"
 while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  id=${line#*\"id\":}
+  id=${id%%,*}
   case "$line" in
     *notifications/initialized*) ;;
     *'"initialize"'*)
@@ -2944,7 +2951,8 @@ while IFS= read -r line; do
     *'"tools/list"'*)
       printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"plain"}]}}\n' "$id" ;;
     *'"tools/call"'*)
-      path=$(printf '%s' "$line" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')
+      path=${line#*\"path\":\"}
+      path=${path%%\"*}
       printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"the tool got %s"}]}}\n' "$id" "$path" ;;
   esac
 done
@@ -2957,7 +2965,8 @@ done
         const SERVE_SERVER: &str = r#"
 printf 'engine warm\n' >&2
 while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  id=${line#*\"id\":}
+  id=${id%%,*}
   case "$line" in
     *notifications/initialized*) ;;
     *'"initialize"'*)

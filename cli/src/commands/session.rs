@@ -38,6 +38,7 @@ Usage:
   future session reject <id> <request-id> [opts]       Deny a pending approval
   future session delete <id>                           Delete a session
   future session prune --older-than <age> [--yes]      Delete sessions idle longer than <age>
+  future session journal [--reclaim [--yes]] [--json]  Raw run-journal cost + reclamation
 
 Session data is stored in ~/.future/agent/agent.db";
 
@@ -1465,6 +1466,10 @@ pub async fn session(
 
     if subcommand == "prune" {
         return super::session_prune::run(args, out).await;
+    }
+
+    if subcommand == "journal" {
+        return super::session_journal::run(args, out).await;
     }
 
     if subcommand == "wait" {

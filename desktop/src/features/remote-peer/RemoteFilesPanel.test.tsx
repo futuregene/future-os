@@ -73,7 +73,7 @@ beforeEach(() => {
   save.mockReset().mockResolvedValue("/Users/me/report.txt");
 });
 
-async function mount(props: { expanded?: boolean } = {}) {
+async function mount(props: { expanded?: boolean; floating?: boolean } = {}) {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -83,6 +83,7 @@ async function mount(props: { expanded?: boolean } = {}) {
       <RemoteFilesPanel
         desktopId="desktop_a"
         expanded={props.expanded ?? true}
+        floating={props.floating}
         onToggleExpanded={onToggleExpanded}
         peer={peer}
         sessionId="sess_1"
@@ -321,6 +322,25 @@ it("shows only the toggle when collapsed, and reports the toggle", async () => {
   const toggle = view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Show this conversation's files\"]")!;
   await act(async () => toggle.click());
   expect(view.onToggleExpanded).toHaveBeenCalledTimes(1);
+  await view.unmount();
+});
+
+/**
+ * In a window too narrow for the third column the panel is a drawer over the
+ * conversation: out of the row's flow, so the conversation keeps its width and
+ * the panel still opens instead of vanishing with its own toggle.
+ */
+it("draws over the conversation when floated", async () => {
+  list.mockResolvedValue(listing([
+    { isDir: false, name: "effect-size.R", path: "/home/studio/effect-size.R", size: 2_048 },
+  ]));
+  const view = await mount({ floating: true });
+  const aside = view.container.querySelector<HTMLElement>("aside")!;
+  expect(aside.className).toContain("absolute");
+  expect(aside.className).toContain("right-0");
+  expect(aside.className).not.toContain("shrink-0");
+  // It is still the real files browser, not a placeholder.
+  expect(view.container.textContent).toContain("effect-size.R");
   await view.unmount();
 });
 

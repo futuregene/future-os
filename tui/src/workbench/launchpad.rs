@@ -5,14 +5,19 @@
 //! "a composer card on top of the chat" and "the TUI's home screen", and it is
 //! the one the contract calls for (§3, §4).
 //!
-//! Sections are stacked from the top and dropped from the end when the area is
-//! short: the logo, the input box, the parameter row, the shortcuts and the
-//! recent sessions. The input box is never dropped — a launchpad that cannot
-//! take a prompt is not a launchpad.
+//! The block — name, prompt, parameter chips, shortcut entries — is centred in
+//! the body rather than pinned to its top: with the conversation column empty
+//! below it, a block that starts at row 0 reads as a form that failed to load.
+//! Sections still drop from the end when the area is short (the chips and the
+//! shortcuts first, then the wordmark), and the input box is never dropped — a
+//! launchpad that cannot take a prompt is not a launchpad.
 
-use crate::workbench::ansi::{align_right, fit, width};
+use crate::approval_mode::ApprovalMode;
+use crate::workbench::ansi::{clip, fit, width};
 use crate::workbench::i18n::{self, t, Key, Language};
 use crate::workbench::layout::{HitMap, Rect};
+use crate::workbench::picker;
+use crate::workbench::preferences::{Action, Keybindings};
 use crate::workbench::state::WorkbenchData;
 use crate::workbench::theme::Palette;
 use crate::workbench::widgets;
@@ -26,8 +31,22 @@ pub struct Chip {
 }
 
 /// The parameter row: what the first message will run with.
+///
+/// The workspace leads, because it is the one choice that decides what the rest
+/// of them mean: a model is picked for a directory, not the other way round.
+///
+/// Four chips, not five: those are the desktop composer's own controls (model,
+/// thinking level, approval mode) plus the workspace this TUI adds because it
+/// starts from a directory. A separate "permission level" chip used to sit here;
+/// the desktop exposes no such choice, so it is gone rather than kept as a TUI
+/// invention.
 pub fn chips(data: &WorkbenchData, lang: Language) -> Vec<Chip> {
     vec![
+        Chip {
+            id: "launchpad.workspace",
+            title: t(lang, Key::ChipWorkspace),
+            value: workspace_label(&data.session.cwd),
+        },
         Chip {
             id: "launchpad.model",
             title: t(lang, Key::ChipModel),
@@ -43,24 +62,23 @@ pub fn chips(data: &WorkbenchData, lang: Language) -> Vec<Chip> {
             },
         },
         Chip {
-            id: "launchpad.mode",
-            title: t(lang, Key::ChipMode),
-            value: if data.mode.is_empty() {
-                "open".to_string()
-            } else {
-                data.mode.clone()
-            },
-        },
-        Chip {
-            id: "launchpad.permission",
-            title: t(lang, Key::ChipAccess),
-            value: if data.permission.is_empty() {
-                "all".to_string()
-            } else {
-                data.permission.clone()
-            },
+            id: "launchpad.approval",
+            title: t(lang, Key::ChipApproval),
+            value: approval_label(&data.mode, lang),
         },
     ]
+}
+
+/// The approval mode as the desktop names it (`手动审批` / `完全访问`), falling
+/// back to the raw wire spelling for a value this build does not know.
+fn approval_label(mode: &str, lang: Language) -> String {
+    match ApprovalMode::from_wire(mode) {
+        Some(mode) => picker::approval_label(mode, lang).to_string(),
+        None if mode.trim().is_empty() => {
+            picker::approval_label(ApprovalMode::Off, lang).to_string()
+        }
+        None => mode.to_string(),
+    }
 }
 
 /// The last path segment of a model id, which is what a chip has room for.
@@ -76,14 +94,48 @@ fn short_model(model: &str) -> String {
         .to_string()
 }
 
-/// How the launchpad's shortcut entry points read; the loop runs them as
-/// `/command`s.
-pub const SHORTCUTS: [(&str, Key); 4] = [
-    ("/", Key::ShortcutCommands),
-    ("?", Key::ShortcutHelp),
-    ("ctrl+n", Key::ShortcutNewChat),
-    ("ctrl+b", Key::ShortcutSidebar),
-];
+/// The workspace's own name, which is what a chip has room for (`D:/work/x` →
+/// `x`). A path with no last segment (`/`) is shown as it is.
+fn workspace_label(cwd: &str) -> String {
+    if cwd.trim().is_empty() {
+        return "—".to_string();
+    }
+    let trimmed = cwd.trim_end_matches(['/', '\\']);
+    let name = trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed);
+    if name.is_empty() {
+        cwd.to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+/// How the launchpad's shortcut entry points read, with the *bound* keys: a
+/// rebound shortcut is shown rebound, because the row's whole job is to teach
+/// the key that works. The third field is what a click on the entry does — the
+/// same verb the key runs.
+pub fn shortcuts(keys: &Keybindings) -> Vec<(String, Key, &'static str)> {
+    vec![
+        ("/".to_string(), Key::ShortcutCommands, "palette"),
+        ("?".to_string(), Key::ShortcutHelp, "help"),
+        (keys.label(Action::NewSession), Key::ShortcutNewChat, "new"),
+        (keys.label(Action::Thinking), Key::ChipEffort, "thinking"),
+        (keys.label(Action::Approval), Key::ChipApproval, "mode"),
+        (
+            keys.label(Action::Workspaces),
+            Key::ChipWorkspace,
+            "workspace",
+        ),
+        (keys.label(Action::Sidebar), Key::ShortcutSidebar, "sidebar"),
+    ]
+}
+
+/// What a clickable piece of the block is, and where it is drawn.
+struct Region {
+    row: usize,
+    x: u16,
+    w: u16,
+    id: String,
+}
 
 /// Render the launchpad into `area`, registering what is clickable.
 ///
@@ -95,6 +147,8 @@ pub fn render(
     area: Rect,
     hit: &mut HitMap,
     lang: Language,
+    focused_chip: Option<&str>,
+    keys: &Keybindings,
 ) -> (Vec<String>, Option<(u16, u16)>) {
     if area.is_empty() {
         return (Vec::new(), None);
@@ -106,48 +160,37 @@ pub fn render(
     let content_width = columns.min(76).max(columns.min(20));
     let left = (columns - content_width) / 2;
 
+    // The block is built in block-local rows first and placed afterwards, so
+    // "where is the prompt" and "where is the block" are one calculation.
     let mut lines: Vec<String> = Vec::new();
-    let mut cursor = None;
+    let mut regions: Vec<Region> = Vec::new();
+    let mut cursor: Option<(u16, usize)> = None;
+    // Rows the block may lose from the top when it cannot fit: the wordmark and
+    // the blank rule above the prompt are decoration, the prompt is not.
+    let mut decoration = 0usize;
     let push = |lines: &mut Vec<String>, text: String| {
         // Centre a block of `content_width`; the rest of the row is canvas.
         let padded = format!("{}{}", " ".repeat(left), fit(&text, content_width));
         lines.push(fit(&padded, columns));
     };
 
-    // ── logo + wordmark ───────────────────────────────────────────────
-    let mark_width = width(&widgets::wordmark_rows(palette)[0]);
-    let block_width = 9 + 3 + mark_width;
-    // The hero needs the *block* to fit beside the whale: the chat column is
-    // 83 cells at 120×38 (the sidebar takes the rest), so a fixed "wide screen"
-    // threshold drew the whale alone on the screen that has the most room.
-    let room_for_wordmark = columns >= block_width + 4 && rows >= 18;
-    if room_for_wordmark {
-        let logo = widgets::logo_rows(palette);
-        let mark = widgets::wordmark_rows(palette);
-        let block_left = (columns - block_width) / 2;
-        for (index, mark_row) in mark.iter().enumerate() {
-            let logo_row = logo.get(index).cloned().unwrap_or_else(|| " ".repeat(9));
-            let row = format!("{logo_row}   {mark_row}");
-            lines.push(fit(&format!("{}{}", " ".repeat(block_left), row), columns));
-        }
-    } else if rows >= 8 {
-        for row in widgets::logo_rows(palette) {
-            let block_left = (columns - 9) / 2;
-            lines.push(fit(&format!("{}{}", " ".repeat(block_left), row), columns));
-        }
-    }
-
+    // ── wordmark ──────────────────────────────────────────────────────
+    // No icon. The name and tagline are centred in the conversation column,
+    // leaving the input as the visual focus of the launchpad.
     if rows >= 12 {
-        // The name is drawn once on this screen: the hero (whale + block
-        // wordmark) owns it, and the header keeps only its text brand. A
-        // second `FUTURE OS` line here is what made the launchpad read as two
-        // brands stacked on top of each other.
+        decoration = 3;
+        let name = format!(
+            "{}   {}",
+            palette.strong(palette.fg, "F U T U R E"),
+            palette.strong(palette.accent, "O S")
+        );
+        push(&mut lines, center(&name, content_width));
         push(
             &mut lines,
             palette.dim(&center(t(lang, Key::LaunchpadTagline), content_width)),
         );
+        push(&mut lines, String::new());
     }
-    push(&mut lines, String::new());
 
     // ── the input box ─────────────────────────────────────────────────
     let title = if data.session.cwd.is_empty() {
@@ -160,17 +203,16 @@ pub fn render(
     let box_top_row = lines.len();
     for (index, row) in box_rows.iter().enumerate() {
         push(&mut lines, row.clone());
-        let y = area.y + (box_top_row + index) as u16;
         if index == 1 {
-            let x = area.x + (left + cursor_column as usize) as u16;
-            cursor = Some((x.min(area.right().saturating_sub(1)), y));
+            cursor = Some((left as u16 + cursor_column, box_top_row + cursor_row));
         }
     }
-    let prompt_row = area.y + (box_top_row + cursor_row) as u16;
-    hit.push(
-        Rect::new(area.x + left as u16, prompt_row, content_width as u16, 1),
-        "input",
-    );
+    regions.push(Region {
+        row: box_top_row + cursor_row,
+        x: left as u16,
+        w: content_width as u16,
+        id: "input".to_string(),
+    });
 
     // ── parameter chips ───────────────────────────────────────────────
     if rows >= lines.len() + 2 {
@@ -178,8 +220,17 @@ pub fn render(
         let mut row = String::new();
         let mut x = left;
         for chip in chips(data, lang) {
-            let text = format!("  {} ‹{}›", chip.title, chip.value);
-            let text = crate::workbench::ansi::clip(&text, content_width);
+            // The chip the `tab` key stands on says so: `▸` in place of the
+            // leading space, in the accent colour. Same width either way, so
+            // focusing one does not reflow the row.
+            let focused = focused_chip == Some(chip.id);
+            let text = format!(
+                "{}{} ‹{}›",
+                if focused { "▸ " } else { "  " },
+                chip.title,
+                chip.value
+            );
+            let text = clip(&text, content_width);
             let chip_width = width(&text);
             if x + chip_width > left + content_width {
                 // Wrap the chips onto a second row rather than clipping one.
@@ -187,12 +238,18 @@ pub fn render(
                 row = String::new();
                 x = left;
             }
-            let y = area.y + lines.len() as u16;
-            hit.push(
-                Rect::new(area.x + x as u16, y, chip_width as u16, 1),
-                chip.id,
-            );
-            row.push_str(&palette.text(palette.iris, &text));
+            regions.push(Region {
+                row: lines.len(),
+                x: x as u16,
+                w: chip_width as u16,
+                id: chip.id.to_string(),
+            });
+            let painted = if focused {
+                palette.strong(palette.accent, &text)
+            } else {
+                palette.text(palette.iris, &text)
+            };
+            row.push_str(&painted);
             x += chip_width;
         }
         if !row.is_empty() {
@@ -203,61 +260,102 @@ pub fn render(
     // ── shortcuts ─────────────────────────────────────────────────────
     if rows >= lines.len() + 2 {
         push(&mut lines, String::new());
+        let separator = palette.dim("  ·  ");
+        // Wrapped, not clipped: the same rule as the chips, and the reason the
+        // list can grow to seven entries without losing the last two. A wrapped
+        // row starts with its first entry rather than a comma: the line break is
+        // already the separator.
         let mut row = String::new();
-        for (index, (key, label)) in SHORTCUTS.iter().enumerate() {
-            if index > 0 {
-                row.push_str(&palette.dim("  ·  "));
+        let mut plain = String::new();
+        let gap = width("  ·  ");
+        for (key, label, action) in shortcuts(keys) {
+            let piece = format!("{} {}", key, t(lang, label));
+            let piece_width = width(&piece);
+            if !plain.is_empty() && width(&plain) + gap + piece_width > content_width {
+                lines.push(fit(
+                    &format!("{}{}", " ".repeat(left), fit(&row, content_width)),
+                    columns,
+                ));
+                row.clear();
+                plain.clear();
             }
-            row.push_str(&palette.text(palette.accent, key));
-            row.push(' ');
-            row.push_str(&palette.dim(t(lang, *label)));
+            if !plain.is_empty() {
+                row.push_str(&separator);
+                plain.push_str("  ·  ");
+            }
+            let at = lines.len();
+            let x = left as u16 + width(&plain) as u16;
+            regions.push(Region {
+                row: at,
+                x,
+                w: piece_width.max(1) as u16,
+                id: format!("launchpad.command.{action}"),
+            });
+            row.push_str(&format!(
+                "{} {}",
+                palette.text(palette.accent, &key),
+                palette.dim(t(lang, label))
+            ));
+            plain.push_str(&piece);
         }
-        let y = area.y + lines.len() as u16;
-        hit.push(
-            Rect::new(area.x + left as u16, y, content_width as u16, 1),
-            "launchpad.shortcuts",
-        );
-        lines.push(fit(
-            &format!("{}{}", " ".repeat(left), fit(&row, content_width)),
-            columns,
-        ));
+        if !row.is_empty() {
+            lines.push(fit(
+                &format!("{}{}", " ".repeat(left), fit(&row, content_width)),
+                columns,
+            ));
+        }
     }
 
     // ── recent sessions ───────────────────────────────────────────────
-    let remaining = rows.saturating_sub(lines.len());
-    if remaining >= 4 && !data.sessions.is_empty() {
-        push(&mut lines, String::new());
-        push(&mut lines, palette.dim(t(lang, Key::LaunchpadRecent)));
-        let room = rows.saturating_sub(lines.len());
-        for (index, session) in data.sessions.iter().take(room).enumerate() {
-            let age = align_right(&session.age, 6.min(content_width / 3));
-            let title = fit(
-                &session.title,
-                content_width.saturating_sub(width(&age) + 1),
-            );
-            let pad = content_width.saturating_sub(1 + width(&title) + width(&age));
-            let row = format!(
-                " {}{}{}",
-                palette.body(&title),
-                " ".repeat(pad),
-                palette.dim(&age)
-            );
-            let y = area.y + lines.len() as u16;
-            hit.push(
-                Rect::new(area.x + left as u16, y, content_width as u16, 1),
-                format!("launchpad.session.{index}"),
-            );
-            push(&mut lines, row);
+    // None: the rail's 最近 tab is the list. A second copy under the prompt
+    // took the rows the parameter row and the shortcuts need, and the same
+    // conversation twice on one screen is one list too many.
+
+    // ── placement ─────────────────────────────────────────────────────
+    // A block taller than the area keeps the prompt: drop the decoration above
+    // it, then cut the tail. What is left is centred in what the area has.
+    let mut block_h = lines.len();
+    if block_h > rows {
+        let cut = (block_h - rows).min(decoration).min(block_h);
+        lines.drain(0..cut);
+        for region in &mut regions {
+            region.row = region.row.saturating_sub(cut);
         }
+        if let Some((_, row)) = cursor.as_mut() {
+            *row = row.saturating_sub(cut);
+        }
+        block_h = lines.len();
+    }
+    let top = rows.saturating_sub(block_h) / 2;
+
+    let mut frame: Vec<String> = Vec::with_capacity(rows);
+    frame.extend((0..top).map(|_| fit("", columns)));
+    frame.extend(lines);
+    frame.truncate(rows);
+    while frame.len() < rows {
+        frame.push(fit("", columns));
     }
 
-    // Fill the rest of the area with canvas: the launchpad is bottom-open, not
-    // a card floating in the middle.
-    while lines.len() < rows {
-        lines.push(fit("", columns));
+    for region in regions {
+        let y = top + region.row;
+        if y >= rows {
+            continue;
+        }
+        hit.push(
+            Rect::new(area.x + region.x, area.y + y as u16, region.w, 1),
+            region.id,
+        );
     }
-    lines.truncate(rows);
-    (lines, cursor)
+    let cursor = cursor
+        .map(|(column, row)| (column, top + row))
+        .filter(|(_, row)| *row < rows)
+        .map(|(column, row)| {
+            (
+                (area.x + column).min(area.right().saturating_sub(1)),
+                area.y + row as u16,
+            )
+        });
+    (frame, cursor)
 }
 
 fn center(text: &str, columns: usize) -> String {
@@ -282,12 +380,32 @@ mod tests {
 
     const P: Palette = FUTURE_DARK;
 
+    /// The default shortcut map: what the launchpad draws unless the reader
+    /// rebound something.
+    fn keys() -> Keybindings {
+        Keybindings::default()
+    }
+
     fn text_of(lines: &[String]) -> String {
         lines
             .iter()
             .map(|line| crate::utils::strip_ansi_codes(line))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// The first and last painted row of a frame, as indices.
+    fn block_rows(lines: &[String]) -> (usize, usize) {
+        let painted: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| !line.trim_end().is_empty())
+            .map(|(index, _)| index)
+            .collect();
+        (
+            *painted.first().expect("a painted row"),
+            *painted.last().expect("a painted row"),
+        )
     }
 
     #[test]
@@ -303,7 +421,15 @@ mod tests {
             (200, 60),
         ] {
             let mut hit = HitMap::new();
-            let (lines, _cursor) = render(&data, &P, Rect::new(0, 0, w, h), &mut hit, LANG);
+            let (lines, _cursor) = render(
+                &data,
+                &P,
+                Rect::new(0, 0, w, h),
+                &mut hit,
+                LANG,
+                None,
+                &keys(),
+            );
             assert_eq!(lines.len(), h as usize, "{w}x{h}");
             for line in &lines {
                 assert_eq!(width(line), w as usize, "{w}x{h}: {line:?}");
@@ -312,43 +438,99 @@ mod tests {
     }
 
     #[test]
-    fn a_tall_screen_shows_the_logo_the_prompt_and_the_chips() {
+    fn a_tall_screen_shows_the_name_prompt_and_chips() {
         let data = demo::launchpad();
         let mut hit = HitMap::new();
-        let (lines, cursor) = render(&data, &P, Rect::new(0, 0, 120, 38), &mut hit, LANG);
+        let (lines, cursor) = render(
+            &data,
+            &P,
+            Rect::new(0, 0, 120, 38),
+            &mut hit,
+            LANG,
+            None,
+            &keys(),
+        );
         let text = text_of(&lines);
-        // The hero carries the name as block art; there is no second text
-        // `FUTURE OS` line under it (that was the duplicate brand).
-        assert!(!text.contains("FUTURE OS"), "{text}");
-        assert!(lines.iter().any(|line| line.contains('█')), "{text}");
+        // Typography alone carries the brand: no block art or icon.
+        assert!(text.contains("F U T U R E   O S"), "{text}");
+        assert_eq!(text.matches("F U T U R E").count(), 1, "{text}");
+        assert!(!text.contains('▀'), "{text}");
+        assert!(!text.contains('▄'), "{text}");
         assert!(text.contains("一个 AI agent"), "{text}");
         assert!(text.contains("新会话"), "{text}");
         assert!(text.contains("模型"), "{text}");
         assert!(text.contains("强度"), "{text}");
         assert!(text.contains("deepseek-flash"), "{text}");
         assert!(text.contains("命令"), "{text}");
-        assert!(text.contains("最近会话"), "{text}");
-        // The cursor sits on the prompt row, inside the box.
+        // The approval chip names the mode the way the desktop does, and there
+        // is no second "permission" control beside it.
+        assert!(text.contains("手动审批"), "{text}");
+        assert!(!text.contains("权限"), "{text}");
+        // The rail lists the conversations; the launchpad does not repeat it.
+        assert!(!text.contains("最近会话"), "{text}");
+        // The cursor sits on the prompt row, inside the box, which is inside
+        // the block rather than at the top of the body.
         let (_, row) = cursor.expect("the prompt owns the cursor");
-        assert_eq!(row, 5 + 1 + 1 + 1, "hero(5) + tagline + blank + box top");
+        assert!(row > 5, "the block is centred, not pinned to row 0: {row}");
+        let (first, _) = block_rows(&lines);
+        assert!(first > 2, "the block leaves room above it: {first}");
     }
 
     #[test]
-    fn every_chip_and_recent_session_is_clickable() {
+    fn the_block_is_centred_in_the_body_and_moves_with_its_height() {
+        let data = demo::launchpad();
+        for h in [20u16, 24, 30, 38, 50] {
+            let mut hit = HitMap::new();
+            let (lines, _) = render(
+                &data,
+                &P,
+                Rect::new(0, 0, 100, h),
+                &mut hit,
+                LANG,
+                None,
+                &keys(),
+            );
+            let (first, last) = block_rows(&lines);
+            let above = first;
+            let below = h as usize - 1 - last;
+            // One row of slack for an odd remainder.
+            assert!(
+                above.abs_diff(below) <= 1,
+                "h={h}: {above} rows above, {below} below"
+            );
+        }
+    }
+
+    #[test]
+    fn every_chip_is_clickable_and_lands_on_the_row_that_prints_it() {
         let data = demo::launchpad();
         let mut hit = HitMap::new();
-        let (lines, _) = render(&data, &P, Rect::new(0, 0, 120, 38), &mut hit, LANG);
+        let (lines, _) = render(
+            &data,
+            &P,
+            Rect::new(0, 0, 120, 38),
+            &mut hit,
+            LANG,
+            None,
+            &keys(),
+        );
         let ids: Vec<&str> = hit.regions().iter().map(|(_, id)| id.as_str()).collect();
         for expected in [
             "input",
+            "launchpad.workspace",
             "launchpad.model",
             "launchpad.effort",
-            "launchpad.mode",
-            "launchpad.permission",
-            "launchpad.session.0",
+            "launchpad.approval",
         ] {
             assert!(ids.contains(&expected), "{expected} missing from {ids:?}");
         }
+        // The permission chip is gone with the desktop-aligned parameter row.
+        assert!(!ids.contains(&"launchpad.permission"), "{ids:?}");
+        // The conversation list is the rail's job, not the launchpad's.
+        assert!(
+            ids.iter().all(|id| !id.starts_with("launchpad.session.")),
+            "{ids:?}"
+        );
         // …and the regions really are on the rows they were drawn on: the model
         // chip is on the row that prints it.
         let chip_row = lines
@@ -364,16 +546,135 @@ mod tests {
     }
 
     #[test]
+    fn the_shortcut_row_teaches_the_keys_that_work() {
+        let data = demo::launchpad();
+        let mut keys = Keybindings::default();
+        keys.bind(Action::Thinking, "ctrl+k").unwrap();
+        let mut hit = HitMap::new();
+        let (lines, _) = render(
+            &data,
+            &P,
+            Rect::new(0, 0, 120, 38),
+            &mut hit,
+            LANG,
+            None,
+            &keys,
+        );
+        let text = text_of(&lines);
+        // The bound key is shown, the default one is not.
+        assert!(text.contains("ctrl+k"), "{text}");
+        assert!(!text.contains("ctrl+t"), "{text}");
+        // Every entry point the block offers is named.
+        for needle in ["ctrl+n", "ctrl+s", "ctrl+l", "ctrl+b", "ctrl+k", "帮助"] {
+            assert!(text.contains(needle), "{needle} missing: {text}");
+        }
+    }
+
+    #[test]
+    fn the_focused_chip_says_so_without_moving_the_row() {
+        let data = demo::launchpad();
+        let mut plain = HitMap::new();
+        let (unfocused, _) = render(
+            &data,
+            &P,
+            Rect::new(0, 0, 120, 38),
+            &mut plain,
+            LANG,
+            None,
+            &keys(),
+        );
+        let mut focused_hit = HitMap::new();
+        let (focused, _) = render(
+            &data,
+            &P,
+            Rect::new(0, 0, 120, 38),
+            &mut focused_hit,
+            LANG,
+            Some("launchpad.model"),
+            &keys(),
+        );
+        assert_eq!(unfocused.len(), focused.len());
+        let marker_row = text_of(&focused)
+            .lines()
+            .position(|line| line.contains('▸'))
+            .expect("the focused chip is marked");
+        assert!(!text_of(&unfocused).contains('▸'));
+        // The marker sits inside the chip's own hit region.
+        let want = plain
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "launchpad.model")
+            .map(|(rect, _)| *rect)
+            .expect("the model chip");
+        let got = focused_hit
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "launchpad.model")
+            .map(|(rect, _)| *rect)
+            .expect("the model chip");
+        assert_eq!((want.x, want.y), (got.x, got.y));
+        assert_eq!(got.y as usize, marker_row);
+    }
+
+    #[test]
     fn a_short_screen_keeps_the_prompt_and_drops_the_rest() {
         let data = demo::launchpad();
         let mut hit = HitMap::new();
-        let (lines, _) = render(&data, &P, Rect::new(0, 0, 60, 10), &mut hit, LANG);
+        let (lines, cursor) = render(
+            &data,
+            &P,
+            Rect::new(0, 0, 60, 10),
+            &mut hit,
+            LANG,
+            None,
+            &keys(),
+        );
         assert_eq!(lines.len(), 10);
         let text = text_of(&lines);
         assert!(text.contains("新会话"), "the prompt survives: {text}");
-        assert!(text.contains("模型"), "{text}");
-        // No room for recents.
-        assert!(!text.contains("最近会话"), "{text}");
+        // Ten rows cannot hold the chips and the shortcuts as well; the prompt
+        // is the one thing that must not go.
+        assert!(cursor.is_some(), "{text}");
+    }
+
+    #[test]
+    fn a_screen_too_short_for_the_block_drops_the_name_not_the_prompt() {
+        let data = demo::launchpad();
+        // Narrow enough that the chips and the shortcuts wrap, and short enough
+        // that the block cannot fit: the decoration above the prompt goes first.
+        let mut hit = HitMap::new();
+        let (lines, cursor) = render(
+            &data,
+            &P,
+            Rect::new(0, 0, 40, 12),
+            &mut hit,
+            LANG,
+            None,
+            &keys(),
+        );
+        assert_eq!(lines.len(), 12);
+        let text = text_of(&lines);
+        assert!(text.contains("新会话"), "the prompt survives: {text}");
+        assert!(
+            !text.contains("F U T U R E"),
+            "the name is what goes: {text}"
+        );
+        assert!(cursor.is_some(), "{text}");
+
+        // Two rows more and the name fits around the prompt again.
+        let mut hit = HitMap::new();
+        let (lines, _) = render(
+            &data,
+            &P,
+            Rect::new(0, 0, 40, 16),
+            &mut hit,
+            LANG,
+            None,
+            &keys(),
+        );
+        let text = text_of(&lines);
+        assert!(text.contains("F U T U R E"), "{text}");
+        assert!(text.contains("新会话"), "{text}");
     }
 
     #[test]
@@ -381,5 +682,25 @@ mod tests {
         assert_eq!(short_model("future/deepseek-flash"), "deepseek-flash");
         assert_eq!(short_model("gpt-4o"), "gpt-4o");
         assert_eq!(short_model(""), "—");
+    }
+
+    #[test]
+    fn the_approval_chip_names_the_mode_the_way_the_desktop_does() {
+        assert_eq!(approval_label("manual", LANG), "手动审批");
+        assert_eq!(approval_label("off", LANG), "完全访问");
+        assert_eq!(approval_label("auto", Language::En), "Automatic review");
+        // An empty mode is the product default (`off`), not a blank chip.
+        assert_eq!(approval_label("", LANG), "完全访问");
+        // A value this build does not know is shown as it arrived.
+        assert_eq!(approval_label("turbo", LANG), "turbo");
+    }
+
+    #[test]
+    fn a_workspace_chip_names_the_directory_it_would_run_in() {
+        assert_eq!(workspace_label("D:\\work\\future-os"), "future-os");
+        assert_eq!(workspace_label("/home/dev/future-os/"), "future-os");
+        assert_eq!(workspace_label(""), "—");
+        // Nothing to take: the path itself is the honest label.
+        assert_eq!(workspace_label("/"), "/");
     }
 }

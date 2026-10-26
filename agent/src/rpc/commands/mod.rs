@@ -129,6 +129,12 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             return session_lifecycle::cmd_session_storage_format(state, &cmd, id)
         }
         "get_storage_health" => return session_lifecycle::cmd_storage_health(state, id),
+        // Journal maintenance spans every session: neither answers a question
+        // about one conversation, and both must work with no session loaded.
+        "get_journal_stats" => return session_lifecycle::cmd_journal_stats(state, id),
+        "reclaim_run_journals" => {
+            return session_lifecycle::cmd_reclaim_run_journals(state, &cmd, id)
+        }
         "list_session_ids" => return session_lifecycle::cmd_list_session_ids(state, id),
         "list_streaming_sessions" => {
             return session_lifecycle::cmd_list_streaming_sessions(state, id)

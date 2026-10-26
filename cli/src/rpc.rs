@@ -65,6 +65,31 @@ impl RunClient {
         Ok(data)
     }
 
+    /// Database-wide run-journal cost and reclamation evidence. Read-only.
+    pub async fn journal_stats(&self) -> Result<Value, String> {
+        self.execute_command("get_journal_stats", RpcCommand::default(), None, 10)
+            .await
+    }
+
+    /// One bounded step of the explicit journal reclaim sweep. `dry_run` plans
+    /// without writing; the caller repeats until `hasMore` is false.
+    pub async fn reclaim_run_journals(&self, dry_run: bool) -> Result<Value, String> {
+        self.execute_command(
+            "reclaim_run_journals",
+            RpcCommand {
+                custom_instructions: if dry_run {
+                    "dryRun".into()
+                } else {
+                    String::new()
+                },
+                ..Default::default()
+            },
+            None,
+            10,
+        )
+        .await
+    }
+
     pub fn new(addr: &str) -> Self {
         Self {
             addr: addr.to_string(),

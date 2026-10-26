@@ -38,7 +38,6 @@ pub(crate) struct StoredEventRow {
     idx: i64,
     event_id: Option<String>,
     pub(crate) payload: String,
-    #[cfg(test)]
     pub(crate) sequence: i64,
 }
 
@@ -403,7 +402,6 @@ pub(crate) fn read_replay_event_rows(
 
 /// Index-ordered keyset pages for maintenance. Include epoch in the cursor so
 /// duplicate indices across epochs cannot hide at a page boundary.
-#[cfg(test)]
 pub(crate) fn read_compaction_event_rows(
     db: &Connection,
     session: &str,
@@ -453,7 +451,6 @@ fn stored_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredEventRow> {
         idx: row.get(3)?,
         event_id: row.get(4)?,
         payload: row.get(5)?,
-        #[cfg(test)]
         sequence: row.get(6)?,
     })
 }

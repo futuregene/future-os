@@ -34,8 +34,12 @@ fn active_incomplete_and_gapped_journals_are_kept() {
     assert_eq!(store.events("s", "run").unwrap().len(), 11);
 }
 
+/// A **single** stored event above the paged-read budget is the one permanent
+/// refusal left: a bounded read cannot see it, so no byte-faithful snapshot can
+/// be built. It is recorded as `oversized_event` rather than silently skipped,
+/// and raw paging keeps working.
 #[test]
-fn oversize_snapshot_keeps_raw_paged_replay() {
+fn a_single_event_above_the_page_budget_keeps_raw_paged_replay() {
     let dir = tempfile::tempdir().unwrap();
     let store = fixture(&dir.path().join("agent.db"), "completed", 1);
     let body = json!({"text":"x".repeat(SNAPSHOT_BYTE_BUDGET)}).to_string();
@@ -55,29 +59,41 @@ fn oversize_snapshot_keeps_raw_paged_replay() {
     assert!(page.snapshot.is_none());
 }
 
+/// A journal above the per-transaction delete bound is retired across several
+/// slices instead of being skipped forever. This is the dominant blocker on a
+/// real database: measured on a 1 GB `agent.db`, 1,213,282 of 1,304,373 stuck
+/// rows sat in 15 runs whose only disqualifier was that row count.
 #[test]
-fn oversized_raw_journal_keeps_paging_without_an_atomic_bulk_delete() {
+fn oversized_raw_journal_is_retired_in_bounded_slices() {
     let dir = tempfile::tempdir().unwrap();
-    let store = fixture(
-        &dir.path().join("agent.db"),
-        "completed",
-        MAX_ATOMIC_RETIRE_EVENTS as usize,
-    );
-    assert_eq!(store.compact_run("s", "run").unwrap(), 0);
-    let page = store.replay_page("s", "run", 0, false, Some(1)).unwrap();
-    assert_eq!(page.events.len(), 1);
-    assert!(page.snapshot.is_none());
-    assert_eq!(
+    let chunks = RETIRE_CHUNK_ROWS as usize + 2;
+    let store = fixture(&dir.path().join("agent.db"), "completed", chunks);
+    let rows = RETIRE_CHUNK_ROWS + 4;
+    let raw = |store: &SqliteStore| -> i64 {
         store
             .db
-            .call(|db| Ok(db.query_row(
-                "SELECT count(*) FROM run_events WHERE run_id='run'",
-                [],
-                |r| r.get::<_, i64>(0)
-            )?))
-            .unwrap(),
-        MAX_ATOMIC_RETIRE_EVENTS + 2
-    );
+            .call(|db| {
+                Ok(db.query_row(
+                    "SELECT count(*) FROM run_events WHERE run_id='run'",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )?)
+            })
+            .unwrap()
+    };
+    assert_eq!(raw(&store), rows);
+    assert_eq!(store.compact_run("s", "run").unwrap(), rows as usize);
+    assert_eq!(raw(&store), 0, "every raw row must be retired");
+    let page = store.replay_page("s", "run", -1, false, None).unwrap();
+    let snapshot = page
+        .snapshot
+        .expect("the slice chain must publish one snapshot");
+    assert_eq!(snapshot.cursor, rows - 1);
+    assert_eq!(text(&snapshot), "中文𠮷".repeat(chunks));
+    // Durable counters are the evidence that this was one run, not two.
+    let stats = store.journal_stats().unwrap();
+    assert_eq!(stats["reclaimed"]["events"], rows);
+    assert_eq!(stats["reclaimed"]["runs"], 1);
 }
 
 #[test]

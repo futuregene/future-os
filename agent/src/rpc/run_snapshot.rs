@@ -180,7 +180,6 @@ pub(crate) struct DeltaFolder {
 }
 
 impl DeltaFolder {
-    #[cfg(test)]
     pub(crate) fn bounded() -> Self {
         Self {
             bounded_segments: true,
@@ -196,14 +195,6 @@ impl DeltaFolder {
             self.bytes += event.data.len() + 512;
             self.output.push(event);
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn estimated_bytes(&self) -> usize {
-        self.bytes
-            + self.pending.as_ref().map_or(0, |(event, data, _)| {
-                event.data.len() + data["text"].as_str().map_or(0, |s| s.len() * 6) + 512
-            })
     }
 
     pub(crate) fn push(&mut self, event: SseEvent) {

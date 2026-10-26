@@ -182,7 +182,6 @@ impl SqliteStore {
 
 mod events;
 mod transcript;
-#[cfg(test)]
 pub(crate) use events::read_compaction_event_rows;
 pub(crate) use events::{
     decode_event_row, insert_event_record, is_event_rejected, read_replay_event_rows,

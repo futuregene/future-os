@@ -16,9 +16,9 @@
 1. 全屏布局：Header / Chat / 侧栏 / 输入框 / 活动行 / 状态栏 / 提示行。
 2. 鼠标：点击（切面板、切页签、点行、聚焦输入、点按钮）、滚轮（聊天/侧栏）、
    拖拽（分栏分隔条）、悬停高亮（可选，能力允许时）。
-3. Launchpad 首屏：大字 logo、大输入框、参数行（模型/强度/模式/权限，可点击）、
+3. Launchpad 首屏：大字 logo、大输入框、参数行（工作区/模型/强度/审批，可点击）、
    快捷入口、最近会话。
-4. 侧栏 4 个真实面板：待办（goal）、会话（sessions）、用量（usage）、技能（skills）。
+4. 侧栏 2 个真实面板：最近（会话名、所在工作区、刷新时间）、工作区（同一批会话按桌面端的方式归档：置顶 / 工作区 / 对话会话）。
 5. 状态栏真实指标：模型 · 强度 · cwd · git 分支 · 上下文占用条 · token · 费用/缓存。
 6. `/` 命令面板（带说明、Tab 补全）、`?` 帮助覆盖层、`/` 过滤、历史 ↑↓。
 7. 主题：内置六套 256 色——`dark` / `light` / `one-dark` / `one-light` /
@@ -53,8 +53,8 @@ tui/src/workbench/layout.rs     // Rect、Panes、命中区域（HitMap）
 tui/src/workbench/mouse.rs      // SGR 1006 解析、MouseEvent、滚轮/拖拽状态机
 tui/src/workbench/launchpad.rs  // 首屏
 tui/src/workbench/screen.rs     // 全屏合成：header/body/sidebar/input/status
-tui/src/workbench/panels.rs     // 侧栏 4 面板的渲染（纯函数，输入 PanelData）
-tui/src/workbench/picker.rs     // /model、/theme、/sessions 的列表选择器覆盖层
+tui/src/workbench/panels.rs     // 侧栏 2 面板的渲染（纯函数，输入同一个行模型）
+tui/src/workbench/picker.rs     // /model、/thinking、/mode、/workspace、/theme、/sessions、/lang 的选择器覆盖层
 tui/src/workbench/state.rs      // WorkbenchData / TodoItem / SessionRow / UsageData
 tui/src/workbench/demo.rs       // 演示数据（截图/自测用，不连 agent）
 tui/examples/workbench_demo.rs  // 打印任意尺寸的一帧 + 鼠标自测
@@ -86,14 +86,13 @@ live 接入只允许改：`tui/src/workbench/live.rs`、`tui/src/workbench/state
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ row 0..4   HEADER (5)                                                        │
-│   x0..9   像素鲸/像素 FUTURE 图标（4 行, 每行 9 cells）                       │
-│   x10..    FUTURE OS  (bold, accent)  ·  workbench                           │
+│   x0..     FUTURE OS  (bold, accent)  ·  workbench                           │
 │            session title (dim) · 分支/工作区                                  │
 │   right    ⌘ future-tui vX · 后端状态点 (●connected)                          │
 │ row 4      细分隔线 (dim, ─)                                                  │
 ├───────────────────────────────────────────────┬──────────────────────────────┤
 │ rows 6..h-8   BODY                            │ SIDEBAR_W = 36 (30..48)      │
-│   chat 区域宽 = W - SIDEBAR_W - 1             │ row 6 页签条: 待办 任务 会话 │
+│   chat 区域宽 = W - SIDEBAR_W - 1             │ row 6 页签条: 最近 工作区    │
 │   x = SIDEBAR_W+1 .. W-1                      │        用量 技能            │
 │   左右各留 2 列内边距                          │ 分隔列 x = SIDEBAR_W (│)     │
 ├───────────────────────────────────────────────┴──────────────────────────────┤
@@ -131,8 +130,9 @@ live 接入只允许改：`tui/src/workbench/live.rs`、`tui/src/workbench/state
 workbench 自己的——全屏画布必须自己画一层背景，而行内主题是继承终端背景的。早期
 workbench 写下的 id（`future-dark`、`future-light`）仍能解析到 `dark` / `light`。
 
-Logo：9x4 像素鲸（用 `█ ▀ ▄` 三档方块），运行时按 8fps 轻微摆尾（demo 可静态）。
-字标 `FUTURE OS` 用 block 字体 5 行版本，仅在宽度 ≥ 96 时显示；否则单行文字。
+TUI 不使用 logo 或图标。聊天页眉的字标 `FUTURE OS` 用 block 字体 5 行版本，
+仅在宽度 ≥ 96 时显示；否则单行文字。启动台在对话栏中居中显示两行的宽字距
+名称和主张句，让输入框成为视觉焦点。
 
 ---
 
@@ -150,7 +150,7 @@ Logo：9x4 像素鲸（用 `█ ▀ ▄` 三档方块），运行时按 8fps 轻
 | 输入框点击 | 聚焦并把光标放到点击处（按显示宽度换算字节偏移） |
 | `⛶` 点击 | 打开全屏草稿编辑器（P1 可 stub） |
 | 工具卡标题点击 | 展开/折叠该卡片（复用 `ctrl+o` 的单项切换） |
-| Launchpad 参数段点击 | 打开对应选择器（model/effort/preset/permission） |
+| Launchpad 参数段点击 | 打开对应选择器（工作区/模型/强度/审批） |
 | Launchpad 快捷入口点击 | 执行对应 `/command` |
 | 悬停 | 页签/行/按钮高亮；600ms 后显示 tooltip（窄终端截断时） |
 
@@ -159,12 +159,14 @@ Logo：9x4 像素鲸（用 `█ ▀ ▄` 三档方块），运行时按 8fps 轻
 ### 键盘
 
 沿用现有全局键位；新增/覆盖：
-`ctrl+b` 侧栏开/聚焦/关；`tab` 面板内焦点；`shift+tab` 反向；
+`ctrl+b` 侧栏开/聚焦/关（侧栏外沿的 `›` 按钮一键等效，收起后在**同一列**留一个 `‹` 把它叫回）；
+`ctrl+t` 思考强度选择器；`ctrl+s` 审批模式选择器；`ctrl+l` 工作区选择器；
+`tab` 面板内焦点；`shift+tab` 反向；
 `ctrl+q` 折叠待办；`alt+z` 放大侧栏；`/` 命令面板；`?` 帮助；`esc` 逐层关闭。
 
-### 选择器（`/model`、`/theme`、`/sessions`）
+### 选择器（`/model`、`/thinking`、`/mode`、`/workspace`、`/theme`、`/sessions`、`/lang`）
 
-三个菜单共用同一个组件（`picker.rs`）：带标题的盒子 + 增量搜索行（`❯`）+ 分组标题
+七个菜单共用同一个组件（`picker.rs`）：带标题的盒子 + 增量搜索行（`❯`）+ 分组标题
 （模型按 provider 分组，顺序跟 agent 一致）+ 生效行上的 `✓` + 最后一行该菜单的键位提示。
 
 | 键 / 手势 | 行为 |
@@ -192,7 +194,15 @@ Logo：9x4 像素鲸（用 `█ ▀ ▄` 三档方块），运行时按 8fps 轻
 `session not found — pass a valid session_id`，所以这一对选择变成 `SetPending*`——头部与启动台
 参数段显示的就是它，同时写进 `settings.json` 的 `defaultModel`/`defaultThinkingLevel`，
 第一条消息用它们建会话；会话建好后 agent 就是唯一来源，暂存值清空。启动台上点参数段同理：
-模型与强度这两颗芯片走暂存，模式与权限是 agent 级设置、没有会话也能设，仍然走线上。
+工作区、模型、强度、审批模式都走暂存——`set_cwd` 和 `set_sandbox_policy` 跟另外两个 setter 一样
+需要会话，所以暂存的模式在会话建好后立刻补发一次。
+
+`/thinking`、`/mode`、`/workspace` 是三个不用打开命令面板就能到的选择器：`ctrl+t`、`ctrl+s`、
+`ctrl+l` 直接打开它们。`/thinking` 列六档强度；`/mode` 列桌面端输入框的那四档审批模式（手动 /
+沙箱 / 自动 / 完全访问），每行带一句解释；`/workspace` 列本客户端有会话的全部目录，并在最前面
+多一行「用搜索框里的路径新建工作区」——在那一行按 `enter` 就是 `set_cwd`，和选一个已有工作区
+同一个动作。审批模式就是桌面端自己的那四个值；没有单独的 TUI「权限级别」芯片，因为别的客户端
+都没有这个选择。
 
 行的绘制与命中区域来自同一份列表和同一份几何（`screen::picker_box` 用 `box_geometry`），
 所以点击一定落在指针下面那一行，而不是旁边一行。
@@ -207,7 +217,7 @@ pub struct WorkbenchData {
     pub connected: bool,
     pub session: SessionMeta,          // id/title/cwd/branch
     pub model: String, pub effort: String,
-    pub mode: String, pub permission: String,
+    pub mode: String,                  // manual|sandbox|auto|off（桌面端那四档）
     pub usage: UsageData,              // ctx_used/ctx_total/cost/cache/tps
     pub todos: Vec<TodoItem>,          // goal todos
     pub sessions: Vec<SessionRow>,
@@ -228,6 +238,7 @@ pub enum WbEvent { Key(KeyEvent), Mouse(MouseEvent), Resize(u16,u16), Tick }
 pub enum WbAction {
     Submit(String), Command(String), Scroll(i32), LoadOlder,
     SwitchSession(String), SetModel(String), SetThinking(String),
+    SetApproval(String), SelectWorkspace(String),
     SetTheme(String), NewSession,
     SetPanel(PanelId), ResizeSidebar(u16), FocusPane(PaneId),
     ToggleToolCall(usize), PersistSettings(SettingsPatch), Quit, Redraw,
@@ -247,7 +258,7 @@ pub enum WbAction {
 ```
 cargo run -p future-tui --example workbench_demo -- \
     --scenario launchpad|chat|todo|help --width 120 --height 38 [--ansi|--plain] \
-    [--picker model|theme|sessions]
+    [--picker /model|/thinking|/mode|/workspace|/theme|/sessions|/lang]
 cargo run -p future-tui --example workbench_demo -- --self-test
 ```
 

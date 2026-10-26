@@ -281,10 +281,15 @@ fn lower_messages(request: &ModelRequest, replay_reasoning: bool) -> Vec<Value> 
         }
         let mut wire = Map::new();
         wire.insert("role".into(), json!(message.role));
+        // Replaying `reasoning_content` must never resurrect a turn that has
+        // no content and no tool_calls: a crash can leave a reasoning-only
+        // assistant entry in the journal, and that shape is refused with
+        // "content or tool_calls must be set". Drop it like before.
+        let has_payload = !content.is_empty() || !tool_calls.is_empty();
         if !content.is_empty() {
             wire.insert("content".into(), Value::Array(content));
         }
-        if replay_reasoning && !reasoning.is_empty() {
+        if replay_reasoning && has_payload && !reasoning.is_empty() {
             wire.insert("reasoning_content".into(), Value::String(reasoning));
         }
         if !tool_calls.is_empty() {
@@ -1108,6 +1113,86 @@ mod tests {
             content[1],
             json!({"type": "image_url", "image_url": {"url": "http://img.example/1.png"}})
         );
+    }
+
+    /// The registry shape the Future platform serves for `deepseek-flash`:
+    /// compat carries `thinkingFormat` and nothing else. Its thinking mode
+    /// requires the assistant turn's `reasoning_content` to come back on the
+    /// wire, so the body built from that model must carry it.
+    fn deepseek_flash_target() -> ResolvedModelTarget {
+        let mut model = crate::models::Model {
+            id: "deepseek-flash".into(),
+            provider: "future".into(),
+            api: "openai-completions".into(),
+            base_url: "https://future-os.cn/api/v1".into(),
+            reasoning: true,
+            ..Default::default()
+        };
+        model
+            .compat
+            .insert("thinkingFormat".into(), json!("deepseek"));
+        ResolvedModelTarget::from_model(&model, "key".into(), None, None).unwrap()
+    }
+
+    #[test]
+    fn deepseek_chat_body_replays_assistant_reasoning() {
+        let target = deepseek_flash_target();
+        let request = ModelRequest {
+            model: "deepseek-flash".into(),
+            system_prompt: String::new(),
+            messages: vec![
+                crate::types::AgentMessage {
+                    role: "assistant".into(),
+                    content: vec![
+                        ContentBlock::reasoning("the thought", ProviderMetadata::new()),
+                        ContentBlock::tool_call(
+                            "call_1",
+                            "shell",
+                            json!({"command": "ls"}),
+                            ProviderMetadata::new(),
+                        ),
+                    ],
+                    ..Default::default()
+                },
+                crate::types::AgentMessage {
+                    role: "tool".into(),
+                    content: vec![ContentBlock::tool_result("call_1", "out", false)],
+                    ..Default::default()
+                },
+            ],
+            tools: Vec::new(),
+        };
+        let body = OpenAiChatAdapter.build_body(&target, &request).unwrap();
+        assert_eq!(
+            body["messages"][0]["reasoning_content"], "the thought",
+            "a deepseek thinking turn must echo the assistant's reasoning_content"
+        );
+        assert_eq!(body["messages"][0]["tool_calls"][0]["id"], "call_1");
+    }
+
+    /// A crash can leave a reasoning-only assistant entry in the journal. The
+    /// replay must not turn that into `{role, reasoning_content}`, which the
+    /// same API refuses with "content or tool_calls must be set".
+    #[test]
+    fn deepseek_replay_never_sends_a_reasoning_only_message() {
+        let target = deepseek_flash_target();
+        let request = ModelRequest {
+            model: "deepseek-flash".into(),
+            system_prompt: String::new(),
+            messages: vec![
+                crate::types::AgentMessage {
+                    role: "assistant".into(),
+                    content: vec![ContentBlock::reasoning("orphan", ProviderMetadata::new())],
+                    ..Default::default()
+                },
+                crate::types::AgentMessage::new_user("user", json!("hello")),
+            ],
+            tools: Vec::new(),
+        };
+        let body = OpenAiChatAdapter.build_body(&target, &request).unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1, "the reasoning-only turn is dropped");
+        assert_eq!(messages[0]["role"], "user");
     }
 
     #[test]

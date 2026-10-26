@@ -84,10 +84,53 @@ export interface RemoteSessionRow {
   createdAt?: number | null;
 }
 
+/**
+ * One workspace on another machine, as that host reports it.
+ *
+ * A workspace is a *place*, not a conversation: the merged list groups rows by
+ * it, and a workspace with nothing in it yet — the one a user just created from
+ * the "＋" on the list's own heading — has no row to be grouped by. So the list
+ * carries the host's workspaces beside its sessions, and a heading can exist
+ * without a conversation under it, exactly as this machine's own list draws an
+ * empty folder.
+ *
+ * `orderedAt` is the key the host's own list orders by
+ * (`COALESCE(last_opened_at, updated_at)`), carried here rather than derived
+ * because it is the host's clock: a client that invented one would place the
+ * group on a different timeline from the host's next report of it.
+ */
+export interface RemoteWorkspaceRow {
+  id: string;
+  name: string;
+  path: string;
+  pinned: boolean;
+  /**
+   * `user` (a directory the user chose) or `temporary` (app-managed chat
+   * scratch).
+   *
+   * Only a `user` workspace gets a heading of its own in the merged list: a
+   * temporary one exists to hold chats, whose conversations are drawn in the
+   * chats section, and this machine's own list makes the same distinction.
+   * Absent on a host that predates the field, which is read as `user`.
+   */
+  kind?: "user" | "temporary";
+  /** When that workspace itself was last touched there, or `null` if unknown. */
+  orderedAt?: number | null;
+}
+
 export interface RemoteCatalog {
   /** The paired host this snapshot came from. */
   desktopId: string;
   sessions: RemoteSessionRow[];
+  /**
+   * That host's workspaces, for the headings of workspaces with no rows.
+   *
+   * Optional because a host that predates the workspace read has none, and
+   * because a catalogue kept across a read it did not answer describes the
+   * sessions it held: an absent list draws no empty heading rather than an
+   * invented one.
+   */
+  workspaces?: RemoteWorkspaceRow[];
 }
 
 /**
@@ -481,6 +524,20 @@ export function groupMergedRows(
    * no tree (a unit test, a list of roots) omits it, and every row is its own.
    */
   rowRoots: ReadonlyMap<string, MergedConversation> = new Map(),
+  /**
+   * Every shown host's workspaces, by desktop id.
+   *
+   * Here for one thing only: a workspace nobody has had a conversation in has no
+   * row to be grouped by, and a heading is how the reader learns it exists —
+   * which is what the "＋" on the list's own workspace heading just made. This
+   * machine's list draws the same heading from its own workspace store; a host's
+   * has to be told.
+   *
+   * Keyed by machine because a workspace id is that machine's, and a group that
+   * took its id alone would file two machines' same-id folders under one heading
+   * — the reason every remote group key carries its machine.
+   */
+  hostWorkspaces: ReadonlyMap<string, readonly RemoteWorkspaceRow[]> = new Map(),
 ): {
   chats: MergedConversation[];
   pinned: MergedConversation[];
@@ -552,6 +609,41 @@ export function groupMergedRows(
     group.pinned ||= grouped && root.workspacePinned === true;
     group.orderedAt ??= root.workspaceOrderedAt ?? null;
     group.rows.push(...block.rows);
+  }
+
+  /**
+   * A heading for a workspace nobody has written in yet.
+   *
+   * A group exists only where a row does, which is what made a workspace created
+   * from the "＋" on the list's own heading vanish: the form registered a folder
+   * on that machine, the host read it back, and the list went on showing nothing
+   * because nothing had been said in it. Locally the heading comes from this
+   * machine's workspace store and an empty folder is drawn like any other, so the
+   * two lists disagreed about a place that plainly exists.
+   *
+   * Only workspaces with no rows at all are added here: one that has rows already
+   * built its group above, and a second heading for it would split a workspace in
+   * two. A `temporary` workspace is skipped — it exists to hold chats, which are
+   * drawn in the chats section, and this machine's own list makes the same call.
+   */
+  for (const [desktopId, list] of hostWorkspaces) {
+    for (const workspace of list) {
+      if (workspace.kind === "temporary")
+        continue;
+      const key = `${desktopId}::${workspace.id}`;
+      if (byKey.has(key))
+        continue;
+      byKey.set(key, {
+        key,
+        desktopId,
+        kind: "workspace",
+        label: workspace.name || null,
+        workspaceId: workspace.id,
+        pinned: workspace.pinned,
+        orderedAt: workspace.orderedAt ?? null,
+        rows: [],
+      });
+    }
   }
 
   const groups = [...byKey.values()];
