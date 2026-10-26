@@ -97,7 +97,7 @@ Content — a conversation, a session title, a path — is never translated.
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ row 0..4   HEADER (5)                                                        │
-│   x0..9    pixel whale / pixel FUTURE icon (4 rows, 9 cells per row)         │
+│   x0..13   FutureOS icon (4 rows, 13 cells per row)                          │
 │   x10..    FUTURE OS  (bold, accent)  ·  workbench                           │
 │            session title (dim) · branch/workspace                            │
 │   right    ⌘ future-tui vX · backend status dot (●connected)                 │
@@ -146,10 +146,13 @@ workbench's own, because a full-screen canvas paints an explicit background
 step where the inline theme inherits the terminal's. Ids older workbench builds
 wrote (`future-dark`, `future-light`) still resolve, to `dark` and `light`.
 
-Logo: a 9x4 pixel whale (using the three block levels `█ ▀ ▄`), swishing its tail
-slightly at 8fps at runtime (the demo may keep it static). The wordmark
-`FUTURE OS` uses the 5-row block font and is shown only at width ≥ 96; otherwise
-single-line text.
+Logo: a 13x4 half-block rendering sampled from the official FutureOS icon at
+https://future-os.cn/logo.png (byte-identical to `desktop/src-tauri/icons/icon.png`).
+It is static; the retired whale and its animation belonged to dsh, not FutureOS.
+The chat header's wordmark `FUTURE OS` uses the 5-row block font and is shown
+only at width ≥ 96; otherwise it is single-line text. The launchpad instead
+uses a four-row hero: the product icon beside the letterspaced name, with `OS`
+in the accent colour and the tagline below it.
 
 ---
 

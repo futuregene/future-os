@@ -86,7 +86,7 @@ live 接入只允许改：`tui/src/workbench/live.rs`、`tui/src/workbench/state
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ row 0..4   HEADER (5)                                                        │
-│   x0..9   像素鲸/像素 FUTURE 图标（4 行, 每行 9 cells）                       │
+│   x0..13  FutureOS 图标（4 行, 每行 13 cells）                               │
 │   x10..    FUTURE OS  (bold, accent)  ·  workbench                           │
 │            session title (dim) · 分支/工作区                                  │
 │   right    ⌘ future-tui vX · 后端状态点 (●connected)                          │
@@ -131,8 +131,11 @@ live 接入只允许改：`tui/src/workbench/live.rs`、`tui/src/workbench/state
 workbench 自己的——全屏画布必须自己画一层背景，而行内主题是继承终端背景的。早期
 workbench 写下的 id（`future-dark`、`future-light`）仍能解析到 `dark` / `light`。
 
-Logo：9x4 像素鲸（用 `█ ▀ ▄` 三档方块），运行时按 8fps 轻微摆尾（demo 可静态）。
-字标 `FUTURE OS` 用 block 字体 5 行版本，仅在宽度 ≥ 96 时显示；否则单行文字。
+Logo：官网 https://future-os.cn/logo.png 的 13x4 半块字符版本，采样原图的轮廓和
+颜色层次（官网图与 `desktop/src-tauri/icons/icon.png` 字节一致）。图标保持静态；
+已移除的像素鲸及摆尾动画属于 dsh，不是 FutureOS。聊天页眉的字标 `FUTURE OS`
+用 block 字体 5 行版本，仅在宽度 ≥ 96 时显示；否则单行文字。启动台则使用四行
+品牌区：产品图标旁是拉开字距的名称，`OS` 用主题强调色，主张句在名称下方。
 
 ---
 

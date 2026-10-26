@@ -1,10 +1,10 @@
 //! The workbench's drawing primitives: rules, tabs, bars, badges, the spinner,
-//! the pixel logo and the block wordmark.
+//! the FutureOS icon and the block wordmark.
 //!
 //! Every function here returns text that is *already* the width it was asked
 //! for (or is measured with [`crate::workbench::ansi::width`]), so the screen
 //! composer can concatenate them without re-measuring. Decoration is kept in
-//! this file for one reason: the logo and the wordmark are where a terminal
+//! this file for one reason: the icon and the wordmark are where a terminal
 //! font's block glyphs matter, and a width bug there corrupts every row below
 //! it.
 
@@ -123,12 +123,147 @@ pub fn spinner(frame: usize) -> &'static str {
     SPINNER[frame % SPINNER.len()]
 }
 
-/// One row of the 9×4 pixel whale. Rows are laid out left to right, so the
-/// caller pastes `logo_row(0..4)` side by side with the wordmark block.
-const LOGO: [&str; 4] = ["  ▄███▄  ", " ███████ ", "█▀████▀▀█", " ▀▀   ▀▀ "];
+/// A 13×4-cell rendering sampled from the official FutureOS mark at
+/// https://future-os.cn/logo.png (byte-identical to the desktop app icon).
+/// Each entry is one source pixel; two pixels make a `▀` cell. Keeping the
+/// sampled colours and silhouette avoids inventing another brand symbol.
+const LOGO_PIXELS: [[Option<u8>; 13]; 8] = [
+    [None; 13],
+    [
+        None,
+        Some(16),
+        Some(16),
+        Some(16),
+        Some(16),
+        Some(23),
+        Some(23),
+        Some(23),
+        Some(16),
+        Some(16),
+        Some(16),
+        Some(16),
+        None,
+    ],
+    [
+        None,
+        Some(16),
+        Some(16),
+        Some(23),
+        Some(67),
+        Some(152),
+        Some(152),
+        Some(152),
+        Some(67),
+        Some(23),
+        Some(16),
+        Some(16),
+        None,
+    ],
+    [
+        None,
+        Some(16),
+        Some(17),
+        Some(67),
+        Some(153),
+        Some(159),
+        Some(195),
+        Some(153),
+        Some(152),
+        Some(67),
+        Some(17),
+        Some(16),
+        None,
+    ],
+    [
+        None,
+        Some(16),
+        Some(17),
+        Some(67),
+        Some(116),
+        Some(116),
+        Some(116),
+        Some(116),
+        Some(80),
+        Some(66),
+        Some(17),
+        Some(16),
+        None,
+    ],
+    [
+        None,
+        Some(16),
+        Some(16),
+        Some(23),
+        Some(66),
+        Some(73),
+        Some(73),
+        Some(73),
+        Some(66),
+        Some(23),
+        Some(16),
+        Some(16),
+        None,
+    ],
+    [
+        None,
+        Some(234),
+        Some(16),
+        Some(16),
+        Some(16),
+        Some(17),
+        Some(23),
+        Some(17),
+        Some(16),
+        Some(16),
+        Some(16),
+        Some(16),
+        None,
+    ],
+    [None; 13],
+];
 
-pub fn logo_rows(palette: &Palette) -> [String; 4] {
-    LOGO.map(|row| palette.text(palette.accent, row))
+pub fn logo_width() -> usize {
+    LOGO_PIXELS[0].len()
+}
+
+/// The launchpad's light, letterspaced name and tagline, vertically arranged
+/// beside the four-row product icon rather than a wall of block glyphs.
+pub fn launchpad_hero_rows(palette: &Palette, lang: Language) -> [String; 4] {
+    let name = format!(
+        "{}   {}",
+        palette.strong(palette.fg, "F U T U R E"),
+        palette.strong(palette.accent, "O S")
+    );
+    [
+        String::new(),
+        name,
+        String::new(),
+        palette.dim(i18n::t(lang, Key::LaunchpadTagline)),
+    ]
+}
+
+pub fn logo_rows(_palette: &Palette) -> [String; 4] {
+    std::array::from_fn(|row| {
+        let mut line = String::new();
+        for (&top, &bottom) in LOGO_PIXELS[row * 2].iter().zip(&LOGO_PIXELS[row * 2 + 1]) {
+            let cell = match (top, bottom) {
+                (Some(color), None) => crate::theme::fg(color, "▀"),
+                (None, Some(color)) => crate::theme::fg(color, "▄"),
+                (Some(top), Some(bottom)) => {
+                    let style =
+                        crate::theme::CSI.to_string() + &format!("38;5;{top};48;5;{bottom}m");
+                    if std::env::var_os("NO_COLOR").is_some() {
+                        "▀".to_string()
+                    } else {
+                        format!("{style}▀{}", crate::theme::RESET)
+                    }
+                }
+                (None, None) => " ".to_string(),
+            };
+            line.push_str(&cell);
+        }
+        line
+    })
 }
 
 /// The 5-row block font the header uses for `FUTURE OS` (35 columns). Only
@@ -446,8 +581,14 @@ mod tests {
         let logo = logo_rows(&P);
         assert_eq!(logo.len(), 4);
         for row in &logo {
-            assert_eq!(width(row), 9, "{row:?}");
+            assert_eq!(width(row), logo_width(), "{row:?}");
         }
+        assert!(logo
+            .iter()
+            .all(|row| row.contains('▀') || row.contains('▄')));
+        let hero = launchpad_hero_rows(&P, Language::En);
+        assert!(hero[1].contains("F U T U R E"));
+        assert!(hero[1].contains("O S"));
         let mark = wordmark_rows(&P);
         assert_eq!(mark.len(), 5);
         let mark_width = width(&mark[0]);
