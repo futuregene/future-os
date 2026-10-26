@@ -166,6 +166,8 @@ pub struct Live {
     branch: super::git::BranchCache,
     /// The goal store's todos for `local_cwd` (see [`super::local`]).
     todos: Vec<TodoItem>,
+    /// The goal's own one-line identity, printed above its todos.
+    goal_label: String,
     /// Installed skills and scheduled jobs are machine-wide: read once, then
     /// reused for every frame.
     local_skills: Option<Vec<SkillRow>>,
@@ -242,6 +244,7 @@ impl Live {
             local_cwd: String::new(),
             branch: super::git::BranchCache::new(),
             todos: Vec::new(),
+            goal_label: String::new(),
             local_skills: None,
             local_jobs: None,
             files: Vec::new(),
@@ -299,11 +302,16 @@ impl Live {
     fn refresh_local(&mut self) {
         let cwd = self.state.cwd.clone().unwrap_or_default();
         if cwd != self.local_cwd {
-            self.todos = if cwd.is_empty() {
-                Vec::new()
+            // One read of the goal store: the panel needs both the board and the
+            // goal it belongs to, and asking twice would read the same file
+            // twice.
+            let board = if cwd.is_empty() {
+                super::local::GoalBoard::default()
             } else {
-                super::local::goal_todos(std::path::Path::new(&cwd))
+                super::local::goal_board(std::path::Path::new(&cwd))
             };
+            self.todos = board.todos;
+            self.goal_label = board.objective;
             self.local_cwd = cwd;
         }
         // The `@` menu's candidates belong to the directory, not to the session:
@@ -929,6 +937,7 @@ impl Live {
                 tps: self.live_tps(),
             },
             todos: self.todos.clone(),
+            goal_label: self.goal_label.clone(),
             files: self.files.clone(),
             sessions: rows,
             models: self

@@ -91,10 +91,28 @@ fn git_toplevel(cwd: &Path) -> Option<PathBuf> {
 /// empty list is the honest answer for a workspace with no goal — the panel
 /// says `no todos` rather than inventing them.
 pub fn goal_todos(cwd: &Path) -> Vec<TodoItem> {
+    goal_board(cwd).todos
+}
+
+/// One goal's identity and its todos: what the 待办 panel prints.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GoalBoard {
+    /// The goal's own objective, one line. Empty when there is no goal.
+    pub objective: String,
+    pub todos: Vec<TodoItem>,
+}
+
+/// The board the 待办 panel shows, with the goal it belongs to named.
+///
+/// The panel used to print a bare list, and a list of `✔ P0 收敛两份实现` with no
+/// title reads as "something about this repository" — which is exactly the
+/// question a reader asked. The objective comes from the same registry the
+/// control plane keeps, so the title is the goal's own words and not a guess.
+pub fn goal_board(cwd: &Path) -> GoalBoard {
     let Some(root) = goal_root(cwd) else {
-        return Vec::new();
+        return GoalBoard::default();
     };
-    let mut best: Option<Folded> = None;
+    let mut best: Option<(String, Folded)> = None;
     for id in goal_ids(&root) {
         let events = root.join("goals").join(&id).join("events.jsonl");
         let Ok(text) = std::fs::read_to_string(&events) else {
@@ -106,12 +124,40 @@ pub fn goal_todos(cwd: &Path) -> Vec<TodoItem> {
         }
         if best
             .as_ref()
-            .is_none_or(|current| folded.last_ts >= current.last_ts)
+            .is_none_or(|(_, current)| folded.last_ts >= current.last_ts)
         {
-            best = Some(folded);
+            best = Some((id, folded));
         }
     }
-    best.map(|folded| folded.todos).unwrap_or_default()
+    let Some((id, folded)) = best else {
+        return GoalBoard::default();
+    };
+    GoalBoard {
+        objective: registry_objective(&root, &id),
+        todos: folded.todos,
+    }
+}
+
+/// A goal's `objective` from `registry.json`, or its id when the registry does
+/// not carry one (a store written by an older control plane).
+fn registry_objective(root: &Path, id: &str) -> String {
+    let Ok(text) = std::fs::read_to_string(root.join("registry.json")) else {
+        return id.to_string();
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&text) else {
+        return id.to_string();
+    };
+    value
+        .as_array()
+        .and_then(|entries| {
+            entries
+                .iter()
+                .find(|entry| entry.get("goal_id").and_then(Value::as_str) == Some(id))
+        })
+        .and_then(|entry| entry.get("objective").and_then(Value::as_str))
+        .map(str::to_string)
+        .filter(|objective| !objective.trim().is_empty())
+        .unwrap_or_else(|| id.to_string())
 }
 
 /// A bounded list of files under `cwd`, for the `@` menu.
@@ -525,6 +571,43 @@ mod tests {
     fn write(path: &Path, text: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, text).unwrap();
+    }
+
+    /// The board carries the goal it belongs to, in the goal's own words, so the
+    /// 待办 panel can say what the list *is*.
+    #[test]
+    fn the_board_names_its_goal_from_the_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join(".future/goal");
+        write(
+            &root.join("goals/goal_a/events.jsonl"),
+            concat!(
+                r#"{"kind":"goal_started","ts":10}"#,
+                "\n",
+                r#"{"kind":"todo_added","ts":11,"todo":{"id":"t1","text":"first","priority":"P0","status":"open"}}"#,
+                "\n",
+            ),
+        );
+        write(
+            &root.join("registry.json"),
+            r#"[{"goal_id":"goal_a","objective":"把工作台做成能用的东西","status":"active"}]"#,
+        );
+        let board = goal_board(dir.path());
+        assert_eq!(board.objective, "把工作台做成能用的东西");
+        assert_eq!(board.todos.len(), 1);
+        // A store whose registry was never written still gets a board: the id is
+        // the honest name when there is no objective to quote.
+        std::fs::remove_file(root.join("registry.json")).unwrap();
+        assert_eq!(goal_board(dir.path()).objective, "goal_a");
+        // And an objective recorded as blank is not a name either.
+        write(
+            &root.join("registry.json"),
+            r#"[{"goal_id":"goal_a","objective":"   "}]"#,
+        );
+        assert_eq!(goal_board(dir.path()).objective, "goal_a");
+        // No store at all: an empty board, and nothing created.
+        let elsewhere = tempfile::tempdir().unwrap();
+        assert_eq!(goal_board(elsewhere.path()), GoalBoard::default());
     }
 
     #[test]

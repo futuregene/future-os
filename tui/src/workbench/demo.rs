@@ -142,6 +142,7 @@ fn base() -> WorkbenchData {
                 description: "搜公开网页并核对事实".into(),
             },
         ],
+        goal_label: "FutureOS · workbench".into(),
         // The `@` menu's candidates: a handful of real paths, so a demo frame
         // can show the menu with something in it.
         files: vec![

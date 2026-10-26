@@ -109,10 +109,30 @@ fn item_rows(
 ) -> Vec<String> {
     match panel {
         PanelId::Todo => {
-            if data.todos.is_empty() {
-                return empty(t(lang, Key::PanelEmptyTodo), palette);
+            // The board names itself first: a bare list of `✔ P0 …` rows is what
+            // made a reader ask "what is this 待办?". The goal's own objective is
+            // the answer, and without a goal the panel says what would create
+            // one instead of showing an unexplained empty list.
+            let mut rows: Vec<String> = Vec::new();
+            if data.goal_label.is_empty() {
+                rows.push(palette.dim(&format!("  {}", t(lang, Key::PanelNoGoal))));
+                rows.push(palette.dim(&format!("  {}", t(lang, Key::PanelNoGoalHint))));
+                if data.todos.is_empty() {
+                    return rows;
+                }
+            } else {
+                rows.push(format!(
+                    " {} {}",
+                    palette.text(palette.iris, t(lang, Key::PanelGoalLabel)),
+                    palette.dim(&fit(&data.goal_label, columns.saturating_sub(4)))
+                ));
             }
-            data.todos
+            if data.todos.is_empty() {
+                rows.push(palette.dim(&format!("  {}", t(lang, Key::PanelEmptyGoalTodo))));
+                return rows;
+            }
+            let items: Vec<String> = data
+                .todos
                 .iter()
                 .map(|todo| {
                     let glyph = palette.text(glyph_color(todo.state, palette), todo.state.glyph());
@@ -130,7 +150,9 @@ fn item_rows(
                         palette.body(&fit(&text, columns))
                     }
                 })
-                .collect()
+                .collect();
+            rows.extend(items);
+            rows
         }
         PanelId::Jobs => {
             if data.jobs.is_empty() {
@@ -336,6 +358,7 @@ mod tests {
     /// machine running the suite.
     const LANG: Language = Language::Zh;
     use crate::workbench::demo;
+    use crate::workbench::state::TodoItem;
     use crate::workbench::theme::FUTURE_DARK;
 
     const P: Palette = FUTURE_DARK;
@@ -503,7 +526,6 @@ mod tests {
         // Both spellings: an empty panel that says nothing, or says it in the
         // wrong language, is the same bug from the reader's seat.
         for (panel, zh, en) in [
-            (PanelId::Todo, "没有待办", "no todos"),
             (PanelId::Skills, "没有技能", "no skills"),
             (PanelId::Jobs, "没有定时任务", "no scheduled jobs"),
         ] {
@@ -518,5 +540,70 @@ mod tests {
                 assert!(text.contains(needle), "{panel:?}: {text}");
             }
         }
+    }
+
+    /// The 待办 panel names the board: a bare list of `✔ P0 …` rows is what made
+    /// a reader ask "what is this 待办?".
+    #[test]
+    fn the_todo_panel_names_the_goal_it_belongs_to() {
+        let mut data = demo::chat();
+        data.todos.clear();
+        for (lang, needle) in [
+            (Language::Zh, "这个目标还没有待办"),
+            (Language::En, "no todos yet"),
+        ] {
+            let text = panel_text(PanelId::Todo, &data, lang);
+            assert!(text.contains(&data.goal_label), "{lang:?}: {text}");
+            assert!(text.contains(needle), "{lang:?}: {text}");
+        }
+        // With a board, the goal's own words sit above its rows.
+        let mut data = demo::chat();
+        data.todos = vec![TodoItem {
+            id: String::new(),
+            text: "one open row".into(),
+            priority: "P2".into(),
+            state: TodoState::Open,
+        }];
+        let text = panel_text(PanelId::Todo, &data, Language::Zh);
+        assert!(text.contains(&data.goal_label), "{text}");
+        assert!(text.contains("one open row"), "{text}");
+    }
+
+    /// A workspace with no goal says so, and says what would create one, instead
+    /// of printing an empty list with no explanation.
+    #[test]
+    fn a_workspace_without_a_goal_explains_the_empty_board() {
+        let mut data = demo::chat();
+        data.goal_label.clear();
+        data.todos.clear();
+        for (lang, needle) in [
+            (Language::Zh, "本仓库没有进行中的目标"),
+            (Language::En, "no goal in progress"),
+        ] {
+            let text = panel_text(PanelId::Todo, &data, lang);
+            assert!(text.contains(needle), "{lang:?}: {text}");
+        }
+        // A goal's todos without a goal name (an older store) still list.
+        let mut data = demo::chat();
+        data.goal_label.clear();
+        data.todos = vec![TodoItem {
+            id: String::new(),
+            text: "orphan row".into(),
+            priority: String::new(),
+            state: TodoState::Open,
+        }];
+        let text = panel_text(PanelId::Todo, &data, Language::Zh);
+        assert!(text.contains("本仓库没有进行中的目标"), "{text}");
+        assert!(text.contains("orphan row"), "the rows still list: {text}");
+    }
+
+    /// One panel's painted rows, as one string with the styling stripped.
+    fn panel_text(panel: PanelId, data: &WorkbenchData, lang: Language) -> String {
+        let mut hit = HitMap::new();
+        render(panel, data, &P, area(10), 0, &mut hit, lang)
+            .iter()
+            .map(|line| crate::utils::strip_ansi_codes(line))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }

@@ -2008,6 +2008,10 @@ impl Workbench {
                 self.focus_panel(PanelId::Skills);
                 VerbOutcome::Done { notice: None }
             }
+            "todo" => {
+                self.focus_panel(PanelId::Todo);
+                VerbOutcome::Done { notice: None }
+            }
             // There is no workspace picker to open, and pretending there is
             // would be the same lie as `Unknown command`. What is true: the
             // directory is the session's own, chosen where the session was
@@ -2230,7 +2234,7 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
 /// The command palette's entries: `(command, description)`. Kept here rather
 /// than in the app so the palette, the help overlay and the tests share one
 /// list.
-pub const COMMANDS: [(&str, Key); 28] = [
+pub const COMMANDS: [(&str, Key); 29] = [
     ("/new", Key::CmdNew),
     ("/queue", Key::CmdQueue),
     ("/copy", Key::CmdCopy),
@@ -2255,6 +2259,7 @@ pub const COMMANDS: [(&str, Key); 28] = [
     ("/preferences", Key::CmdPreferences),
     ("/usage", Key::CmdUsage),
     ("/skills", Key::CmdSkills),
+    ("/todo", Key::CmdTodo),
     ("/export", Key::CmdExport),
     ("/transcript", Key::CmdTranscript),
     ("/help", Key::CmdHelp),

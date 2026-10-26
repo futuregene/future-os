@@ -354,6 +354,10 @@ pub struct WorkbenchData {
     pub mode: String,
     pub permission: String,
     pub usage: UsageData,
+    /// The goal the todo board belongs to, in the goal's own words. Empty when
+    /// this workspace has no goal in progress — the panel then says so instead
+    /// of printing a list of unexplained rows.
+    pub goal_label: String,
     pub todos: Vec<TodoItem>,
     pub sessions: Vec<SessionRow>,
     /// Every model the agent offers, in the agent's order. The `/model` picker

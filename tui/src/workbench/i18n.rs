@@ -168,6 +168,10 @@ pub enum Key {
     UsageCache,
     UsageOutput,
     PanelEmptyTodo,
+    PanelGoalLabel,
+    PanelNoGoal,
+    PanelNoGoalHint,
+    PanelEmptyGoalTodo,
     PanelEmptyJobs,
     PanelEmptySessions,
     PanelEmptySkills,
@@ -314,6 +318,7 @@ pub enum Key {
     CmdTheme,
     CmdUsage,
     CmdSkills,
+    CmdTodo,
     CmdExport,
     CmdTranscript,
     CmdHelp,
@@ -394,6 +399,13 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         UsageCache => ("缓存命中", "Cache hit"),
         UsageOutput => ("输出", "Output"),
         PanelEmptyTodo => ("没有待办", "no todos"),
+        PanelGoalLabel => ("目标", "goal"),
+        PanelNoGoal => (
+            "本仓库没有进行中的目标",
+            "no goal in progress in this repository",
+        ),
+        PanelNoGoalHint => ("future goal init 创建一个", "future goal init creates one"),
+        PanelEmptyGoalTodo => ("这个目标还没有待办", "this goal has no todos yet"),
         PanelEmptyJobs => ("没有定时任务", "no scheduled jobs"),
         PanelEmptySessions => ("没有会话", "no sessions"),
         PanelEmptySkills => ("没有技能", "no skills"),
@@ -574,6 +586,10 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         CmdWorkspace => ("workspace 目录", "Workspace directory"),
         CmdTheme => ("切换主题", "Switch theme"),
         CmdUsage => ("用量与成本", "Usage and cost"),
+        CmdTodo => (
+            "侧栏的待办面板（这个仓库的目标看板）",
+            "The sidebar's to-do panel (this repository's goal board)",
+        ),
         CmdSkills => ("技能列表", "Installed skills"),
         CmdExport => ("导出会话", "Export the session"),
         CmdTranscript => ("完整记录", "The whole record"),
@@ -831,7 +847,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 206] = {
+    const ALL_KEYS: [Key; 211] = {
         use Key::*;
         [
             TabTodo,
@@ -848,6 +864,10 @@ mod tests {
             UsageCache,
             UsageOutput,
             PanelEmptyTodo,
+            PanelGoalLabel,
+            PanelNoGoal,
+            PanelNoGoalHint,
+            PanelEmptyGoalTodo,
             PanelEmptyJobs,
             PanelEmptySessions,
             PanelEmptySkills,
@@ -988,6 +1008,7 @@ mod tests {
             CmdTheme,
             CmdUsage,
             CmdSkills,
+            CmdTodo,
             CmdExport,
             CmdTranscript,
             CmdHelp,
