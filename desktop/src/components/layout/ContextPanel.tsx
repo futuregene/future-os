@@ -70,6 +70,13 @@ interface ContextPanelProps {
   activeWorkspace: StoredWorkspace | null;
   activeTab: ContextTab;
   expanded: boolean;
+  /**
+   * Draw the panel over the conversation instead of as a column beside it.
+   * Set when the window is too narrow to host the third column: an overlay
+   * takes no layout space, so the conversation keeps its width floor while the
+   * panel is on screen.
+   */
+  floating?: boolean;
   /** Current panel width in px (drag-resized, session-persisted). */
   width: number;
   onResizeStart: (event: ReactMouseEvent) => void;
@@ -84,6 +91,7 @@ export function ContextPanel({
   activeWorkspace,
   activeTab,
   expanded,
+  floating,
   width,
   onResizeStart,
   onResizeNudge,
@@ -321,8 +329,15 @@ export function ContextPanel({
   }
 
   return (
+    // Floated, the panel is anchored to the window's right edge and lifted off
+    // the conversation with the panel shadow, like the rail's floating preview;
+    // as a column it is a normal shrink-0 child of the three-column row.
     <aside
-      className="relative flex shrink-0 flex-col border-l border-line-soft bg-surface-panel"
+      className={
+        floating
+          ? "absolute inset-y-0 right-0 z-40 flex flex-col border-l border-line-soft bg-surface-panel shadow-panel"
+          : "relative flex shrink-0 flex-col border-l border-line-soft bg-surface-panel"
+      }
       style={{ width }}
     >
       {/* Divider: drag to resize the center/right split. Sits astride the left

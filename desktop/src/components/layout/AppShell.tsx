@@ -233,6 +233,13 @@ function ReadyAppShell({
   const [leftExpanded, setLeftExpanded] = useState(true);
   const [leftOverlayOpen, setLeftOverlayOpen] = useState(false);
   const [rightExpanded, setRightExpanded] = useState(false);
+  // The right panel opened as an overlay, which is how it is reachable on a
+  // window too narrow to host it as a column (see `handleToggleRightPanel`).
+  // Deliberately not folded into `rightExpanded`: the column is the user's
+  // standing choice and comes back when the window grows, while the drawer is
+  // asked for in the narrow layout and must not pop over the conversation on
+  // its own when the window shrinks.
+  const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
   // Panels open on the content tab (Files/Review), not Runs; ContextPanel seeds
   // the exact tab each time the panel opens (not per thread — a mid-open thread
   // switch keeps the current tab). Files is the default in both modes while the
@@ -315,8 +322,14 @@ function ReadyAppShell({
   // squeezing (or overflowing) the center. The user's own collapsed/expanded
   // choice is kept, so the panel comes back on its own when the window grows.
   const rightPanelAvailable = canShowRightPanel(windowWidth);
+  // Without the room for a third column the panel still opens — as an overlay
+  // over the conversation, which is the one way to show Files/Runs/Review in a
+  // narrow window without stealing from the center. `floating` says which of
+  // the two the panel is drawing, `rightPanelOpen` whether it is on screen.
+  const rightPanelFloating = !rightPanelAvailable;
+  const rightPanelOpen = rightPanelAvailable ? rightExpanded : rightDrawerOpen;
   const showLeftPanel = leftExpanded && canShowLeftPanel(windowWidth);
-  const leftPanel = useLeftPanelWidth(rightExpanded && rightPanelAvailable);
+  const leftPanel = useLeftPanelWidth(rightPanelOpen && rightPanelAvailable);
   const centerRef = useRef<HTMLElement>(null);
   const {
     width: rightPanelWidth,
@@ -331,6 +344,16 @@ function ReadyAppShell({
   useEffect(() => {
     reclampRightPanel();
   }, [showLeftPanel, leftPanel.width, reclampRightPanel]);
+
+  // A drawer has no meaning once the window can host the column again: promote
+  // what the user opened into the column instead of closing it under them, so
+  // resizing back and forth never loses the panel.
+  useEffect(() => {
+    if (!rightPanelAvailable || !rightDrawerOpen)
+      return;
+    setRightDrawerOpen(false);
+    setRightExpanded(true);
+  }, [rightPanelAvailable, rightDrawerOpen]);
 
   // Install the Tauri event listener for real-time agent state updates
   // (settings changes from other clients).  Only runs once.
@@ -592,8 +615,7 @@ function ReadyAppShell({
       // Tasks are their own two-pane view (list + detail); the context panel
       // beside them would describe whichever conversation happened to be active
       // before, which is not what the tasks view is about.
-      || section === "tasks"
-      || !rightPanelAvailable;
+      || section === "tasks";
 
   // The terminal belongs to a conversation: it is offered only while a real
   // thread is on screen, so the shortcut and the panel state never apply to the
@@ -1037,6 +1059,17 @@ function ReadyAppShell({
     setLeftOverlayOpen(open);
   }
 
+  function handleToggleRightPanel() {
+    // Same question as the left rail's toggle, answered with the drawer: below
+    // the three-column floor there is no column to open, and going silent
+    // would leave the panel's button doing nothing. The drawer takes no layout
+    // space, so the conversation keeps its floor while the panel is on screen.
+    if (rightPanelAvailable)
+      setRightExpanded(value => !value);
+    else
+      setRightDrawerOpen(value => !value);
+  }
+
   const remoteTimeline = useRemoteTimeline(
     activeRemote?.desktopId ?? null,
     activeRemote?.sessionId ?? null,
@@ -1336,7 +1369,7 @@ function ReadyAppShell({
       setVibeOpen(true);
   }, shortcutsLive);
   useCommand("panel.left", handleToggleLeftPanel, shortcutsLive);
-  useCommand("panel.right", () => setRightExpanded(value => !value), shortcutsLive && !hideRightPanel);
+  useCommand("panel.right", handleToggleRightPanel, shortcutsLive && !hideRightPanel);
   useCommand("settings.open", () => {
     setSettingsTab("general");
     setSettingsOpen(true);
@@ -1871,20 +1904,22 @@ function ReadyAppShell({
                           activeThread={activeThread}
                           activeWorkspace={activeWorkspace}
                           activeTab={contextTab}
-                          expanded={rightExpanded}
+                          expanded={rightPanelOpen}
+                          floating={rightPanelFloating}
                           width={rightPanelWidth}
                           onResizeStart={startRightPanelResize}
                           onResizeNudge={nudgeRightPanel}
                           onTabChange={setContextTab}
-                          onToggleExpanded={() => setRightExpanded(value => !value)}
+                          onToggleExpanded={handleToggleRightPanel}
                         />
                       )}
                   {activeRemote && activeRemote.sessionId !== "" && !hideRightPanel
                     ? (
                         <RemoteFilesPanel
                           desktopId={activeRemote.desktopId}
-                          expanded={rightExpanded}
-                          onToggleExpanded={() => setRightExpanded(value => !value)}
+                          expanded={rightPanelOpen}
+                          floating={rightPanelFloating}
+                          onToggleExpanded={handleToggleRightPanel}
                           peer={activeRemotePeer}
                           sessionId={activeRemote.sessionId}
                         />

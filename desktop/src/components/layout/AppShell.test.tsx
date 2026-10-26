@@ -806,8 +806,55 @@ describe("app shell layout", () => {
     expect(edge.className).toContain("cursor-col-resize");
     act(() => edge.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
     expect(view.container.querySelector("[data-child=\"activity-rail\"]")).not.toBeNull();
-    // The conversation yields to the panel: no context panel either.
-    expect(view.container.querySelector("[data-child=\"context-panel\"]")).toBeNull();
+    // The conversation yields to the panel: no context panel column. Its
+    // affordance stays though — without it a narrow window could reach neither
+    // Files, Runs nor Review.
+    const panel = () => children.contextPanel as { expanded: boolean; floating?: boolean };
+    expect(panel()).toMatchObject({ expanded: false, floating: true });
+    view.unmount();
+  });
+
+  it("opens the context panel as a drawer when the window cannot host a column", () => {
+    mocks.geometry = { left: false, right: false };
+    const view = mount(<AppShell />);
+    const panel = () => children.contextPanel as { expanded: boolean; floating?: boolean; onToggleExpanded: () => void };
+    expect(panel()).toMatchObject({ expanded: false, floating: true });
+
+    // The header toggle opens it over the conversation rather than beside it:
+    // the panel floats (no layout width), so the center keeps its floor and
+    // nothing is clipped off-screen.
+    act(() => panel().onToggleExpanded());
+    expect(panel()).toMatchObject({ expanded: true, floating: true });
+
+    // And the same button closes it again, which is the only way back to the
+    // conversation in this layout.
+    act(() => panel().onToggleExpanded());
+    expect(panel()).toMatchObject({ expanded: false, floating: true });
+    view.unmount();
+  });
+
+  it("promotes a narrow drawer to the column when the window grows, and never pops one open on shrink", () => {
+    mocks.geometry = { left: true, right: false };
+    const view = mount(<AppShell />);
+    const panel = () => children.contextPanel as { expanded: boolean; floating?: boolean; onToggleExpanded: () => void };
+    act(() => panel().onToggleExpanded());
+    expect(panel()).toMatchObject({ expanded: true, floating: true });
+
+    // Room for the third column again: what the user opened becomes the column
+    // instead of closing under them (or staying a drawer over a full layout).
+    mocks.geometry = { left: true, right: true };
+    view.rerender(<AppShell />);
+    expect(panel()).toMatchObject({ expanded: true });
+    expect(panel().floating).toBe(false);
+
+    // Shrinking back folds the column away (the standing choice is kept for the
+    // next grow) and does not slam a drawer over the conversation uninvited.
+    mocks.geometry = { left: true, right: false };
+    view.rerender(<AppShell />);
+    expect(panel()).toMatchObject({ expanded: false, floating: true });
+    mocks.geometry = { left: true, right: true };
+    view.rerender(<AppShell />);
+    expect(panel()).toMatchObject({ expanded: true });
     view.unmount();
   });
 
@@ -2974,6 +3021,23 @@ describe("app shell collapsed-panel affordances", () => {
     });
 
     /**
+     * A narrow window keeps the remote files reachable too: the panel is the
+     * same drawer the local one becomes there, rather than disappearing along
+     * with the column that cannot fit.
+     */
+    it("offers the remote files as a drawer in a narrow window", () => {
+      // Wide enough for the rail, too narrow for the third column.
+      mocks.geometry = { left: true, right: false };
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+
+      expect(children.filesPanel).toMatchObject({ expanded: false, floating: true });
+      act(() => (children.filesPanel as { onToggleExpanded: () => void }).onToggleExpanded());
+      expect(children.filesPanel).toMatchObject({ expanded: true, floating: true });
+      view.unmount();
+    });
+
+    /**
      * Starting a chat from a remote workspace heading names that workspace.
      *
      * The workspace belongs to the host, so the request carries its id — the
@@ -3268,6 +3332,19 @@ describe("app shell keyboard commands", () => {
     expect(panelExpanded()).toBe(false);
     press({ ctrlKey: true, shiftKey: true, key: "b" });
     expect(panelExpanded()).toBe(true);
+    view.unmount();
+  });
+
+  it("toggles the context panel's drawer from the keyboard in a narrow window", () => {
+    // The shortcut must not go quiet where the panel needs it most: in a narrow
+    // window it opens the drawer, the same thing the header button does.
+    mocks.geometry = { left: false, right: false };
+    const view = mount(<AppShell />);
+    const panelExpanded = () => (children.contextPanel as { expanded: boolean }).expanded;
+    expect(panelExpanded()).toBe(false);
+    press({ ctrlKey: true, shiftKey: true, key: "b" });
+    expect(panelExpanded()).toBe(true);
+    expect((children.contextPanel as { floating?: boolean }).floating).toBe(true);
     view.unmount();
   });
 

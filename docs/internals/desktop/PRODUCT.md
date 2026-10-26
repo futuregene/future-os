@@ -582,6 +582,14 @@ supports drag-resize, and arrow keys work when the divider is focused; the
 width persists across restarts, and it auto-constrains when the window shrinks
 to leave room for the conversation area and an open right panel.
 
+The conversation wins a narrow window: below the width where all three columns
+can keep their floors, the left rail folds into its hover preview and the right
+panel stops being a column. It stays reachable rather than disappearing with
+its toggle — the header's toggle and the panel shortcut open it as an overlay
+over the conversation, which takes no width from the center. A panel opened that
+way becomes the column again if the window grows back, and the user's
+open/closed choice is kept across the resize instead of being committed by it.
+
 The right panel must not steal user attention and must not carry approval
 actions needing immediate response. Ordinary background refreshes must not
 flicker or switch tabs frequently.
