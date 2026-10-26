@@ -1,6 +1,7 @@
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ProvidersView } from "../../integrations/agent/providers";
-import type { RemoteCatalog, RemoteSessionRow } from "./mergeConversations";
+import type { RemoteCatalog, RemoteSessionRow, RemoteWorkspaceRow } from "./mergeConversations";
+import { requestNativeRead } from "../../integrations/storage/historyTransfer";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 
 /**
@@ -1138,13 +1139,15 @@ export async function setRemoteApprovalTier(
   return typeof raw?.approvalTier === "string" ? raw.approvalTier : tier;
 }
 
-/** One workspace on a host, as this machine may show it. */
-export interface RemoteWorkspaceRow {
-  id: string;
-  name: string;
-  path: string;
-  pinned: boolean;
-}
+/**
+ * One workspace on a host, as this machine may show it.
+ *
+ * The shape is the merged list's (`mergeConversations`), because the merged list
+ * is what draws a host's workspaces — as headings — and a second, similar type
+ * here is how a field would reach one reader and not the other. Re-exported so
+ * the screens that address a workspace keep importing it from here.
+ */
+export type { RemoteWorkspaceRow } from "./mergeConversations";
 
 /**
  * That host's workspaces.
@@ -1155,10 +1158,22 @@ export interface RemoteWorkspaceRow {
  */
 export async function listRemoteWorkspaces(desktopId: string): Promise<RemoteWorkspaceRow[]> {
   const raw = await invokeCommand<{ workspaces?: unknown[] }>("remote_peer_workspaces", { desktopId });
-  return workspaceRows(raw?.workspaces);
+  return hostWorkspaceRows(raw?.workspaces);
 }
 
-function workspaceRows(items: unknown): RemoteWorkspaceRow[] {
+/**
+ * Parse a host's workspace rows.
+ *
+ * Exported because two paths read them: a polled list (above) and a pushed
+ * `state.workspaces` snapshot (`useRemotePeers`). One field list for both, for
+ * the reason `normalizeRemoteSessionRows` gives — a field that reached only the
+ * poll would be a name the list shows a second late and a place it ranks last.
+ *
+ * `orderedAt` is the host's own coalesce (`last_opened_at`, else `updated_at`),
+ * computed here rather than on the host because it is what the host's *ordering*
+ * uses and this machine only ever needs the key, never the SQL that made it.
+ */
+export function hostWorkspaceRows(items: unknown): RemoteWorkspaceRow[] {
   if (!Array.isArray(items))
     return [];
   return items.flatMap((entry): RemoteWorkspaceRow[] => {
@@ -1167,11 +1182,19 @@ function workspaceRows(items: unknown): RemoteWorkspaceRow[] {
     const row = entry as Record<string, unknown>;
     if (typeof row.id !== "string" || !row.id)
       return [];
+    const orderedAt = typeof row.lastOpenedAt === "number"
+      ? row.lastOpenedAt
+      : typeof row.updatedAt === "number" ? row.updatedAt : null;
     return [{
       id: row.id,
       name: typeof row.name === "string" && row.name ? row.name : (typeof row.path === "string" ? row.path : row.id),
       path: typeof row.path === "string" ? row.path : "",
       pinned: row.pinned === true,
+      // Absent rather than defaulted, the way every optional field here is: a
+      // host that predates `kind` has not said "user", and one that reports
+      // neither timestamp has not said "now".
+      ...(row.kind === "temporary" || row.kind === "user" ? { kind: row.kind } : {}),
+      ...(orderedAt === null ? {} : { orderedAt }),
     }];
   });
 }
@@ -1193,7 +1216,7 @@ export async function createRemoteWorkspace(
     { type: "create_workspace", path: path.trim(), name: name.trim() },
     "list",
   );
-  const [created] = workspaceRows([raw?.workspace]);
+  const [created] = hostWorkspaceRows([raw?.workspace]);
   if (!created)
     throw new Error("invalid_workspace_snapshot");
   return created;
@@ -1335,6 +1358,9 @@ export function requestRemotePeer<T = unknown>(
   desktopId: string,
   command: Record<string, unknown>,
   lane: string,
+  isCurrent?: () => boolean,
 ): Promise<T> {
+  if (["get_session_entries", "get_event_content_range", "get_events_since", "get_messages", "get_tool_call_args"].includes(command.type as string))
+    return requestNativeRead<T>("remote_peer_request", { desktopId, command, lane }, isCurrent);
   return invokeCommand<T>("remote_peer_request", { desktopId, command, lane });
 }

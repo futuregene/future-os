@@ -141,6 +141,9 @@ struct MockAgent;
 /// echoes the requested run id so tests that let the pipeline generate one
 /// still get a consistent acknowledgement.
 fn default_reply_data(cmd: &RpcCommand) -> String {
+    if cmd.r#type == "get_session_storage_format" {
+        return serde_json::json!({"exists":true,"format":1,"new_session_format":2}).to_string();
+    }
     if cmd.r#type == "get_session_presence" {
         return serde_json::json!({"databaseId":"test-agent-database","restoreGeneration":"test-generation",
             "sessions":cmd.session_ids.iter().map(|id|serde_json::json!({"sessionId":id,"status":"present"})).collect::<Vec<_>>()}).to_string();
@@ -323,22 +326,16 @@ impl FutureAgent for MockAgent {
 // This driver belongs only to the test harness. Production services require an
 // entry-provided runtime and never construct one as a fallback.
 pub(crate) fn install_channel_runtime() {
-    static INSTALLED: OnceLock<()> = OnceLock::new();
-    INSTALLED.get_or_init(|| {
-        if crate::agent_client::agent_channel_runtime().is_ok() {
-            return;
-        }
-        let runtime = tokio::runtime::Builder::new_multi_thread()
+    // Installation is idempotent, so this needs no `Once` of its own: when the
+    // Desktop entry (or another fixture) already registered a driver runtime,
+    // this returns `AlreadyInstalled` and nothing is built. An `expect` here
+    // used to turn that ordinary case into a panic.
+    crate::agent_client::provide_channel_runtime("fixture-agent-channel", || {
+        tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .worker_threads(1)
             .build()
-            .expect("fixture Agent channel runtime");
-        crate::agent_client::configure_channel_runtime(runtime.handle().clone())
-            .expect("fixture installs its channel runtime once");
-        std::thread::Builder::new()
-            .name("fixture-agent-channel".into())
-            .spawn(move || runtime.block_on(std::future::pending::<()>()))
-            .expect("fixture channel driver");
+            .expect("fixture Agent channel runtime")
     });
 }
 

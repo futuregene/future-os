@@ -1,3 +1,4 @@
+import { eventPayload , asToolKind, normalizeArgs, targetFromArgs } from "@future-os/thread-projection";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { useCallback, useRef, useState } from "react";
 import type { RemoteClient } from "./client";
@@ -11,7 +12,6 @@ import {
 } from "./files";
 import type { SyncEngine } from "@future-os/remote-client/syncEngine";
 import { requestReadPage } from "@future-os/remote-client/readPages";
-import { asToolKind, normalizeArgs, targetFromArgs } from "@future-os/thread-projection";
 import { loadLastModel, loadLastThinking, saveLastModel, saveLastThinking } from "./storage";
 import { markApprovalDecision } from "@future-os/remote-client/timeline";
 import { modelProviderFromReference, modelReference } from "./types";
@@ -121,7 +121,7 @@ export function useConversationController({
   const handleSessionSettingsEvent = useCallback((event: StreamEvent, sessionId: string) => {
     if (event.type !== "model_changed" && event.type !== "thinking_level_changed") return;
     try {
-      const data: unknown = JSON.parse(event.data);
+      const data: unknown = eventPayload(event, event.data);
       if (!data || typeof data !== "object") return;
       if (event.type === "model_changed" && "model" in data && typeof data.model === "string") {
         applySessionSettings(sessionId, { model: data.model });

@@ -34,6 +34,48 @@
           }
         ]
       },
+      "context-panel-narrow": {
+        "note": "A narrow window: the context panel has no room for a third column, so it opens as an overlay over the conversation instead of vanishing with its own toggle. Measured, because the point is a position and a width: the toggle is inside the window, opening the panel leaves the conversation exactly as wide as it was, and the panel is anchored to the window's right edge at full height.",
+        "width": 900,
+        "steps": [
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => { const toggle = document.querySelector(\"button[aria-label='展开上下文面板']\") || document.querySelector(\"button[aria-label='Expand context panel']\"); if (!toggle) throw new Error('a narrow window has no way to open the context panel: the toggle is not on screen'); const t = toggle.getBoundingClientRect(); if (t.width < 8 || t.height < 8) throw new Error('the toggle has no size: ' + Math.round(t.width) + 'x' + Math.round(t.height)); if (t.left < 0 || t.right > window.innerWidth + 1) throw new Error('the toggle sits outside the window: ' + Math.round(t.left) + '..' + Math.round(t.right) + ' of ' + window.innerWidth); const main = document.querySelector('main'); if (!main) throw new Error('no conversation area'); const panel = document.querySelector('#context-panel-view'); if (panel) throw new Error('the panel is a column in a window too narrow for one'); window.__narrow = { innerWidth: window.innerWidth, mainWidth: Math.round(main.getBoundingClientRect().width) }; return JSON.stringify(window.__narrow); })()"
+          },
+          {
+            "tap": "展开上下文面板"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "(() => { const select = document.querySelector('#context-panel-view'); if (!select) throw new Error('the panel did not open'); const aside = select.closest('aside'); if (!aside) throw new Error('the panel is not drawn'); const box = aside.getBoundingClientRect(); const inner = window.innerWidth; if (Math.abs(box.right - inner) > 1) throw new Error('the panel is not anchored to the window\\'s right edge: ' + Math.round(box.right) + ' of ' + inner); if (Math.round(box.height) < window.innerHeight - 2) throw new Error('the panel is not full height: ' + Math.round(box.height) + ' of ' + window.innerHeight); if (box.left < 0) throw new Error('the panel runs past the window\\'s left edge: ' + Math.round(box.left)); const mainWidth = Math.round(document.querySelector('main').getBoundingClientRect().width); if (mainWidth !== window.__narrow.mainWidth) throw new Error('opening the panel squeezed the conversation: ' + window.__narrow.mainWidth + ' -> ' + mainWidth); if (document.documentElement.scrollWidth > inner + 1) throw new Error('the layout overflows the window: ' + document.documentElement.scrollWidth + ' vs ' + inner); const hit = document.elementFromPoint(inner - 24, 24); if (!hit || !aside.contains(hit)) throw new Error('the panel is painted under the conversation: ' + (hit ? hit.tagName : 'nothing')); const close = document.querySelector(\"button[aria-label='收起上下文面板']\") || document.querySelector(\"button[aria-label='Collapse context panel']\"); if (!close) throw new Error('the opened panel has no way back'); const closeBox = close.getBoundingClientRect(); if (closeBox.right > inner + 1) throw new Error('the panel\\'s own close button is off screen'); return JSON.stringify({ panel: Math.round(box.left) + '..' + Math.round(box.right), height: Math.round(box.height), mainWidth }); })()"
+          },
+          {
+            "tap": "收起上下文面板"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => { if (document.querySelector('#context-panel-view')) throw new Error('the panel is still open after closing it'); const toggle = document.querySelector(\"button[aria-label='展开上下文面板']\") || document.querySelector(\"button[aria-label='Expand context panel']\"); if (!toggle) throw new Error('closing the drawer took its own toggle away, so there is no way back'); const box = toggle.getBoundingClientRect(); if (box.right > window.innerWidth + 1 || box.left < 0) throw new Error('the toggle is off screen after closing'); return 'closed, toggle at ' + Math.round(box.left) + '..' + Math.round(box.right); })()"
+          },
+          {
+            "tap": "展开上下文面板"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => { if (!document.querySelector('#context-panel-view')) throw new Error('the panel did not reopen from its own toggle'); return 'reopened'; })()"
+          },
+          {
+            "shot": "d-context-panel-narrow.png"
+          }
+        ]
+      },
       "hash-session-menu": {
         "note": "The composer's `#` menu: one list, newest activity first — a chat leads its workspace neighbours when it was used more recently, so there is no chats-first section — and each row names the workspace it lives in. The conversation being composed in is not offered.",
         "steps": [

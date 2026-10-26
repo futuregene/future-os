@@ -1,10 +1,11 @@
 //! Bounded display-page IO and lossless history-entry fragments.
 use super::display_projection::project_entries;
+use super::fragment_cache::{self, Encoded, FragmentCache};
+use crate::session::{content::reader, sqlite_store::SqliteStore};
 use crate::session::{projection::hydrate_entry_projections, Manager, SessionEntry};
 use anyhow::Result;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 
 pub(super) const HISTORY_PAGE_BYTE_BUDGET: usize = 8 * 1024 * 1024;
 // JSON escaping of a fragment can expand each byte up to six times.
@@ -14,12 +15,14 @@ pub(super) struct DisplayPageRow {
     ordinal: i64,
     index_payload: String,
     entry_payload: Option<String>,
+    canonical_entry: Option<reader::Entry>,
 }
 
 pub(super) struct DisplayHistoryPage {
     pub(super) rows: Vec<DisplayPageRow>,
     has_more: bool,
     next_offset: i64,
+    snapshot: Option<reader::Snapshot>,
 }
 
 pub(super) fn read_display_page(
@@ -29,6 +32,11 @@ pub(super) fn read_display_page(
     offset: Option<i64>,
     limit: Option<i64>,
 ) -> Result<DisplayHistoryPage> {
+    let canonical =
+        crate::session::content::format(db, session)? == crate::session::content::FORMAT_VERSION;
+    let snapshot = canonical
+        .then(|| reader::Snapshot::capture_from(db, session))
+        .transpose()?;
     let total: i64 = db.query_row(
         "SELECT COALESCE(MAX(ordinal)+1,0) FROM history_display WHERE session_id=?1",
         [session],
@@ -47,7 +55,37 @@ pub(super) fn read_display_page(
         )
     };
     let direction = if before.is_some() { "DESC" } else { "ASC" };
-    let mut stmt = db.prepare(&format!("SELECT d.ordinal,d.payload,e.payload FROM history_display d LEFT JOIN entry_records e ON e.session_id=d.session_id AND e.position=d.source_position WHERE d.session_id=?1 AND d.ordinal>=?2 AND d.ordinal<?3 ORDER BY d.ordinal {direction}"))?;
+    // The canonical branch must never touch the compatibility body views:
+    // even asking SQLite for a sliced payload first assembles their full JSON.
+    let sql = if canonical {
+        let outcome = "json_object('status',CASE r.status WHEN 'error' THEN 'failed' WHEN 'incomplete' THEN 'interrupted' WHEN 'interrupted_by_restart' THEN 'interrupted' ELSE r.status END,'error',r.error,'durationMs',r.duration_ms)";
+        format!("SELECT d.ordinal,
+        CASE WHEN r.run_id IS NOT NULL THEN
+          CASE WHEN header.entry_type='assistant' AND header.position=(SELECT max(a.position) FROM entries a WHERE a.session_id=header.session_id AND a.run_id=header.run_id AND a.entry_type='assistant')
+          THEN json_set(d.payload,'$.run',{outcome},'$.usage',json_object('inputTokens',r.input_tokens,'outputTokens',r.output_tokens,'cacheReadTokens',r.cache_read_tokens,'cacheWriteTokens',r.cache_write_tokens))
+          ELSE json_set(d.payload,'$.run',{outcome}) END
+        ELSE d.payload END,NULL,header.position,header.entry_id
+        FROM history_display d
+        LEFT JOIN entries header ON header.session_id=d.session_id AND header.position=d.source_position
+        LEFT JOIN runs r ON r.session_id=header.session_id AND r.run_id=header.run_id
+          AND EXISTS(SELECT 1 FROM entries terminal WHERE terminal.session_id=header.session_id AND terminal.run_id=header.run_id AND terminal.entry_type='run_terminal')
+        WHERE d.session_id=?1 AND d.ordinal>=?2 AND d.ordinal<?3 ORDER BY d.ordinal {direction}")
+    } else {
+        format!("SELECT d.ordinal,d.payload,e.payload,NULL,NULL
+        FROM history_display d LEFT JOIN entry_records e ON e.session_id=d.session_id AND e.position=d.source_position
+        WHERE d.session_id=?1 AND d.ordinal>=?2 AND d.ordinal<?3 ORDER BY d.ordinal {direction}")
+    };
+    let sql = if canonical {
+        format!("{sql} LIMIT 64")
+    } else {
+        sql
+    };
+    let read_budget = if canonical {
+        crate::session::content::READ_BYTES
+    } else {
+        HISTORY_PAGE_BYTE_BUDGET
+    };
+    let mut stmt = db.prepare(&sql)?;
     let mut cursor = stmt.query(params![session, start, end])?;
     let mut rows = Vec::new();
     let mut body_bytes = 0usize;
@@ -56,12 +94,29 @@ pub(super) fn read_display_page(
         let ordinal: i64 = row.get(0)?;
         let overlay: String = row.get(1)?;
         let body: Option<String> = row.get(2)?;
+        let canonical_entry = if let Some(position) = row.get::<_, Option<i64>>(3)? {
+            Some(reader::Entry {
+                position,
+                id: row.get(4)?,
+            })
+        } else {
+            None
+        };
         let size = overlay
             .len()
-            .saturating_add(body.as_ref().map_or(0, String::len));
-        if !rows.is_empty() && body_bytes.saturating_add(size) > HISTORY_PAGE_BYTE_BUDGET {
+            .saturating_add(body.as_ref().map_or(0, String::len))
+            .saturating_add(
+                canonical_entry
+                    .as_ref()
+                    .map_or(0, |entry| entry.id.len() + 32),
+            );
+        if !rows.is_empty() && body_bytes.saturating_add(size) > read_budget {
             break;
         }
+        anyhow::ensure!(
+            !canonical || size <= read_budget,
+            "canonical display header exceeds the read budget"
+        );
         body_bytes = body_bytes.saturating_add(size);
         next = if before.is_some() {
             ordinal
@@ -72,8 +127,9 @@ pub(super) fn read_display_page(
             ordinal,
             index_payload: overlay,
             entry_payload: body,
+            canonical_entry,
         });
-        if body_bytes >= HISTORY_PAGE_BYTE_BUDGET {
+        if body_bytes >= read_budget {
             break;
         }
     }
@@ -85,6 +141,7 @@ pub(super) fn read_display_page(
             next < total
         },
         next_offset: next,
+        snapshot,
     })
 }
 
@@ -94,6 +151,8 @@ fn materialize_display_page(
     page: DisplayHistoryPage,
     before: Option<i64>,
     fragment_offset: Option<i64>,
+    store: Option<&SqliteStore>,
+    cache: Option<&parking_lot::Mutex<FragmentCache>>,
 ) -> Result<Value> {
     let mut entries = Vec::new();
     let mut bytes = 64usize; // page envelope and commas
@@ -104,26 +163,62 @@ fn materialize_display_page(
         ordinal,
         index_payload: overlay,
         entry_payload: raw,
+        canonical_entry,
     } in page.rows
     {
-        let overlay: Value = serde_json::from_str(&overlay)?;
-        let payload = if let Some(raw) = raw.filter(|_| overlay["kind"] != "session_info") {
-            let mut entry: SessionEntry = serde_json::from_str(&raw)?;
-            hydrate_entry_projections(&mut entry);
-            let mut value = project_entries(&[entry])
-                .pop()
-                .ok_or_else(|| anyhow::anyhow!("history index refers to a non-display entry"))?;
-            for key in ["usage", "run"] {
-                if let Some(annotation) = overlay.get(key) {
-                    value[key] = annotation.clone();
-                }
-            }
-            value
+        let key = page
+            .snapshot
+            .as_ref()
+            .zip(canonical_entry.as_ref())
+            .map(|(scope, entry)| scope.render_key(entry, &overlay));
+        let cached = key
+            .as_ref()
+            .zip(cache)
+            .and_then(|(key, cache)| cache.lock().get(key));
+        let (payload, encoded) = if let Some(body) = cached {
+            (None, Encoded::Large(body))
         } else {
-            overlay
+            let overlay: Value = serde_json::from_str(&overlay)?;
+            let canonical = canonical_entry.is_some();
+            let entry = if let Some(locator) = canonical_entry {
+                Some(serde_json::from_value(
+                    page.snapshot
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("canonical page has no snapshot"))?
+                        .display(
+                            store.ok_or_else(|| anyhow::anyhow!("canonical page has no reader"))?,
+                            &locator,
+                        )?,
+                )?)
+            } else if overlay["kind"] == "session_info" {
+                None
+            } else {
+                raw.map(|raw| serde_json::from_str::<SessionEntry>(&raw))
+                    .transpose()?
+            };
+            let payload = if let Some(mut entry) = entry {
+                if !canonical {
+                    hydrate_entry_projections(&mut entry);
+                }
+                let mut value = project_entries(&[entry]).pop().ok_or_else(|| {
+                    anyhow::anyhow!("history index refers to a non-display entry")
+                })?;
+                for key in ["usage", "run"] {
+                    if let Some(annotation) = overlay.get(key) {
+                        value[key] = annotation.clone();
+                    }
+                }
+                value
+            } else {
+                overlay
+            };
+            let encoded = fragment_cache::encode(&payload, HISTORY_PAGE_BYTE_BUDGET - 65)?;
+            if let (Some(key), Some(cache), Encoded::Large(body)) = (key, cache, &encoded) {
+                cache.lock().insert(key, body.clone());
+            }
+            (Some(payload), encoded)
         };
-        let serialized = serde_json::to_string(&payload)?;
-        if serialized.len().saturating_add(bytes + 1) > HISTORY_PAGE_BYTE_BUDGET {
+        if encoded.len().saturating_add(bytes + 1) > HISTORY_PAGE_BYTE_BUDGET {
             if !entries.is_empty() {
                 next = if before.is_some() {
                     ordinal + 1
@@ -133,33 +228,35 @@ fn materialize_display_page(
                 more = true;
                 break;
             }
+            let Encoded::Large(body) = encoded else {
+                anyhow::bail!("oversized entry was not spooled");
+            };
             let offset = usize::try_from(fragment_offset.unwrap_or(0))?;
-            anyhow::ensure!(
-                offset < serialized.len() && serialized.is_char_boundary(offset),
-                "invalid history fragment offset"
-            );
-            let mut end = offset
-                .saturating_add(ENTRY_FRAGMENT_BYTE_BUDGET)
-                .min(serialized.len());
-            while !serialized.is_char_boundary(end) {
-                end -= 1;
+            let fragment = body.read(offset, ENTRY_FRAGMENT_BYTE_BUDGET)?;
+            if let Some(scope) = &page.snapshot {
+                scope.verify(
+                    store.ok_or_else(|| anyhow::anyhow!("canonical page has no reader"))?,
+                )?;
             }
             return Ok(json!({"entries":[],
                 "hasMore":page.has_more || row_count > 1,
                 "nextOffset":if before.is_some() {ordinal} else {ordinal + 1},
-                "fragment":{"entryId":payload["id"],"ordinal":ordinal,"offset":offset,
-                    "totalBytes":serialized.len(),"json":&serialized[offset..end],
-                    "sha256":format!("{:x}", Sha256::digest(serialized.as_bytes()))}}));
+                "fragment":{"entryId":body.entry_id,"ordinal":ordinal,"offset":offset,
+                    "totalBytes":body.len,"json":fragment,"sha256":body.sha256}}));
         }
         anyhow::ensure!(
             fragment_offset.unwrap_or(0) == 0,
             "history changed during fragmented read"
         );
-        bytes += serialized.len() + 1;
-        entries.push(payload);
+        bytes += encoded.len() + 1;
+        entries
+            .push(payload.ok_or_else(|| anyhow::anyhow!("cached entry unexpectedly fits inline"))?);
     }
     if before.is_some() {
         entries.reverse();
+    }
+    if let Some(scope) = &page.snapshot {
+        scope.verify(store.ok_or_else(|| anyhow::anyhow!("canonical page has no reader"))?)?;
     }
     Ok(json!({"entries":entries,"hasMore":more,"nextOffset":next}))
 }
@@ -184,13 +281,41 @@ impl Manager {
         limit: Option<i64>,
         fragment_offset: Option<i64>,
     ) -> Result<serde_json::Value> {
-        let id = id.to_owned();
-        let page = self.storage()?.db.call(move |db| super::with_history_index(db, &id, |connection| {
-            let skipped: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='skipped')", [&id], |r| r.get(0))?;
-            if skipped { anyhow::bail!("session migration was skipped"); }
-            read_display_page(connection, &id, before, offset, limit)
-        }))?;
-        materialize_display_page(page, before, fragment_offset)
+        let store = self.storage()?;
+        let owned = id.to_owned();
+        let page = store.db.read(move |db| {
+            let tx = db.transaction()?;
+            let skipped: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='skipped')",
+                [&owned], |row| row.get(0),
+            )?;
+            anyhow::ensure!(!skipped, "session migration was skipped");
+            let page = if super::recovery::history_index_ready(&tx, &owned)? {
+                Some(read_display_page(&tx, &owned, before, offset, limit)?)
+            } else {
+                None
+            };
+            tx.commit()?;
+            Ok(page)
+        })?;
+        let page = match page {
+            Some(page) => page,
+            None => {
+                let id = id.to_owned();
+                store.db.call(move |db| super::with_history_index(db,&id,|connection| {
+                    let skipped:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='skipped')",[&id],|r|r.get(0))?;
+                    if skipped {anyhow::bail!("session migration was skipped");}
+                    read_display_page(connection,&id,before,offset,limit)
+                }))?
+            }
+        };
+        materialize_display_page(
+            page,
+            before,
+            fragment_offset,
+            Some(store),
+            Some(&self.history_fragments),
+        )
     }
 }
 

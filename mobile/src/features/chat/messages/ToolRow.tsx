@@ -32,10 +32,18 @@ import type { ToolKind } from "./messageUtils";
 export function ToolRow({
   tool,
   opened,
+  replyStreaming,
   resolveTarget,
 }: {
   tool: TimelineToolRow;
   opened: boolean;
+  /**
+   * Whether the reply this row belongs to is still being written. A call whose
+   * result never arrived reads "running" forever in the projection — no event
+   * says otherwise — so the reply, not the call, is what tells the row it has
+   * stopped: a settled reply's unfinished call was interrupted.
+   */
+  replyStreaming?: boolean;
   resolveTarget?: ToolTargetResolver;
 }) {
   const styles = useStyles();
@@ -76,7 +84,11 @@ export function ToolRow({
   };
   const label = failed
     ? failedToolLabel(t, kind)
-    : tool.count != null && tool.count > 1
+    : tool.status === "running" && !replyStreaming
+      // The reply is over and this call never reported: it was cut off with the
+      // run, so it is neither "running" nor "completed"/"failed".
+      ? t("chat.toolInterrupted")
+      : tool.count != null && tool.count > 1
       ? t("chat.stepSummary", {
         count: tool.count,
         action: t(TOOL_LABEL_KEYS[kind]),

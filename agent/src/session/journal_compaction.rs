@@ -1,5 +1,7 @@
 //! Crash-safe retirement of settled token journals. Snapshot publication and
-//! raw-row deletion share one FULL-synchronous SQLite transaction.
+//! the first slice of raw-row deletion share one FULL-synchronous SQLite
+//! transaction; the remaining slices follow in bounded transactions, because a
+//! long run's journal is routinely six figures of rows.
 use super::sqlite_store::SqliteStore;
 use crate::rpc::run_snapshot::{strip_repeated_tool_arguments, DeltaFolder};
 use crate::rpc::SseEvent;
@@ -9,13 +11,28 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-// Below the 8 MiB replay budget even after wire envelopes. Oversize runs keep
-// their raw journal and its existing paged replay; they are never truncated.
+// The size a *published* snapshot aims for: the delivered projection crosses
+// the wire about three times (JSON `data` dual-write, typed event, typed
+// payload), so this keeps an ordinary replay well inside the 32 MiB gRPC cap.
+// It is a target, not a veto: a run whose folded projection is larger than this
+// is still published (measured 4.5 MiB for the largest real run on a 1 GB
+// database), because the alternative — refusing forever — is what let
+// `run_events` grow without bound. Publishing also never makes a replay bigger
+// than the raw journal it replaces; the raw path folds the same events anyway.
 const SNAPSHOT_BYTE_BUDGET: usize = 4 * 1024 * 1024;
 const COMPACTION_PAGE_EVENT_LIMIT: usize = 256;
-// Deletion is atomic with publication, so bound the rows in that transaction.
-// Larger runs keep raw paging instead of monopolizing the SQLite worker.
-const MAX_ATOMIC_RETIRE_EVENTS: i64 = 65_536;
+// One transaction retires at most this many raw rows. A single 200k-row journal
+// therefore commits in several slices instead of holding the shared SQLite
+// worker for one unbounded delete. Publication and the first slice stay atomic
+// so a crash can never leave a reader without a snapshot.
+pub(super) const RETIRE_CHUNK_ROWS: i64 = 32_768;
+
+/// Durable evidence that a settled journal *was* retired, read back by
+/// `future session journal` (`journal_reclaim.rs`).
+const META_RECLAIMED_RUNS: &str = "journal.reclaimed_runs";
+const META_RECLAIMED_EVENTS: &str = "journal.reclaimed_events";
+const META_RECLAIMED_AT_MS: &str = "journal.reclaimed_at_ms";
+const META_OVERSIZE_PUBLISHES: &str = "journal.oversize_publishes";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct RunJournalSnapshot {
@@ -53,6 +70,82 @@ pub(crate) struct RunReplayPage {
     pub snapshot: Option<RunJournalSnapshot>,
 }
 
+/// A refusal that keeps the raw journal. Every variant is durable evidence
+/// (`journal.skipped.<reason>`) rather than a silent `Ok(0)`, so a database
+/// that stops shrinking can be explained by one command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SkipReason {
+    /// Raw rows exist but no `runs` row does: nothing proves the run settled.
+    MissingRun,
+    /// The run is still `running`, so its journal is still being appended to.
+    NotSettled,
+    /// Already published; the raw journal is gone or is an inert leftover.
+    AlreadyCompacted,
+    /// A run with no raw rows: `bind_events` created the session only.
+    Empty,
+    /// One stored event is above the paged-read budget, so a bounded snapshot
+    /// cannot be built from it without materializing it in one piece.
+    OversizedEvent,
+    /// Raw provider deltas that are not provably a duplicate of the visible
+    /// text stream: dropping them would change what a client renders.
+    ProviderDelta,
+    /// The last event is not `agent_end`, so a producer may still append.
+    NotTerminal,
+    /// Agent shutdown interrupted the build. Not evidence: the next completion
+    /// (or an explicit sweep) retries the run.
+    Cancelled,
+    /// Canonical conversations already store one segmented body and must never
+    /// be rewritten by the explicitly invoked legacy reclamation command.
+    CanonicalFormat,
+}
+
+impl SkipReason {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            SkipReason::MissingRun => "missing_run",
+            SkipReason::NotSettled => "not_settled",
+            SkipReason::AlreadyCompacted => "already_compacted",
+            SkipReason::Empty => "empty",
+            SkipReason::OversizedEvent => "oversized_event",
+            SkipReason::ProviderDelta => "provider_delta",
+            SkipReason::NotTerminal => "not_terminal",
+            SkipReason::Cancelled => "cancelled",
+            SkipReason::CanonicalFormat => "canonical_format",
+        }
+    }
+
+    /// Reasons that mean "this journal cannot be reclaimed as it stands" rather
+    /// than "there was nothing to do". Only these are counted, so the counters
+    /// stay a list of real leftovers.
+    fn is_leftover(self) -> bool {
+        !matches!(
+            self,
+            SkipReason::AlreadyCompacted
+                | SkipReason::Empty
+                | SkipReason::Cancelled
+                | SkipReason::CanonicalFormat
+        )
+    }
+}
+
+impl SkipReason {
+    fn key(self) -> String {
+        format!("journal.skipped.{}", self.as_str())
+    }
+}
+
+/// What one attempt achieved. `deleted` is the number of raw rows this call
+/// removed; `skip` is set exactly when nothing was published.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CompactionOutcome {
+    pub deleted: usize,
+    pub snapshot_bytes: usize,
+    /// Published above [`SNAPSHOT_BYTE_BUDGET`]; visible because it is the
+    /// signal that a run's visible content alone is large.
+    pub oversize: bool,
+    pub skip: Option<SkipReason>,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 struct CompactionSource {
     status: String,
@@ -61,30 +154,68 @@ struct CompactionSource {
     last_sequence: i64,
 }
 
+/// The one gate every attempt reads, both before building and again under the
+/// write lock before publishing. Equality of two reads is how a concurrent
+/// append, a second compactor or a manual prune invalidates a build.
+#[derive(Clone, PartialEq, Eq)]
+enum CompactionRead {
+    Source(CompactionSource),
+    AlreadyCompacted,
+    NotSettled,
+    Missing,
+}
+
 fn read_compaction_source(
     db: &rusqlite::Connection,
     session: &str,
     run: &str,
-) -> Result<Option<CompactionSource>> {
-    Ok(db
+) -> Result<CompactionRead> {
+    let row: Option<(String, Option<i64>, bool)> = db
         .query_row(
-            "SELECT status,completed_at_ms,
-                coalesce((SELECT idx+1 FROM run_events WHERE session_id=?1 AND run_id=?2 ORDER BY idx DESC LIMIT 1),0),
-                coalesce((SELECT sequence FROM run_events WHERE session_id=?1 AND run_id=?2 ORDER BY idx DESC LIMIT 1),0)
-         FROM runs WHERE session_id=?1 AND run_id=?2
-           AND status IN ('completed','failed','cancelled','interrupted')
-           AND NOT EXISTS(SELECT 1 FROM run_snapshots WHERE session_id=?1 AND run_id=?2)",
+            "SELECT r.status,r.completed_at_ms,
+                EXISTS(SELECT 1 FROM run_snapshots s
+                       WHERE s.session_id=r.session_id AND s.run_id=r.run_id)
+         FROM runs r WHERE r.session_id=?1 AND r.run_id=?2",
             params![session, run],
-            |r| {
-                Ok(CompactionSource {
-                    status: r.get(0)?,
-                    completed: r.get(1)?,
-                    count: r.get(2)?,
-                    last_sequence: r.get(3)?,
-                })
-            },
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
-        .optional()?)
+        .optional()?;
+    let Some((status, completed, compacted)) = row else {
+        return Ok(CompactionRead::Missing);
+    };
+    if compacted {
+        return Ok(CompactionRead::AlreadyCompacted);
+    }
+    if !matches!(
+        status.as_str(),
+        "completed" | "failed" | "cancelled" | "interrupted"
+    ) {
+        return Ok(CompactionRead::NotSettled);
+    }
+    let (count, last_sequence) = db.query_row(
+        "SELECT coalesce((SELECT idx+1 FROM run_events WHERE session_id=?1 AND run_id=?2 ORDER BY idx DESC LIMIT 1),0),
+                coalesce((SELECT sequence FROM run_events WHERE session_id=?1 AND run_id=?2 ORDER BY idx DESC LIMIT 1),0)",
+        params![session, run],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    Ok(CompactionRead::Source(CompactionSource {
+        status,
+        completed,
+        count,
+        last_sequence,
+    }))
+}
+
+/// Add `delta` to an integer counter in `storage_meta`. Used for the durable
+/// reclamation evidence; a counter is never the reason a reclaim fails.
+pub(crate) fn bump_meta(connection: &rusqlite::Connection, key: &str, delta: i64) -> Result<()> {
+    connection.execute(
+        "INSERT INTO storage_meta(key,value) VALUES (?1,cast(?2 AS TEXT))
+         ON CONFLICT(key) DO UPDATE SET
+             value=cast(cast(storage_meta.value AS INTEGER)+?2 AS TEXT)",
+        params![key, delta],
+    )?;
+    Ok(())
 }
 
 impl SqliteStore {
@@ -98,9 +229,12 @@ impl SqliteStore {
         session_scope: bool,
         limit: Option<usize>,
     ) -> Result<RunReplayPage> {
+        if self.storage_format(session)? == super::content::FORMAT_VERSION {
+            return self.segmented_replay(session, run, since, session_scope, limit);
+        }
         let (session, run) = (session.to_owned(), run.to_owned());
         let decode_run = run.clone();
-        let (known,rows,snapshot)=self.db.call(move |db| {
+        let (known,rows,snapshot)=self.db.read(move |db| {
             let tx=db.transaction()?;
             let snapshot: Option<(i64,Option<String>)> = if run.is_empty() { None } else {
                 tx.query_row("SELECT cursor,CASE WHEN cursor>?3 THEN payload END FROM run_snapshots WHERE session_id=?1 AND run_id=?2 AND version=1",
@@ -138,7 +272,9 @@ impl SqliteStore {
     /// source under the write lock before atomically publishing + deleting.
     #[cfg(test)]
     pub(crate) fn compact_run(&self, session: &str, run: &str) -> Result<usize> {
-        self.compact_run_cancellable(session, run, &AtomicBool::new(false))
+        Ok(self
+            .compact_run_cancellable(session, run, &AtomicBool::new(false))?
+            .deleted)
     }
 
     pub(super) fn compact_run_cancellable(
@@ -146,15 +282,25 @@ impl SqliteStore {
         session: &str,
         run: &str,
         stop: &AtomicBool,
-    ) -> Result<usize> {
+    ) -> Result<CompactionOutcome> {
+        if self.storage_format(session)? == super::content::FORMAT_VERSION {
+            return Ok(CompactionOutcome {
+                skip: Some(SkipReason::CanonicalFormat),
+                ..Default::default()
+            });
+        }
         let (owned_session, owned_run) = (session.to_owned(), run.to_owned());
-        let original = self
+        let read = self
             .db
             .call(move |db| read_compaction_source(db, &owned_session, &owned_run))?;
-        let Some(original) =
-            original.filter(|s| s.count > 0 && s.count <= MAX_ATOMIC_RETIRE_EVENTS)
-        else {
-            return Ok(0);
+        let original = match read {
+            CompactionRead::Source(source) if source.count > 0 => source,
+            CompactionRead::Source(_) => return Ok(self.skipped(session, SkipReason::Empty)),
+            CompactionRead::AlreadyCompacted => {
+                return Ok(self.skipped(session, SkipReason::AlreadyCompacted))
+            }
+            CompactionRead::NotSettled => return Ok(self.skipped(session, SkipReason::NotSettled)),
+            CompactionRead::Missing => return Ok(self.skipped(session, SkipReason::MissingRun)),
         };
         let mut folder = DeltaFolder::bounded();
         let mut cursor = -1i64;
@@ -168,7 +314,7 @@ impl SqliteStore {
         let mut provider_plain = true;
         loop {
             if stop.load(Ordering::Acquire) {
-                return Ok(0);
+                return Ok(self.skipped(session, SkipReason::Cancelled));
             }
             let (page_session, page_run) = (session.to_owned(), run.to_owned());
             let after_epoch = epoch.unwrap_or(i64::MIN);
@@ -183,7 +329,9 @@ impl SqliteStore {
                 )
             })?
             else {
-                return Ok(0);
+                // A single stored event above the page budget: a bounded read
+                // cannot see it, so no byte-faithful snapshot can be built.
+                return Ok(self.skipped(session, SkipReason::OversizedEvent));
             };
             let events = rows
                 .into_iter()
@@ -213,10 +361,6 @@ impl SqliteStore {
                         let item = serde_json::json!({"sequence": sequence, "payload": payload});
                         pricing_bytes =
                             pricing_bytes.saturating_add(serde_json::to_vec(&item)?.len() + 1);
-                        ensure!(
-                            pricing_bytes <= SNAPSHOT_BYTE_BUDGET,
-                            "pricing snapshot too large; kept raw journal"
-                        );
                         pricing.push(item);
                     }
                     Ok(event)
@@ -254,10 +398,9 @@ impl SqliteStore {
                 }
                 cursor = event.idx;
                 last = Some(event.clone());
+                // A fold above the budget is published, not abandoned: the
+                // bytes saved are the whole point, and `oversize` records it.
                 folder.push(event);
-                if folder.estimated_bytes() > SNAPSHOT_BYTE_BUDGET {
-                    return Ok(0);
-                }
             }
         }
         ensure!(
@@ -268,13 +411,15 @@ impl SqliteStore {
         // when they are plain text and duplicate the authoritative text stream.
         if provider_seen && (!provider_plain || provider_text.finalize() != visible_text.finalize())
         {
-            return Ok(0);
+            return Ok(self.skipped(session, SkipReason::ProviderDelta));
         }
-        let Some(last) = last else { return Ok(0) };
+        let Some(last) = last else {
+            return Ok(self.skipped(session, SkipReason::Empty));
+        };
         // A persisted transcript terminal precedes the final event broadcast.
         // Never retire that journal while its producer may still append.
         if last.event_type != "agent_end" {
-            return Ok(0);
+            return Ok(self.skipped(session, SkipReason::NotTerminal));
         }
         let snapshot = RunJournalSnapshot {
             run_id: run.to_owned(),
@@ -285,18 +430,34 @@ impl SqliteStore {
         };
         snapshot.validate(run, cursor)?;
         let payload = serde_json::to_string(&snapshot)?;
-        if payload.len() > SNAPSHOT_BYTE_BUDGET {
-            return Ok(0);
-        }
         let pricing = serde_json::to_string(&pricing)?;
-        if pricing.len() > SNAPSHOT_BYTE_BUDGET {
-            return Ok(0);
+        let snapshot_bytes = payload.len();
+        let oversize =
+            snapshot_bytes > SNAPSHOT_BYTE_BUDGET || pricing.len() > SNAPSHOT_BYTE_BUDGET;
+        if oversize {
+            // Rare and worth a line: it means this run's *visible* content alone
+            // exceeds the target replay size, which no fold can fix.
+            tracing::info!(
+                %session,
+                %run,
+                snapshot_bytes,
+                budget = SNAPSHOT_BYTE_BUDGET,
+                "run journal published above the snapshot budget; the raw journal was larger still"
+            );
         }
         let (session, run) = (session.to_owned(), run.to_owned());
-        let deleted = self.db.call(move |db| {
+        // Publish and retire the first slice together. Every later slice is a
+        // bounded transaction; between them the raw rows are already unreachable
+        // (replay prefers the snapshot, and appends to a published run are
+        // refused), so an interruption there wastes space but cannot corrupt a
+        // replay. The reclaim sweep deletes those inert leftovers.
+        let (commit_session, commit_run) = (session.clone(), run.clone());
+        let expected = original.clone();
+        let first = self.db.call(move |db| {
             let deleted = super::database::try_maintenance_transaction(db, |tx| {
                 ensure!(
-                    read_compaction_source(tx, &session, &run)?.as_ref() == Some(&original),
+                    read_compaction_source(tx, &commit_session, &commit_run)?
+                        == CompactionRead::Source(expected),
                     "run changed before snapshot commit"
                 );
                 // Pricing was extracted off the DB worker; revalidation fences
@@ -312,20 +473,12 @@ impl SqliteStore {
                 tx.execute(
                     "INSERT INTO run_snapshots(session_id,run_id,version,cursor,payload,pricing_payloads)
                      VALUES (?1,?2,1,?3,?4,?5)",
-                    params![session, run, cursor, payload, pricing],
+                    params![commit_session, commit_run, cursor, payload, pricing],
                 )?;
                 #[cfg(test)]
                 crash_point("after_snapshot");
-                // A failed delete/commit rolls back publication and preserves
-                // every raw row. There is no later cleanup or automatic retry.
-                let deleted = tx.execute(
-                    "DELETE FROM run_events WHERE session_id=?1 AND run_id=?2",
-                    params![session, run],
-                )?;
-                ensure!(
-                    deleted == usize::try_from(original.count)?,
-                    "raw journal changed before deletion"
-                );
+                let deleted = delete_raw_rows(tx, &commit_session, &commit_run, RETIRE_CHUNK_ROWS)?;
+                record_reclamation(tx, deleted, true, oversize)?;
                 #[cfg(test)]
                 crash_point("after_delete");
                 Ok(deleted)
@@ -334,9 +487,101 @@ impl SqliteStore {
             crash_point("after_commit");
             Ok(deleted)
         })?;
+        let mut deleted = first;
+        while (deleted as i64) < original.count && !stop.load(Ordering::Acquire) {
+            let (chunk_session, chunk_run) = (session.clone(), run.clone());
+            let chunk = self.db.call(move |db| {
+                super::database::try_maintenance_transaction(db, |tx| {
+                    let deleted =
+                        delete_raw_rows(tx, &chunk_session, &chunk_run, RETIRE_CHUNK_ROWS)?;
+                    record_reclamation(tx, deleted, false, false)?;
+                    Ok(deleted)
+                })
+            });
+            let chunk = match chunk {
+                Ok(chunk) => chunk,
+                Err(error) => {
+                    // The snapshot is already published, so these rows are inert:
+                    // stopping here keeps a locked database from turning a
+                    // completed retirement into a failure. The sweep collects
+                    // the leftovers.
+                    tracing::debug!(%error, %session, %run, "raw journal slices remain; `future session journal --reclaim` collects them");
+                    break;
+                }
+            };
+            if chunk == 0 {
+                break;
+            }
+            deleted += chunk;
+        }
         self.db.request_space_reclamation();
-        Ok(deleted)
+        Ok(CompactionOutcome {
+            deleted,
+            snapshot_bytes,
+            oversize,
+            skip: None,
+        })
     }
+
+    /// Record a refusal, then hand back an outcome that publishes nothing.
+    fn skipped(&self, session: &str, reason: SkipReason) -> CompactionOutcome {
+        if reason.is_leftover() {
+            let key = reason.key();
+            if let Err(error) = self.db.call(move |db| bump_meta(db, &key, 1)) {
+                tracing::debug!(%error, reason = reason.as_str(), "could not record journal skip");
+            }
+            tracing::debug!(
+                session,
+                reason = reason.as_str(),
+                "settled journal kept; see `future session journal`"
+            );
+        }
+        CompactionOutcome {
+            skip: Some(reason),
+            ..CompactionOutcome::default()
+        }
+    }
+}
+
+/// Delete at most `limit` raw rows of one run, in sequence order. Shared with
+/// the sweep, which uses it to retire rows an interrupted retirement left behind.
+pub(super) fn delete_raw_rows(
+    tx: &rusqlite::Transaction<'_>,
+    session: &str,
+    run: &str,
+    limit: i64,
+) -> Result<usize> {
+    Ok(tx.execute(
+        "DELETE FROM run_events WHERE sequence IN (
+             SELECT sequence FROM run_events
+             WHERE session_id=?1 AND run_id=?2 ORDER BY sequence LIMIT ?3)",
+        params![session, run, limit],
+    )?)
+}
+
+/// Written inside the same transaction as the deletes, so the counters can
+/// never describe a retirement that rolled back.
+fn record_reclamation(
+    tx: &rusqlite::Transaction<'_>,
+    deleted: usize,
+    published: bool,
+    oversize: bool,
+) -> Result<()> {
+    if deleted > 0 {
+        bump_meta(tx, META_RECLAIMED_EVENTS, deleted as i64)?;
+    }
+    if published {
+        bump_meta(tx, META_RECLAIMED_RUNS, 1)?;
+        if oversize {
+            bump_meta(tx, META_OVERSIZE_PUBLISHES, 1)?;
+        }
+        tx.execute(
+            "INSERT INTO storage_meta(key,value) VALUES (?1,cast(?2 AS TEXT))
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![META_RECLAIMED_AT_MS, chrono::Utc::now().timestamp_millis()],
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

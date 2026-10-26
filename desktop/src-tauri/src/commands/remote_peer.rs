@@ -143,11 +143,28 @@ pub async fn remote_peer_workspaces(desktop_id: String) -> Result<Value, crate::
 /// otherwise). The Frontend does not build subjects — that stays here, where
 /// the host's routing contract lives.
 #[tauri::command]
-pub async fn remote_peer_request(
+pub async fn remote_peer_request<R: tauri::Runtime>(
+    window: tauri::WebviewWindow<R>,
     desktop_id: String,
     command: Value,
     lane: Option<String>,
 ) -> Result<Value, crate::AppError> {
+    if matches!(
+        command["type"].as_str(),
+        Some(
+            "get_session_entries"
+                | "get_event_content_range"
+                | "get_events_since"
+                | "get_messages"
+                | "get_tool_call_args"
+        )
+    ) {
+        let lease = super::history_transfer::admit().await?;
+        let value =
+            runtime::request(&desktop_id, command, lane.as_deref().unwrap_or("list")).await?;
+        return super::history_transfer::remote_reply(window.label().to_owned(), value, lease)
+            .await;
+    }
     runtime::request(&desktop_id, command, lane.as_deref().unwrap_or("list")).await
 }
 
@@ -227,6 +244,13 @@ pub async fn remote_peer_list_files(
 /// the name the host gave the file, which is what the UI reports: the host may
 /// rename a preview variant, and telling the user a name the file does not have
 /// would make the saved copy unfindable.
+///
+/// With no `variant` this is a desktop save-as, so it asks for the desktop's own
+/// tier rather than the phone's (`download_for_desktop`): the phone's 10 MiB
+/// ceiling and type list exist for a phone's reader and memory budget, and
+/// applying them here refused a 12.5 MB installer to a machine that had only
+/// asked to save it. A host built before that variant exists is asked again for
+/// `original`, which is exactly what this command used to send.
 #[tauri::command]
 pub async fn remote_peer_download_file(
     desktop_id: String,
@@ -236,14 +260,27 @@ pub async fn remote_peer_download_file(
     variant: Option<String>,
     destination: String,
 ) -> Result<String, crate::AppError> {
-    let fetched = crate::remote_peer::transfer::download(
-        &desktop_id,
-        &session_id,
-        &path,
-        name.as_deref(),
-        variant.as_deref().unwrap_or("original"),
-    )
-    .await?;
+    let fetched = match variant.as_deref() {
+        Some(variant) => {
+            crate::remote_peer::transfer::download(
+                &desktop_id,
+                &session_id,
+                &path,
+                name.as_deref(),
+                variant,
+            )
+            .await?
+        }
+        None => {
+            crate::remote_peer::transfer::download_for_desktop(
+                &desktop_id,
+                &session_id,
+                &path,
+                name.as_deref(),
+            )
+            .await?
+        }
+    };
     crate::remote_peer::transfer::write_to_path(&destination, &fetched.bytes)?;
     Ok(fetched.name)
 }
@@ -515,6 +552,10 @@ mod tests {
     #[tokio::test]
     async fn labels_and_catalogues_flow_through_the_commands() {
         let (_home, fx) = start("peer-cmd-catalog").await;
+        let app = mock_app();
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
         let desktop_id = fx.paired.creds.desktop_id.clone();
         crate::store::create_thread(crate::store::CreateThreadInput {
             mode: "chat".into(),
@@ -555,6 +596,7 @@ mod tests {
         // `remote_peer_request` is the general escape hatch; the lane defaults
         // to a catalogue read when the caller does not name one.
         let requested = remote_peer_request(
+            window.clone(),
             desktop_id.clone(),
             serde_json::json!({ "type": "list_workspaces" }),
             None,
@@ -564,6 +606,7 @@ mod tests {
         assert!(requested["workspaces"].is_array());
 
         let routed = remote_peer_request(
+            window,
             desktop_id,
             serde_json::json!({ "type": "list_sessions" }),
             Some("list".into()),
@@ -747,6 +790,54 @@ mod tests {
 
         // The name the host chose, which is what the UI reports as saved.
         assert_eq!(name, "report.txt");
+        assert_eq!(std::fs::read(&destination).expect("read back"), contents);
+
+        teardown(&fx.pair_id).await;
+    }
+
+    /// A desktop save-as reaches the desktop tier, not the phone's.
+    ///
+    /// This is the reported defect end to end at the command layer: a 12.5 MiB
+    /// installer, a type no phone reader opens. `variant: None` is what the panel
+    /// sends, and it used to mean `original` — the phone's mode — so the download
+    /// was refused for a limit that exists for a phone's memory budget. The bytes
+    /// are compared in full, because "it saved something" is not the assertion the
+    /// user cares about.
+    #[tokio::test]
+    async fn a_desktop_download_of_an_installer_is_not_held_to_the_phones_limits() {
+        let (_home, fx) = start("peer-cmd-desktop-tier").await;
+        let desktop_id = fx.paired.creds.desktop_id.clone();
+        let noop: runtime::Emitter = std::sync::Arc::new(|_| {});
+        runtime::connect_with_emitter(&desktop_id, Some(noop))
+            .await
+            .expect("connect");
+
+        let source_dir = std::env::temp_dir().join("futureos-peer-cmd-desktop-tier-src");
+        std::fs::create_dir_all(&source_dir).expect("create dir");
+        let source = source_dir.join("app-debug.apk");
+        let contents: Vec<u8> = (0..12 * 1024 * 1024 + 512 * 1024)
+            .map(|index| (index % 251) as u8)
+            .collect();
+        std::fs::write(&source, &contents).expect("write the source file");
+
+        let destination = std::env::temp_dir()
+            .join("futureos-peer-cmd-desktop-tier-dst")
+            .join("app-debug.apk");
+        std::fs::create_dir_all(destination.parent().expect("parent")).expect("create dir");
+        let _ = std::fs::remove_file(&destination);
+
+        let name = remote_peer_download_file(
+            desktop_id,
+            "sess_unused".into(),
+            source.to_string_lossy().into_owned(),
+            Some("app-debug.apk".into()),
+            None,
+            destination.to_string_lossy().into_owned(),
+        )
+        .await
+        .expect("a desktop save-as of the installer");
+
+        assert_eq!(name, "app-debug.apk");
         assert_eq!(std::fs::read(&destination).expect("read back"), contents);
 
         teardown(&fx.pair_id).await;

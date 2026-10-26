@@ -835,12 +835,11 @@ impl ShutdownSignals {
     }
 }
 
-fn install_channel_runtime() {
-    static INITIALIZED: std::sync::Once = std::sync::Once::new();
-    INITIALIZED.call_once(|| {
-        future_host::agent_client::configure_channel_runtime(agent_channel_runtime())
-            .expect("entry configures the Agent channel runtime once");
-    });
+fn install_channel_runtime() -> future_host::agent_client::RuntimeInstall {
+    future_host::agent_client::provide_channel_runtime(
+        "agent-channel-runtime",
+        agent_channel_driver,
+    )
 }
 
 fn stop(reason: &'static str) -> Result<(), AppError> {
@@ -869,28 +868,13 @@ fn stop(reason: &'static str) -> Result<(), AppError> {
     .map_err(Into::into)
 }
 
-fn agent_channel_runtime() -> tokio::runtime::Handle {
-    static RUNTIME: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
-    RUNTIME
-        .get_or_init(|| {
-            let runtime = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(1)
-                .enable_all()
-                .thread_name("agent-channel")
-                .build()
-                .expect("build agent channel runtime");
-            let handle = runtime.handle().clone();
-            std::thread::Builder::new()
-                .name("agent-channel-runtime".to_string())
-                .spawn(move || {
-                    // Park forever: dropping the runtime would kill the shared
-                    // connection's driver task.
-                    runtime.block_on(std::future::pending::<()>());
-                })
-                .expect("spawn agent channel runtime thread");
-            handle
-        })
-        .clone()
+fn agent_channel_driver() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .thread_name("agent-channel")
+        .build()
+        .expect("build agent channel runtime")
 }
 
 #[cfg(not(test))]

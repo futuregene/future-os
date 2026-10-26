@@ -4,6 +4,7 @@ import type {
   ThreadCleanupSummary,
 } from "./types";
 import { invokeCommand } from "../tauri/invoke";
+import { readHistoryTransfer } from "./historyTransfer";
 
 // ─── Workspaces ──────────────────────────────────────────────────────────
 
@@ -201,11 +202,12 @@ export async function getSessionEntriesPage(
   before: number | null = null,
   limit = 10,
   historySource?: string,
+  isCurrent?: () => boolean,
 ) {
-  return invokeCommand<SessionHistoryPage>("get_session_entries_page", {
+  return readHistoryTransfer<SessionHistoryPage>({
     threadId,
     before,
     limit,
     ...(historySource ? { historySource } : {}),
-  });
+  }, isCurrent);
 }

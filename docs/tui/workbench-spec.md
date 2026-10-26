@@ -22,9 +22,10 @@ implementation may extend it, but may not change its meaning.
    button), wheel (chat / sidebar), drag (the pane divider), hover highlight
    (optional, where the terminal supports it).
 3. Launchpad first screen: large logo, large input box, parameter row
-   (model / effort / mode / permission, clickable), shortcut entries, recent
+   (workspace / model / effort / approval, clickable), shortcut entries, recent
    sessions.
-4. Sidebar with 4 real panels: todos (goal), sessions, usage, skills.
+4. Sidebar with 2 real panels: recent conversations (name, workspace, age) and
+   the same conversations filed by workspace (pinned / workspaces / chats).
 5. Real metrics in the status bar: model · effort · cwd · git branch · context
    gauge · tokens · cost / cache.
 6. `/` command palette (with descriptions, Tab completion), `?` help overlay,
@@ -67,8 +68,8 @@ tui/src/workbench/layout.rs     // Rect, Panes, hit regions (HitMap)
 tui/src/workbench/mouse.rs      // SGR 1006 parsing, MouseEvent, wheel/drag state machine
 tui/src/workbench/launchpad.rs  // first screen
 tui/src/workbench/screen.rs     // full-screen composition: header/body/sidebar/input/status
-tui/src/workbench/panels.rs     // rendering of the 4 sidebar panels (pure functions over PanelData)
-tui/src/workbench/picker.rs     // the /model, /theme and /sessions list overlay
+tui/src/workbench/panels.rs     // rendering of the 2 sidebar panels (pure functions over a row model)
+tui/src/workbench/picker.rs     // the /model, /thinking, /mode, /workspace, /theme, /sessions and /lang list overlay
 tui/src/workbench/state.rs      // WorkbenchData / TodoItem / SessionRow / UsageData
 tui/src/workbench/demo.rs       // demo data (for screenshots/self-tests; does not connect to the agent)
 tui/examples/workbench_demo.rs  // prints one frame at any size + mouse self-test
@@ -96,16 +97,14 @@ Content — a conversation, a session title, a path — is never translated.
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ row 0..4   HEADER (5)                                                        │
-│   x0..9    pixel whale / pixel FUTURE icon (4 rows, 9 cells per row)         │
-│   x10..    FUTURE OS  (bold, accent)  ·  workbench                           │
+│   x0..     FUTURE OS  (bold, accent)  ·  workbench                           │
 │            session title (dim) · branch/workspace                            │
 │   right    ⌘ future-tui vX · backend status dot (●connected)                 │
 │ row 4      hairline separator (dim, ─)                                       │
 ├───────────────────────────────────────────────┬──────────────────────────────┤
 │ rows 6..h-8   BODY                            │ SIDEBAR_W = 36 (30..48)      │
-│   chat width = W - SIDEBAR_W - 1              │ row 6 tabs: 待办 任务 会话   │
-│   x = SIDEBAR_W+1 .. W-1                      │        用量 技能             │
-│   2 columns of padding on each side           │ divider x = SIDEBAR_W (│)    │
+│   chat width = W - SIDEBAR_W - 1              │ row 6 tabs: 最近 工作区      │
+│   x = SIDEBAR_W+1 .. W-1                      │ divider x = SIDEBAR_W (│)    │
 ├───────────────────────────────────────────────┴──────────────────────────────┤
 │ rows h-7..h-4  INPUT (4): top border / prompt line / bottom border           │
 │   ❯ <draft>                                   right ⛶                        │
@@ -146,10 +145,10 @@ workbench's own, because a full-screen canvas paints an explicit background
 step where the inline theme inherits the terminal's. Ids older workbench builds
 wrote (`future-dark`, `future-light`) still resolve, to `dark` and `light`.
 
-Logo: a 9x4 pixel whale (using the three block levels `█ ▀ ▄`), swishing its tail
-slightly at 8fps at runtime (the demo may keep it static). The wordmark
-`FUTURE OS` uses the 5-row block font and is shown only at width ≥ 96; otherwise
-single-line text.
+There is no logo or icon in the TUI. The chat header's wordmark `FUTURE OS`
+uses the 5-row block font and is shown only at width ≥ 96; otherwise it is
+single-line text. The launchpad instead centres a two-row, letterspaced name
+and tagline in the conversation column, keeping the input as the visual focus.
 
 ---
 
@@ -187,16 +186,16 @@ pins it.
 | Input box click | focus and put the cursor where clicked (byte offset from display width) |
 | `⛶` click | open the full-screen draft editor (may be a stub in P1) |
 | Tool-card title click | expand/collapse that card (reusing `ctrl+o`'s per-item toggle) |
-| Launchpad parameter click | open the matching picker (model/effort/preset/permission) |
+| Launchpad parameter click | open the matching picker (workspace / model / effort / approval) |
 | Launchpad shortcut click | run the matching `/command` |
 | Hover | highlight tabs/rows/buttons; tooltip after 600ms (when truncated at narrow widths) |
 
 Double-click = two clicks at the same point <400ms apart; triple click = row
 selection (P1).
 
-### Pickers (`/model`, `/theme`, `/sessions`)
+### Pickers (`/model`, `/thinking`, `/mode`, `/workspace`, `/theme`, `/sessions`, `/lang`)
 
-One overlay component (`picker.rs`) behind all three menus: a titled box with an
+One overlay component (`picker.rs`) behind all seven menus: a titled box with an
 incremental-search line (`❯`), group headings (the model list is grouped by
 provider, in the agent's order), a `✓` on the row already in force, and the
 key hints for that menu on its last row.
@@ -231,9 +230,21 @@ valid session_id` when nothing is attached, so the pair becomes `SetPending*`.
 The header and the launchpad's chips show the staged value, it is written to
 `settings.json` as `defaultModel`/`defaultThinkingLevel`, and the first message
 asks for the session with it; once that session exists the agent is the only
-source and the staging is cleared. The launchpad's model and effort chips follow
-the same rule; its mode and permission chips are agent-level settings that work
-without a session, so they still go over the wire.
+source and the staging is cleared. The launchpad's workspace, model, effort and
+approval chips follow the same rule: `set_cwd` and `set_sandbox_policy` need a
+session like the other two setters do, so a staged mode is applied right after
+the session exists.
+
+`/thinking`, `/mode` and `/workspace` are the three choosers a reader reaches
+without opening the palette: they answer to `ctrl+t`, `ctrl+s` and `ctrl+l` as
+well. `/thinking` lists the six levels, `/mode` the desktop composer's four
+approval tiers with their one-line explanations, and `/workspace` every
+directory this client has a conversation in plus a first row that creates one
+from the path typed into its search line (`enter` there is `set_cwd`, the same
+verb as choosing an existing one). The approval tiers are the desktop's own
+values — manual / sandboxed / automatic review / full access; there is no
+separate TUI "permission level" chip, because no other client offers that
+choice.
 
 Rows are painted and registered as hit regions from one list and one geometry
 (`screen::picker_box` over `box_geometry`), which is what makes a click land on
@@ -242,9 +253,13 @@ the row under the pointer rather than one beside it.
 ### Keyboard
 
 Keep the existing global bindings; add/override:
-`ctrl+b` sidebar open/focus/close; `tab` focus within a panel; `shift+tab`
+`ctrl+b` sidebar open/focus/close (the rail's own `›` edge button does the same
+with one click, and leaves a `‹` in the same column when the rail is closed);
+`ctrl+t` thinking-effort chooser; `ctrl+s` approval-mode chooser; `ctrl+l`
+workspace chooser; `tab` focus within a panel; `shift+tab`
 reverse; `ctrl+q` collapse todos; `alt+z` enlarge the sidebar; `/` command
-palette; `?` help; `esc` close one layer at a time.
+palette; `?` help; `esc` close one layer at a time. A focused rail spends its
+last row on the keys it answers (`↑↓ 选择 · ⏎ 打开 · ←→ 页签`).
 
 ---
 
@@ -256,7 +271,7 @@ pub struct WorkbenchData {
     pub connected: bool,
     pub session: SessionMeta,          // id/title/cwd/branch
     pub model: String, pub effort: String,
-    pub mode: String, pub permission: String,
+    pub mode: String,                  // manual|sandbox|auto|off (the desktop's four tiers)
     pub usage: UsageData,              // ctx_used/ctx_total/cost/cache/tps
     pub todos: Vec<TodoItem>,          // goal todos
     pub sessions: Vec<SessionRow>,
@@ -277,6 +292,7 @@ pub enum WbEvent { Key(KeyEvent), Mouse(MouseEvent), Resize(u16,u16), Tick }
 pub enum WbAction {
     Submit(String), Command(String), Scroll(i32), LoadOlder,
     SwitchSession(String), SetModel(String), SetThinking(String),
+    SetApproval(String), SelectWorkspace(String),
     SetTheme(String), NewSession,
     SetPanel(PanelId), ResizeSidebar(u16), FocusPane(PaneId),
     ToggleToolCall(usize), PersistSettings(SettingsPatch), Quit, Redraw,
@@ -297,7 +313,7 @@ returns **exactly h rows, each exactly w display columns wide**, as ANSI strings
 ```
 cargo run -p future-tui --example workbench_demo -- \
     --scenario launchpad|chat|todo|help --width 120 --height 38 [--ansi|--plain] \
-    [--picker model|theme|sessions]
+    [--picker /model|/thinking|/mode|/workspace|/theme|/sessions|/lang]
 cargo run -p future-tui --example workbench_demo -- --self-test
 ```
 
@@ -365,7 +381,7 @@ nothing here is ever clipped mid-value.
 
 | File | Size | What it proves |
 |---|---|---|
-| `workbench-chat.png` | 120×38 | the full frame: header (wordmark, plus `cwd · ⎇ branch` on line 2), sidebar with tabs, divider, framed input box, activity, status, hint |
+| `workbench-chat.png` | 120×38 | the full frame: header (wordmark, plus `cwd · @branch` on line 2), sidebar with tabs, divider, framed input box, activity, status, hint |
 | `workbench-90x24.png` | 90×24 | still two columns; the header falls back to its text brand; the hairline spans the whole width |
 | `workbench-60x20.png` | 60×20 | `< 88`: no sidebar and no dead rail; `< 24`: one-row header, the input box keeps a frame (top edge + sides), the hint row drops whole entries |
 | `workbench-panel-todo.png` | 120×38 | 待办 lists the repo's real goal todos (`✔/◉/○/✖`, priority, text) |

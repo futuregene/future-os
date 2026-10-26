@@ -39,7 +39,7 @@
 | [长程证据账本](architecture/long-run-evidence-ledger.zh-CN.md)（[en](architecture/long-run-evidence-ledger.md)） | 长程 goal 目标问责记录 — 墙钟、花费、验证结果、每个已关闭目标的显式边界 |
 | [定时任务](architecture/tasks.zh-CN.md)（[en](architecture/tasks.md)） | `future-tasks` — 可复用提示词 + 触发器（按计划或随时手动）、全权限运行、确定性 `next_due` 内核、运行台账与提示词版本历史 |
 | [SQLite 迁移](architecture/sqlite-migration.zh-CN.md)（[en](architecture/sqlite-migration.md)） | Agent/Desktop SQLite 存储布局与迁移策略 |
-| [精简会话存储开发计划](architecture/stream-storage-development.zh-CN.md)（[en](architecture/stream-storage-development.md)） | 待 review：规范分段正文、实时与持久化解耦、崩溃一致性、历史兼容与分阶段验收 |
+| [精简会话存储开发计划](architecture/stream-storage-development.zh-CN.md)（[en](architecture/stream-storage-development.md)） | 分段存储重构：实现与本地验证完成，进入人工验收；保留历史格式 |
 | [Desktop 内置 Agent 开发计划](architecture/embedded-agent-development.zh-CN.md)（[en](architecture/embedded-agent-development.md)） | 进程内完整 Agent、服务与宿主生命周期、实例锁、退出清理、升级安装、开发工具及分阶段验收 |
 | [Agent 启动仲裁与自愈](architecture/agent-supervision.zh-CN.md)（[en](architecture/agent-supervision.md)） | 同一数据根下 `future agent` 与 `future host` 谁启动 Agent：实例锁仲裁、让位而非失败、有界等待、崩溃熔断，以及 TUI 为何只连接（D11） |
 | [回复结果语义](architecture/response-outcomes.zh-CN.md)（[en](architecture/response-outcomes.md)） | 回复结束的结果语义（停止 / 拒答 / 过滤 / 暂停） |
@@ -47,6 +47,7 @@
 | [共享包](architecture/packages.zh-CN.md)（[en](architecture/packages.md)） | `packages/` 约定：npm/workspace 包与 crate 边界 |
 | [通道测试覆盖率](architecture/channels-test-coverage.zh-CN.md)（[en](architecture/channels-test-coverage.md)） | 通道框架的测试承诺什么，以及有意不覆盖的那几行代码及每行的原因 |
 | [RPC crate](architecture/rpc.zh-CN.md)（[en](architecture/rpc.md)） | `packages/rpc` — protobuf 线上契约（唯一事实来源） |
+| [远程下载分档](architecture/remote-download-tiers.zh-CN.md)（[en](architecture/remote-download-tiers.md)） | 桌面保存副本不是手机下载：按客户端分档（手机 10 MiB、桌面 512 MiB）、桌面档去掉了什么、旧 host 的受匹配拒绝文案及其验收证据 |
 
 ## 内部文档（`internals/`）
 

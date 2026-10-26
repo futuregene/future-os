@@ -101,7 +101,7 @@ fn opening_old_database_preserves_layout_and_free_pages() {
 fn deleting_a_session_returns_its_pages_to_the_filesystem() {
     let directory = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(&directory.path().join("agent.db")).unwrap();
-    store.bind_events("doomed").unwrap();
+    store.bind_legacy_events("doomed").unwrap();
     // Past the 4 MiB reclaiming threshold, in one transaction.
     store
         .append_events("doomed", (0..24_000).map(event).collect())
@@ -127,7 +127,7 @@ fn deleting_a_session_returns_its_pages_to_the_filesystem() {
 fn pruning_run_events_reclaims_their_pages() {
     let directory = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(&directory.path().join("agent.db")).unwrap();
-    store.bind_events("keeps").unwrap();
+    store.bind_legacy_events("keeps").unwrap();
     store
         .append_events("keeps", (0..24_000).map(event).collect())
         .unwrap();

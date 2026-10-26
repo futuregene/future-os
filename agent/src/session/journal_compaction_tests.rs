@@ -68,7 +68,7 @@ fn obsolete_snapshot_cleanup_state_is_removed_without_rewriting_existing_payload
 
 fn fixture(path: &std::path::Path, status: &str, chunks: usize) -> SqliteStore {
     let store = SqliteStore::open(path).unwrap();
-    store.bind_events("s").unwrap();
+    store.bind_legacy_events("s").unwrap();
     let status = status.to_owned();
     store.db.call(move |db| {
         db.execute("INSERT INTO runs(session_id,run_id,status,completed_at_ms) VALUES ('s','run',?1,1)",[status])?;
@@ -123,7 +123,7 @@ fn text(snapshot: &RunJournalSnapshot) -> String {
 /// count it read).
 fn run_with_bodies(path: &std::path::Path, bodies: Vec<(&str, String)>) -> SqliteStore {
     let store = SqliteStore::open(path).unwrap();
-    store.bind_events("s").unwrap();
+    store.bind_legacy_events("s").unwrap();
     store
         .db
         .call(|db| {
@@ -177,17 +177,19 @@ fn escape_heavy_data(control_chars: usize) -> String {
     json!({ "k": "\u{1}".repeat(control_chars) }).to_string()
 }
 
-/// The folded projection's own size check: a run whose events add up to more
-/// than `SNAPSHOT_BYTE_BUDGET` is left as a raw journal. The check runs per push,
-/// so the arm fires on the event that crosses the budget.
+/// The budget is a target, not a veto: a run whose fold is over it used to be
+/// skipped forever (`Ok(0)`), which is exactly how `run_events` grew to 1.4M
+/// rows on a real database. It is now published anyway, and the publish is
+/// counted so the operator can see that this run's visible content alone is
+/// large.
 #[test]
-fn a_run_larger_than_the_snapshot_budget_keeps_its_raw_journal() {
+fn a_run_larger_than_the_snapshot_budget_is_reclaimed_anyway() {
     // `DeltaFolder` counts a non-coalescable event as `data.len() + 512`, so the
     // fixture needs `n * (data.len() + 512) > SNAPSHOT_BYTE_BUDGET`. **A single
     // larger event does not work**: the reader caps each *stored* payload at its
-    // 4 MiB page budget and returns NULL (an earlier `Ok(0)`) above that, and the
+    // 4 MiB page budget and returns NULL above that (`oversized_event`), and the
     // stored form is the event re-serialized, so it is bigger than `data`. Many
-    // events of ~2 MiB keep every payload readable and still cross the estimate.
+    // events of ~2 MiB keep every payload readable and still cross the budget.
     let data = escape_heavy_data(333_332);
     let per_event = data.len() + 512;
     let events = SNAPSHOT_BYTE_BUDGET / per_event + 1;
@@ -210,28 +212,28 @@ fn a_run_larger_than_the_snapshot_budget_keeps_its_raw_journal() {
 
     assert_eq!(
         store.compact_run("s", "run").unwrap(),
-        0,
-        "an over-budget run must be left uncompacted"
+        raw as usize,
+        "an over-budget run must still be reclaimed"
     );
-    assert_eq!(snapshot_rows(&store), 0, "nothing may be published");
+    assert_eq!(snapshot_rows(&store), 1, "the snapshot must be published");
     let kept: i64 = store
         .db
         .call(|db| Ok(db.query_row("SELECT count(*) FROM run_events", [], |r| r.get(0))?))
         .unwrap();
-    assert_eq!(kept, raw, "the raw journal must be untouched");
+    assert_eq!(kept, 0, "the raw journal must be retired");
+    // The publish is visible as a counter, not just as a log line.
+    let stats = store.journal_stats().unwrap();
+    assert_eq!(stats["oversizePublishes"], 1);
+    assert_eq!(stats["runEvents"]["rows"], 0);
 }
 
-/// The **serialized** snapshot's size check, a different quantity from the
-/// estimate above: `DeltaFolder::estimated_bytes` counts an event's `data` string
-/// once, while serializing the snapshot embeds that string *as a JSON string*, so
-/// every escape in it is re-expanded. Two escape-heavy events sit comfortably
-/// inside the estimate's budget and blow past the serializer's.
+/// The same budget applies to the **serialized** payload, a different quantity
+/// from the fold estimate: serializing the snapshot embeds each event's `data`
+/// string *as a JSON string*, so every escape in it is re-expanded (7/6 growth
+/// for escape-heavy text). Two events sit inside the estimate and cross it after
+/// serialization — and the run is still reclaimed.
 #[test]
-fn an_escape_heavy_payload_can_exceed_the_budget_after_serialization() {
-    // Each control character is already six bytes in `data`, and embedding that
-    // string in the snapshot escapes its backslashes again (7/6 growth) — enough
-    // to cross the budget while the estimate, which counts `data` once, stays
-    // inside it. The window is roughly 1.8-2.09 MiB per event.
+fn an_escape_heavy_payload_is_published_even_when_serialization_crosses_the_budget() {
     let data = escape_heavy_data(333_332);
     let per_event = data.len() + 512;
     assert!(
@@ -254,17 +256,223 @@ fn an_escape_heavy_payload_can_exceed_the_budget_after_serialization() {
             ("provider_payload", data),
         ],
     );
+    assert_eq!(store.compact_run("s", "run").unwrap(), 4);
+    assert_eq!(snapshot_rows(&store), 1);
+    let page = store.replay_page("s", "run", -1, false, None).unwrap();
+    let snapshot = page.snapshot.expect("published snapshot");
+    assert_eq!(snapshot.cursor, 3);
     assert_eq!(
-        store.compact_run("s", "run").unwrap(),
-        0,
-        "an over-budget serialized snapshot must not be published"
+        serde_json::from_str::<serde_json::Value>(&snapshot.events[1].data).unwrap()["k"]
+            .as_str()
+            .map(str::len),
+        Some(333_332),
+        "no content may be dropped to fit the budget"
     );
-    assert_eq!(snapshot_rows(&store), 0);
-    let kept: i64 = store
+}
+
+/// Everything a client can see, reduced without the production fold: the text
+/// stream in order, and each tool call with its announced arguments and result.
+fn visible(events: &[SseEvent]) -> (String, Vec<(String, String, String)>) {
+    let mut text = String::new();
+    let mut tools: Vec<(String, String, String)> = Vec::new();
+    for event in events {
+        let Ok(data) = serde_json::from_str::<serde_json::Value>(&event.data) else {
+            continue;
+        };
+        match event.event_type.as_str() {
+            "text_chunk" | "thinking_delta" => {
+                if let Some(chunk) = data["text"].as_str() {
+                    text.push_str(chunk);
+                }
+            }
+            "tool_start" => {
+                let id = data["tool_id"].as_str().unwrap_or_default().to_owned();
+                if !tools.iter().any(|(known, _, _)| *known == id) {
+                    tools.push((id.clone(), String::new(), String::new()));
+                }
+                if data["phase"] == "execution" {
+                    if let Some(entry) = tools.iter_mut().find(|(known, _, _)| *known == id) {
+                        entry.1 = data["tool_args"].to_string();
+                    }
+                }
+            }
+            "tool_end" => {
+                let id = data["tool_id"].as_str().unwrap_or_default();
+                if let Some(entry) = tools.iter_mut().find(|(known, _, _)| known == id) {
+                    entry.2 = data["text"].as_str().unwrap_or_default().to_owned();
+                }
+            }
+            _ => {}
+        }
+    }
+    (text, tools)
+}
+
+fn replay_all(store: &SqliteStore) -> Vec<SseEvent> {
+    let page = store.replay_page("s", "run", -1, false, None).unwrap();
+    page.snapshot
+        .map(|snapshot| snapshot.events)
+        .unwrap_or(page.events)
+}
+
+/// The reason reclamation is allowed to exist: it must not change a single
+/// message. Everything a client renders — text in order, tool arguments, tool
+/// results — is compared across the retirement, through the real replay entry
+/// point rather than the fold the compactor happens to use.
+#[test]
+fn reclamation_replays_exactly_what_the_raw_journal_did() {
+    let dir = tempfile::tempdir().unwrap();
+    // A tool call written the way the agent emits it: `input` start, streamed
+    // fragments, an `execution` start carrying the same parsed arguments, then
+    // the result. Plus thinking and a usage event, so every projection kind the
+    // snapshot has to keep is present.
+    let mut bodies: Vec<(&str, String)> = Vec::new();
+    for index in 0..40 {
+        bodies.push((
+            "text_chunk",
+            json!({"text": format!("chunk {index} ")}).to_string(),
+        ));
+    }
+    bodies.push((
+        "tool_start",
+        json!({"tool_id":"t1","tool_name":"shell","phase":"input","tool_args":""}).to_string(),
+    ));
+    for fragment in ["{\"path\":", "\"/tmp/x\"", "}"] {
+        bodies.push((
+            "tool_delta",
+            json!({"tool_id":"t1","text":fragment}).to_string(),
+        ));
+    }
+    bodies.push(("thinking_delta", json!({"text":"considering"}).to_string()));
+    bodies.push((
+        "tool_start",
+        json!({"tool_id":"t1","phase":"execution",
+               "tool_args": {"path":"/tmp/x"}})
+        .to_string(),
+    ));
+    bodies.push((
+        "tool_end",
+        json!({"tool_id":"t1","text":"42 lines"}).to_string(),
+    ));
+    bodies.push(("usage", json!({"output_tokens": 7}).to_string()));
+
+    let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+    store.bind_legacy_events("s").unwrap();
+    store
         .db
-        .call(|db| Ok(db.query_row("SELECT count(*) FROM run_events", [], |r| r.get(0))?))
+        .call(|db| {
+            db.execute(
+                "INSERT INTO runs(session_id,run_id,status,completed_at_ms) VALUES ('s','run','completed',1)",
+                [],
+            )?;
+            Ok(())
+        })
         .unwrap();
-    assert!(kept > 0, "the raw journal is preserved");
+    let mut events = vec![SseEvent {
+        run_id: "run".into(),
+        idx: 0,
+        ..SseEvent::new("agent_start", json!({}))
+    }];
+    for (index, (kind, data)) in bodies.into_iter().enumerate() {
+        let mut event = SseEvent::new(kind, json!({}));
+        event.data = data;
+        event.run_id = "run".into();
+        event.idx = index as i64 + 1;
+        events.push(event);
+    }
+    let mut terminal = SseEvent::new("agent_end", json!({"state": "completed"}));
+    terminal.run_id = "run".into();
+    terminal.idx = events.len() as i64;
+    events.push(terminal);
+    store
+        .append_events(
+            "s",
+            events
+                .into_iter()
+                .map(|event| serde_json::to_value(event).unwrap())
+                .collect(),
+        )
+        .unwrap();
+
+    let before = visible(&replay_all(&store));
+    assert!(
+        before.0.contains("chunk 39"),
+        "fixture text: {}",
+        before.0.len()
+    );
+    assert_eq!(before.1.len(), 1, "one tool call");
+    let retired = store.compact_run("s", "run").unwrap();
+    assert!(retired > 0, "the journal must have been reclaimed");
+    let after = visible(&replay_all(&store));
+    assert_eq!(before.0, after.0, "the text stream changed");
+    assert_eq!(before.1, after.1, "a tool call changed");
+    // The duplicate argument fragments are what the snapshot is allowed to drop;
+    // the parsed arguments they spell out still reach the client from the start.
+    let replayed = replay_all(&store);
+    assert!(replayed
+        .iter()
+        .all(|event| event.event_type != "tool_delta"));
+    assert!(replayed.iter().any(|event| event.event_type == "tool_end"));
+}
+
+/// A late append must never produce a snapshot that disagrees with the journal
+/// it replaced. The writer either lands before the commit — and then the build is
+/// refused because the source changed — or it is refused because the run is now
+/// published. Either way a replay is gap-free and carries every accepted event.
+#[test]
+fn a_concurrent_append_never_produces_an_inconsistent_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("agent.db");
+    let store = fixture(&path, "completed", 20_000);
+    let last = 20_001i64;
+    let writer = SqliteStore::open(&path).unwrap();
+    let compacting = store.clone();
+    let handle = std::thread::spawn(move || compacting.compact_run("s", "run"));
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let appended = writer.append_event(
+        "s",
+        json!({"run_id":"run","epoch":0,"idx":last + 1,"event_type":"text_chunk",
+               "data": json!({"text":"late"}).to_string()}),
+    );
+    let compacted = handle.join().unwrap();
+    assert!(
+        compacted.is_ok() || compacted.is_err(),
+        "either outcome is legitimate; the replay is what must stay consistent"
+    );
+
+    let page = store.replay_page("s", "run", -1, false, None).unwrap();
+    let published = page.snapshot.is_some();
+    let events = page
+        .snapshot
+        .map(|snapshot| snapshot.events)
+        .unwrap_or(page.events);
+    assert_eq!(events.first().map(|event| event.idx), Some(0));
+    assert!(
+        events.windows(2).all(|pair| pair[1].idx == pair[0].idx + 1),
+        "a replayed journal must not have a gap or a duplicate"
+    );
+    match (published, appended.is_ok()) {
+        (true, false) => assert_eq!(
+            events.last().map(|event| event.idx),
+            Some(last),
+            "the published snapshot must cover exactly the journal it replaced"
+        ),
+        (false, true) => assert_eq!(
+            events.last().map(|event| event.idx),
+            Some(last + 1),
+            "a retained raw journal must still carry the accepted append"
+        ),
+        (true, true) => assert_eq!(
+            events.last().map(|event| event.idx),
+            Some(last + 1),
+            "a snapshot published after the append must include it"
+        ),
+        (false, false) => assert_eq!(
+            events.last().map(|event| event.idx),
+            Some(last),
+            "a refused append leaves the raw journal as it was"
+        ),
+    }
 }
 
 /// A raw provider delta that is **not** the plain `{text, type}` shape an old

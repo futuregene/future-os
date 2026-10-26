@@ -4,10 +4,15 @@ use journal_writer::{AppendFailure, EventBatchWriter, EventJournalHealth};
 #[cfg(test)]
 use journal_writer::{EventWriteCommand, EVENT_BATCH_WINDOW};
 use tokio::sync::broadcast;
+mod admission;
+mod content_sequence;
 mod journal;
+mod journal_control;
+mod journal_metrics;
 mod journal_writer;
 mod projection;
 mod replay;
+#[cfg(test)]
 pub(in crate::rpc) use projection::apply_to_projection;
 use projection::is_buffered_delta;
 
@@ -33,10 +38,30 @@ struct RunState {
     epoch: i64,
     idx: i64,
     run_sequence: i64,
-    events: Vec<SseEvent>,
-    projection_events: Vec<SseEvent>,
+    events: std::collections::VecDeque<SseEvent>,
+    event_bytes: usize,
+    projection_events: projection::Projection,
     projection_complete: bool,
     compacted: bool,
+}
+
+impl RunState {
+    fn record_event(&mut self, event: &SseEvent, segmented: bool) {
+        if segmented {
+            self.projection_events.limit(8 * 1024 * 1024);
+        }
+        self.projection_events.push(event);
+        self.event_bytes = self.event_bytes.saturating_add(event.data.len() + 512);
+        self.events.push_back(event.clone());
+        while self.events.len() > MAX_RUN_EVENTS
+            || (segmented && self.event_bytes > 4 * 1024 * 1024)
+        {
+            let Some(old) = self.events.pop_front() else {
+                break;
+            };
+            self.event_bytes = self.event_bytes.saturating_sub(old.data.len() + 512);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -46,6 +71,12 @@ struct EventJournalState {
     store: Option<crate::session::sqlite_store::SqliteStore>,
     writer: Option<EventBatchWriter>,
     closed: bool,
+    segmented: bool,
+    storage_identity: Option<future_rpc::content_range::StorageIdentity>,
+    /// Volatile cursors at the mode boundary. Rebinding is safe only before
+    /// a memory-only event has been admitted or a run has started.
+    memory_boundary: Option<(i64, i64)>,
+    content_sequence: content_sequence::ContentSequence,
     #[cfg(test)]
     fail_at: Option<JournalFailPoint>,
     /// A drain failure injected where the guard that decides whether to ask for
@@ -73,6 +104,17 @@ pub struct RunAttachment {
     pub events: Vec<SseEvent>,
     pub truncated: bool,
     pub projection: Option<RunProjectionSnapshot>,
+    pub(crate) backfill: Option<RunBackfill>,
+}
+
+/// Captured under the same lock as receiver registration. The transport walks
+/// this finite prefix in bounded pages before polling the registered receiver.
+#[derive(Clone)]
+pub(crate) struct RunBackfill {
+    pub run_id: String,
+    pub epoch: i64,
+    pub after_idx: i64,
+    pub until_idx: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -116,8 +158,9 @@ impl SseBroadcaster {
                 epoch: 0,
                 idx: 0,
                 run_sequence: -1,
-                events: Vec::new(),
-                projection_events: Vec::new(),
+                events: std::collections::VecDeque::new(),
+                event_bytes: 0,
+                projection_events: projection::Projection::default(),
                 projection_complete: true,
                 compacted: false,
             })),
@@ -168,8 +211,54 @@ impl SseBroadcaster {
     /// broadcast — all under one lock so stream order matches idx order (no
     /// reordering race).
     pub fn broadcast(&self, event: SseEvent) {
+        self.broadcast_with_ack(event, true);
+    }
+
+    /// The model producer must never wait synchronously for the writer. Its
+    /// semantic boundaries explicitly await `flush_journal_async` instead.
+    pub(crate) fn broadcast_deferred(&self, event: SseEvent) {
+        self.broadcast_with_ack(event, false);
+    }
+
+    fn broadcast_with_ack(&self, event: SseEvent, wait: bool) {
+        if self.uses_segmented_storage()
+            && is_buffered_delta(&event.event_type)
+            && event.data.len() > crate::session::content::transport::LIVE_TEXT_BYTES
+        {
+            if let Ok(mut data) = serde_json::from_str::<serde_json::Value>(&event.data) {
+                if let Some(text) = data["text"]
+                    .as_str()
+                    .filter(|text| text.len() > crate::session::content::transport::LIVE_TEXT_BYTES)
+                    .map(str::to_owned)
+                {
+                    let mut header = event;
+                    header.data.clear();
+                    let mut offset = 0;
+                    while offset < text.len() {
+                        let end = text.floor_char_boundary(
+                            (offset + crate::session::content::transport::LIVE_TEXT_BYTES)
+                                .min(text.len()),
+                        );
+                        data["text"] = serde_json::json!(&text[offset..end]);
+                        // A replacement snapshot replaces only once; subsequent
+                        // pieces extend that same new content generation.
+                        if offset > 0 && data["snapshot"] == true {
+                            data["snapshot"] = serde_json::json!(false);
+                        }
+                        let mut piece = header.clone();
+                        piece.data = data.to_string();
+                        self.broadcast_stamped(piece, false, wait);
+                        if self.persistence_error().is_some() {
+                            break;
+                        }
+                        offset = end;
+                    }
+                    return;
+                }
+            }
+        }
         let session_scoped = is_session_scoped_event(&event.event_type);
-        self.broadcast_stamped(event, session_scoped);
+        self.broadcast_stamped(event, session_scoped, wait);
     }
 
     /// Broadcast a signal about the **session** rather than about a run.
@@ -185,10 +274,43 @@ impl SseBroadcaster {
     /// already replay for the events that have no run (`model_changed`,
     /// `cwd_changed`, …).
     pub fn broadcast_session(&self, event: SseEvent) {
-        self.broadcast_stamped(event, true);
+        self.broadcast_stamped(event, true, true);
     }
 
-    fn broadcast_stamped(&self, mut event: SseEvent, session_scoped: bool) {
+    fn broadcast_stamped(&self, mut event: SseEvent, session_scoped: bool, wait: bool) {
+        // Parse/preview large tool facts before acquiring the stamping lock.
+        // The writer receives the parsed immutable data, so this critical
+        // section never serializes or clones a multi-megabyte body.
+        let segmented = self.uses_segmented_storage();
+        let bytes = event.data.len().saturating_add(2048);
+        let mut source = if segmented {
+            match serde_json::from_str::<serde_json::Value>(&event.data) {
+                Ok(data) => Some(data),
+                Err(error) => {
+                    self.journal_health
+                        .fail(format!("invalid event data: {error}"));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let mut wire = source.as_ref().map(|data| {
+            crate::session::content::transport::prepare_wire_data(data, &event.event_type)
+        });
+        let initial_tool_bytes = source
+            .as_ref()
+            .filter(|_| event.event_type == "tool_start")
+            .map(|data| {
+                data["tool_args"]
+                    .as_str()
+                    .map(str::len)
+                    .unwrap_or_else(|| data["tool_args"].to_string().len())
+            })
+            .unwrap_or(0);
+        if segmented {
+            event.data.clear();
+        }
         let mut run = self.run.lock();
         let mut journal = self.journal.lock();
         if journal.closed {
@@ -201,7 +323,6 @@ impl SseBroadcaster {
             event.idx = -1;
             event.session_idx = journal.session_idx;
             event.run_sequence = -1;
-            journal.session_idx += 1;
         } else {
             event.run_id = run.run_id.clone();
             event.epoch = run.epoch;
@@ -218,45 +339,83 @@ impl SseBroadcaster {
                 event.session_id, event.run_id, event.epoch, event.idx
             )
         };
-        if let Err(failure) = Self::append_journal(&mut journal, &event) {
-            match failure {
-                // The journal refuses this event for good, so retrying could
-                // never store it — and reporting it as a session-wide journal
-                // failure is what turned one misplaced event into a session no
-                // prompt could be sent to. Name it, drop it, and keep the rest
-                // of the session writable.
-                AppendFailure::Rejected(reason) => {
-                    tracing::warn!(
-                        session = %event.session_id,
-                        run_id = %event.run_id,
-                        epoch = event.epoch,
-                        idx = event.idx,
-                        event_id = %event.event_id,
-                        event_type = %event.event_type,
-                        %reason,
-                        "dropping an event this journal refuses; the session's journal stays live"
-                    );
-                    return;
-                }
-                // A storage problem: fail closed and keep the journal blocked
-                // until it is recovered, as before.
-                AppendFailure::Unavailable(message) => {
-                    let message = format!("event journal append failed: {message}");
-                    self.journal_health.fail(message.clone());
-                    tracing::error!(run_id = %event.run_id, idx = event.idx, "{message}");
-                    return;
-                }
+        let mut content_sequence = journal.content_sequence.clone();
+        if journal.segmented && !session_scoped {
+            if let Err(error) = content_sequence.stamp(
+                &event,
+                source.as_mut().expect("canonical data prepared"),
+                initial_tool_bytes,
+            ) {
+                self.journal_health
+                    .fail(format!("content sequencing failed: {error:#}"));
+                return;
             }
         }
+        if let Some(wire) = wire.as_mut() {
+            let identity = journal
+                .storage_identity
+                .as_ref()
+                .expect("configured canonical identity");
+            crate::session::content::transport::stamp_wire_data(
+                wire,
+                source.as_ref().expect("prepared source"),
+                identity,
+                if session_scoped { -1 } else { event.epoch },
+                if session_scoped {
+                    event.session_idx
+                } else {
+                    event.idx
+                },
+            );
+            event.data = wire.to_string();
+            if event.data.len() > crate::session::content::transport::INLINE_EVENT_BYTES {
+                self.journal_health
+                    .fail("event metadata exceeds the bounded live frame budget".into());
+                return;
+            }
+        }
+        let receipt = match Self::append_journal(&mut journal, &event, source, bytes) {
+            Ok(receipt) => receipt,
+            Err(failure) => {
+                match failure {
+                    // The journal refuses this event for good, so retrying could
+                    // never store it — and reporting it as a session-wide journal
+                    // failure is what turned one misplaced event into a session no
+                    // prompt could be sent to. Name it, drop it, and keep the rest
+                    // of the session writable.
+                    AppendFailure::Rejected(reason) => {
+                        tracing::warn!(
+                            session = %event.session_id,
+                            run_id = %event.run_id,
+                            epoch = event.epoch,
+                            idx = event.idx,
+                            event_id = %event.event_id,
+                            event_type = %event.event_type,
+                            %reason,
+                            "dropping an event this journal refuses; the session's journal stays live"
+                        );
+                        return;
+                    }
+                    // A storage problem: fail closed and keep the journal blocked
+                    // until it is recovered, as before.
+                    AppendFailure::Unavailable(message) => {
+                        let message = format!("event journal append failed: {message}");
+                        self.journal_health.fail(message.clone());
+                        tracing::error!(run_id = %event.run_id, idx = event.idx, "{message}");
+                        return;
+                    }
+                }
+            }
+        };
+        if session_scoped {
+            journal.session_idx += 1;
+        }
+        journal.content_sequence = content_sequence;
+        let bounded = journal.segmented || journal.memory_boundary.is_some();
         drop(journal);
         if !session_scoped {
             run.idx += 1;
-            apply_to_projection(&mut run.projection_events, &event);
-            run.events.push(event.clone());
-            if run.events.len() > MAX_RUN_EVENTS {
-                let overflow = run.events.len() - MAX_RUN_EVENTS;
-                run.events.drain(0..overflow);
-            }
+            run.record_event(&event, bounded);
         }
         // tokio broadcast semantics: send() only fails when there are NO
         // active receivers — normal for ephemeral sessions before a client
@@ -265,6 +424,21 @@ impl SseBroadcaster {
         // receivers observe RecvError::Lagged, then resync via
         // `events_since` (which reports the gap via min_idx).
         let _ = self.tx.send(event);
+        // Publication remains ordered, while the durable acknowledgment may
+        // wait without holding either lock. User input and terminal transcript
+        // markers are already committed by their owning async operation.
+        drop(run);
+        if let Some(receipt) = receipt.filter(|_| wait) {
+            match receipt.recv() {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => self
+                    .journal_health
+                    .fail(format!("event commit failed: {error}")),
+                Err(_) => self
+                    .journal_health
+                    .fail("event commit acknowledgment lost".into()),
+            }
+        }
     }
 
     /// Begin a new user run: set `run_id` + `epoch`, reset `idx`, clear the
@@ -275,15 +449,27 @@ impl SseBroadcaster {
     }
 
     pub fn start_run_with_sequence(&self, run_id: String, epoch: i64, run_sequence: Option<u64>) {
-        let (recovered, snapshot, recovery_failed) =
-            match self.read_journal_page(&run_id, -1, false, None) {
-                Ok((_, events, snapshot)) => (events, snapshot, false),
-                Err(error) => {
-                    self.journal_health
-                        .fail(format!("event journal recovery failed: {error:#}"));
-                    (Vec::new(), None, true)
-                }
-            };
+        let canonical = {
+            let journal = self.journal.lock();
+            journal
+                .segmented
+                .then(|| (journal.store.clone(), journal.session_id.clone()))
+        };
+        let recovered_page = if let Some((Some(store), session)) = canonical {
+            self.flush_journal()
+                .and_then(|()| store.segmented_run_tail(&session, &run_id, epoch))
+                .map(|events| (true, events, None))
+        } else {
+            self.read_journal_page(&run_id, -1, false, None)
+        };
+        let (recovered, snapshot, recovery_failed) = match recovered_page {
+            Ok((_, events, snapshot)) => (events, snapshot, false),
+            Err(error) => {
+                self.journal_health
+                    .fail(format!("event journal recovery failed: {error:#}"));
+                (Vec::new(), None, true)
+            }
+        };
         let mut run = self.run.lock();
         run.run_id = run_id;
         run.epoch = epoch;
@@ -296,7 +482,8 @@ impl SseBroadcaster {
             run.run_sequence = snapshot.run_sequence;
             run.idx = snapshot.cursor.saturating_add(1);
             run.events.clear();
-            run.projection_events = snapshot.events;
+            run.event_bytes = 0;
+            run.projection_events = projection::Projection::from_events(snapshot.events);
             run.projection_complete = true;
             self.journal_health.clear();
             self.journal_health.clear_interrupt();
@@ -307,19 +494,18 @@ impl SseBroadcaster {
             .map_or(0, |event| event.idx.saturating_add(1));
         run.events = recovered
             .iter()
-            .rev()
-            .take(MAX_RUN_EVENTS)
+            .skip(recovered.len().saturating_sub(MAX_RUN_EVENTS))
             .cloned()
-            .collect::<Vec<_>>();
-        run.events.reverse();
+            .collect();
+        run.event_bytes = run.events.iter().map(|event| event.data.len() + 512).sum();
         run.projection_events.clear();
-        run.projection_complete = !recovery_failed
-            && recovered
-                .iter()
-                .enumerate()
-                .all(|(index, event)| event.run_id == run.run_id && event.idx == index as i64);
+        if self.uses_segmented_storage() {
+            run.projection_events.limit(8 * 1024 * 1024);
+        }
+        run.projection_complete =
+            !recovery_failed && replay::covers_prefix(&recovered, &run.run_id);
         for event in &recovered {
-            apply_to_projection(&mut run.projection_events, event);
+            run.projection_events.push(event);
         }
         if !recovery_failed {
             self.journal_health.clear();

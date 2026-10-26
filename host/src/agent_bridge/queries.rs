@@ -39,7 +39,7 @@ pub async fn get_events_since_payload(
     run_id: String,
     since_idx: i64,
 ) -> Result<future_rpc::payloads::EventsSincePayload, crate::Error> {
-    read_events_since(session_id, run_id, since_idx, None).await
+    read_events_since(session_id, run_id, since_idx, None, None).await
 }
 
 pub(super) async fn read_events_since(
@@ -47,14 +47,17 @@ pub(super) async fn read_events_since(
     run_id: String,
     since_idx: i64,
     page_limit: Option<i64>,
+    until: Option<i64>,
 ) -> Result<future_rpc::payloads::EventsSincePayload, crate::Error> {
     let mut client = connect_agent().await?;
     let mut cursor = since_idx;
+    let mut window = until;
     let mut merged: Option<future_rpc::payloads::EventsSincePayload> = None;
     loop {
         let command = future_rpc::proto::RpcCommand {
             run_id: run_id.clone(),
             since_idx: cursor,
+            replay_until_idx: window,
             max_events: page_limit
                 .unwrap_or(EVENTS_PAGE_SIZE)
                 .clamp(1, EVENTS_PAGE_SIZE),
@@ -89,8 +92,52 @@ pub(super) async fn read_events_since(
                 truncated: false,
                 projection: None,
                 has_more: false,
+                watermark: window,
             }
         });
+        if let Some(watermark) = page.watermark {
+            if window.is_some_and(|window| window != watermark) {
+                return Err("replay_window_changed".into());
+            }
+            window = Some(watermark);
+        }
+        if let Some(until) = window {
+            page.events.retain(|event| event.idx <= until);
+            if page
+                .projection
+                .as_ref()
+                .is_some_and(|projection| projection.cursor > until)
+            {
+                return Err("replay_window_changed".into());
+            }
+            if page.events.last().is_some_and(|event| event.idx >= until) {
+                page.has_more = false;
+            }
+        }
+        if page_limit.is_none() {
+            for event in page.events.iter_mut().chain(
+                page.projection
+                    .iter_mut()
+                    .flat_map(|projection| projection.events.iter_mut()),
+            ) {
+                if !future_rpc::content_body::required_inline(&event.event_type)
+                    || !event.data.contains("\"content_refs\"")
+                {
+                    continue;
+                }
+                let mut data = serde_json::from_str(&event.data)?;
+                future_rpc::content_body::hydrate_required(
+                    &mut client,
+                    &session_id,
+                    &run_id,
+                    &event.event_type,
+                    &mut data,
+                )
+                .await
+                .map_err(crate::Error::from)?;
+                event.data = data.to_string();
+            }
+        }
         if !page.run_id.is_empty() && page.run_id != run_id {
             return Err(format!(
                 "get_events_since returned run {}, expected {run_id}",
@@ -106,6 +153,9 @@ pub(super) async fn read_events_since(
         } else {
             next_events_cursor(&page, cursor)
         };
+        if page_limit.is_none() && page.has_more && next.is_none() {
+            return Err("replay page did not advance its cursor".into());
+        }
         match &mut merged {
             None => merged = Some(page),
             Some(total) => {
@@ -127,6 +177,7 @@ pub(super) async fn read_events_since(
         truncated: false,
         projection: None,
         has_more: false,
+        watermark: window,
     });
     // Only the full-tail API has drained all Agent pages. A bounded remote
     // read must preserve has_more so the phone continues from its cursor.
@@ -198,8 +249,60 @@ pub async fn get_events_since_page(
     limit: usize,
 ) -> Result<serde_json::Value, crate::Error> {
     let limit = limit.min(EVENTS_PAGE_SIZE as usize) as i64;
-    serde_json::to_value(read_events_since(session_id, run_id, since_idx, Some(limit)).await?)
+    serde_json::to_value(read_events_since(session_id, run_id, since_idx, Some(limit), None).await?)
         .map_err(|error| format!("Could not serialize get_events_since response: {error}").into())
+}
+
+/// One source page in an immutable replay window, including its first read.
+pub async fn get_events_since_page_until(
+    session_id: String,
+    run_id: String,
+    since_idx: i64,
+    limit: usize,
+    until: Option<i64>,
+) -> Result<serde_json::Value, crate::Error> {
+    let limit = limit.min(EVENTS_PAGE_SIZE as usize) as i64;
+    serde_json::to_value(
+        read_events_since(session_id, run_id, since_idx, Some(limit), until).await?,
+    )
+    .map_err(|error| format!("Could not serialize get_events_since response: {error}").into())
+}
+
+/// Capability preflight reads metadata only, including a missing session's
+/// prospective format. It must never hydrate history or create the session.
+pub async fn get_session_storage_format(
+    session_id: String,
+) -> Result<serde_json::Value, crate::Error> {
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(base_command("get_session_storage_format", session_id))
+        .await
+        .map_err(|error| format!("session format preflight failed: {error}"))?
+        .into_inner()
+        .ok_or_rpc_error("session format preflight rejected")?;
+    Ok(future_rpc::decode::response_data(&response))
+}
+
+/// Read one committed immutable event field page. The Agent checks the exact
+/// session/run, database restore generation and published stream coordinates.
+pub async fn get_event_content_range(
+    session_id: String,
+    run_id: String,
+    request: future_rpc::content_range::ContentRequest,
+) -> Result<serde_json::Value, crate::Error> {
+    let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, &session_id).await?;
+    let response = client
+        .execute_command(future_rpc::proto::RpcCommand {
+            run_id,
+            content_request: Some(request.into()),
+            ..base_command("get_event_content_range", session_id)
+        })
+        .await
+        .map_err(|error| format!("event content read failed: {error}"))?
+        .into_inner()
+        .ok_or_rpc_error("event content read rejected")?;
+    Ok(future_rpc::decode::response_data(&response))
 }
 
 /// Fetch a session's full message history from the agent (LLM Message shape:

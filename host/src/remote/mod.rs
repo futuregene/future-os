@@ -7,6 +7,8 @@
 pub(crate) mod commands;
 pub mod control;
 mod diagnostics;
+#[cfg(test)]
+mod download_tiers_network;
 pub mod pairing;
 #[cfg(test)]
 mod presence;

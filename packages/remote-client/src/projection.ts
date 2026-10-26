@@ -1,5 +1,7 @@
 import {
   compactionCheckpoints,
+  copyEventPayload,
+  eventPayload,
   normalizeReplayEvents as normalizeSharedReplayEvents,
   createRunProjector,
   entriesToMessages,
@@ -22,6 +24,14 @@ import type {
   TimelineToolRow,
 } from "./types";
 import { messageText } from "./codec";
+
+/**
+ * The Agent's own label for a stream that ended without a terminal decision
+ * (`host/src/agent_bridge/stream.rs`). Used when this client has to settle a
+ * reply nobody will ever send a terminal for — the desktop classifies the same
+ * string into "the response ended before it finished".
+ */
+const RESPONSE_UNCONFIRMED = "[RESPONSE_UNCONFIRMED] response did not complete";
 
 export interface TimelineState {
   items: TimelineItem[];
@@ -350,7 +360,7 @@ export type { ReplayEventWire } from "@future-os/thread-projection";
  * is left here is the narrowing to the fields this lane reads.
  */
 export function normalizeReplayEvents(events: ReplayEventWire[] | undefined | null): StreamEvent[] {
-  return normalizeSharedReplayEvents(events).map(event => ({
+  return normalizeSharedReplayEvents(events).map(event => copyEventPayload(event, {
     type: event.type,
     data: event.data,
     runId: event.runId,
@@ -360,11 +370,9 @@ export function normalizeReplayEvents(events: ReplayEventWire[] | undefined | nu
 }
 
 function eventData(event: StreamEvent): Record<string, unknown> {
-  try {
-    return JSON.parse(event.data) as Record<string, unknown>;
-  } catch {
-    return {};
-  }
+  const value = eventPayload(event, event.data);
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : {};
 }
 
 function textValue(value: unknown): string {
@@ -524,7 +532,8 @@ function applyEvent(state: TimelineState, event: StreamEvent, batch?: {
   // Standalone compaction is session activity, not a reply. Materialize it
   // directly in both single-event and batched paths; it has no run accumulator
   // or run-scoped sequence (a later run can restart idx at zero).
-  const standalone = event.type.startsWith("compaction_") && data.phase === "standalone";
+  const compactionEvent = event.type.startsWith("compaction_");
+  const standalone = compactionEvent && data.phase === "standalone";
   if (standalone) {
     items = applyStandaloneCompaction(items, event.type, data);
   } else if (runEvents && isRunEvent(event.type)) {
@@ -532,6 +541,10 @@ function applyEvent(state: TimelineState, event: StreamEvent, batch?: {
     items = result.items;
     streaming = result.streaming;
     liveRuns = result.liveRuns;
+    // A compaction frame carries the *surrounding* run's identity and says
+    // nothing about liveness; every other run event is this run writing, which
+    // no other reply can be doing at the same time (see `settleSuperseded`).
+    if (!compactionEvent) items = settleSuperseded(items, runId);
   }
 
   return {
@@ -779,14 +792,14 @@ function toRunEvent(
   sequence: number;
   createdAt: number;
 } {
-  return {
+  return copyEventPayload(event, {
     id: `${runId}:${event.idx ?? 0}`,
     runId,
     eventType: event.type,
     payload: event.data,
     sequence: event.idx ?? 0,
     createdAt: 0,
-  };
+  });
 }
 
 function buildLiveAssistantItem(
@@ -832,6 +845,49 @@ function buildLiveAssistantItem(
   if (acc.failed) item.failed = true;
   if (acc.error) item.error = acc.error;
   return item;
+}
+
+/**
+ * Settle the replies a newer run has superseded.
+ *
+ * The Agent runs one turn per session, so the moment a run writes an event no
+ * *other* run can still be in flight. The live lane is at-most-once per event,
+ * though, and `agent_end` is one more frame it can drop: a reply whose terminal
+ * never reached this client kept its generating flag — and its clock — until
+ * some later reconcile happened to settle the whole lane, and once the next
+ * prompt's run began the transcript drew two generating dots, one of them
+ * counting past three hours (measured on a phone, 2026-10-26).
+ *
+ * The sync engine's `settledTimeline` applies the same rule to a lane with
+ * nothing in flight; this is it for the rows a *live* run leaves behind.
+ *
+ * The label is the desktop's for a stream that ended without a terminal: the
+ * run is over and this client cannot say why, so it must not read as a finished
+ * answer either. A reply that already carries an error keeps its own.
+ *
+ * Only a reply stamped with a *different* run id is settled. Two runs cannot
+ * interleave; a row with no identity at all (an event envelope that never named
+ * its run) is not evidence of one, and a compaction frame's run id belongs to
+ * the run around it rather than to a write of its own — see the caller.
+ */
+function settleSuperseded(items: TimelineItem[], runId: string | undefined): TimelineItem[] {
+  let settled = false;
+  const next = items.map((item): TimelineItem => {
+    if (item.kind !== "message" || item.role !== "assistant") return item;
+    if (!item.streaming || !item.runId || item.runId === runId) return item;
+    settled = true;
+    const reply: Extract<TimelineItem, { kind: "message" }> = {
+      ...item,
+      streaming: false,
+      failed: true,
+      error: item.error ?? RESPONSE_UNCONFIRMED,
+    };
+    // The live clock belongs to the flag that just went off; a settled row shows
+    // the run's own duration, and this run has none.
+    delete reply.startedAt;
+    return reply;
+  });
+  return settled ? next : items;
 }
 
 /**

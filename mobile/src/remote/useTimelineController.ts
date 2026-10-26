@@ -1,3 +1,4 @@
+import { eventPayload } from "@future-os/thread-projection";
 import { useOlderHistory, type OlderPageResult, type PendingOlderPage } from "./timeline/useOlderHistory";
 import { compactionTerminalOf, useCompactionOutcomes } from "./timeline/useCompactionOutcomes";
 import { HISTORY_PAGE_USER_EXCHANGES, HISTORY_TAIL_CURSOR, HistoryPageHiddenError, commitHistoryPage, readHistoryPage, latestTimelineWindow, retainOlderHistoryPrefix, diagnosticError } from "./timeline/historyPaging";
@@ -6,7 +7,7 @@ import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState } from "react-native";
 import type { RemoteClient } from "./client";
-import { fetchEventsSince } from "@future-os/remote-client/replay";
+import { fetchEventsSince, hydrateRemoteEvent } from "@future-os/remote-client/replay";
 
 import type { RunCursor } from "@future-os/thread-projection";
 import { SyncEngine, type ReconcileReason, type TimelineSyncStatus } from "@future-os/remote-client/syncEngine";
@@ -143,7 +144,7 @@ export function useTimelineController({
       }
       if (event.type === "session_name_changed") {
         try {
-          const data = JSON.parse(event.data) as Record<string, unknown>;
+          const data = eventPayload(event, event.data) as Record<string, unknown>;
           const name = typeof data.name === "string" ? data.name.trim() : "";
           if (name) {
             setTitleOverrides((previous) => ({ ...previous, [sid]: name }));
@@ -170,7 +171,7 @@ export function useTimelineController({
         void hydrateAttachmentsRef.current(sid);
       if (event.type === "approval_decision") {
         try {
-          const data = JSON.parse(event.data) as Record<string, unknown>;
+          const data = eventPayload(event, event.data) as Record<string, unknown>;
           const approvalId = data.approval_request_id;
           const status = data.status;
           if (
@@ -550,6 +551,11 @@ export function useTimelineController({
         return state;
       },
       requestHistory: loadHistory,
+      hydrateEvent: async (sessionId, event, isCurrent) => {
+        const client = clientRef.current;
+        if (!client) throw new Error("not_connected");
+        return hydrateRemoteEvent(client, sessionId, event, () => clientRef.current === client && isCurrent());
+      },
       // The lane the Desktop agreed to send decides what the integrity checks
       // may demand: a lean feed omits slices by design, so it must not be read
       // as loss (that reconciliation would retry forever). Read through the

@@ -954,6 +954,34 @@ describe("a host's workspaces", () => {
   });
 
   /**
+   * A workspace's place and whether it is a folder the user chose.
+   *
+   * Both are what the merged list needs to draw a heading for a workspace with
+   * nothing in it: the place ranks it, and a `temporary` one is chat scratch
+   * whose conversations belong to the chats section rather than under a folder.
+   * The place is the host's coalesce (`last_opened_at`, else `updated_at`) — the
+   * key that host's own workspace list is ordered by.
+   */
+  it("carries a workspace's place and kind", async () => {
+    invokeMock.mockResolvedValue({
+      workspaces: [
+        { id: "ws_open", name: "open", path: "/a", kind: "user", lastOpenedAt: 700, updatedAt: 100 },
+        { id: "ws_touched", name: "touched", path: "/b", kind: "user", updatedAt: 300 },
+        { id: "ws_tmp", name: "scratch", path: "/tmp", kind: "temporary" },
+      ],
+    });
+
+    const rows = await listRemoteWorkspaces("desktop_a");
+    // A workspace opened last is placed by when it was opened, even if it was
+    // created before one that has only been touched.
+    expect(rows[0]).toMatchObject({ id: "ws_open", kind: "user", orderedAt: 700 });
+    expect(rows[1]).toMatchObject({ id: "ws_touched", orderedAt: 300 });
+    expect(rows[2]).toMatchObject({ id: "ws_tmp", kind: "temporary" });
+    // Nothing to place it by: absent, so it sorts last rather than as "now".
+    expect(rows[2]).not.toHaveProperty("orderedAt");
+  });
+
+  /**
    * Registering a workspace sends the host's path as typed.
    *
    * The directory has to exist on *that* machine, so this one cannot check it —

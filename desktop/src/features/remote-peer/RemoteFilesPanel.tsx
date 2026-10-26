@@ -24,12 +24,20 @@ import { useRemoteFiles } from "./useRemoteFiles";
 export function RemoteFilesPanel({
   desktopId,
   expanded,
+  floating,
   onToggleExpanded,
   peer,
   sessionId,
 }: {
   desktopId: string;
   expanded: boolean;
+  /**
+   * Draw the panel over the conversation rather than as a column: the window
+   * is too narrow to host the third column, so an overlay is the only way to
+   * show the remote files without squeezing the conversation. Same contract as
+   * `ContextPanel.floating`.
+   */
+  floating?: boolean;
   onToggleExpanded: () => void;
   peer: RemotePeer | undefined;
   sessionId: string;
@@ -57,7 +65,13 @@ export function RemoteFilesPanel({
   }
 
   return (
-    <aside className="relative flex w-80 shrink-0 flex-col border-l border-line-soft bg-surface-panel">
+    <aside
+      className={
+        floating
+          ? "absolute inset-y-0 right-0 z-40 flex w-80 flex-col border-l border-line-soft bg-surface-panel shadow-panel"
+          : "relative flex w-80 shrink-0 flex-col border-l border-line-soft bg-surface-panel"
+      }
+    >
       <header className="flex h-12 shrink-0 items-center gap-1 px-4">
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">
           {t("filesOn", { name: peer ? peerBadgeText(peer, peer.desktopId) : desktopId })}

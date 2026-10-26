@@ -32,8 +32,8 @@ use crate::rpc::GrpcClient;
 use super::i18n::{self, t, Key, Language, LanguagePreference};
 use super::layout::Frame;
 use super::state::{
-    Activity, ActivityKind, InputView, JobRow, ModelChoice, QueuedPrompt, SessionMeta, SessionRow,
-    SkillRow, TodoItem, UsageData, WorkbenchData, THINKING_LEVELS,
+    Activity, ActivityKind, InputView, ModelChoice, QueuedPrompt, SessionMeta, SessionRow,
+    SkillRow, UsageData, WorkbenchData, WorkspaceGroup, THINKING_LEVELS,
 };
 use super::WbAction;
 
@@ -74,7 +74,7 @@ struct Paging {
 /// ([`super::Workbench::surface_command`]) and this list have to account for
 /// every entry exactly once. That is the check whose absence let five entries
 /// advertise themselves and then answer `Unknown command`.
-pub const APP_COMMANDS: [&str; 17] = [
+pub const APP_COMMANDS: [&str; 15] = [
     "/new",
     "/reply-detail",
     "/export",
@@ -82,8 +82,6 @@ pub const APP_COMMANDS: [&str; 17] = [
     "/copy",
     "/mouse",
     "/compact",
-    "/sandbox",
-    "/permission",
     "/tools",
     "/providers",
     "/diff",
@@ -144,6 +142,15 @@ pub struct Live {
     /// Cleared once that session exists — from then on the agent is the source.
     pending_model: Option<String>,
     pending_effort: Option<String>,
+    /// The approval mode chosen while nothing was attached. `set_sandbox_policy`
+    /// needs a session like the other two setters, so the launchpad's chip and
+    /// the `/mode` menu stage it here and the session the next message creates
+    /// is told once it exists.
+    pending_mode: Option<String>,
+    /// The workspace the next session will run in, chosen on the launchpad.
+    /// Nothing is sent: the agent has no session to set a directory on until
+    /// the first message creates one.
+    pending_cwd: Option<String>,
     /// When the current run started and how many output tokens it has reported:
     /// tok/s is the two divided. Cleared at `agent_start`, frozen at
     /// `agent_end` so an idle surface still shows the turn it just finished.
@@ -157,19 +164,24 @@ pub struct Live {
     /// instead of only when someone presses ctrl+k.
     state_refresh_pending: bool,
     /// The workspace the local facts below were read for. A worktree move is the
-    /// one thing that has to re-read the goal store, so the panel follows the
-    /// session instead of the process's own directory.
+    /// one thing that has to re-read the working directory's files, so the menu
+    /// follows the session instead of the process's own directory.
     local_cwd: String,
     /// The git branch of `local_cwd`, read once per workspace (see
     /// [`super::git`]): the header names it after the cwd, and a per-frame
     /// `git` spawn would be a stutter on a large repository.
     branch: super::git::BranchCache,
-    /// The goal store's todos for `local_cwd` (see [`super::local`]).
-    todos: Vec<TodoItem>,
-    /// Installed skills and scheduled jobs are machine-wide: read once, then
-    /// reused for every frame.
+    /// The installed skills (machine-wide: read once, then reused for every
+    /// frame), which the `/` palette offers beside its commands.
     local_skills: Option<Vec<SkillRow>>,
-    local_jobs: Option<Vec<JobRow>>,
+    /// Workspace paths the reader pinned in the rail (the 置顶 section), as
+    /// `~/.future/tui/settings.json` last recorded them.
+    pinned_workspaces: Vec<String>,
+    /// The `@` menu's candidates for `local_cwd`, read once per directory: a
+    /// listing per keystroke would be a `git ls-files` per keystroke.
+    files: Vec<String>,
+    /// Which directory `files` describes, so a session that moved reloads them.
+    files_for: String,
 }
 
 impl Live {
@@ -230,15 +242,20 @@ impl Live {
             launchpad: false,
             pending_model: None,
             pending_effort: None,
+            pending_mode: None,
+            pending_cwd: None,
             run_started: None,
             run_output_tokens: 0,
             run_tps: 0.0,
             state_refresh_pending: false,
             local_cwd: String::new(),
             branch: super::git::BranchCache::new(),
-            todos: Vec::new(),
             local_skills: None,
-            local_jobs: None,
+            pinned_workspaces: settings
+                .and_then(|settings| settings.pinned_workspaces.clone())
+                .unwrap_or_default(),
+            files: Vec::new(),
+            files_for: String::new(),
         };
 
         if let Some(id) = session.filter(|id| !id.is_empty()) {
@@ -291,13 +308,12 @@ impl Live {
     /// workspace must re-read rather than keep painting the old one's list.
     fn refresh_local(&mut self) {
         let cwd = self.state.cwd.clone().unwrap_or_default();
-        if cwd != self.local_cwd {
-            self.todos = if cwd.is_empty() {
-                Vec::new()
-            } else {
-                super::local::goal_todos(std::path::Path::new(&cwd))
-            };
-            self.local_cwd = cwd;
+        self.local_cwd = cwd;
+        // The `@` menu's candidates belong to the directory, not to the session:
+        // read them when the directory changes and not once per keystroke.
+        if self.files_for != self.local_cwd {
+            self.files = super::local::workspace_files(std::path::Path::new(&self.local_cwd));
+            self.files_for = self.local_cwd.clone();
         }
         // The header's second line names the workspace *and its branch*. The
         // cache keys on the cwd, so this is a no-op on every refresh that did
@@ -305,9 +321,6 @@ impl Live {
         self.branch.for_cwd(&self.local_cwd);
         if self.local_skills.is_none() {
             self.local_skills = Some(super::local::installed_skills());
-        }
-        if self.local_jobs.is_none() {
-            self.local_jobs = Some(super::local::scheduled_jobs(self.lang));
         }
     }
 
@@ -321,6 +334,35 @@ impl Live {
         if let Ok(models) = self.client.list_models().await {
             self.models = models;
         }
+    }
+
+    /// The 工作区 tab's filing, for the pins this client holds.
+    fn file_sessions(
+        &self,
+        sessions: &[SessionSummary],
+        rows: &[SessionRow],
+    ) -> (Vec<WorkspaceGroup>, Vec<String>) {
+        file_sessions(sessions, rows, &self.pinned_workspaces)
+    }
+
+    /// Pin or unpin one workspace, and answer what belongs on the notice row.
+    pub fn set_workspace_pinned(&mut self, path: &str, pinned: bool) -> String {
+        self.pinned_workspaces
+            .retain(|known| !same_path(known, path));
+        if pinned {
+            self.pinned_workspaces.push(path.to_string());
+        }
+        let name = workspace_name(path);
+        if pinned {
+            i18n::render(self.lang, Key::NoticePinned, &[&name])
+        } else {
+            i18n::render(self.lang, Key::NoticeUnpinned, &[&name])
+        }
+    }
+
+    /// The workspace paths the rail currently pins, for the settings file.
+    pub fn pinned_workspaces(&self) -> &[String] {
+        &self.pinned_workspaces
     }
 
     /// `--continue`: attach to the most recently active session.
@@ -845,7 +887,12 @@ impl Live {
             .map(|session| SessionRow {
                 id: session.id.clone(),
                 title: display_name(session),
-                workspace: shorten(&session.cwd),
+                // The workspace's *name*, not its path: the rail and the
+                // `ctrl+r` list are 30-odd columns wide, and a path spent on
+                // the tail of `D:/work/…/future-os` says less than the word
+                // itself. The path is still the group's identity (see
+                // `WorkspaceGroup`) and the header still names it in full.
+                workspace: workspace_name(&session.cwd),
                 parent_id: session.parent_session_id.clone(),
                 age: age(session.updated_at_ms),
                 // On the launchpad nothing is attached, so no row claims to be
@@ -863,6 +910,10 @@ impl Live {
             };
             at(b).cmp(&at(a))
         });
+        // The 工作区 tab: the same rows, filed the way the desktop's rail files
+        // them. A conversation that ran in one of the app's own scratch
+        // directories belongs to no workspace, so it is a plain chat.
+        let (workspaces, chats) = self.file_sessions(&sessions, &rows);
         let skill_names = state.skills.clone();
         // The agent names the skills it discovered; the sidebar's local read adds
         // the descriptions (and is the fallback when an older agent reports
@@ -895,7 +946,10 @@ impl Live {
                     current
                 },
                 title,
-                cwd: state.cwd.clone().unwrap_or_default(),
+                // On the launchpad the chip names the workspace the first
+                // message will create the session in, not whatever session the
+                // client left behind.
+                cwd: self.shown_cwd().unwrap_or_default(),
                 branch: self.branch.for_cwd(&self.local_cwd).to_string(),
             },
             model: self
@@ -903,11 +957,7 @@ impl Live {
                 .filter(|model| !model.trim().is_empty())
                 .unwrap_or_else(|| "no model".to_string()),
             effort: self.shown_effort(),
-            mode: state.sandbox_tier.clone().unwrap_or_else(|| "open".into()),
-            permission: state
-                .permission_level
-                .clone()
-                .unwrap_or_else(|| "all".into()),
+            mode: self.shown_mode(),
             usage: UsageData {
                 ctx_used: state.context_tokens.unwrap_or(0).max(0) as u64,
                 ctx_total: state.context_window.unwrap_or(0).max(0) as u64,
@@ -915,8 +965,10 @@ impl Live {
                 cache_pct: cache_percent(&state),
                 tps: self.live_tps(),
             },
-            todos: self.todos.clone(),
+            files: self.files.clone(),
             sessions: rows,
+            workspaces,
+            chats,
             models: self
                 .models
                 .iter()
@@ -933,7 +985,6 @@ impl Live {
                 })
                 .collect(),
             skills,
-            jobs: self.local_jobs.clone().unwrap_or_default(),
             messages,
             input,
             activity,
@@ -1031,15 +1082,8 @@ impl Live {
             WbAction::SelectWorktree(path) => self.select_worktree(&path).await,
             WbAction::ForkAt(id) => self.fork_at(&id).await,
             WbAction::Compact(instructions) => self.compact(instructions).await,
-            WbAction::SetPermission(level) => {
-                match self.client.set_permission_level(&level).await {
-                    Ok(()) => self.refresh_state().await,
-                    Err(error) => {
-                        self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
-                    }
-                }
-            }
-            WbAction::CycleSandbox => self.cycle_mode().await,
+            WbAction::SetApproval(mode) => self.set_approval(&mode).await,
+            WbAction::SelectWorkspace(path) => self.select_workspace(&path).await,
             WbAction::SetTools(tools) => match self.client.set_tools(&tools).await {
                 Ok(()) => self.notice = Some(t(self.lang, Key::ToolsDone).into()),
                 Err(error) => {
@@ -1069,6 +1113,10 @@ impl Live {
             // Surface-only state: the driver owns persistence, the agent does
             // not need a round trip for a rectangle or a local shortcut.
             WbAction::SetPreferences | WbAction::SetKeybindings => {}
+            // The rail's pin lands in this client's settings file; the driver
+            // applies it through [`Live::set_workspace_pinned`], so here it is
+            // only a shape the agent never sees.
+            WbAction::SetWorkspacePinned { .. } => {}
             // The driver displays local notices; a demo adapter has no notice
             // dispatch of its own to perform.
             WbAction::Notice(_) => {}
@@ -1097,19 +1145,35 @@ impl Live {
 
     /// Send the draft. A submission while a run is in flight queues behind it
     /// (the agent's coalescing policy), which is what the inline TUI does too.
-    async fn submit(&mut self, _text: &str) {
+    async fn submit(&mut self, text: &str) {
         self.draft.editor.record_submission();
-        let original_text = self.draft.editor.text().to_string();
-        let message = self
+        // The draft is read first because it is what carries the folded pastes
+        // that `pending()` expands into the prompt. It is *not* the only source:
+        // the driver hands this action over after clearing the surface, and a
+        // `Submit` that found an empty draft used to return without ever
+        // reaching the agent — the launchpad's first message did nothing at all.
+        // The action's own text is the surface's reading of the prompt, so it
+        // stands in whenever the draft has already been reset.
+        let drafted = self.draft.editor.text().to_string();
+        let original_text = if drafted.trim().is_empty() {
+            text.to_string()
+        } else {
+            drafted
+        };
+        // The draft is what the reader typed; the prompt is that draft with its
+        // `@path` mentions inlined. The transcript keeps the draft (that is what
+        // was said), the agent gets the files (that is what was meant).
+        let typed = self
             .draft
             .editor
             .pending()
             .expand(&original_text)
             .trim()
             .to_string();
-        if message.is_empty() {
+        if typed.is_empty() {
             return;
         }
+        let message = expand_mentions(&typed, &self.local_cwd);
         // The launchpad's first message: there is no session to send it to yet,
         // so create one in the folder the surface is showing before sending.
         // `/new` left the previous session attached on the agent's side, which
@@ -1131,7 +1195,7 @@ impl Live {
         self.chat.add_message(ChatMessage::new(
             crate::session_rows::random_id(),
             ChatRole::User,
-            &message,
+            &typed,
         ));
         self.mark(ActivityKind::Thinking);
         match self
@@ -1193,26 +1257,21 @@ impl Live {
             "compact" => {
                 self.compact(arg).await;
             }
-            "sandbox" => self.cycle_mode().await,
+            "sandbox" => {
+                // `/sandbox <mode>` sets it; a bare `/sandbox` is the menu the
+                // driver opens before this handler ever sees it.
+                if crate::approval_mode::ApprovalMode::from_wire(&arg).is_some() {
+                    self.set_approval(&arg).await;
+                } else {
+                    self.cycle_mode().await;
+                }
+            }
             "diff" | "history" | "fork" => {}
             "worktree" if !arg.is_empty() => {
                 if arg.strip_prefix("new ").is_some() {
                     self.notice = Some(t(self.lang, Key::WorktreeCreating).into());
                 } else {
                     self.notice = Some(crate::worktree::WORKTREE_USAGE.into());
-                }
-            }
-            "permission" => {
-                if ["all", "workspace", "none"].contains(&arg.as_str()) {
-                    match self.client.set_permission_level(&arg).await {
-                        Ok(()) => self.refresh_state().await,
-                        Err(error) => {
-                            self.notice =
-                                Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
-                        }
-                    }
-                } else {
-                    self.cycle_permission().await;
                 }
             }
             "tools" => {
@@ -1264,16 +1323,15 @@ impl Live {
                 Err(error) => self.notice = Some(format!("Could not set the model: {error}")),
             },
             "model" => self.cycle_model().await,
-            "thinking" | "effort" => self.cycle_thinking().await,
             // The launchpad's parameter chips. With a session attached each
             // floats a wire call rather than carrying state of its own: the
             // agent stays the single source of what the next message runs with.
-            // With none, the model and effort chips stage the choice locally —
-            // the agent has no session to accept either.
+            // With none, the model, effort and approval chips stage the choice
+            // locally — the agent has no session to accept any of them.
             "launchpad.model" => self.cycle_model().await,
             "launchpad.effort" => self.cycle_thinking().await,
-            "launchpad.permission" => self.cycle_permission().await,
-            "launchpad.mode" => self.cycle_mode().await,
+            "launchpad.approval" => self.cycle_mode().await,
+            "launchpad.workspace" => self.cycle_pending_workspace(),
             "reply-detail" => {
                 let next = match self.detail {
                     ReplyDetail::Default => ReplyDetail::Detailed,
@@ -1307,8 +1365,10 @@ impl Live {
             // handler): `/usage`, `/skills`, `/workspace`, `/transcript`,
             // `/help`. They are named here so a caller that bypasses the
             // surface is not told a command the palette advertises does not
-            // exist — the notice the whole family used to produce.
-            "usage" | "skills" | "workspace" | "transcript" | "help" => {}
+            // exist — the notice the whole family used to produce. The four
+            // choosers (`/model`, `/thinking`, `/mode`, `/workspace`) come back
+            // to the surface the same way: the picker is not the agent's.
+            "usage" | "skills" | "workspace" | "transcript" | "help" | "thinking" | "mode" => {}
             other => self.notice = Some(format!("Unknown command /{other}")),
         }
         Outcome::Continue
@@ -1390,6 +1450,84 @@ impl Live {
         self.state.thinking_level.clone()
     }
 
+    /// The approval mode the surface should name (see [`Self::shown_model`]).
+    ///
+    /// The agent reports the sandbox *tier* only, and `auto` is that tier with
+    /// the model reviewer — so a mode chosen in this process is named from what
+    /// was chosen, and a fresh attach reads the tier (`sandbox` rather than
+    /// `auto`). The empty state is the product default the desktop starts on.
+    fn shown_mode(&self) -> String {
+        if self.detached() {
+            if let Some(mode) = self.pending_mode.clone() {
+                return mode;
+            }
+        }
+        self.state
+            .sandbox_tier
+            .clone()
+            .filter(|tier| !tier.trim().is_empty())
+            .unwrap_or_else(|| "off".to_string())
+    }
+
+    /// The workspace the surface should name (see [`Self::shown_model`]).
+    fn shown_cwd(&self) -> Option<String> {
+        if self.detached() {
+            return self.pending_cwd.clone().or_else(|| self.state.cwd.clone());
+        }
+        self.state.cwd.clone()
+    }
+
+    /// The directories a new session can be started in: the one that would be
+    /// used now, then every workspace this client has a conversation in, newest
+    /// first. Deduplicated by the same trailing-slash-insensitive comparison
+    /// the 工作区 filing uses, so one directory is one choice.
+    pub fn workspace_choices(&self) -> Vec<String> {
+        let mut choices: Vec<String> = Vec::new();
+        let mut push = |path: &str| {
+            if path.trim().is_empty() {
+                return;
+            }
+            if choices.iter().any(|known| same_path(known, path)) {
+                return;
+            }
+            choices.push(path.to_string());
+        };
+        if let Some(cwd) = self.shown_cwd() {
+            push(&cwd);
+        }
+        for session in &self.sessions {
+            push(&session.cwd);
+        }
+        choices
+    }
+
+    /// Stage the next workspace of the launchpad's 工作区 chip.
+    ///
+    /// The chip cycles the directories the reader already works in; with none
+    /// to cycle it says so rather than doing nothing. The notice names the
+    /// directory's *path*, because two checkouts can share a name and the chip
+    /// itself only has room for the name.
+    pub fn cycle_pending_workspace(&mut self) {
+        let choices = self.workspace_choices();
+        if choices.len() < 2 {
+            self.notice = Some(t(self.lang, Key::WorkspaceNone).into());
+            return;
+        }
+        let current = self.shown_cwd().unwrap_or_default();
+        let next = choices
+            .iter()
+            .position(|path| same_path(path, &current))
+            .map(|index| (index + 1) % choices.len())
+            .unwrap_or(0);
+        let path = choices[next].clone();
+        self.pending_cwd = Some(path.clone());
+        self.notice = Some(i18n::render(
+            self.lang,
+            Key::WorkspaceChosen,
+            &[&shorten(&path)],
+        ));
+    }
+
     /// Stage a model chosen while nothing is attached — the picker's row or the
     /// launchpad's own chip. Nothing is sent: the agent has no session to set a
     /// model on ("session not found"), and the session the next message creates
@@ -1417,7 +1555,7 @@ impl Live {
     }
 
     async fn new_session(&mut self) {
-        let cwd = self.state.cwd.clone().unwrap_or_default();
+        let cwd = self.shown_cwd().unwrap_or_default();
         // What the reader chose on the launchpad is what this session starts
         // with; with nothing staged this is the state the agent already has.
         let model = self.shown_model().unwrap_or_default();
@@ -1439,6 +1577,20 @@ impl Live {
                 // pick override the session's own on the next `/new`.
                 self.pending_model = None;
                 self.pending_effort = None;
+                self.pending_cwd = None;
+                // The approval mode has no `new_session` argument: it is one
+                // call after the session exists.
+                if let Some(mode) = self.pending_mode.take() {
+                    if let Some(mode) = crate::approval_mode::ApprovalMode::from_wire(&mode) {
+                        match self.client.set_sandbox_policy(mode).await {
+                            Ok(_) => self.state.sandbox_tier = Some(mode.as_str().to_string()),
+                            Err(error) => {
+                                self.notice =
+                                    Some(format!("Could not set the approval mode: {error}"))
+                            }
+                        }
+                    }
+                }
                 self.refresh_state().await;
                 self.refresh_sessions().await;
                 self.load_tail().await;
@@ -1542,43 +1694,40 @@ impl Live {
         self.set_pending_effort(next);
     }
 
-    /// all → workspace → none → all: the level `/permission` sets, in the order
-    /// the inline TUI offers them.
-    async fn cycle_permission(&mut self) {
-        const LEVELS: [&str; 3] = ["all", "workspace", "none"];
-        let current = self
-            .state
-            .permission_level
-            .clone()
-            .unwrap_or_else(|| "all".to_string());
-        let index = LEVELS
-            .iter()
-            .position(|level| *level == current)
-            .unwrap_or(0);
-        let next = LEVELS[(index + 1) % LEVELS.len()];
-        match self.client.set_permission_level(next).await {
-            Ok(()) => {
-                self.state.permission_level = Some(next.to_string());
-            }
-            Err(error) => self.notice = Some(format!("Could not set the permission: {error}")),
-        }
-    }
-
     /// The approval mode, in the desktop composer's order.
     async fn cycle_mode(&mut self) {
         use crate::approval_mode::ApprovalMode;
-        let current = self
-            .state
-            .sandbox_tier
-            .clone()
-            .unwrap_or_else(|| "off".into());
+        let current = self.shown_mode();
         let index = ApprovalMode::ALL
             .iter()
             .position(|mode| mode.as_str() == current)
             .unwrap_or(ApprovalMode::ALL.len() - 1);
         let next = ApprovalMode::ALL[(index + 1) % ApprovalMode::ALL.len()];
-        match self.client.set_sandbox_policy(next).await {
-            Ok(_) => self.state.sandbox_tier = Some(next.as_str().to_string()),
+        self.set_approval(next.as_str()).await;
+    }
+
+    /// Apply one approval mode — the `/mode` menu's row, a click on the
+    /// launchpad's chip, or the next step of the cycle.
+    ///
+    /// With no session attached it is staged like the model and the level: the
+    /// agent answers `set_sandbox_policy` with "session not found" otherwise,
+    /// and the reader would see a red row for a choice that was perfectly fine.
+    pub async fn set_approval(&mut self, mode: &str) {
+        use crate::approval_mode::ApprovalMode;
+        let Some(mode) = ApprovalMode::from_wire(mode) else {
+            self.notice = Some(i18n::render(self.lang, Key::NoticeModeUnknown, &[&mode]));
+            return;
+        };
+        if self.detached() {
+            self.pending_mode = Some(mode.as_str().to_string());
+            self.notice = None;
+            return;
+        }
+        match self.client.set_sandbox_policy(mode).await {
+            Ok(_) => {
+                self.state.sandbox_tier = Some(mode.as_str().to_string());
+                self.notice = None;
+            }
             Err(error) => self.notice = Some(format!("Could not set the approval mode: {error}")),
         }
     }
@@ -1740,6 +1889,40 @@ impl Live {
         }
     }
 
+    /// Move the session to a workspace the reader picked (or typed).
+    ///
+    /// Two roads, decided by whether anything is attached — the same split the
+    /// model and the effort take. With no session the directory is staged for
+    /// the one the next message creates; with one, the agent moves it, and the
+    /// rail re-files the conversation under its new workspace.
+    pub async fn select_workspace(&mut self, path: &str) {
+        let path = path.trim().trim_end_matches(['/', '\\']);
+        if path.is_empty() {
+            return;
+        }
+        let notice = i18n::render(self.lang, Key::WorkspaceChosen, &[&shorten(path)]);
+        if self.detached() {
+            self.pending_cwd = Some(path.to_string());
+            self.notice = Some(notice);
+            return;
+        }
+        if same_path(&self.state.cwd.clone().unwrap_or_default(), path) {
+            self.notice = None;
+            return;
+        }
+        match self.client.set_cwd(path).await {
+            Ok(()) => {
+                self.refresh_state().await;
+                self.refresh_worktrees();
+                self.diff = None;
+                self.notice = Some(notice);
+            }
+            Err(error) => {
+                self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
+            }
+        }
+    }
+
     pub async fn create_worktree_with<F>(&mut self, create: F)
     where
         F: FnOnce() -> Result<crate::worktree::WorktreeCreated, String>,
@@ -1854,6 +2037,52 @@ fn token_field(usage: &Value, key: &str) -> i64 {
         .unwrap_or(0)
 }
 
+/// The 工作区 tab's filing: one group per workspace, pinned first, and the
+/// conversations that belong to no workspace at all.
+///
+/// A conversation is a plain chat when its directory is one of the app's own
+/// scratch roots — the agent's default workspace (a session started without a
+/// directory) or the per-chat scratch tree the desktop hands out. Everything
+/// else is filed under the directory it ran in, named by that directory and
+/// identified by its path: two checkouts can share a name.
+fn file_sessions(
+    sessions: &[SessionSummary],
+    rows: &[SessionRow],
+    pinned: &[String],
+) -> (Vec<WorkspaceGroup>, Vec<String>) {
+    let mut groups: Vec<WorkspaceGroup> = Vec::new();
+    let mut chats: Vec<String> = Vec::new();
+    // `rows` is newest-first, so a group keeps that order inside itself and the
+    // first time a path is seen is that workspace's newest activity.
+    for row in rows {
+        let Some(summary) = sessions.iter().find(|session| session.id == row.id) else {
+            continue;
+        };
+        let path = summary.cwd.trim_end_matches(['/', '\\']).to_string();
+        if path.is_empty() || is_chat_directory(&summary.cwd) {
+            chats.push(row.id.clone());
+            continue;
+        }
+        match groups
+            .iter_mut()
+            .find(|group| same_path(&group.path, &path))
+        {
+            Some(group) => group.session_ids.push(row.id.clone()),
+            None => groups.push(WorkspaceGroup {
+                name: workspace_name(&path),
+                pinned: pinned.iter().any(|pin| same_path(pin, &path)),
+                path,
+                age: row.age.clone(),
+                session_ids: vec![row.id.clone()],
+            }),
+        }
+    }
+    // Pinned workspaces lead (the desktop's rail does the same); the rest keep
+    // the newest-activity order the rows already carry.
+    groups.sort_by_key(|group| !group.pinned);
+    (groups, chats)
+}
+
 fn cache_percent(state: &RpcSessionState) -> u8 {
     let read = state.usage.cache_read_tokens.max(0) as u64;
     let input = state.usage.input_tokens.max(0) as u64;
@@ -1885,6 +2114,52 @@ fn shorten(cwd: &str) -> String {
     } else {
         cwd.to_string()
     }
+}
+
+/// A workspace's heading name: the directory's own name, or the whole path
+/// when there is no last segment to take (`/`).
+fn workspace_name(path: &str) -> String {
+    let trimmed = path.trim_end_matches(['/', '\\']);
+    let name = trimmed
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(trimmed)
+        .to_string();
+    if name.is_empty() {
+        path.to_string()
+    } else {
+        name
+    }
+}
+
+/// Do two spellings name the same directory? Trailing separators and the two
+/// separator characters are the only differences a pin has to survive; a
+/// case-insensitive filesystem is not assumed (this is not a filesystem check).
+fn same_path(left: &str, right: &str) -> bool {
+    let normalise = |path: &str| path.replace('\\', "/").trim_end_matches('/').to_string();
+    normalise(left) == normalise(right)
+}
+
+/// Is `cwd` one of the app's own scratch directories — a conversation with no
+/// workspace of its own?
+///
+/// Two of them exist: the agent's default workspace (a session started without
+/// a directory lands there) and the per-chat scratch tree the desktop creates.
+/// A directory the reader chose is never one of these, so a project's
+/// conversation is always filed.
+fn is_chat_directory(cwd: &str) -> bool {
+    let cwd = cwd.trim_end_matches(['/', '\\']);
+    if cwd.is_empty() {
+        return true;
+    }
+    let normalized = cwd.replace('\\', "/");
+    let root = crate::home::future_state_dir()
+        .display()
+        .to_string()
+        .replace('\\', "/");
+    let root = root.trim_end_matches('/');
+    normalized == format!("{root}/agent/workspace")
+        || normalized.starts_with(&format!("{root}/workspaces/chat/"))
 }
 
 fn age(updated_at_ms: i64) -> String {
@@ -1927,18 +2202,191 @@ pub fn persisted_language(settings: &crate::settings::TuiSettings) -> LanguagePr
     LanguagePreference::from_wire(settings.language.as_deref().unwrap_or("system"))
 }
 
+/// A draft with its `@path` mentions inlined.
+///
+/// `@` completion is a *local* affordance: the agent receives a prompt, not a
+/// path it would resolve itself, and only this side knows which directory the
+/// reader means. So every `@path` that names a readable file under the session's
+/// working directory becomes a `<file name="…">…</file>` block — exactly the
+/// shape `future run @README.md` sends.
+///
+/// The limits are stated rather than silent: at most [`MAX_MENTION_FILES`] files
+/// and [`MAX_MENTION_BYTES`] each; a file that is skipped (too large, binary,
+/// unreadable) is named in the prompt with the reason, so the model is told what
+/// it did not get. A token that names no file (`@team`) stays as typed — it may
+/// still mean something to the reader's sentence.
+pub fn expand_mentions(text: &str, cwd: &str) -> String {
+    const MAX_MENTION_FILES: usize = 8;
+    const MAX_MENTION_BYTES: usize = 256 * 1024;
+
+    if !text.contains('@') {
+        return text.to_string();
+    }
+    let root = std::path::Path::new(cwd);
+    let mut out = String::with_capacity(text.len());
+    let mut inlined = 0usize;
+    for (index, token) in text.split(' ').enumerate() {
+        if index > 0 {
+            out.push(' ');
+        }
+        let Some(rest) = token.strip_prefix('@') else {
+            out.push_str(token);
+            continue;
+        };
+        // Trailing punctuation belongs to the sentence, not the path — and it is
+        // put back after the block, so the reader's comma survives the inlining.
+        let path = rest.trim_end_matches([',', '。', ':', ';', ')']);
+        let tail = &rest[path.len()..];
+        if path.is_empty() || inlined >= MAX_MENTION_FILES {
+            out.push_str(token);
+            continue;
+        }
+        let absolute = if std::path::Path::new(path).is_absolute() {
+            std::path::PathBuf::from(path)
+        } else {
+            root.join(path)
+        };
+        match std::fs::read(&absolute) {
+            Ok(bytes) if bytes.len() > MAX_MENTION_BYTES => {
+                // What the *model* reads, never what the screen draws.
+                out.push_str(&format!(
+                    "[{path}: {} KB, not inlined - read it in pieces]", // i18n: prompt text for the model
+                    bytes.len() / 1024
+                ));
+                out.push_str(tail);
+            }
+            Ok(bytes) if bytes.iter().take(4096).any(|byte| *byte == 0) => {
+                out.push_str(&format!(
+                    "[{path}: binary, not inlined]" // i18n: prompt text for the model
+                ));
+                out.push_str(tail);
+            }
+            Ok(bytes) => {
+                out.push_str(&format!(
+                    "<file name=\"{}\">\n{}\n</file>",
+                    absolute.display(),
+                    String::from_utf8_lossy(&bytes)
+                ));
+                out.push_str(tail);
+                inlined += 1;
+            }
+            Err(_) => out.push_str(token),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod mention_tests {
+    use super::expand_mentions;
+
+    fn workspace() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        std::fs::write(dir.path().join("note.md"), "hello from the file").unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/deep.rs"), "fn main() {}").unwrap();
+        dir
+    }
+
+    /// The prompt the agent reads is the CLI's `<file>` block, not a path it has
+    /// to go and open itself: the reader's sentence stays, the token does not.
+    #[test]
+    fn a_mention_becomes_the_same_file_block_the_cli_sends() {
+        let dir = workspace();
+        let cwd = dir.path().display().to_string();
+        let prompt = expand_mentions("看一下 @note.md 的结论", &cwd);
+        assert!(prompt.starts_with("看一下 "), "{prompt}");
+        assert!(prompt.contains("hello from the file"), "{prompt}");
+        // The name in the block is the absolute path the code actually opened,
+        // so build the expectation the same way instead of pasting a separator:
+        // `Path::join` yields `\` on Windows and `/` elsewhere.
+        assert!(
+            prompt.contains(&format!(
+                "<file name=\"{}\">",
+                dir.path().join("note.md").display()
+            )),
+            "{prompt}"
+        );
+        assert!(prompt.contains("</file>"), "{prompt}");
+        assert!(
+            !prompt.contains("@note.md"),
+            "the token is replaced: {prompt}"
+        );
+    }
+
+    /// Every mention that cannot be inlined says why in the prompt, and a token
+    /// that names nothing stays exactly as the reader typed it.
+    #[test]
+    fn every_mention_kind_that_cannot_be_inlined_says_so_in_the_prompt() {
+        let dir = workspace();
+        let cwd = dir.path().display().to_string();
+        std::fs::write(dir.path().join("blob.bin"), [0u8, 1, 2, 3]).unwrap();
+        let prompt = expand_mentions("@missing.rs 和 @blob.bin 以及 @team 都在这里", &cwd);
+        assert!(prompt.contains("@missing.rs"), "{prompt}");
+        assert!(prompt.contains("blob.bin: binary"), "{prompt}");
+        assert!(prompt.contains("@team"), "{prompt}");
+    }
+
+    /// A file past the size limit is named rather than silently dropped — and a
+    /// draft with no mention is returned untouched, byte for byte.
+    #[test]
+    fn a_large_file_is_named_and_a_draft_without_mentions_is_unchanged() {
+        let dir = workspace();
+        let cwd = dir.path().display().to_string();
+        std::fs::write(dir.path().join("big.txt"), "x".repeat(300 * 1024)).unwrap();
+        let prompt = expand_mentions("@big.txt", &cwd);
+        assert!(prompt.contains("big.txt: 300 KB"), "{prompt}");
+        assert!(!prompt.contains("<file"), "{prompt}");
+        assert_eq!(
+            expand_mentions("no mentions here", &cwd),
+            "no mentions here"
+        );
+        // And an e-mail address is not a mention either: the token does not start
+        // with the sigil.
+        assert_eq!(
+            expand_mentions("mail me@example.com", &cwd),
+            "mail me@example.com"
+        );
+        // Trailing sentence punctuation is dropped from the path, because a
+        // comma after a filename is the reader's, not the file's.
+        let prompt = expand_mentions("see @note.md, then the test", &cwd);
+        assert!(prompt.contains("</file>, then the test"), "{prompt}");
+        // A full stop is deliberately *not* trimmed: it is part of a filename as
+        // often as it is the end of a sentence. What that costs depends on the
+        // filesystem — and in both cases the assertions below hold the same
+        // invariant, that the stop reached the filesystem instead of being cut.
+        let prompt = expand_mentions("see @note.md.", &cwd);
+        #[cfg(windows)]
+        {
+            // Win32 strips trailing dots, so `note.md.` *does* resolve here. The
+            // block therefore names the path with the stop still on it: a trimmer
+            // would have produced `note.md` and left the stop outside the tag.
+            assert!(
+                prompt.contains(&format!(
+                    "<file name=\"{}\">",
+                    dir.path().join("note.md.").display()
+                )),
+                "the trailing stop is passed through untrimmed: {prompt}"
+            );
+            assert!(!prompt.contains("@note.md."), "{prompt}");
+        }
+        #[cfg(not(windows))]
+        {
+            // A trailing dot is a legal file name here, so this names nothing in
+            // the directory: the token stays exactly as the reader typed it.
+            assert!(prompt.contains("@note.md."), "{prompt}");
+            assert!(!prompt.contains("<file"), "{prompt}");
+        }
+    }
+}
+
 impl Live {
     /// Adopt a language preference: the adapter's own sentences (the input hint,
     /// an approval prompt) and the panels' local facts are re-read in it, and the
     /// resolved bundle is returned for the surface.
-    ///
-    /// The scheduled jobs are read from `tasks.db` with their state already
-    /// spelled out, so the cache is dropped rather than patched; the next frame
-    /// refills it. Skills and todos carry no chrome, so they are untouched.
     pub fn set_language(&mut self, preference: LanguagePreference) -> Language {
         self.lang = preference.resolve();
         self.draft.placeholder = t(self.lang, Key::InputHintLaunchpad).into();
-        self.local_jobs = None;
         self.lang
     }
 }
@@ -1947,6 +2395,114 @@ impl Live {
 mod tests {
     use super::*;
     use crate::rpc::types::SessionSummary;
+
+    /// The launchpad's first message must create the session and send the
+    /// prompt.
+    ///
+    /// `Submit` carries the text the surface read, and it must stand on its own
+    /// without the draft: the driver used to clear the draft *before* handing
+    /// the action over, which made every submit read an empty draft and return
+    /// silently — the reported "type on the home screen, press enter, nothing
+    /// happens". The sequence below is that order, kept as the contract.
+    #[tokio::test]
+    async fn a_launchpad_submit_creates_the_session_and_sends_the_prompt() {
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("new_session", r#"{"sessionId":"s-new"}"#),
+            ("get_state", r#"{"sessionId":"s-new"}"#),
+            ("prompt", r#"{"runId":"r-1","acceptedState":"running"}"#),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        // The home screen: nothing attached, so the next message must create
+        // the session.
+        live.to_launchpad();
+        live.set_draft("hello there".into(), 11);
+
+        // …and the driver's own order, verbatim.
+        live.set_draft(String::new(), 0);
+        live.apply(WbAction::Submit("hello there".into())).await;
+
+        let commands = seen.lock().unwrap().clone();
+        assert!(
+            commands.iter().any(|command| command == "new_session"),
+            "the first message must create a session, saw {commands:?}"
+        );
+        assert!(
+            commands.iter().any(|command| command == "prompt"),
+            "the prompt must reach the agent, saw {commands:?}"
+        );
+        let painted = live.chat.render_all(80).join("\n");
+        assert!(
+            painted.contains("hello there"),
+            "the transcript keeps what was said:\n{painted}"
+        );
+    }
+
+    /// When no session can be started, the reader's text must survive: the
+    /// whole point of the launchpad's first message is that it can be retried
+    /// after whatever stopped the session is fixed.
+    #[tokio::test]
+    async fn a_submit_that_cannot_start_a_session_keeps_the_draft() {
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            // A `new_session` that hands back no id, and a state with none
+            // either: the adapter has nothing to send a prompt to.
+            ("new_session", "{}"),
+            ("get_state", r#"{"sessionId":""}"#),
+            ("prompt", r#"{"runId":"r-1"}"#),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        live.to_launchpad();
+        live.set_draft("do not lose this".into(), 16);
+        live.apply(WbAction::Submit("do not lose this".into()))
+            .await;
+
+        assert_eq!(
+            live.draft.text, "do not lose this",
+            "the reader's text must survive a session that could not start"
+        );
+        let commands = seen.lock().unwrap().clone();
+        assert!(
+            !commands.iter().any(|command| command == "prompt"),
+            "nothing is sent without a session, saw {commands:?}"
+        );
+    }
+
+    /// The same submission with the draft intact — the ordinary path once the
+    /// driver stops clearing it first — attaches the folded pastes it carries.
+    #[tokio::test]
+    async fn a_submit_still_sends_when_the_draft_holds_the_text() {
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("new_session", r#"{"sessionId":"s-new"}"#),
+            ("get_state", r#"{"sessionId":"s-new"}"#),
+            ("prompt", r#"{"runId":"r-1","acceptedState":"running"}"#),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        live.to_launchpad();
+        live.set_draft("second try".into(), 10);
+        live.apply(WbAction::Submit("second try".into())).await;
+
+        let commands = seen.lock().unwrap().clone();
+        assert!(
+            commands.iter().any(|command| command == "prompt"),
+            "{commands:?}"
+        );
+        let painted = live.chat.render_all(80).join("\n");
+        assert!(
+            painted.contains("second try"),
+            "the transcript keeps what was said:\n{painted}"
+        );
+    }
 
     fn row(id: &str, name: Option<&str>, cwd: &str) -> SessionSummary {
         SessionSummary {
@@ -1959,6 +2515,82 @@ mod tests {
             is_streaming: None,
             first_message: None,
         }
+    }
+
+    /// The rail, the `ctrl+r` list and the 工作区 tab name a workspace by its
+    /// own name; the path is what the *group* is filed under, not what the row
+    /// has room for. On the launchpad the 工作区 chip stages the directory the
+    /// next session is created in.
+    #[tokio::test]
+    async fn the_rail_names_workspaces_and_the_chip_stages_the_next_one() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        // Two workspaces, one of them named twice (a checkout and its trailing
+        // slash), which is one choice and two rows.
+        live.sessions = vec![
+            row("s-1", Some("first"), "/work/alpha"),
+            row("s-2", Some("second"), "/work/alpha/"),
+            row("s-3", Some("third"), "/other/beta"),
+        ];
+        live.state.cwd = Some("/work/alpha".into());
+        live.to_launchpad();
+
+        let frame = crate::workbench::layout::Frame::new(
+            120,
+            38,
+            36,
+            crate::workbench::preferences::Density::Focused,
+            crate::workbench::preferences::SidebarPosition::Right,
+        );
+        let data = live.data(&frame);
+        let names: Vec<&str> = data
+            .sessions
+            .iter()
+            .map(|session| session.workspace.as_str())
+            .collect();
+        assert_eq!(names.len(), 3);
+        for name in &names {
+            assert!(!name.contains('/'), "a row names a workspace: {name:?}");
+        }
+        assert!(names.contains(&"alpha"), "{names:?}");
+        assert!(names.contains(&"beta"), "{names:?}");
+
+        // The chip starts on the directory the session would run in…
+        assert_eq!(data.session.cwd, "/work/alpha");
+        assert_eq!(live.workspace_choices(), vec!["/work/alpha", "/other/beta"]);
+
+        // …cycles to the next *distinct* one…
+        live.cycle_pending_workspace();
+        assert_eq!(live.pending_cwd.as_deref(), Some("/other/beta"));
+        let data = live.data(&frame);
+        assert_eq!(data.session.cwd, "/other/beta");
+
+        // …and wraps back.
+        live.cycle_pending_workspace();
+        assert_eq!(live.pending_cwd.as_deref(), Some("/work/alpha"));
+    }
+
+    /// With a single workspace there is nothing to cycle: the chip says so
+    /// instead of silently keeping the only choice.
+    #[tokio::test]
+    async fn cycling_one_workspace_reports_that_there_is_nothing_else() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        live.sessions = vec![row("s-1", Some("only"), "/work/alpha")];
+        live.state.cwd = Some("/work/alpha".into());
+        live.to_launchpad();
+        live.cycle_pending_workspace();
+        assert_eq!(live.pending_cwd, None);
+        assert_eq!(
+            live.notice.as_deref(),
+            Some(t(live.lang, Key::WorkspaceNone))
+        );
     }
 
     #[test]
@@ -2012,6 +2644,91 @@ mod tests {
         state.usage.cache_read_tokens = 96;
         state.usage.input_tokens = 4;
         assert_eq!(cache_percent(&state), 96);
+    }
+
+    /// The 工作区 tab's filing. A conversation is filed under the directory it
+    /// ran in; two checkouts that share a name are two groups (the path is the
+    /// identity); a scratch directory is a plain chat; a pinned workspace leads
+    /// even when it is not the freshest.
+    #[test]
+    fn conversations_are_filed_by_the_directory_they_ran_in() {
+        // The scratch tree belongs to *this* home, so the fixture builds it the
+        // way the app does rather than pasting another machine's path.
+        let scratch = crate::home::future_state_dir()
+            .join("workspaces")
+            .join("chat")
+            .join("abc")
+            .display()
+            .to_string();
+        let sessions = vec![
+            row("a", Some("newest in main"), "/work/future-os"),
+            row("b", Some("older in main"), "/work/future-os/"),
+            row("c", Some("a worktree"), "/work/future-os/.worktrees/rail"),
+            row("d", Some("a sibling checkout"), "/other/future-os"),
+            row("e", Some("scratch"), &scratch),
+        ];
+        let rows: Vec<SessionRow> = sessions
+            .iter()
+            .enumerate()
+            .map(|(index, session)| SessionRow {
+                id: session.id.clone(),
+                title: display_name(session),
+                workspace: workspace_name(&session.cwd),
+                age: format!("{index}h"),
+                ..SessionRow::default()
+            })
+            .collect();
+        let pinned = vec!["/other/future-os/".to_string()];
+        let (groups, chats) = file_sessions(&sessions, &rows, &pinned);
+
+        // The pinned checkout leads although it is not the freshest.
+        assert_eq!(groups[0].path, "/other/future-os");
+        assert!(groups[0].pinned);
+        assert_eq!(groups[0].session_ids, vec!["d".to_string()]);
+
+        // A trailing slash is not a different workspace: `a` and `b` are one
+        // group, newest first, and the group's age is that newest one.
+        let main = groups
+            .iter()
+            .find(|group| group.path == "/work/future-os")
+            .expect("the main checkout");
+        assert_eq!(main.session_ids, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(main.age, "0h");
+        assert!(!main.pinned);
+        assert_eq!(main.name, "future-os");
+
+        // A worktree is its own group, and so is a second checkout with the
+        // same name.
+        assert!(groups
+            .iter()
+            .any(|group| group.path == "/work/future-os/.worktrees/rail"));
+        assert_eq!(
+            groups
+                .iter()
+                .filter(|group| group.name == "future-os")
+                .count(),
+            2,
+            "two checkouts share a name and stay apart: {groups:?}"
+        );
+
+        // The scratch directory is a plain chat, not a workspace.
+        assert_eq!(chats, vec!["e".to_string()]);
+        assert!(!groups
+            .iter()
+            .any(|group| group.session_ids.contains(&"e".into())));
+    }
+
+    #[test]
+    fn a_workspace_is_named_by_its_last_segment() {
+        assert_eq!(workspace_name("/home/dev/future-os"), "future-os");
+        assert_eq!(workspace_name("/home/dev/future-os/"), "future-os");
+        assert_eq!(workspace_name("D:\\work\\future-os"), "future-os");
+        // Nothing to take: the path itself is the honest name.
+        assert_eq!(workspace_name("/"), "/");
+        for (left, right) in [("/a/b", "/a/b/"), ("D:\\a\\b", "D:/a/b"), ("/a/b/", "/a/b")] {
+            assert!(same_path(left, right), "{left:?} vs {right:?}");
+        }
+        assert!(!same_path("/a/b", "/a/bc"));
     }
 
     /// A `usage` event is the only thing that moves the footer's ctx gauge

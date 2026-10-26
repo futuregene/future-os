@@ -747,6 +747,11 @@ fn default_answer(
     state: &mut MockAgentState,
 ) -> (bool, String, String) {
     match cmd.r#type.as_str() {
+        // These fixtures model released legacy sessions unless a test scripts
+        // the explicit canonical capability preflight itself.
+        "get_session_storage_format" => {
+            ok(json!({"exists":true,"format":1,"new_session_format":2}))
+        }
         "get_session_presence" => ok(
             json!({"databaseId":"test-agent-database","restoreGeneration":"test-generation",
             "sessions":cmd.session_ids.iter().map(|id|json!({"sessionId":id,"status":"present"})).collect::<Vec<_>>()}),

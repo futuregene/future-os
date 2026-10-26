@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import type { DeviceFilter, MergedConversation } from "../../features/remote-peer/mergeConversations";
+import type { DeviceFilter, MergedConversation, RemoteWorkspaceRow } from "../../features/remote-peer/mergeConversations";
 import type { RemotePeer } from "../../features/remote-peer/remotePeerClient";
 import type { StoredThread } from "../../integrations/storage/threadStore";
 import { act } from "react";
@@ -101,6 +101,8 @@ async function render(props: {
   selectionMode?: boolean;
   threadById: Map<string, StoredThread>;
   workspaceSectionCollapsed?: boolean;
+  /** The hosts' workspaces, for the headings of empty ones. */
+  workspaces?: ReadonlyMap<string, readonly RemoteWorkspaceRow[]>;
 }) {
   const container = document.createElement("div");
   document.body.append(container);
@@ -138,6 +140,7 @@ async function render(props: {
         selectionMode={props.selectionMode ?? false}
         threadById={props.threadById}
         workspaceSectionCollapsed={props.workspaceSectionCollapsed ?? false}
+        workspaces={props.workspaces}
       />,
     );
   });
@@ -1153,5 +1156,37 @@ it("hands the machine, the id and the current name to the rename hand-off", asyn
     name: "Docs",
     workspaceId: "ws_remote",
   });
+  await view.unmount();
+});
+
+/**
+ * A workspace created on a host shows up before anything is said in it.
+ *
+ * The "＋" on the list's own workspace section registers a folder on that machine
+ * and the list is what has to show it. A group was built from the rows under it,
+ * so a folder with no conversations had no group: the create succeeded, the host
+ * listed it, and the list went on showing nothing. The host's workspaces travel
+ * with its sessions for exactly this, and this is the render that proves one
+ * arrives as a heading with nothing beneath it.
+ */
+it("draws a host's workspace heading before anything is said in it", async () => {
+  const view = await render({
+    onNewChatInWorkspace: vi.fn(),
+    peers: [peer("desktop_a", "Studio iMac")],
+    renderLocalRow: vi.fn(() => null),
+    rows: [],
+    threadById: new Map(),
+    workspaces: new Map<string, RemoteWorkspaceRow[]>([["desktop_a", [
+      { id: "ws_new", name: "charts", path: "/Users/me/charts", pinned: false, kind: "user", orderedAt: 900 },
+    ]]]),
+  });
+
+  const headings = [...view.container.querySelectorAll("[data-testid='merged-group-heading']")]
+    .map(node => node.textContent ?? "");
+  expect(headings).toEqual(["charts"]);
+  // The workspace section is not its empty placeholder — the host has a folder to
+  // show, and the heading is all of it. (The chats section's own placeholder is a
+  // different statement: that host really has no chats.)
+  expect(view.container.textContent).not.toContain("No workspace threads");
   await view.unmount();
 });

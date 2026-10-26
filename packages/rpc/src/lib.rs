@@ -18,9 +18,11 @@
 //! It owns the session-not-found error code both sides key off as well
 //! ([`session_errors`]).
 
+pub mod approval_assessment;
 pub mod cli_capabilities;
 pub mod command_policy;
 pub mod connection;
+pub mod content_range;
 pub mod history;
 pub mod home;
 pub mod instance_lock;
@@ -28,6 +30,7 @@ pub mod session_deletion;
 pub mod session_errors;
 pub mod shell_result;
 pub mod supervision;
+pub mod tool_arguments;
 pub mod transport;
 
 pub mod proto {
@@ -192,3 +195,5 @@ mod automatic_approval_wire_tests {
         assert_eq!(decoded["input_context"], value["input_context"]);
     }
 }
+
+pub mod content_body;

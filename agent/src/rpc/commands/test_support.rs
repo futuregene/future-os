@@ -68,9 +68,35 @@ pub(crate) fn make_app_state_with_provider(
     session_dir: std::path::PathBuf,
     queue_budget: Arc<crate::runtime::GlobalQueueBudget>,
 ) -> AppState {
+    make_app_state_with_format(provider, session_dir, queue_budget, false)
+}
+
+/// Released raw-journal fixtures select their format before reserving the id.
+pub(crate) fn make_legacy_app_state() -> AppState {
+    make_app_state_with_format(
+        Arc::new(EmptyProvider),
+        test_session_dir(),
+        Arc::new(crate::runtime::GlobalQueueBudget::defaults()),
+        true,
+    )
+}
+
+fn make_app_state_with_format(
+    provider: Arc<dyn LLMProvider>,
+    session_dir: std::path::PathBuf,
+    queue_budget: Arc<crate::runtime::GlobalQueueBudget>,
+    legacy: bool,
+) -> AppState {
     let cwd = test_workspace();
     let model_registry = Arc::new(parking_lot::RwLock::new(crate::models::Registry::new()));
     let session_manager = Arc::new(crate::session::Manager::new(session_dir));
+    if legacy {
+        session_manager
+            .storage()
+            .unwrap()
+            .bind_legacy_events("default")
+            .unwrap();
+    }
     let approval_gate = ApprovalGate::default();
     // One live session named "default" — sessions are equal peers now,
     // so tests address it explicitly by id.
@@ -167,4 +193,44 @@ pub(crate) fn save_via(
         entries,
     );
     state.session_manager.save(&snapshot).unwrap();
+}
+
+/// Exact equality with a compact field path instead of megabytes of body text.
+pub(crate) fn assert_json_eq(left: &serde_json::Value, right: &serde_json::Value) {
+    fn difference(left: &serde_json::Value, right: &serde_json::Value, path: &str) -> String {
+        match (left, right) {
+            (serde_json::Value::Object(a), serde_json::Value::Object(b)) => {
+                for key in a.keys().chain(b.keys()) {
+                    if a.get(key) != b.get(key) {
+                        return difference(&a[key], &b[key], &format!("{path}/{key}"));
+                    }
+                }
+            }
+            (serde_json::Value::Array(a), serde_json::Value::Array(b)) => {
+                for (index, (x, y)) in a.iter().zip(b).enumerate() {
+                    if x != y {
+                        return difference(x, y, &format!("{path}/{index}"));
+                    }
+                }
+            }
+            (serde_json::Value::String(a), serde_json::Value::String(b)) => {
+                if let (Ok(x), Ok(y)) = (
+                    serde_json::from_str::<serde_json::Value>(a),
+                    serde_json::from_str::<serde_json::Value>(b),
+                ) {
+                    if x == y {
+                        return format!("{path} (JSON encoding differs)");
+                    }
+                    return difference(&x, &y, &format!("{path}:json"));
+                }
+            }
+            _ => {}
+        }
+        path.to_owned()
+    }
+    assert!(
+        left == right,
+        "JSON differs at {}",
+        difference(left, right, "")
+    );
 }

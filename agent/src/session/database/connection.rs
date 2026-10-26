@@ -21,6 +21,7 @@ pub(super) fn open_connection_cancellable(
         std::fs::create_dir_all(parent).context("create SQLite directory")?;
     }
     let mut connection = Connection::open(path).context("open Agent SQLite database")?;
+    crate::session::content::install_functions(&connection)?;
     connection.busy_timeout(Duration::from_secs(5))?;
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     let application: i64 =
@@ -31,6 +32,7 @@ pub(super) fn open_connection_cancellable(
         && version != 4
         && version != 5
         && version != 6
+        && version != 7
         && version != super::CURRENT_SCHEMA_VERSION
     {
         bail!("unsupported Agent database schema version {version}");
@@ -102,7 +104,9 @@ pub(super) fn open_connection_cancellable(
     connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "synchronous", "FULL")?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
-    connection.pragma_update(None, "wal_autocheckpoint", 1_000)?;
+    // FULL durability stays on the writer; PASSIVE checkpoints have their own
+    // connection/thread so crossing a page count does not expand COMMIT work.
+    connection.pragma_update(None, "wal_autocheckpoint", 0)?;
     connection.pragma_update(None, "journal_size_limit", 8 * 1024 * 1024)?;
     cancellation.check()?;
     super::schema::initialize_schema(&mut connection, cancellation)?;

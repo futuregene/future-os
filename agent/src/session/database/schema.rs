@@ -7,12 +7,14 @@ pub(super) fn initialize_schema(
     cancellation: &crate::service::StartupCancellation,
 ) -> Result<()> {
     cancellation.check()?;
+    crate::session::content::install_functions(connection)?;
     let tx = connection.transaction()?;
     let missing_projection: bool = tx.query_row(
         "SELECT count(*)!=2 FROM sqlite_schema WHERE type='table' AND name IN ('history_shapes','history_display')",
         [], |row| row.get(0),
     )?;
     tx.execute_batch(include_str!("schema.sql"))?;
+    tx.execute_batch(include_str!("../content/schema.sql"))?;
     if missing_projection {
         tx.execute("DELETE FROM history_index_state", [])?;
     }
@@ -26,7 +28,9 @@ pub(super) fn initialize_schema(
         ON CONFLICT(key) DO UPDATE SET value=CAST(max(CAST(storage_meta.value AS INTEGER),CAST(excluded.value AS INTEGER)) AS TEXT)", [])?;
     cancellation.check()?;
     tx.execute_batch(crate::skills::registry::SKILLS_TABLE_SQL)?;
+    tx.execute_batch(crate::session::content::entries::RESOLVED_BLOCKS_SQL)?;
     tx.execute_batch(crate::session::entry_records::ENTRY_RECORD_VIEWS_SQL)?;
+    tx.execute_batch(&crate::session::content::entries::header_views_sql())?;
     tx.execute_batch(
         "CREATE UNIQUE INDEX IF NOT EXISTS run_events_custom_id
          ON run_events(session_id,event_id) WHERE event_id IS NOT NULL;",
@@ -67,24 +71,46 @@ pub(super) fn validate_authoritative_history(connection: &Connection, version: i
         connection.prepare("SELECT session_id,run_id,version,cursor,payload,pricing_payloads FROM run_snapshots LIMIT 0")
             .map_err(|error| anyhow::anyhow!("Agent database history structure is incomplete; preserve the database for recovery: {error}"))?;
     }
+    if version >= 7 {
+        for query in [
+            "SELECT session_id,deleted_at_ms FROM session_tombstones LIMIT 0",
+            "SELECT session_id,run_id,client_request_id,run_sequence,fingerprint,payload_json,user_entry_json,status FROM queued_run_receipts LIMIT 0",
+        ] {
+            connection.prepare(query).map_err(|error| anyhow::anyhow!("Agent database history structure is incomplete; preserve the database for recovery: {error}"))?;
+        }
+        let identities: i64 = connection.query_row(
+            "SELECT count(*) FROM storage_meta WHERE key IN ('database_id','restore_generation') AND length(value)>0",
+            [], |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            identities == 2,
+            "Agent database identity is incomplete; preserve the database for recovery"
+        );
+    }
+    if version >= 8 {
+        for query in [
+            "SELECT session_id,format FROM session_formats LIMIT 0",
+            "SELECT session_id,generation,metadata_generation FROM content_history_versions LIMIT 0",
+            "SELECT id,byte_length,sealed,sha256,json_sha256 FROM content_objects LIMIT 0",
+            "SELECT content_id,byte_offset,body FROM content_segments LIMIT 0",
+            "SELECT session_id,owner_kind,owner_id,field,encoding,content_id,byte_offset,byte_length FROM content_references LIMIT 0",
+            "SELECT id,session_id,run_id,epoch,durable_cursor FROM stream_runs LIMIT 0",
+            "SELECT id,stream_id,first_cursor,last_cursor,event_type,metadata_json FROM stream_changes LIMIT 0",
+            "SELECT change_id,field,encoding,content_id,byte_offset,byte_length FROM stream_change_content LIMIT 0",
+            "SELECT content_id FROM content_collection LIMIT 0",
+            "SELECT session_id,entry_id,digest FROM entry_fingerprints LIMIT 0",
+            "SELECT operation_id,session_id,owner_prefix,expected_revision,kind FROM content_operations LIMIT 0",
+            "SELECT operation_id,session_id,entry_id,run_id FROM content_entry_stages LIMIT 0",
+            "SELECT stream_id FROM retired_streams LIMIT 0",
+            "SELECT session_id,input_key,history_generation FROM checkpoint_generations LIMIT 0",
+            "SELECT session_id,through_generation FROM retired_checkpoint_generations LIMIT 0",
+        ] {
+            connection.prepare(query).map_err(|error| anyhow::anyhow!("Agent database history structure is incomplete; preserve the database for recovery: {error}"))?;
+        }
+    }
     Ok(())
 }
 
 pub(super) fn validate_core(connection: &Connection) -> Result<()> {
-    validate_authoritative_history(connection, super::CURRENT_SCHEMA_VERSION)?;
-    for query in [
-        "SELECT session_id,deleted_at_ms FROM session_tombstones LIMIT 0",
-        "SELECT session_id,run_id,client_request_id,run_sequence,fingerprint,payload_json,user_entry_json,status FROM queued_run_receipts LIMIT 0",
-    ] {
-        connection.prepare(query).map_err(|error| anyhow::anyhow!("Agent database history structure is incomplete; preserve the database for recovery: {error}"))?;
-    }
-    let identities: i64 = connection.query_row(
-        "SELECT count(*) FROM storage_meta WHERE key IN ('database_id','restore_generation') AND length(value)>0",
-        [], |row| row.get(0),
-    )?;
-    anyhow::ensure!(
-        identities == 2,
-        "Agent database identity is incomplete; preserve the database for recovery"
-    );
-    Ok(())
+    validate_authoritative_history(connection, super::CURRENT_SCHEMA_VERSION)
 }

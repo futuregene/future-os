@@ -1114,10 +1114,11 @@ fn get_session_entries_renders_roles_and_run_stats() {
         ],
     );
 
-    let resp = parse_response(&handle_command_internal(
-        &state,
-        make_cmd("get_session_entries"),
-    ));
+    let resp = parse_response(&handle_command_internal(&state, {
+        let mut command = make_cmd("get_session_entries");
+        command.offset = Some(0);
+        command
+    }));
     assert_eq!(resp["success"], true);
     let entries = resp["data"]["entries"].as_array().unwrap();
     // session_info (deduped to one), user, assistant, tool, failing tool.
@@ -1163,10 +1164,11 @@ fn get_session_entries_projects_replyless_failure_onto_canonical_user_entry() {
     );
     save_via(&state, "default", "mock", vec![user, terminal]);
 
-    let resp = parse_response(&handle_command_internal(
-        &state,
-        make_cmd("get_session_entries"),
-    ));
+    let resp = parse_response(&handle_command_internal(&state, {
+        let mut command = make_cmd("get_session_entries");
+        command.offset = Some(0);
+        command
+    }));
     let entry = &resp["data"]["entries"][0];
     assert_eq!(entry["runId"], "run-failed");
     assert_eq!(entry["run"]["status"], "failed");
@@ -1190,10 +1192,11 @@ fn get_session_entries_reports_a_corrupt_persisted_history() {
         .session_manager
         .test_execute("UPDATE entries SET metadata_json='{\"timestamp\":false}'; UPDATE sessions SET revision=revision+1;");
 
-    let response = parse_response(&handle_command_internal(
-        &state,
-        make_cmd("get_session_entries"),
-    ));
+    let response = parse_response(&handle_command_internal(&state, {
+        let mut command = make_cmd("get_session_entries");
+        command.offset = Some(0);
+        command
+    }));
     assert_eq!(response["success"], false);
     assert_eq!(response["error_code"], "session_history_unreadable");
     assert!(response["error"]
@@ -1248,10 +1251,11 @@ fn get_session_entries_covers_compaction_billed_deltas_and_empty_info() {
         ],
     );
 
-    let resp = parse_response(&handle_command_internal(
-        &state,
-        make_cmd("get_session_entries"),
-    ));
+    let resp = parse_response(&handle_command_internal(&state, {
+        let mut command = make_cmd("get_session_entries");
+        command.offset = Some(0);
+        command
+    }));
     assert_eq!(resp["success"], true);
     let entries = resp["data"]["entries"].as_array().unwrap();
 
@@ -1303,10 +1307,11 @@ fn get_session_entries_marks_failed_tool_result_is_error() {
     });
     save_via(&state, "default", "mock", vec![info, assistant, failed]);
 
-    let resp = parse_response(&handle_command_internal(
-        &state,
-        make_cmd("get_session_entries"),
-    ));
+    let resp = parse_response(&handle_command_internal(&state, {
+        let mut command = make_cmd("get_session_entries");
+        command.offset = Some(0);
+        command
+    }));
     assert_eq!(resp["success"], true);
     let entries = resp["data"]["entries"].as_array().unwrap();
     let tool = entries.iter().find(|e| e["kind"] == "tool").unwrap();
@@ -1317,7 +1322,7 @@ fn get_session_entries_marks_failed_tool_result_is_error() {
 
 #[test]
 fn get_session_entries_paginates_only_when_offset_is_explicit() {
-    let state = make_app_state();
+    let state = make_legacy_app_state();
     let entries = (0..5)
         .map(|i| crate::session::SessionEntry::new_user("user", serde_json::json!(format!("q{i}"))))
         .collect();
@@ -1779,7 +1784,7 @@ fn clone_fails_when_disk_session_missing() {
 
 #[test]
 fn clone_rejects_disk_session_with_idless_last_entry() {
-    let state = make_app_state();
+    let state = make_legacy_app_state();
     {
         let session = state.get_session("default").unwrap();
         session
@@ -1965,10 +1970,11 @@ fn get_session_entries_handles_empty_tool_and_rich_meta() {
     let empty_tool = crate::session::SessionEntry::new_tool("call-1", "");
     save_via(&state, "default", "mock", vec![assistant, empty_tool]);
 
-    let resp = parse_response(&handle_command_internal(
-        &state,
-        make_cmd("get_session_entries"),
-    ));
+    let resp = parse_response(&handle_command_internal(&state, {
+        let mut command = make_cmd("get_session_entries");
+        command.offset = Some(0);
+        command
+    }));
     assert_eq!(resp["success"], true);
     let entries = resp["data"]["entries"].as_array().unwrap();
     assert_eq!(entries.len(), 2);
@@ -2126,10 +2132,11 @@ fn get_session_entries_skips_orphan_terminal_marker() {
             crate::session::SessionEntry::new_user("user", serde_json::json!("hi")),
         ],
     );
-    let resp = parse_response(&handle_command_internal(
-        &state,
-        make_cmd("get_session_entries"),
-    ));
+    let resp = parse_response(&handle_command_internal(&state, {
+        let mut command = make_cmd("get_session_entries");
+        command.offset = Some(0);
+        command
+    }));
     assert_eq!(resp["success"], true);
 }
 
@@ -2463,4 +2470,32 @@ fn batch_delete_is_partial_for_busy_sessions_and_validates_before_mutation() {
         .iter()
         .all(|r| r["deleted"] == true));
     assert!(!state.sessions.read().contains_key("default"));
+}
+#[test]
+fn canonical_history_requires_a_cursor_and_never_uses_the_whole_history_fallback() {
+    let root = tempfile::tempdir().unwrap();
+    let manager = crate::session::Manager::new(root.path().join("sessions"));
+    let store = manager.storage().unwrap();
+    store.reserve_segmented("s").unwrap();
+    store.replace("s",vec![serde_json::json!({"id":"u","type":"user","role":"user","timestamp":"2026-10-26T00:00:00Z","content":"visible"})]).unwrap();
+    let response = super::session_lifecycle::cmd_read_session_entries(
+        &manager,
+        "s",
+        &make_cmd("get_session_entries"),
+        "read",
+    );
+    let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+    assert_eq!(response["success"], false);
+    assert_eq!(response["error_code"], "history_paging_required");
+    let mut command = make_cmd("get_session_entries");
+    command.offset = Some(0);
+    command.limit = Some(10);
+    let response =
+        super::session_lifecycle::cmd_read_session_entries(&manager, "s", &command, "read");
+    let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+    assert_eq!(response["success"], true);
+    assert_eq!(
+        response["data"]["entries"][0]["blocks"][0]["text"],
+        "visible"
+    );
 }

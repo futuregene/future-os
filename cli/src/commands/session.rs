@@ -38,6 +38,7 @@ Usage:
   future session reject <id> <request-id> [opts]       Deny a pending approval
   future session delete <id>                           Delete a session
   future session prune --older-than <age> [--yes]      Delete sessions idle longer than <age>
+  future session journal [--reclaim [--yes]] [--json]  Raw run-journal cost + reclamation
 
 Session data is stored in ~/.future/agent/agent.db";
 
@@ -1467,6 +1468,10 @@ pub async fn session(
         return super::session_prune::run(args, out).await;
     }
 
+    if subcommand == "journal" {
+        return super::session_journal::run(args, out).await;
+    }
+
     if subcommand == "wait" {
         return super::session_wait::run(args, out).await;
     }
@@ -2084,8 +2089,8 @@ mod tests {
     async fn info_session_not_found() {
         let _guard = crate::test_env::lock_env().await;
         let agent = crate::test_server::MockAgent::respond(
-            "list_sessions",
-            "{\"sessions\":[{\"id\":\"other\"}]}",
+            "get_session_entries",
+            r#"{"entries":[],"hasMore":false,"nextOffset":0}"#,
         );
         let (_agent, _env) = mock_env(agent).await;
         let (out, cap) = Output::memory();

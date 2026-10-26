@@ -380,7 +380,7 @@ fn prune_run_events_validates_run_id() {
 
 #[test]
 fn prune_run_events_removes_journal_and_tolerates_missing_file() {
-    let state = make_app_state();
+    let state = make_legacy_app_state();
     state.session_manager.storage().unwrap().append_event("default", serde_json::json!({"run_id":"run-prune","epoch":1,"idx":0,"event_type":"agent_start","data":"{}"})).unwrap();
 
     let mut cmd = make_cmd("prune_run_events");
@@ -564,7 +564,7 @@ fn prompt_supersede_replaces_queued_run() {
 
 #[test]
 fn prompt_duplicate_run_id_maps_to_scheduler_error() {
-    let state = make_app_state();
+    let state = make_legacy_app_state();
     // Plant a journal for run-dupe so the id is rejected as reused.
     state.session_manager.storage().unwrap().append_event("default", serde_json::json!({"run_id":"run-dupe","epoch":1,"idx":0,"event_type":"agent_start","data":"{}"})).unwrap();
 

@@ -12,8 +12,8 @@
 use crate::workbench::ansi::style;
 use crate::workbench::i18n::{t, Key};
 use crate::workbench::state::{
-    Activity, ActivityKind, InputView, JobRow, ModelChoice, SessionMeta, SessionRow, SkillRow,
-    TodoItem, TodoState, UsageData, WorkbenchData,
+    Activity, ActivityKind, InputView, ModelChoice, SessionMeta, SessionRow, SkillRow, UsageData,
+    WorkbenchData, WorkspaceGroup,
 };
 use crate::workbench::theme::FUTURE_DARK;
 
@@ -24,8 +24,8 @@ pub enum Scenario {
     Launchpad,
     /// A conversation with the work between two answers folded away.
     Chat,
-    /// A long goal todo list, to see the sidebar scroll.
-    Todo,
+    /// Many workspaces and conversations, to see the rail scroll.
+    Workspaces,
 }
 
 impl Scenario {
@@ -33,7 +33,7 @@ impl Scenario {
         match name.to_ascii_lowercase().as_str() {
             "launchpad" | "home" => Some(Self::Launchpad),
             "chat" => Some(Self::Chat),
-            "todo" | "todos" => Some(Self::Todo),
+            "workspaces" | "workspace" | "todo" => Some(Self::Workspaces),
             _ => None,
         }
     }
@@ -42,7 +42,7 @@ impl Scenario {
         match self {
             Self::Launchpad => "launchpad",
             Self::Chat => "chat",
-            Self::Todo => "todo",
+            Self::Workspaces => "workspaces",
         }
     }
 }
@@ -52,7 +52,7 @@ pub fn data(scenario: Scenario) -> WorkbenchData {
     match scenario {
         Scenario::Launchpad => launchpad(),
         Scenario::Chat => chat(),
-        Scenario::Todo => todo(),
+        Scenario::Workspaces => workspaces(),
     }
 }
 
@@ -65,7 +65,6 @@ fn base() -> WorkbenchData {
         model: "future/deepseek-flash".into(),
         effort: "medium".into(),
         mode: "manual".into(),
-        permission: "workspace".into(),
         usage: UsageData {
             ctx_used: 6_900,
             ctx_total: 1_000_000,
@@ -73,31 +72,11 @@ fn base() -> WorkbenchData {
             cache_pct: 96,
             tps: 0.0,
         },
-        todos: vec![
-            TodoItem {
-                text: "复现 parser 的 off-by-one".into(),
-                priority: "P0".into(),
-                state: TodoState::Done,
-                ..TodoItem::default()
-            },
-            TodoItem {
-                text: "补一个回归测试".into(),
-                priority: "P0".into(),
-                state: TodoState::Active,
-                ..TodoItem::default()
-            },
-            TodoItem {
-                text: "跑 tui 的完整测试套件".into(),
-                priority: "P1".into(),
-                state: TodoState::Open,
-                ..TodoItem::default()
-            },
-        ],
         sessions: vec![
             SessionRow {
                 id: "s1".into(),
                 title: "修复 parser 的 off-by-one".into(),
-                workspace: "~/future-os".into(),
+                workspace: "future-os".into(),
                 age: "2m".into(),
                 current: true,
                 parent_id: None,
@@ -105,7 +84,7 @@ fn base() -> WorkbenchData {
             SessionRow {
                 id: "s2".into(),
                 title: "workbench 布局草图".into(),
-                workspace: "~/future-os".into(),
+                workspace: "future-os".into(),
                 age: "1h".into(),
                 current: false,
                 parent_id: None,
@@ -113,7 +92,7 @@ fn base() -> WorkbenchData {
             SessionRow {
                 id: "s3".into(),
                 title: "mobile 恢复会话".into(),
-                workspace: "~/future-os/.worktrees/mobile".into(),
+                workspace: "mobile".into(),
                 age: "3h".into(),
                 current: false,
                 parent_id: None,
@@ -121,12 +100,44 @@ fn base() -> WorkbenchData {
             SessionRow {
                 id: "s4".into(),
                 title: "blog: why one agent".into(),
-                workspace: "~/futureos-wechat-articles".into(),
+                workspace: "futureos-wechat-articles".into(),
                 age: "2d".into(),
                 current: false,
                 parent_id: None,
             },
+            SessionRow {
+                id: "s5".into(),
+                title: "把 NATS 的 TLS 说清楚".into(),
+                workspace: "临时对话".into(),
+                age: "4d".into(),
+                current: false,
+                parent_id: None,
+            },
         ],
+        workspaces: vec![
+            WorkspaceGroup {
+                name: "future-os".into(),
+                path: "/home/dev/future-os".into(),
+                pinned: true,
+                age: "2m".into(),
+                session_ids: vec!["s1".into(), "s2".into()],
+            },
+            WorkspaceGroup {
+                name: "mobile".into(),
+                path: "/home/dev/future-os/.worktrees/mobile".into(),
+                pinned: false,
+                age: "3h".into(),
+                session_ids: vec!["s3".into()],
+            },
+            WorkspaceGroup {
+                name: "futureos-wechat-articles".into(),
+                path: "/home/dev/futureos-wechat-articles".into(),
+                pinned: false,
+                age: "2d".into(),
+                session_ids: vec!["s4".into()],
+            },
+        ],
+        chats: vec!["s5".into()],
         models: demo_models(),
         skills: vec![
             SkillRow {
@@ -142,15 +153,14 @@ fn base() -> WorkbenchData {
                 description: "搜公开网页并核对事实".into(),
             },
         ],
-        jobs: vec![
-            JobRow {
-                name: "dev 分支 PR 合并".into(),
-                state: "每 10m".into(),
-            },
-            JobRow {
-                name: "夜间覆盖率".into(),
-                state: "每天 03:00".into(),
-            },
+        // The `@` menu's candidates: a handful of real paths, so a demo frame
+        // can show the menu with something in it.
+        files: vec![
+            "tui/src/workbench/mod.rs".into(),
+            "tui/src/workbench/screen.rs".into(),
+            "tui/src/workbench/live.rs".into(),
+            "docs/tui/workbench-spec.md".into(),
+            "AGENTS.md".into(),
         ],
         messages: Vec::new(),
         input: InputView {
@@ -222,6 +232,8 @@ pub fn launchpad() -> WorkbenchData {
     let mut data = base();
     data.input.text.clear();
     data.sessions[0].current = false;
+    // The workspace chip names the directory the first message would run in.
+    data.session.cwd = "~/future-os".into();
     data
 }
 
@@ -259,35 +271,47 @@ pub fn chat() -> WorkbenchData {
     data
 }
 
-/// A long todo list, to exercise the sidebar's window and its "more" row.
-pub fn todo() -> WorkbenchData {
+/// Twelve workspaces and their conversations, to exercise the rail's window and
+/// its "more" row.
+pub fn workspaces() -> WorkbenchData {
     let mut data = chat();
-    data.todos = (0..24)
-        .map(|index| TodoItem {
-            text: format!(
-                "第 {} 项：把 workbench 的 {} 接上真实数据",
-                index + 1,
-                panel_for(index)
-            ),
-            priority: if index < 8 { "P0" } else { "P1" }.into(),
-            state: match index % 5 {
-                0 => TodoState::Done,
-                2 => TodoState::Active,
-                4 => TodoState::Blocked,
-                _ => TodoState::Open,
-            },
-            ..TodoItem::default()
-        })
-        .collect();
     data.session.title = "workbench 侧栏验收".into();
+    let names = [
+        "future-os",
+        "mobile",
+        "futureos-wechat-articles",
+        "agent-harness",
+        "loop",
+        "docs-site",
+        "slides",
+        "desktop",
+        "remote-peers",
+        "channels",
+        "goal-plane",
+        "screenshots",
+    ];
+    data.sessions = Vec::new();
+    data.workspaces = Vec::new();
+    for (index, name) in names.iter().enumerate() {
+        let id = format!("w{index}");
+        data.sessions.push(SessionRow {
+            id: id.clone(),
+            title: format!("{} 的第一条会话", name),
+            workspace: format!("~/{name}"),
+            age: format!("{}h", index + 1),
+            current: index == 0,
+            parent_id: None,
+        });
+        data.workspaces.push(WorkspaceGroup {
+            name: (*name).to_string(),
+            path: format!("/home/dev/{name}"),
+            pinned: index < 2,
+            age: format!("{}h", index + 1),
+            session_ids: vec![id],
+        });
+    }
+    data.chats = Vec::new();
     data
-}
-
-/// The fifth panel's name for the demo todos' text: the sample data names the
-/// panels it lives beside, and reads them from the one place that spells them.
-fn panel_for(index: usize) -> &'static str {
-    use crate::workbench::i18n::Language;
-    crate::workbench::state::PanelId::ALL[index % 5].label(Language::Zh)
 }
 
 #[cfg(test)]
@@ -296,7 +320,7 @@ mod tests {
 
     #[test]
     fn every_scenario_is_reachable_by_name() {
-        for scenario in [Scenario::Launchpad, Scenario::Chat, Scenario::Todo] {
+        for scenario in [Scenario::Launchpad, Scenario::Chat, Scenario::Workspaces] {
             assert_eq!(Scenario::parse(scenario.name()), Some(scenario));
             assert_eq!(
                 Scenario::parse(&scenario.name().to_uppercase()),
@@ -332,18 +356,16 @@ mod tests {
     }
 
     #[test]
-    fn the_todo_scenario_is_long_enough_to_scroll() {
-        let data = todo();
-        assert_eq!(data.todos.len(), 24);
-        assert!(data.todos.iter().any(|todo| todo.state.is_done()));
-        assert!(data
-            .todos
-            .iter()
-            .any(|todo| todo.state == TodoState::Active));
-        assert!(data
-            .todos
-            .iter()
-            .any(|todo| todo.state == TodoState::Blocked));
+    fn the_workspace_scenario_is_long_enough_to_scroll() {
+        let data = workspaces();
+        assert_eq!(data.workspaces.len(), 12);
+        assert!(data.workspaces.iter().any(|group| group.pinned));
+        assert!(data.workspaces.iter().any(|group| !group.pinned));
+        for group in &data.workspaces {
+            for id in &group.session_ids {
+                assert!(data.sessions.iter().any(|session| &session.id == id));
+            }
+        }
     }
 
     #[test]
@@ -352,5 +374,6 @@ mod tests {
         // builds of the same scenario must produce identical bytes.
         assert_eq!(chat(), chat());
         assert_eq!(launchpad(), launchpad());
+        assert_eq!(workspaces(), workspaces());
     }
 }

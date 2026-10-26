@@ -14,6 +14,8 @@ mod artifacts;
 #[cfg(feature = "gui")]
 mod debug;
 mod files;
+#[cfg(feature = "gui")]
+mod history_transfer;
 #[cfg(all(test, feature = "gui"))]
 pub(crate) mod ipc_harness;
 #[cfg(feature = "gui")]
@@ -56,6 +58,8 @@ pub use self::artifacts::*;
 pub use self::debug::*;
 #[cfg(feature = "gui")]
 pub use self::files::*;
+#[cfg(feature = "gui")]
+pub use self::history_transfer::*;
 #[cfg(feature = "gui")]
 pub use self::login::*;
 #[cfg(feature = "gui")]

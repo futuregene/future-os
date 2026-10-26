@@ -223,6 +223,35 @@ describe("context panel shell", () => {
     view.unmount();
   });
 
+  it("draws over the conversation instead of beside it when floated", () => {
+    // Floated is the narrow-window layout: the panel is out of the column row
+    // (absolute), so it takes no width from the conversation and cannot be the
+    // reason a control ends up off-screen. The collapsed affordance is the same
+    // button either way — that is what keeps it reachable while floated.
+    const p = baseProps({ floating: true });
+    const view = mount(<ContextPanel {...p} />);
+    const aside = view.container.querySelector<HTMLElement>("aside")!;
+    expect(aside.className).toContain("absolute");
+    expect(aside.className).toContain("right-0");
+    expect(aside.className).toContain("z-40");
+    expect(aside.className).not.toContain("shrink-0");
+    expect(aside.style.width).toBe("360px");
+    view.unmount();
+
+    const collapsed = mount(<ContextPanel {...baseProps({ expanded: false, floating: true })} />);
+    expect(collapsed.container.querySelector<HTMLButtonElement>("button[aria-label=\"Expand context panel\"]")).not.toBeNull();
+    expect(collapsed.container.querySelector("aside")).toBeNull();
+    collapsed.unmount();
+  });
+
+  it("keeps the column in the row's flow when not floated", () => {
+    const view = mount(<ContextPanel {...baseProps()} />);
+    const aside = view.container.querySelector<HTMLElement>("aside")!;
+    expect(aside.className).toContain("shrink-0");
+    expect(aside.className).not.toContain("absolute");
+    view.unmount();
+  });
+
   it("offers only the non-git tabs for a chat thread and routes the picker", () => {
     const p = baseProps();
     const view = mount(<ContextPanel {...p} />);

@@ -102,14 +102,32 @@ pub(crate) fn project_entries(entries: &[SessionEntry]) -> Vec<serde_json::Value
             let outcome = run_id.as_ref().and_then(|id| run_outcomes.get(id));
             let stats = run_stats.get(&e.id);
             let blocks = if matches!(e.entry_type.as_str(), "user" | "assistant" | "tool") {
-                let raw: serde_json::Value = serde_json::from_str(
-                    &crate::session::Manager::serialize_entry(e).expect("serializable entry"),
-                )
-                .expect("serialized entry");
-                raw["content"]
-                    .as_array()
-                    .map(|blocks| blocks.iter().map(MessageBlock::from_model).collect())
-                    .unwrap_or_default()
+                // Persisted canonical blocks already contain ordered reasoning,
+                // calls and results. Borrow them directly rather than serializing
+                // the complete entry, copying its bodies and parsing it again.
+                if let Some(blocks) = e
+                    .content
+                    .as_ref()
+                    .and_then(serde_json::Value::as_array)
+                    .filter(|blocks| {
+                        (e.thinking.is_empty() || blocks.iter().any(|b| b["type"] == "reasoning"))
+                            && (e.tool_calls.is_empty()
+                                || blocks.iter().any(|b| b["type"] == "tool_call"))
+                            && (e.entry_type != "tool"
+                                || blocks.iter().any(|b| b["type"] == "tool_result"))
+                    })
+                {
+                    blocks.iter().map(MessageBlock::from_model).collect()
+                } else {
+                    let raw: serde_json::Value = serde_json::from_str(
+                        &crate::session::Manager::serialize_entry(e).expect("serializable entry"),
+                    )
+                    .expect("serialized entry");
+                    raw["content"]
+                        .as_array()
+                        .map(|blocks| blocks.iter().map(MessageBlock::from_model).collect())
+                        .unwrap_or_default()
+                }
             } else {
                 Vec::new()
             };

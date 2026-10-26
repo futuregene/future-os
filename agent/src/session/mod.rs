@@ -27,12 +27,15 @@ mod checkpoint;
 pub(crate) mod compaction_ops;
 #[cfg(test)]
 mod compaction_ops_tests;
+pub(crate) mod content;
 pub(crate) mod database;
 mod database_backup;
 pub use database_backup::create_database_snapshot;
 pub(crate) mod history;
 pub(crate) mod journal_compaction;
+#[cfg(test)]
 mod journal_compactor;
+pub(crate) mod journal_reclaim;
 pub(crate) use history::{HISTORY_DEFAULT_BYTES, HISTORY_DEFAULT_SESSIONS};
 mod legacy_import;
 pub use legacy_import::ImportRecord;
@@ -51,6 +54,7 @@ pub use reset::{DropKind, ResetOutcome, ResetPlan, ResetPlanResult, ResetSelecto
 mod run_journal;
 pub mod sqlite_store;
 mod summary;
+mod title_preview;
 mod tools;
 
 pub use checkpoint::{checkpoint_to_entry, entry_to_checkpoint, latest_context_checkpoint};
@@ -64,6 +68,7 @@ pub use fork::{build_fork_session, set_creation_provenance, ForkPoint, ForkReque
 pub use manager::Manager;
 pub use model::{Session, SessionSummary, CURRENT_SESSION_VERSION};
 pub use persistence::SessionPersistence;
+pub(crate) use projection::agent_message_to_compact_entry;
 pub use projection::{
     agent_message_to_entry, build_context, entries_to_agent_messages, first_message_title,
     truncate_visible,

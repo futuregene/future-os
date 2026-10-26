@@ -593,7 +593,7 @@ mod tests {
 
     #[test]
     fn inconsistent_nonzero_headers_never_replay_contract_steps() {
-        for extra_version in [0, 4] {
+        for extra_version in [0, future_app_settings::APP_DB_SCHEMA_VERSION + 1] {
             let conn = Connection::open_in_memory().unwrap();
             legacy(&conn);
             initialize(&conn).unwrap();

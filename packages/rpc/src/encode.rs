@@ -350,6 +350,7 @@ pub(crate) fn events_since_to_proto(payload: &EventsSincePayload) -> proto::Even
         truncated: payload.truncated,
         projection: payload.projection.as_ref().map(projection_to_proto),
         has_more: payload.has_more,
+        watermark: payload.watermark,
     }
 }
 
@@ -389,6 +390,14 @@ fn replay_event_to_proto(event: &ReplayEventPayload) -> proto::ReplayEvent {
 pub fn event_payload(event_type: &str, data_json: &str) -> Option<proto::EventPayload> {
     use proto::event_payload::Kind;
     let mut value: Value = serde_json::from_str(data_json).ok()?;
+    // Canonical range coordinates must survive transport. The existing JSON
+    // carrier is lossless; legacy typed payloads predate these coordinates.
+    if value.get("content_key").is_some()
+        || value.get("content_refs").is_some()
+        || value.get("content_format").is_some()
+    {
+        return None;
+    }
     // The broadcast serializer injects a redundant "type" key into most
     // payloads; the envelope already carries the type, so the typed form
     // drops it.
@@ -795,6 +804,7 @@ fn get_runtime_metrics(data: &Value) -> Option<proto::RuntimeMetricsResponse> {
         queued_bytes: payload.queued_bytes as u64,
         event_journal_healthy: payload.event_journal_healthy,
         event_journal_error: payload.event_journal_error,
+        event_journal_json: payload.event_journal.map(|value| value.to_string()),
     })
 }
 

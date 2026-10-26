@@ -15,6 +15,11 @@ pub const FAST_TIMEOUT: Duration = Duration::from_secs(10);
 pub const PROMPT_ACK_TIMEOUT: Duration = Duration::from_secs(15);
 pub const NETWORK_TIMEOUT: Duration = Duration::from_secs(20);
 pub const STORAGE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Journal maintenance: one bounded reclaim step (see
+/// `agent::session::journal_reclaim::SWEEP_WORK_BUDGET`) plus its integrity
+/// check and page fold-back. Deliberately longer than [`STORAGE_TIMEOUT`] — it
+/// is explicitly requested maintenance, not an interactive read.
+pub const MAINTENANCE_TIMEOUT: Duration = Duration::from_secs(60);
 pub const SHELL_EXECUTION_TIMEOUT: Duration = Duration::from_secs(120);
 pub const SHELL_RPC_TIMEOUT: Duration = Duration::from_secs(125);
 
@@ -77,12 +82,15 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "get_agent_readiness",
     "get_commands",
     "get_events_since",
+    "get_event_content_range",
     "get_run_snapshot",
     "get_fork_messages",
     "get_last_assistant_text",
+    "get_journal_stats",
     "get_messages",
     "get_runtime_metrics",
     "get_session_entries",
+    "get_session_storage_format",
     "get_session_history_entry",
     "search_all_session_history",
     "search_session_history",
@@ -111,6 +119,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "prompt",
     "prune_run_events",
     "refresh_skills",
+    "reclaim_run_journals",
     "reload_auth",
     "reload_config",
     "request_future_models_refresh",
@@ -212,6 +221,7 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
             ExecutionKind::ManagedProcess,
         ),
         "get_events_since"
+        | "get_event_content_range"
         | "get_run_snapshot"
         | "list_tool_calls"
         | "get_tool_output"
@@ -225,12 +235,22 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
         | "get_session_events_since"
         | "list_session_ids"
         | "get_session_presence"
+        | "get_session_storage_format"
         | "get_storage_health"
+        | "get_journal_stats"
         | "list_sessions"
         | "probe_sandbox"
         | "probe_windows_sandbox" => policy(
             STORAGE_TIMEOUT,
             RetryPolicy::SafeRead,
+            ExecutionKind::Bounded,
+        ),
+        // Explicit, resumable journal maintenance: each call takes the next
+        // bounded slice, so a retry would only duplicate a slice already
+        // applied — never retry automatically.
+        "reclaim_run_journals" => policy(
+            MAINTENANCE_TIMEOUT,
+            RetryPolicy::Never,
             ExecutionKind::Bounded,
         ),
         "add_session_rule"

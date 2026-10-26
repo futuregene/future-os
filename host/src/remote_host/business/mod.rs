@@ -43,7 +43,7 @@ pub(crate) enum Route {
 pub(crate) fn route(cmd_type: &str) -> Option<Route> {
     Some(match cmd_type {
         "list_sessions" | "list_workspaces" => Route::Catalog,
-        "get_messages" | "get_session_entries" | "get_events_since" | "get_tool_call_args" => {
+        "get_messages" | "get_session_entries" | "get_events_since" | "get_tool_call_args" | "get_event_content_range" => {
             Route::History
         }
         "upload_init" | "upload_complete" | "upload_cancel" | "list_session_files"
@@ -103,6 +103,36 @@ pub(crate) fn route(cmd_type: &str) -> Option<Route> {
     })
 }
 
+/// Legacy peers may keep using legacy conversations. Creation and content
+/// operations need the format contract; stop/approval/delete remain available.
+fn needs_content_capability(cmd: &str) -> bool {
+    matches!(
+        cmd,
+        "get_messages"
+            | "get_session_entries"
+            | "get_events_since"
+            | "get_tool_call_args"
+            | "get_event_content_range"
+            | "prompt"
+            | "continue_run"
+            | "fork_session"
+            | "compact_context"
+    )
+}
+
+fn unsupported_format(cmd: &str, info: &Value) -> Result<bool, &'static str> {
+    let exists = info["exists"]
+        .as_bool()
+        .ok_or("invalid session format preflight")?;
+    let format = if !exists && cmd == "prompt" {
+        info["new_session_format"].as_i64()
+    } else {
+        info["format"].as_i64()
+    }
+    .ok_or("invalid session format preflight")?;
+    Ok(format != 1)
+}
+
 pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
     let Some(route) = route(&cmd.cmd_type) else {
         reply(
@@ -114,6 +144,31 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
         .await;
         return;
     };
+    if needs_content_capability(&cmd.cmd_type)
+        && future_remote_server::content_capability::declared() == Some(false)
+    {
+        let result = crate::agent_bridge::get_session_storage_format(cmd.session_id.clone())
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|info| unsupported_format(&cmd.cmd_type, &info).map_err(str::to_owned));
+        match result {
+            Ok(false) => {}
+            Ok(true) => {
+                reply(
+                    sink,
+                    false,
+                    Value::Null,
+                    Some(future_remote_server::content_capability::UPGRADE_REQUIRED),
+                )
+                .await;
+                return;
+            }
+            Err(error) => {
+                reply(sink, false, Value::Null, Some(&error)).await;
+                return;
+            }
+        }
+    }
     match route {
         Route::Catalog => catalog::execute(&cmd, sink).await,
         Route::History => history::execute(&cmd, sink).await,
@@ -146,6 +201,34 @@ pub(super) async fn reply_unit(sink: &dyn ReplySink, result: Result<(), crate::E
 mod tests {
     use super::*;
     use crate::remote::test_support::{HomeGuard, RecordingSink};
+
+    #[test]
+    fn old_peers_keep_legacy_access_but_cannot_create_or_open_an_unsupported_format() {
+        assert!(!unsupported_format(
+            "get_session_entries",
+            &json!({"exists":true,"format":1,"new_session_format":2})
+        )
+        .unwrap());
+        assert!(unsupported_format(
+            "get_session_entries",
+            &json!({"exists":true,"format":2,"new_session_format":2})
+        )
+        .unwrap());
+        assert!(unsupported_format(
+            "prompt",
+            &json!({"exists":false,"format":1,"new_session_format":2})
+        )
+        .unwrap());
+        assert!(!unsupported_format(
+            "get_messages",
+            &json!({"exists":false,"format":1,"new_session_format":2})
+        )
+        .unwrap());
+        assert!(unsupported_format("prompt", &json!({})).is_err());
+        assert!(!needs_content_capability("abort"));
+        assert!(!needs_content_capability("approval_decision"));
+        assert!(!needs_content_capability("delete_session"));
+    }
 
     /// Every command a paired phone sends, mirrored from the mobile client's
     /// command surface (`mobile/src/remote/useDesktopManagement.ts`,

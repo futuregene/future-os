@@ -73,6 +73,8 @@ pub(crate) fn insert_entry_record(
     position: i64,
     value: &Value,
 ) -> Result<()> {
+    let segmented =
+        crate::session::content::format(db, session)? == crate::session::content::FORMAT_VERSION;
     let mut metadata = value
         .as_object()
         .cloned()
@@ -133,6 +135,12 @@ pub(crate) fn insert_entry_record(
         db.execute("UPDATE sessions SET created_at_ms=CASE WHEN created_at_ms IS NULL THEN ?2 ELSE min(created_at_ms,?2) END,updated_at_ms=CASE WHEN updated_at_ms IS NULL THEN ?2 ELSE max(updated_at_ms,?2) END WHERE id=?1",params![session,timestamp_ms])?;
     }
     if kind == "session_info" {
+        if segmented {
+            crate::session::content::metadata::validate_thin(
+                content.as_ref().unwrap_or(&Value::Null),
+            )?;
+            crate::session::content::metadata::advance_generation(db, session)?;
+        }
         db.execute(
             "UPDATE sessions SET current_metadata_json=?2 WHERE id=?1",
             params![session, content.as_ref().map(Value::to_string)],
@@ -144,6 +152,10 @@ pub(crate) fn insert_entry_record(
             .and_then(|c| c.get("model"))
             .and_then(Value::as_str)
         {
+            if segmented {
+                crate::session::content::metadata::validate_model(model)?;
+                crate::session::content::metadata::advance_generation(db, session)?;
+            }
             db.execute("UPDATE sessions SET current_metadata_json=json_set(COALESCE(current_metadata_json,'{}'),'$.model',?2) WHERE id=?1",params![session,model])?;
             db.execute("UPDATE history_shapes SET payload=json_set(payload,'$.content.model',?2) WHERE session_id=?1 AND position IN (SELECT position FROM entries WHERE session_id=?1 AND entry_type='session_info')",params![session,model])?;
         }
@@ -164,7 +176,7 @@ pub(crate) fn insert_entry_record(
             } else {
                 "text"
             };
-            let text = extra
+            let mut text = extra
                 .get(text_key)
                 .and_then(Value::as_str)
                 .map(str::to_owned);
@@ -192,7 +204,7 @@ pub(crate) fn insert_entry_record(
             if name.is_some() {
                 extra.remove("name");
             }
-            let args = if block_kind == Some("tool_call") {
+            let mut args = if block_kind == Some("tool_call") {
                 extra.remove("args")
             } else {
                 None
@@ -204,6 +216,34 @@ pub(crate) fn insert_entry_record(
             };
             if error.is_some() {
                 extra.remove("is_error");
+            }
+            // Prepared new-format headers carry no body. The scoped reference
+            // is authoritative; retain NULL in legacy columns for the read view.
+            let field = format!("/content/{ordinal}/{text_key}");
+            if segmented
+                && crate::session::content::resolve(
+                    db,
+                    session,
+                    "entry",
+                    id.as_str().unwrap_or_default(),
+                    &field,
+                )?
+                .is_some()
+            {
+                text = None;
+            }
+            let field = format!("/content/{ordinal}/args");
+            if segmented
+                && crate::session::content::resolve(
+                    db,
+                    session,
+                    "entry",
+                    id.as_str().unwrap_or_default(),
+                    &field,
+                )?
+                .is_some()
+            {
+                args = None;
             }
             db.execute("INSERT INTO message_blocks(session_id,entry_position,ordinal,kind,text,tool_call_id,tool_name,arguments_json,is_error,metadata_json) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
                 params![session,position,ordinal as i64,block_kind,text,call.as_ref().and_then(Value::as_str),name.as_ref().and_then(Value::as_str),args.map(|v|v.to_string()),error.as_ref().and_then(Value::as_bool),
@@ -222,7 +262,7 @@ pub(crate) const ENTRY_RECORD_VIEWS_SQL: &str = "
 DROP VIEW IF EXISTS entry_records;
 DROP VIEW IF EXISTS block_records;
 CREATE VIEW block_records AS
-WITH b0 AS (SELECT *,CASE WHEN kind IS NULL THEN metadata_json ELSE json_set(metadata_json,'$.' || 'type',kind) END AS j0 FROM message_blocks),
+WITH b0 AS (SELECT *,CASE WHEN kind IS NULL THEN metadata_json ELSE json_set(metadata_json,'$.' || 'type',kind) END AS j0 FROM resolved_message_blocks),
 b1 AS (SELECT *,CASE WHEN text IS NULL THEN j0 ELSE json_set(j0,'$.' || CASE WHEN kind='tool_result' THEN 'content' ELSE 'text' END,text) END AS j1 FROM b0),
 b2 AS (SELECT *,CASE WHEN tool_call_id IS NULL THEN j1 ELSE json_set(j1,'$.' || CASE WHEN kind='tool_result' THEN 'tool_call_id' ELSE 'id' END,tool_call_id) END AS j2 FROM b1),
 b3 AS (SELECT *,CASE WHEN tool_name IS NULL THEN j2 ELSE json_set(j2,'$.' || 'name',tool_name) END AS j3 FROM b2),
@@ -236,14 +276,23 @@ WITH headers AS (
  SELECT *,CASE WHEN role IS NULL THEN header ELSE json_set(header,'$.role',role) END AS with_role FROM headers
 ), ownership AS (
  SELECT *,CASE WHEN run_id IS NULL OR entry_type IN ('run_started','run_terminal') THEN with_role ELSE json_set(with_role,'$.meta.run_id',run_id) END AS envelope FROM roles
-)
+), assembled AS (
 SELECT e.session_id,e.position,e.entry_id,e.entry_type,
 CASE WHEN e.entry_type='session_info' THEN json_set(envelope,'$.content',json((SELECT current_metadata_json FROM sessions WHERE id=e.session_id)))
  WHEN e.content_json IS NULL THEN envelope ELSE json_set(envelope,'$.content',json(
  CASE WHEN e.content_json='[]' THEN COALESCE((SELECT json_group_array(json(payload)) FROM
  (SELECT payload FROM block_records b WHERE b.session_id=e.session_id AND b.entry_position=e.position ORDER BY ordinal)),'[]')
  ELSE e.content_json END)) END AS payload
-FROM ownership e;
+FROM ownership e
+)
+SELECT a.session_id,a.position,a.entry_id,a.entry_type,
+CASE WHEN EXISTS(SELECT 1 FROM content_references r WHERE r.session_id=a.session_id AND r.owner_kind='entry' AND r.owner_id=a.entry_id
+ AND NOT EXISTS(SELECT 1 FROM message_blocks b WHERE b.session_id=a.session_id AND b.entry_position=a.position AND r.field LIKE printf('/content/%d/%%',b.ordinal)))
+THEN future_restore_content_json(a.payload,(SELECT json_group_array(json_object('field',r.field,'encoding',r.encoding,'body',r.body))
+ FROM resolved_content_references r WHERE r.session_id=a.session_id AND r.owner_kind='entry' AND r.owner_id=a.entry_id
+ AND NOT EXISTS(SELECT 1 FROM message_blocks b WHERE b.session_id=a.session_id AND b.entry_position=a.position AND r.field LIKE printf('/content/%d/%%',b.ordinal))))
+ELSE a.payload END AS payload
+FROM assembled a;
 ";
 
 #[cfg(test)]

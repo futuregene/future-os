@@ -36,7 +36,7 @@ pub(crate) fn with_history_index<T>(
     Ok(result)
 }
 
-fn history_index_ready(db: &Connection, session: &str) -> Result<bool> {
+pub(super) fn history_index_ready(db: &Connection, session: &str) -> Result<bool> {
     Ok(db.query_row(
         "SELECT EXISTS(SELECT 1 FROM history_index_state WHERE session_id=?1 AND projection_version=?2)",
         params![session, PROJECTION_VERSION],
@@ -61,10 +61,17 @@ pub(crate) fn ensure_history_index(db: &Connection, session: &str) -> Result<()>
     }
     db.execute("DELETE FROM history_shapes WHERE session_id=?1", [session])?;
     db.execute("DELETE FROM history_display WHERE session_id=?1", [session])?;
+    let canonical =
+        crate::session::content::format(db, session)? == crate::session::content::FORMAT_VERSION;
+    let source = if canonical {
+        "entry_header_records"
+    } else {
+        "entry_records"
+    };
     let mut position = -1;
     loop {
         let rows: Vec<(i64, String)> = {
-            let mut query = db.prepare("SELECT position,payload FROM entry_records WHERE session_id=?1 AND position>?2 ORDER BY position LIMIT 64")?;
+            let mut query = db.prepare(&format!("SELECT position,payload FROM {source} WHERE session_id=?1 AND position>?2 ORDER BY position LIMIT 64"))?;
             let rows = query
                 .query_map(params![session, position], |row| {
                     Ok((row.get(0)?, row.get(1)?))

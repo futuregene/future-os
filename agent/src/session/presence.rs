@@ -7,7 +7,8 @@ use serde_json::json;
 impl Manager {
     /// Catalogue diagnostics only: no history bodies, API keys or paths.
     pub(crate) fn storage_health(&self) -> Result<serde_json::Value> {
-        self.storage()?.db.call(move |db| {
+        let store = self.storage()?;
+        let mut result=store.db.read(move |db| {
             let tx = db.transaction()?;
             let schema: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
             let mut result = json!({"schemaVersion":schema});
@@ -36,7 +37,9 @@ impl Manager {
             }
             tx.commit()?;
             Ok(result)
-        })
+        })?;
+        result["io"] = store.db.metrics();
+        Ok(result)
     }
 
     pub(crate) fn session_presence(&self, ids: &[String]) -> Result<serde_json::Value> {

@@ -1,18 +1,15 @@
-//! Print one workbench frame at any size — for screenshots, for grepping a
-//! layout, and for the mouse self-test the contract asks every worker to run.
-//!
-//! `cargo run -p future-tui --example workbench_demo -- --scenario chat --width 120 --height 38 --plain`
-//! `cargo run -p future-tui --example workbench_demo -- --scenario chat --lang en`
-//! `cargo run -p future-tui --example workbench_demo -- --self-test`
-
+//! Deterministic visual review frames. This uses the real workbench renderer,
+//! state machine, i18n and hit maps; only the fixture data is synthetic.
 use future_tui::utils::strip_ansi_codes;
 use future_tui::workbench::demo;
 use future_tui::workbench::i18n::{t, Key, LanguagePreference};
 use future_tui::workbench::layout::{self, Rect};
 use future_tui::workbench::mouse::{MouseEvent, MouseKind};
 use future_tui::workbench::picker::PickerKind;
-use future_tui::workbench::state::PanelId;
-use future_tui::workbench::{PaneId, WbAction, WbEvent, Workbench};
+use future_tui::workbench::state::{
+    ApprovalView, DiffView, ForkPoint, PanelId, QueuedPrompt, WorktreeView,
+};
+use future_tui::workbench::{Overlay, PaneId, WbAction, WbEvent, Workbench};
 
 fn main() {
     let mut scenario = demo::Scenario::Launchpad;
@@ -21,56 +18,38 @@ fn main() {
     let mut plain = false;
     let mut self_test = false;
     let mut picker: Option<PickerKind> = None;
-    // What the chrome is drawn in; `system` is what `future tui` itself does.
     let mut language = LanguagePreference::System;
+    let mut overlay: Option<String> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--scenario" | "-s" => match args.next().as_deref().and_then(demo::Scenario::parse) {
                 Some(parsed) => scenario = parsed,
-                None => {
-                    eprintln!("unknown scenario");
-                    std::process::exit(2);
-                }
+                None => fail("unknown scenario"),
             },
             "--width" | "-w" => width = parse_size(&mut args),
             "--height" | "-h" => height = parse_size(&mut args),
             "--plain" => plain = true,
             "--ansi" => plain = false,
-            // Show the frame with one of the three menus open — the design
-            // review of a picker needs a frame, not an agent.
             "--picker" | "-p" => match args.next().as_deref().and_then(PickerKind::from_command) {
                 Some(parsed) => picker = Some(parsed),
-                None => {
-                    eprintln!("expected model | theme | sessions");
-                    std::process::exit(2);
-                }
+                None => fail("expected a picker command: /model /thinking /mode /workspace /theme /sessions /lang"),
             },
+            "--overlay" | "-o" => overlay = args.next(),
             "--lang" | "-l" => match args.next().as_deref() {
                 Some(value) => language = LanguagePreference::from_wire(value),
-                None => {
-                    eprintln!("expected system | zh | en");
-                    std::process::exit(2);
-                }
+                None => fail("expected system | zh | en"),
             },
             "--self-test" => self_test = true,
-            other => {
-                eprintln!("unknown argument {other}");
-                std::process::exit(2);
-            }
+            other => fail(&format!("unknown argument {other}")),
         }
     }
 
     if self_test {
         match run_self_test() {
-            Ok(()) => {
-                println!("self-test ok");
-            }
-            Err(reason) => {
-                eprintln!("self-test failed: {reason}");
-                std::process::exit(1);
-            }
+            Ok(()) => println!("self-test ok"),
+            Err(reason) => fail(&format!("self-test failed: {reason}")),
         }
         return;
     }
@@ -78,9 +57,107 @@ fn main() {
     let mut data = demo::data(scenario);
     let mut workbench = Workbench::new();
     workbench.set_language(language);
-    // The demo's own input hint is chrome, not content: it follows the language
-    // the frame is drawn in, or an English screenshot argues with itself.
     data.input.placeholder = t(workbench.lang, Key::InputHintLaunchpad).to_string();
+    if let Some(name) = overlay.as_deref() {
+        match name {
+            "queue" => {
+                data.queue = vec![
+                    QueuedPrompt {
+                        run_id: "run-2".into(),
+                        text: "把回归测试拆成单元测试和集成测试，并报告覆盖率".into(),
+                    },
+                    QueuedPrompt {
+                        run_id: "run-3".into(),
+                        text: "顺便检查 Windows 下的路径".into(),
+                    },
+                ];
+                workbench.surface_command("/queue", &data);
+            }
+            "approval" => {
+                data.approval = Some(ApprovalView {
+                    request_id: "approval-42".into(),
+                    tool: "shell".into(),
+                    kind: "command".into(),
+                    risk: "HIGH".into(),
+                    title: "执行测试与覆盖率检查".into(),
+                    summary: "在工作区运行 Rust 测试并写入覆盖率报告".into(),
+                    action: "{\n  \"command\": \"cargo test -p future-tui\"\n}".into(),
+                    requested_action: "执行 shell 命令；可读取项目文件，写入 target/".into(),
+                    sandbox_boundary: "workspace: D:/future-os\nwrite: target/**\nnetwork: denied"
+                        .into(),
+                    rules: vec![future_tui::workbench::state::AllowRule {
+                        path: "target/**".into(),
+                        access: "write".into(),
+                    }],
+                });
+                workbench.overlay = Some(Overlay::Approval);
+            }
+            "diff" => {
+                data.diff = Some(DiffView {
+                    files: vec![
+                        future_tui::workbench::diff_review::DiffFile { path: "tui/src/workbench/editor.rs".into(), status: "M".into() },
+                        future_tui::workbench::diff_review::DiffFile { path: "tui/src/workbench/run.rs".into(), status: "M".into() },
+                        future_tui::workbench::diff_review::DiffFile { path: "docs/guide/tui.zh-CN.md".into(), status: "M".into() },
+                    ],
+                    selected: 0,
+                    patch: "diff --git a/tui/src/workbench/editor.rs b/tui/src/workbench/editor.rs\n@@ -18,6 +18,12 @@ impl EditorState {\n     pub fn key(&mut self, key: &str) {\n-        self.input.handle_key(key);\n+        match key {\n+            \"shift+enter\" | \"alt+enter\" => self.input.insert_text(\"\\n\"),\n+            other => self.input.handle_key(other),\n+        }\n     }\n }".into(),
+                    error: None,
+                });
+                workbench.overlay = Some(Overlay::Diff);
+            }
+            "history" | "tree" | "fork" | "worktree" => {
+                if name == "fork" {
+                    data.fork_points = vec![
+                        ForkPoint {
+                            id: "e1".into(),
+                            text: "先比较 DSH-TUI、Codex、OpenCode 与 Claude Code".into(),
+                        },
+                        ForkPoint {
+                            id: "e7".into(),
+                            text: "实现多行编辑器，再处理队列与滚动".into(),
+                        },
+                    ];
+                }
+                if name == "worktree" {
+                    data.worktrees = vec![
+                        WorktreeView {
+                            path: "D:/future-os".into(),
+                            label: "main".into(),
+                            description: "主工作区".into(),
+                            current: true,
+                        },
+                        WorktreeView {
+                            path: "D:/future-os/.worktrees/tui-visual-audit".into(),
+                            label: "feat/tui-visual-audit".into(),
+                            description: "截图审查与体验优化".into(),
+                            current: false,
+                        },
+                    ];
+                }
+                workbench.overlay = Some(match name {
+                    "history" => Overlay::History,
+                    "tree" => Overlay::Tree,
+                    "fork" => Overlay::Fork,
+                    _ => Overlay::Worktree,
+                });
+            }
+            "recent" | "workspaces" => {
+                workbench.panel = match name {
+                    "workspaces" => PanelId::Workspaces,
+                    _ => PanelId::Recent,
+                };
+            }
+            "help" | "palette" | "preferences" => {
+                workbench.surface_command(&format!("/{name}"), &data);
+            }
+            "keybindings" => {
+                workbench.overlay = Some(Overlay::Keybindings);
+            }
+            _ => {
+                let _ = workbench.surface_command(&format!("/{name}"), &data);
+            }
+        }
+    }
     workbench.render(&data, width.max(1), height.max(1));
     if let Some(kind) = picker {
         workbench.open_picker(kind, &data);
@@ -95,24 +172,22 @@ fn main() {
     }
 }
 
+fn fail(message: &str) -> ! {
+    eprintln!("{message}");
+    std::process::exit(2)
+}
 fn parse_size(args: &mut impl Iterator<Item = String>) -> u16 {
     match args.next().and_then(|value| value.parse().ok()) {
         Some(size) => size,
-        None => {
-            eprintln!("expected a number");
-            std::process::exit(2);
-        }
+        None => fail("expected a number"),
     }
 }
 
-/// The contract's acceptance check (§6): at two sizes, the regions the frame
-/// painted answer with the actions the input means.
 fn run_self_test() -> Result<(), String> {
     for (width, height) in [(120u16, 38u16), (90, 24)] {
         let data = demo::chat();
         let mut workbench = Workbench::new();
         workbench.render(&data, width, height);
-
         let press = |x: u16, y: u16| MouseEvent {
             kind: MouseKind::Press,
             x,
@@ -130,22 +205,18 @@ fn run_self_test() -> Result<(), String> {
                 .map(|(rect, _)| *rect)
                 .ok_or_else(|| format!("{width}x{height}: no {id} region"))
         };
-
-        // A sidebar tab switches the panel.
-        let tab = region(&workbench, "sidebar.tab.usage")?;
-        let actions = workbench.handle(WbEvent::Mouse(press(tab.x, tab.y)), &data);
-        if actions != vec![WbAction::SwitchPanel(PanelId::Usage)] {
-            return Err(format!("{width}x{height}: tab click gave {actions:?}"));
+        let tab = region(&workbench, "sidebar.tab.workspaces")?;
+        if workbench.handle(WbEvent::Mouse(press(tab.x, tab.y)), &data)
+            != vec![WbAction::SwitchPanel(PanelId::Workspaces)]
+        {
+            return Err("sidebar tab".into());
         }
-
-        // Clicking the input asks for focus.
         let input = region(&workbench, "input")?;
-        let actions = workbench.handle(WbEvent::Mouse(press(input.x + 1, input.y)), &data);
-        if actions != vec![WbAction::FocusPane(PaneId::Input)] {
-            return Err(format!("{width}x{height}: input click gave {actions:?}"));
+        if workbench.handle(WbEvent::Mouse(press(input.x + 1, input.y)), &data)
+            != vec![WbAction::FocusPane(PaneId::Input)]
+        {
+            return Err("input click".into());
         }
-
-        // Dragging the divider resizes the sidebar.
         let divider = region(&workbench, "divider")?;
         workbench.handle(WbEvent::Mouse(press(divider.x, divider.y + 1)), &data);
         let drag = MouseEvent {
@@ -156,12 +227,12 @@ fn run_self_test() -> Result<(), String> {
             alt: false,
             ctrl: false,
         };
-        let actions = workbench.handle(WbEvent::Mouse(drag), &data);
-        if !matches!(actions.as_slice(), [WbAction::ResizeSidebar(_)]) {
-            return Err(format!("{width}x{height}: divider drag gave {actions:?}"));
+        if !matches!(
+            workbench.handle(WbEvent::Mouse(drag), &data).as_slice(),
+            [WbAction::ResizeSidebar(_)]
+        ) {
+            return Err("divider drag".into());
         }
-
-        // The wheel scrolls the conversation.
         let wheel = MouseEvent {
             kind: MouseKind::WheelDown,
             x: 4,
@@ -173,19 +244,22 @@ fn run_self_test() -> Result<(), String> {
             alt: false,
             ctrl: false,
         };
-        let actions = workbench.handle(WbEvent::Mouse(wheel), &data);
-        if !matches!(actions.as_slice(), [WbAction::Scroll(_)]) {
-            return Err(format!("{width}x{height}: wheel gave {actions:?}"));
+        if !matches!(
+            workbench.handle(WbEvent::Mouse(wheel), &data).as_slice(),
+            [WbAction::Scroll(_)]
+        ) {
+            return Err("wheel".into());
         }
-
-        // A click on a picker row completes the choice, from the same hit map
-        // the frame painted.
         workbench.open_picker(PickerKind::Sessions, &data);
         workbench.render(&data, width, height);
         let row = region(&workbench, "picker.row.1")?;
-        let actions = workbench.handle(WbEvent::Mouse(press(row.x + 1, row.y)), &data);
-        if !matches!(actions.as_slice(), [WbAction::SwitchSession(_)]) {
-            return Err(format!("{width}x{height}: picker click gave {actions:?}"));
+        if !matches!(
+            workbench
+                .handle(WbEvent::Mouse(press(row.x + 1, row.y)), &data)
+                .as_slice(),
+            [WbAction::SwitchSession(_)]
+        ) {
+            return Err("picker click".into());
         }
     }
     Ok(())

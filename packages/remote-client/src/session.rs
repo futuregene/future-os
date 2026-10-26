@@ -273,8 +273,9 @@ pub const SELECTIVE_EVENTS_FEATURE: &str = "selective_events_v1";
 ///   `sessions_activity`). The packet is then the only writer of a remote row's
 ///   ordering timestamp on this side: a live event moves no row, because a
 ///   client clock in that value is a row the next packet moves back.
-pub const DECLARED_FEATURES: [&str; 7] = [
+pub const DECLARED_FEATURES: [&str; 8] = [
     "event_coalescing_v1",
+    future_remote_protocol::SEGMENTED_CONTENT_FEATURE,
     "reply_gzip_v1",
     SELECTIVE_EVENTS_FEATURE,
     future_remote_protocol::LEAN_EVENTS_FEATURE,
@@ -1616,6 +1617,7 @@ mod tests {
             CATALOG_ACTIVITY_FEATURE,
             future_remote_protocol::CLIENT_PRESENCE_FEATURE,
             future_remote_protocol::READ_BINARY_FEATURE,
+            future_remote_protocol::SEGMENTED_CONTENT_FEATURE,
         ] {
             assert!(
                 DECLARED_FEATURES.contains(&expected),
@@ -1624,6 +1626,7 @@ mod tests {
         }
         let legacy = [
             "event_coalescing_v1",
+            "segmented_content_v1",
             "reply_gzip_v1",
             "selective_events_v1",
             "lean_events_v1",
@@ -1650,6 +1653,7 @@ mod tests {
             json!({ "features": declared_features(&confirmed) })["features"],
             json!([
                 "event_coalescing_v1",
+                "segmented_content_v1",
                 "reply_gzip_v1",
                 "selective_events_v1",
                 "lean_events_v1",

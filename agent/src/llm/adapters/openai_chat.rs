@@ -281,10 +281,15 @@ fn lower_messages(request: &ModelRequest, replay_reasoning: bool) -> Vec<Value> 
         }
         let mut wire = Map::new();
         wire.insert("role".into(), json!(message.role));
+        // Replaying `reasoning_content` must never resurrect a turn that has
+        // no content and no tool_calls: a crash can leave a reasoning-only
+        // assistant entry in the journal, and that shape is refused with
+        // "content or tool_calls must be set". Drop it like before.
+        let has_payload = !content.is_empty() || !tool_calls.is_empty();
         if !content.is_empty() {
             wire.insert("content".into(), Value::Array(content));
         }
-        if replay_reasoning && !reasoning.is_empty() {
+        if replay_reasoning && has_payload && !reasoning.is_empty() {
             wire.insert("reasoning_content".into(), Value::String(reasoning));
         }
         if !tool_calls.is_empty() {
@@ -1110,6 +1115,86 @@ mod tests {
         );
     }
 
+    /// The registry shape the Future platform serves for `deepseek-flash`:
+    /// compat carries `thinkingFormat` and nothing else. Its thinking mode
+    /// requires the assistant turn's `reasoning_content` to come back on the
+    /// wire, so the body built from that model must carry it.
+    fn deepseek_flash_target() -> ResolvedModelTarget {
+        let mut model = crate::models::Model {
+            id: "deepseek-flash".into(),
+            provider: "future".into(),
+            api: "openai-completions".into(),
+            base_url: "https://future-os.cn/api/v1".into(),
+            reasoning: true,
+            ..Default::default()
+        };
+        model
+            .compat
+            .insert("thinkingFormat".into(), json!("deepseek"));
+        ResolvedModelTarget::from_model(&model, "key".into(), None, None).unwrap()
+    }
+
+    #[test]
+    fn deepseek_chat_body_replays_assistant_reasoning() {
+        let target = deepseek_flash_target();
+        let request = ModelRequest {
+            model: "deepseek-flash".into(),
+            system_prompt: String::new(),
+            messages: vec![
+                crate::types::AgentMessage {
+                    role: "assistant".into(),
+                    content: vec![
+                        ContentBlock::reasoning("the thought", ProviderMetadata::new()),
+                        ContentBlock::tool_call(
+                            "call_1",
+                            "shell",
+                            json!({"command": "ls"}),
+                            ProviderMetadata::new(),
+                        ),
+                    ],
+                    ..Default::default()
+                },
+                crate::types::AgentMessage {
+                    role: "tool".into(),
+                    content: vec![ContentBlock::tool_result("call_1", "out", false)],
+                    ..Default::default()
+                },
+            ],
+            tools: Vec::new(),
+        };
+        let body = OpenAiChatAdapter.build_body(&target, &request).unwrap();
+        assert_eq!(
+            body["messages"][0]["reasoning_content"], "the thought",
+            "a deepseek thinking turn must echo the assistant's reasoning_content"
+        );
+        assert_eq!(body["messages"][0]["tool_calls"][0]["id"], "call_1");
+    }
+
+    /// A crash can leave a reasoning-only assistant entry in the journal. The
+    /// replay must not turn that into `{role, reasoning_content}`, which the
+    /// same API refuses with "content or tool_calls must be set".
+    #[test]
+    fn deepseek_replay_never_sends_a_reasoning_only_message() {
+        let target = deepseek_flash_target();
+        let request = ModelRequest {
+            model: "deepseek-flash".into(),
+            system_prompt: String::new(),
+            messages: vec![
+                crate::types::AgentMessage {
+                    role: "assistant".into(),
+                    content: vec![ContentBlock::reasoning("orphan", ProviderMetadata::new())],
+                    ..Default::default()
+                },
+                crate::types::AgentMessage::new_user("user", json!("hello")),
+            ],
+            tools: Vec::new(),
+        };
+        let body = OpenAiChatAdapter.build_body(&target, &request).unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1, "the reasoning-only turn is dropped");
+        assert_eq!(messages[0]["role"], "user");
+    }
+
     #[test]
     fn apply_reasoning_none_and_effort_arms() {
         let mut target = test_target(
@@ -1174,6 +1259,103 @@ mod tests {
         let events = finish(&mut state, FinishReason::Stop, Some(usage)).unwrap();
         assert!(
             matches!(events.as_slice(), [ModelStreamEvent::Usage(usage)] if usage.prompt_tokens == 123)
+        );
+    }
+
+    /// The Future gateway ends one `future/...` streaming request with three
+    /// usage-carrying frames. Captured verbatim from
+    /// `POST https://future-os.cn/api/v1/chat/completions` (`kimi-k3.1-pro`,
+    /// 2026-10-26), trimmed to the usage fields:
+    ///
+    /// 1. a coarse frame the gateway itself synthesizes (`"id":"synthesized"`)
+    ///    with no cache breakdown at all;
+    /// 2. the provider's real block, nested inside `choices[0].usage` on the
+    ///    finish chunk (this adapter reads `usage` at the top level, so it lands
+    ///    as `Finish { usage: None }`);
+    /// 3. the same real block at the top level on the trailing `choices: []`
+    ///    chunk, where the gateway also adds `credit_cost`.
+    ///
+    /// Frames 1 and 3 are the two `usage` events a run recorded per request, and
+    /// counting both is what reported a 99.9%-cached prompt as a 46% one: the
+    /// coarse frame's prompt (607k) is the gateway's estimate and carries no
+    /// cache counters, while the real block says 526,759 with 526,336 cached.
+    /// The run loop therefore has to fold a call into one record; keeping the
+    /// wire shape here makes that contract explicit.
+    #[test]
+    fn the_future_gateway_reports_one_requests_usage_three_times() {
+        let adapter = OpenAiChatAdapter;
+        let mut state = adapter.new_stream_state();
+        let mut decode = |data: Value| adapter.decode_frame(&frame(data), state.as_mut()).unwrap();
+
+        // 1. synthesized coarse frame: no cache breakdown.
+        let synthesized = decode(json!({
+            "choices": [],
+            "id": "synthesized",
+            "model": "",
+            "object": "chat.completion.chunk",
+            "usage": {
+                "completion_tokens": 271,
+                "credit_cost": "7.911534",
+                "prompt_tokens": 607162,
+                "total_tokens": 607433,
+            },
+        }));
+
+        // 2. the provider's real block, nested in the finish chunk's choice.
+        let finished = decode(json!({
+            "choices": [{
+                "delta": {},
+                "finish_reason": "stop",
+                "index": 0,
+                "usage": {
+                    "completion_tokens": 351,
+                    "completion_tokens_details": {"reasoning_tokens": 1},
+                    "prompt_tokens": 526759,
+                    "prompt_tokens_details": {
+                        "cache_write_tokens": 256,
+                        "cached_tokens": 526336,
+                    },
+                    "total_tokens": 527110,
+                },
+            }],
+            "id": "chatcmpl-6adeb4de2ce24a4453f2bf5f",
+            "model": "kimi-k3.1-pro",
+        }));
+
+        // 3. the same block, repeated at the top level of the trailing chunk.
+        let trailing = decode(json!({
+            "choices": [],
+            "id": "chatcmpl-6adeb4de2ce24a4453f2bf5f",
+            "model": "kimi-k3.1-pro",
+            "object": "chat.completion.chunk",
+            "usage": {
+                "completion_tokens": 351,
+                "credit_cost": "0.7136038",
+                "prompt_tokens": 526759,
+                "prompt_tokens_details": {
+                    "cache_write_tokens": 256,
+                    "cached_tokens": 526336,
+                },
+                "total_tokens": 527110,
+            },
+        }));
+
+        assert!(
+            matches!(synthesized.as_slice(), [ModelStreamEvent::Usage(u)]
+                if u.prompt_tokens == 607_162 && !u.has_cache_detail()),
+            "the synthesized frame is a coarse usage block: {synthesized:?}"
+        );
+        assert!(
+            matches!(
+                finished.as_slice(),
+                [ModelStreamEvent::Finish { usage: None, .. }]
+            ),
+            "the nested choice usage is not read at the top level: {finished:?}"
+        );
+        assert!(
+            matches!(trailing.as_slice(), [ModelStreamEvent::Usage(u)]
+                if u.prompt_tokens == 526_759 && u.cache_read_tokens == Some(526_336)),
+            "the trailing chunk carries the provider's real block: {trailing:?}"
         );
     }
 }

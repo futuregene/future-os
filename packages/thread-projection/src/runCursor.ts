@@ -1,3 +1,5 @@
+import { contentRangeStart } from "./contentRange";
+
 /**
  * Per-run integrity cursor for gap detection and prefix completeness.
  *
@@ -69,13 +71,15 @@ export function nextEvent(
   runId: string | undefined | null,
   idx: number | undefined | null,
   coalescedCount?: number,
-  options?: { omitIndices?: boolean },
+  options?: { omitIndices?: boolean; data?: string },
 ): CursorEvent {
   if (!runId || idx == null) return { kind: "untracked" };
 
-  const covered = coveredFrom(idx, coalescedCount);
+  const canonicalStart = contentRangeStart(options?.data);
+  const covered = canonicalStart !== undefined && canonicalStart <= idx ? { start: canonicalStart } : coveredFrom(idx, coalescedCount);
   const entry = cursor.get(runId);
   if (entry === undefined) {
+    if (canonicalStart !== undefined && canonicalStart > 0 && !options?.omitIndices) return { kind: "gap", fromIdx: -1 };
     // First event for this run — accept and start tracking. A run that begins
     // above idx 0 has an unknown prefix (H3): the caller reconciles from -1.
     advanceCursor(cursor, runId, idx, covered.start === 0);
@@ -89,7 +93,7 @@ export function nextEvent(
   // would append the overlap a second time, which reads as a duplicated
   // fragment and a fence reopened mid-message. The journal still holds every
   // source event, so the caller recovers the range from replay instead.
-  if (covered.start === entry.highWater + 1) {
+  if (covered.start === entry.highWater + 1 || (canonicalStart !== undefined && covered.start <= entry.highWater + 1)) {
     cursor.set(runId, { ...entry, highWater: idx });
     return { kind: "apply", idx };
   }

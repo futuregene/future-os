@@ -68,6 +68,12 @@ impl ApprovalGate {
             context.observe_message(message);
         }
     }
+
+    pub(crate) fn initialize_review_history(&self, history: &[crate::types::AgentMessage]) {
+        if let Some(review) = &self.review {
+            review.initialize_history(history);
+        }
+    }
     pub(crate) fn for_run(
         &self,
         user_request: String,
@@ -585,7 +591,8 @@ impl ApprovalGate {
             let approved = outcome.verdict.approved();
             let status = outcome.verdict.status;
             let request_id = outcome.approval_request_id;
-            let event = outcome.event;
+            let event =
+                future_rpc::approval_assessment::for_storage(outcome.event, cfg!(debug_assertions));
             broadcaster.broadcast(SseEvent::new("approval_assessment", event));
             // Journal persistence is synchronous. No action may use an approval
             // whose audit failed, or whose context changed while recording it.
@@ -644,6 +651,10 @@ impl ApprovalGate {
         );
 
         broadcaster.broadcast(SseEvent::new("approval_request", payload));
+        if broadcaster.persistence_error().is_some() {
+            self.pending.lock().remove(&request_id);
+            return ApprovalOutcome::Cancelled("approval request could not be saved".into());
+        }
 
         let decision = tokio::task::block_in_place(|| rx.recv());
         let (status, note, outcome) = match decision {
@@ -676,6 +687,9 @@ impl ApprovalGate {
                 "note": note,
             }),
         ));
+        if broadcaster.persistence_error().is_some() {
+            return ApprovalOutcome::Cancelled("approval decision could not be saved".into());
+        }
         outcome
     }
 

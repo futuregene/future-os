@@ -325,6 +325,8 @@ const SHAPES_DDL: &str = "CREATE TABLE history_shapes(\
 
 fn schema(statements: &[&str]) -> Connection {
     let db = Connection::open_in_memory().unwrap();
+    db.execute_batch("CREATE TABLE session_formats(session_id TEXT PRIMARY KEY, format INTEGER)")
+        .unwrap();
     for statement in statements {
         db.execute_batch(statement).unwrap();
     }

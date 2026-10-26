@@ -508,7 +508,7 @@ fn get_state_internal(
     let context_tokens = sess.last_prompt_tokens.load(Ordering::Relaxed);
     // Query count: number of user messages (prompts and follow-ups).
     // Excludes internal tool/assistant messages.
-    let loaded = sess.session_manager.load_metadata(&session_id).ok();
+    let stored_metadata = sess.session_manager.state_metadata(&session_id).ok();
     let query_count = if sess.history_loaded {
         sess.messages
             .read()
@@ -516,9 +516,9 @@ fn get_state_internal(
             .filter(|m| m.role == "user")
             .count()
     } else {
-        loaded
+        stored_metadata
             .as_ref()
-            .map(|s| s.entries.iter().filter(|e| e.role == "user").count())
+            .map(|(count, _)| *count)
             .unwrap_or(0)
     };
     let context_percent = if context_window > 0 {
@@ -538,9 +538,9 @@ fn get_state_internal(
     let parent_session_id = if !sess.parent_session_id.is_empty() {
         sess.parent_session_id.clone()
     } else {
-        loaded
+        stored_metadata
             .as_ref()
-            .map(|s| s.parent_session_id.clone())
+            .map(|(_, parent)| parent.clone())
             .unwrap_or_default()
     };
     let active_run = sess
@@ -594,9 +594,10 @@ fn get_state_internal(
     // the previous run was interrupted by a crash or agent restart. Surface it
     // explicitly so clients never mistake it for a completed run.
     let interrupted_run = if active_run.is_none() {
-        loaded
-            .as_ref()
-            .and_then(|s| crate::session::find_unterminated_run(&s.entries))
+        sess.session_manager
+            .unterminated_run_id(&session_id)
+            .ok()
+            .flatten()
             .map(|run_id| payloads::RunStateSnapshot {
                 run_id,
                 epoch: None,
@@ -610,9 +611,10 @@ fn get_state_internal(
     let requested_run = requested_run_id
         .filter(|run_id| !run_id.is_empty())
         .and_then(|run_id| {
-            loaded
-                .as_ref()
-                .and_then(|session| crate::session::find_run_terminal(&session.entries, run_id))
+            sess.session_manager
+                .run_terminal(&session_id, run_id)
+                .ok()
+                .flatten()
                 .map(|terminal| future_rpc::message::run_terminal(&terminal))
         });
     // Approvals this session is parked on, with the full card payload. A client

@@ -99,6 +99,14 @@ pub struct OpenAiChatConfig {
     /// product level is, and `off` degrades to "no depth hint" rather than a
     /// switch the provider will reject.
     pub thinking_required: bool,
+    /// Echo the assistant turn's `reasoning_content` back in history
+    /// (`compat.requiresReasoningContentOnAssistantMessages`).
+    ///
+    /// `thinkingFormat: "deepseek"` implies it: DeepSeek's thinking mode
+    /// requires the reasoning of a previous assistant turn on the follow-up
+    /// request and answers a tool-call round trip without it with HTTP 400
+    /// ("The `reasoning_content` in the thinking mode must be passed back to
+    /// the API"). An explicit compat boolean still wins over the implication.
     pub replay_assistant_reasoning: bool,
     pub max_tokens_field: ChatMaxTokensField,
     pub tool_stream: bool,
@@ -851,12 +859,30 @@ fn parse_chat_config(model: &crate::models::Model) -> Result<OpenAiChatConfig> {
             model.id
         ),
     };
+    // The `deepseek` wire format's thinking mode requires the assistant turn's
+    // `reasoning_content` to be echoed back on the follow-up request; without
+    // it the API refuses the whole turn with HTTP 400 ("The `reasoning_content`
+    // in the thinking mode must be passed back to the API"). That is a
+    // property of the format, not of one registry entry, so the format alone
+    // enables the replay — an explicit compat value still overrides it.
+    let replay_assistant_reasoning = match model
+        .compat
+        .get("requiresReasoningContentOnAssistantMessages")
+    {
+        None | Some(Value::Null) => matches!(reasoning, ChatReasoningFormat::DeepSeek),
+        Some(Value::Bool(value)) => *value,
+        Some(_) => bail!(
+            "provider `{}` model `{}` compat.requiresReasoningContentOnAssistantMessages must be a boolean",
+            model.provider,
+            model.id
+        ),
+    };
 
     Ok(OpenAiChatConfig {
         reasoning,
         supports_reasoning_effort: boolean("supportsReasoningEffort")?,
         thinking_required: boolean("thinkingRequired")?,
-        replay_assistant_reasoning: boolean("requiresReasoningContentOnAssistantMessages")?,
+        replay_assistant_reasoning,
         max_tokens_field,
         tool_stream: boolean("toolStream")? || model.provider == "zai",
     })
@@ -1327,6 +1353,62 @@ mod tests {
         let target = ResolvedModelTarget::from_model(&plain, "key".into(), None, None).unwrap();
         let chat = expect_chat(target.protocol);
         assert_eq!(chat.reasoning, ChatReasoningFormat::None);
+    }
+
+    /// `thinkingFormat: "deepseek"` is the wire contract that the assistant
+    /// turn's `reasoning_content` must be echoed back: in thinking mode a
+    /// follow-up without it is refused with HTTP 400 ("The `reasoning_content`
+    /// in the thinking mode must be passed back to the API"). The Future
+    /// registry entries for `deepseek-flash` / `deepseek-v4-pro` carry only
+    /// `thinkingFormat` — no `requiresReasoningContentOnAssistantMessages` —
+    /// so the format itself has to imply the replay.
+    #[test]
+    fn deepseek_thinking_format_implies_assistant_reasoning_replay() {
+        let config = |compat: &[(&str, Value)]| -> OpenAiChatConfig {
+            let mut model = crate::models::Model {
+                id: "deepseek-flash".into(),
+                provider: "future".into(),
+                api: "openai-completions".into(),
+                base_url: "https://future-os.cn/api/v1".into(),
+                reasoning: true,
+                ..Default::default()
+            };
+            for (key, value) in compat {
+                model.compat.insert((*key).into(), value.clone());
+            }
+            expect_chat(
+                ResolvedModelTarget::from_model(&model, "key".into(), None, None)
+                    .unwrap()
+                    .protocol,
+            )
+        };
+
+        let deepseek = config(&[("thinkingFormat", json!("deepseek"))]);
+        assert_eq!(deepseek.reasoning, ChatReasoningFormat::DeepSeek);
+        assert!(
+            deepseek.replay_assistant_reasoning,
+            "a deepseek-format model must replay the assistant's reasoning_content"
+        );
+
+        // Only the deepseek wire format implies it.
+        assert!(!config(&[("thinkingFormat", json!("zai"))]).replay_assistant_reasoning);
+        assert!(!config(&[("thinkingFormat", json!("qwen"))]).replay_assistant_reasoning);
+
+        // An explicit compat value still wins over what the format implies.
+        assert!(
+            !config(&[
+                ("thinkingFormat", json!("deepseek")),
+                ("requiresReasoningContentOnAssistantMessages", json!(false)),
+            ])
+            .replay_assistant_reasoning
+        );
+        assert!(
+            config(&[
+                ("thinkingFormat", json!("qwen")),
+                ("requiresReasoningContentOnAssistantMessages", json!(true)),
+            ])
+            .replay_assistant_reasoning
+        );
     }
 
     #[test]

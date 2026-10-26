@@ -1,4 +1,147 @@
 use super::*;
+
+#[test]
+fn canonical_search_matches_legacy_semantics_across_segment_and_read_page_edges() {
+    let root = tempfile::tempdir().unwrap();
+    let manager = Manager::new(root.path().join("sessions"));
+    let store = manager.storage().unwrap();
+    store.reserve_segmented("s").unwrap();
+    let prefix = "中🙂".repeat(crate::session::content::READ_BYTES / 7 - 1);
+    let text = format!("{prefix}边界NeEdLe🙂\\n{}", "尾部".repeat(1000));
+    store.replace("s",vec![
+        json!({"id":"u","type":"user","role":"user","timestamp":"2026-10-26T00:00:00Z","content":"literal %_ and needle"}),
+        json!({"id":"a","type":"assistant","role":"assistant","timestamp":"2026-10-26T00:00:01Z","meta":{"run_id":"r"},"content":[
+            {"type":"text","text":text},
+            {"type":"reasoning","text":"hidden-only","provider_metadata":{"signature":"signature".repeat(3000)}},
+            {"type":"tool_call","id":"Exact-ID","name":"read","args":{"path":"/中文/Needle.swift","data":"参数".repeat(500)}}]}),
+        json!({"id":"t","type":"tool","role":"tool","timestamp":"2026-10-26T00:00:02Z","meta":{"run_id":"r"},"content":[
+            {"type":"tool_result","tool_call_id":"Exact-ID","content":"ab中文🙂\u{0000}tail needle","is_error":true},
+            {"type":"tool_result","tool_call_id":"Empty-ID","content":""}]}),
+    ]).unwrap();
+    let queries = [
+        "needle",
+        "边界needle🙂",
+        "Exact-ID",
+        "Empty-ID",
+        "%_",
+        "hidden-only",
+        "中文",
+        "不存在",
+    ];
+    let mut expected = Vec::new();
+    for query in queries {
+        let query = query.to_owned();
+        expected.push(
+            store
+                .db
+                .read(move |db| search_session_matches(db, "s", &query, 20))
+                .unwrap(),
+        );
+    }
+    store.db.call(|db| {
+        db.execute_batch("DROP VIEW entry_records; DROP VIEW resolved_message_blocks; DROP VIEW block_records")?;
+        db.execute("DELETE FROM content_segments WHERE content_id IN (SELECT content_id FROM content_references WHERE session_id='s' AND field='/content/1/provider_metadata')",[])?;
+        Ok(())
+    }).unwrap();
+    for (query, expected) in queries.into_iter().zip(expected) {
+        let actual = manager.search_history("s", query, 20).unwrap();
+        assert_eq!(actual["matches"], json!(expected), "query: {query}");
+        for hit in actual["matches"].as_array().unwrap() {
+            let fragment = manager
+                .read_history_entry(
+                    "s",
+                    hit["entryId"].as_str().unwrap(),
+                    hit["byteOffset"].as_i64().unwrap(),
+                    1000,
+                )
+                .unwrap();
+            assert!(
+                fragment["totalBytes"].as_i64().unwrap() >= hit["byteOffset"].as_i64().unwrap()
+            );
+        }
+    }
+}
+
+#[test]
+fn mixed_format_cross_session_search_preserves_order_limits_and_exact_scope() {
+    let root = tempfile::tempdir().unwrap();
+    let manager = Manager::new(root.path().join("sessions"));
+    let store = manager.storage().unwrap();
+    for (session, canonical, day) in [("legacy", false, 25), ("canonical", true, 26)] {
+        if canonical {
+            store.reserve_segmented(session).unwrap();
+        }
+        let entries=(0..4).map(|i|json!({"id":format!("{session}-{i}"),"type":"user","role":"user","timestamp":format!("2026-10-{day}T00:00:0{i}Z"),"content":format!("needle {session} {i}")})).collect();
+        store.replace(session, entries).unwrap();
+    }
+    let hits = manager.search_history_all("needle", 2, 2).unwrap();
+    assert_eq!(hits["scannedSessions"], 2);
+    assert_eq!(hits["hasMore"], true);
+    assert_eq!(hits["truncated"], false);
+    assert_eq!(hits["matches"][0]["entryId"], "canonical-3");
+    assert_eq!(hits["matches"][1]["entryId"], "canonical-2");
+    let recent = manager.search_history_all("needle", 20, 1).unwrap();
+    assert_eq!(recent["scannedSessions"], 1);
+    assert_eq!(recent["truncated"], true);
+    assert!(recent["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|hit| hit["sessionId"] == "canonical"));
+    assert!(
+        manager.search_history("canonical", "legacy", 20).unwrap()["matches"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn canonical_original_ranges_cross_blocks_without_loading_unrelated_protocol_bodies() {
+    let root = tempfile::tempdir().unwrap();
+    let manager = Manager::new(root.path().join("sessions"));
+    let store = manager.storage().unwrap();
+    store.reserve_segmented("s").unwrap();
+    let first = "正文🙂".repeat(10_000);
+    let args = json!({"path":"/tmp/中文","body":"参数\"🙂".repeat(500)});
+    let last = "尾部";
+    store.replace("s",vec![json!({"id":"a","type":"assistant","role":"assistant",
+        "timestamp":"2026-10-26T00:00:00Z","meta":{"run_id":"r"},"content":[
+            {"type":"text","text":first},
+            {"type":"reasoning","text":"hidden","provider_metadata":{"signature":"signature".repeat(5000)}},
+            {"type":"tool_call","id":"call","name":"edit","args":args},
+            {"type":"text","text":last}]})]).unwrap();
+    store.db.call(|db| {
+        db.execute_batch("DROP VIEW entry_records; DROP VIEW resolved_message_blocks")?;
+        db.execute("DELETE FROM content_segments WHERE content_id IN (SELECT content_id FROM content_references WHERE session_id='s' AND owner_id='a' AND field='/content/1/provider_metadata')",[])?;
+        Ok(())
+    }).unwrap();
+    let expected = format!("{first}{}{last}", args);
+    let mut actual = String::new();
+    let mut offset = 0;
+    loop {
+        let page = manager.read_history_entry("s", "a", offset, 8191).unwrap();
+        assert_eq!(page["totalBytes"], expected.len());
+        assert_eq!(page["omittedKinds"], json!(["reasoning"]));
+        let before = actual.len();
+        for chunk in page["chunks"].as_array().unwrap() {
+            actual.push_str(chunk["text"].as_str().unwrap());
+            assert!(matches!(chunk["blockIndex"].as_i64(), Some(0 | 2 | 3)));
+        }
+        assert!(actual.len() > before);
+        if page["hasMore"] == false {
+            break;
+        }
+        offset = page["nextOffset"].as_i64().unwrap();
+        assert_eq!(offset as usize, actual.len());
+    }
+    assert_eq!(actual, expected);
+    assert!(manager.read_history_entry("s", "a", 1, 40).is_err());
+    assert!(manager
+        .read_history_entry("s", "a", expected.len() as i64 + 1, 40)
+        .is_err());
+    assert!(manager.read_history_entry("s", "foreign", 0, 40).is_err());
+}
 fn setup() -> (tempfile::TempDir, Manager) {
     let temp = tempfile::tempdir().unwrap();
     let m = Manager::new(temp.path().to_owned());

@@ -173,7 +173,7 @@ describe("useThreadMessages agent events", () => {
 
     expect(tauri.invokeCommand).toHaveBeenCalledTimes(1);
     // The remote run's first message must appear without a manual reload.
-    expect(storage.getSessionEntriesPage).toHaveBeenCalledWith("T1", null);
+    expect(storage.getSessionEntriesPage).toHaveBeenCalledWith("T1", null, 10, undefined, expect.any(Function));
     expect(storage.getLatestRun).toHaveBeenCalledWith("T1");
 
     // concurrency: a second start for the same stream is a no-op — the phone

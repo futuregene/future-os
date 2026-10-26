@@ -222,19 +222,25 @@ fn a_terminal_but_active_goal_with_a_drained_outbox_stops_the_watcher() {
     let cr = cli_root();
     let rt = rt();
     let gid = init_goal(&cr, "terminal but active");
-    // Close every todo so `is_terminal()` becomes true without cancelling.
+    // Close every todo so `is_terminal()` becomes true without cancelling. The
+    // completion is written into the past on purpose: a completion inside the
+    // catch-up window makes `record_completions` queue its acceptance reminder
+    // (that is the point of that note), and this test is about the terminal +
+    // DRAINED stop, not about completion reporting.
     let onboarding = first_todo_id(&cr.root, &gid);
-    cli_ok(&[
-        "todo",
-        "complete",
-        "--goal",
-        &gid,
-        "--todo-id",
-        &onboarding,
-        "--no-follow-up",
-        "--evidence",
-        "artifact landed",
-    ]);
+    {
+        let mut writer = open_store(&cr);
+        writer
+            .append(Event::TodoCompleted {
+                goal_id: gid.clone(),
+                todo_id: onboarding,
+                no_follow_up: true,
+                successor_ids: Vec::new(),
+                evidence: Some("artifact landed".into()),
+                ts: 1,
+            })
+            .unwrap();
+    }
     let mut store = open_store(&cr);
     store
         .append(Event::SupervisorRegistered {

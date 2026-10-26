@@ -448,7 +448,9 @@ pub(crate) fn handle_set_ephemeral(
     cmd: &RpcCommand,
     id: &str,
 ) -> String {
-    session.write().set_ephemeral(cmd.ephemeral);
+    if let Err(error) = session.write().set_ephemeral(cmd.ephemeral) {
+        return RpcResponse::build_fail(id, "set_ephemeral", &error.to_string());
+    }
     RpcResponse::ok(
         id,
         "set_ephemeral",

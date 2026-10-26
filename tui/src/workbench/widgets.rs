@@ -1,10 +1,10 @@
 //! The workbench's drawing primitives: rules, tabs, bars, badges, the spinner,
-//! the pixel logo and the block wordmark.
+//! the block wordmark.
 //!
 //! Every function here returns text that is *already* the width it was asked
 //! for (or is measured with [`crate::workbench::ansi::width`]), so the screen
 //! composer can concatenate them without re-measuring. Decoration is kept in
-//! this file for one reason: the logo and the wordmark are where a terminal
+//! this file for one reason: the wordmark is where a terminal
 //! font's block glyphs matter, and a width bug there corrupts every row below
 //! it.
 
@@ -123,16 +123,8 @@ pub fn spinner(frame: usize) -> &'static str {
     SPINNER[frame % SPINNER.len()]
 }
 
-/// One row of the 9×4 pixel whale. Rows are laid out left to right, so the
-/// caller pastes `logo_row(0..4)` side by side with the wordmark block.
-const LOGO: [&str; 4] = ["  ▄███▄  ", " ███████ ", "█▀████▀▀█", " ▀▀   ▀▀ "];
-
-pub fn logo_rows(palette: &Palette) -> [String; 4] {
-    LOGO.map(|row| palette.text(palette.accent, row))
-}
-
 /// The 5-row block font the header uses for `FUTURE OS` (35 columns). Only
-/// drawn at width ≥ 96, where it fits beside the logo and the session title.
+/// drawn at width ≥ 96, where it fits beside the session title.
 ///
 /// Built from per-letter 3×5 cells rather than a pre-joined constant, so every
 /// row is the same width by construction — an off-by-one in a hand-written
@@ -442,12 +434,7 @@ mod tests {
     }
 
     #[test]
-    fn the_logo_and_wordmark_are_rectangular() {
-        let logo = logo_rows(&P);
-        assert_eq!(logo.len(), 4);
-        for row in &logo {
-            assert_eq!(width(row), 9, "{row:?}");
-        }
+    fn the_wordmark_is_rectangular() {
         let mark = wordmark_rows(&P);
         assert_eq!(mark.len(), 5);
         let mark_width = width(&mark[0]);

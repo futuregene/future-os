@@ -290,11 +290,14 @@ export function StepRunBlock({
 export function ReplyBlockRow({
   block,
   streaming,
+  replyStreaming,
   onOpenFile,
   onResolveToolTarget,
 }: {
   block: ReplyBlock;
   streaming?: boolean;
+  /** Whether the reply itself is still being written (see `ToolRow`). */
+  replyStreaming?: boolean;
   onOpenFile?(path: string): void;
   onResolveToolTarget?: ToolTargetResolver;
 }) {
@@ -305,6 +308,7 @@ export function ReplyBlockRow({
     <SegmentBlock
       segment={block.segment}
       streaming={streaming}
+      replyStreaming={replyStreaming}
       onOpenFile={onOpenFile}
       onResolveToolTarget={onResolveToolTarget}
     />
@@ -391,11 +395,13 @@ export function ProcessFold({
 export function SegmentBlock({
   segment,
   streaming,
+  replyStreaming,
   onOpenFile,
   onResolveToolTarget,
 }: {
   segment: TimelineSegment;
   streaming?: boolean;
+  replyStreaming?: boolean;
   onOpenFile?(path: string): void;
   onResolveToolTarget?: ToolTargetResolver;
 }) {
@@ -413,7 +419,12 @@ export function SegmentBlock({
   if (segment.kind === "tool") {
     return (
       <View style={styles.activityBlock}>
-        <ToolRow opened={false} tool={segment.tool} resolveTarget={onResolveToolTarget} />
+        <ToolRow
+          opened={false}
+          replyStreaming={replyStreaming}
+          tool={segment.tool}
+          resolveTarget={onResolveToolTarget}
+        />
       </View>
     );
   }

@@ -50,11 +50,22 @@ impl CompactionTicket {
         if self.cached.is_some() {
             return Ok(());
         }
+        let canonical = self
+            .journal
+            .manager
+            .storage()?
+            .storage_format(&self.journal.session)?
+            == crate::session::content::FORMAT_VERSION;
+        let receipt = if canonical {
+            json!({"checkpoint":null,"result":result})
+        } else {
+            json!({"checkpoint":checkpoint,"result":result})
+        };
         self.journal.persistence.commit_compaction(
             self.key.clone(),
             self.input.clone(),
             checkpoint.map(crate::session::checkpoint_to_entry),
-            json!({"checkpoint":checkpoint,"result":result}),
+            receipt,
         )
     }
     pub fn fail(&self, error: &str) {

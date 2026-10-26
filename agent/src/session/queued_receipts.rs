@@ -33,17 +33,43 @@ impl Manager {
             ack.run_sequence
                 .ok_or_else(|| anyhow::anyhow!("queued acknowledgement has no sequence"))?,
         )?;
-        let (session, request, run, fingerprint, payload, user) = (
+        let store = self.storage()?;
+        let segmented = store.storage_format(session)? == super::content::FORMAT_VERSION;
+        let mut prepared = if segmented {
+            Some(super::content::entries::prepare(
+                store,
+                session,
+                vec![serde_json::from_str(&Self::serialize_entry(user)?)?],
+            )?)
+        } else {
+            None
+        };
+        let user = if let Some(prepared) = prepared.as_mut() {
+            prepared
+                .take()
+                .pop()
+                .expect("one prepared user")
+                .to_string()
+        } else {
+            Self::serialize_entry(user)?
+        };
+        // Restart never executes the request payload; the in-memory scheduler
+        // owns it. Only the durable user entry and acceptance fingerprint are
+        // consumed by recovery, so new-format receipts omit this unused copy.
+        let payload = (!segmented).then(|| payload.to_string());
+        let (session, request, run, fingerprint) = (
             session.to_owned(),
             request.to_owned(),
             ack.run_id.clone(),
             fingerprint.to_owned(),
-            payload.to_string(),
-            Self::serialize_entry(user)?,
         );
         self.storage()?.db.call(move |db| {
-            db.execute("INSERT INTO queued_run_receipts(session_id,run_id,client_request_id,run_sequence,fingerprint,payload_json,user_entry_json,status)
+            let tx = super::database::begin_write_transaction(db)?;
+            let resetting: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM content_operations WHERE session_id=?1 AND kind='reset')",[&session],|row|row.get(0))?;
+            anyhow::ensure!(!resetting,"session history reset is in progress");
+            tx.execute("INSERT INTO queued_run_receipts(session_id,run_id,client_request_id,run_sequence,fingerprint,payload_json,user_entry_json,status)
                 VALUES (?1,?2,?3,?4,?5,?6,?7,'queued')",params![session,run,request,sequence,fingerprint,payload,user])?;
+            tx.commit()?;
             Ok(())
         })
     }
@@ -133,6 +159,9 @@ impl super::sqlite_store::SqliteStore {
                     super::sqlite_store::insert_transcript_entries(&tx,&session,vec![serde_json::from_str(&Manager::serialize_entry(&user)?)?,serde_json::from_str(&Manager::serialize_entry(&terminal)?)?])?;
                     tx.execute("UPDATE sessions SET revision=revision+1 WHERE id=?1",[&session])?;
                     tx.execute("UPDATE queued_run_receipts SET status=?3 WHERE session_id=?1 AND run_id=?2",params![session,run,if cancelled {"cancelled"} else {"interrupted"}])?;
+                    if super::content::format(&tx,&session)? == super::content::FORMAT_VERSION {
+                        tx.execute("UPDATE queued_run_receipts SET payload_json=NULL,user_entry_json=NULL WHERE session_id=?1 AND run_id=?2",params![session,run])?;
+                    }
                 }
                 tx.commit()?;
                 Ok(count)

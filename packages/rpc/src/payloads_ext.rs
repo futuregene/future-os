@@ -317,6 +317,8 @@ pub struct RuntimeMetricsPayload {
     pub event_journal_healthy: bool,
     /// JSON null when the journal is healthy.
     pub event_journal_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_journal: Option<serde_json::Value>,
 }
 
 // ── get_session_events_since ─────────────────────────────────────────────────
