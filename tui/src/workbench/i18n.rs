@@ -395,6 +395,13 @@ pub enum Key {
     HelpKeyThinking,
     HelpKeyApproval,
     HelpKeyWorkspaces,
+    HelpKeyPanelRecent,
+    HelpKeyPanelWorkspaces,
+    HelpGroupSessions,
+    HelpGroupChoice,
+    HelpGroupPanels,
+    HelpGroupInterface,
+    HelpGroupInline,
     HelpKeyClick,
     HelpKeyDrag,
     HelpKeyQuit,
@@ -751,6 +758,16 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "工作区：切换到已有的或新建一个",
             "Workspaces: switch to one or create one",
         ),
+        HelpKeyPanelRecent => ("切到「最近」面板", "Show the Recent panel"),
+        HelpKeyPanelWorkspaces => ("切到「工作区」面板", "Show the Workspaces panel"),
+        HelpGroupSessions => ("会话", "Chats"),
+        HelpGroupChoice => ("选择", "Choices"),
+        HelpGroupPanels => ("面板", "Panels"),
+        HelpGroupInterface => ("界面", "Interface"),
+        HelpGroupInline => (
+            "行内按键（不可改键）",
+            "Inline keys (not rebindable)",
+        ),
         HelpKeyClick => ("切页签、点行、点参数", "Tabs, rows and chips"),
         HelpKeyDrag => ("侧栏分隔条调宽", "Widen the sidebar at its divider"),
         HelpKeyQuit => ("退出", "Quit"),
@@ -967,7 +984,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 249] = {
+    const ALL_KEYS: [Key; 256] = {
         use Key::*;
         [
             TabTodo,
@@ -1203,6 +1220,13 @@ mod tests {
             HelpKeyThinking,
             HelpKeyApproval,
             HelpKeyWorkspaces,
+            HelpKeyPanelRecent,
+            HelpKeyPanelWorkspaces,
+            HelpGroupSessions,
+            HelpGroupChoice,
+            HelpGroupPanels,
+            HelpGroupInterface,
+            HelpGroupInline,
             HelpKeyClick,
             HelpKeyDrag,
             HelpKeyQuit,

@@ -1062,6 +1062,9 @@ impl Live {
     pub async fn apply(&mut self, action: WbAction) -> Outcome {
         match action {
             WbAction::Quit => return Outcome::Quit,
+            // The surface's own cursor move, resolved by whoever holds the data
+            // (`run::quit`): this layer has no rail to walk.
+            WbAction::SessionStep(_) => {}
             WbAction::EditInput { text, cursor } => self.set_draft(text, cursor),
             WbAction::EditEditor(editor) => {
                 self.draft = InputView::from_editor(*editor, self.draft.placeholder.clone())

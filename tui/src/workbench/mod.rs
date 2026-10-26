@@ -268,6 +268,10 @@ pub enum WbAction {
     LoadOlder,
     /// Open this conversation.
     SwitchSession(String),
+    /// Move the rail's cursor `delta` conversations and open the one it lands
+    /// on. Resolved by the driver *after* the whole input burst, so a held
+    /// `shift+←`/`shift+→` pays for one switch instead of one per repeat.
+    SessionStep(i32),
     SwitchPanel(PanelId),
     /// The model picker chose a model: apply it to the agent.
     SetModel(String),
@@ -885,17 +889,27 @@ impl Workbench {
                 self.open_preferences();
                 return vec![WbAction::Redraw];
             }
-            // The three choosers reachable without leaving the keyboard. Each
+            // The four choosers reachable without leaving the keyboard. Each
             // opens its picker through the same command a typed line would run
             // (`PickerKind::from_command`), so the key, the palette and the
             // draft share one implementation — and a chooser is what these keys
             // get, not a silent cycle: a cycle has no `esc`.
+            Some(preferences::Action::Model) => return vec![WbAction::Command("/model".into())],
             Some(preferences::Action::Thinking) => {
                 return vec![WbAction::Command("/thinking".into())]
             }
             Some(preferences::Action::Approval) => return vec![WbAction::Command("/mode".into())],
             Some(preferences::Action::Workspaces) => {
                 return vec![WbAction::Command("/workspace".into())]
+            }
+            // The rail's two tabs, from anywhere: the same intent as a click on
+            // the tab strip, so the key and the pointer land in the same place
+            // (the conversation on screen gets the cursor).
+            Some(preferences::Action::PanelRecent) => {
+                return self.focus_panel_action(PanelId::Recent, data)
+            }
+            Some(preferences::Action::PanelWorkspaces) => {
+                return self.focus_panel_action(PanelId::Workspaces, data)
             }
             Some(preferences::Action::Sidebar) => {
                 return self.toggle_sidebar();
@@ -914,24 +928,16 @@ impl Workbench {
             }
             // One conversation either way, with the transcript following it: a
             // rail whose highlight moved while the chat stayed put would name a
-            // conversation the screen is not showing.
-            Some(preferences::Action::PrevSession) => return self.step_session(-1, data),
-            Some(preferences::Action::NextSession) => return self.step_session(1, data),
+            // conversation the screen is not showing. The *switch* is deferred
+            // to the driver (`WbAction::SessionStep`), which applies just the
+            // net step once the whole input burst is read: a held shift+arrow
+            // used to queue one round trip and one transcript load per repeat.
+            Some(preferences::Action::PrevSession) => return vec![WbAction::SessionStep(-1)],
+            Some(preferences::Action::NextSession) => return vec![WbAction::SessionStep(1)],
             _ => {}
         }
         match key {
             "ctrl+q" => vec![WbAction::Quit],
-            "f6" => vec![WbAction::CopyLast],
-            "f7" => vec![WbAction::ToggleMouse],
-            "f8" => {
-                self.linear_reading = !self.linear_reading;
-                self.sidebar_focus = false;
-                vec![WbAction::SetPreferences]
-            }
-            "f9" => {
-                self.reduced_motion = !self.reduced_motion;
-                vec![WbAction::SetPreferences]
-            }
             "ctrl+g" => vec![WbAction::OpenQueue],
             "?" if data.input.text.is_empty() => {
                 self.overlay = Some(Overlay::Help);
@@ -1204,12 +1210,22 @@ impl Workbench {
     /// The rail's order is the reader's order, so this walks the rows rather
     /// than the raw session list: under 工作区 it follows the sections, in 最近 it
     /// follows refresh time. The cursor is left where the switch went, so a
-    /// second press moves a second conversation.
-    fn step_session(&mut self, delta: i32, data: &WorkbenchData) -> Vec<WbAction> {
+    /// second call moves a second conversation.
+    ///
+    /// The driver calls this once per input burst with the *net* step a held
+    /// `shift+←`/`shift+→` accumulated: every step still moves the cursor, but
+    /// the conversation is switched once — a switch is two round trips and a
+    /// transcript load, and paying that per key repeat is what made the rail
+    /// feel stuck.
+    pub(crate) fn step_session(&mut self, delta: i32, data: &WorkbenchData) -> Vec<WbAction> {
+        if delta == 0 {
+            return Vec::new();
+        }
         let rows = self.panel_rows(data);
+        let direction = if delta < 0 { -1 } else { 1 };
         // The cursor may stand on nothing yet (a fresh rail): start from the
         // conversation on screen so the first press moves *one* step.
-        let from = match self.current_row(data) {
+        let mut from = match self.current_row(data) {
             Some(current)
                 if rows
                     .get(self.sidebar_index)
@@ -1219,10 +1235,20 @@ impl Workbench {
             }
             _ => self.sidebar_index,
         };
-        let Some(next) = panels::step_session(&rows, from, delta) else {
+        let mut moved = false;
+        for _ in 0..delta.unsigned_abs() {
+            let Some(next) = panels::step_session(&rows, from, direction) else {
+                // The list ends here: further steps have nowhere to go, and the
+                // one conversation we did move to is still the right answer.
+                break;
+            };
+            from = next;
+            moved = true;
+        }
+        if !moved {
             return Vec::new();
-        };
-        self.sidebar_index = next;
+        }
+        self.sidebar_index = from;
         let index = self.panel.index();
         if self.sidebar_index < self.panel_scroll[index] {
             self.panel_scroll[index] = self.sidebar_index;
@@ -2321,6 +2347,14 @@ impl Workbench {
         }
     }
 
+    /// The same intent as a click on the rail's tab strip (and as the verb
+    /// `/recent`), returned as an action so the app records which panel the
+    /// reader chose.
+    fn focus_panel_action(&mut self, panel: PanelId, data: &WorkbenchData) -> Vec<WbAction> {
+        self.focus_panel(panel, data);
+        vec![WbAction::SwitchPanel(panel)]
+    }
+
     /// The rail's neighbouring tab: `←`/`→` while the rail has the keys, which
     /// is the keyboard spelling of a click on the tab strip.
     fn switch_panel(&mut self, delta: i32, data: &WorkbenchData) -> Vec<WbAction> {
@@ -2644,19 +2678,22 @@ fn known_command(text: &str) -> Option<TypedCommand> {
 }
 
 /// The help overlay's key table.
-pub const HELP_KEYS: [(&str, Key); 12] = [
+/// The keys that are *not* configurable actions, for the help overlay: they are
+/// spelled inside the composer (`/`, `?`, `@`, `#`), or they are the pointer, or
+/// they belong to the focused rail (`p`). Everything with a `preferences::Action`
+/// is listed from that table instead, so a rebind is shown rebind.
+pub const HELP_KEYS: [(&str, Key); 11] = [
     ("tab", Key::HelpKeyFocus),
-    ("↑↓", Key::HelpKeyScroll),
+    ("↑ ↓", Key::HelpKeyScroll),
     ("pageUp / pageDown", Key::HelpKeyPage),
-    ("shift+← / →", Key::HelpKeyNextSession),
-    ("p", Key::HelpKeyPin),
+    ("esc", Key::HintBackToChat),
     ("/", Key::HelpKeyPalette),
+    ("?", Key::HelpKeyHelp),
     ("@", Key::HelpKeyMentionFile),
     ("#", Key::HelpKeyMentionSession),
-    ("?", Key::HelpKeyHelp),
+    ("p", Key::HelpKeyPin),
     ("click", Key::HelpKeyClick),
     ("drag", Key::HelpKeyDrag),
-    ("ctrl+c", Key::HelpKeyQuit),
 ];
 
 #[cfg(test)]
@@ -2999,6 +3036,12 @@ mod tests {
         let data = demo::chat();
         let mut wb = workbench();
         wb.overlay = Some(Overlay::Keybindings);
+        // The editor lists `ACTIONS` in table order; stand on the palette row so
+        // the case names one action rather than "whatever is first today".
+        wb.keybinding_index = preferences::ACTIONS
+            .iter()
+            .position(|action| *action == preferences::Action::Palette)
+            .expect("the palette is rebindable");
         wb.handle(WbEvent::Key("enter".into()), &data);
         assert!(wb.awaiting_keybinding);
         assert_eq!(
@@ -3358,19 +3401,60 @@ mod tests {
             .keys
             .key(preferences::Action::PrevSession)
             .to_string();
+        // The key asks the driver for a *step*: the surface has the rail, the
+        // app has the session list, and the step is resolved against both
+        // (`run::event_loop` collapses a held key's repeats into one).
         assert_eq!(
             workbench.handle(WbEvent::Key(next.clone()), &data),
+            vec![WbAction::SessionStep(1)]
+        );
+        assert_eq!(
+            workbench.step_session(1, &data),
             vec![WbAction::SwitchSession(data.sessions[1].id.clone())]
         );
         assert_eq!(workbench.sidebar_index, 1);
         // …and back, from the conversation it just named.
         assert_eq!(
             workbench.handle(WbEvent::Key(previous.clone()), &data),
+            vec![WbAction::SessionStep(-1)]
+        );
+        assert_eq!(
+            workbench.step_session(-1, &data),
             vec![WbAction::SwitchSession(data.sessions[0].id.clone())]
         );
         assert_eq!(workbench.sidebar_index, 0);
-        // At either end the key does nothing rather than wrapping around.
-        assert!(workbench.handle(WbEvent::Key(previous), &data).is_empty());
+        // At either end the rail stops: the key still asks for a step, and the
+        // step finds nowhere to go, so no conversation is switched.
+        assert_eq!(
+            workbench.handle(WbEvent::Key(previous), &data),
+            vec![WbAction::SessionStep(-1)]
+        );
+        assert!(workbench.step_session(-1, &data).is_empty());
+    }
+
+    /// A held `shift+→` is one switch: the driver accumulates the burst's steps
+    /// and asks the surface to walk them in one go.
+    #[test]
+    fn a_burst_of_session_steps_is_one_switch() {
+        let mut data = demo::chat();
+        data.sessions.truncate(4);
+        data.chats.clear();
+        data.workspaces.clear();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        for _ in 0..3 {
+            let actions = workbench.handle(WbEvent::Key("shift+right".into()), &data);
+            assert_eq!(actions, vec![WbAction::SessionStep(1)]);
+        }
+        assert_eq!(
+            workbench.step_session(3, &data),
+            vec![WbAction::SwitchSession(data.sessions[3].id.clone())],
+            "the net step lands on the fourth conversation, in one switch"
+        );
+        assert_eq!(workbench.sidebar_index, 3);
+        // Past the end the steps find nowhere to go: no switch, and no wrap
+        // around to the first conversation.
+        assert!(workbench.step_session(5, &data).is_empty());
+        assert_eq!(workbench.sidebar_index, 3);
     }
 
     /// `p` in the rail pins the workspace the cursor's conversation belongs to,
@@ -3736,6 +3820,33 @@ mod tests {
             vec![WbAction::Command(chosen.command())]
         );
         assert_eq!(workbench.overlay, None);
+    }
+
+    /// `ctrl+m` is the model picker, `ctrl+1`/`ctrl+2` the rail's two tabs — the
+    /// three keys the reader asked for so the pointer is never the only way.
+    #[test]
+    fn the_model_and_panel_keys_reach_their_surfaces() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("ctrl+m".into()), &data),
+            vec![WbAction::Command("/model".into())]
+        );
+        assert_eq!(
+            workbench.handle(WbEvent::Key("ctrl+1".into()), &data),
+            vec![WbAction::SwitchPanel(PanelId::Recent)]
+        );
+        assert_eq!(
+            workbench.handle(WbEvent::Key("ctrl+2".into()), &data),
+            vec![WbAction::SwitchPanel(PanelId::Workspaces)]
+        );
+        // …and each one lands where a click on the tab strip does: the panel is
+        // the tab in force, the rail takes the keys, and the cursor is on the
+        // conversation on screen.
+        assert_eq!(workbench.panel, PanelId::Workspaces);
+        assert!(workbench.sidebar_focus && workbench.sidebar_visible);
+        let rows = workbench.render(&data, 120, 38);
+        assert!(plain(&rows).contains("对话会话"), "{}", plain(&rows));
     }
 
     /// The palette is one list of two kinds of thing: a verb the surface answers
@@ -4148,8 +4259,9 @@ mod tests {
             .find(|(_, id)| id == "sidebar.toggle")
             .expect("the expand button");
         assert_eq!(rect.x + rect.w, 120);
-        // The edge runs the body's rows: from under the header to the input box.
-        assert_eq!((rect.y, rect.h), (3, 28), "{rect:?}");
+        // The edge runs the body *and* the composer band: from under the header
+        // down to the footer, so nothing beside the box is bare canvas.
+        assert_eq!((rect.y, rect.h), (3, 29), "{rect:?}");
         assert!(plain(&rows).contains('‹'), "{}", plain(&rows));
 
         // A second click brings it back, focused, with the cursor on the
@@ -4824,7 +4936,7 @@ mod tests {
             .any(|(_, id)| id.starts_with("sidebar.tab.")));
 
         assert_eq!(
-            workbench.handle(WbEvent::Key("f8".into()), &data),
+            workbench.handle(WbEvent::Key("alt+l".into()), &data),
             vec![WbAction::SetPreferences]
         );
         assert!(workbench.linear_reading);
@@ -4842,9 +4954,9 @@ mod tests {
 
         workbench
             .keys
-            .bind(preferences::Action::LinearReading, "alt+l")
+            .bind(preferences::Action::LinearReading, "ctrl+y")
             .unwrap();
-        workbench.handle(WbEvent::Key("alt+l".into()), &data);
+        workbench.handle(WbEvent::Key("ctrl+y".into()), &data);
         assert!(!workbench.linear_reading);
         workbench
             .keys
@@ -4871,9 +4983,9 @@ mod tests {
         let mut workbench = Workbench::new();
         let data = demo::chat();
         workbench.render(&data, 120, 38);
-        workbench.handle(WbEvent::Key("f9".into()), &data);
+        workbench.handle(WbEvent::Key("alt+a".into()), &data);
         assert!(workbench.reduced_motion && !workbench.motion_enabled());
-        workbench.handle(WbEvent::Key("f8".into()), &data);
+        workbench.handle(WbEvent::Key("alt+l".into()), &data);
         workbench.handle(WbEvent::Key("ctrl+b".into()), &data);
         assert!(!workbench.linear_reading);
         assert!(workbench.sidebar_visible && workbench.sidebar_focus);

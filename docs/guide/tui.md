@@ -47,12 +47,19 @@ conversations, to see the rail's window and its `↓ N more` row).
  conversation (bottom-anchored, ↑ 更早)     │ rail: 最近 工作区
                                             │ ▸ the conversation's name
                                             │   ~/future-os · 2m
- ──────────────────────────────────────────┴──────────────────────
- input box (❯ multiline draft, grows to 8 visual rows)
+                                            │
+ input box (❯ multiline draft, grows)      │  (the rail runs down beside it)
  activity: ⠋ 思考 … · 3s · 2 工具                   42 tok/s · 缓存 96%
  status:   model · effort · approval   ░░ ctx 6.9k/1.0M 0.7% · ≈¥0.01
  hint:     Esc 回到聊天 · ctrl+b 侧栏 · tab 焦点 · ctrl+r 会话 · ctrl+p 命令
 ```
+
+The rail is a *column*, not a panel that stops one band early: it (and its
+divider) run from under the header down to the footer, so the space beside the
+composer is the rail's own background rather than bare canvas. The three footer
+rows — activity, status, hint — stay full width. The composer band is exactly
+the box it draws (top rule, prompt, closing rule); it used to reserve a fourth
+row and leave it blank.
 
 The rail is a *task* panel, in two tabs. **最近** (the default) lists every
 conversation — its name, then the workspace it is filed under and when it was
@@ -76,6 +83,14 @@ the prompt and the chips, `enter` cycles the chip under the cursor, and typing
 desktop composer's own controls (model, thinking effort, approval mode) plus the
 workspace this TUI starts from; there is no separate permission level, because
 no other client offers one.
+
+No default shortcut is a function key: `F1`–`F12` need an `Fn` modifier on a
+laptop keyboard and are absent on a compact one, so the defaults are
+`ctrl+m` model, `ctrl+t` effort, `ctrl+s` approval mode, `ctrl+l` workspaces,
+`ctrl+1`/`ctrl+2` the rail's tabs, `alt+h` help, `alt+r` refresh, `alt+c` copy,
+`alt+m` mouse, `alt+l` linear reading, `alt+a` reduced motion. Every one of them
+is rebindable in `/preferences`, and the help overlay lists them grouped by what
+they do rather than in one flat list.
 
 Two breakpoints, both from the contract:
 
@@ -126,14 +141,14 @@ Choices persist in `~/.future/tui/settings.json` as `density`, `sidebarPosition`
 `/theme` retains the six-theme picker, including `high-contrast`; choosing a
 theme persists `themeId`. With no stored choice, the terminal's `COLORFGBG`
 hint selects its light/dark palette (unknown hints use dark). `NO_COLOR`
-disables styling by variable presence, including an empty value. `F8` toggles
+disables styling by variable presence, including an empty value. `alt+l` toggles
 **linear reading**: plain text is appended to the terminal's native scrollback,
 not to an alternate-screen single-column imitation. Entering replays the loaded
 conversation once; streaming appends complete lines without repeating tokens,
 and the single-line draft prompt redraws in place. The terminal/screen reader's
 own scrollback navigation reads history. Complex overlays (diff, history and
 preferences) still use the full-screen workflow; a fully linear menu/screen-
-reader interaction audit is not complete. `F9`
+reader interaction audit is not complete. `alt+a`
 independently toggles **reduced motion**. Neither delays streamed content or
 changes agent behavior. `Ctrl+B` leaves linear mode when explicitly reopening
 the sidebar. These bindings, plus copy, queue and mouse, are contextual global
@@ -151,11 +166,23 @@ reporting is treated as focused, so foreground completions stay quiet.
 terminal's desktop-notification escape. Delivery is best-effort and depends on
 the terminal; notification payloads are sanitized, flattened and bounded.
 
-`Ctrl+P` opens the command palette, `Ctrl+R` sessions, and `F1` help. Help and
-footer hints show the effective bindings, not stale defaults. In the shortcut
+`Ctrl+P` opens the command palette, `Ctrl+R` sessions, and `alt+h` (`?` in an
+empty draft) help. No default binding is a function key: `F1`–`F12` need an
+`Fn` modifier on a laptop, a screen-reader chord on some terminals, and are
+absent on a compact keyboard — a shortcut that takes three fingers, or does not
+exist, is not a shortcut. A reader may still *rebind* one to an F key. Help and
+footer hints show the effective bindings, not stale defaults, and the help
+overlay groups them (chats / choices / panels / interface / inline keys /
+commands) instead of printing one flat list. In the shortcut
 editor, press Enter and then a chord; conflicts swap owners, `r` restores
 defaults, and Escape cancels capture. Supported chords include Ctrl/Alt plus an
 ASCII letter or digit, F1–F24, Tab, navigation keys and Enter/Escape.
+
+`Ctrl+M`, `Ctrl+1` and `Ctrl+2` are delivered only by terminals that report
+modifiers — the kitty keyboard protocol, or xterm's `modifyOtherKeys`, both of
+which the TUI negotiates at start. A terminal that reports none sends `Ctrl+M`
+and `Enter` as the same byte, and `Ctrl+1` as a plain `1`; there `/model` and a
+click on the rail's tab strip are the doors to the same places.
 
 ## Keys and mouse
 
@@ -164,17 +191,19 @@ ASCII letter or digit, F1–F24, Tab, navigation keys and Enter/Escape.
 | `tab` / `shift+tab` | Launchpad: move between the prompt and the parameter chips (`enter` cycles the chip under the cursor; `escape` or typing goes back to the prompt). Conversation: take the keys into the rail (the cursor lands on the conversation on screen) and back |
 | `←` `→` | Move the draft cursor; in a focused rail, switch between its two tabs (最近 ↔ 工作区) |
 | `↑` `↓` | Move through draft lines / submission history; in a focused rail, move to the previous / next conversation (headings are skipped) and `enter` opens it |
-| `shift+←` / `shift+→` | Switch to the previous / next conversation in the rail's order, wherever the keys are: the transcript follows, and so does the rail's cursor |
+| `shift+←` / `shift+→` | Switch to the previous / next conversation in the rail's order, wherever the keys are: the transcript follows, and so does the rail's cursor. A held key switches once per burst, not once per repeat |
 | `p` | Rails: pin / unpin the workspace the selected conversation belongs to |
 | `ctrl+j` / `ctrl+enter` | Insert a newline. `ctrl+j` is the one every terminal delivers; `ctrl+enter` arrives when the terminal reports modifiers (kitty keyboard protocol, xterm `modifyOtherKeys`, or a Windows Terminal `sendInput` binding), and `shift+enter` needs one of those too. Windows Terminal keeps `alt+enter` for fullscreen and sends plain Enter for `ctrl+enter` unless the reader binds it, e.g. `{"keys": "ctrl+enter", "command": {"action": "sendInput", "input": "\u001b[13;5u"}}` |
 | `ctrl+w`, `alt+d`, `ctrl+u`, `ctrl+k`, `ctrl+y` | Delete a word, kill to line start/end, yank |
 | `ctrl+z` / `ctrl+shift+z` (or `alt+y`) | Undo / redo draft edits |
 | `pageUp` / `pageDown` or `ctrl+↑` / `ctrl+↓` | Scroll the conversation; `esc` returns to the latest output |
 | `ctrl+g` or `/queue` | List queued prompts; `x` cancels, `r` / `enter` cancels and recalls into the draft (`ctrl+x` stops the active run, not the queue) |
-| `F6` or `/copy` | Copy the last assistant answer as clean content, without terminal chrome |
-| `F7` or `/mouse` | Toggle and persist mouse capture off/on for native terminal selection |
-| `F8` | Toggle native-scrollback linear reading |
-| `F9` | Toggle reduced motion independently |
+| `ctrl+m` | Model picker (`/model`): every model the agent offers, grouped by provider, with the reasoning slider on its first row |
+| `ctrl+1` / `ctrl+2` | The rail's two tabs: 最近 (conversations by refresh time) and 工作区 (filed by directory). The rail takes the keys and its cursor lands on the conversation on screen |
+| `alt+c` or `/copy` | Copy the last assistant answer as clean content, without terminal chrome |
+| `alt+m` or `/mouse` | Toggle and persist mouse capture off/on for native terminal selection |
+| `alt+l` | Toggle native-scrollback linear reading |
+| `alt+a` | Toggle reduced motion independently |
 | `ctrl+t` | Thinking effort: opens the six-level chooser (`/thinking`); on the launchpad the level is staged for the session the first message creates |
 | `ctrl+s` | Approval mode: opens the four-tier chooser (`/mode`), the desktop composer's own values — 手动审批 / 沙箱保护 / 自动审批 / 完全访问 |
 | `ctrl+l` | Workspaces: opens the workspace chooser (`/workspace`) — every directory this client has a conversation in, plus a row that creates one from the path typed into its search line |
@@ -182,7 +211,7 @@ ASCII letter or digit, F1–F24, Tab, navigation keys and Enter/Escape.
 | `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run |
 | `ctrl+r` | Session picker (name, workspace and age of each conversation; the footer names the key) |
 | `ctrl+o` | Preferences and shortcut editor |
-| `F1` or `?` | Help overlay (effective keys + commands; `?` requires an empty draft) |
+| `alt+h` or `?` | Help overlay (effective keys, grouped by area, then the commands; `?` requires an empty draft) |
 | `/lang` | Interface language: follow the system, Chinese or English |
 | `ctrl+e` | Final-answer / full-process reading level: a settled reply folds its whole work — the calls and reasoning before *and* after its last prose — into one summary row |
 | `ctrl+c` | Quit |
@@ -234,7 +263,7 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | Existing settings | `/mode` (or `/sandbox`) opens the approval-mode chooser, `/thinking` the reasoning chooser, `/compact [instructions]`, `/tools a,b` or `/tools off`, `/providers`; `/skills` and `/model` retain their existing surfaces |
 | Sessions panel | `list_sessions`, newest first: 最近 as a flat list, 工作区 filed by directory with the pinned ones leading. Pins persist in `settings.json` (`pinnedWorkspaces`) |
 | Usage / context / cost | `get_state`'s usage block, refreshed on the same events |
-| `ctrl+n` / `/new`, `ctrl+x` stop, `F5` refresh | |
+| `ctrl+n` / `/new`, `ctrl+x` stop, `alt+r` refresh | |
 | Launchpad chips | Click 工作区 / 模型 / 强度 / 审批 to cycle them. On the launchpad the workspace, model, effort and approval choices are staged for the session the first message creates (the agent has no session to set them on yet); with a session attached they go over the wire. 工作区 cycles the directories this client has conversations in, and the notice row names the full path it chose |
 | Theme, reading level | Persisted in `~/.future/tui/settings.json` (`tui/src/settings.rs`) |
 
