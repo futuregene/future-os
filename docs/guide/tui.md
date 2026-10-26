@@ -98,17 +98,29 @@ Choices persist in `~/.future/tui/settings.json` as `density`, `sidebarPosition`
 `keybindings.json`.
 
 `/theme` retains the six-theme picker, including `high-contrast`; choosing a
-theme persists `themeId`. `F8` toggles **linear reading**: a focused single
-column without the auxiliary sidebar, with a static activity indicator. `F9`
+theme persists `themeId`. With no stored choice, the terminal's `COLORFGBG`
+hint selects its light/dark palette (unknown hints use dark). `NO_COLOR`
+disables styling by variable presence, including an empty value. `F8` toggles
+**linear reading**: plain text is appended to the terminal's native scrollback,
+not to an alternate-screen single-column imitation. Entering replays the loaded
+conversation once; streaming appends complete lines without repeating tokens,
+and the single-line draft prompt redraws in place. The terminal/screen reader's
+own scrollback navigation reads history. Complex overlays (diff, history and
+preferences) still use the full-screen workflow; a fully linear menu/screen-
+reader interaction audit is not complete. `F9`
 independently toggles **reduced motion**. Neither delays streamed content or
 changes agent behavior. `Ctrl+B` leaves linear mode when explicitly reopening
 the sidebar. These bindings, plus copy, queue and mouse, are contextual global
 actions and can be rebound; overlays keep their local keys so a global shortcut
 never submits an approval or edits history search accidentally.
 
-Notifications are emitted only for a successful run submitted by this TUI when
-no queued follow-up remains. Failures, cancellations, replays and other
-clients' runs do not notify. `notify.enabled` is the master switch;
+Notifications are emitted for a successful run submitted by this TUI when no
+queued follow-up remains and the terminal reports focus-out. Approval requests
+and failures require attention in either focus state; approvals use their real
+request id and terminal failures their run id for duplicate suppression.
+Cancellations, replays and other clients' runs do not notify. Unsupported focus
+reporting is treated as focused, so foreground completions stay quiet.
+`notify.enabled` is the master switch;
 `notify.bell` independently controls BEL and `notify.osc9` controls the
 terminal's desktop-notification escape. Delivery is best-effort and depends on
 the terminal; notification payloads are sanitized, flattened and bounded.
@@ -133,7 +145,7 @@ ASCII letter or digit, F1–F24, Tab, navigation keys and Enter/Escape.
 | `ctrl+g` or `/queue` | List queued prompts; `x` cancels, `r` / `enter` cancels and recalls into the draft (`ctrl+x` stops the active run, not the queue) |
 | `F6` or `/copy` | Copy the last assistant answer as clean content, without terminal chrome |
 | `F7` or `/mouse` | Toggle and persist mouse capture off/on for native terminal selection |
-| `F8` | Toggle single-column, static linear reading |
+| `F8` | Toggle native-scrollback linear reading |
 | `F9` | Toggle reduced motion independently |
 | `ctrl+b` | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal |
 | `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run |
@@ -157,7 +169,7 @@ Mouse reporting is SGR 1006 and starts with the persisted preference (enabled by
 
 The conversation follows new output by default. Scrolling up detaches from the tail; further output leaves the reading position unchanged and shows a new-output badge. Scroll back to the bottom or press `esc` to follow again.
 
-The driver only repaints dirty frames: there is no idle 120ms repaint timer. Streaming and spinner updates coalesce at 80ms, input and resize repaint immediately, and transcript rendering is cached by width/content revision. Reduced-motion and linear-reading modes do not schedule animation repaints; actual stream and state changes still repaint.
+The driver only repaints dirty frames: there is no idle 120ms repaint timer. Streaming and spinner updates coalesce at 80ms, input and resize repaint immediately, and transcript rendering is cached by width/content revision. Reduced-motion does not schedule animation repaints; actual stream and state changes still repaint. Linear reading bypasses full-screen repaint entirely and appends only new transcript content, redrawing its one-line prompt.
 
 ## What is wired to the agent
 

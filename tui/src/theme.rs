@@ -330,32 +330,57 @@ pub const DEFAULT_THEME: LegacyTheme = LegacyTheme {
 
 // ─── Color helpers ─────────────────────────────────────────────────────
 
+/// The conventional opt-out from coloured terminal output. Presence matters,
+/// including an empty value; explicit `NO_COLOR=0` still requests no colour.
+pub fn colors_disabled(no_color: Option<std::ffi::OsString>) -> bool {
+    no_color.is_some()
+}
+
+fn styled(sequence: &str, text: &str, reset: bool) -> String {
+    styled_with_policy(
+        sequence,
+        text,
+        reset,
+        colors_disabled(std::env::var_os("NO_COLOR")),
+    )
+}
+
+fn styled_with_policy(sequence: &str, text: &str, reset: bool, disabled: bool) -> String {
+    if disabled {
+        text.to_string()
+    } else if reset {
+        format!("{sequence}{text}{RESET}")
+    } else {
+        format!("{sequence}{text}")
+    }
+}
+
 pub fn fg(c: u8, text: &str) -> String {
-    format!("{CSI}38;5;{c}m{text}{RESET}")
+    styled(&format!("{CSI}38;5;{c}m"), text, true)
 }
 
 pub fn bg(c: u8, text: &str) -> String {
-    format!("{CSI}48;5;{c}m{text}{RESET}")
+    styled(&format!("{CSI}48;5;{c}m"), text, true)
 }
 
 pub fn bold(text: &str) -> String {
-    format!("{CSI}1m{text}{RESET}")
+    styled(&format!("{CSI}1m"), text, true)
 }
 
 pub fn dim(text: &str) -> String {
-    format!("{CSI}2m{text}{RESET}")
+    styled(&format!("{CSI}2m"), text, true)
 }
 
 pub fn italic(text: &str) -> String {
-    format!("{CSI}3m{text}{RESET}")
+    styled(&format!("{CSI}3m"), text, true)
 }
 
 pub fn underline(text: &str) -> String {
-    format!("{CSI}4m{text}{RESET}")
+    styled(&format!("{CSI}4m"), text, true)
 }
 
 pub fn strikethrough(text: &str) -> String {
-    format!("{CSI}9m{text}{RESET}")
+    styled(&format!("{CSI}9m"), text, true)
 }
 
 pub fn reset(text: &str) -> String {
@@ -366,42 +391,42 @@ pub fn reset(text: &str) -> String {
 
 /// Apply foreground color without trailing RESET.
 pub fn fg_raw(c: u8, text: &str) -> String {
-    format!("{CSI}38;5;{c}m{text}")
+    styled(&format!("{CSI}38;5;{c}m"), text, false)
 }
 
 /// Apply background color without trailing RESET.
 pub fn bg_raw(c: u8, text: &str) -> String {
-    format!("{CSI}48;5;{c}m{text}")
+    styled(&format!("{CSI}48;5;{c}m"), text, false)
 }
 
 /// Apply bold without trailing RESET.
 pub fn bold_raw(text: &str) -> String {
-    format!("{CSI}1m{text}")
+    styled(&format!("{CSI}1m"), text, false)
 }
 
 /// Apply dim without trailing RESET.
 pub fn dim_raw(text: &str) -> String {
-    format!("{CSI}2m{text}")
+    styled(&format!("{CSI}2m"), text, false)
 }
 
 /// Apply italic without trailing RESET.
 pub fn italic_raw(text: &str) -> String {
-    format!("{CSI}3m{text}")
+    styled(&format!("{CSI}3m"), text, false)
 }
 
 /// Apply underline without trailing RESET.
 pub fn underline_raw(text: &str) -> String {
-    format!("{CSI}4m{text}")
+    styled(&format!("{CSI}4m"), text, false)
 }
 
 /// Apply strikethrough without trailing RESET.
 pub fn strikethrough_raw(text: &str) -> String {
-    format!("{CSI}9m{text}")
+    styled(&format!("{CSI}9m"), text, false)
 }
 
 /// Reverse video without trailing RESET.
 pub fn reverse_raw(text: &str) -> String {
-    format!("{CSI}7m{text}")
+    styled(&format!("{CSI}7m"), text, false)
 }
 
 /// Compose multiple style functions into one. Each fn receives text and
@@ -412,7 +437,11 @@ pub fn style(text: &str, fns: &[&dyn Fn(&str) -> String]) -> String {
     for f in fns {
         result = f(&result);
     }
-    result + RESET
+    if colors_disabled(std::env::var_os("NO_COLOR")) {
+        result
+    } else {
+        result + RESET
+    }
 }
 
 // ─── Thinking ────────────────────────────────────────────────────────────
@@ -473,6 +502,21 @@ mod tests {
         assert_eq!(DARK_THEME.assistant_bg, -1);
         assert_eq!(DARK_THEME.fg, 252);
         assert_eq!(DARK_THEME.user_bg, 59);
+    }
+
+    #[test]
+    fn no_color_preserves_text_and_removes_all_styling() {
+        assert_eq!(styled_with_policy("red", "plain", true, true), "plain");
+        assert_eq!(styled_with_policy("bold", "raw", false, true), "raw");
+        assert_eq!(styled_with_policy("red", "x", true, false), "redx\x1b[m");
+        assert_eq!(styled_with_policy("\x1b[7m", "x", false, true), "x");
+    }
+
+    #[test]
+    fn no_color_presence_including_zero_disables_styling() {
+        assert!(colors_disabled(Some("".into())));
+        assert!(colors_disabled(Some("0".into())));
+        assert!(!colors_disabled(None));
     }
 
     #[test]

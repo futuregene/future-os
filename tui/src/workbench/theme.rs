@@ -177,8 +177,8 @@ fn canonical(id: &str) -> String {
         .unwrap_or(id)
 }
 
-/// Resolve a persisted id; an unknown or absent id is the dark palette, the
-/// same "fall back to the default" rule every other setting uses.
+/// Resolve a persisted id. With no explicit choice, follow the terminal's
+/// system light/dark hint; malformed or unavailable hints use the dark default.
 pub fn resolve(id: Option<&str>) -> Palette {
     match id.map(canonical) {
         Some(id) => PALETTES
@@ -186,7 +186,16 @@ pub fn resolve(id: Option<&str>) -> Palette {
             .copied()
             .find(|palette| palette.id == id)
             .unwrap_or(FUTURE_DARK),
-        None => FUTURE_DARK,
+        None => PALETTES
+            .iter()
+            .copied()
+            .find(|palette| {
+                palette.id
+                    == super::accessibility::system_theme_id(
+                        std::env::var("COLORFGBG").ok().as_deref(),
+                    )
+            })
+            .unwrap_or(FUTURE_DARK),
     }
 }
 

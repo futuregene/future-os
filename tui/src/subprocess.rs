@@ -232,6 +232,7 @@ fn decode(bytes: Vec<u8>) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     fn sh_args(script: &str) -> Vec<String> {
         vec!["-c".to_string(), script.to_string()]
     }
