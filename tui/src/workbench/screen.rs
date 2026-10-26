@@ -377,9 +377,8 @@ fn header(
     } else {
         data.session.title.clone()
     };
-    // The launchpad hero owns the block wordmark (its whale plus the big name),
-    // so the header falls back to its text brand there. One screen, one
-    // wordmark.
+    // The launchpad has its own quieter hero, so the header falls back to its
+    // text brand there. One screen, one name treatment.
     let show_wordmark = columns >= 96 && !data.on_launchpad();
     let mut identity: Vec<String> = Vec::new();
     if show_wordmark {
@@ -393,8 +392,8 @@ fn header(
     }
     // Five identity rows beside the logo, then the hairline. Five is
     // `wordmark_rows`' height: drawing four dropped the bottom stroke of every
-    // letter in `FUTURE OS` (the launchpad hero draws all five, so the header
-    // and the hero disagreed about the same block font).
+    // letter in `FUTURE OS`. The launchpad's separate four-row hero does not
+    // change the chat header's five-row identity block.
     let detail = [
         format!(" · {title}"),
         // The workspace, then the branch it is on. `⎇` names *what* the second
@@ -413,7 +412,11 @@ fn header(
     ];
     for index in 0..5 {
         let mut row = String::new();
-        row.push_str(logo.get(index).map(String::as_str).unwrap_or("         "));
+        row.push_str(
+            logo.get(index)
+                .map(String::as_str)
+                .unwrap_or("             "),
+        );
         row.push_str("  ");
         if show_wordmark {
             row.push_str(&identity.get(index).cloned().unwrap_or_default());
@@ -428,7 +431,9 @@ fn header(
             } else if index < detail.len() {
                 // Line the details up under the wordmark instead of under the
                 // logo, where they would read as part of the logo.
-                row.push_str(&palette.dim(&format!("          {}", detail[index].trim_start())));
+                row.push_str(
+                    &palette.dim(&format!("              {}", detail[index].trim_start())),
+                );
             }
         }
         if index == 0 {
@@ -2109,16 +2114,16 @@ mod tests {
     }
 
     #[test]
-    fn the_launchpad_header_keeps_the_text_brand_so_the_hero_owns_the_block_one() {
+    fn the_launchpad_header_keeps_the_text_brand_so_the_hero_owns_the_name() {
         let mut workbench = Workbench::new();
         workbench.density = super::super::preferences::Density::Comfortable;
         let launchpad = crate::workbench::demo::launchpad();
         let rows = workbench.render(&launchpad, 120, 38);
         let header_rows: Vec<String> = rows[..5].iter().map(|row| plain(row)).collect();
         for (index, row) in header_rows.iter().enumerate() {
-            // The whale's block art lives in the first ten cells; the name
-            // beside it is text, not the block wordmark (the hero draws that).
-            let tail: String = row.chars().skip(10).collect();
+            // The product icon lives in the first thirteen cells; the name
+            // beside it is text, not the block wordmark used by the chat header.
+            let tail: String = row.chars().skip(13).collect();
             assert!(
                 !tail.contains('█'),
                 "header row {index} still carries the block wordmark: {row:?}"
@@ -2130,10 +2135,15 @@ mod tests {
             .map(|row| plain(row))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(body.contains('█'), "the hero's wordmark is missing");
+        let mark = plain(&widgets::logo_rows(&FUTURE_DARK)[1]);
+        assert!(body.contains(&mark), "the hero's FutureOS icon is missing");
+        assert!(
+            body.contains("F U T U R E   O S"),
+            "the hero's name is missing"
+        );
         assert!(
             !body.contains("FUTURE OS"),
-            "the name is drawn once, as block art: the hero still spells it"
+            "the name is drawn once, in the launchpad's lighter type"
         );
     }
 }

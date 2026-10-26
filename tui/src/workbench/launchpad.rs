@@ -139,33 +139,31 @@ pub fn render(
     };
 
     // ── logo + wordmark ───────────────────────────────────────────────
-    let mark_width = width(&widgets::wordmark_rows(palette)[0]);
-    let block_width = 9 + 3 + mark_width;
-    // The hero needs the *block* to fit beside the whale: the chat column is
-    // 83 cells at 120×38 (the sidebar takes the rest), so a fixed "wide screen"
-    // threshold drew the whale alone on the screen that has the most room.
-    let room_for_wordmark = columns >= block_width + 4 && rows >= 18;
+    // The official FutureOS icon sits beside a lighter, letterspaced name.
+    // Four rows keep the tagline off its baseline and leave room for the
+    // composer; short and narrow terminals retain the compact presentation.
+    let hero = widgets::launchpad_hero_rows(palette, lang);
+    let hero_text_width = hero.iter().map(|row| width(row)).max().unwrap_or(0);
+    let block_width = widgets::logo_width() + 4 + hero_text_width;
+    let room_for_wordmark = columns >= block_width + 4 && rows >= 12;
     if room_for_wordmark {
         let logo = widgets::logo_rows(palette);
-        let mark = widgets::wordmark_rows(palette);
         let block_left = (columns - block_width) / 2;
-        for (index, mark_row) in mark.iter().enumerate() {
-            let logo_row = logo.get(index).cloned().unwrap_or_else(|| " ".repeat(9));
-            let row = format!("{logo_row}   {mark_row}");
+        for (index, hero_row) in hero.iter().enumerate() {
+            let logo_row = logo
+                .get(index)
+                .map(String::as_str)
+                .unwrap_or("             ");
+            let row = format!("{logo_row}    {hero_row}");
             lines.push(fit(&format!("{}{}", " ".repeat(block_left), row), columns));
         }
     } else if rows >= 8 {
         for row in widgets::logo_rows(palette) {
-            let block_left = (columns - 9) / 2;
+            let block_left = (columns - widgets::logo_width()) / 2;
             lines.push(fit(&format!("{}{}", " ".repeat(block_left), row), columns));
         }
     }
-
-    if rows >= 12 {
-        // The name is drawn once on this screen: the hero (whale + block
-        // wordmark) owns it, and the header keeps only its text brand. A
-        // second `FUTURE OS` line here is what made the launchpad read as two
-        // brands stacked on top of each other.
+    if !room_for_wordmark && rows >= 12 {
         push(
             &mut lines,
             palette.dim(&center(t(lang, Key::LaunchpadTagline), content_width)),
@@ -332,10 +330,16 @@ mod tests {
         let mut hit = HitMap::new();
         let (lines, cursor) = render(&data, &P, Rect::new(0, 0, 120, 38), &mut hit, LANG, None);
         let text = text_of(&lines);
-        // The hero carries the name as block art; there is no second text
-        // `FUTURE OS` line under it (that was the duplicate brand).
-        assert!(!text.contains("FUTURE OS"), "{text}");
-        assert!(lines.iter().any(|line| line.contains('█')), "{text}");
+        // The lighter hero carries the name and official product icon, not
+        // the chat header's heavy block letters.
+        assert!(text.contains("F U T U R E   O S"), "{text}");
+        assert_eq!(text.matches("F U T U R E").count(), 1, "{text}");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains(&widgets::logo_rows(&P)[1])),
+            "{text}"
+        );
         assert!(text.contains("一个 AI agent"), "{text}");
         assert!(text.contains("新会话"), "{text}");
         assert!(text.contains("模型"), "{text}");
@@ -346,7 +350,7 @@ mod tests {
         assert!(!text.contains("最近会话"), "{text}");
         // The cursor sits on the prompt row, inside the box.
         let (_, row) = cursor.expect("the prompt owns the cursor");
-        assert_eq!(row, 5 + 1 + 1 + 1, "hero(5) + tagline + blank + box top");
+        assert_eq!(row, 4 + 1 + 1, "hero(4) + blank + box top");
     }
 
     #[test]
@@ -430,6 +434,17 @@ mod tests {
         let text = text_of(&lines);
         assert!(text.contains("新会话"), "the prompt survives: {text}");
         assert!(text.contains("模型"), "{text}");
+    }
+
+    #[test]
+    fn a_short_screen_keeps_the_compact_hero_and_tagline() {
+        let data = demo::launchpad();
+        let mut hit = HitMap::new();
+        let (lines, _) = render(&data, &P, Rect::new(0, 0, 40, 12), &mut hit, LANG, None);
+        let text = text_of(&lines);
+        assert!(!text.contains("F U T U R E"), "{text}");
+        assert!(text.contains("一个 AI agent"), "{text}");
+        assert!(text.contains("新会话"), "{text}");
     }
 
     #[test]
