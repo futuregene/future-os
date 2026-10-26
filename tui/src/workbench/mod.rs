@@ -375,6 +375,9 @@ pub struct Workbench {
     pub scroll: scroll::ScrollState,
     pub queue_index: usize,
     pub workflow_index: usize,
+    /// How many list rows the last frame showed. Only the renderer knows,
+    /// and `pageUp`/`pageDown` need it to move the cursor by a page.
+    pub list_page: usize,
     /// Diff navigator focus: files or the patch. The narrow layout uses the
     /// same distinction so file selection cannot eat the patch's scroll keys.
     pub diff_patch_focus: bool,
@@ -448,6 +451,7 @@ impl Workbench {
             scroll: scroll::ScrollState::default(),
             queue_index: 0,
             workflow_index: 0,
+            list_page: 10,
             diff_patch_focus: true,
             history_query: String::new(),
             session_key: String::new(),
@@ -1030,6 +1034,15 @@ impl Workbench {
                     self.overlay = None;
                     vec![WbAction::Redraw]
                 }
+                "pageUp" => {
+                    self.queue_index = self.queue_index.saturating_sub(self.list_page.max(1));
+                    vec![WbAction::Redraw]
+                }
+                "pageDown" => {
+                    self.queue_index = (self.queue_index + self.list_page.max(1))
+                        .min(data.queue.len().saturating_sub(1));
+                    vec![WbAction::Redraw]
+                }
                 "up" => {
                     self.queue_index = self.queue_index.saturating_sub(1);
                     vec![WbAction::Redraw]
@@ -1054,6 +1067,16 @@ impl Workbench {
                 _ => Vec::new(),
             },
             Overlay::Preferences => match key {
+                "pageUp" => {
+                    self.preferences_index =
+                        self.preferences_index.saturating_sub(self.list_page.max(1));
+                    vec![WbAction::Redraw]
+                }
+                "pageDown" => {
+                    self.preferences_index = (self.preferences_index + self.list_page.max(1))
+                        .min(preferences::PREFERENCE_ROWS.len() - 1);
+                    vec![WbAction::Redraw]
+                }
                 "escape" | "q" => {
                     self.overlay = None;
                     vec![WbAction::Redraw]
@@ -1116,6 +1139,21 @@ impl Workbench {
                 _ => Vec::new(),
             },
             Overlay::Keybindings => {
+                if !self.awaiting_keybinding {
+                    match key {
+                        "pageUp" => {
+                            self.keybinding_index =
+                                self.keybinding_index.saturating_sub(self.list_page.max(1));
+                            return vec![WbAction::Redraw];
+                        }
+                        "pageDown" => {
+                            self.keybinding_index = (self.keybinding_index + self.list_page.max(1))
+                                .min(preferences::ACTIONS.len() - 1);
+                            return vec![WbAction::Redraw];
+                        }
+                        _ => {}
+                    }
+                }
                 if self.awaiting_keybinding {
                     if key == "escape" {
                         self.awaiting_keybinding = false;
@@ -1242,6 +1280,16 @@ impl Workbench {
                     }
                     vec![WbAction::Redraw]
                 }
+                "pageUp" => {
+                    self.palette_index = self.palette_index.saturating_sub(self.list_page.max(1));
+                    vec![WbAction::Redraw]
+                }
+                "pageDown" => {
+                    let count = self.palette_rows(data).len();
+                    self.palette_index =
+                        (self.palette_index + self.list_page.max(1)).min(count.saturating_sub(1));
+                    vec![WbAction::Redraw]
+                }
                 "backspace" => {
                     self.palette_query.pop();
                     self.palette_index = 0;
@@ -1365,8 +1413,29 @@ impl Workbench {
                 self.diff_patch_focus = false;
                 self.workflow_index = (self.workflow_index + 1).min(count.saturating_sub(1));
             }
-            "pageUp" => self.overlay_scroll = self.overlay_scroll.saturating_sub(10),
-            "pageDown" | "space" if overlay != Overlay::History => self.overlay_scroll += 10,
+            // `space` types into history's filter, so only the two named page
+            // keys page there; everywhere else it is the same verb. A detail
+            // view (an approval, a patch) scrolls; every list moves its cursor
+            // — the diff is both, so whichever pane has the keys decides.
+            "pageUp" | "pageDown" | "space" if key != "space" || overlay != Overlay::History => {
+                let page = self.list_page.max(1);
+                let back = key == "pageUp";
+                // A detail view (an approval, a patch) scrolls; every list moves
+                // its cursor. The diff is both, so the pane with the keys decides.
+                let scrolls = overlay == Overlay::Approval
+                    || (overlay == Overlay::Diff && self.diff_patch_focus);
+                if scrolls {
+                    if back {
+                        self.overlay_scroll = self.overlay_scroll.saturating_sub(page);
+                    } else {
+                        self.overlay_scroll += page;
+                    }
+                } else if back {
+                    self.workflow_index = self.workflow_index.saturating_sub(page);
+                } else {
+                    self.workflow_index = (self.workflow_index + page).min(count.saturating_sub(1));
+                }
+            }
             "backspace" if overlay == Overlay::History => {
                 self.history_query.pop();
                 self.workflow_index = 0;
@@ -2059,6 +2128,12 @@ impl Workbench {
 
     pub(crate) fn hit_map(&mut self) -> &mut layout::HitMap {
         &mut self.hit
+    }
+
+    /// Record how many list rows this frame shows; the page keys move the
+    /// cursor by exactly that many.
+    pub(crate) fn set_list_page(&mut self, rows: usize) {
+        self.list_page = rows.max(1);
     }
 
     /// The first region this frame's overlay painted — set by the compositor so
@@ -4341,6 +4416,155 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A list longer than its box must page. `pageDown` used to add to
+    /// `overlay_scroll`, which list overlays never read — the key was inert on
+    /// every one of them while the help table advertised a page key.
+    #[test]
+    fn page_keys_move_any_list_cursor_by_a_page() {
+        let mut data = demo::chat();
+        data.sessions = (0..30)
+            .map(|index| state::SessionRow {
+                id: format!("page-{index:03}"),
+                title: format!("第 {index} 个会话 · 标题足够长，长到必须被截断才放得下"),
+                workspace: format!("D:/future-os/.worktrees/page-{index}"),
+                ..SessionRow::default()
+            })
+            .collect();
+        data.fork_points = (0..30)
+            .map(|index| state::ForkPoint {
+                id: format!("e{index}"),
+                text: format!("第 {index} 条用户消息，同样很长，长到占不下一行"),
+            })
+            .collect();
+        data.worktrees = (0..30)
+            .map(|index| state::WorktreeView {
+                path: format!("D:/future-os/.worktrees/page-branch-{index}"),
+                label: format!("feat/page-{index}"),
+                description: format!("第 {index} 个工作区"),
+                current: index == 0,
+            })
+            .collect();
+
+        for overlay in [
+            Overlay::History,
+            Overlay::Tree,
+            Overlay::Fork,
+            Overlay::Worktree,
+        ] {
+            let mut wb = workbench();
+            wb.overlay = Some(overlay);
+            wb.render(&data, 100, 30);
+            let page = wb.list_page;
+            assert!(page > 1, "{overlay:?}: the list shows one row");
+            assert_eq!(wb.workflow_index, 0);
+
+            wb.handle(WbEvent::Key("pageDown".into()), &data);
+            let rows = wb.render(&data, 100, 30);
+            assert_eq!(
+                wb.workflow_index,
+                page.min(29),
+                "{overlay:?}: pageDown should land a page down"
+            );
+            // …and the cursor is still on screen, with its arrow.
+            let (rect, _) = wb
+                .hits()
+                .regions()
+                .iter()
+                .find(|(_, id)| *id == format!("workflow.row.{}", wb.workflow_index))
+                .cloned()
+                .unwrap_or_else(|| panic!("{overlay:?}: the selection is not painted"));
+            assert!(
+                crate::utils::strip_ansi_codes(&rows[rect.y as usize]).contains('\u{203a}'),
+                "{overlay:?}: row {} has no arrow",
+                rect.y
+            );
+
+            wb.handle(WbEvent::Key("pageUp".into()), &data);
+            assert_eq!(wb.workflow_index, 0, "{overlay:?}: pageUp should come back");
+        }
+
+        // The diff is a list *and* a detail view: whichever pane has the keys
+        // decides whether the page key moves the cursor or the patch.
+        data.diff = Some(state::DiffView {
+            files: (0..30)
+                .map(|index| diff_review::DiffFile {
+                    path: format!("src/page_{index}.rs"),
+                    status: "M".into(),
+                })
+                .collect(),
+            ..state::DiffView::default()
+        });
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Diff);
+        wb.diff_patch_focus = false;
+        wb.render(&data, 100, 30);
+        let page = wb.list_page;
+        wb.handle(WbEvent::Key("pageDown".into()), &data);
+        assert_eq!(
+            wb.workflow_index,
+            page.min(29),
+            "the file navigator pages its own cursor"
+        );
+        assert_eq!(wb.overlay_scroll, 0, "and leaves the patch where it was");
+        wb.diff_patch_focus = true;
+        wb.handle(WbEvent::Key("pageDown".into()), &data);
+        assert_eq!(wb.overlay_scroll, page, "the patch scrolls a page");
+    }
+
+    /// The cursor menus keep their own field, so they page too — a long list on
+    /// a short screen cannot be crossed with `down` alone in reasonable time.
+    #[test]
+    fn page_keys_move_the_menu_cursors_too() {
+        let data = demo::chat();
+
+        let mut wb = workbench();
+        wb.open_preferences();
+        wb.render(&data, 100, 30);
+        let page = wb.list_page;
+        wb.handle(WbEvent::Key("pageDown".into()), &data);
+        assert_eq!(
+            wb.preferences_index,
+            page.min(crate::workbench::preferences::PREFERENCE_ROWS.len() - 1)
+        );
+        wb.handle(WbEvent::Key("pageUp".into()), &data);
+        assert_eq!(wb.preferences_index, 0);
+
+        let mut wb = workbench();
+        wb.open_preferences();
+        wb.overlay = Some(Overlay::Keybindings);
+        wb.render(&data, 100, 30);
+        let page = wb.list_page;
+        wb.handle(WbEvent::Key("pageDown".into()), &data);
+        assert_eq!(
+            wb.keybinding_index,
+            page.min(crate::workbench::preferences::ACTIONS.len() - 1)
+        );
+
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Palette);
+        wb.render(&data, 100, 30);
+        let page = wb.list_page;
+        wb.handle(WbEvent::Key("pageDown".into()), &data);
+        assert_eq!(
+            wb.palette_index,
+            page.min(wb.palette_rows(&data).len().saturating_sub(1))
+        );
+
+        let mut data = demo::chat();
+        data.queue = (0..30)
+            .map(|index| state::QueuedPrompt {
+                run_id: format!("run-{index}"),
+                text: format!("第 {index} 条排队消息"),
+            })
+            .collect();
+        let mut wb = workbench();
+        wb.surface_command("/queue", &data);
+        wb.render(&data, 100, 30);
+        let page = wb.list_page;
+        wb.handle(WbEvent::Key("pageDown".into()), &data);
+        assert_eq!(wb.queue_index, page.min(29));
     }
 
     fn workbench_surface(wb: &Workbench) -> crate::workbench::layout::Rect {

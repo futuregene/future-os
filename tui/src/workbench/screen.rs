@@ -560,6 +560,7 @@ fn queue_box(
         ));
     }
     let room = (h as usize).saturating_sub(3).min(12);
+    workbench.set_list_page(room);
     let first = workbench.queue_index.saturating_add(1).saturating_sub(room);
     for (index, item) in data.queue.iter().skip(first).take(room).enumerate() {
         let index = first + index;
@@ -646,6 +647,7 @@ fn workflow_box(
     }
     let header = rows.len();
     let available = (h as usize).saturating_sub(header + 1);
+    workbench.set_list_page(available);
     if available == 0 {
         rows.push(widgets::box_bottom(palette, columns));
         return indent(rows, left, w as usize);
@@ -1401,6 +1403,7 @@ fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
     content.push(String::new());
     content.push(palette.dim(t(lang, Key::PreferencesHint)));
     let visible = h.saturating_sub(5).max(1) as usize;
+    workbench.set_list_page(visible);
     let first = workbench
         .preferences_index
         .saturating_add(1)
@@ -1488,6 +1491,7 @@ fn keybindings_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
     content.push(String::new());
     content.push(palette.dim(t(lang, Key::KeybindingsHint)));
     let visible = h.saturating_sub(5).max(1) as usize;
+    workbench.set_list_page(visible);
     let first = workbench
         .keybinding_index
         .saturating_add(1)
@@ -1543,6 +1547,7 @@ fn palette_box(
     let query = workbench.palette_query.clone();
     let selection = workbench.palette_index.min(rows.len().saturating_sub(1));
     let room = h.saturating_sub(6) as usize;
+    workbench.set_list_page(room);
     // Keep the highlighted entry inside the window.
     let start = selection.saturating_sub(room.saturating_sub(1));
     let shown = rows.len().saturating_sub(start).min(room);
