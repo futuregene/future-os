@@ -10,7 +10,7 @@
 //! recent sessions. The input box is never dropped — a launchpad that cannot
 //! take a prompt is not a launchpad.
 
-use crate::workbench::ansi::{align_right, fit, width};
+use crate::workbench::ansi::{fit, width};
 use crate::workbench::i18n::{self, t, Key, Language};
 use crate::workbench::layout::{HitMap, Rect};
 use crate::workbench::state::WorkbenchData;
@@ -26,8 +26,16 @@ pub struct Chip {
 }
 
 /// The parameter row: what the first message will run with.
+///
+/// The workspace leads, because it is the one choice that decides what the rest
+/// of them mean: a model is picked for a directory, not the other way round.
 pub fn chips(data: &WorkbenchData, lang: Language) -> Vec<Chip> {
     vec![
+        Chip {
+            id: "launchpad.workspace",
+            title: t(lang, Key::ChipWorkspace),
+            value: workspace_label(&data.session.cwd),
+        },
         Chip {
             id: "launchpad.model",
             title: t(lang, Key::ChipModel),
@@ -76,6 +84,21 @@ fn short_model(model: &str) -> String {
         .to_string()
 }
 
+/// The workspace's own name, which is what a chip has room for (`D:/work/x` →
+/// `x`). A path with no last segment (`/`) is shown as it is.
+fn workspace_label(cwd: &str) -> String {
+    if cwd.trim().is_empty() {
+        return "—".to_string();
+    }
+    let trimmed = cwd.trim_end_matches(['/', '\\']);
+    let name = trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed);
+    if name.is_empty() {
+        cwd.to_string()
+    } else {
+        name.to_string()
+    }
+}
+
 /// How the launchpad's shortcut entry points read; the loop runs them as
 /// `/command`s.
 pub const SHORTCUTS: [(&str, Key); 4] = [
@@ -95,6 +118,7 @@ pub fn render(
     area: Rect,
     hit: &mut HitMap,
     lang: Language,
+    focused_chip: Option<&str>,
 ) -> (Vec<String>, Option<(u16, u16)>) {
     if area.is_empty() {
         return (Vec::new(), None);
@@ -178,7 +202,16 @@ pub fn render(
         let mut row = String::new();
         let mut x = left;
         for chip in chips(data, lang) {
-            let text = format!("  {} ‹{}›", chip.title, chip.value);
+            // The chip the `tab` key stands on says so: `▸` in place of the
+            // leading space, in the accent colour. Same width either way, so
+            // focusing one does not reflow the row.
+            let focused = focused_chip == Some(chip.id);
+            let text = format!(
+                "{}{} ‹{}›",
+                if focused { "▸ " } else { "  " },
+                chip.title,
+                chip.value
+            );
             let text = crate::workbench::ansi::clip(&text, content_width);
             let chip_width = width(&text);
             if x + chip_width > left + content_width {
@@ -192,7 +225,12 @@ pub fn render(
                 Rect::new(area.x + x as u16, y, chip_width as u16, 1),
                 chip.id,
             );
-            row.push_str(&palette.text(palette.iris, &text));
+            let painted = if focused {
+                palette.strong(palette.accent, &text)
+            } else {
+                palette.text(palette.iris, &text)
+            };
+            row.push_str(&painted);
             x += chip_width;
         }
         if !row.is_empty() {
@@ -224,35 +262,9 @@ pub fn render(
     }
 
     // ── recent sessions ───────────────────────────────────────────────
-    let remaining = rows.saturating_sub(lines.len());
-    if remaining >= 4 && !data.sessions.is_empty() {
-        push(&mut lines, String::new());
-        push(&mut lines, palette.dim(t(lang, Key::LaunchpadRecent)));
-        let room = rows.saturating_sub(lines.len());
-        for (index, session) in data.sessions.iter().take(room).enumerate() {
-            // The same three facts the rail and the `ctrl+r` list show: what the
-            // conversation is called, where it is filed and how fresh it is.
-            let tail = format!("{} · {}", session.workspace, session.age);
-            let tail = align_right(&tail, (content_width / 2).max(6));
-            let title = fit(
-                &session.title,
-                content_width.saturating_sub(width(&tail) + 1),
-            );
-            let pad = content_width.saturating_sub(1 + width(&title) + width(&tail));
-            let row = format!(
-                " {}{}{}",
-                palette.body(&title),
-                " ".repeat(pad),
-                palette.dim(&tail)
-            );
-            let y = area.y + lines.len() as u16;
-            hit.push(
-                Rect::new(area.x + left as u16, y, content_width as u16, 1),
-                format!("launchpad.session.{index}"),
-            );
-            push(&mut lines, row);
-        }
-    }
+    // None: the rail's 最近 tab is the list. A second copy under the prompt
+    // took the rows the parameter row and the shortcuts need, and the same
+    // conversation twice on one screen is one list too many.
 
     // Fill the rest of the area with canvas: the launchpad is bottom-open, not
     // a card floating in the middle.
@@ -306,7 +318,7 @@ mod tests {
             (200, 60),
         ] {
             let mut hit = HitMap::new();
-            let (lines, _cursor) = render(&data, &P, Rect::new(0, 0, w, h), &mut hit, LANG);
+            let (lines, _cursor) = render(&data, &P, Rect::new(0, 0, w, h), &mut hit, LANG, None);
             assert_eq!(lines.len(), h as usize, "{w}x{h}");
             for line in &lines {
                 assert_eq!(width(line), w as usize, "{w}x{h}: {line:?}");
@@ -318,7 +330,7 @@ mod tests {
     fn a_tall_screen_shows_the_logo_the_prompt_and_the_chips() {
         let data = demo::launchpad();
         let mut hit = HitMap::new();
-        let (lines, cursor) = render(&data, &P, Rect::new(0, 0, 120, 38), &mut hit, LANG);
+        let (lines, cursor) = render(&data, &P, Rect::new(0, 0, 120, 38), &mut hit, LANG, None);
         let text = text_of(&lines);
         // The hero carries the name as block art; there is no second text
         // `FUTURE OS` line under it (that was the duplicate brand).
@@ -330,28 +342,34 @@ mod tests {
         assert!(text.contains("强度"), "{text}");
         assert!(text.contains("deepseek-flash"), "{text}");
         assert!(text.contains("命令"), "{text}");
-        assert!(text.contains("最近会话"), "{text}");
+        // The rail lists the conversations; the launchpad does not repeat it.
+        assert!(!text.contains("最近会话"), "{text}");
         // The cursor sits on the prompt row, inside the box.
         let (_, row) = cursor.expect("the prompt owns the cursor");
         assert_eq!(row, 5 + 1 + 1 + 1, "hero(5) + tagline + blank + box top");
     }
 
     #[test]
-    fn every_chip_and_recent_session_is_clickable() {
+    fn every_chip_is_clickable_and_lands_on_the_row_that_prints_it() {
         let data = demo::launchpad();
         let mut hit = HitMap::new();
-        let (lines, _) = render(&data, &P, Rect::new(0, 0, 120, 38), &mut hit, LANG);
+        let (lines, _) = render(&data, &P, Rect::new(0, 0, 120, 38), &mut hit, LANG, None);
         let ids: Vec<&str> = hit.regions().iter().map(|(_, id)| id.as_str()).collect();
         for expected in [
             "input",
+            "launchpad.workspace",
             "launchpad.model",
             "launchpad.effort",
             "launchpad.mode",
             "launchpad.permission",
-            "launchpad.session.0",
         ] {
             assert!(ids.contains(&expected), "{expected} missing from {ids:?}");
         }
+        // The conversation list is the rail's job, not the launchpad's.
+        assert!(
+            ids.iter().all(|id| !id.starts_with("launchpad.session.")),
+            "{ids:?}"
+        );
         // …and the regions really are on the rows they were drawn on: the model
         // chip is on the row that prints it.
         let chip_row = lines
@@ -367,16 +385,51 @@ mod tests {
     }
 
     #[test]
+    fn the_focused_chip_says_so_without_moving_the_row() {
+        let data = demo::launchpad();
+        let mut plain = HitMap::new();
+        let (unfocused, _) = render(&data, &P, Rect::new(0, 0, 120, 38), &mut plain, LANG, None);
+        let mut focused_hit = HitMap::new();
+        let (focused, _) = render(
+            &data,
+            &P,
+            Rect::new(0, 0, 120, 38),
+            &mut focused_hit,
+            LANG,
+            Some("launchpad.model"),
+        );
+        assert_eq!(unfocused.len(), focused.len());
+        let marker_row = text_of(&focused)
+            .lines()
+            .position(|line| line.contains('▸'))
+            .expect("the focused chip is marked");
+        assert!(!text_of(&unfocused).contains('▸'));
+        // The marker sits inside the chip's own hit region.
+        let want = plain
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "launchpad.model")
+            .map(|(rect, _)| *rect)
+            .expect("the model chip");
+        let got = focused_hit
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "launchpad.model")
+            .map(|(rect, _)| *rect)
+            .expect("the model chip");
+        assert_eq!((want.x, want.y), (got.x, got.y));
+        assert_eq!(got.y as usize, marker_row);
+    }
+
+    #[test]
     fn a_short_screen_keeps_the_prompt_and_drops_the_rest() {
         let data = demo::launchpad();
         let mut hit = HitMap::new();
-        let (lines, _) = render(&data, &P, Rect::new(0, 0, 60, 10), &mut hit, LANG);
+        let (lines, _) = render(&data, &P, Rect::new(0, 0, 60, 10), &mut hit, LANG, None);
         assert_eq!(lines.len(), 10);
         let text = text_of(&lines);
         assert!(text.contains("新会话"), "the prompt survives: {text}");
         assert!(text.contains("模型"), "{text}");
-        // No room for recents.
-        assert!(!text.contains("最近会话"), "{text}");
     }
 
     #[test]
@@ -384,5 +437,14 @@ mod tests {
         assert_eq!(short_model("future/deepseek-flash"), "deepseek-flash");
         assert_eq!(short_model("gpt-4o"), "gpt-4o");
         assert_eq!(short_model(""), "—");
+    }
+
+    #[test]
+    fn a_workspace_chip_names_the_directory_it_would_run_in() {
+        assert_eq!(workspace_label("D:\\work\\future-os"), "future-os");
+        assert_eq!(workspace_label("/home/dev/future-os/"), "future-os");
+        assert_eq!(workspace_label(""), "—");
+        // Nothing to take: the path itself is the honest label.
+        assert_eq!(workspace_label("/"), "/");
     }
 }

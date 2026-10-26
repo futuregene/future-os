@@ -144,6 +144,10 @@ pub struct Live {
     /// Cleared once that session exists — from then on the agent is the source.
     pending_model: Option<String>,
     pending_effort: Option<String>,
+    /// The workspace the next session will run in, chosen on the launchpad.
+    /// Nothing is sent: the agent has no session to set a directory on until
+    /// the first message creates one.
+    pending_cwd: Option<String>,
     /// When the current run started and how many output tokens it has reported:
     /// tok/s is the two divided. Cleared at `agent_start`, frozen at
     /// `agent_end` so an idle surface still shows the turn it just finished.
@@ -235,6 +239,7 @@ impl Live {
             launchpad: false,
             pending_model: None,
             pending_effort: None,
+            pending_cwd: None,
             run_started: None,
             run_output_tokens: 0,
             run_tps: 0.0,
@@ -878,7 +883,12 @@ impl Live {
             .map(|session| SessionRow {
                 id: session.id.clone(),
                 title: display_name(session),
-                workspace: shorten(&session.cwd),
+                // The workspace's *name*, not its path: the rail and the
+                // `ctrl+r` list are 30-odd columns wide, and a path spent on
+                // the tail of `D:/work/…/future-os` says less than the word
+                // itself. The path is still the group's identity (see
+                // `WorkspaceGroup`) and the header still names it in full.
+                workspace: workspace_name(&session.cwd),
                 parent_id: session.parent_session_id.clone(),
                 age: age(session.updated_at_ms),
                 // On the launchpad nothing is attached, so no row claims to be
@@ -932,7 +942,10 @@ impl Live {
                     current
                 },
                 title,
-                cwd: state.cwd.clone().unwrap_or_default(),
+                // On the launchpad the chip names the workspace the first
+                // message will create the session in, not whatever session the
+                // client left behind.
+                cwd: self.shown_cwd().unwrap_or_default(),
                 branch: self.branch.for_cwd(&self.local_cwd).to_string(),
             },
             model: self
@@ -1332,6 +1345,7 @@ impl Live {
             "launchpad.effort" => self.cycle_thinking().await,
             "launchpad.permission" => self.cycle_permission().await,
             "launchpad.mode" => self.cycle_mode().await,
+            "launchpad.workspace" => self.cycle_pending_workspace(),
             "reply-detail" => {
                 let next = match self.detail {
                     ReplyDetail::Default => ReplyDetail::Detailed,
@@ -1448,6 +1462,65 @@ impl Live {
         self.state.thinking_level.clone()
     }
 
+    /// The workspace the surface should name (see [`Self::shown_model`]).
+    fn shown_cwd(&self) -> Option<String> {
+        if self.detached() {
+            return self.pending_cwd.clone().or_else(|| self.state.cwd.clone());
+        }
+        self.state.cwd.clone()
+    }
+
+    /// The directories a new session can be started in: the one that would be
+    /// used now, then every workspace this client has a conversation in, newest
+    /// first. Deduplicated by the same trailing-slash-insensitive comparison
+    /// the 工作区 filing uses, so one directory is one choice.
+    pub fn workspace_choices(&self) -> Vec<String> {
+        let mut choices: Vec<String> = Vec::new();
+        let mut push = |path: &str| {
+            if path.trim().is_empty() {
+                return;
+            }
+            if choices.iter().any(|known| same_path(known, path)) {
+                return;
+            }
+            choices.push(path.to_string());
+        };
+        if let Some(cwd) = self.shown_cwd() {
+            push(&cwd);
+        }
+        for session in &self.sessions {
+            push(&session.cwd);
+        }
+        choices
+    }
+
+    /// Stage the next workspace of the launchpad's 工作区 chip.
+    ///
+    /// The chip cycles the directories the reader already works in; with none
+    /// to cycle it says so rather than doing nothing. The notice names the
+    /// directory's *path*, because two checkouts can share a name and the chip
+    /// itself only has room for the name.
+    pub fn cycle_pending_workspace(&mut self) {
+        let choices = self.workspace_choices();
+        if choices.len() < 2 {
+            self.notice = Some(t(self.lang, Key::WorkspaceNone).into());
+            return;
+        }
+        let current = self.shown_cwd().unwrap_or_default();
+        let next = choices
+            .iter()
+            .position(|path| same_path(path, &current))
+            .map(|index| (index + 1) % choices.len())
+            .unwrap_or(0);
+        let path = choices[next].clone();
+        self.pending_cwd = Some(path.clone());
+        self.notice = Some(i18n::render(
+            self.lang,
+            Key::WorkspaceChosen,
+            &[&shorten(&path)],
+        ));
+    }
+
     /// Stage a model chosen while nothing is attached — the picker's row or the
     /// launchpad's own chip. Nothing is sent: the agent has no session to set a
     /// model on ("session not found"), and the session the next message creates
@@ -1475,7 +1548,7 @@ impl Live {
     }
 
     async fn new_session(&mut self) {
-        let cwd = self.state.cwd.clone().unwrap_or_default();
+        let cwd = self.shown_cwd().unwrap_or_default();
         // What the reader chose on the launchpad is what this session starts
         // with; with nothing staged this is the state the agent already has.
         let model = self.shown_model().unwrap_or_default();
@@ -1497,6 +1570,7 @@ impl Live {
                 // pick override the session's own on the next `/new`.
                 self.pending_model = None;
                 self.pending_effort = None;
+                self.pending_cwd = None;
                 self.refresh_state().await;
                 self.refresh_sessions().await;
                 self.load_tail().await;
@@ -2392,6 +2466,82 @@ mod tests {
         }
     }
 
+    /// The rail, the `ctrl+r` list and the 工作区 tab name a workspace by its
+    /// own name; the path is what the *group* is filed under, not what the row
+    /// has room for. On the launchpad the 工作区 chip stages the directory the
+    /// next session is created in.
+    #[tokio::test]
+    async fn the_rail_names_workspaces_and_the_chip_stages_the_next_one() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        // Two workspaces, one of them named twice (a checkout and its trailing
+        // slash), which is one choice and two rows.
+        live.sessions = vec![
+            row("s-1", Some("first"), "/work/alpha"),
+            row("s-2", Some("second"), "/work/alpha/"),
+            row("s-3", Some("third"), "/other/beta"),
+        ];
+        live.state.cwd = Some("/work/alpha".into());
+        live.to_launchpad();
+
+        let frame = crate::workbench::layout::Frame::new(
+            120,
+            38,
+            36,
+            crate::workbench::preferences::Density::Focused,
+            crate::workbench::preferences::SidebarPosition::Right,
+        );
+        let data = live.data(&frame);
+        let names: Vec<&str> = data
+            .sessions
+            .iter()
+            .map(|session| session.workspace.as_str())
+            .collect();
+        assert_eq!(names.len(), 3);
+        for name in &names {
+            assert!(!name.contains('/'), "a row names a workspace: {name:?}");
+        }
+        assert!(names.contains(&"alpha"), "{names:?}");
+        assert!(names.contains(&"beta"), "{names:?}");
+
+        // The chip starts on the directory the session would run in…
+        assert_eq!(data.session.cwd, "/work/alpha");
+        assert_eq!(live.workspace_choices(), vec!["/work/alpha", "/other/beta"]);
+
+        // …cycles to the next *distinct* one…
+        live.cycle_pending_workspace();
+        assert_eq!(live.pending_cwd.as_deref(), Some("/other/beta"));
+        let data = live.data(&frame);
+        assert_eq!(data.session.cwd, "/other/beta");
+
+        // …and wraps back.
+        live.cycle_pending_workspace();
+        assert_eq!(live.pending_cwd.as_deref(), Some("/work/alpha"));
+    }
+
+    /// With a single workspace there is nothing to cycle: the chip says so
+    /// instead of silently keeping the only choice.
+    #[tokio::test]
+    async fn cycling_one_workspace_reports_that_there_is_nothing_else() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        live.sessions = vec![row("s-1", Some("only"), "/work/alpha")];
+        live.state.cwd = Some("/work/alpha".into());
+        live.to_launchpad();
+        live.cycle_pending_workspace();
+        assert_eq!(live.pending_cwd, None);
+        assert_eq!(
+            live.notice.as_deref(),
+            Some(t(live.lang, Key::WorkspaceNone))
+        );
+    }
+
     #[test]
     fn a_session_row_is_named_by_its_name_then_its_first_prompt() {
         assert_eq!(
@@ -2472,7 +2622,7 @@ mod tests {
             .map(|(index, session)| SessionRow {
                 id: session.id.clone(),
                 title: display_name(session),
-                workspace: shorten(&session.cwd),
+                workspace: workspace_name(&session.cwd),
                 age: format!("{index}h"),
                 ..SessionRow::default()
             })
