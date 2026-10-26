@@ -2506,6 +2506,24 @@ mod tests {
         completed_tool("read", &format!(r#"{{"path":"{path}"}}"#), "body\n")
     }
 
+    /// [`assert_matches_fresh_render`] at an arbitrary width, for the resizing
+    /// case: a wrap change re-measures every row, so the cached ranges have to
+    /// equal what a fresh layout at that width produces.
+    fn assert_matches_fresh_render_at(chat: &mut ChatArea, width: usize) {
+        let incremental = chat.render_all(width);
+        let mut fresh = ChatArea::new(width, None);
+        fresh.set_tool_output_expanded(chat.tool_output_expanded());
+        fresh.set_thinking_hidden(chat.thinking_hidden);
+        fresh.compact_activity = chat.compact_activity;
+        fresh.reply_detail = chat.reply_detail;
+        set_messages(&mut fresh, chat.messages.clone());
+        let expected = fresh.render_all(width);
+        assert_eq!(
+            incremental, expected,
+            "width {width}: incremental rendering drifted from a fresh layout"
+        );
+    }
+
     /// The invariant the compact folds must not break: whatever the incremental
     /// paths did (appends, splices, folds), the transcript is exactly what a
     /// from-scratch layout of the same messages would produce.
@@ -3225,6 +3243,258 @@ mod tests {
         chat.prepend_messages(stored_page());
         assert_folded(&mut chat, 4, "after a later prepend");
         assert_matches_fresh_render(&mut chat);
+    }
+
+    /// One settled turn, built the way `live.rs` builds it from the event
+    /// stream: a user row, the assistant row a run opens with, its reasoning, a
+    /// call and its result, then the answer.
+    fn streamed_turn(chat: &mut ChatArea, turn: &str, path: &str) {
+        let call = format!("call-{turn}");
+        chat.add_message(ChatMessage::new(
+            format!("u-{turn}"),
+            ChatRole::User,
+            &format!("prompt {turn}"),
+        ));
+        chat.add_message(ChatMessage::new(
+            format!("a0-{turn}"),
+            ChatRole::Assistant,
+            "",
+        ));
+        chat.start_thinking();
+        chat.append_thinking_delta(&format!("thinking about {turn}"));
+        chat.end_thinking();
+        chat.add_tool_start(&call, "read", Some(format!(r#"{{"path":"{path}"}}"#)));
+        chat.append_tool_delta(&call, "body\n");
+        chat.finish_tool(&call, None, false);
+        chat.append_to_last_message(&format!("answer {turn}"));
+        chat.mark_last_message_complete();
+    }
+
+    /// A reply that never produced prose — the shape an **interrupted** turn
+    /// leaves behind: the run opened an assistant row, reasoned, maybe ran a
+    /// tool, and then the answer never arrived.
+    fn interrupted_turn(chat: &mut ChatArea, turn: &str, path: &str) {
+        let call = format!("call-{turn}");
+        chat.add_message(ChatMessage::new(
+            format!("u-{turn}"),
+            ChatRole::User,
+            &format!("prompt {turn}"),
+        ));
+        chat.add_message(ChatMessage::new(
+            format!("a0-{turn}"),
+            ChatRole::Assistant,
+            "",
+        ));
+        chat.start_thinking();
+        chat.append_thinking_delta(&format!("thinking about {turn}"));
+        chat.end_thinking();
+        chat.add_tool_start(&call, "read", Some(format!(r#"{{"path":"{path}"}}"#)));
+        chat.append_tool_delta(&call, "body\n");
+        chat.finish_tool(&call, None, false);
+        // `agent_end` still settles the message — `live.rs` calls this
+        // unconditionally — but no answer text ever came.
+        chat.mark_last_message_complete();
+    }
+
+    fn folded_rows(chat: &mut ChatArea) -> usize {
+        const FOLDED: &str = "\u{25b8} 1 tool call \u{00b7} 1 thought";
+        compact_lines(chat)
+            .iter()
+            .filter(|line| line.as_str() == FOLDED)
+            .count()
+    }
+
+    /// The incremental paths, which the workspace-level test never reaches:
+    /// `sync_compact_layout` / `fold_layout_extends` / `rerender_message` /
+    /// `append_last_message`. The width is established once with `render`, then
+    /// every later step must ride the splice path — asking for a new width, or
+    /// a dirty flag, would rerender everything and hide the bug.
+    #[test]
+    fn incremental_streaming_keeps_every_turn_folded() {
+        let mut chat = new_chat();
+        chat.render(W);
+        assert_eq!(chat.reply_detail(), ReplyDetail::Default);
+
+        for turn in 0..5 {
+            streamed_turn(&mut chat, &format!("{turn}"), &format!("/src/{turn}.rs"));
+            let lines = compact_lines(&mut chat);
+            assert_eq!(
+                folded_rows(&mut chat),
+                turn + 1,
+                "turn {turn}: every settled reply folded — {lines:?}"
+            );
+            let gone = format!("read /src/{turn}.rs");
+            assert!(
+                !lines.iter().any(|line| line.contains(&gone)),
+                "turn {turn}: {gone} still painted — {lines:?}"
+            );
+            assert!(
+                !lines.iter().any(|line| line.contains("thinking about")),
+                "turn {turn}: reasoning still painted — {lines:?}"
+            );
+        }
+        assert_matches_fresh_render(&mut chat);
+    }
+
+    /// …and the same incremental stream, with the level flipped *after* it.
+    #[test]
+    fn toggling_after_incremental_streaming_folds_everything() {
+        let mut chat = detailed_chat();
+        chat.render(W);
+        for turn in 0..4 {
+            streamed_turn(&mut chat, &format!("{turn}"), &format!("/src/{turn}.rs"));
+        }
+        // Detailed: every slice is on screen.
+        let open = compact_lines(&mut chat);
+        assert!(
+            open.iter().any(|line| line.contains("read /src/2.rs")),
+            "detail keeps the call — {open:?}"
+        );
+
+        assert_eq!(chat.toggle_reply_detail(), ReplyDetail::Default);
+        let lines = compact_lines(&mut chat);
+        assert_eq!(folded_rows(&mut chat), 4, "after the toggle — {lines:?}");
+        for turn in 0..4 {
+            let gone = format!("read /src/{turn}.rs");
+            assert!(
+                !lines.iter().any(|line| line.contains(&gone)),
+                "{gone} still painted after the toggle — {lines:?}"
+            );
+        }
+        assert_matches_fresh_render(&mut chat);
+    }
+
+    /// The transcript's visible rows at an arbitrary width.
+    ///
+    /// `compact_lines` is pinned to `W`; using it inside a width loop measures
+    /// the same width every iteration and the loop proves nothing.
+    fn compact_lines_at(chat: &mut ChatArea, width: usize) -> Vec<String> {
+        let mut lines = chat.render_all(width);
+        while lines.last().is_some_and(|line| line.is_empty()) {
+            lines.pop();
+        }
+        lines
+            .iter()
+            .map(|line| strip(line).trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect()
+    }
+
+    /// A width change re-wraps every row, so the cached line ranges have to be
+    /// rebuilt; a fold whose summary row was measured at another width must not
+    /// survive as a stale offset.
+    #[test]
+    fn resizing_while_folded_keeps_every_turn_folded() {
+        for width in [W, 64, 40, 100] {
+            let mut chat = new_chat();
+            chat.render(W);
+            for turn in 0..4 {
+                streamed_turn(&mut chat, &format!("{turn}"), &format!("/src/{turn}.rs"));
+            }
+            let lines = compact_lines_at(&mut chat, width);
+            assert_eq!(
+                lines
+                    .iter()
+                    .filter(|line| line.starts_with('\u{25b8}'))
+                    .count(),
+                4,
+                "width {width}: every reply keeps its summary — {lines:?}"
+            );
+            for turn in 0..4 {
+                let gone = format!("read /src/{turn}.rs");
+                assert!(
+                    !lines.iter().any(|line| line.contains(&gone)),
+                    "width {width}: {gone} painted — {lines:?}"
+                );
+            }
+            assert_matches_fresh_render_at(&mut chat, width);
+        }
+    }
+
+    // ── The interrupted turn: documented behaviour, and an open question ────
+    //
+    // `fold_reply_segment` needs an assistant row with prose to fold *into*: the
+    // fold isolates the work above an answer. A turn that never produced an
+    // answer — an interrupted or cancelled run, whose `agent_end` settles the
+    // messages without carrying text — therefore stays whole. That is the
+    // documented rule on `ReplyDetail::Default` ("a reply with no prose has no
+    // answer to isolate, so it stays whole") and on `reply_fold_layout`, not an
+    // oversight, so it is pinned here rather than changed.
+    //
+    // It is, however, the closest match anyone has produced for the report
+    // ("ctrl+e only collapses part of the output; scrolling up I find the
+    // historical messages not collapsed"): one interrupted turn among the
+    // history is exactly one stretch that stays expanded. Folding it instead
+    // would leave a summary row with no answer under it, which is a product
+    // decision, not a bug fix — hence the explicit pin.
+
+    /// A settled turn with no prose keeps its slices, live path.
+    #[test]
+    fn an_interrupted_turn_keeps_its_slices_by_design() {
+        let mut chat = new_chat();
+        chat.render(W);
+        streamed_turn(&mut chat, "done", "/src/done.rs");
+        interrupted_turn(&mut chat, "cut", "/src/cut.rs");
+
+        let lines = compact_lines(&mut chat);
+        // The answered turn folds…
+        assert_eq!(folded_rows(&mut chat), 1, "{lines:?}");
+        // …and the unanswered one is the exception the rule describes.
+        assert!(
+            lines.iter().any(|line| line.contains("read /src/cut.rs")),
+            "an interrupted turn stays whole — if this now folds, the rule on \
+             `ReplyDetail::Default` changed and the doc comment owes an update: \
+             {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("thinking about cut")),
+            "{lines:?}"
+        );
+    }
+
+    /// The same shape arriving from the session store.
+    #[test]
+    fn an_interrupted_stored_page_keeps_its_slices_by_design() {
+        let rows = serde_json::json!([
+            {"id": "c-u", "role": "user", "blocks": [{"kind": "text", "text": "cancelled work"}]},
+            {"id": "c-a0", "role": "assistant", "blocks": [{"kind": "reasoning", "text": "stored reasoning"}]},
+            {"id": "c-step", "role": "assistant", "blocks": [{"kind": "tool_call", "toolCallId": "cc-1", "name": "read", "arguments": "{\"path\":\"/src/gone.rs\"}"}]},
+            {"id": "c-t", "role": "tool", "blocks": [{"kind": "tool_result", "toolCallId": "cc-1", "text": "partial body"}]}
+        ]);
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.prepend_messages(crate::session_rows::rows_to_messages(
+            rows.as_array().unwrap(),
+        ));
+        let lines = compact_lines(&mut chat);
+        assert!(
+            lines.iter().any(|line| line.contains("/src/gone.rs")),
+            "a stored turn with no answer stays whole — {lines:?}"
+        );
+    }
+
+    /// The premise those two rest on: the store always settles its tool rows, so
+    /// a stored page never leaves a turn out of the fold for *that* reason.
+    /// `tool_status` is `Complete` or `Error`, never `Running`.
+    #[test]
+    fn a_stored_tool_row_is_never_running() {
+        let rows = serde_json::json!([
+            {"id": "s-u", "role": "user", "blocks": [{"kind": "text", "text": "ask"}]},
+            {"id": "s-step", "role": "assistant", "blocks": [{"kind": "tool_call", "toolCallId": "c-1", "name": "read", "arguments": "{}"}]},
+            {"id": "s-ok", "role": "tool", "blocks": [{"kind": "tool_result", "toolCallId": "c-1", "text": "fine"}]},
+            {"id": "s-bad", "role": "tool", "blocks": [{"kind": "tool_result", "toolCallId": "c-2", "text": "broke", "isError": true}]}
+        ]);
+        let messages = crate::session_rows::rows_to_messages(rows.as_array().unwrap());
+        for message in &messages {
+            if message.role == ChatRole::Tool {
+                assert!(
+                    !matches!(message.tool_status, Some(ToolStatus::Running)),
+                    "a stored tool row must be settled, saw {:?}",
+                    message.tool_status
+                );
+                assert!(!message.pending, "a stored row is never pending");
+            }
+        }
     }
 
     /// `/transcript` shows every slice whatever the screen folds away, and the
