@@ -386,6 +386,10 @@ pub struct WorkbenchData {
     pub fork_points: Vec<ForkPoint>,
     /// Read-only git worktree list.
     pub worktrees: Vec<WorktreeView>,
+    /// Files a `@` mention can name, relative to the session's working
+    /// directory. Filled by the adapter once per directory; empty disables the
+    /// menu's file half rather than suggesting nothing.
+    pub files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]

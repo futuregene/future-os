@@ -221,7 +221,22 @@ pub(crate) fn compose(
             paint_overlay(&mut rows, &palette, lines, columns);
             workbench.set_cursor(None);
         }
-        None => {}
+        None => {
+            // The mention menu is not an overlay: it must not own the keys, or
+            // typing after the sigil would stop reaching the draft. It is drawn
+            // last, above whatever the surface painted, and the cursor stays.
+            if workbench.mention.is_some() {
+                // The row the composer's top edge is painted on, whatever the
+                // draft's height: the menu sits *above* it, never on it.
+                let input_top = if data.on_launchpad() {
+                    frame.prompt_row.saturating_sub(1)
+                } else {
+                    frame.input.y.saturating_sub(composer_extra)
+                };
+                let (lines, geometry) = mention_box(workbench, data, &palette, w, h, input_top);
+                paint_mention(&mut rows, &palette, lines, geometry, columns);
+            }
+        }
     }
 
     for row in &rows {
@@ -1582,6 +1597,136 @@ fn palette_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> 
         &geometry,
     )
 }
+/// `#[allow(clippy::too_many_arguments)]` is not needed: the box is one shape.
+fn mention_box(
+    workbench: &mut Workbench,
+    data: &WorkbenchData,
+    palette: &Palette,
+    w: u16,
+    h: u16,
+    input_top: u16,
+) -> (Vec<String>, BoxGeometry) {
+    let lang = workbench.lang;
+    let Some(kind) = workbench.mention.as_ref().map(|m| m.kind) else {
+        return (Vec::new(), box_geometry(w, h, 64, 0));
+    };
+    let rows = workbench.mention_rows(data);
+    let query = workbench
+        .mention
+        .as_ref()
+        .map(|m| m.query.clone())
+        .unwrap_or_default();
+    let selection = workbench
+        .mention
+        .as_ref()
+        .map(|m| m.index)
+        .unwrap_or(0)
+        .min(rows.len().saturating_sub(1));
+    let room = h.saturating_sub(6) as usize;
+    let start = selection.saturating_sub(room.saturating_sub(1));
+    let shown = rows.len().saturating_sub(start).min(room);
+
+    let mut content: Vec<String> = Vec::new();
+    content.push(format!(
+        " {}{} {}",
+        palette.text(palette.accent, &kind.sigil().to_string()),
+        palette.body(&query),
+        palette.dim(if rows.is_empty() {
+            t(lang, Key::MentionEmpty)
+        } else {
+            ""
+        })
+    ));
+    content.push(String::new());
+    for (index, row) in rows.iter().enumerate().skip(start).take(shown) {
+        let marker = if index == selection { "›" } else { " " };
+        let detail = if row.detail.is_empty() {
+            String::new()
+        } else {
+            palette.dim(&format!("  {}", row.detail))
+        };
+        let line = format!(
+            " {marker} {}{detail}",
+            palette.text(palette.iris, &row.label)
+        );
+        content.push(if index == selection {
+            palette.strong(palette.fg, &line)
+        } else {
+            line
+        });
+    }
+    content.push(String::new());
+    content.push(palette.dim(&format!(" {}", kind.hint(lang))));
+
+    // Above the composer and never on it: the menu completes the line the
+    // reader is still typing, so it must not cover the draft, the composer's own
+    // frame, the status bar or the hints. Its height is bounded (a long candidate
+    // list scrolls inside the window) so it cannot reach the header either.
+    let mut geometry = box_geometry(w, h, 64, content.len());
+    geometry.h = geometry.h.min(12);
+    geometry.top = input_top.saturating_sub(geometry.h).max(1);
+
+    workbench.hit_map().push(
+        Rect::new(
+            geometry.left.saturating_add(1),
+            geometry.top,
+            geometry.w.saturating_sub(2),
+            geometry.h,
+        ),
+        "mention.body",
+    );
+    // Every visible candidate is a click target, painted row by row from the
+    // same window the loop above used: two rows above the first candidate (the
+    // query line and a blank), so a click cannot land one row off.
+    let rows_y = geometry.top.saturating_add(3);
+    for offset in 0..shown {
+        let y = rows_y + offset as u16;
+        if y + 1 > geometry.top.saturating_add(geometry.h) {
+            continue;
+        }
+        workbench.hit_map().push(
+            Rect::new(geometry.left + 1, y, geometry.w - 2, 1),
+            format!("mention.row.{}", start + offset),
+        );
+    }
+    (
+        framed(palette, kind.title(lang), content, w, h, &geometry),
+        geometry,
+    )
+}
+
+/// Paint the mention menu over the box's own rectangle only.
+///
+/// Unlike the full-screen overlays this one does **not** sheet the whole frame:
+/// the menu sits above the composer, and the draft it is completing has to stay
+/// readable underneath and beside it.
+fn paint_mention(
+    rows: &mut [String],
+    palette: &Palette,
+    lines: Vec<String>,
+    geometry: BoxGeometry,
+    columns: usize,
+) {
+    let end = (geometry.left as usize + geometry.w as usize).min(columns);
+    // `paint_box` returns one line per *frame* row — leading blanks included —
+    // so a line's own index is its screen row.
+    for (y, line) in lines
+        .iter()
+        .enumerate()
+        .take(geometry.top as usize + geometry.h as usize)
+    {
+        if y < geometry.top as usize {
+            continue;
+        }
+        let Some(slot) = rows.get_mut(y) else {
+            continue;
+        };
+        let piece = ansi::slice_cols(line, geometry.left as usize, end);
+        let piece = palette.on(palette.panel, &piece, geometry.w as usize);
+        *slot = splice(slot, &piece, geometry.left as usize, geometry.w as usize);
+    }
+}
+
 fn picker_box(
     workbench: &mut Workbench,
     data: &WorkbenchData,

@@ -170,6 +170,11 @@ pub struct Live {
     /// reused for every frame.
     local_skills: Option<Vec<SkillRow>>,
     local_jobs: Option<Vec<JobRow>>,
+    /// The `@` menu's candidates for `local_cwd`, read once per directory: a
+    /// listing per keystroke would be a `git ls-files` per keystroke.
+    files: Vec<String>,
+    /// Which directory `files` describes, so a session that moved reloads them.
+    files_for: String,
 }
 
 impl Live {
@@ -239,6 +244,8 @@ impl Live {
             todos: Vec::new(),
             local_skills: None,
             local_jobs: None,
+            files: Vec::new(),
+            files_for: String::new(),
         };
 
         if let Some(id) = session.filter(|id| !id.is_empty()) {
@@ -298,6 +305,12 @@ impl Live {
                 super::local::goal_todos(std::path::Path::new(&cwd))
             };
             self.local_cwd = cwd;
+        }
+        // The `@` menu's candidates belong to the directory, not to the session:
+        // read them when the directory changes and not once per keystroke.
+        if self.files_for != self.local_cwd {
+            self.files = super::local::workspace_files(std::path::Path::new(&self.local_cwd));
+            self.files_for = self.local_cwd.clone();
         }
         // The header's second line names the workspace *and its branch*. The
         // cache keys on the cwd, so this is a no-op on every refresh that did
@@ -916,6 +929,7 @@ impl Live {
                 tps: self.live_tps(),
             },
             todos: self.todos.clone(),
+            files: self.files.clone(),
             sessions: rows,
             models: self
                 .models

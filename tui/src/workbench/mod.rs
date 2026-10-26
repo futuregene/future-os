@@ -1,4 +1,4 @@
-﻿//! The workbench — the FutureOS terminal UI (`future tui`).
+//! The workbench — the FutureOS terminal UI (`future tui`).
 //!
 //! It normally owns the whole screen, repaints absolute rows, and resolves mouse
 //! clicks against what it painted. Linear reading is the explicit exception:
@@ -116,6 +116,81 @@ pub enum PaneId {
     Input,
     Chat,
     Sidebar,
+}
+
+/// Which token the `@` / `#` menu completes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MentionKind {
+    /// `@` — a file under the session's working directory.
+    File,
+    /// `#` — a conversation, inserted as a `futureos://session/<id>` link, the
+    /// same form a conversation link travels as everywhere else.
+    Session,
+}
+
+impl MentionKind {
+    pub fn sigil(self) -> char {
+        match self {
+            Self::File => '@',
+            Self::Session => '#',
+        }
+    }
+
+    /// The box's title.
+    pub fn title(self, lang: Language) -> &'static str {
+        t(
+            lang,
+            match self {
+                Self::File => Key::MentionTitleFile,
+                Self::Session => Key::MentionTitleSession,
+            },
+        )
+    }
+
+    /// The footer: what the keys do *here*.
+    pub fn hint(self, lang: Language) -> &'static str {
+        t(
+            lang,
+            match self {
+                Self::File => Key::MentionHintFile,
+                Self::Session => Key::MentionHintSession,
+            },
+        )
+    }
+}
+
+/// The `@` / `#` menu's own state: which token it completes, where that token
+/// starts in the draft, the query typed after the sigil, and the highlight.
+///
+/// It is *derived* from the draft on every event (see
+/// [`Workbench::sync_mention`]) rather than owned by the menu: the query is the
+/// text after the sigil, so the menu and the draft cannot disagree.
+pub struct Mention {
+    pub kind: MentionKind,
+    /// Byte offset of the sigil in the draft; an insert replaces `start..cursor`.
+    pub start: usize,
+    pub query: String,
+    pub index: usize,
+}
+
+impl std::fmt::Debug for Mention {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Mention")
+            .field("kind", &self.kind)
+            .field("start", &self.start)
+            .field("query", &self.query)
+            .field("index", &self.index)
+            .finish()
+    }
+}
+
+/// One row of the `@` / `#` menu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MentionRow {
+    /// What replaces the token — `@path ` or a conversation link.
+    pub insert: String,
+    pub label: String,
+    pub detail: String,
 }
 
 /// What the app has to do about a key or click. The workbench never mutates the
@@ -308,6 +383,13 @@ pub struct Workbench {
     pub mouse_capture: bool,
     pub(crate) composer_width: usize,
     pub tick: usize,
+    /// The `@` / `#` completion menu, while the draft's current token carries a
+    /// sigil. Derived from the draft on every event, never owned by the menu
+    /// (see [`Self::sync_mention`]).
+    pub mention: Option<Mention>,
+    /// The token an `esc` dismissed, so the menu does not reopen on the same
+    /// keystroke that closed it. Cleared as soon as the token changes.
+    mention_dismissed: Option<(usize, String)>,
     /// The frame size of the last render; mouse coordinates are resolved
     /// against it.
     last_frame: (u16, u16),
@@ -372,6 +454,8 @@ impl Workbench {
             mouse_capture: true,
             composer_width: 76,
             tick: 0,
+            mention: None,
+            mention_dismissed: None,
             last_frame: (0, 0),
             hit: layout::HitMap::new(),
             overlay_mark: 0,
@@ -443,6 +527,11 @@ impl Workbench {
         }
         self.scroll.observe(data.revision);
         self.mouse_capture = data.mouse_capture;
+        // The menu is a reading of the draft, and a frame is the moment the
+        // draft is as fresh as it will get in this iteration: a paste inserts a
+        // whole token with no keystroke after it, so painting is what opens the
+        // menu for it.
+        self.sync_mention(data);
         let rows = screen::compose(self, data, w, h);
         debug_assert_eq!(
             rows.len(),
@@ -521,6 +610,11 @@ impl Workbench {
     }
 
     pub fn handle(&mut self, event: WbEvent, data: &WorkbenchData) -> Vec<WbAction> {
+        // The `@` / `#` menu is a reading of the draft, so it is re-derived
+        // before the event is interpreted: a keystroke that just became the
+        // sigil opens it, and one that made the token stop looking like a
+        // mention closes it.
+        self.sync_mention(data);
         match event {
             WbEvent::Focus(_) => Vec::new(),
             WbEvent::Tick => {
@@ -539,7 +633,165 @@ impl Workbench {
         }
     }
 
+    /// Rebuild [`Self::mention`] from the draft's current token.
+    ///
+    /// The token is the run of non-space characters ending at the caret; it
+    /// becomes a mention when it *starts* with `@` (files) or `#`
+    /// (conversations). A token that merely contains the sigil (`me@example.com`,
+    /// `x#y`) is not one, which is what keeps an e-mail address in a prompt from
+    /// opening a menu.
+    fn sync_mention(&mut self, data: &WorkbenchData) {
+        if self.overlay.is_some() {
+            self.mention = None;
+            return;
+        }
+        let Some((kind, start, query)) = mention_token(&data.input) else {
+            self.mention = None;
+            return;
+        };
+        if self
+            .mention_dismissed
+            .as_ref()
+            .is_some_and(|(at, text)| *at == start && *text == query)
+        {
+            self.mention = None;
+            return;
+        }
+        match &mut self.mention {
+            Some(current) if current.kind == kind && current.start == start => {
+                if current.query != query {
+                    current.query = query;
+                    // A narrower query is a different list, so the highlight
+                    // starts over at its top: keeping the old ordinal would
+                    // silently move the selection to an unrelated row.
+                    current.index = 0;
+                }
+            }
+            _ => {
+                self.mention = Some(Mention {
+                    kind,
+                    start,
+                    query,
+                    index: 0,
+                });
+            }
+        }
+    }
+
+    /// The rows the open mention menu offers, filtered by what was typed after
+    /// the sigil.
+    pub fn mention_rows(&self, data: &WorkbenchData) -> Vec<MentionRow> {
+        let Some(mention) = &self.mention else {
+            return Vec::new();
+        };
+        let needle = mention.query.to_lowercase();
+        let matches = |values: &[&str]| {
+            needle.is_empty()
+                || values
+                    .iter()
+                    .any(|value| value.to_lowercase().contains(&needle))
+        };
+        match mention.kind {
+            MentionKind::File => data
+                .files
+                .iter()
+                .filter(|path| matches(&[path.as_str()]))
+                // A bounded window: the menu is a picker, not a file browser.
+                .take(60)
+                .map(|path| MentionRow {
+                    insert: format!("@{path} "),
+                    label: path.clone(),
+                    detail: String::new(),
+                })
+                .collect(),
+            MentionKind::Session => data
+                .sessions
+                .iter()
+                .filter(|session| {
+                    matches(&[
+                        session.title.as_str(),
+                        session.id.as_str(),
+                        session.workspace.as_str(),
+                    ])
+                })
+                .take(60)
+                .map(|session| MentionRow {
+                    insert: session_reference(&session.title, &session.id),
+                    label: if session.title.is_empty() {
+                        session.id.clone()
+                    } else {
+                        session.title.clone()
+                    },
+                    detail: session.workspace.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Replace the mention token with `insert`, leaving the caret after it.
+    fn insert_mention(&mut self, data: &WorkbenchData, insert: &str) -> Vec<WbAction> {
+        let Some(mention) = self.mention.take() else {
+            return Vec::new();
+        };
+        let text = data.input.text.as_str();
+        let at = floor_char_boundary(text, mention.start.min(text.len()));
+        let end = floor_char_boundary(text, data.input.cursor.min(text.len()));
+        let end = end.max(at);
+        let mut filled = String::with_capacity(text.len() + insert.len());
+        filled.push_str(&text[..at]);
+        filled.push_str(insert);
+        filled.push_str(&text[end..]);
+        let cursor = at + insert.len();
+        self.mention_dismissed = Some((at, insert.to_string()));
+        vec![WbAction::EditInput {
+            text: filled,
+            cursor,
+        }]
+    }
+
     fn handle_key(&mut self, key: &str, data: &WorkbenchData) -> Vec<WbAction> {
+        // The mention menu answers the navigation keys while it is up, and
+        // nothing else: every other key still edits the draft, which is what
+        // keeps the query and the menu from disagreeing.
+        if self.mention.is_some() {
+            match key {
+                "escape" => {
+                    if let Some(mention) = self.mention.take() {
+                        self.mention_dismissed = Some((mention.start, mention.query));
+                    }
+                    return vec![WbAction::Redraw];
+                }
+                "up" | "down" => {
+                    let rows = self.mention_rows(data).len();
+                    let index = self.mention.as_ref().map(|m| m.index).unwrap_or(0);
+                    let next = if key == "up" {
+                        index.saturating_sub(1)
+                    } else {
+                        (index + 1).min(rows.saturating_sub(1))
+                    };
+                    if let Some(mention) = self.mention.as_mut() {
+                        mention.index = next;
+                    }
+                    return vec![WbAction::Redraw];
+                }
+                "enter" | "tab" => {
+                    let rows = self.mention_rows(data);
+                    let index = self.mention.as_ref().map(|m| m.index).unwrap_or(0);
+                    let Some(row) = rows.get(index.min(rows.len().saturating_sub(1))) else {
+                        // Nothing matches: `enter` must not eat the submission,
+                        // and `tab` must not insert a token that names nothing.
+                        if key == "tab" {
+                            return Vec::new();
+                        }
+                        self.mention = None;
+                        return self.submit_draft(data);
+                    };
+                    let insert = row.insert.clone();
+                    return self.insert_mention(data, &insert);
+                }
+                _ => {}
+            }
+        }
         if let Some(overlay) = self.overlay {
             return self.handle_overlay_key(overlay, key, data);
         }
@@ -623,32 +875,7 @@ impl Workbench {
                 }
                 vec![WbAction::Redraw]
             }
-            "enter" => {
-                let text = data.input.text.trim().to_string();
-                if text.is_empty() {
-                    return Vec::new();
-                }
-                // A typed command is a command, never a prompt: `/model` in the
-                // draft used to be sent to the agent as text, which is why no
-                // picker ever opened from the input box. Only the surface's own
-                // verbs are claimed — `/something else` still reaches the agent,
-                // and a verb with arguments keeps them (`/model <id>`).
-                if let Some(command) = known_command(&text) {
-                    let mut actions = vec![WbAction::EditInput {
-                        text: String::new(),
-                        cursor: 0,
-                    }];
-                    match (command.arg.is_empty())
-                        .then(|| PickerKind::from_command(&command.name))
-                        .flatten()
-                    {
-                        Some(kind) => actions.extend(self.open_picker(kind, data)),
-                        None => actions.push(WbAction::Command(command.raw)),
-                    }
-                    return actions;
-                }
-                vec![WbAction::Submit(text)]
-            }
+            "enter" => self.submit_draft(data),
             "up" if self.sidebar_focus => self.scroll(-1, data),
             "down" if self.sidebar_focus => self.scroll(1, data),
             "ctrl+up" | "pageUp" => self.scroll(-10, data),
@@ -1552,6 +1779,30 @@ impl Workbench {
     }
 
     fn click(&mut self, id: &str, event: mouse::MouseEvent, data: &WorkbenchData) -> Vec<WbAction> {
+        // The mention menu owns its rows before anything underneath them: a
+        // click on a candidate inserts it, and a click on the box's own frame is
+        // not a dismissal (the reader aimed at the list).
+        if self.mention.is_some() {
+            if let Some(index) = id
+                .strip_prefix("mention.row.")
+                .and_then(|rest| rest.parse::<usize>().ok())
+            {
+                if let Some(mention) = self.mention.as_mut() {
+                    mention.index = index;
+                }
+                let rows = self.mention_rows(data);
+                if let Some(row) = rows.get(index.min(rows.len().saturating_sub(1))) {
+                    let insert = row.insert.clone();
+                    return self.insert_mention(data, &insert);
+                }
+            }
+            if id == "mention.body" {
+                return Vec::new();
+            }
+            // A click anywhere else closes the menu and then takes effect
+            // normally: the reader aimed past it.
+            self.mention = None;
+        }
         if id == "chat.latest" {
             self.scroll.latest();
             self.chat_scroll = 0;
@@ -1790,6 +2041,88 @@ impl Workbench {
     pub(crate) fn overlay_scroll_offset(&self) -> usize {
         self.overlay_scroll
     }
+
+    /// `enter` on the draft: a surface verb when the line names one, a prompt
+    /// otherwise.
+    fn submit_draft(&mut self, data: &WorkbenchData) -> Vec<WbAction> {
+        let text = data.input.text.trim().to_string();
+        if text.is_empty() {
+            return Vec::new();
+        }
+        // A typed command is a command, never a prompt: `/model` in the draft
+        // used to be sent to the agent as text, which is why no picker ever
+        // opened from the input box. Only the surface's own verbs are claimed —
+        // `/something else` (a skill, a path) still reaches the agent, and a
+        // verb with arguments keeps them (`/model <id>`).
+        if let Some(command) = known_command(&text) {
+            let mut actions = vec![WbAction::EditInput {
+                text: String::new(),
+                cursor: 0,
+            }];
+            match (command.arg.is_empty())
+                .then(|| PickerKind::from_command(&command.name))
+                .flatten()
+            {
+                Some(kind) => actions.extend(self.open_picker(kind, data)),
+                None => actions.push(WbAction::Command(command.raw)),
+            }
+            return actions;
+        }
+        vec![WbAction::Submit(text)]
+    }
+}
+
+/// The token the caret is at the end of, when it is a mention: `(kind, byte
+/// offset of the sigil, text after the sigil)`.
+///
+/// A mention starts at a **word boundary**: the sigil must be the first
+/// character of the token, so `me@example.com` and a URL fragment are text, not
+/// a request for a menu.
+pub fn mention_token(input: &state::InputView) -> Option<(MentionKind, usize, String)> {
+    let text = &input.text;
+    let cursor = floor_char_boundary(text, input.cursor);
+    let head = &text[..cursor];
+    let start = head
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| ch.is_whitespace())
+        .map(|(index, ch)| index + ch.len_utf8())
+        .unwrap_or(0);
+    let token = &text[start..cursor];
+    let kind = match token.chars().next()? {
+        '@' => MentionKind::File,
+        '#' => MentionKind::Session,
+        _ => return None,
+    };
+    Some((kind, start, token[1..].to_string()))
+}
+
+/// How a picked conversation is written into the draft: the same
+/// `futureos://session/<id>` link the desktop, the phone and this very
+/// conversation use, so any client (and this TUI itself) can follow it back to
+/// the conversation it names.
+pub fn session_reference(title: &str, id: &str) -> String {
+    // Brackets would close the label early and push the id out of the link.
+    let label: String = title
+        .chars()
+        .filter(|ch| *ch != '[' && *ch != ']')
+        .collect();
+    let label = label.split_whitespace().collect::<Vec<_>>().join(" ");
+    let label = if label.is_empty() {
+        id.to_string()
+    } else {
+        label
+    };
+    format!("[{label}](futureos://session/{id}) ")
+}
+
+/// The largest byte offset at or below `at` that is a character boundary.
+fn floor_char_boundary(text: &str, at: usize) -> usize {
+    let mut at = at.min(text.len());
+    while at > 0 && !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
 }
 
 /// The command palette's entries: `(command, description)`. Kept here rather
@@ -1859,11 +2192,13 @@ fn known_command(text: &str) -> Option<TypedCommand> {
 }
 
 /// The help overlay's key table.
-pub const HELP_KEYS: [(&str, Key); 8] = [
+pub const HELP_KEYS: [(&str, Key); 10] = [
     ("tab", Key::HelpKeyFocus),
     ("↑↓", Key::HelpKeyScroll),
     ("pageUp / pageDown", Key::HelpKeyPage),
     ("/", Key::HelpKeyPalette),
+    ("@", Key::HelpKeyMentionFile),
+    ("#", Key::HelpKeyMentionSession),
     ("?", Key::HelpKeyHelp),
     ("click", Key::HelpKeyClick),
     ("drag", Key::HelpKeyDrag),
@@ -2728,6 +3063,176 @@ mod tests {
             vec![WbAction::Command(chosen.0.to_string())]
         );
         assert_eq!(workbench.overlay, None);
+    }
+
+    /// A copy of `data` whose draft holds `typed`, caret at the end.
+    fn with_input(data: &WorkbenchData, typed: &str) -> WorkbenchData {
+        let mut data = data.clone();
+        let mut editor = data.input.editor.clone();
+        editor.set(typed, typed.len());
+        data.input = state::InputView::from_editor(editor, String::new());
+        data
+    }
+
+    /// The `@` menu is *derived* from the draft, so the assertions here are
+    /// about one token: what opens it, what it offers, and what an insert
+    /// replaces.
+    #[test]
+    fn at_opens_a_file_menu_from_the_token_the_caret_is_in() {
+        let mut data = demo::chat();
+        data.files = vec![
+            "tui/src/workbench/mod.rs".into(),
+            "tui/src/workbench/screen.rs".into(),
+            "docs/tui/workbench-spec.md".into(),
+        ];
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        data = with_input(&data, "看 @scr");
+        // One frame is enough: the menu is a reading of the draft, taken when
+        // the frame is composed.
+        workbench.render(&data, 120, 38);
+        let mention = workbench.mention.as_ref().expect("@ opens the menu");
+        assert_eq!(mention.kind, MentionKind::File);
+        assert_eq!(
+            mention.start,
+            "看 ".len(),
+            "the sigil is where the token starts"
+        );
+        assert_eq!(mention.query, "scr");
+        let rows = workbench.mention_rows(&data);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].label, "tui/src/workbench/screen.rs");
+        // Enter replaces the token and nothing else.
+        let actions = workbench.handle(WbEvent::Key("enter".into()), &data);
+        let [WbAction::EditInput { text, cursor }] = actions.as_slice() else {
+            panic!("{actions:?}");
+        };
+        assert_eq!(text, "看 @tui/src/workbench/screen.rs ");
+        assert_eq!(*cursor, text.len());
+        assert!(workbench.mention.is_none(), "inserting closes the menu");
+    }
+
+    #[test]
+    fn a_sigil_inside_a_word_is_not_a_mention() {
+        // An e-mail address and a channel name are text, not requests for a
+        // menu — the menu is for a token that *starts* with the sigil.
+        for typed in ["mail me@example.com", "x#y", "a/b"] {
+            let data = with_input(&demo::chat(), typed);
+            let (mut workbench, _rows) = frame(&data, 120, 38);
+            workbench.render(&data, 120, 38);
+            assert!(workbench.mention.is_none(), "{typed}");
+        }
+        // A bare `#` is one, with an empty query: the reader has typed the
+        // sigil and nothing else yet.
+        let data = with_input(&demo::chat(), "#");
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.render(&data, 120, 38);
+        assert_eq!(
+            workbench.mention.as_ref().map(|m| m.kind),
+            Some(MentionKind::Session)
+        );
+    }
+
+    #[test]
+    fn hash_offers_conversations_and_inserts_the_link_the_rest_of_the_app_uses() {
+        let data = with_input(&demo::chat(), "#");
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.render(&data, 120, 38);
+        let rows = workbench.mention_rows(&data);
+        assert!(!rows.is_empty(), "the demo has conversations");
+        assert!(rows[0].insert.contains("futureos://session/"), "{rows:?}");
+        let actions = workbench.handle(WbEvent::Key("tab".into()), &data);
+        let [WbAction::EditInput { text, .. }] = actions.as_slice() else {
+            panic!("{actions:?}");
+        };
+        assert!(
+            text.starts_with(&format!(
+                "[{}](futureos://session/{})",
+                demo::chat().sessions[0].title,
+                demo::chat().sessions[0].id
+            )),
+            "{text}"
+        );
+        // Brackets in a title would close the label early and push the id out of
+        // the link, so they are dropped rather than escaped.
+        assert_eq!(
+            session_reference("[a] b", "s1"),
+            "[a b](futureos://session/s1) "
+        );
+        assert_eq!(
+            session_reference("   ", "s2"),
+            "[s2](futureos://session/s2) "
+        );
+    }
+
+    #[test]
+    fn escape_closes_the_mention_menu_without_touching_the_draft() {
+        let data = with_input(&demo::chat(), "看 @t");
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.render(&data, 120, 38);
+        assert!(workbench.mention.is_some());
+        let actions = workbench.handle(WbEvent::Key("escape".into()), &data);
+        assert_eq!(actions, vec![WbAction::Redraw]);
+        assert!(workbench.mention.is_none());
+        // The same token does not reopen the menu on the next frame…
+        workbench.render(&data, 120, 38);
+        assert!(workbench.mention.is_none());
+        // …but typing on does.
+        let typed = with_input(&demo::chat(), "看 @tu");
+        workbench.render(&typed, 120, 38);
+        assert!(workbench.mention.is_some());
+    }
+
+    #[test]
+    fn a_draft_with_no_mention_sends_its_at_sign_as_text() {
+        // `@` with nothing after it is a mention with an empty query, so `enter`
+        // on an unmatched list must still submit rather than swallow the key.
+        let mut data = with_input(&demo::chat(), "@");
+        data.files.clear();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.render(&data, 120, 38);
+        let actions = workbench.handle(WbEvent::Key("enter".into()), &data);
+        assert!(
+            matches!(actions.as_slice(), [WbAction::Submit(text)] if text == "@"),
+            "{actions:?}"
+        );
+    }
+
+    /// The menu is drawn, not just computed: the box is on screen with the
+    /// query and the highlighted candidate, and the draft under it still shows.
+    #[test]
+    fn the_mention_menu_is_painted_above_the_composer() {
+        let mut data = demo::chat();
+        data.files = vec!["src/main.rs".into(), "src/lib.rs".into()];
+        data = with_input(&data, "read @src");
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let text = plain(&workbench.render(&data, 120, 38));
+        assert!(text.contains("src/main.rs"), "{text}");
+        assert!(
+            text.contains("read @src"),
+            "the draft stays visible: {text}"
+        );
+        // The box is above the composer, never over it.
+        let rows = workbench
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "mention.row.0")
+            .map(|(rect, _)| rect.y)
+            .expect("the first candidate is a target");
+        let input_top = workbench
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "input")
+            .map(|(rect, _)| rect.y)
+            .expect("the composer is a target");
+        assert!(rows < input_top, "{rows} < {input_top}");
+        // A click on a candidate inserts it, the way `enter` does.
+        let actions = click_region(&mut workbench, &data, 120, 38, "mention.row.1");
+        let [WbAction::EditInput { text, .. }] = actions.as_slice() else {
+            panic!("{actions:?}");
+        };
+        assert_eq!(text, "read @src/lib.rs ");
     }
 
     #[test]

@@ -142,6 +142,15 @@ fn base() -> WorkbenchData {
                 description: "搜公开网页并核对事实".into(),
             },
         ],
+        // The `@` menu's candidates: a handful of real paths, so a demo frame
+        // can show the menu with something in it.
+        files: vec![
+            "tui/src/workbench/mod.rs".into(),
+            "tui/src/workbench/screen.rs".into(),
+            "tui/src/workbench/live.rs".into(),
+            "docs/tui/workbench-spec.md".into(),
+            "AGENTS.md".into(),
+        ],
         jobs: vec![
             JobRow {
                 name: "dev 分支 PR 合并".into(),

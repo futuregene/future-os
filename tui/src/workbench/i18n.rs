@@ -214,6 +214,12 @@ pub enum Key {
     PaletteTitle,
     PaletteFilter,
     PaletteEmpty,
+    // ── the `@` / `#` mention menu ────────────────────────────────────
+    MentionTitleFile,
+    MentionTitleSession,
+    MentionHintFile,
+    MentionHintSession,
+    MentionEmpty,
     // ── the launchpad ─────────────────────────────────────────────────
     ChipModel,
     ChipEffort,
@@ -340,6 +346,8 @@ pub enum Key {
     HelpKeyScroll,
     HelpKeyPage,
     HelpKeyPalette,
+    HelpKeyMentionFile,
+    HelpKeyMentionSession,
     HelpKeyHelp,
     HelpKeyReplyDetail,
     HelpKeyReplyDetailSet,
@@ -448,6 +456,20 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         PaletteTitle => ("命令", "Commands"),
         PaletteFilter => ("输入以过滤命令", "Type to filter commands"),
         PaletteEmpty => (" 没有匹配的命令", " No matching command"),
+
+        // The menu completes a token the reader is typing, so its own copy is
+        // chrome: what the sigil means, and which keys do what while it is up.
+        MentionTitleFile => ("文件", "Files"),
+        MentionTitleSession => ("会话", "Sessions"),
+        MentionHintFile => (
+            "↑↓ 选择 · ⏎ / tab 插入 · esc 关闭（不带 @ 提交则原样发送）",
+            "↑↓ select · enter / tab insert · esc close",
+        ),
+        MentionHintSession => (
+            "↑↓ 选择 · ⏎ / tab 插入会话链接 · esc 关闭",
+            "↑↓ select · enter / tab insert a link · esc close",
+        ),
+        MentionEmpty => ("没有匹配", "no matches"),
 
         ChipModel => ("模型", "Model"),
         ChipEffort => ("强度", "Effort"),
@@ -577,6 +599,14 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         HelpKeyScroll => ("滚动聊天，或侧栏列表", "Scroll the chat, or the sidebar's list"),
         HelpKeyPage => ("整页滚动聊天", "Scroll the chat a page at a time"),
         HelpKeyPalette => ("命令面板", "Command palette"),
+        HelpKeyMentionFile => (
+            "引用文件（插入 @path，提交时带内容）",
+            "Reference a file (@path, sent with its content)",
+        ),
+        HelpKeyMentionSession => (
+            "引用会话（插入会话链接）",
+            "Reference a conversation (inserts its link)",
+        ),
         HelpKeyHelp => ("这份帮助", "This help"),
         HelpKeyReplyDetail => ("最终输出 / 完整过程", "Final answer / full process"),
         HelpKeyReplyDetailSet => ("同上，直接设置", "The same, set directly"),
@@ -791,7 +821,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 197] = {
+    const ALL_KEYS: [Key; 204] = {
         use Key::*;
         [
             TabTodo,
@@ -851,6 +881,11 @@ mod tests {
             PaletteTitle,
             PaletteFilter,
             PaletteEmpty,
+            MentionTitleFile,
+            MentionTitleSession,
+            MentionHintFile,
+            MentionHintSession,
+            MentionEmpty,
             ChipModel,
             ChipEffort,
             ChipMode,
@@ -974,6 +1009,8 @@ mod tests {
             HelpKeyScroll,
             HelpKeyPage,
             HelpKeyPalette,
+            HelpKeyMentionFile,
+            HelpKeyMentionSession,
             HelpKeyHelp,
             HelpKeyReplyDetail,
             HelpKeyReplyDetailSet,
