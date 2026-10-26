@@ -46,5 +46,11 @@ tempfile = "3"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    # `detach` joins a Job Object in a test to prove the breakaway refusal is
+    # the `ERROR_ACCESS_DENIED` it degrades on, and clears the inherit bit on
+    # this process's own std handles so a detached child cannot keep a caller's
+    # pipes open.
+    "Win32_System_Console",
+    "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }

@@ -222,7 +222,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "replan" => cmd_replan(&mut store, &args[1..]),
         "frontier" => cmd_frontier(&store, &args[1..]),
         "profile" => cmd_profile(&mut store, &args[1..]),
-        "status" => cmd_status(&store, &args[1..]),
+        "status" => cmd_status(&mut store, &args[1..]).await,
         "ui" => cmd_webui(&args[1..]).await,
         "quota" => cmd_quota(&store, &args[1..]),
         "scheduler" => cmd_scheduler(&mut store, &args[1..]).await,
@@ -245,7 +245,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "task-graph" => cmd_task_graph(&store, &args[1..]),
         "attention" => cmd_attention(&store, &args[1..]),
         "inbox" => cmd_inbox(&store, &args[1..]),
-        "delivery" => cmd_delivery(&mut store, &args[1..]),
+        "delivery" => cmd_delivery(&mut store, &args[1..]).await,
         "registry" => cmd_registry(&registry, &args[1..]),
         "commands" => cmd_commands(&registry, &args[1..]),
         // ── P4 commands (G-20 / G-27) ───────────────────────────────────
@@ -1821,7 +1821,7 @@ async fn cmd_todo(store: &mut Store, args: &[String]) -> Result<()> {
     match args[0].as_str() {
         "add" => todo_add(store, &args[1..]),
         "claim" => todo_claim(store, &args[1..]),
-        "complete" => todo_complete(store, &args[1..]),
+        "complete" => todo_complete(store, &args[1..]).await,
         "archive" => todo_archive(store, &args[1..]),
         "supersede" => todo_supersede(store, &args[1..]).await,
         "update" => todo_update(store, &args[1..]),
@@ -2585,7 +2585,7 @@ fn human_dur(secs: u64) -> String {
     }
 }
 
-fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
+async fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut todo_id = None;
     let mut no_follow_up = false;
@@ -2728,6 +2728,19 @@ fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
     refresh_next_action(store, &goal_id)?;
     sync_compat(store, &goal_id);
     println!("todo {todo_id} → done (no_follow_up={no_follow_up}) ✔");
+    // R3: a clean completion is the one thing the supervisor was never told
+    // about — `record_dead_holders` only reports failures. The note is queued
+    // here (not left to a later sweep) so an unwatched goal can still deliver it
+    // inline below, and it reports the completion only: the delivery stays
+    // `delivered` until someone records a verdict.
+    if let Err(error) = crate::agents::supervision::record_completions(store, &goal_id) {
+        eprintln!("supervisor: {goal_id}: {error:#}");
+    }
+    // R2: completing a todo is exactly where a dead watcher must be noticed —
+    // otherwise the note above sits in the outbox until someone looks.
+    if let Err(error) = crate::agents::supervision::rearm(store, &goal_id).await {
+        eprintln!("supervisor: {goal_id}: {error:#}");
+    }
     Ok(())
 }
 
@@ -3196,7 +3209,7 @@ fn cmd_profile(store: &mut Store, args: &[String]) -> Result<()> {
 
 // ── status ─────────────────────────────────────────────────────────────────
 
-fn cmd_status(store: &Store, args: &[String]) -> Result<()> {
+async fn cmd_status(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_filter = None;
     let mut format = String::new();
     reject_unknown_flags(args, &["--format", "--goal"])?;
@@ -3207,29 +3220,51 @@ fn cmd_status(store: &Store, args: &[String]) -> Result<()> {
             format = v;
         }
     });
-    if format == "json" {
-        return print_status_json(store, goal_filter);
-    }
-    if let Some(g) = goal_filter {
-        let goal = store
-            .replay(&g)?
-            .ok_or_else(|| anyhow::anyhow!("goal {g} not found"))?;
-        print_goal_status(&goal);
-        print_ledger_read_note(store, &g);
-        return Ok(());
-    }
-    if store.registry().is_empty() {
+    let printed = if format == "json" {
+        print_status_json(store, goal_filter.clone())
+    } else if let Some(g) = goal_filter.clone() {
+        match store.replay(&g)? {
+            Some(goal) => {
+                print_goal_status(&goal);
+                print_ledger_read_note(store, &g);
+                Ok(())
+            }
+            None => Err(anyhow::anyhow!("goal {g} not found")),
+        }
+    } else if store.registry().is_empty() {
         println!("no goals registered (root {})", root_dir());
-        return Ok(());
-    }
-    for entry in store.registry() {
-        if let Ok(Some(goal)) = store.replay(&entry.goal_id) {
-            print_goal_status(&goal);
-            print_ledger_read_note(store, &entry.goal_id);
-            println!();
+        Ok(())
+    } else {
+        for entry in store.registry() {
+            if let Ok(Some(goal)) = store.replay(&entry.goal_id) {
+                print_goal_status(&goal);
+                print_ledger_read_note(store, &entry.goal_id);
+                println!();
+            }
+        }
+        Ok(())
+    };
+    // R2: `status` is the heartbeat an orchestrator already runs, so it is where
+    // a dead watcher gets noticed and restarted. Deliberately AFTER the report is
+    // printed — a reader must never wait on supervision — and free in the normal
+    // case: `rearm` probes the watcher lock first and returns when it is held.
+    rearm_status(store, goal_filter.as_deref()).await;
+    printed
+}
+
+/// Re-arm supervision for what `status` covered: the named goal, or every
+/// registered goal on an unscoped call (each one is still a single lock probe
+/// unless it is genuinely unwatched).
+async fn rearm_status(store: &mut Store, goal: Option<&str>) {
+    let goals: Vec<String> = match goal {
+        Some(g) => vec![g.to_string()],
+        None => store.registry().iter().map(|e| e.goal_id.clone()).collect(),
+    };
+    for goal_id in goals {
+        if let Err(error) = crate::agents::supervision::rearm(store, &goal_id).await {
+            eprintln!("supervisor: {goal_id}: {error:#}");
         }
     }
-    Ok(())
 }
 
 /// O1: surface the ledger read diagnostics note (unknown-kind lines skipped
@@ -4369,27 +4404,18 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         let mut cmd = std::process::Command::new(&exe);
         let child_args = detached_child_args(&exe_stem, args);
         cmd.args(&child_args);
-        // Platform-neutral detachment: own process group (POSIX process_group
-        // / Windows CREATE_NEW_PROCESS_GROUP|DETACHED_PROCESS), stdio routed
-        // to the log file so the parent's terminal stays clean.
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.process_group(0);
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-            const DETACHED_PROCESS: u32 = 0x0000_0008;
-            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
-        }
+        // Platform-neutral detachment: `detach::spawn` owns it — own process
+        // group on POSIX, and on Windows `CREATE_NEW_PROCESS_GROUP |
+        // DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB` so the child leaves the
+        // caller's Job Object (a caller that waits for its job to drain would
+        // otherwise sit until its own timeout and then take this worker down
+        // with it). Stdio is routed to the log so the parent's terminal stays
+        // clean.
         let log = std::fs::File::create(&log_path)?;
         cmd.stdout(log.try_clone()?)
             .stderr(log)
             .stdin(std::process::Stdio::null());
-        let mut child = cmd
-            .spawn()
+        let mut child = crate::detach::spawn(&mut cmd)
             .map_err(|e| anyhow::anyhow!("spawn detached run (log {}): {e}", log_path.display()))?;
         // Defensive liveness check: `spawn` succeeding only means the process
         // was created, not that it re-dispatched correctly. A bad re-exec
@@ -4742,17 +4768,18 @@ pub async fn notify_infra_stop(
 /// no-op (the tick itself never fails over a lost notification).
 #[doc(hidden)] // test-visible seam
 pub async fn notify_dead_holders(store: &mut Store, goal_id: &str) -> Result<()> {
-    // Persist before attempting any connection: agent downtime must not erase
-    // the very observation needed to recover once it comes back.
-    crate::agents::supervision::record_dead_holders(store, goal_id)?;
-    if !crate::agents::supervision::running(store, goal_id) {
-        if let Ok(mut client) =
-            crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await
-        {
-            let _ = crate::agents::supervision::flush(store, goal_id, &mut client).await;
-        }
-    }
-    Ok(())
+    // The sweep runs first and unconditionally: a note persists even for a goal
+    // with no supervisor registered yet (`queue`'s contract — a later
+    // `supervisor register` reads it back), which is why this does not just
+    // delegate the observation to `rearm`.
+    crate::agents::supervision::sweep(store, goal_id)?;
+    // …and `rearm` is this plus the watcher it was missing: it delivers inline
+    // when no watcher holds the lock and starts one when none exists. A tick
+    // that only delivered left the goal with no watcher again by the next tick,
+    // which is how a goal ended up reported only when someone happened to run a
+    // command. Both halves are idempotent, so the repeated sweep costs reads but
+    // can never duplicate a note.
+    crate::agents::supervision::rearm(store, goal_id).await
 }
 
 /// Best-effort post-run supervision — the run process itself is a live actor,
@@ -6645,7 +6672,7 @@ async fn cmd_worker(store: &mut Store, args: &[String]) -> Result<()> {
     match sub {
         "list" => cmd_worker_list(&*store, &args[1..]).await,
         "stop" | "kill" => cmd_worker_stop(store, &args[1..]).await,
-        "tail" => cmd_worker_tail(&*store, &args[1..]).await,
+        "tail" => cmd_worker_tail(store, &args[1..]).await,
         other => bail!(
             "unknown worker subcommand `{other}` (try `{} worker --help`)",
             prog()
@@ -6661,7 +6688,7 @@ async fn cmd_worker(store: &mut Store, args: &[String]) -> Result<()> {
 /// whether to steer / stop / let it run — without hand-tailing the file.
 /// `--agent-id` picks one worker's latest run; without it, the latest run
 /// across all workers on the goal. Default `--lines 20`.
-async fn cmd_worker_tail(store: &Store, args: &[String]) -> Result<()> {
+async fn cmd_worker_tail(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut agent_id = None;
     let mut lines = 20usize;
@@ -6726,6 +6753,7 @@ async fn cmd_worker_tail(store: &Store, args: &[String]) -> Result<()> {
         for line in &all[start..] {
             println!("{line}");
         }
+        rearm_after_tail(store, &goal_id).await;
         return Ok(());
     }
     // Condensed view: the events an orchestrator actually scans — the run
@@ -6746,7 +6774,17 @@ async fn cmd_worker_tail(store: &Store, args: &[String]) -> Result<()> {
     for ev in &events[start..] {
         println!("{ev}");
     }
+    rearm_after_tail(store, &goal_id).await;
     Ok(())
+}
+
+/// R2: `worker tail` is the orchestrator's "what is this worker doing" command,
+/// so it is also where a supervision loop that died gets re-armed — after the
+/// tail is printed, and free when the watcher is alive.
+async fn rearm_after_tail(store: &mut Store, goal_id: &str) {
+    if let Err(error) = crate::agents::supervision::rearm(store, goal_id).await {
+        eprintln!("supervisor: {goal_id}: {error:#}");
+    }
 }
 
 /// Collapse a `.live.jsonl` stream into the lines an orchestrator scans:
@@ -7527,10 +7565,10 @@ fn cmd_inbox(store: &Store, args: &[String]) -> Result<()> {
 /// `delivery <status|record|followthrough>` — the P0-2 signal chain:
 /// delivered → verified/failed/rework, plus the manual follow-through scan
 /// (the run path also scans automatically after every turn).
-fn cmd_delivery(store: &mut Store, args: &[String]) -> Result<()> {
+async fn cmd_delivery(store: &mut Store, args: &[String]) -> Result<()> {
     match args.first().map(|s| s.as_str()) {
         Some("status") => delivery_status(store, &args[1..]),
-        Some("record") => delivery_record(store, &args[1..]),
+        Some("record") => delivery_record(store, &args[1..]).await,
         Some("followthrough") => delivery_followthrough(store, &args[1..]),
         _ => bail!("delivery subcommand must be `status`, `record`, or `followthrough`"),
     }
@@ -7613,7 +7651,7 @@ fn delivery_status(store: &Store, args: &[String]) -> Result<()> {
 /// failed|rework> [--note ...]` — manual outcome writeback (the operator /
 /// validator verification signal). Transitions are validated against the
 /// current state before the event lands.
-fn delivery_record(store: &mut Store, args: &[String]) -> Result<()> {
+async fn delivery_record(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut todo_id = None;
     let mut outcome_raw = None;
@@ -7689,6 +7727,14 @@ fn delivery_record(store: &mut Store, args: &[String]) -> Result<()> {
                 println!("follow-through todo {followup} closed ✔ (delivery {todo_id} resolved)");
             }
         }
+    }
+    // R2: recording a verdict is a command the operator runs anyway, so it is a
+    // free place to notice a dead watcher (a single lock probe when one is live)
+    // and to deliver anything the outbox is still holding — the verified verdict
+    // itself changes no note, and the `todo_done` reminder from the completion
+    // stays exactly as it was recorded.
+    if let Err(error) = crate::agents::supervision::rearm(store, &goal_id).await {
+        eprintln!("supervisor: {goal_id}: {error:#}");
     }
     Ok(())
 }
@@ -9989,12 +10035,14 @@ mod cli_quirks_tests {
         assert!(reject_unknown_flags(&args, &["--goal"]).is_ok());
     }
 
-    #[test]
-    fn unknown_flag_errors_end_to_end_on_read_and_write_commands() {
+    #[tokio::test]
+    async fn unknown_flag_errors_end_to_end_on_read_and_write_commands() {
         let mut store = tmp_store("e2e-unknown");
         open_goal_with_todo(&mut store, "g1");
         // read-only command
-        let err = cmd_status(&store, &["--bogus".to_string()]).unwrap_err();
+        let err = cmd_status(&mut store, &["--bogus".to_string()])
+            .await
+            .unwrap_err();
         assert!(format!("{err}").contains("unknown flag `--bogus`"));
         // write command
         let err = todo_update(
@@ -11063,8 +11111,8 @@ mod residual_branch_tests {
 
     // ── todo_complete: a user gate is resolved via `gate resolve`, never ────
     // ── marked done via `todo complete` (M1: decision points are not work) ──
-    #[test]
-    fn todo_complete_rejects_user_gate() {
+    #[tokio::test]
+    async fn todo_complete_rejects_user_gate() {
         let (_dir, mut store) = tmp_store();
         registered(&mut store, "g");
         store
@@ -11083,7 +11131,7 @@ mod residual_branch_tests {
             "--evidence".to_string(),
             "x".to_string(),
         ];
-        let err = todo_complete(&mut store, &args).unwrap_err();
+        let err = todo_complete(&mut store, &args).await.unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("user gate"), "got: {msg}");
         assert!(msg.contains("gate resolve"), "got: {msg}");
@@ -11415,8 +11463,8 @@ mod residual_branch_tests {
     // outcome, so `all_todos_done` never held and the goal could not reach
     // terminal closure. Recording the resolution IS the verification the todo
     // asks for, so it has to close it.
-    #[test]
-    fn resolving_a_delivery_closes_its_followthrough_todo() {
+    #[tokio::test]
+    async fn resolving_a_delivery_closes_its_followthrough_todo() {
         let (_dir, mut store) = tmp_store();
         registered(&mut store, "g");
         store
@@ -11448,6 +11496,7 @@ mod residual_branch_tests {
                 crate::work_items::delivery_outcome::OUTCOME_VERIFIED.into(),
             ],
         )
+        .await
         .unwrap();
 
         let goal = store.replay("g").unwrap().unwrap();
@@ -11468,8 +11517,8 @@ mod residual_branch_tests {
     /// The reset case: a *fresh* delivery starts a new cycle and must not be
     /// read as a resolution — the follow-through for the previous cycle was
     /// already dropped by the fold, and a new one is minted when this one ages.
-    #[test]
-    fn a_fresh_delivery_does_not_close_anything() {
+    #[tokio::test]
+    async fn a_fresh_delivery_does_not_close_anything() {
         let (_dir, mut store) = tmp_store();
         registered(&mut store, "g");
         store
@@ -11491,6 +11540,7 @@ mod residual_branch_tests {
                 crate::work_items::delivery_outcome::OUTCOME_DELIVERED.into(),
             ],
         )
+        .await
         .unwrap();
 
         let goal = store.replay("g").unwrap().unwrap();
@@ -11504,8 +11554,8 @@ mod residual_branch_tests {
 
     /// A resolution with no follow-through to close (the delivery was verified
     /// before the threshold fired) must stay a no-op, not invent a completion.
-    #[test]
-    fn resolving_a_delivery_without_a_followthrough_is_a_no_op() {
+    #[tokio::test]
+    async fn resolving_a_delivery_without_a_followthrough_is_a_no_op() {
         let (_dir, mut store) = tmp_store();
         registered(&mut store, "g");
         store
@@ -11538,6 +11588,7 @@ mod residual_branch_tests {
                 crate::work_items::delivery_outcome::OUTCOME_FAILED.into(),
             ],
         )
+        .await
         .unwrap();
 
         let goal = store.replay("g").unwrap().unwrap();
