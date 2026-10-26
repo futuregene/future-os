@@ -133,6 +133,26 @@ impl Cost {
     }
 }
 
+/// The share of a prompt that the provider served from its cache, `0.0..=1.0`.
+///
+/// The single definition of this ratio, for the same reason [`Cost::parts`] is
+/// the single definition of the split: `prompt_tokens` already *includes* the
+/// cached subset (that is what makes `prompt - cache_read - cache_write` the
+/// uncached remainder above), so the rate is `cache_read / prompt` and never
+/// `cache_read / (prompt + cache_read)`. Dividing by the sum halves a perfect
+/// cache hit into "50%" and was the reading that made a 99.8%-cached session
+/// look like a 44% one.
+///
+/// `None` when the provider reported no prompt tokens at all: a session with no
+/// recorded request has no hit rate, which is different from a 0% one.
+pub fn cache_hit_rate(prompt_tokens: i64, cache_read_tokens: i64) -> Option<f64> {
+    if prompt_tokens <= 0 {
+        return None;
+    }
+    let cached = cache_read_tokens.clamp(0, prompt_tokens);
+    Some(cached as f64 / prompt_tokens as f64)
+}
+
 impl Model {
     /// The thinking levels this model offers to clients, in canonical order.
     ///

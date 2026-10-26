@@ -766,6 +766,81 @@ pub struct Usage {
     pub provider_metadata: Option<ProviderMetadata>,
 }
 
+impl Usage {
+    /// Whether this block carries the provider's cache breakdown.
+    ///
+    /// Providers that report caching send `cache_read_tokens` and/or
+    /// `cache_write_tokens` on the usage of a request; the frames that only
+    /// carry a coarse token count (an estimate, or a gateway's first pass) do
+    /// not. That difference is what tells the two apart when one request
+    /// reports usage more than once.
+    pub fn has_cache_detail(&self) -> bool {
+        self.cache_read_tokens.is_some() || self.cache_write_tokens.is_some()
+    }
+
+    /// Fold a later usage block for the *same request* into this one.
+    ///
+    /// A streaming provider can report one request's usage more than once: the
+    /// Future gateway sends a coarse synthesized frame (no cache detail) before
+    /// the provider's own, and the provider's block itself reaches the run loop
+    /// twice — nested in the finish chunk and again at the top level of the
+    /// trailing empty-choices chunk. All of them describe one request, so exactly
+    /// one may be charged; this decides which and what it says.
+    ///
+    /// - The block with the cache breakdown wins over a coarse one, in either
+    ///   order: it is the only one that prices and explains the request, and its
+    ///   `prompt_tokens` is the provider's count rather than an estimate.
+    /// - Between blocks of equal detail the later one wins, because progressive
+    ///   chunks refine the earlier ones (a completion grows, a cost settles).
+    /// - A field the winning block omits is never replaced by a missing value,
+    ///   so a coarse trailing frame cannot erase the real cache counters.
+    pub fn merge_later_chunk(&mut self, later: &Usage) {
+        if self.has_cache_detail() && !later.has_cache_detail() {
+            // Keep this block's tokens and cache counters; a later coarse frame
+            // can still be the authoritative one for cost if we have none.
+            if self.credit_cost.is_none() {
+                self.credit_cost = later.credit_cost;
+            }
+            return;
+        }
+        let mut merged = later.clone();
+        if merged.cache_read_tokens.is_none() {
+            merged.cache_read_tokens = self.cache_read_tokens;
+        }
+        if merged.cache_write_tokens.is_none() {
+            merged.cache_write_tokens = self.cache_write_tokens;
+        }
+        if merged.reasoning_tokens.is_none() {
+            merged.reasoning_tokens = self.reasoning_tokens;
+        }
+        if merged.credit_cost.is_none() {
+            merged.credit_cost = self.credit_cost;
+        }
+        if merged.provider_metadata.is_none() {
+            merged.provider_metadata = self.provider_metadata.clone();
+        }
+        *self = merged;
+    }
+
+    /// The share of this request's prompt the provider served from cache; see
+    /// [`crate::models::cache_hit_rate`] for why the denominator is the prompt
+    /// alone.
+    pub fn cache_hit_rate(&self) -> Option<f64> {
+        crate::models::cache_hit_rate(self.prompt_tokens, self.cache_read_tokens.unwrap_or(0))
+    }
+
+    /// True when this block's cache counters exceed its own prompt, which no
+    /// single request can do (the cached bytes are part of that prompt).
+    ///
+    /// A violation means a coarse block and a detailed one were mixed, or the
+    /// same block was counted twice — the accounting bug this invariant exists
+    /// to catch, not a provider quirk to tolerate.
+    pub fn cached_tokens_exceed_prompt(&self) -> bool {
+        self.cache_read_tokens.unwrap_or(0) + self.cache_write_tokens.unwrap_or(0)
+            > self.prompt_tokens
+    }
+}
+
 /// Deserialize `credit_cost` which may be a string ("0.00019") or a number.
 fn deserialize_credit_cost<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
 where
@@ -1340,6 +1415,89 @@ mod tests {
             err.to_string().contains("representing credit cost"),
             "{err}"
         );
+    }
+
+    /// The gateway's coarse frame is an estimate without a cache breakdown; the
+    /// provider's block is the real meter. Whichever order they arrive in, the
+    /// provider's block is what the request said, so it must survive.
+    #[test]
+    fn a_detailed_usage_block_wins_over_a_coarse_one_in_either_order() {
+        let coarse = Usage {
+            prompt_tokens: 607_162,
+            completion_tokens: 271,
+            credit_cost: Some(7.91),
+            ..Default::default()
+        };
+        let detailed = Usage {
+            prompt_tokens: 526_759,
+            completion_tokens: 351,
+            cache_read_tokens: Some(526_336),
+            cache_write_tokens: Some(256),
+            credit_cost: Some(0.71),
+            ..Default::default()
+        };
+
+        let mut coarse_then_detailed = coarse.clone();
+        coarse_then_detailed.merge_later_chunk(&detailed);
+        assert_eq!(coarse_then_detailed.prompt_tokens, 526_759);
+        assert_eq!(coarse_then_detailed.cache_read_tokens, Some(526_336));
+        assert_eq!(coarse_then_detailed.cache_write_tokens, Some(256));
+        assert_eq!(coarse_then_detailed.credit_cost, Some(0.71));
+
+        let mut detailed_then_coarse = detailed.clone();
+        detailed_then_coarse.merge_later_chunk(&coarse);
+        assert_eq!(detailed_then_coarse.prompt_tokens, 526_759);
+        assert_eq!(detailed_then_coarse.cache_read_tokens, Some(526_336));
+        // The coarse frame's cost is an estimate of the same request; keeping it
+        // would bill the request at the price of the guess.
+        assert_eq!(detailed_then_coarse.credit_cost, Some(0.71));
+    }
+
+    /// Two deliveries of one real block (a finish chunk and a trailing frame)
+    /// merge to that block — not to a sum and not to a dropped field.
+    #[test]
+    fn two_detailed_blocks_merge_to_the_later_one() {
+        let mut total = Usage {
+            prompt_tokens: 1_000,
+            completion_tokens: 50,
+            cache_read_tokens: Some(900),
+            cache_write_tokens: Some(100),
+            ..Default::default()
+        };
+        let later = Usage {
+            prompt_tokens: 1_000,
+            completion_tokens: 51,
+            cache_read_tokens: Some(900),
+            cache_write_tokens: Some(100),
+            credit_cost: Some(0.25),
+            ..Default::default()
+        };
+        total.merge_later_chunk(&later);
+        assert_eq!(total.prompt_tokens, 1_000);
+        assert_eq!(total.completion_tokens, 51);
+        assert_eq!(total.cache_read_tokens, Some(900));
+        assert_eq!(total.cache_write_tokens, Some(100));
+        assert_eq!(total.credit_cost, Some(0.25));
+        assert!(!total.cached_tokens_exceed_prompt());
+    }
+
+    /// `prompt_tokens` includes the cached subset, so the hit rate divides by the
+    /// prompt alone. Dividing by `prompt + cache_read` reported a perfect cache
+    /// as 50%.
+    #[test]
+    fn the_cache_hit_rate_divides_by_the_prompt() {
+        let usage = Usage {
+            prompt_tokens: 1_000,
+            cache_read_tokens: Some(990),
+            cache_write_tokens: Some(10),
+            ..Default::default()
+        };
+        assert_eq!(usage.cache_hit_rate(), Some(0.99));
+        assert_eq!(crate::models::cache_hit_rate(1_000, 990), Some(0.99));
+        // No recorded prompt tokens: no rate, which is not a 0% one.
+        assert_eq!(crate::models::cache_hit_rate(0, 0), None);
+        // A provider over-reporting cache reads cannot push the rate over 100%.
+        assert_eq!(crate::models::cache_hit_rate(100, 500), Some(1.0));
     }
 
     #[test]
