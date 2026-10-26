@@ -651,16 +651,16 @@ fn sidebar_tab() -> Result<(), String> {
     let data = demo::chat();
     let mut wb = wb();
     wb.render(&data, 120, 38);
-    let tab = region(&wb, "sidebar.tab.usage")?;
+    let tab = region(&wb, "sidebar.tab.workspaces")?;
     let (x, y) = centre(tab);
     match wb.handle(WbEvent::Mouse(press(x, y)), &data).as_slice() {
-        [WbAction::SwitchPanel(PanelId::Usage)] => {
+        [WbAction::SwitchPanel(PanelId::Workspaces)] => {
             if !wb.sidebar_focus {
                 return Err("the tab did not take the keys".into());
             }
             Ok(())
         }
-        other => Err(format!("usage tab gave {other:?}")),
+        other => Err(format!("workspaces tab gave {other:?}")),
     }
 }
 

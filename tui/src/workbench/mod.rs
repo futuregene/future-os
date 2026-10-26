@@ -1091,7 +1091,7 @@ impl Workbench {
     }
 
     /// The workspace the conversation under the cursor belongs to.
-    fn selected_workspace(&self, data: &WorkbenchData) -> Option<&state::WorkspaceGroup> {
+    fn selected_workspace<'a>(&'a self, data: &'a WorkbenchData) -> Option<&'a state::WorkspaceGroup> {
         let rows = self.panel_rows(data);
         let session = rows.get(self.sidebar_index)?.session()?;
         let id = &data.sessions.get(session)?.id;
@@ -2875,7 +2875,7 @@ mod tests {
 
     #[test]
     fn a_frame_is_always_the_terminal_size() {
-        for data in [demo::launchpad(), demo::chat(), demo::todo()] {
+        for data in [demo::launchpad(), demo::chat(), demo::workspaces()] {
             for (w, h) in [
                 (120u16, 38u16),
                 (96, 30),
@@ -2974,42 +2974,40 @@ mod tests {
         }
     }
 
-    /// `/usage` and `/skills` are names for two panels. With room for a rail
-    /// they focus it (showing it if the reader had hidden it); on a terminal too
-    /// narrow for a rail they take the body, which is the one surface there is.
+    /// `/sessions` and `/workspaces` name the rail's two panels. With room for
+    /// a rail they focus it (showing it if the reader had hidden it); on a
+    /// terminal too narrow for a rail they take the body, which is the one
+    /// surface there is.
     #[test]
-    fn usage_and_skills_focus_their_panel_and_never_reach_the_agent() {
+    fn the_panel_verbs_focus_their_panel_and_never_reach_the_agent() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
 
         assert_eq!(
-            workbench.surface_command("/usage", &data),
+            workbench.surface_command("/sessions", &data),
             VerbOutcome::Done { notice: None }
         );
-        assert_eq!(workbench.panel, PanelId::Usage);
+        assert_eq!(workbench.panel, PanelId::Recent);
         assert!(workbench.sidebar_focus, "the panel it names takes the keys");
         assert!(workbench.sidebar_visible);
         let text = plain(&workbench.render(&data, 120, 38));
-        assert!(
-            text.contains("上下文"),
-            "the usage panel is on screen: {text}"
-        );
+        assert!(text.contains("最近"), "the recent panel is on screen: {text}");
 
         assert_eq!(
-            workbench.surface_command("/skills", &data),
+            workbench.surface_command("/workspaces", &data),
             VerbOutcome::Done { notice: None }
         );
-        assert_eq!(workbench.panel, PanelId::Skills);
+        assert_eq!(workbench.panel, PanelId::Workspaces);
         let text = plain(&workbench.render(&data, 120, 38));
         assert!(
-            text.contains("个技能"),
-            "the skills panel is on screen: {text}"
+            text.contains("个工作区"),
+            "the workspace panel is on screen: {text}"
         );
 
         // A hidden rail comes back rather than swallowing the request.
         workbench.sidebar_visible = false;
         workbench.sidebar_focus = false;
-        workbench.surface_command("/usage", &data);
+        workbench.surface_command("/sessions", &data);
         assert!(workbench.sidebar_visible && workbench.sidebar_focus);
     }
 
@@ -3025,12 +3023,12 @@ mod tests {
         assert!(!plain(&rows).contains("用量"));
 
         assert_eq!(
-            workbench.surface_command("/usage", &data),
+            workbench.surface_command("/workspaces", &data),
             VerbOutcome::Done { notice: None }
         );
         assert_eq!(workbench.overlay, Some(Overlay::PanelFull));
         let text = plain(&workbench.render(&data, 60, 20));
-        assert!(text.contains("上下文"), "the panel takes the body: {text}");
+        assert!(text.contains("工作区"), "the panel takes the body: {text}");
         // The rail's own key still leaves it, which is what the hint row already
         // names at this width (`ctrl+b 侧栏`), so the overlay is not a dead end
         // even though its title line carries no footer of its own.
@@ -3113,9 +3111,9 @@ mod tests {
             .hits()
             .regions()
             .iter()
-            .find(|(_, id)| id == "sidebar.tab.sessions")
+            .find(|(_, id)| id == "sidebar.tab.recent")
             .cloned()
-            .expect("the sessions tab is a target");
+            .expect("the recent tab is a target");
         let press = mouse::MouseEvent {
             kind: mouse::MouseKind::Press,
             x: rect.x + 1,
@@ -3125,7 +3123,7 @@ mod tests {
             ctrl: false,
         };
         let actions = workbench.handle(WbEvent::Mouse(press), &data);
-        assert_eq!(actions, vec![WbAction::SwitchPanel(PanelId::Sessions)]);
+        assert_eq!(actions, vec![WbAction::SwitchPanel(PanelId::Recent)]);
         // Clicking the sidebar is working *in* the sidebar: one click both
         // switches the panel and takes the keys, so `up`/`down` and the wheel
         // act on what the reader just chose.
@@ -3705,10 +3703,10 @@ mod tests {
 
     #[test]
     fn a_narrow_terminal_has_no_sidebar_but_ctrl_b_still_reaches_the_panel() {
-        let data = demo::todo();
+        let data = demo::workspaces();
         let (mut workbench, rows) = frame(&data, 70, 24);
         let text = plain(&rows);
-        assert!(!text.contains("待办"), "no sidebar at 70 columns: {text}");
+        assert!(!text.contains("最近"), "no sidebar at 70 columns: {text}");
         assert!(workbench
             .hits()
             .regions()
@@ -3717,9 +3715,11 @@ mod tests {
 
         let actions = workbench.handle(WbEvent::Key("ctrl+b".into()), &data);
         assert_eq!(actions, vec![WbAction::Redraw]);
-        // The full-screen panel is now the surface: it carries the todos.
+        // The full-screen panel is now the surface: it carries the workspace
+        // groups (the fixture pins its two leading workspaces).
         let text = plain(&workbench.render(&data, 70, 24));
-        assert!(text.contains("第 1 项"), "{text}");
+        assert!(text.contains("工作区"), "{text}");
+        assert!(text.contains("置顶"), "{text}");
     }
 
     #[test]
@@ -3790,7 +3790,7 @@ mod tests {
             parent_id: None,
         });
         let (mut workbench, _rows) = frame(&data, 120, 38);
-        workbench.panel = PanelId::Sessions;
+        workbench.panel = PanelId::Recent;
         workbench.render(&data, 120, 38);
         let (rect, _) = workbench
             .hits()

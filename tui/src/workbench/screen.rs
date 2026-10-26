@@ -882,13 +882,16 @@ fn sidebar_rows(
     let content = Rect::new(area.x, area.y + 1, area.w, area.h - 1);
     let index = workbench.panel.index();
     let scroll = workbench.panel_scroll[index];
+    let selected = workbench.sidebar_index;
     let lang = workbench.lang;
+    let panel = workbench.panel;
     let body = panels::render(
-        workbench.panel,
+        panel,
         data,
         palette,
         content,
         scroll,
+        selected,
         workbench.hit_map(),
         lang,
     );
@@ -1010,12 +1013,13 @@ fn hint_row(
         ("Esc", Key::HintBackToChat),
         (workbench.keys.key(Action::Sidebar), Key::HintSidebar),
         ("tab", Key::HintFocus),
+        (workbench.keys.key(Action::Sessions), Key::HintSessions),
         (workbench.keys.key(Action::Palette), Key::HintCommands),
         (workbench.keys.key(Action::Help), Key::HintHelp),
         (workbench.keys.key(Action::NewSession), Key::HintNewChat),
         (workbench.keys.key(Action::Preferences), Key::HintSettings),
     ];
-    let parts: &[(&str, Key)] = if compact { &wide[1..4] } else { &wide };
+    let parts: &[(&str, Key)] = if compact { &wide[1..5] } else { &wide };
     let items: Vec<String> = parts
         .iter()
         .map(|(key, action)| {
@@ -1865,15 +1869,18 @@ fn panel_box(
 ) -> Vec<String> {
     let lang = workbench.lang;
     let title = workbench.panel.label(lang);
+    let panel = workbench.panel;
     let area = Rect::new(0, 0, w.saturating_sub(6), h.saturating_sub(4).max(3));
     let index = workbench.panel.index();
     let scroll = workbench.panel_scroll[index];
+    let selected = workbench.sidebar_index;
     let body = panels::render(
-        workbench.panel,
+        panel,
         data,
         palette,
         area,
         scroll,
+        selected,
         workbench.hit_map(),
         lang,
     );

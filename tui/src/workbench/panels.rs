@@ -81,7 +81,7 @@ pub fn rows(panel: PanelId, data: &WorkbenchData) -> Vec<Row> {
         PanelId::Recent => (0..data.sessions.len()).map(Row::Session).collect(),
         PanelId::Workspaces => {
             let mut rows: Vec<Row> = Vec::new();
-            let mut push_section = |rows: &mut Vec<Row>, kind: Section| {
+            let push_section = |rows: &mut Vec<Row>, kind: Section| {
                 if rows.last() != Some(&Row::Section(kind)) {
                     rows.push(Row::Section(kind));
                 }

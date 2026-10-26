@@ -258,7 +258,7 @@ fn surfaces() -> Vec<Surface> {
         name: "sidebar sessions",
         data,
         open: Box::new(|wb, _| {
-            wb.panel = PanelId::Sessions;
+            wb.panel = PanelId::Recent;
             wb.sidebar_focus = true;
         }),
         id: |index| format!("sidebar.row.{index}"),
