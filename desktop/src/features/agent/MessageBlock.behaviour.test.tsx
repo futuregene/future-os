@@ -199,6 +199,18 @@ it("copies the raw content, trimmed, when the reply is not segmented", async () 
   expect(mocks.copyText).toHaveBeenCalledWith("a single block");
 });
 
+it("distinguishes a user's prompt with a soft accent bubble", () => {
+  render(message({ content: "the prompt", id: "u1", role: "user" }));
+  const bubble = container.querySelector<HTMLElement>("[data-message-id='u1'] .bg-accent-soft")!;
+  expect(bubble.textContent).toContain("the prompt");
+  expect(bubble.className).toContain("border-accent/25");
+
+  act(() => root.unmount());
+  root = createRoot(container);
+  render(message({ content: "the reply", id: "a1", role: "assistant" }));
+  expect(container.querySelector("[data-message-id='a1'] .bg-accent-soft")).toBeNull();
+});
+
 it("keeps the user's copy button off their own bubble", () => {
   // The user's body is a filled bubble holding their words; a control drawn on
   // that fill reads as part of what they wrote. It sits below it instead.
