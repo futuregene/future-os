@@ -179,6 +179,9 @@ pub(crate) fn update_display_index_from(
     session: &str,
     changed_position: i64,
 ) -> Result<()> {
+    if crate::session::content::format(db, session)? == crate::session::content::FORMAT_VERSION {
+        return append_segmented_index(db, session, changed_position);
+    }
     let start = affected_history_start(db, session, changed_position)?;
     let ordinal: i64 = if start == 0 {
         0
@@ -231,6 +234,38 @@ pub(crate) fn update_display_index_from(
         "DELETE FROM history_display WHERE session_id=?1 AND ordinal>=?2",
         params![session, ordinal + projected.len() as i64],
     )?;
+    Ok(())
+}
+
+/// Canonical entries are already normalized and have stable tool/run identity.
+/// Append only their body-free shapes. Terminal annotations are joined from
+/// `runs` on bounded page reads, so closing a long run does no suffix rebuild.
+fn append_segmented_index(db: &Connection, session: &str, start: i64) -> Result<()> {
+    let mut ordinal: i64 = db.query_row(
+        "SELECT coalesce(max(ordinal)+1,0) FROM history_display WHERE session_id=?1",
+        [session],
+        |row| row.get(0),
+    )?;
+    let mut query=db.prepare("SELECT h.position,h.payload FROM history_shapes h WHERE h.session_id=?1 AND h.position>=?2 AND NOT EXISTS(SELECT 1 FROM history_display d WHERE d.session_id=h.session_id AND d.source_position=h.position) ORDER BY h.position")?;
+    let rows = query
+        .query_map(params![session, start], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut insert=db.prepare("INSERT INTO history_display(session_id,ordinal,source_position,is_user,payload) VALUES (?1,?2,?3,?4,?5)")?;
+    for (position, raw) in rows {
+        let entry: SessionEntry = serde_json::from_str(&raw)?;
+        if let Some(payload) = project_entries(&[entry]).pop() {
+            insert.execute(params![
+                session,
+                ordinal,
+                position,
+                payload["role"] == "user",
+                payload.to_string()
+            ])?;
+            ordinal += 1;
+        }
+    }
     Ok(())
 }
 

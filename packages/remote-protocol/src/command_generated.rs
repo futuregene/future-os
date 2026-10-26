@@ -92,6 +92,8 @@ pub struct IncomingCmd {
     pub features: Vec<String>,
     /// Additive. client_disconnect: why the client is leaving. `disconnected` is the user's own stop — the device gives up the machine and a device that is actually there may take it. `background` only says the client is off screen (a suspended app), so the device keeps the machine and is presumed back when it speaks again. An older host ignores the command (it names no reply, and an unhandled type only reaches its business dispatcher), so a new client on an old host keeps the old reading.
     pub reason: String,
+    /// get_event_content_range: session/run scoped immutable event field and UTF-8 page coordinates.
+    pub content_request: Option<serde_json::Value>,
 }
 impl Default for IncomingCmd {
     fn default() -> Self {
@@ -159,6 +161,7 @@ impl Default for IncomingCmd {
             client_signature: String::new(),
             features: Vec::new(),
             reason: String::new(),
+            content_request: None,
         }
     }
 }

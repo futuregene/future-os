@@ -623,6 +623,7 @@ describe("RemoteClient connection handoff", () => {
       type: "secure_ready",
       features: [
         "event_coalescing_v1",
+        "segmented_content_v1",
         "reply_gzip_v1",
         "lean_events_v1",
         "catalog_activity_v1",

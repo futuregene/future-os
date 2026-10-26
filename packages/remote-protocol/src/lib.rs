@@ -10,6 +10,7 @@ pub use command_generated::{IncomingCmd, UploadReference};
 pub use future_remote_crypto as crypto;
 
 /// Clients that declare this capability implement lean event/history reads.
+pub const SEGMENTED_CONTENT_FEATURE: &str = "segmented_content_v1";
 pub const LEAN_EVENTS_FEATURE: &str = "lean_events_v1";
 
 pub const EVENT_COALESCING_FEATURE: &str = "event_coalescing_v1";

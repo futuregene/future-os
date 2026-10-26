@@ -589,6 +589,7 @@ pub fn plan_reset(entries: &[SessionEntry], selectors: &ResetSelectors) -> Resul
             continue;
         }
         let mut killed_by: Option<(DropKind, u64)> = None;
+        let mut changed = false;
         for kind in &kinds {
             let (blocks, survives) = drop_kind_from_entry(&mut entry, *kind);
             if !survives {
@@ -596,6 +597,7 @@ pub fn plan_reset(entries: &[SessionEntry], selectors: &ResetSelectors) -> Resul
                 break;
             }
             if blocks > 0 {
+                changed = true;
                 record_effect(&mut effects, *kind, 1, blocks);
             }
         }
@@ -605,6 +607,11 @@ pub fn plan_reset(entries: &[SessionEntry], selectors: &ResetSelectors) -> Resul
                 affected_runs.insert(run.to_owned());
             }
             continue;
+        }
+        if changed {
+            if let Some(run) = entry_run_id(&entry) {
+                affected_runs.insert(run.to_owned());
+            }
         }
         retained.push(entry);
     }
@@ -724,7 +731,12 @@ impl super::Manager {
         selectors: &ResetSelectors,
         apply: bool,
     ) -> Result<ResetOutcome> {
-        let raw = self.storage()?.entries(id)?;
+        let store = self.storage()?;
+        let canonical = store.storage_format(id)? == super::content::FORMAT_VERSION;
+        let revision = store
+            .revision(id)?
+            .ok_or_else(|| anyhow::anyhow!("reset session is unavailable"))?;
+        let raw = store.entries(id)?;
         let entries: Vec<SessionEntry> = raw
             .iter()
             .map(|value| serde_json::from_value(value.clone()))
@@ -737,7 +749,13 @@ impl super::Manager {
                 backup: None,
             });
         }
-        let digest = super::compaction_ops::canonical_hash(&serde_json::Value::Array(raw.clone()))?;
+        let digest = if canonical {
+            None
+        } else {
+            Some(super::compaction_ops::canonical_hash(
+                &serde_json::Value::Array(raw.clone()),
+            )?)
+        };
         #[cfg(test)]
         {
             // Id-gated so unrelated resets never consume the hook.
@@ -749,7 +767,15 @@ impl super::Manager {
             }
         }
         let backup = self.write_reset_backup(id, selectors, &planned.plan, &raw)?;
-        let plan = self.storage()?.reset_transcript(id, &digest, selectors)?;
+        let plan = if canonical {
+            store.apply_segmented_reset(id, revision, &raw, planned)?
+        } else {
+            store.reset_transcript(
+                id,
+                digest.as_deref().expect("legacy reset digest"),
+                selectors,
+            )?
+        };
         // The display projection cache is keyed by transcript revision, which
         // the rewrite bumped; drop it anyway so a reader that captured the
         // session's revision before the reset cannot reuse the old projection.
@@ -783,7 +809,7 @@ impl super::Manager {
         std::fs::create_dir_all(&directory)
             .map_err(|error| anyhow::anyhow!("create {}: {error}", directory.display()))?;
         let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
-        let path = directory.join(format!("{id}-{stamp}.json"));
+        let path = directory.join(format!("{id}-{stamp}-{}.json", uuid::Uuid::new_v4()));
         let backup = serde_json::json!({
             "format": "futureos-session-backup",
             "version": 1,
@@ -795,15 +821,18 @@ impl super::Manager {
             "entriesAfter": plan.entries_after,
             "entries": entries,
         });
-        let temporary = path.with_extension("json.tmp");
-        std::fs::write(
-            &temporary,
-            serde_json::to_vec_pretty(&backup)
-                .map_err(|error| anyhow::anyhow!("encode backup: {error}"))?,
-        )
-        .map_err(|error| anyhow::anyhow!("write {}: {error}", temporary.display()))?;
-        std::fs::rename(&temporary, &path)
-            .map_err(|error| anyhow::anyhow!("publish {}: {error}", path.display()))?;
+        let mut temporary = tempfile::Builder::new()
+            .prefix(".history-reset-")
+            .tempfile_in(&directory)
+            .map_err(|error| anyhow::anyhow!("create reset backup: {error}"))?;
+        serde_json::to_writer_pretty(temporary.as_file_mut(), &backup)
+            .map_err(|error| anyhow::anyhow!("encode reset backup: {error}"))?;
+        temporary.as_file().sync_all()?;
+        temporary
+            .persist_noclobber(&path)
+            .map_err(|error| anyhow::anyhow!("publish reset backup: {error}"))?;
+        #[cfg(unix)]
+        std::fs::File::open(&directory)?.sync_all()?;
         Ok(path)
     }
 }

@@ -37,11 +37,16 @@ export async function loadThreadHistory(
   activeRunStartedAt?: number | null,
   before: number | null = null,
   historySource?: string,
+  isCurrent?: () => boolean,
 ): Promise<AgentLoadResult> {
   try {
-    const result = historySource
-      ? await getSessionEntriesPage(threadId, before, 10, historySource)
-      : await getSessionEntriesPage(threadId, before);
+    const result = isCurrent
+      ? await getSessionEntriesPage(threadId, before, 10, historySource, isCurrent)
+      : historySource
+        ? await getSessionEntriesPage(threadId, before, 10, historySource)
+        : await getSessionEntriesPage(threadId, before);
+    if (isCurrent && !isCurrent())
+      throw new Error("stale_history_transfer");
     const entries = result?.entries ?? [];
     if (!entries.length) {
       return {

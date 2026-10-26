@@ -164,10 +164,17 @@ fn pinned_reader_does_not_block_foreground_write_or_destroy_snapshot() {
         .execute_batch("BEGIN; SELECT count(*) FROM run_events;")
         .unwrap();
     store.compact_run("s", "run").unwrap();
-    assert!(!store
+    store
         .db
         .call(crate::session::database::reclaim_space_when_idle)
-        .unwrap());
+        .unwrap();
+    // Reclamation no longer owns checkpointing. Observe the independent WAL
+    // worker explicitly while this reader still pins the old end mark.
+    let (_, frames, checkpointed) = store.db.checkpoint_for_test().unwrap();
+    assert!(
+        checkpointed < frames,
+        "the pinned reader must prevent a complete checkpoint"
+    );
     let event = SseEvent {
         run_id: "next".into(),
         idx: 0,
@@ -226,14 +233,15 @@ fn a_pinned_reader_blocks_the_checkpoint_but_not_the_reclamation() {
     reader
         .execute_batch("BEGIN; SELECT count(*) FROM run_events;")
         .unwrap();
-    let reclaimed = store
+    store
         .db
         .call(crate::session::database::reclaim_space_when_idle)
         .unwrap();
+    let (_, frames, checkpointed) = store.db.checkpoint_for_test().unwrap();
     reader.execute_batch("ROLLBACK").unwrap();
 
     assert!(
-        !reclaimed,
+        checkpointed < frames,
         "the blocked checkpoint must still be reported as unfinished"
     );
     let free_after: i64 = store

@@ -68,17 +68,6 @@ impl CompletedRunCompactor {
         receiver.recv().unwrap();
     }
 
-    pub(crate) fn shutdown(mut self) -> Result<()> {
-        self.stop.store(true, Ordering::Release);
-        let _ = self.sender.send(CompactionRequest::Stop);
-        if let Some(thread) = self.thread.take() {
-            thread
-                .join()
-                .map_err(|_| anyhow::anyhow!("journal compactor panicked during shutdown"))?;
-        }
-        Ok(())
-    }
-
     pub(crate) fn request(&self, session: &str, run: &str) {
         self.pending.fetch_add(1, Ordering::AcqRel);
         let _ = self.sender.try_send(CompactionRequest::Compact(
@@ -86,10 +75,6 @@ impl CompletedRunCompactor {
             run.to_owned(),
             PendingCompaction(self.pending.clone()),
         ));
-    }
-
-    pub(crate) fn pending_count(&self) -> usize {
-        self.pending.load(Ordering::Acquire)
     }
 }
 

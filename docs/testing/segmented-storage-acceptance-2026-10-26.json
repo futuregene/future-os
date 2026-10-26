@@ -1,0 +1,2406 @@
+{
+  "status": "partial final acceptance; integration and remaining checks pending",
+  "environment": {
+    "platform": "macOS-27.0.1-arm64-arm-64bit",
+    "machine": "arm64",
+    "rust": "1.99.1"
+  },
+  "limitations": [
+    "Synthetic temporary databases only; no personal conversation data.",
+    "Storage workloads overlapped regression-test activity; timings are observations, not isolated release thresholds.",
+    "Database/WAL peaks are sampled and include unreclaimed WAL; no VACUUM or historical compaction.",
+    "Headless desktop Chrome is not native Tauri IPC, a mobile device, or physical power-loss verification."
+  ],
+  "storage": {
+    "workload": "synthetic-reasoning-55-byte-fragments-128-event-batches",
+    "cases": [
+      {
+        "format": 1,
+        "bodyBytes": 1048630,
+        "fragments": 19066,
+        "writeMicros": 869968,
+        "foregroundBatchMicros": {
+          "p95": 5408,
+          "p99": 6240,
+          "max": 8047
+        },
+        "finishMicros": 39555,
+        "finalDatabaseAndWalBytes": 19382456,
+        "sampledPeakDatabaseAndWalBytes": 19382456,
+        "rows": {
+          "run_events": 19070,
+          "run_snapshots": 0,
+          "stream_changes": 0,
+          "content_segments": 0,
+          "content_objects": 0,
+          "contentBytes": 0
+        },
+        "io": {
+          "writerQueue": {
+            "count": 155,
+            "failures": 0,
+            "totalMicros": 453,
+            "lastMicros": 4,
+            "maxMicros": 12,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              155,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "writerJob": {
+            "count": 155,
+            "failures": 0,
+            "totalMicros": 799448,
+            "lastMicros": 19586,
+            "maxMicros": 64204,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              0,
+              3,
+              0,
+              0,
+              136,
+              13,
+              2,
+              0,
+              1,
+              0,
+              0,
+              0
+            ]
+          },
+          "readerQueue": {
+            "count": 9,
+            "failures": 0,
+            "totalMicros": 68,
+            "lastMicros": 11,
+            "maxMicros": 12,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              9,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "readerJob": {
+            "count": 9,
+            "failures": 0,
+            "totalMicros": 22805,
+            "lastMicros": 21204,
+            "maxMicros": 21204,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              5,
+              1,
+              2,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "foregroundCommit": {
+            "count": 155,
+            "failures": 0,
+            "totalMicros": 27063,
+            "lastMicros": 204,
+            "maxMicros": 2455,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              3,
+              150,
+              0,
+              0,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkpoint": {
+            "count": 3,
+            "failures": 0,
+            "totalMicros": 10198,
+            "lastMicros": 2966,
+            "maxMicros": 5515,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              0,
+              0,
+              0,
+              1,
+              1,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "commitTiming": "SQLite COMMIT elapsed including FULL synchronization; not an isolated fsync measurement",
+          "commitCoverage": "begin_write_transaction helper; writerJob covers complete queued work",
+          "fileSamplePeriodMs": 250,
+          "walPeak": "sampled maximum, not every filesystem write",
+          "checkpointMode": "PASSIVE on a separate connection/thread",
+          "checkpointBusy": 0,
+          "walFrames": 2420,
+          "checkpointedFrames": 2420,
+          "databaseBytes": 5996544,
+          "walBytes": 9970432,
+          "maxWalBytes": 9970432
+        }
+      },
+      {
+        "format": 2,
+        "bodyBytes": 1048630,
+        "fragments": 19066,
+        "writeMicros": 609622,
+        "foregroundBatchMicros": {
+          "p95": 3176,
+          "p99": 4724,
+          "max": 5712
+        },
+        "finishMicros": 1661,
+        "finalDatabaseAndWalBytes": 8972824,
+        "sampledPeakDatabaseAndWalBytes": 8972824,
+        "rows": {
+          "run_events": 0,
+          "run_snapshots": 0,
+          "stream_changes": 154,
+          "content_segments": 150,
+          "content_objects": 2,
+          "contentBytes": 1048646
+        },
+        "io": {
+          "writerQueue": {
+            "count": 169,
+            "failures": 0,
+            "totalMicros": 471,
+            "lastMicros": 2,
+            "maxMicros": 13,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              169,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "writerJob": {
+            "count": 169,
+            "failures": 0,
+            "totalMicros": 52689,
+            "lastMicros": 91,
+            "maxMicros": 3161,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              4,
+              156,
+              4,
+              1,
+              4,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "readerQueue": {
+            "count": 211,
+            "failures": 0,
+            "totalMicros": 697,
+            "lastMicros": 3,
+            "maxMicros": 16,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              211,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "readerJob": {
+            "count": 211,
+            "failures": 0,
+            "totalMicros": 5682,
+            "lastMicros": 27,
+            "maxMicros": 617,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              205,
+              4,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "foregroundCommit": {
+            "count": 169,
+            "failures": 0,
+            "totalMicros": 28610,
+            "lastMicros": 42,
+            "maxMicros": 3052,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              59,
+              104,
+              2,
+              2,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkpoint": {
+            "count": 2,
+            "failures": 0,
+            "totalMicros": 1955,
+            "lastMicros": 1030,
+            "maxMicros": 1030,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              0,
+              0,
+              1,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "commitTiming": "SQLite COMMIT elapsed including FULL synchronization; not an isolated fsync measurement",
+          "commitCoverage": "begin_write_transaction helper; writerJob covers complete queued work",
+          "fileSamplePeriodMs": 250,
+          "walPeak": "sampled maximum, not every filesystem write",
+          "checkpointMode": "PASSIVE on a separate connection/thread",
+          "checkpointBusy": 0,
+          "walFrames": 1813,
+          "checkpointedFrames": 1813,
+          "databaseBytes": 1503232,
+          "walBytes": 7469592,
+          "maxWalBytes": 7469592
+        }
+      },
+      {
+        "format": 1,
+        "bodyBytes": 10485805,
+        "fragments": 190651,
+        "writeMicros": 9333831,
+        "foregroundBatchMicros": {
+          "p95": 6294,
+          "p99": 6508,
+          "max": 9672
+        },
+        "finishMicros": 60283,
+        "finalDatabaseAndWalBytes": 200795664,
+        "sampledPeakDatabaseAndWalBytes": 200795664,
+        "rows": {
+          "run_events": 190655,
+          "run_snapshots": 0,
+          "stream_changes": 0,
+          "content_segments": 0,
+          "content_objects": 0,
+          "contentBytes": 0
+        },
+        "io": {
+          "writerQueue": {
+            "count": 1496,
+            "failures": 0,
+            "totalMicros": 5036,
+            "lastMicros": 2,
+            "maxMicros": 102,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              1495,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "writerJob": {
+            "count": 1496,
+            "failures": 0,
+            "totalMicros": 7657870,
+            "lastMicros": 17921,
+            "maxMicros": 81640,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              1,
+              2,
+              0,
+              0,
+              991,
+              499,
+              1,
+              1,
+              1,
+              0,
+              0,
+              0
+            ]
+          },
+          "readerQueue": {
+            "count": 9,
+            "failures": 0,
+            "totalMicros": 82,
+            "lastMicros": 7,
+            "maxMicros": 16,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              9,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "readerJob": {
+            "count": 9,
+            "failures": 0,
+            "totalMicros": 49141,
+            "lastMicros": 45424,
+            "maxMicros": 45424,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              5,
+              0,
+              2,
+              1,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "foregroundCommit": {
+            "count": 1496,
+            "failures": 0,
+            "totalMicros": 237688,
+            "lastMicros": 105,
+            "maxMicros": 9812,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              4,
+              1482,
+              4,
+              2,
+              3,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkpoint": {
+            "count": 36,
+            "failures": 0,
+            "totalMicros": 68405,
+            "lastMicros": 1714,
+            "maxMicros": 3334,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              0,
+              0,
+              0,
+              26,
+              10,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "commitTiming": "SQLite COMMIT elapsed including FULL synchronization; not an isolated fsync measurement",
+          "commitCoverage": "begin_write_transaction helper; writerJob covers complete queued work",
+          "fileSamplePeriodMs": 250,
+          "walPeak": "sampled maximum, not every filesystem write",
+          "checkpointMode": "PASSIVE on a separate connection/thread",
+          "checkpointBusy": 0,
+          "walFrames": 29238,
+          "checkpointedFrames": 29238,
+          "databaseBytes": 69046272,
+          "walBytes": 120555352,
+          "maxWalBytes": 120555352
+        }
+      },
+      {
+        "format": 2,
+        "bodyBytes": 10485805,
+        "fragments": 190651,
+        "writeMicros": 6124030,
+        "foregroundBatchMicros": {
+          "p95": 3263,
+          "p99": 3559,
+          "max": 7840
+        },
+        "finishMicros": 1633,
+        "finalDatabaseAndWalBytes": 21868544,
+        "sampledPeakDatabaseAndWalBytes": 21868544,
+        "rows": {
+          "run_events": 0,
+          "run_snapshots": 0,
+          "stream_changes": 1495,
+          "content_segments": 1491,
+          "content_objects": 2,
+          "contentBytes": 10485821
+        },
+        "io": {
+          "writerQueue": {
+            "count": 1510,
+            "failures": 0,
+            "totalMicros": 6400,
+            "lastMicros": 6,
+            "maxMicros": 52,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              1510,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "writerJob": {
+            "count": 1510,
+            "failures": 0,
+            "totalMicros": 413924,
+            "lastMicros": 101,
+            "maxMicros": 5111,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              3,
+              1494,
+              4,
+              3,
+              5,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "readerQueue": {
+            "count": 1588,
+            "failures": 0,
+            "totalMicros": 9068,
+            "lastMicros": 5,
+            "maxMicros": 42,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              1588,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "readerJob": {
+            "count": 1588,
+            "failures": 0,
+            "totalMicros": 33904,
+            "lastMicros": 34,
+            "maxMicros": 646,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              1543,
+              43,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "foregroundCommit": {
+            "count": 1510,
+            "failures": 0,
+            "totalMicros": 170525,
+            "lastMicros": 48,
+            "maxMicros": 4907,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              943,
+              557,
+              2,
+              2,
+              6,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkpoint": {
+            "count": 23,
+            "failures": 0,
+            "totalMicros": 20062,
+            "lastMicros": 1138,
+            "maxMicros": 1349,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              0,
+              1,
+              16,
+              6,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "commitTiming": "SQLite COMMIT elapsed including FULL synchronization; not an isolated fsync measurement",
+          "commitCoverage": "begin_write_transaction helper; writerJob covers complete queued work",
+          "fileSamplePeriodMs": 250,
+          "walPeak": "sampled maximum, not every filesystem write",
+          "checkpointMode": "PASSIVE on a separate connection/thread",
+          "checkpointBusy": 0,
+          "walFrames": 894,
+          "checkpointedFrames": 894,
+          "databaseBytes": 13479936,
+          "walBytes": 8388608,
+          "maxWalBytes": 13789672
+        }
+      }
+    ],
+    "limits": "foregroundBatch is a direct writer measurement, not live admission backlog, UI latency, CPU time or peak RSS; file peak is sampled after batches; no VACUUM or compaction"
+  },
+  "concurrency": {
+    "cases": [
+      {
+        "sessions": 1,
+        "workers": [
+          {
+            "session": "s0",
+            "bodyBytes": 1048630,
+            "elapsedMicros": 582810,
+            "batchP99Micros": 2876,
+            "batchMaxMicros": 2934,
+            "readerMaxMicros": 235
+          }
+        ],
+        "io": {
+          "writerQueue": {
+            "count": 162,
+            "failures": 0,
+            "totalMicros": 697,
+            "lastMicros": 3,
+            "maxMicros": 13,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              162,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "writerJob": {
+            "count": 162,
+            "failures": 0,
+            "totalMicros": 40172,
+            "lastMicros": 499,
+            "maxMicros": 1784,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              3,
+              158,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "readerQueue": {
+            "count": 233,
+            "failures": 0,
+            "totalMicros": 1334,
+            "lastMicros": 10,
+            "maxMicros": 18,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              233,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "readerJob": {
+            "count": 233,
+            "failures": 0,
+            "totalMicros": 9034,
+            "lastMicros": 29,
+            "maxMicros": 1077,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              224,
+              5,
+              3,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "foregroundCommit": {
+            "count": 162,
+            "failures": 0,
+            "totalMicros": 16734,
+            "lastMicros": 135,
+            "maxMicros": 198,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              67,
+              95,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkpoint": {
+            "count": 2,
+            "failures": 0,
+            "totalMicros": 2332,
+            "lastMicros": 904,
+            "maxMicros": 1428,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              0,
+              0,
+              1,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "commitTiming": "SQLite COMMIT elapsed including FULL synchronization; not an isolated fsync measurement",
+          "commitCoverage": "begin_write_transaction helper; writerJob covers complete queued work",
+          "fileSamplePeriodMs": 250,
+          "walPeak": "sampled maximum, not every filesystem write",
+          "checkpointMode": "PASSIVE on a separate connection/thread",
+          "checkpointBusy": 0,
+          "walFrames": 887,
+          "checkpointedFrames": 887,
+          "databaseBytes": 1572864,
+          "walBytes": 4115912,
+          "maxWalBytes": 4115912
+        }
+      },
+      {
+        "sessions": 4,
+        "workers": [
+          {
+            "session": "s0",
+            "bodyBytes": 1048630,
+            "elapsedMicros": 697736,
+            "batchP99Micros": 3533,
+            "batchMaxMicros": 3794,
+            "readerMaxMicros": 197
+          },
+          {
+            "session": "s1",
+            "bodyBytes": 1048630,
+            "elapsedMicros": 700932,
+            "batchP99Micros": 3662,
+            "batchMaxMicros": 3688,
+            "readerMaxMicros": 249
+          },
+          {
+            "session": "s2",
+            "bodyBytes": 1048630,
+            "elapsedMicros": 694934,
+            "batchP99Micros": 3556,
+            "batchMaxMicros": 3572,
+            "readerMaxMicros": 347
+          },
+          {
+            "session": "s3",
+            "bodyBytes": 1048630,
+            "elapsedMicros": 702600,
+            "batchP99Micros": 3554,
+            "batchMaxMicros": 3589,
+            "readerMaxMicros": 168
+          }
+        ],
+        "io": {
+          "writerQueue": {
+            "count": 648,
+            "failures": 0,
+            "totalMicros": 28378,
+            "lastMicros": 7,
+            "maxMicros": 580,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              549,
+              96,
+              3,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "writerJob": {
+            "count": 648,
+            "failures": 0,
+            "totalMicros": 182126,
+            "lastMicros": 427,
+            "maxMicros": 1776,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              15,
+              627,
+              2,
+              4,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "readerQueue": {
+            "count": 926,
+            "failures": 0,
+            "totalMicros": 8029,
+            "lastMicros": 8,
+            "maxMicros": 40,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              926,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "readerJob": {
+            "count": 926,
+            "failures": 0,
+            "totalMicros": 36709,
+            "lastMicros": 30,
+            "maxMicros": 1243,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              896,
+              20,
+              5,
+              5,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "foregroundCommit": {
+            "count": 648,
+            "failures": 0,
+            "totalMicros": 83802,
+            "lastMicros": 123,
+            "maxMicros": 236,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              52,
+              596,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkpoint": {
+            "count": 2,
+            "failures": 0,
+            "totalMicros": 6000,
+            "lastMicros": 3003,
+            "maxMicros": 3003,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              0,
+              0,
+              0,
+              0,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "commitTiming": "SQLite COMMIT elapsed including FULL synchronization; not an isolated fsync measurement",
+          "commitCoverage": "begin_write_transaction helper; writerJob covers complete queued work",
+          "fileSamplePeriodMs": 250,
+          "walPeak": "sampled maximum, not every filesystem write",
+          "checkpointMode": "PASSIVE on a separate connection/thread",
+          "checkpointBusy": 0,
+          "walFrames": 6242,
+          "checkpointedFrames": 6242,
+          "databaseBytes": 4292608,
+          "walBytes": 25918952,
+          "maxWalBytes": 25918952
+        }
+      },
+      {
+        "sessions": 16,
+        "workers": [
+          {
+            "session": "s0",
+            "bodyBytes": 1048630,
+            "elapsedMicros": 1495583,
+            "batchP99Micros": 32187,
+            "batchMaxMicros": 36812,
+            "readerMaxMicros": 5205
+          },
+          {
+            "session": "s1",
+            "bodyBytes": 1048630,
+            "elapsedMicros": 1521444,
+            "batchP99Micros": 15686,
+            "batchMaxMicros": 25215,
+            "readerMaxMicros": 33823
+          },
+          {
+            "session": "s2",
+            "bodyBytes": 1048630,
+            "elapsedMicros": 1436788,
+            "batchP99Micros": 15786,
+            "batchMaxMicros": 15962,
+            "readerMaxMicros": 24211
+          },
+          {
+            "session": "s3",
+            "bodyBytes": 1048630,
+            "elapsedMicros": 1533580,
+            "batchP99Micros": 20886,
+            "batchMaxMicros": 34559,
+            "readerMaxMicros": 12115
+          },
+          {
+            "session": "s4",
+            "bodyBytes": 1048630,
+            "elapsedMicros": 1523570,
+            "batchP99Micros": 31869,
+            "batchMaxMicros": 43725,
+            "readerMaxMicros": 10710
+          },
+          {
+            "session": "s5",
+            "bodyBytes": 1048630,
+            "elapsedMicros": 1517071,
+            "batchP99Micros": 30915,
+            "batchMaxMicros": 32524,
+            "readerMaxMicros": 5238
+          },
+          {
+            "session": "s6",
+            "bodyBytes": 1048630,
+            "elapsedMicros": 1531738,
+            "batchP99Micros": 34719,
+            "batchMaxMicros": 37715,
+            "readerMaxMicros": 5303
+          },
+          {
+            "session": "s7",
+            "bodyBytes": 1048630,
+            "elapsedMicros": 1503153,
+            "batchP99Micros": 32392,
+            "batchMaxMicros": 36117,
+            "readerMaxMicros": 8258
+          },
+          {
+            "session": "s8",
+            "bodyBytes": 1048630,
+            "elapsedMicros": 1466363,
+            "batchP99Micros": 16445,
+            "batchMaxMicros": 20390,
+            "readerMaxMicros": 8880
+          },
+          {
+            "session": "s9",
+            "bodyBytes": 1048630,
+            "elapsedMicros": 1506768,
+            "batchP99Micros": 26712,
+            "batchMaxMicros": 32745,
+            "readerMaxMicros": 11598
+          },
+          {
+            "session": "s10",
+            "bodyBytes": 1048630,
+            "elapsedMicros": 1498789,
+            "batchP99Micros": 19891,
+            "batchMaxMicros": 34079,
+            "readerMaxMicros": 7677
+          },
+          {
+            "session": "s11",
+            "bodyBytes": 1048630,
+            "elapsedMicros": 1544318,
+            "batchP99Micros": 30469,
+            "batchMaxMicros": 34025,
+            "readerMaxMicros": 9047
+          },
+          {
+            "session": "s12",
+            "bodyBytes": 1048630,
+            "elapsedMicros": 1513631,
+            "batchP99Micros": 29588,
+            "batchMaxMicros": 33417,
+            "readerMaxMicros": 4227
+          },
+          {
+            "session": "s13",
+            "bodyBytes": 1048630,
+            "elapsedMicros": 1538830,
+            "batchP99Micros": 23583,
+            "batchMaxMicros": 33631,
+            "readerMaxMicros": 11257
+          },
+          {
+            "session": "s14",
+            "bodyBytes": 1048630,
+            "elapsedMicros": 1556573,
+            "batchP99Micros": 35033,
+            "batchMaxMicros": 50682,
+            "readerMaxMicros": 7533
+          },
+          {
+            "session": "s15",
+            "bodyBytes": 1048630,
+            "elapsedMicros": 1524052,
+            "batchP99Micros": 16558,
+            "batchMaxMicros": 37140,
+            "readerMaxMicros": 24018
+          }
+        ],
+        "io": {
+          "writerQueue": {
+            "count": 2592,
+            "failures": 0,
+            "totalMicros": 2778594,
+            "lastMicros": 1,
+            "maxMicros": 10685,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              867,
+              418,
+              319,
+              477,
+              456,
+              54,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "writerJob": {
+            "count": 2592,
+            "failures": 0,
+            "totalMicros": 1049200,
+            "lastMicros": 386,
+            "maxMicros": 10546,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              99,
+              2126,
+              230,
+              65,
+              60,
+              11,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "readerQueue": {
+            "count": 3698,
+            "failures": 0,
+            "totalMicros": 948109,
+            "lastMicros": 2,
+            "maxMicros": 22707,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              2908,
+              322,
+              179,
+              198,
+              61,
+              24,
+              6,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "readerJob": {
+            "count": 3698,
+            "failures": 0,
+            "totalMicros": 162064,
+            "lastMicros": 26,
+            "maxMicros": 2793,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              3455,
+              185,
+              29,
+              27,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "foregroundCommit": {
+            "count": 2592,
+            "failures": 0,
+            "totalMicros": 379748,
+            "lastMicros": 104,
+            "maxMicros": 4703,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              737,
+              1827,
+              6,
+              11,
+              11,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkpoint": {
+            "count": 6,
+            "failures": 0,
+            "totalMicros": 27564,
+            "lastMicros": 3255,
+            "maxMicros": 5549,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              0,
+              0,
+              0,
+              0,
+              3,
+              3,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "commitTiming": "SQLite COMMIT elapsed including FULL synchronization; not an isolated fsync measurement",
+          "commitCoverage": "begin_write_transaction helper; writerJob covers complete queued work",
+          "fileSamplePeriodMs": 250,
+          "walPeak": "sampled maximum, not every filesystem write",
+          "checkpointMode": "PASSIVE on a separate connection/thread",
+          "checkpointBusy": 0,
+          "walFrames": 35567,
+          "checkpointedFrames": 35567,
+          "databaseBytes": 21823488,
+          "walBytes": 146799752,
+          "maxWalBytes": 146799752
+        }
+      }
+    ],
+    "scope": "shared ordered SQLite writer and independent bounded history readers; direct batches, not live admission backlog or UI timing"
+  },
+  "browser": {
+    "date": "2026-10-26T15:47:57.533Z",
+    "scope": "Isolated headless desktop Chrome; local synthetic workloads. Not a native Tauri IPC test or mobile measurement.",
+    "json": [
+      {
+        "mode": "native",
+        "sizeMiB": 1,
+        "shape": "string",
+        "encodedBytes": 1118603,
+        "rounds": 5,
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+        "hardwareConcurrency": 12,
+        "samples": [
+          {
+            "decodeMs": 1.6999998092651367,
+            "timerDelayMs": 1.8999998569488525,
+            "frameP95Ms": 16.600000000000023,
+            "frameMaxMs": 16.600000000000023,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 1.9000000953674316,
+            "timerDelayMs": 1.9000000953674316,
+            "frameP95Ms": 16.700000000000045,
+            "frameMaxMs": 16.700000000000045,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 1.2999999523162842,
+            "timerDelayMs": 1.4000000953674316,
+            "frameP95Ms": 16.699999999999932,
+            "frameMaxMs": 16.699999999999932,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 1.7000000476837158,
+            "timerDelayMs": 1.7999999523162842,
+            "frameP95Ms": 16.699999999999932,
+            "frameMaxMs": 16.699999999999932,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 1.2000000476837158,
+            "timerDelayMs": 1.3999998569488525,
+            "frameP95Ms": 16.700000000000045,
+            "frameMaxMs": 16.700000000000045,
+            "longTasks": []
+          }
+        ],
+        "manualInputSamples": 0,
+        "manualInputDelayP95Ms": 0,
+        "scope": "Browser JSON decoding and event-loop probes; excludes dataset construction, native IPC, DB durability and Markdown rendering. No result is a mobile-device measurement."
+      },
+      {
+        "mode": "cooperative",
+        "sizeMiB": 1,
+        "shape": "string",
+        "encodedBytes": 1118603,
+        "rounds": 5,
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+        "hardwareConcurrency": 12,
+        "samples": [
+          {
+            "decodeMs": 15.200000047683716,
+            "timerDelayMs": 1.4000000953674316,
+            "frameP95Ms": 100,
+            "frameMaxMs": 100,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 4.8999998569488525,
+            "timerDelayMs": 0.5999999046325684,
+            "frameP95Ms": 50,
+            "frameMaxMs": 50,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 3.299999952316284,
+            "timerDelayMs": 0.6999998092651367,
+            "frameP95Ms": 16.700000000000045,
+            "frameMaxMs": 16.700000000000045,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 2.5999999046325684,
+            "timerDelayMs": 0.5999999046325684,
+            "frameP95Ms": 16.69999999999999,
+            "frameMaxMs": 16.69999999999999,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 2.700000047683716,
+            "timerDelayMs": 0.7000000476837158,
+            "frameP95Ms": 16.69999999999999,
+            "frameMaxMs": 16.69999999999999,
+            "longTasks": []
+          }
+        ],
+        "manualInputSamples": 0,
+        "manualInputDelayP95Ms": 0,
+        "scope": "Browser JSON decoding and event-loop probes; excludes dataset construction, native IPC, DB durability and Markdown rendering. No result is a mobile-device measurement."
+      },
+      {
+        "mode": "native",
+        "sizeMiB": 1,
+        "shape": "objects",
+        "encodedBytes": 1867939,
+        "rounds": 5,
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+        "hardwareConcurrency": 12,
+        "samples": [
+          {
+            "decodeMs": 2.5,
+            "timerDelayMs": 2.5,
+            "frameP95Ms": 16.700000000000003,
+            "frameMaxMs": 16.700000000000003,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 2.700000047683716,
+            "timerDelayMs": 2.700000047683716,
+            "frameP95Ms": 16.700000000000017,
+            "frameMaxMs": 16.700000000000017,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 2.5999999046325684,
+            "timerDelayMs": 2.5999999046325684,
+            "frameP95Ms": 16.69999999999999,
+            "frameMaxMs": 16.69999999999999,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 2.5,
+            "timerDelayMs": 2.5,
+            "frameP95Ms": 16.700000000000045,
+            "frameMaxMs": 16.700000000000045,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 2.5,
+            "timerDelayMs": 2.5,
+            "frameP95Ms": 16.69999999999999,
+            "frameMaxMs": 16.69999999999999,
+            "longTasks": []
+          }
+        ],
+        "manualInputSamples": 0,
+        "manualInputDelayP95Ms": 0,
+        "scope": "Browser JSON decoding and event-loop probes; excludes dataset construction, native IPC, DB durability and Markdown rendering. No result is a mobile-device measurement."
+      },
+      {
+        "mode": "cooperative",
+        "sizeMiB": 1,
+        "shape": "objects",
+        "encodedBytes": 1867939,
+        "rounds": 5,
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+        "hardwareConcurrency": 12,
+        "samples": [
+          {
+            "decodeMs": 17.800000190734863,
+            "timerDelayMs": 1,
+            "frameP95Ms": 16.700000000000003,
+            "frameMaxMs": 16.700000000000003,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 17.899999856948853,
+            "timerDelayMs": 1,
+            "frameP95Ms": 16.599999999999994,
+            "frameMaxMs": 16.599999999999994,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 16.399999856948853,
+            "timerDelayMs": 0.8999998569488525,
+            "frameP95Ms": 16.700000000000017,
+            "frameMaxMs": 16.700000000000017,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 16.5,
+            "timerDelayMs": 1,
+            "frameP95Ms": 16.700000000000045,
+            "frameMaxMs": 16.700000000000045,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 16.200000047683716,
+            "timerDelayMs": 0.8999998569488525,
+            "frameP95Ms": 16.69999999999999,
+            "frameMaxMs": 16.69999999999999,
+            "longTasks": []
+          }
+        ],
+        "manualInputSamples": 0,
+        "manualInputDelayP95Ms": 0,
+        "scope": "Browser JSON decoding and event-loop probes; excludes dataset construction, native IPC, DB durability and Markdown rendering. No result is a mobile-device measurement."
+      },
+      {
+        "mode": "native",
+        "sizeMiB": 10,
+        "shape": "string",
+        "encodedBytes": 11184907,
+        "rounds": 5,
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+        "hardwareConcurrency": 12,
+        "samples": [
+          {
+            "decodeMs": 13,
+            "timerDelayMs": 13.599999904632568,
+            "frameP95Ms": 16.700000000000003,
+            "frameMaxMs": 16.700000000000003,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 13.400000095367432,
+            "timerDelayMs": 14,
+            "frameP95Ms": 16.600000000000023,
+            "frameMaxMs": 16.600000000000023,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 10.799999952316284,
+            "timerDelayMs": 11.299999952316284,
+            "frameP95Ms": 16.69999999999999,
+            "frameMaxMs": 16.69999999999999,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 12.700000047683716,
+            "timerDelayMs": 13.099999904632568,
+            "frameP95Ms": 16.700000000000045,
+            "frameMaxMs": 16.700000000000045,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 13.899999856948853,
+            "timerDelayMs": 14.399999856948853,
+            "frameP95Ms": 16.69999999999999,
+            "frameMaxMs": 16.69999999999999,
+            "longTasks": []
+          }
+        ],
+        "manualInputSamples": 0,
+        "manualInputDelayP95Ms": 0,
+        "scope": "Browser JSON decoding and event-loop probes; excludes dataset construction, native IPC, DB durability and Markdown rendering. No result is a mobile-device measurement."
+      },
+      {
+        "mode": "cooperative",
+        "sizeMiB": 10,
+        "shape": "string",
+        "encodedBytes": 11184907,
+        "rounds": 5,
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+        "hardwareConcurrency": 12,
+        "samples": [
+          {
+            "decodeMs": 40.90000009536743,
+            "timerDelayMs": 3.5999999046325684,
+            "frameP95Ms": 16.700000000000003,
+            "frameMaxMs": 16.700000000000003,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 41.299999952316284,
+            "timerDelayMs": 3.5999999046325684,
+            "frameP95Ms": 16.799999999999983,
+            "frameMaxMs": 16.799999999999983,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 34,
+            "timerDelayMs": 3.799999952316284,
+            "frameP95Ms": 16.700000000000045,
+            "frameMaxMs": 16.700000000000045,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 33.40000009536743,
+            "timerDelayMs": 3.799999952316284,
+            "frameP95Ms": 16.700000000000045,
+            "frameMaxMs": 16.700000000000045,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 40.700000047683716,
+            "timerDelayMs": 4,
+            "frameP95Ms": 16.69999999999999,
+            "frameMaxMs": 16.69999999999999,
+            "longTasks": []
+          }
+        ],
+        "manualInputSamples": 0,
+        "manualInputDelayP95Ms": 0,
+        "scope": "Browser JSON decoding and event-loop probes; excludes dataset construction, native IPC, DB durability and Markdown rendering. No result is a mobile-device measurement."
+      },
+      {
+        "mode": "native",
+        "sizeMiB": 10,
+        "shape": "objects",
+        "encodedBytes": 18852305,
+        "rounds": 5,
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+        "hardwareConcurrency": 12,
+        "samples": [
+          {
+            "decodeMs": 23.100000143051147,
+            "timerDelayMs": 23.5,
+            "frameP95Ms": 16.700000000000003,
+            "frameMaxMs": 16.700000000000003,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 27.699999809265137,
+            "timerDelayMs": 27.799999952316284,
+            "frameP95Ms": 16.80000000000001,
+            "frameMaxMs": 16.80000000000001,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 29.600000143051147,
+            "timerDelayMs": 29.600000143051147,
+            "frameP95Ms": 16.700000000000017,
+            "frameMaxMs": 16.700000000000017,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 27.799999952316284,
+            "timerDelayMs": 27.899999856948853,
+            "frameP95Ms": 16.700000000000045,
+            "frameMaxMs": 16.700000000000045,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 26.399999856948853,
+            "timerDelayMs": 26.5,
+            "frameP95Ms": 16.69999999999999,
+            "frameMaxMs": 16.69999999999999,
+            "longTasks": []
+          }
+        ],
+        "manualInputSamples": 0,
+        "manualInputDelayP95Ms": 0,
+        "scope": "Browser JSON decoding and event-loop probes; excludes dataset construction, native IPC, DB durability and Markdown rendering. No result is a mobile-device measurement."
+      },
+      {
+        "mode": "cooperative",
+        "sizeMiB": 10,
+        "shape": "objects",
+        "encodedBytes": 18852305,
+        "rounds": 5,
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+        "hardwareConcurrency": 12,
+        "samples": [
+          {
+            "decodeMs": 325.90000009536743,
+            "timerDelayMs": 4.200000047683716,
+            "frameP95Ms": 16.700000000000045,
+            "frameMaxMs": 16.700000000000045,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 349.90000009536743,
+            "timerDelayMs": 3.200000047683716,
+            "frameP95Ms": 16.700000000000045,
+            "frameMaxMs": 16.800000000000068,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 351.2999999523163,
+            "timerDelayMs": 3.1999998092651367,
+            "frameP95Ms": 16.700000000000045,
+            "frameMaxMs": 16.700000000000045,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 384.09999990463257,
+            "timerDelayMs": 3.5999999046325684,
+            "frameP95Ms": 16.700000000000045,
+            "frameMaxMs": 16.799999999999955,
+            "longTasks": []
+          },
+          {
+            "decodeMs": 542,
+            "timerDelayMs": 3.299999952316284,
+            "frameP95Ms": 16.700000000000273,
+            "frameMaxMs": 16.800000000000182,
+            "longTasks": []
+          }
+        ],
+        "manualInputSamples": 0,
+        "manualInputDelayP95Ms": 0,
+        "scope": "Browser JSON decoding and event-loop probes; excludes dataset construction, native IPC, DB durability and Markdown rendering. No result is a mobile-device measurement."
+      }
+    ],
+    "markdown": [
+      {
+        "mode": "baseline",
+        "rows": 1000,
+        "chars": 53934,
+        "rounds": 5,
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+        "median": {
+          "pushMs": 34.6,
+          "renderMs": 30,
+          "formatReadyMs": 37.6,
+          "maxTimerDelayMs": 25.8
+        },
+        "samples": [
+          {
+            "pushMs": 77.29999995231628,
+            "renderMs": 71.80000042915344,
+            "formatReadyMs": 80.5,
+            "maxTimerDelayMs": 69.79999995231628
+          },
+          {
+            "pushMs": 38.5,
+            "renderMs": 33.39999985694885,
+            "formatReadyMs": 41.40000009536743,
+            "maxTimerDelayMs": 29.699999809265137
+          },
+          {
+            "pushMs": 33.89999985694885,
+            "renderMs": 29.09999990463257,
+            "formatReadyMs": 35.69999980926514,
+            "maxTimerDelayMs": 25
+          },
+          {
+            "pushMs": 34.60000014305115,
+            "renderMs": 30,
+            "formatReadyMs": 37.60000014305115,
+            "maxTimerDelayMs": 25.800000190734863
+          },
+          {
+            "pushMs": 33.200000047683716,
+            "renderMs": 28.800000190734863,
+            "formatReadyMs": 34.700000047683716,
+            "maxTimerDelayMs": 24.299999952316284
+          }
+        ]
+      },
+      {
+        "mode": "worker",
+        "rows": 1000,
+        "chars": 53934,
+        "rounds": 5,
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+        "median": {
+          "pushMs": 10.1,
+          "renderMs": 11.1,
+          "formatReadyMs": 28.3,
+          "maxTimerDelayMs": 2.4
+        },
+        "samples": [
+          {
+            "pushMs": 49.799999952316284,
+            "renderMs": 50.90000033378601,
+            "formatReadyMs": 68.59999990463257,
+            "maxTimerDelayMs": 43.59999990463257
+          },
+          {
+            "pushMs": 11.5,
+            "renderMs": 10.90000033378601,
+            "formatReadyMs": 25.59999990463257,
+            "maxTimerDelayMs": 2.9000000953674316
+          },
+          {
+            "pushMs": 9.900000095367432,
+            "renderMs": 11.700000047683716,
+            "formatReadyMs": 25.5,
+            "maxTimerDelayMs": 1.4000000953674316
+          },
+          {
+            "pushMs": 10.100000143051147,
+            "renderMs": 11.100001096725464,
+            "formatReadyMs": 29.300000190734863,
+            "maxTimerDelayMs": 1.0999999046325684
+          },
+          {
+            "pushMs": 9.699999809265137,
+            "renderMs": 11,
+            "formatReadyMs": 28.299999952316284,
+            "maxTimerDelayMs": 2.3999998569488525
+          }
+        ]
+      },
+      {
+        "mode": "baseline",
+        "rows": 3000,
+        "chars": 163934,
+        "rounds": 5,
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+        "median": {
+          "pushMs": 101,
+          "renderMs": 86.5,
+          "formatReadyMs": 104.4,
+          "maxTimerDelayMs": 94.1
+        },
+        "samples": [
+          {
+            "pushMs": 109.59999990463257,
+            "renderMs": 93.5000011920929,
+            "formatReadyMs": 113.59999990463257,
+            "maxTimerDelayMs": 103.29999995231628
+          },
+          {
+            "pushMs": 101,
+            "renderMs": 86.49999952316284,
+            "formatReadyMs": 104.40000009536743,
+            "maxTimerDelayMs": 94.09999990463257
+          },
+          {
+            "pushMs": 102.29999995231628,
+            "renderMs": 88.10000038146973,
+            "formatReadyMs": 105.69999980926514,
+            "maxTimerDelayMs": 94.89999985694885
+          },
+          {
+            "pushMs": 93.5,
+            "renderMs": 80.89999985694885,
+            "formatReadyMs": 97.40000009536743,
+            "maxTimerDelayMs": 86.5
+          },
+          {
+            "pushMs": 93.29999995231628,
+            "renderMs": 79.79999923706055,
+            "formatReadyMs": 97.20000004768372,
+            "maxTimerDelayMs": 85.90000009536743
+          }
+        ]
+      },
+      {
+        "mode": "worker",
+        "rows": 3000,
+        "chars": 163934,
+        "rounds": 5,
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+        "median": {
+          "pushMs": 31.3,
+          "renderMs": 36.2,
+          "formatReadyMs": 71.6,
+          "maxTimerDelayMs": 25.9
+        },
+        "samples": [
+          {
+            "pushMs": 36.299999952316284,
+            "renderMs": 41.299999713897705,
+            "formatReadyMs": 85.89999985694885,
+            "maxTimerDelayMs": 35.19999980926514
+          },
+          {
+            "pushMs": 31,
+            "renderMs": 36.19999933242798,
+            "formatReadyMs": 72,
+            "maxTimerDelayMs": 26.59999990463257
+          },
+          {
+            "pushMs": 32.200000047683716,
+            "renderMs": 37.199997901916504,
+            "formatReadyMs": 71.20000004768372,
+            "maxTimerDelayMs": 25.899999856948853
+          },
+          {
+            "pushMs": 31.299999952316284,
+            "renderMs": 33.60000038146973,
+            "formatReadyMs": 71.59999990463257,
+            "maxTimerDelayMs": 25
+          },
+          {
+            "pushMs": 30.600000143051147,
+            "renderMs": 32.30000019073486,
+            "formatReadyMs": 67.80000019073486,
+            "maxTimerDelayMs": 23.5
+          }
+        ]
+      }
+    ],
+    "errors": []
+  },
+  "faultWorkloads": {
+    "result": "7 passed, 0 failed",
+    "log": "/tmp/future-segmented-acceptance.log",
+    "includes": [
+      "real child process kill after acknowledged commit and inside uncommitted transaction",
+      "SQLITE_FULL and recovery after capacity restoration",
+      "external write lock and committed-prefix read",
+      "actual SQLite writer thread unwind and reopen"
+    ]
+  }
+}

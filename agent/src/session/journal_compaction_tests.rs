@@ -68,7 +68,7 @@ fn obsolete_snapshot_cleanup_state_is_removed_without_rewriting_existing_payload
 
 fn fixture(path: &std::path::Path, status: &str, chunks: usize) -> SqliteStore {
     let store = SqliteStore::open(path).unwrap();
-    store.bind_events("s").unwrap();
+    store.bind_legacy_events("s").unwrap();
     let status = status.to_owned();
     store.db.call(move |db| {
         db.execute("INSERT INTO runs(session_id,run_id,status,completed_at_ms) VALUES ('s','run',?1,1)",[status])?;
@@ -123,7 +123,7 @@ fn text(snapshot: &RunJournalSnapshot) -> String {
 /// count it read).
 fn run_with_bodies(path: &std::path::Path, bodies: Vec<(&str, String)>) -> SqliteStore {
     let store = SqliteStore::open(path).unwrap();
-    store.bind_events("s").unwrap();
+    store.bind_legacy_events("s").unwrap();
     store
         .db
         .call(|db| {

@@ -1,20 +1,26 @@
 //! Crash-safe retirement of settled token journals. Snapshot publication and
 //! raw-row deletion share one FULL-synchronous SQLite transaction.
 use super::sqlite_store::SqliteStore;
+#[cfg(test)]
 use crate::rpc::run_snapshot::{strip_repeated_tool_arguments, DeltaFolder};
 use crate::rpc::SseEvent;
 use anyhow::{ensure, Result};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use sha2::{Digest, Sha256};
+#[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 // Below the 8 MiB replay budget even after wire envelopes. Oversize runs keep
 // their raw journal and its existing paged replay; they are never truncated.
+#[cfg(test)]
 const SNAPSHOT_BYTE_BUDGET: usize = 4 * 1024 * 1024;
+#[cfg(test)]
 const COMPACTION_PAGE_EVENT_LIMIT: usize = 256;
 // Deletion is atomic with publication, so bound the rows in that transaction.
 // Larger runs keep raw paging instead of monopolizing the SQLite worker.
+#[cfg(test)]
 const MAX_ATOMIC_RETIRE_EVENTS: i64 = 65_536;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -53,6 +59,7 @@ pub(crate) struct RunReplayPage {
     pub snapshot: Option<RunJournalSnapshot>,
 }
 
+#[cfg(test)]
 #[derive(Clone, PartialEq, Eq)]
 struct CompactionSource {
     status: String,
@@ -61,6 +68,7 @@ struct CompactionSource {
     last_sequence: i64,
 }
 
+#[cfg(test)]
 fn read_compaction_source(
     db: &rusqlite::Connection,
     session: &str,
@@ -98,9 +106,12 @@ impl SqliteStore {
         session_scope: bool,
         limit: Option<usize>,
     ) -> Result<RunReplayPage> {
+        if self.storage_format(session)? == super::content::FORMAT_VERSION {
+            return self.segmented_replay(session, run, since, session_scope, limit);
+        }
         let (session, run) = (session.to_owned(), run.to_owned());
         let decode_run = run.clone();
-        let (known,rows,snapshot)=self.db.call(move |db| {
+        let (known,rows,snapshot)=self.db.read(move |db| {
             let tx=db.transaction()?;
             let snapshot: Option<(i64,Option<String>)> = if run.is_empty() { None } else {
                 tx.query_row("SELECT cursor,CASE WHEN cursor>?3 THEN payload END FROM run_snapshots WHERE session_id=?1 AND run_id=?2 AND version=1",
@@ -141,6 +152,7 @@ impl SqliteStore {
         self.compact_run_cancellable(session, run, &AtomicBool::new(false))
     }
 
+    #[cfg(test)]
     pub(super) fn compact_run_cancellable(
         &self,
         session: &str,

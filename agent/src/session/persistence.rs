@@ -16,6 +16,7 @@ const COMMAND_QUEUE_CAPACITY: usize = 256;
 
 enum PersistenceCommand {
     Append(Vec<SessionEntry>),
+    AppendStream(super::content::stream_entry::StreamEntry),
     UpdateInfo {
         fields: serde_json::Map<String, serde_json::Value>,
         ack: mpsc::SyncSender<std::result::Result<(), String>>,
@@ -160,6 +161,13 @@ impl SessionPersistence {
         self.try_send(PersistenceCommand::Append(entries))
     }
 
+    pub(crate) fn append_stream(
+        &self,
+        entry: super::content::stream_entry::StreamEntry,
+    ) -> Result<()> {
+        self.try_send(PersistenceCommand::AppendStream(entry))
+    }
+
     /// Persist a session-info field in queue order.
     pub fn update_info(&self, key: &str, value: serde_json::Value) -> Result<()> {
         self.update_info_fields([(key.to_owned(), value)].into_iter().collect())
@@ -201,8 +209,8 @@ impl SessionPersistence {
     /// boundary. Because the queue is FIFO, this runs after every mid-run
     /// append; a successful return means the whole run (user/assistant/tool +
     /// terminal marker + refreshed session_info) is durably on disk. Returns an
-    /// error if any earlier append failed, signaling the caller to heal with a
-    /// full rewrite instead of committing an incomplete run.
+    /// error if any earlier append failed. Legacy callers may heal a snapshot;
+    /// canonical callers preserve the committed prefix and report the failure.
     pub fn commit_run(&self, entries: Vec<SessionEntry>) -> Result<()> {
         #[cfg(test)]
         if self.inner.panic_next_commit.swap(false, Ordering::AcqRel) {
@@ -637,6 +645,14 @@ fn execute(state: &PersistenceInner, command: PersistenceCommand) {
             record_result(state, &result, true);
             let _ = ack.send(result);
         }
+        PersistenceCommand::AppendStream(entry) => {
+            let result = state
+                .manager
+                .storage()
+                .and_then(|store| store.append_stream_entry(&state.session_id, entry))
+                .map_err(|error| error.to_string());
+            record_result(state, &result, false);
+        }
         PersistenceCommand::Append(entries) => {
             let result = state
                 .manager
@@ -723,32 +739,34 @@ fn execute(state: &PersistenceInner, command: PersistenceCommand) {
                     "refusing to commit run: an earlier append failed ({error})"
                 )),
                 None => {
-                    // The run's session_info was built from values frozen at run
-                    // start; fold in any mid-run metadata change (rename / model
-                    // / thinking / cwd / auto-compaction) that an update_info
-                    // already persisted, so the commit's stale snapshot cannot
-                    // revert it on disk. The rewrite path does the same merge.
-                    if let Some(latest_info) = latest_session_info_content(state) {
-                        if let Some(target_info) = entries
-                            .iter_mut()
-                            .find(|entry| entry.entry_type == ENTRY_TYPE_SESSION_INFO)
-                            .and_then(|entry| entry.content.as_mut())
-                            .and_then(serde_json::Value::as_object_mut)
-                        {
-                            merge_session_info_keys(target_info, &latest_info);
+                    let appended = (|| -> Result<()> {
+                        let canonical =
+                            state.manager.storage()?.storage_format(&state.session_id)?
+                                == super::content::FORMAT_VERSION;
+                        // Legacy commits merge frozen settings as before.
+                        // Canonical commits patch only counters/automatic name
+                        // against the current thin metadata in the terminal Tx;
+                        // they never load this run's history to merge settings.
+                        if !canonical {
+                            if let Some(latest_info) = latest_session_info_content(state) {
+                                if let Some(target_info) = entries
+                                    .iter_mut()
+                                    .find(|entry| entry.entry_type == ENTRY_TYPE_SESSION_INFO)
+                                    .and_then(|entry| entry.content.as_mut())
+                                    .and_then(serde_json::Value::as_object_mut)
+                                {
+                                    merge_session_info_keys(target_info, &latest_info);
+                                }
+                            }
                         }
-                    }
-                    // See RewriteRun above: cfg!(test) keeps this one line.
-                    let injected_failure =
-                        cfg!(test) && state.fail_next_commit.swap(false, Ordering::AcqRel);
-                    let appended = if injected_failure {
-                        Err("injected run commit failure".to_string())
-                    } else {
+                        if cfg!(test) && state.fail_next_commit.swap(false, Ordering::AcqRel) {
+                            return Err(anyhow!("injected run commit failure"));
+                        }
                         state
                             .manager
-                            .append_entries_synced(&state.session_id, &entries)
-                            .map_err(|error| error.to_string())
-                    };
+                            .commit_run_entries_synced(&state.session_id, &entries)
+                    })()
+                    .map_err(|error| error.to_string());
                     record_result(state, &appended, false);
                     appended
                 }

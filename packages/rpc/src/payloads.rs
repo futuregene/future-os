@@ -221,6 +221,8 @@ pub struct EventsSincePayload {
     /// legacy fixtures and old agents round-trip unchanged.
     #[serde(default, skip_serializing_if = "is_false")]
     pub has_more: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watermark: Option<i64>,
 }
 
 fn is_false(value: &bool) -> bool {

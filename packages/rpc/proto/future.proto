@@ -271,6 +271,21 @@ message RpcCommand {
   // In-place history reset selectors (typed sub-message, not JSON-in-string).
   // Read when type == "reset_session_history".
   HistoryReset reset_history = 190;
+
+  // Scoped canonical event-body paging. No raw database content ID is accepted.
+  ContentRangeRequest content_request = 191;
+  // Inclusive replay boundary captured on the first page.
+  optional int64 replay_until_idx = 192;
+}
+
+message ContentRangeRequest {
+  string database_id = 1;
+  string restore_generation = 2;
+  int64 epoch = 3;
+  int64 cursor = 4;
+  string field = 5;
+  int64 offset = 6;
+  int64 max_bytes = 7;
 }
 
 // ── HistoryReset ─────────────────────────────────────────────────────────────
@@ -750,6 +765,8 @@ message RuntimeMetricsResponse {
   bool event_journal_healthy = 10;
   // Absent when the journal is healthy.
   optional string event_journal_error = 11;
+  // Fixed-size journal counters/histograms; no body or per-token diagnostics.
+  optional string event_journal_json = 12;
 }
 
 // ── Typed event payloads ────────────────────────────────────────────────────
@@ -1270,6 +1287,8 @@ message EventsSince {
   // True when this page was cut short (see RpcCommand.max_events) and more
   // events follow: re-request with since_idx = the last event's idx.
   bool has_more = 5;
+  // Durable inclusive boundary; all pages of a read window pin this value.
+  optional int64 watermark = 6;
 }
 
 // A compressed projection of a run's events (coalesced deltas).

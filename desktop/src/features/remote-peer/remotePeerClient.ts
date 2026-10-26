@@ -1,6 +1,7 @@
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ProvidersView } from "../../integrations/agent/providers";
 import type { RemoteCatalog, RemoteSessionRow } from "./mergeConversations";
+import { requestNativeRead } from "../../integrations/storage/historyTransfer";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 
 /**
@@ -1335,6 +1336,9 @@ export function requestRemotePeer<T = unknown>(
   desktopId: string,
   command: Record<string, unknown>,
   lane: string,
+  isCurrent?: () => boolean,
 ): Promise<T> {
+  if (["get_session_entries", "get_event_content_range", "get_events_since", "get_messages", "get_tool_call_args"].includes(command.type as string))
+    return requestNativeRead<T>("remote_peer_request", { desktopId, command, lane }, isCurrent);
   return invokeCommand<T>("remote_peer_request", { desktopId, command, lane });
 }

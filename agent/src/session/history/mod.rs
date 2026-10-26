@@ -3,6 +3,7 @@
 //! paging materializes selected bodies after leaving the database worker.
 mod display_index;
 mod display_projection;
+pub(super) mod fragment_cache;
 mod paging;
 mod recall;
 mod recovery;

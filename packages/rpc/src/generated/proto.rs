@@ -202,6 +202,29 @@ pub struct RpcCommand {
     /// Read when type == "reset_session_history".
     #[prost(message, optional, tag = "190")]
     pub reset_history: ::core::option::Option<HistoryReset>,
+    /// Scoped canonical event-body paging. No raw database content ID is accepted.
+    #[prost(message, optional, tag = "191")]
+    pub content_request: ::core::option::Option<ContentRangeRequest>,
+    /// Inclusive replay boundary captured on the first page.
+    #[prost(int64, optional, tag = "192")]
+    pub replay_until_idx: ::core::option::Option<i64>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ContentRangeRequest {
+    #[prost(string, tag = "1")]
+    pub database_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub restore_generation: ::prost::alloc::string::String,
+    #[prost(int64, tag = "3")]
+    pub epoch: i64,
+    #[prost(int64, tag = "4")]
+    pub cursor: i64,
+    #[prost(string, tag = "5")]
+    pub field: ::prost::alloc::string::String,
+    #[prost(int64, tag = "6")]
+    pub offset: i64,
+    #[prost(int64, tag = "7")]
+    pub max_bytes: i64,
 }
 /// ── HistoryReset ─────────────────────────────────────────────────────────────
 /// Selectors for an in-place history reset (`reset_session_history`) — the
@@ -806,6 +829,9 @@ pub struct RuntimeMetricsResponse {
     /// Absent when the journal is healthy.
     #[prost(string, optional, tag = "11")]
     pub event_journal_error: ::core::option::Option<::prost::alloc::string::String>,
+    /// Fixed-size journal counters/histograms; no body or per-token diagnostics.
+    #[prost(string, optional, tag = "12")]
+    pub event_journal_json: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct EventPayload {
@@ -1436,6 +1462,9 @@ pub struct EventsSince {
     /// events follow: re-request with since_idx = the last event's idx.
     #[prost(bool, tag = "5")]
     pub has_more: bool,
+    /// Durable inclusive boundary; all pages of a read window pin this value.
+    #[prost(int64, optional, tag = "6")]
+    pub watermark: ::core::option::Option<i64>,
 }
 /// A compressed projection of a run's events (coalesced deltas).
 #[derive(Clone, PartialEq, ::prost::Message)]

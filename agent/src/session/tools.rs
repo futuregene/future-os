@@ -4,6 +4,9 @@ use anyhow::Result;
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 
+#[path = "tools_canonical.rs"]
+mod canonical;
+
 impl Manager {
     pub(crate) fn tool_page(
         &self,
@@ -24,16 +27,19 @@ impl Manager {
 
 impl SqliteStore {
     fn tool_page(&self, session: &str, run: &str, offset: i64, limit: i64) -> Result<Value> {
+        if self.storage_format(session)? == super::content::FORMAT_VERSION {
+            return canonical::page(self, session, run, offset, limit);
+        }
         let (session, run) = (session.to_owned(), run.to_owned());
         let offset = offset.max(0);
         let limit = limit.clamp(1, 200);
-        self.db.call(move |db| {
+        self.db.read(move |db| {
             let state: Option<String> = db.query_row("SELECT status FROM runs WHERE session_id=?1 AND run_id=?2",params![session,run],|r|r.get(0)).optional()?;
             let unsettled_status = match state.as_deref() { Some("running") => "running", Some("cancelled") => "cancelled", Some("error" | "failed") => "failed", Some("completed" | "interrupted_by_restart" | "incomplete" | "interrupted") => "interrupted", _ => "unknown" };
             let mut stmt=db.prepare("SELECT b.tool_call_id,b.tool_name,b.arguments_json,e.timestamp_ms,
-                (SELECT r.is_error FROM message_blocks r JOIN entries re ON re.session_id=r.session_id AND re.position=r.entry_position WHERE r.session_id=e.session_id AND re.run_id=e.run_id AND r.tool_call_id=b.tool_call_id AND r.kind='tool_result' ORDER BY re.position DESC LIMIT 1),
-                (SELECT re.timestamp_ms FROM message_blocks r JOIN entries re ON re.session_id=r.session_id AND re.position=r.entry_position WHERE r.session_id=e.session_id AND re.run_id=e.run_id AND r.tool_call_id=b.tool_call_id AND r.kind='tool_result' ORDER BY re.position DESC LIMIT 1)
-                FROM entries e JOIN message_blocks b ON b.session_id=e.session_id AND b.entry_position=e.position
+                (SELECT r.is_error FROM resolved_message_blocks r JOIN entries re ON re.session_id=r.session_id AND re.position=r.entry_position WHERE r.session_id=e.session_id AND re.run_id=e.run_id AND r.tool_call_id=b.tool_call_id AND r.kind='tool_result' ORDER BY re.position DESC LIMIT 1),
+                (SELECT re.timestamp_ms FROM resolved_message_blocks r JOIN entries re ON re.session_id=r.session_id AND re.position=r.entry_position WHERE r.session_id=e.session_id AND re.run_id=e.run_id AND r.tool_call_id=b.tool_call_id AND r.kind='tool_result' ORDER BY re.position DESC LIMIT 1)
+                FROM entries e JOIN resolved_message_blocks b ON b.session_id=e.session_id AND b.entry_position=e.position
                 WHERE e.session_id=?1 AND e.run_id=?2 AND b.kind='tool_call' ORDER BY e.position,b.ordinal LIMIT ?3 OFFSET ?4")?;
             let mut rows=stmt.query(params![session,run,limit+1,offset])?;
             let mut tools=Vec::new();
@@ -52,9 +58,15 @@ impl SqliteStore {
     }
 
     fn tool_output(&self, session: &str, run: &str, call: &str) -> Result<Value> {
+        if self.storage_format(session)? == super::content::FORMAT_VERSION {
+            return canonical::output(self, session, run, call);
+        }
         let (session, run, call) = (session.to_owned(), run.to_owned(), call.to_owned());
-        self.db.call(move |db| {
-            let mut stmt=db.prepare("SELECT b.text,b.is_error,e.timestamp_ms,e.metadata_json FROM message_blocks b JOIN entries e ON e.session_id=b.session_id AND e.position=b.entry_position WHERE b.session_id=?1 AND e.run_id=?2 AND b.tool_call_id=?3 AND b.kind='tool_result' ORDER BY e.position DESC LIMIT 1")?;
+        self.db.read(move |db| {
+            let mut stmt=db.prepare("SELECT b.text,b.is_error,e.timestamp_ms,
+                CASE WHEN EXISTS(SELECT 1 FROM content_references r WHERE r.session_id=e.session_id AND r.owner_kind='entry' AND r.owner_id=e.entry_id AND r.field='/meta/shell_result')
+                THEN json_set(e.metadata_json,'$.meta.shell_result',json((SELECT r.body FROM resolved_content_references r WHERE r.session_id=e.session_id AND r.owner_kind='entry' AND r.owner_id=e.entry_id AND r.field='/meta/shell_result'))) ELSE e.metadata_json END
+                FROM resolved_message_blocks b JOIN entries e ON e.session_id=b.session_id AND e.position=b.entry_position WHERE b.session_id=?1 AND e.run_id=?2 AND b.tool_call_id=?3 AND b.kind='tool_result' ORDER BY e.position DESC LIMIT 1")?;
             let mut rows=stmt.query(params![session,run,call])?;
             let output=if let Some(row)=rows.next()? {
                 let metadata: Option<String> = row.get(3)?;
@@ -76,9 +88,12 @@ impl SqliteStore {
     /// identity the page carries, scoped to its session AND run so an id that
     /// repeats in another conversation cannot answer this one.
     fn tool_call_args(&self, session: &str, run: &str, call: &str) -> Result<Value> {
+        if self.storage_format(session)? == super::content::FORMAT_VERSION {
+            return canonical::arguments(self, session, run, call);
+        }
         let (session, run, call) = (session.to_owned(), run.to_owned(), call.to_owned());
-        self.db.call(move |db| {
-            let mut stmt = db.prepare("SELECT b.tool_name,b.arguments_json FROM message_blocks b JOIN entries e ON e.session_id=b.session_id AND e.position=b.entry_position WHERE b.session_id=?1 AND e.run_id=?2 AND b.tool_call_id=?3 AND b.kind='tool_call' ORDER BY e.position DESC LIMIT 1")?;
+        self.db.read(move |db| {
+            let mut stmt = db.prepare("SELECT b.tool_name,b.arguments_json FROM resolved_message_blocks b JOIN entries e ON e.session_id=b.session_id AND e.position=b.entry_position WHERE b.session_id=?1 AND e.run_id=?2 AND b.tool_call_id=?3 AND b.kind='tool_call' ORDER BY e.position DESC LIMIT 1")?;
             let mut rows = stmt.query(params![session, run, call])?;
             let (name, arguments) = match rows.next()? {
                 Some(row) => (
@@ -97,6 +112,87 @@ impl SqliteStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_canonical_tool_inspection_does_not_publish_hidden_forks() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+        store.reserve_segmented("s").unwrap();
+        assert_eq!(
+            store.tool_call_args("s", "r", "call").unwrap()["arguments"],
+            Value::Null
+        );
+        assert_eq!(
+            store.tool_output("s", "r", "call").unwrap()["output"],
+            Value::Null
+        );
+        assert_eq!(
+            store.tool_page("s", "r", 0, 10).unwrap()["tools"],
+            json!([])
+        );
+        store
+            .db
+            .call(|db| {
+                db.execute(
+                    "INSERT INTO fork_operations VALUES('operation','fingerprint','parent','s',0)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(store.tool_call_args("s", "r", "call").is_err());
+        assert!(store.tool_output("s", "r", "call").is_err());
+        assert!(store.tool_page("s", "r", 0, 10).is_err());
+    }
+
+    #[test]
+    fn canonical_tool_details_page_only_the_selected_fields_without_compatibility_views() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+        store.reserve_segmented("s").unwrap();
+        let args = json!({"path":"/tmp/result","body":"工具参数🙂".repeat(30_000)});
+        let facts = json!({"command":"action","cwd":"/repo","duration_ms":1,"status":"exited",
+            "exit_code":2,"is_soft_fail":false,"is_error":true,
+            "attempts":[{"status":"exited","exit_code":2,"duration_ms":1,"output":"失败🙂".repeat(30_000),"output_truncated":false,"escalated":false}],
+            "approval":null,"note":null});
+        let expected = future_rpc::shell_result::model_summary(
+            &serde_json::from_value(facts.clone()).unwrap(),
+        );
+        store.replace("s",vec![
+            json!({"id":"a","type":"assistant","role":"assistant","timestamp":"2026-10-26T00:00:00Z","meta":{"run_id":"r"},"content":[
+                {"type":"reasoning","text":"unrelated","provider_metadata":{"signature":"signature".repeat(20_000)}},
+                {"type":"tool_call","id":"call","name":"edit","args":args}]}),
+            json!({"id":"other","type":"assistant","role":"assistant","timestamp":"2026-10-26T00:00:00Z","meta":{"run_id":"other"},"content":[
+                {"type":"tool_call","id":"call","name":"edit","args":{"secret":"other run"}}]}),
+            json!({"id":"out","type":"tool","role":"tool","timestamp":"2026-10-26T00:00:01Z","meta":{"run_id":"r","shell_result":facts},"content":[
+                {"type":"tool_result","tool_call_id":"call","content":expected,"is_error":true}]})
+        ]).unwrap();
+        store.db.call(|db| {
+            db.execute_batch("DROP VIEW entry_records; DROP VIEW resolved_message_blocks")?;
+            // Damage an unrelated signature. A targeted argument/output read
+            // must neither load it nor accidentally fail on its body.
+            db.execute("DELETE FROM content_segments WHERE content_id IN (SELECT content_id FROM content_references WHERE session_id='s' AND owner_id='a' AND field='/content/0/provider_metadata')",[])?;
+            Ok(())
+        }).unwrap();
+        assert_eq!(
+            store.tool_call_args("s", "r", "call").unwrap()["arguments"],
+            args
+        );
+        assert_eq!(
+            store.tool_call_args("s", "other", "call").unwrap()["arguments"]["secret"],
+            "other run"
+        );
+        assert!(store.tool_call_args("s", "missing", "call").unwrap()["arguments"].is_null());
+        let page = store.tool_page("s", "r", 0, 100).unwrap();
+        assert_eq!(page["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(page["tools"][0]["arguments"], args);
+        assert_eq!(page["tools"][0]["status"], "failed");
+        let output = store.tool_output("s", "r", "call").unwrap();
+        assert_eq!(output["output"]["shell_result"], facts);
+        let expected =
+            future_rpc::shell_result::model_summary(&serde_json::from_value(facts).unwrap());
+        assert_eq!(output["output"]["text"], expected);
+    }
     #[test]
     fn tool_queries_are_run_scoped_paged_and_preserve_null_arguments() {
         let dir = tempfile::tempdir().unwrap();

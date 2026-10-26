@@ -57,6 +57,11 @@ import {
   newCursor,
   nextEvent,
   tailCoversRange,
+  needsContentHydration,
+  eventPayload,
+  hasEventPayload,
+  parseJsonText,
+  withEventPayload,
   type ReplayEvent,
   type RunCursor,
   type RunReplay,
@@ -91,6 +96,7 @@ export interface SyncDeps {
    * range the peer will never send.
    */
   feedOmitsIndices?: () => boolean;
+  hydrateEvent?(sessionId: string, event: StreamEvent, isCurrent: () => boolean): Promise<StreamEvent>;
   onFailure?(failure: SyncFailure): void;
   onRecovered?(sessionId: string): void;
   /** Replay progress is independent of whether a cached timeline is readable. */
@@ -532,7 +538,7 @@ export class SyncEngine {
       lane.retryTimer = null;
       justReconciledRun = request.runId ?? null;
     }
-    this.applyOps(lane, justReconciledRun);
+    await this.applyOps(lane, justReconciledRun);
     if (request && lane.retryNotBefore === 0) {
       lane.retryAttempt = 0;
       this.deps.onRecovered?.(lane.sessionId);
@@ -824,12 +830,14 @@ export class SyncEngine {
    * still has not caught up to a queued gap, retain the tail and use bounded
    * backoff; neither dropping it nor an immediate replay loop is safe.
    */
-  private applyOps(lane: SessionLane, justReconciledRun: string | null): void {
+  private async applyOps(lane: SessionLane, justReconciledRun: string | null): Promise<void> {
     if (lane.ops.length === 0) return;
     let timeline = lane.timeline ?? emptyTimeline();
     const ops = lane.ops;
     lane.ops = [];
     const deadline = Date.now() + LIVE_OP_BUDGET_MS;
+    const generation = lane.generation;
+    const isCurrent = () => lane.generation === generation && this.isVisible(lane.sessionId);
     const beforeStreaming = timeline.streaming;
     let flipRunId: string | undefined;
     let changed = false;
@@ -867,7 +875,31 @@ export class SyncEngine {
         }
         continue;
       }
-      const event = op.event;
+      let event = op.event;
+      const requiredContent = !hasEventPayload(event) && event.data.length <= 32 * 1024
+        && event.data.includes('"content_refs"') && needsContentHydration(event.type, eventPayload(event, event.data));
+      if (requiredContent || (!hasEventPayload(event) && event.data.length > 32 * 1024)) {
+        // Publish the already-applied prefix before yielding to IO. A failed
+        // body read keeps this event and every later operation pending.
+        flushBatch();
+        if (changed) { lane.timeline = timeline; this.commit(lane); changed = false; }
+        try {
+          if (!this.deps.hydrateEvent && requiredContent) throw new Error("content_reader_unavailable");
+          if (this.deps.hydrateEvent) {
+            event = await this.deps.hydrateEvent(lane.sessionId, event, isCurrent);
+          } else {
+            const data = await parseJsonText(event.data, { isCurrent });
+            if (needsContentHydration(event.type, data)) throw new Error("content_reader_unavailable");
+            event = withEventPayload(event, data);
+          }
+          if (!isCurrent()) return;
+        } catch {
+          if (!isCurrent()) return;
+          lane.ops.unshift(...ops.slice(index));
+          this.enqueueReplay(lane, { reason: "gap", runId: event.runId });
+          break;
+        }
+      }
       // The broadcaster keeps the settled run's run_id + idx until the next
       // run starts, so a standalone compaction emitted between runs arrives
       // stamped inside that run at an idx past its end. It is session fan-out,
@@ -885,6 +917,7 @@ export class SyncEngine {
       const omitsIndices = this.deps.feedOmitsIndices?.() === true;
       const verdict = nextEvent(lane.cursor, event.runId, event.idx, event.coalescedCount, {
         omitIndices: omitsIndices,
+        data: event.data,
       });
       if (verdict.kind === "overlap") {
         // A merged event whose range starts below the high-water: a reconcile

@@ -187,6 +187,7 @@ pub(super) async fn collect_agent_response(
     // source of truth); a mid-collect reconnect resumes from `last_idx` below,
     // and a forced re-attach replays through the gap check.
     let mut last_idx: i64 = -1;
+    let mut content_cursors = future_rpc::content_range::ContentCursors::default();
     let mut reconnect_attempt = 0_u32;
 
     let (clean_end, termination_kind) = 'attach: loop {
@@ -301,10 +302,20 @@ pub(super) async fn collect_agent_response(
                 replace_projection_off_thread(thread_id, local_run_id, snapshot_events).await;
 
                 content.clear();
+                content_cursors.clear();
                 waiting_for_approval = false;
                 let mut snapshot_terminal = None;
                 for projected in &event.snapshot_events {
                     let projected_data = future_rpc::decode::projected_event_data_json(projected);
+                    let mut data: serde_json::Value =
+                        serde_json::from_str(&projected_data).map_err(|error| error.to_string())?;
+                    content_cursors.apply(
+                        canonical_run_id,
+                        event.epoch,
+                        &projected.r#type,
+                        &mut data,
+                    )?;
+                    let projected_data = data.to_string();
                     match fold_response_event(
                         &projected.r#type,
                         &projected_data,
@@ -334,7 +345,14 @@ pub(super) async fn collect_agent_response(
             if event.idx <= last_idx {
                 continue;
             }
-            if event.idx != last_idx.saturating_add(1) {
+            let mut range_data: serde_json::Value =
+                serde_json::from_str(&future_rpc::decode::event_data_json(&event))
+                    .unwrap_or(serde_json::Value::Null);
+            if !future_rpc::content_range::covers_next(
+                &range_data,
+                last_idx.saturating_add(1),
+                event.idx,
+            ) {
                 // Drop this stream and atomically reattach from the last
                 // confirmed cursor. The Agent will return either the missing
                 // tail or a full projection snapshot if the ring rolled over.
@@ -344,12 +362,30 @@ pub(super) async fn collect_agent_response(
                     event.idx
                 );
             }
+            if future_rpc::content_body::needs_hydration(&event.r#type, &range_data) {
+                let mut client = connect_agent().await?;
+                future_rpc::content_body::hydrate_required(
+                    &mut client,
+                    session_id,
+                    canonical_run_id,
+                    &event.r#type,
+                    &mut range_data,
+                )
+                .await
+                .map_err(crate::Error::from)?;
+            }
             last_idx = event.idx;
 
             // Canonical event payload (byte-stable while the agent dual-writes
             // `data`; the typed reconstruction takes over once `data` is
             // retired). Persistence and the content fold read the same string.
-            let event_data = future_rpc::decode::event_data_json(&event);
+            content_cursors.apply(
+                canonical_run_id,
+                event.epoch,
+                &event.r#type,
+                &mut range_data,
+            )?;
+            let event_data = range_data.to_string();
             persist_run_event_off_thread(
                 thread_id,
                 local_run_id,

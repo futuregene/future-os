@@ -44,6 +44,14 @@ impl Supervisor {
         // must not outlive the connection that asked for it.
         handshake.gzip_replies.store(false, Ordering::Release);
         handshake.lean_events.store(false, Ordering::Release);
+        handshake.segmented_content.store(false, Ordering::Release);
+        self.segmented_content(pair_id)
+            .store(false, Ordering::Release);
+        self.shared_or_insert(pair_id)
+            .content_refusals
+            .lock()
+            .unwrap()
+            .clear();
         self.lean_events(pair_id).store(false, Ordering::Release);
         let event_task = self.spawn_generation_for(
             epoch,

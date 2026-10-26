@@ -80,6 +80,10 @@ pub struct RpcCommand {
     pub before: Option<i64>,
     #[serde(default)]
     pub fragment_offset: Option<i64>,
+    #[serde(default)]
+    pub content_request: Option<future_rpc::content_range::ContentRequest>,
+    #[serde(default)]
+    pub replay_until_idx: Option<i64>,
     /// Upper bound on how many sessions `search_all_session_history` scans,
     /// most recently updated first. Absent selects the server default.
     #[serde(default)]

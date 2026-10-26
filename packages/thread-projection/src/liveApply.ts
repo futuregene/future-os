@@ -1,3 +1,5 @@
+import { applyContentRange } from "./contentRange";
+import { eventPayload } from "./eventPayload";
 import { shellResult } from "./shellResult";
 import type { RunEvent } from "./events";
 import type { AgentActivityItem, AgentActivityKind, MessageSegment, StreamRetryState } from "./model";
@@ -129,6 +131,7 @@ export interface RunProjector {
 }
 
 interface ProjectorCheckpoint {
+  contentOffsets: Map<string, number>;
   toolActivities: Map<string, ToolActivity>;
   slots: Slot[];
   slottedToolIds: Set<string>;
@@ -155,6 +158,7 @@ export function createRunProjector(options?: { preferEndTokens?: boolean }): Run
 }
 
 function createProjector(options?: { preferEndTokens?: boolean }, initial?: ProjectorCheckpoint): RunProjector {
+  const contentOffsets = new Map(initial?.contentOffsets);
   const toolActivities = new Map<string, ToolActivity>();
   // Ordered timeline of the exchange. Text accumulates into the open text slot;
   // each tool call pins a slot at the point it started.
@@ -219,7 +223,7 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
   }
 
   function processEvent(event: RunEvent) {
-    const payload = parseEventPayload(event.payload);
+    const payload = applyContentRange(eventPayload(event, event.payload), event.eventType, contentOffsets);
 
     if (event.eventType === "stream_retry") {
       if (isRecord(payload)) {
@@ -271,6 +275,11 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
         if (payload.state === "cancelled")
           stopped = true;
       }
+      return;
+    }
+
+    if (event.eventType === "text_start" || event.eventType === "text_end") {
+      openText = null;
       return;
     }
 
@@ -593,7 +602,7 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
       return bytes;
     },
     fork: () => createProjector(options, {
-      toolActivities, slots, slottedToolIds,
+      contentOffsets, toolActivities, slots, slottedToolIds,
       openTextIndex: openText ? slots.indexOf(openText) : -1,
       openThinkingIndex: openThinking ? slots.indexOf(openThinking) : -1,
       activeThinkingIndices: [...activeThinking].map(([id, slot]) => [id, slots.indexOf(slot)]),
@@ -881,18 +890,6 @@ function explicitToolId(payload: unknown) {
     ?? stringValue(payload.tool_call_id);
 }
 
-function parseEventPayload(payload?: string | null): unknown {
-  if (!payload)
-    return null;
-
-  try {
-    return JSON.parse(payload) as unknown;
-  }
-  catch {
-    return null;
-  }
-}
-
 function textFromPayload(payload: unknown) {
   if (!isRecord(payload))
     return "";
@@ -910,6 +907,7 @@ function textFromPayload(payload: unknown) {
 const SOFT_FAIL_COMMANDS = new Set(["grep", "egrep", "fgrep", "rg", "findstr", "diff", "cmp", "test", "["]);
 
 function hasToolError(payload: unknown, command: string | undefined) {
+  if (isRecord(payload) && typeof payload.is_error === "boolean") return payload.is_error;
   if (!isRecord(payload))
     return false;
   const facts = shellResult(payload.shell_result);

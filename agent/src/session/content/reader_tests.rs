@@ -1,0 +1,254 @@
+//! Specifications authored during implementation; run in the final test phase.
+use super::*;
+
+fn store() -> (tempfile::TempDir, SqliteStore) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+    store.reserve_segmented("s").unwrap();
+    store
+        .replace(
+            "s",
+            vec![json!({"id":"info","type":"session_info",
+        "timestamp":"2026-10-26T00:00:00Z","content":{"model":"mock"}})],
+        )
+        .unwrap();
+    (dir, store)
+}
+
+fn message(id: &str) -> Value {
+    json!({"id":id,"type":"assistant","role":"assistant",
+        "timestamp":"2026-10-26T00:00:01+08:00","meta":{"run_id":"r"},
+        "content":[{"type":"text","text":"跨页🙂".repeat(70_000)},
+            {"type":"reasoning","text":"思考","provider_metadata":{"signature":"s".repeat(10_000)}},
+            {"type":"tool_call","id":"tool","name":"edit","args":{"body":"正文".repeat(10_000)}},
+            {"type":"image_url","image_url":{"url":"data:image/png;base64,".repeat(2000)}},
+            {"type":"future_block","text":{"body":"non-string".repeat(1000)},"x/y~z":{"state":"opaque".repeat(2000)}},
+            "scalar extension".repeat(1000)]})
+}
+
+#[test]
+fn paged_reader_matches_lossless_compatibility_view_then_works_without_that_view() {
+    let (_dir, store) = store();
+    store.append("s", vec![message("a")]).unwrap();
+    let expected: Vec<Value> = store
+        .db
+        .read(|db| {
+            let mut query = db.prepare(
+                "SELECT payload FROM entry_records WHERE session_id='s' ORDER BY position",
+            )?;
+            let rows = query
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows.into_iter()
+                .map(|raw| Ok(serde_json::from_str(&raw)?))
+                .collect()
+        })
+        .unwrap();
+    let actual = store.entries("s").unwrap();
+    assert_eq!(actual, expected);
+    store
+        .db
+        .read(|db| {
+            let raw: String = db.query_row(
+                "SELECT payload FROM entry_header_records WHERE session_id='s' AND entry_id='a'",
+                [],
+                |row| row.get(0),
+            )?;
+            let header: Value = serde_json::from_str(&raw)?;
+            assert!(
+                header["content"][4]["text"].is_object(),
+                "thin headers must retain the JSON-valued text sentinel"
+            );
+            Ok(())
+        })
+        .unwrap();
+    store.db.call(|db| {
+        db.execute_batch("DROP VIEW entry_records; DROP VIEW block_records; DROP VIEW resolved_message_blocks")?;
+        Ok(())
+    }).unwrap();
+    assert_eq!(store.entries("s").unwrap(), expected);
+}
+
+#[test]
+fn appends_preserve_the_captured_prefix_but_a_rewrite_invalidates_it() {
+    let (_dir, store) = store();
+    store.append("s", vec![message("a")]).unwrap();
+    let snapshot = Snapshot::capture(&store, "s").unwrap();
+    let prefix = snapshot.page(&store, -1).unwrap();
+    store.append("s", vec![message("b")]).unwrap();
+    assert_eq!(snapshot.page(&store, -1).unwrap().len(), 2);
+    assert_eq!(snapshot.entry(&store, &prefix[1]).unwrap()["id"], "a");
+    let rows = store.entries("s").unwrap();
+    store.replace("s", rows).unwrap();
+    assert!(snapshot
+        .page(&store, -1)
+        .unwrap_err()
+        .to_string()
+        .contains("transcript changed"));
+    assert!(snapshot.entry(&store, &prefix[1]).is_err());
+}
+
+#[test]
+fn every_body_page_rechecks_reference_ownership_and_restore_identity() {
+    let (_dir, store) = store();
+    store.append("s", vec![message("a")]).unwrap();
+    let scope = Snapshot::capture(&store, "s").unwrap();
+    let entry = scope.page(&store, -1).unwrap().pop().unwrap();
+    let reference = scope
+        .references(&store, &entry, "")
+        .unwrap()
+        .into_iter()
+        .find(|reference| reference.field == "/content/0/text")
+        .unwrap();
+    store.db.call(|db| {
+        db.execute("UPDATE content_references SET byte_length=byte_length-1 WHERE session_id='s' AND owner_id='a' AND field='/content/0/text'",[])?;
+        Ok(())
+    }).unwrap();
+    assert!(scope
+        .body(&store, &entry, &reference)
+        .unwrap_err()
+        .to_string()
+        .contains("reference changed"));
+    store.db.call(|db| {
+        db.execute("UPDATE storage_meta SET value='replaced-restore-generation' WHERE key='restore_generation'",[])?;
+        Ok(())
+    }).unwrap();
+    assert!(scope.verify(&store).is_err());
+}
+
+#[test]
+fn deletion_invalidates_a_snapshot_without_granting_another_sessions_body() {
+    let (_dir, store) = store();
+    store.append("s", vec![message("a")]).unwrap();
+    let scope = Snapshot::capture(&store, "s").unwrap();
+    let entry = scope.page(&store, -1).unwrap().pop().unwrap();
+    store.delete("s").unwrap();
+    assert!(scope.entry(&store, &entry).is_err());
+    assert!(scope.verify(&store).is_err());
+}
+
+#[test]
+fn conflicting_json_encoding_never_changes_an_already_published_field() {
+    let (_dir, store) = store();
+    let object = json!({"body":"opaque".repeat(2000)});
+    let raw = object.to_string();
+    let entry = json!({"id":"a","type":"assistant","role":"assistant",
+        "timestamp":"2026-10-26T00:00:00Z","meta":{"opaque":raw},"content":"answer"});
+    store.append("s", vec![entry.clone()]).unwrap();
+    let mut conflicting = entry;
+    conflicting["meta"]["opaque"] = object;
+    assert!(store.append("s", vec![conflicting]).is_err());
+    assert_eq!(store.entries("s").unwrap()[1]["meta"]["opaque"], raw);
+}
+
+#[test]
+fn a_published_recovered_prefix_cannot_be_extended_by_a_generic_entry_retry() {
+    let (_dir, store) = store();
+    store
+        .db
+        .call(|db| {
+            let tx = crate::session::database::begin_write_transaction(db)?;
+            let id = super::super::create(&tx)?;
+            let range = super::super::append(&tx, id, 0, "committed prefix")?;
+            super::super::bind(&tx, "s", "entry", "recovered", "/content/0/text", range)?;
+            crate::session::sqlite_store::insert_transcript_entries(
+                &tx,
+                "s",
+                vec![
+                    json!({"id":"recovered","type":"assistant","role":"assistant",
+            "timestamp":"2026-10-26T00:00:01Z","content":[{"type":"text","text":""}]}),
+                ],
+            )?;
+            tx.commit()?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(super::super::entries::stage_named(
+        &store,
+        "s",
+        "entry",
+        "recovered",
+        "/content/0/text",
+        "committed prefix plus unacknowledged tail",
+        false
+    )
+    .is_err());
+    let entry = store.entries("s").unwrap().pop().unwrap();
+    assert_eq!(entry["content"][0]["text"], "committed prefix");
+}
+
+#[test]
+fn a_reader_does_not_wait_for_an_unrelated_writer_transaction() {
+    let (_dir, store) = store();
+    store.append("s", vec![message("a")]).unwrap();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let writer = store.clone();
+    let thread = std::thread::spawn(move || {
+        writer.db.call(move |db| {
+            let tx = crate::session::database::begin_write_transaction(db)?;
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            tx.commit()?;
+            Ok(())
+        })
+    });
+    started_rx.recv().unwrap();
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    let reader = store.clone();
+    let reader_thread = std::thread::spawn(move || {
+        let result = Snapshot::capture(&reader, "s").and_then(|scope| {
+            let entry = scope.page(&reader, -1)?.pop().unwrap();
+            scope.entry(&reader, &entry)
+        });
+        let _ = result_tx.send(result);
+    });
+    // The timeout bounds the failure path too: release/join the writer before
+    // asserting, so a reader accidentally using the writer never hangs the suite.
+    let result = result_rx.recv_timeout(std::time::Duration::from_secs(10));
+    release_tx.send(()).unwrap();
+    thread.join().unwrap().unwrap();
+    reader_thread.join().unwrap();
+    assert_eq!(
+        result.expect("read queued behind held writer").unwrap()["id"],
+        "a"
+    );
+}
+
+#[test]
+fn clearing_externalized_text_or_json_is_a_conflicting_identity_even_when_the_header_matches() {
+    let (_dir, store) = store();
+    let entry = json!({"id":"a","type":"assistant","role":"assistant","timestamp":"2026-10-26T00:00:00Z",
+        "content":[{"type":"text","text":"large body".repeat(2000)},{"type":"future","state":{"body":"large state".repeat(2000)}}]});
+    store.append("s", vec![entry.clone()]).unwrap();
+    let mut cleared = entry.clone();
+    cleared["content"][0]["text"] = json!("");
+    assert!(store.append("s", vec![cleared]).is_err());
+    let mut cleared = entry.clone();
+    cleared["content"][1]["state"] = json!({});
+    assert!(store.append("s", vec![cleared]).is_err());
+    assert_eq!(store.entries("s").unwrap()[1]["content"], entry["content"]);
+}
+
+#[test]
+fn metadata_reads_ignore_ordinary_appends_but_fence_configuration_changes() {
+    let (_dir, store) = store();
+    let scope = Snapshot::capture(&store, "s").unwrap();
+    let info = scope.page(&store, -1).unwrap().remove(0);
+    let expected = store
+        .db
+        .read(|db| super::super::metadata::generation(db, "s"))
+        .unwrap();
+    store.append("s", vec![message("a")]).unwrap();
+    assert!(scope
+        .column(&store, &info, Column::SessionMetadata, Some(expected))
+        .is_ok());
+    store.append("s",vec![json!({"id":"model","type":"model_change","timestamp":"2026-10-26T00:00:02Z","content":{"model":"changed"}})]).unwrap();
+    assert!(scope
+        .column(&store, &info, Column::SessionMetadata, Some(expected))
+        .is_err());
+    assert_eq!(
+        scope.entry(&store, &info).unwrap()["content"]["model"],
+        "changed"
+    );
+}

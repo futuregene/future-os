@@ -77,12 +77,14 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "get_agent_readiness",
     "get_commands",
     "get_events_since",
+    "get_event_content_range",
     "get_run_snapshot",
     "get_fork_messages",
     "get_last_assistant_text",
     "get_messages",
     "get_runtime_metrics",
     "get_session_entries",
+    "get_session_storage_format",
     "get_session_history_entry",
     "search_all_session_history",
     "search_session_history",
@@ -212,6 +214,7 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
             ExecutionKind::ManagedProcess,
         ),
         "get_events_since"
+        | "get_event_content_range"
         | "get_run_snapshot"
         | "list_tool_calls"
         | "get_tool_output"
@@ -225,6 +228,7 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
         | "get_session_events_since"
         | "list_session_ids"
         | "get_session_presence"
+        | "get_session_storage_format"
         | "get_storage_health"
         | "list_sessions"
         | "probe_sandbox"

@@ -232,6 +232,7 @@ fn events_since_from_value(value: Value) -> Option<EventsSincePayload> {
             .and_then(Value::as_bool)
             .unwrap_or(false),
         projection: object.get("projection").and_then(projection_from_value),
+        watermark: object.get("watermark").and_then(Value::as_i64),
         has_more: object
             .get("hasMore")
             .and_then(Value::as_bool)
@@ -551,6 +552,7 @@ pub(crate) fn events_since_from_proto(events: &proto::EventsSince) -> EventsSinc
         truncated: events.truncated,
         projection: events.projection.as_ref().map(projection_from_proto),
         has_more: events.has_more,
+        watermark: events.watermark,
     }
 }
 
@@ -815,6 +817,10 @@ fn runtime_metrics_from_proto(
         queued_bytes: response.queued_bytes as usize,
         event_journal_healthy: response.event_journal_healthy,
         event_journal_error: response.event_journal_error.clone(),
+        event_journal: response
+            .event_journal_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok()),
     }
 }
 
@@ -1313,11 +1319,13 @@ mod tests {
                 }],
             }),
             has_more: true,
+            watermark: Some(12),
         }));
         let payload = decode_events_since(&resp).unwrap();
         assert_eq!(payload.run_id, "r1");
         assert!(payload.truncated);
         assert!(payload.has_more);
+        assert_eq!(payload.watermark, Some(12));
         assert_eq!(payload.events.len(), 1);
         assert_eq!(payload.events[0].data, r#"{"text":"streamed answer"}"#);
         assert_eq!(
@@ -1364,6 +1372,7 @@ mod tests {
             truncated: false,
             projection: None,
             has_more: false,
+            watermark: None,
         }));
         let value = response_data(&resp);
         assert_eq!(value["runId"], json!("r1"));

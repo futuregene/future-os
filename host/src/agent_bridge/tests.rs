@@ -839,6 +839,41 @@ mod bridge_tests {
     }
 
     #[tokio::test]
+    async fn events_since_pins_the_first_durable_watermark_on_following_agent_pages() {
+        let mock = mock_agent();
+        mock.push_typed_data(
+            "get_events_since",
+            serde_json::json!({"runId":"r","events":[{"idx":1}],"hasMore":true,"watermark":3}),
+        );
+        mock.push_typed_data("get_events_since", serde_json::json!({"runId":"r","events":[{"idx":2},{"idx":3}],"hasMore":false,"watermark":3}));
+        let result = get_events_since("s".into(), "r".into(), -1).await.unwrap();
+        assert_eq!(result["watermark"], 3);
+        assert_eq!(result["events"].as_array().unwrap().len(), 3);
+        let requests = mock.requests_of("get_events_since");
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].replay_until_idx, None);
+        assert_eq!(requests[1].replay_until_idx, Some(3));
+    }
+
+    #[tokio::test]
+    async fn events_since_refuses_a_window_that_changes_between_agent_pages() {
+        let mock = mock_agent();
+        mock.push_typed_data(
+            "get_events_since",
+            serde_json::json!({"runId":"r","events":[{"idx":1}],"hasMore":true,"watermark":3}),
+        );
+        mock.push_typed_data(
+            "get_events_since",
+            serde_json::json!({"runId":"r","events":[{"idx":2}],"hasMore":false,"watermark":4}),
+        );
+        assert!(get_events_since("s".into(), "r".into(), -1)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("replay_window_changed"));
+    }
+
+    #[tokio::test]
     async fn events_since_remote_page_is_bounded_and_preserves_has_more() {
         let mock = mock_agent();
         mock.push_typed_data(
@@ -935,15 +970,16 @@ mod bridge_tests {
             serde_json::json!({"runId": "r", "events": [], "truncated": false})
         );
 
-        // A hasMore page whose idx does not advance terminates the loop.
+        // A non-advancing hasMore page is a protocol error, never a silently
+        // truncated successful replay.
         mock.push_data(
             "get_events_since",
             serde_json::json!({"events": [{"idx": 5}], "hasMore": true}),
         );
-        let merged = get_events_since("s".to_string(), "r".to_string(), 5)
+        let error = get_events_since("s".to_string(), "r".to_string(), 5)
             .await
-            .expect("terminates");
-        assert_eq!(merged["events"].as_array().expect("array").len(), 1);
+            .expect_err("non-advancing replay must be rejected");
+        assert!(error.to_string().contains("did not advance"), "{error}");
 
         // Transport failure and rejection.
         mock.push(

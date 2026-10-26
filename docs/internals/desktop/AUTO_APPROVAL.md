@@ -1,5 +1,14 @@
 # Automatic approval: implementation and policy
 
+Storage refactor in progress (2026-10-26): newly emitted/persisted release
+assessments retain the verdict, effective classifications, reported reason, stable
+error and ownership/action digest, while confidence/probability distributions,
+input audit details, raw action, provider/model diagnostics and audit versions are
+omitted. Debug builds retain those diagnostic fields. Decision computation and
+execution gating still use the complete in-memory assessment. Legacy records are
+not rewritten. The JSON wire carrier preserves the lean shape when the legacy
+typed assessment requires diagnostic fields.
+
 Status: shipped — the desktop and the TUI offer the `auto` tier, and the phone offers
 it whenever the paired host declares `auto_approval_v1`. Production
 false-approval rates

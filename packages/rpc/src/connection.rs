@@ -9,7 +9,7 @@ use std::{
 use tonic::transport::Channel;
 
 pub const AGENT_PROTOCOL_VERSION: u32 = 2;
-pub const AGENT_STORAGE_SCHEMA_VERSION: u32 = 7;
+pub const AGENT_STORAGE_SCHEMA_VERSION: u32 = 8;
 /// Coordinated Agent release expected by RPC consumers. This differs from the
 /// CLI/TUI display version in bare development builds; suffixes are ignored.
 pub const EXPECTED_AGENT_VERSION: &str = env!("EXPECTED_AGENT_VERSION");

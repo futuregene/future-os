@@ -1,6 +1,7 @@
 //! Ordered event batches, durable flush barriers and persistence health.
 use super::BROADCAST_RING_CAPACITY;
 use crate::session::sqlite_store::is_event_rejected;
+pub(super) type AppendReceipt = super::journal_control::WorkerReceipt<Result<(), AppendFailure>>;
 
 pub(super) const EVENT_BATCH_WINDOW: std::time::Duration = std::time::Duration::from_millis(100);
 const EVENT_BATCH_MAX_EVENTS: usize = 128;
@@ -10,6 +11,7 @@ const EVENT_BATCH_QUEUE_CAPACITY: usize = BROADCAST_RING_CAPACITY;
 #[derive(Default)]
 pub(super) struct EventJournalHealth {
     last_error: parking_lot::Mutex<Option<String>>,
+    pub(super) metrics: super::journal_metrics::JournalMetrics,
     interrupt_flag: parking_lot::Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
 }
 
@@ -76,11 +78,12 @@ impl std::fmt::Display for AppendFailure {
 
 pub(super) enum EventWriteCommand {
     Append {
+        sequence: u64,
         event: serde_json::Value,
-        reply: Option<std::sync::mpsc::SyncSender<Result<(), AppendFailure>>>,
+        bytes: usize,
+        reservation: Option<super::admission::Reservation>,
+        reply: Option<crossbeam_channel::Sender<Result<(), AppendFailure>>>,
     },
-    Flush(std::sync::mpsc::SyncSender<Result<(), String>>),
-    Shutdown(std::sync::mpsc::SyncSender<Result<(), String>>),
     /// Test-only gate: the worker blocks inside the command loop until the
     /// test releases the barrier. It lets a test act on the command channel
     /// (queue an event without flushing it, drop the last sender) at a known
@@ -92,13 +95,17 @@ pub(super) enum EventWriteCommand {
 
 struct PendingEvent {
     event: serde_json::Value,
-    reply: Option<std::sync::mpsc::SyncSender<Result<(), AppendFailure>>>,
+    bytes: usize,
+    _reservation: Option<super::admission::Reservation>,
+    reply: Option<crossbeam_channel::Sender<Result<(), AppendFailure>>>,
 }
 
 pub(super) struct EventBatchWriter {
-    pub(super) sender: std::sync::mpsc::SyncSender<EventWriteCommand>,
+    pub(super) sender: crossbeam_channel::Sender<EventWriteCommand>,
+    pub(super) control: super::journal_control::JournalControl,
     pub(super) thread: Option<std::thread::JoinHandle<()>>,
     pub(super) health: std::sync::Arc<EventJournalHealth>,
+    pub(super) admission: std::sync::Arc<super::admission::Admission>,
     #[cfg(test)]
     pub(super) commits: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
@@ -110,7 +117,9 @@ impl EventBatchWriter {
         health: std::sync::Arc<EventJournalHealth>,
     ) -> anyhow::Result<Self> {
         let (sender, receiver) =
-            std::sync::mpsc::sync_channel::<EventWriteCommand>(EVENT_BATCH_QUEUE_CAPACITY);
+            crossbeam_channel::bounded::<EventWriteCommand>(EVENT_BATCH_QUEUE_CAPACITY);
+        let (control_sender, controls) = crossbeam_channel::bounded(64);
+        let (control, worker_exit) = super::journal_control::JournalControl::new(control_sender);
         #[cfg(test)]
         let commits = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         #[cfg(test)]
@@ -119,8 +128,10 @@ impl EventBatchWriter {
         let thread = std::thread::Builder::new()
             .name("agent-event-batch".into())
             .spawn(move || {
+                let _worker_exit = worker_exit;
                 run_event_batch_writer(
                     receiver,
+                    controls,
                     store,
                     session_id,
                     worker_health,
@@ -130,8 +141,10 @@ impl EventBatchWriter {
             })?;
         Ok(Self {
             sender,
+            control,
             thread: Some(thread),
             health,
+            admission: Default::default(),
             #[cfg(test)]
             commits,
         })
@@ -146,8 +159,8 @@ impl EventBatchWriter {
             return Err(AppendFailure::Unavailable(error));
         }
         let (reply, receiver) = if durable {
-            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-            (Some(sender), Some(receiver))
+            let (sender, receiver) = crossbeam_channel::bounded(1);
+            (Some(sender), Some(self.control.receipt(receiver)))
         } else {
             (None, None)
         };
@@ -155,13 +168,26 @@ impl EventBatchWriter {
         // full queue is not a storage failure: wait for the dedicated writer
         // (which never acquires broadcaster/session locks) to make space.
         // As at a durable boundary, actual writer failure remains fail-closed.
+        let bytes = event.to_string().len();
+        let mut admitted = self.control.admitted.lock();
+        let sequence = admitted
+            .checked_add(1)
+            .ok_or_else(|| AppendFailure::unavailable("event sequence exhausted"))?;
         self.sender
-            .send(EventWriteCommand::Append { event, reply })
+            .send(EventWriteCommand::Append {
+                sequence,
+                event,
+                bytes,
+                reply,
+                reservation: None,
+            })
             .map_err(|_| {
                 let message = "event persistence worker is unavailable".to_string();
                 self.health.fail(message.clone());
                 AppendFailure::Unavailable(message)
             })?;
+        *admitted = sequence;
+        drop(admitted);
         if let Some(receiver) = receiver {
             receiver.recv().map_err(|_| {
                 AppendFailure::unavailable("event persistence worker is unavailable")
@@ -171,13 +197,46 @@ impl EventBatchWriter {
         }
     }
 
-    pub(super) fn queue_flush(
-        sender: &std::sync::mpsc::SyncSender<EventWriteCommand>,
-    ) -> anyhow::Result<std::sync::mpsc::Receiver<Result<(), String>>> {
-        let (reply, receiver) = std::sync::mpsc::sync_channel(1);
-        sender
-            .send(EventWriteCommand::Flush(reply))
-            .map_err(|_| anyhow::anyhow!("event persistence worker is unavailable"))?;
+    /// Called under the sequence lock: never waits for queue space or a commit.
+    pub(super) fn enqueue(
+        &self,
+        event: serde_json::Value,
+        durable: bool,
+        bytes: usize,
+    ) -> Result<Option<AppendReceipt>, AppendFailure> {
+        if let Some(error) = self.health.error() {
+            return Err(AppendFailure::Unavailable(error));
+        }
+        let reservation = self.admission.reserve(bytes)?;
+        let (reply, receiver) = if durable {
+            let (sender, receiver) = crossbeam_channel::bounded(1);
+            (Some(sender), Some(self.control.receipt(receiver)))
+        } else {
+            (None, None)
+        };
+        let mut admitted = self.control.admitted.lock();
+        let sequence = admitted
+            .checked_add(1)
+            .ok_or_else(|| AppendFailure::unavailable("event sequence exhausted"))?;
+        self.sender
+            .try_send(EventWriteCommand::Append {
+                sequence,
+                event,
+                bytes,
+                reply,
+                reservation: Some(reservation),
+            })
+            .map_err(|error| {
+                AppendFailure::Unavailable(match error {
+                    crossbeam_channel::TrySendError::Full(_) => {
+                        "event queue is full; generation interrupted".into()
+                    }
+                    crossbeam_channel::TrySendError::Disconnected(_) => {
+                        "event persistence worker is unavailable".into()
+                    }
+                })
+            })?;
+        *admitted = sequence;
         Ok(receiver)
     }
 
@@ -185,10 +244,7 @@ impl EventBatchWriter {
         if self.thread.is_none() {
             return Ok(());
         }
-        let (reply, receiver) = std::sync::mpsc::sync_channel(1);
-        self.sender
-            .send(EventWriteCommand::Shutdown(reply))
-            .map_err(|_| anyhow::anyhow!("event persistence worker unavailable at shutdown"))?;
+        let receiver = self.control.queue_shutdown()?;
         let result = receiver
             .recv()
             .map_err(|_| anyhow::anyhow!("event shutdown acknowledgement lost"))?
@@ -201,8 +257,10 @@ impl EventBatchWriter {
         result
     }
 
+    #[cfg(test)]
     pub(super) fn flush(&self) -> anyhow::Result<()> {
-        Self::queue_flush(&self.sender)?
+        self.control
+            .queue_flush()?
             .recv()
             .map_err(|_| anyhow::anyhow!("event persistence worker is unavailable"))?
             .map_err(anyhow::Error::msg)
@@ -233,9 +291,13 @@ impl EventBatchWriter {
     /// of blocking on a worker that has exited.
     #[cfg(test)]
     pub(super) fn disconnect_worker_for_test(&mut self) {
-        let (dead, receiver) = std::sync::mpsc::sync_channel(1);
+        let (dead, receiver) = crossbeam_channel::bounded(1);
         drop(receiver);
         let sender = std::mem::replace(&mut self.sender, dead);
+        drop(sender);
+        let (dead, receiver) = crossbeam_channel::bounded(1);
+        drop(receiver);
+        let sender = std::mem::replace(&mut self.control.sender, dead);
         drop(sender);
     }
 
@@ -244,8 +306,7 @@ impl EventBatchWriter {
     /// than a sleep-and-hope wait. A later `append` must then fail closed.
     #[cfg(test)]
     pub(super) fn stop_worker_for_test(&mut self) {
-        let (reply, receiver) = std::sync::mpsc::sync_channel(1);
-        if self.sender.send(EventWriteCommand::Shutdown(reply)).is_ok() {
+        if let Ok(receiver) = self.control.queue_shutdown() {
             let _ = receiver.recv();
         }
         if let Some(thread) = self.thread.take() {
@@ -259,8 +320,7 @@ impl Drop for EventBatchWriter {
         if self.thread.is_none() {
             return;
         }
-        let (reply, receiver) = std::sync::mpsc::sync_channel(1);
-        if self.sender.send(EventWriteCommand::Shutdown(reply)).is_ok() {
+        if let Ok(receiver) = self.control.queue_shutdown() {
             let _ = receiver.recv();
         }
         if let Some(thread) = self.thread.take() {
@@ -270,68 +330,138 @@ impl Drop for EventBatchWriter {
 }
 
 fn run_event_batch_writer(
-    receiver: std::sync::mpsc::Receiver<EventWriteCommand>,
+    receiver: crossbeam_channel::Receiver<EventWriteCommand>,
+    controls: crossbeam_channel::Receiver<super::journal_control::ControlCommand>,
     store: crate::session::sqlite_store::SqliteStore,
     session_id: String,
     health: std::sync::Arc<EventJournalHealth>,
     #[cfg(test)] commits: std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) {
+    let mut canonical = match store.storage_format(&session_id) {
+        Ok(crate::session::content::FORMAT_VERSION) => {
+            Some(crate::session::content::journal::Writer::default())
+        }
+        Ok(_) => None,
+        Err(error) => {
+            health.fail(format!("cannot determine journal format: {error:#}"));
+            return;
+        }
+    };
+    let window = if canonical.is_some() {
+        std::time::Duration::from_millis(25)
+    } else {
+        EVENT_BATCH_WINDOW
+    };
     let mut pending = Vec::<PendingEvent>::new();
     let mut pending_bytes = 0usize;
     let mut deadline = None::<std::time::Instant>;
     let mut failed = false;
+    let mut consumed = 0u64;
+    let mut control = None::<super::journal_control::ControlCommand>;
     loop {
-        let command = if pending.is_empty() || failed {
-            match receiver.recv() {
-                Ok(command) => command,
-                Err(_) => break,
+        // Only one control is pulled out of the bounded lane at a time. Body
+        // is consumed through its captured target before the reply can advance.
+        if control.is_none() {
+            control = controls.try_recv().ok();
+        }
+        if control
+            .as_ref()
+            .is_some_and(|command| command.target <= consumed)
+        {
+            let command = control.take().expect("ready control");
+            let ok = flush_event_batch(
+                &store,
+                &session_id,
+                &health,
+                &mut pending,
+                &mut canonical,
+                #[cfg(test)]
+                &commits,
+            );
+            failed = !ok;
+            pending_bytes = pending.iter().map(|item| item.bytes).sum();
+            deadline = (!pending.is_empty() && !failed).then(|| std::time::Instant::now() + window);
+            command.reply.send(if ok {
+                Ok(())
+            } else {
+                Err(health
+                    .error()
+                    .unwrap_or_else(|| "event persistence is unavailable".into()))
+            });
+            if command.shutdown {
+                break;
+            }
+            continue;
+        }
+        let timer = if !pending.is_empty() && !failed {
+            crossbeam_channel::after(
+                deadline
+                    .unwrap_or_else(std::time::Instant::now)
+                    .saturating_duration_since(std::time::Instant::now()),
+            )
+        } else {
+            crossbeam_channel::never()
+        };
+        let command = if control.is_some() {
+            // A fence has priority but must consume its preceding body first.
+            crossbeam_channel::select_biased! {
+                recv(receiver) -> command => match command { Ok(command) => Some(command), Err(_) => break },
+                recv(timer) -> _ => None,
             }
         } else {
-            let remaining = deadline
-                .unwrap_or_else(std::time::Instant::now)
-                .saturating_duration_since(std::time::Instant::now());
-            match receiver.recv_timeout(remaining) {
-                Ok(command) => command,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    failed = !flush_event_batch(
-                        &store,
-                        &session_id,
-                        &health,
-                        &mut pending,
-                        #[cfg(test)]
-                        &commits,
-                    );
-                    pending_bytes = pending
-                        .iter()
-                        .map(|item| item.event.to_string().len())
-                        .sum();
-                    deadline = (!pending.is_empty() && !failed)
-                        .then(|| std::time::Instant::now() + EVENT_BATCH_WINDOW);
-                    continue;
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            crossbeam_channel::select_biased! {
+                recv(controls) -> command => {
+                    match command { Ok(command) => { control = Some(command); continue; }, Err(_) => break }
+                },
+                recv(receiver) -> command => match command { Ok(command) => Some(command), Err(_) => break },
+                recv(timer) -> _ => None,
             }
+        };
+        let Some(command) = command else {
+            failed = !flush_event_batch(
+                &store,
+                &session_id,
+                &health,
+                &mut pending,
+                &mut canonical,
+                #[cfg(test)]
+                &commits,
+            );
+            pending_bytes = pending.iter().map(|item| item.bytes).sum();
+            deadline = (!pending.is_empty() && !failed).then(|| std::time::Instant::now() + window);
+            continue;
         };
 
         match command {
-            EventWriteCommand::Append { event, reply } => {
-                if failed && reply.is_some() {
-                    if let Some(reply) = reply {
-                        // Reached only when a storage failure is still blocking
-                        // the journal (`failed`), so it is an availability
-                        // problem, not a refusal of this event.
-                        let _ = reply.send(Err(AppendFailure::Unavailable(
+            EventWriteCommand::Append {
+                sequence,
+                event,
+                bytes,
+                reply,
+                reservation,
+            } => {
+                consumed = sequence;
+                let mut reply = reply;
+                if failed {
+                    if let Some(sender) = reply.take() {
+                        let _ = sender.send(Err(AppendFailure::Unavailable(
                             health
                                 .error()
-                                .unwrap_or_else(|| "event persistence is unavailable".to_string()),
+                                .unwrap_or_else(|| "event persistence is unavailable".into()),
                         )));
                     }
-                    continue;
+                    // Admission preceded the failure. Keep the accepted body
+                    // and its memory reservation for explicit recovery.
                 }
-                pending_bytes = pending_bytes.saturating_add(event.to_string().len());
+                pending_bytes = pending_bytes.saturating_add(bytes);
                 let durable = reply.is_some();
-                pending.push(PendingEvent { event, reply });
-                deadline.get_or_insert_with(|| std::time::Instant::now() + EVENT_BATCH_WINDOW);
+                pending.push(PendingEvent {
+                    event,
+                    bytes,
+                    reply,
+                    _reservation: reservation,
+                });
+                deadline.get_or_insert_with(|| std::time::Instant::now() + window);
                 if durable
                     || pending.len() >= EVENT_BATCH_MAX_EVENTS
                     || pending_bytes >= EVENT_BATCH_MAX_BYTES
@@ -341,60 +471,14 @@ fn run_event_batch_writer(
                         &session_id,
                         &health,
                         &mut pending,
+                        &mut canonical,
                         #[cfg(test)]
                         &commits,
                     );
-                    pending_bytes = pending
-                        .iter()
-                        .map(|item| item.event.to_string().len())
-                        .sum();
+                    pending_bytes = pending.iter().map(|item| item.bytes).sum();
                     deadline = (!pending.is_empty() && !failed)
-                        .then(|| std::time::Instant::now() + EVENT_BATCH_WINDOW);
+                        .then(|| std::time::Instant::now() + window);
                 }
-            }
-            EventWriteCommand::Flush(reply) => {
-                let ok = flush_event_batch(
-                    &store,
-                    &session_id,
-                    &health,
-                    &mut pending,
-                    #[cfg(test)]
-                    &commits,
-                );
-                failed = !ok;
-                pending_bytes = pending
-                    .iter()
-                    .map(|item| item.event.to_string().len())
-                    .sum();
-                deadline = (!pending.is_empty() && !failed)
-                    .then(|| std::time::Instant::now() + EVENT_BATCH_WINDOW);
-                let result = if ok {
-                    Ok(())
-                } else {
-                    Err(health
-                        .error()
-                        .unwrap_or_else(|| "event persistence is unavailable".to_string()))
-                };
-                let _ = reply.send(result);
-            }
-            EventWriteCommand::Shutdown(reply) => {
-                let ok = flush_event_batch(
-                    &store,
-                    &session_id,
-                    &health,
-                    &mut pending,
-                    #[cfg(test)]
-                    &commits,
-                );
-                let result = if ok {
-                    Ok(())
-                } else {
-                    Err(health
-                        .error()
-                        .unwrap_or_else(|| "event persistence is unavailable".to_string()))
-                };
-                let _ = reply.send(result);
-                break;
             }
             #[cfg(test)]
             EventWriteCommand::Hold(gate) => {
@@ -410,16 +494,27 @@ fn flush_event_batch(
     session_id: &str,
     health: &EventJournalHealth,
     pending: &mut Vec<PendingEvent>,
+    canonical: &mut Option<crate::session::content::journal::Writer>,
     #[cfg(test)] commits: &std::sync::atomic::AtomicU64,
 ) -> bool {
     if pending.is_empty() {
         return true;
     }
-    let events = pending
-        .iter()
-        .map(|item| item.event.clone())
-        .collect::<Vec<_>>();
-    match store.append_events(session_id, events) {
+    let started = std::time::Instant::now();
+    let result = match canonical.as_mut() {
+        Some(writer) => writer.persist(store, session_id, pending.iter().map(|item| &item.event)),
+        None => store.append_events(
+            session_id,
+            pending.iter().map(|item| item.event.clone()).collect(),
+        ),
+    };
+    health.metrics.record(
+        pending.len(),
+        pending.iter().map(|item| item.bytes).sum(),
+        started.elapsed(),
+        result.is_ok(),
+    );
+    match result {
         Ok(()) => {
             #[cfg(test)]
             commits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -444,7 +539,7 @@ fn flush_event_batch(
             // healthy while holding the error of the batch that made it
             // unhealthy.
             struct Deferred {
-                reply: std::sync::mpsc::SyncSender<Result<(), AppendFailure>>,
+                reply: crossbeam_channel::Sender<Result<(), AppendFailure>>,
                 outcome: Result<(), AppendFailure>,
             }
             let mut replies: Vec<Deferred> = Vec::new();
@@ -518,12 +613,11 @@ fn flush_event_batch(
             let message = format!("event batch commit failed: {error:#}");
             health.fail(message.clone());
             let mut retry = Vec::new();
-            for item in pending.drain(..) {
-                if let Some(reply) = item.reply {
+            for mut item in pending.drain(..) {
+                if let Some(reply) = item.reply.take() {
                     let _ = reply.send(Err(AppendFailure::Unavailable(message.clone())));
-                } else {
-                    retry.push(item);
                 }
+                retry.push(item);
             }
             *pending = retry;
             false

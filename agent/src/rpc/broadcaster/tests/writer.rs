@@ -2,19 +2,26 @@ use super::*;
 
 #[test]
 fn transient_full_event_queue_backpressures_without_failing_health() {
-    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let (sender, receiver) = crossbeam_channel::bounded(1);
     let health = std::sync::Arc::new(EventJournalHealth::default());
+    let (control, _worker_exit) =
+        super::super::journal_control::JournalControl::new(crossbeam_channel::bounded(1).0);
     let writer = std::sync::Arc::new(EventBatchWriter {
         sender,
+        control,
         thread: None,
         health: health.clone(),
+        admission: Default::default(),
         commits: Default::default(),
     });
     writer
         .sender
         .send(EventWriteCommand::Append {
+            sequence: 1,
             event: serde_json::json!({"n":1}),
             reply: None,
+            reservation: None,
+            bytes: 64,
         })
         .unwrap();
     let copy = writer.clone();
@@ -48,7 +55,7 @@ fn event_batch_writer_refuses_appends_when_unhealthy_or_when_its_worker_is_gone(
     let directory = tempfile::tempdir().unwrap();
     let store = crate::session::sqlite_store::SqliteStore::open(&directory.path().join("agent.db"))
         .unwrap();
-    store.bind_events("session-direct").unwrap();
+    store.bind_legacy_events("session-direct").unwrap();
     let health = std::sync::Arc::new(EventJournalHealth::default());
     let mut writer =
         EventBatchWriter::new(store, "session-direct".to_string(), health.clone()).unwrap();
@@ -105,7 +112,7 @@ fn event_batch_writer_refuses_durable_writes_after_a_failed_batch() {
     let directory = tempfile::tempdir().unwrap();
     let manager = crate::session::Manager::new(directory.path().to_path_buf());
     let store = manager.storage().unwrap().clone();
-    store.bind_events("session-failed-batch").unwrap();
+    store.bind_legacy_events("session-failed-batch").unwrap();
     let health = std::sync::Arc::new(EventJournalHealth::default());
     let writer =
         EventBatchWriter::new(store, "session-failed-batch".to_string(), health.clone()).unwrap();
@@ -185,12 +192,16 @@ fn event_batch_writer_refuses_durable_writes_after_a_failed_batch() {
 /// in hand, which is exactly what holding and dropping the queue models.
 #[test]
 fn an_accepted_durable_append_reports_unavailable_when_the_worker_dies_before_answering() {
-    let (sender, receiver) = std::sync::mpsc::sync_channel(4);
+    let (sender, receiver) = crossbeam_channel::bounded(4);
     let health = std::sync::Arc::new(EventJournalHealth::default());
+    let (control, _worker_exit) =
+        super::super::journal_control::JournalControl::new(crossbeam_channel::bounded(1).0);
     let writer = std::sync::Arc::new(EventBatchWriter {
         sender,
+        control,
         thread: None,
         health: health.clone(),
+        admission: Default::default(),
         commits: Default::default(),
     });
 
@@ -240,7 +251,7 @@ fn event_batch_worker_exits_when_its_last_sender_disappears() {
         let store =
             crate::session::sqlite_store::SqliteStore::open(&directory.path().join("agent.db"))
                 .unwrap();
-        store.bind_events("session-empty-batch").unwrap();
+        store.bind_legacy_events("session-empty-batch").unwrap();
         let health = std::sync::Arc::new(EventJournalHealth::default());
         let mut writer =
             EventBatchWriter::new(store, "session-empty-batch".to_string(), health.clone())
@@ -264,7 +275,7 @@ fn event_batch_worker_exits_when_its_last_sender_disappears() {
         let directory = tempfile::tempdir().unwrap();
         let manager = crate::session::Manager::new(directory.path().to_path_buf());
         let store = manager.storage().unwrap().clone();
-        store.bind_events("session-pending-batch").unwrap();
+        store.bind_legacy_events("session-pending-batch").unwrap();
         let before = store.event_cursors("session-pending-batch").unwrap();
         let health = std::sync::Arc::new(EventJournalHealth::default());
         let mut writer =
@@ -291,7 +302,7 @@ fn event_batch_worker_exits_when_its_last_sender_disappears() {
 fn delta_burst_commits_as_one_batch_at_a_durable_boundary() {
     let directory = tempfile::tempdir().unwrap();
     let b = SseBroadcaster::new();
-    b.configure_journal(
+    b.configure_legacy_journal(
         "session-batch",
         &crate::session::Manager::new(directory.path().to_path_buf()),
     )
@@ -315,7 +326,8 @@ fn lone_delta_is_flushed_after_the_batch_window() {
     let directory = tempfile::tempdir().unwrap();
     let manager = crate::session::Manager::new(directory.path().to_path_buf());
     let b = SseBroadcaster::new();
-    b.configure_journal("session-timer", &manager).unwrap();
+    b.configure_legacy_journal("session-timer", &manager)
+        .unwrap();
     b.start_run("run-timer".to_string(), 1);
     b.broadcast(SseEvent::new(
         "thinking_delta",
@@ -358,7 +370,8 @@ fn asynchronous_delta_failure_interrupts_the_run() {
     let directory = tempfile::tempdir().unwrap();
     let manager = crate::session::Manager::new(directory.path().to_path_buf());
     let b = SseBroadcaster::new();
-    b.configure_journal("session-failure", &manager).unwrap();
+    b.configure_legacy_journal("session-failure", &manager)
+        .unwrap();
     b.start_run("run-failure".to_string(), 1);
     let interrupt = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     b.set_persistence_interrupt(interrupt.clone());
@@ -412,7 +425,7 @@ fn a_refused_batch_retries_singly_and_separates_refusal_from_storage_failure() {
     let directory = tempfile::tempdir().unwrap();
     let manager = crate::session::Manager::new(directory.path().to_path_buf());
     let store = manager.storage().unwrap().clone();
-    store.bind_events("session-mixed-batch").unwrap();
+    store.bind_legacy_events("session-mixed-batch").unwrap();
     let health = std::sync::Arc::new(EventJournalHealth::default());
     let writer = EventBatchWriter::new(
         store.clone(),
@@ -480,7 +493,7 @@ fn refused_batch_with_only_durable_storage_failures_stays_unhealthy() {
     let manager = crate::session::Manager::new(directory.path().to_path_buf());
     let store = manager.storage().unwrap().clone();
     let session = "session-durable-refused-batch";
-    store.bind_events(session).unwrap();
+    store.bind_legacy_events(session).unwrap();
     let health = std::sync::Arc::new(EventJournalHealth::default());
     let writer = EventBatchWriter::new(store.clone(), session.into(), health.clone()).unwrap();
     manager.test_execute("DROP TABLE storage_meta");
@@ -498,12 +511,15 @@ fn refused_batch_with_only_durable_storage_failures_stays_unhealthy() {
     let valid = serde_json::json!({
         "event_type":"agent_end", "run_id":"run", "epoch":0, "idx":1, "session_id":session
     });
-    let (reply, result) = std::sync::mpsc::sync_channel(1);
+    let (reply, result) = crossbeam_channel::bounded(1);
     writer
         .sender
         .send(EventWriteCommand::Append {
+            sequence: 2,
             event: valid.clone(),
             reply: Some(reply),
+            reservation: None,
+            bytes: 64,
         })
         .unwrap();
     gate.wait();

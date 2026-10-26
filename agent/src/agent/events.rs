@@ -9,6 +9,13 @@ pub enum RunEvent {
         started_at_ms: u64,
     },
     Model(ModelStreamEvent),
+    MessageStart {
+        entry_id: String,
+    },
+    MessageEnd {
+        entry_id: String,
+        complete: bool,
+    },
     StreamRetry {
         attempt: usize,
         max_retries: usize,

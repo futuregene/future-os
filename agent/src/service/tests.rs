@@ -371,7 +371,7 @@ async fn an_ephemeral_sessions_cancelled_queue_is_not_written_as_a_terminal_row(
         handle.state.model_registry.clone(),
         handle.state.queue_budget.clone(),
     );
-    ephemeral.ephemeral = true;
+    ephemeral.set_ephemeral(true).unwrap();
     // A queued run that the drain will cancel: the ephemeral skip is only
     // observable when there is something to write.
     let queue = crate::runtime::InMemoryRunQueue::new("ephemeral", 0);

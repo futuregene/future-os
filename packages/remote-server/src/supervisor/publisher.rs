@@ -94,6 +94,31 @@ impl Supervisor {
             }
             return;
         }
+        // A legacy peer must receive an explicit upgrade outcome, never
+        // incomplete referenced bodies. Suppress later frames for this run.
+        // The cache is bounded and is reset with the connection declaration.
+        let unsupported = !self.segmented_content(&pair_id).load(Ordering::Acquire)
+            && crate::content_capability::canonical_data(data);
+        let refusal;
+        let (event_type, data) = if unsupported {
+            let shared = self.shared_or_insert(&pair_id);
+            let key = serde_json::json!([session_id, run_id, epoch]).to_string();
+            let mut refused = shared.content_refusals.lock().unwrap();
+            if refused.contains(&key) {
+                return;
+            }
+            if refused.len() >= 64 {
+                refused.pop_front();
+            }
+            refused.push_back(key);
+            refusal = serde_json::json!({"type":"agent_end","state":"error",
+                "error":crate::content_capability::UPGRADE_REQUIRED,
+                "error_code":"client_upgrade_required"})
+            .to_string();
+            ("agent_end", refusal.as_str())
+        } else {
+            (event_type, data)
+        };
         // Lean feed: reasoning and streamed tool arguments never reach the lane.
         // Dropping here (rather than later in the drain) keeps the queue and the
         // coalescer from ever holding them.

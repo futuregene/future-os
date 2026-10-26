@@ -7,11 +7,89 @@ use std::path::Path;
 /// Project the agent's typed run events onto the stable public RPC vocabulary.
 /// This is the only model/run-event boundary that knows the string event names
 /// and legacy JSON `data` shapes retained by released clients.
+pub(super) fn run_event_to_sse_for_storage(
+    event: crate::agent::RunEvent,
+    segmented: bool,
+) -> Option<super::SseEvent> {
+    if segmented {
+        use crate::{agent::RunEvent, llm::schema::ModelStreamEvent};
+        match &event {
+            RunEvent::MessageStart { entry_id } => {
+                return Some(super::SseEvent::new(
+                    "message_start",
+                    serde_json::json!({"entry_id":entry_id}),
+                ))
+            }
+            RunEvent::MessageEnd { entry_id, complete } => {
+                return Some(super::SseEvent::new(
+                    "message_end",
+                    serde_json::json!({"entry_id":entry_id,"complete":complete}),
+                ))
+            }
+            RunEvent::Model(ModelStreamEvent::TextStart { id }) => {
+                return Some(super::SseEvent::new(
+                    "text_start",
+                    serde_json::json!({"block_id":id}),
+                ))
+            }
+            RunEvent::Model(ModelStreamEvent::TextDelta { id, text }) => {
+                return Some(super::SseEvent::new(
+                    "text_chunk",
+                    serde_json::json!({"block_id":id,"text":text}),
+                ))
+            }
+            RunEvent::Model(ModelStreamEvent::ReasoningEnd {
+                id,
+                provider_metadata,
+            }) => {
+                return Some(super::SseEvent::new(
+                    "thinking_end",
+                    serde_json::json!({"block_id":id,"provider_metadata":provider_metadata}),
+                ))
+            }
+            RunEvent::Model(ModelStreamEvent::TextEnd { id }) => {
+                return Some(super::SseEvent::new(
+                    "text_end",
+                    serde_json::json!({"block_id":id}),
+                ))
+            }
+            RunEvent::Model(ModelStreamEvent::ToolInputStart {
+                index,
+                id,
+                name,
+                arguments,
+                provider_metadata,
+            }) => {
+                return Some(super::SseEvent::new(
+                    "tool_start",
+                    serde_json::json!({"phase":"input","tc_index":index,
+                    "tool_id":id,"tool_name":name,"tool_args":arguments.clone().unwrap_or_else(||serde_json::json!("")),"provider_metadata":provider_metadata}),
+                ))
+            }
+            RunEvent::Model(ModelStreamEvent::ToolInputEnd {
+                index,
+                id,
+                name,
+                arguments,
+                provider_metadata,
+            }) => {
+                return Some(super::SseEvent::new(
+                    "tool_input_end",
+                    serde_json::json!({"tc_index":index,"tool_id":id,"tool_name":name,"tool_args":arguments,"provider_metadata":provider_metadata}),
+                ))
+            }
+            _ => {}
+        }
+    }
+    run_event_to_sse(event)
+}
+
 pub(super) fn run_event_to_sse(event: crate::agent::RunEvent) -> Option<super::SseEvent> {
     use crate::agent::RunEvent;
     use crate::llm::schema::ModelStreamEvent;
 
     let projected = match event {
+        RunEvent::MessageStart { .. } | RunEvent::MessageEnd { .. } => return None,
         RunEvent::AgentStart { started_at_ms } => (
             "agent_start",
             ordered_data([

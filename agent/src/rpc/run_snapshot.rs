@@ -5,6 +5,13 @@ use super::SseEvent;
 use serde_json::Value;
 
 pub(super) fn fold_events(events: Vec<SseEvent>) -> Vec<SseEvent> {
+    if events.iter().any(|event| {
+        serde_json::from_str::<Value>(&event.data)
+            .ok()
+            .is_some_and(|data| data.get("content_key").is_some())
+    }) {
+        return coalesce_deltas(events);
+    }
     strip_repeated_tool_arguments(coalesce_deltas(events))
 }
 
@@ -135,14 +142,30 @@ pub(crate) fn same_delta_stream(
     a: &Value,
     b: &Value,
 ) -> bool {
+    let canonical = a.get("content_key").is_some() || b.get("content_key").is_some();
     previous.run_id == next.run_id
         && previous.epoch == next.epoch
         && previous.event_type == next.event_type
         && b.get("snapshot").and_then(Value::as_bool) != Some(true)
+        && (!canonical
+            || (a.get("content_key") == b.get("content_key")
+                && a["content_offset"]
+                    .as_u64()
+                    .zip(a["content_bytes"].as_u64())
+                    .and_then(|(offset, bytes)| offset.checked_add(bytes))
+                    == b["content_offset"].as_u64()))
         && a.as_object().zip(b.as_object()).is_some_and(|(a, b)| {
+            let varying = |key: &str| {
+                key == "text"
+                    || (canonical
+                        && matches!(
+                            key,
+                            "content_offset" | "content_bytes" | "content_first_idx"
+                        ))
+            };
             a.iter()
-                .filter(|(k, _)| k.as_str() != "text")
-                .eq(b.iter().filter(|(k, _)| k.as_str() != "text"))
+                .filter(|(key, _)| !varying(key))
+                .eq(b.iter().filter(|(key, _)| !varying(key)))
         })
 }
 
@@ -157,6 +180,7 @@ pub(crate) struct DeltaFolder {
 }
 
 impl DeltaFolder {
+    #[cfg(test)]
     pub(crate) fn bounded() -> Self {
         Self {
             bounded_segments: true,
@@ -174,6 +198,7 @@ impl DeltaFolder {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn estimated_bytes(&self) -> usize {
         self.bytes
             + self.pending.as_ref().map_or(0, |(event, data, _)| {
@@ -196,12 +221,16 @@ impl DeltaFolder {
                 let combined_size = previous_data["text"].as_str().map_or(0, str::len)
                     + next["text"].as_str().map_or(0, str::len);
                 if same_delta_stream(previous, &event, previous_data, &next)
-                    && (!self.bounded_segments || combined_size <= 64 * 1024)
+                    && ((!self.bounded_segments && previous_data.get("content_key").is_none())
+                        || combined_size <= 64 * 1024)
                 {
                     let Value::String(text) = &mut previous_data["text"] else {
                         unreachable!()
                     };
                     text.push_str(next["text"].as_str().expect("text checked"));
+                    if previous_data.get("content_key").is_some() {
+                        previous_data["content_bytes"] = serde_json::json!(combined_size);
+                    }
                     previous.idx = event.idx;
                     previous.event_id = event.event_id;
                     previous.timestamp = event.timestamp;

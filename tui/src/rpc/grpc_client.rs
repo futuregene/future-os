@@ -1604,7 +1604,10 @@ async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> StreamExit {
         tokio::select! {
             msg = stream.message() => {
                 match msg {
-                    Ok(Some(event)) => {
+                    Ok(Some(mut event)) => {
+                        if future_rpc::content_body::hydrate_stream_event(&mut client, session, &mut event).await.is_err() {
+                            return StreamExit::Lost;
+                        }
                         let raw_data: Map<String, Value> = if event.data.is_empty() {
                             Map::new()
                         } else {

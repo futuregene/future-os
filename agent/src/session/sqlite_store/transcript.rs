@@ -5,6 +5,19 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
 impl SqliteStore {
+    /// Indexed ownership lookup for admission retries. A run-id collision must
+    /// not hydrate every message merely to discover an earlier run marker.
+    pub(crate) fn has_transcript_run(&self, session: &str, run: &str) -> Result<bool> {
+        let (session, run) = (session.to_owned(), run.to_owned());
+        self.db.read(move |db| {
+            Ok(db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM entries WHERE session_id=?1 AND run_id=?2)",
+                params![session, run],
+                |row| row.get(0),
+            )?)
+        })
+    }
+
     pub fn entries(&self, session: &str) -> Result<Vec<Value>> {
         self.typed_entries(session)
     }
@@ -15,8 +28,27 @@ impl SqliteStore {
         &self,
         session: &str,
     ) -> Result<Vec<T>> {
+        if self.storage_format(session)? == crate::session::content::FORMAT_VERSION {
+            let snapshot = crate::session::content::reader::Snapshot::capture(self, session)?;
+            let mut after = -1;
+            let mut entries = Vec::new();
+            loop {
+                let page = snapshot.page(self, after)?;
+                if page.is_empty() {
+                    break;
+                }
+                for entry in page {
+                    after = entry.position;
+                    entries.push(serde_json::from_value(snapshot.entry(self, &entry)?)?);
+                }
+            }
+            if entries.is_empty() {
+                bail!("session has no entries or was not imported");
+            }
+            return Ok(entries);
+        }
         let session = session.to_owned();
-        let rows = self.db.call(move |db| read_entry_rows(db, &session))?;
+        let rows = self.db.read(move |db| read_entry_rows(db, &session))?;
         rows.into_iter()
             .map(|row| Ok(serde_json::from_str(&row)?))
             .collect()
@@ -26,7 +58,7 @@ impl SqliteStore {
     /// Read the tail timestamp separately so ordering includes all entry kinds.
     pub(crate) fn summary_rows(&self, session: &str) -> Result<(Vec<String>, String, usize)> {
         let session = session.to_owned();
-        self.db.call(move |db| {
+        self.db.read(move |db| {
             let tx = db.transaction()?;
             let rows = {
                 let mut stmt = tx.prepare("SELECT payload FROM entry_records WHERE session_id=?1 AND position IN (
@@ -46,6 +78,8 @@ impl SqliteStore {
     }
 
     pub fn replace(&self, session: &str, entries: Vec<Value>) -> Result<()> {
+        let mut prepared = crate::session::content::entries::prepare(self, session, entries)?;
+        let entries = prepared.take();
         let session = session.to_owned();
         let result = self.db.call(move |db| {
             // Reads `legacy_imports` before writing, so the transaction must own
@@ -124,6 +158,8 @@ impl SqliteStore {
                     "DELETE FROM run_snapshots WHERE session_id=?1 AND run_id=?2",
                     params![session, run],
                 )?;
+                tx.execute("DELETE FROM stream_runs WHERE session_id=?1 AND run_id=?2",params![session,run])?;
+                tx.execute("DELETE FROM content_references WHERE session_id=?1 AND owner_kind='stream' AND json_valid(owner_id) AND json_extract(owner_id,'$[0]')=?2",params![session,run])?;
             }
             tx.commit()?;
             Ok(planned.plan)
@@ -149,8 +185,26 @@ fn read_entry_rows(db: &Connection, session: &str) -> Result<Vec<String>> {
     Ok(values)
 }
 
-pub(crate) fn read_run_markers(db: &Connection, session: &str) -> Result<Vec<Value>> {
-    let mut statement=db.prepare("SELECT payload FROM entry_records WHERE session_id=?1 AND entry_type IN ('run_started','run_terminal','run_stop_requested') ORDER BY position")?;
+pub(crate) fn read_run_marker_headers(db: &Connection, session: &str) -> Result<Vec<Value>> {
+    if crate::session::content::format(db, session)? != crate::session::content::FORMAT_VERSION {
+        return run_marker_rows(db, session, "entry_records");
+    }
+    // The latest start supersedes earlier runs. Only its latest start, stop
+    // and terminal can affect admission/resume; bodies and old runs are skipped.
+    let mut query = db.prepare("SELECT payload FROM entry_header_records WHERE session_id=?1 AND position IN (
+        SELECT max(position) FROM entries WHERE session_id=?1 AND run_id=(
+            SELECT run_id FROM entries WHERE session_id=?1 AND entry_type='run_started' ORDER BY position DESC LIMIT 1)
+        AND entry_type IN ('run_started','run_terminal','run_stop_requested') GROUP BY entry_type) ORDER BY position")?;
+    let rows = query
+        .query_map([session], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.into_iter()
+        .map(|raw| Ok(serde_json::from_str(&raw)?))
+        .collect()
+}
+
+fn run_marker_rows(db: &Connection, session: &str, source: &str) -> Result<Vec<Value>> {
+    let mut statement=db.prepare(&format!("SELECT payload FROM {source} WHERE session_id=?1 AND entry_type IN ('run_started','run_terminal','run_stop_requested') ORDER BY position"))?;
     let rows = statement
         .query_map([session], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -164,7 +218,11 @@ pub(crate) fn read_run_markers(db: &Connection, session: &str) -> Result<Vec<Val
 ///
 /// Shared by `SqliteStore::replace` (its own transaction) and the in-place
 /// history reset (which must verify and rewrite in one transaction).
-fn rewrite_transcript_rows(db: &Connection, session: &str, entries: Vec<Value>) -> Result<()> {
+pub(crate) fn rewrite_transcript_rows(
+    db: &Connection,
+    session: &str,
+    entries: Vec<Value>,
+) -> Result<()> {
     let deleted: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1)",
         [session],
@@ -182,6 +240,9 @@ fn rewrite_transcript_rows(db: &Connection, session: &str, entries: Vec<Value>) 
         bail!("session migration was skipped; retry import before modifying it");
     }
     db.execute("INSERT INTO sessions(id) VALUES (?1) ON CONFLICT(id) DO UPDATE SET revision=MAX(revision+1,0)", [session])?;
+    if crate::session::content::format(db, session)? == crate::session::content::FORMAT_VERSION {
+        crate::session::content::advance_history(db, session)?;
+    }
     db.execute("DELETE FROM entries WHERE session_id=?1", [session])?;
     db.execute("DELETE FROM history_display WHERE session_id=?1", [session])?;
     db.execute("DELETE FROM runs WHERE session_id=?1", [session])?;
@@ -190,6 +251,7 @@ fn rewrite_transcript_rows(db: &Connection, session: &str, entries: Vec<Value>) 
         [session],
     )?;
     insert_transcript_entries(db, session, entries)?;
+    db.execute("DELETE FROM content_references WHERE session_id=?1 AND owner_kind='entry' AND NOT EXISTS(SELECT 1 FROM entries e WHERE e.session_id=content_references.session_id AND e.entry_id=content_references.owner_id)",[session])?;
     db.execute("DELETE FROM run_events WHERE session_id=?1 AND run_id IN (SELECT run_id FROM run_snapshots WHERE session_id=?1 AND NOT EXISTS(SELECT 1 FROM runs r WHERE r.session_id=run_snapshots.session_id AND r.run_id=run_snapshots.run_id))", [session])?;
     db.execute("DELETE FROM run_snapshots WHERE session_id=?1 AND NOT EXISTS(SELECT 1 FROM runs r WHERE r.session_id=run_snapshots.session_id AND r.run_id=run_snapshots.run_id)", [session])?;
     Ok(())
@@ -234,6 +296,8 @@ pub(crate) fn insert_transcript_entries(
         [session],
         |r| r.get(0),
     )?;
+    let segmented =
+        crate::session::content::format(db, session)? == crate::session::content::FORMAT_VERSION;
     let mut changed_position: Option<i64> = None;
     let mut metadata_changed = false;
     for value in entries {
@@ -309,18 +373,43 @@ pub(crate) fn insert_transcript_entries(
             .get("type")
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow::anyhow!("missing entry type"))?;
-        let previous: Option<String> = db
-            .query_row(
-                "SELECT payload FROM entry_records WHERE session_id=?1 AND entry_id=?2 LIMIT 1",
-                params![session, id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(previous) = previous {
-            if serde_json::from_str::<Value>(&previous)? != value {
-                bail!("conflicting entry identity");
+        let fingerprint = if segmented {
+            use sha2::{Digest, Sha256};
+            Some(format!(
+                "{:x}",
+                Sha256::digest(value.to_string().as_bytes())
+            ))
+        } else {
+            None
+        };
+        if let Some(fingerprint) = &fingerprint {
+            let previous: Option<String> = db
+                .query_row(
+                    "SELECT digest FROM entry_fingerprints WHERE session_id=?1 AND entry_id=?2",
+                    params![session, id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(previous) = previous {
+                if previous != *fingerprint {
+                    bail!("conflicting entry identity");
+                }
+                continue;
             }
-            continue;
+        } else {
+            let previous: Option<String> = db
+                .query_row(
+                    "SELECT payload FROM entry_records WHERE session_id=?1 AND entry_id=?2 LIMIT 1",
+                    params![session, id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(previous) = previous {
+                if serde_json::from_str::<Value>(&previous)? != value {
+                    bail!("conflicting entry identity");
+                }
+                continue;
+            }
         }
         // A session has one current metadata record, not a snapshot for each
         // settings change. Keep its original position so history cursors do not
@@ -332,12 +421,24 @@ pub(crate) fn insert_transcript_entries(
         };
         let write_position = metadata_position.unwrap_or(position);
         if metadata_position.is_some() {
+            if segmented {
+                // The new metadata header already owns staged/copied ranges.
+                // Retire the previous owner atomically rather than leaking all
+                // of its externalized fields after every rename/usage update.
+                db.execute("DELETE FROM content_references WHERE session_id=?1 AND owner_kind='entry' AND owner_id=(SELECT entry_id FROM entries WHERE session_id=?1 AND position=?2)",params![session,write_position])?;
+            }
             db.execute(
                 "DELETE FROM entries WHERE session_id=?1 AND position=?2",
                 params![session, write_position],
             )?;
         }
         crate::session::entry_records::insert_entry_record(db, session, write_position, &value)?;
+        if let Some(fingerprint) = fingerprint {
+            db.execute(
+                "INSERT INTO entry_fingerprints(session_id,entry_id,digest) VALUES (?1,?2,?3)",
+                params![session, id, fingerprint],
+            )?;
+        }
         crate::session::history::insert_entry_shape(db, session, write_position, &value)?;
         metadata_changed |= matches!(kind, "session_info" | "model_change");
         if metadata_position.is_none() && kind != "model_change" {

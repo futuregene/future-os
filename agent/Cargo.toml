@@ -20,6 +20,7 @@ dhat-heap = ["dep:dhat"]
 future-rpc = { path = "../packages/rpc" }
 tokio.workspace = true
 parking_lot.workspace = true
+crossbeam-channel = "0.5"
 serde.workspace = true
 # preserve_order: session-list JSON key order must be deterministic across
 # build modes. Without it, the order silently depends on cargo feature
@@ -63,7 +64,7 @@ image = { version = "0.25", default-features = false, features = [
     "bmp",
 ] }
 fd-lock = "4"
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled", "functions"] }
 signal-hook = "0.4"
 
 async-trait.workspace = true

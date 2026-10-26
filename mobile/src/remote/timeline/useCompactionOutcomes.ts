@@ -1,3 +1,4 @@
+import { eventPayload } from "@future-os/thread-projection";
 import type { MutableRefObject } from "react";
 import { useCallback, useEffect, useRef } from "react";
 import { AppState } from "react-native";
@@ -23,7 +24,7 @@ export function compactionTerminalOf(
     return null;
   let parsed: unknown;
   try {
-    parsed = JSON.parse(event.data);
+    parsed = eventPayload(event, event.data);
   } catch {
     return null;
   }

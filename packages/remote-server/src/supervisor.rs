@@ -315,6 +315,10 @@ impl Supervisor {
         self.shared_or_insert(pair_id).lean_events
     }
 
+    pub fn segmented_content(&self, pair_id: &str) -> Arc<AtomicBool> {
+        self.shared_or_insert(pair_id).segmented_content
+    }
+
     /// The capability state of `pair_id`, creating an empty one if this pairing
     /// has no runtime entry yet.
     ///
@@ -334,6 +338,8 @@ impl Supervisor {
                 coalesce_events: Arc::new(AtomicBool::new(false)),
                 catalog_activity: Arc::new(AtomicBool::new(false)),
                 lean_events: Arc::new(AtomicBool::new(false)),
+                segmented_content: Arc::new(AtomicBool::new(false)),
+                content_refusals: Default::default(),
                 client_identity: Arc::new(Mutex::new(None)),
                 client_link: Arc::new(link::ClientLink::default()),
                 next_generation_id: Arc::new(AtomicU64::new(1)),
@@ -642,6 +648,8 @@ pub struct BridgeRuntimeShared {
     /// others: trimming one device's history to fields another device asked to
     /// skip would be a silent narrowing of what it receives.
     pub lean_events: Arc<AtomicBool>,
+    pub segmented_content: Arc<AtomicBool>,
+    pub content_refusals: Arc<Mutex<std::collections::VecDeque<String>>>,
     /// What the connected client said it was, until a new pairing replaces it.
     ///
     /// Spans generations like the fields above, and for the same reason: a
@@ -740,6 +748,8 @@ impl Supervisor {
             coalesce_events: Arc::new(AtomicBool::new(false)),
             catalog_activity: Arc::new(AtomicBool::new(false)),
             lean_events: Arc::new(AtomicBool::new(false)),
+            segmented_content: Arc::new(AtomicBool::new(false)),
+            content_refusals: Default::default(),
             client_identity: Arc::new(Mutex::new(None)),
             client_link: Arc::new(link::ClientLink::default()),
             next_generation_id: Arc::new(AtomicU64::new(1)),

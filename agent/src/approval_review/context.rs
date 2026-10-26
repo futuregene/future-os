@@ -74,6 +74,16 @@ impl RunApprovalReviewer {
         self
     }
 
+    /// Run preparation calls this once, before any model/tool callback can
+    /// execute. Captured generation/source stay fixed at admission; only the
+    /// immutable history evidence is built off the session command lock.
+    pub(crate) fn initialize_history(&self, messages: &[crate::types::AgentMessage]) {
+        let mut history = EvidenceContext::from_history(messages);
+        let mut current = self.evidence.lock();
+        history.current_source_id = current.current_source_id.clone();
+        *current = history;
+    }
+
     pub(crate) fn observe_message(&self, message: &crate::types::AgentMessage) {
         self.evidence.lock().observe(message);
     }

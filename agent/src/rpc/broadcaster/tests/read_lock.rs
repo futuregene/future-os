@@ -9,7 +9,7 @@ fn historical_and_current_disk_replay_release_broadcast_locks_while_waiting_for_
         let manager = crate::session::Manager::new(directory.path().to_path_buf());
         let broadcaster = Arc::new(SseBroadcaster::new());
         broadcaster
-            .configure_journal("session-read-lock", &manager)
+            .configure_legacy_journal("session-read-lock", &manager)
             .unwrap();
         broadcaster.start_run("live".into(), 0);
         broadcaster.broadcast(SseEvent::new("agent_start", serde_json::json!({})));

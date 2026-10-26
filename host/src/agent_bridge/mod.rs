@@ -65,14 +65,15 @@ use self::queries::reload_agent_credentials;
 pub use self::queries::{
     generate_session_title, get_available_models, get_events_since, get_events_since_payload,
     get_session_entries, get_session_entries_before, get_session_messages, get_session_state,
-    probe_sandbox, probe_windows_sandbox, rename_session, request_future_models_refresh,
-    reset_windows_sandbox, set_default_model, set_session_model, set_session_thinking_level,
-    sync_future_models, RequestFutureModelsRefreshResult, SandboxProbeResult,
-    SyncFutureModelsResult, WindowsSandboxProbeResult,
+    get_session_storage_format, probe_sandbox, probe_windows_sandbox, rename_session,
+    request_future_models_refresh, reset_windows_sandbox, set_default_model, set_session_model,
+    set_session_thinking_level, sync_future_models, RequestFutureModelsRefreshResult,
+    SandboxProbeResult, SyncFutureModelsResult, WindowsSandboxProbeResult,
 };
 pub use self::queries::{
-    get_events_since_page, get_run_snapshot, get_session_entries_before_with_client,
-    get_session_entries_with_client, get_tool_call_args, provision_agent_session, query_tools,
+    get_event_content_range, get_events_since_page, get_events_since_page_until, get_run_snapshot,
+    get_session_entries_before_with_client, get_session_entries_with_client, get_tool_call_args,
+    provision_agent_session, query_tools,
 };
 pub use self::reconciliation::{
     attach_remote_stream, reconcile_interrupted_runs, reconcile_thread_workspace,

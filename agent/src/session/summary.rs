@@ -88,6 +88,11 @@ impl Manager {
     pub fn list_all(&self) -> Result<Vec<SessionSummary>> {
         let mut summaries = Vec::new();
         for id in self.storage()?.ids(false)? {
+            let store = self.storage()?;
+            if store.storage_format(&id)? == super::content::FORMAT_VERSION {
+                summaries.push(super::content::reader::Snapshot::summary(store, &id)?);
+                continue;
+            }
             let (rows, timestamp, query_count) = self.storage()?.summary_rows(&id)?;
             let mut entries = rows
                 .into_iter()
@@ -113,6 +118,35 @@ impl Manager {
 mod tests {
     use super::*;
     use crate::utils::generate_id;
+
+    #[test]
+    fn canonical_list_uses_thin_metadata_and_only_the_first_user_text_field() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = Manager::new(root.path().join("sessions"));
+        let store = manager.storage().unwrap();
+        store.reserve_segmented("s").unwrap();
+        store.replace("s",vec![
+            serde_json::json!({"id":"info","type":"session_info","timestamp":"2026-10-26T00:00:00Z","content":{"cwd":"/synthetic","model":"mock","session_name":"named","parent_session_id":"parent","system_prompt":"rules".repeat(10000),"source_meta":{"provenance":"source".repeat(5000)}}}),
+            serde_json::json!({"id":"u","type":"user","role":"user","timestamp":"2026-10-26T00:00:01Z","content":[{"type":"text","text":"[other](futureos://session/parent) 这个会话的主题"},{"type":"image_url","image_url":{"url":"data:image/png;base64,".repeat(3000)}}]}),
+            serde_json::json!({"id":"a","type":"assistant","role":"assistant","timestamp":"2026-10-26T00:00:02Z","content":"irrelevant answer".repeat(10000)}),
+        ]).unwrap();
+        let expected = Manager::summary_from_session(&manager.load("s").unwrap());
+        store.db.call(|db| {
+            db.execute_batch("DROP VIEW entry_records; DROP VIEW resolved_message_blocks; DROP VIEW block_records")?;
+            db.execute("DELETE FROM content_segments WHERE content_id IN (SELECT content_id FROM content_references WHERE session_id='s' AND (owner_id IN ('info','a') OR field='/content/1/image_url'))",[])?;
+            Ok(())
+        }).unwrap();
+        let actual = manager.list_all().unwrap().remove(0);
+        assert_eq!(
+            serde_json::to_value(&actual).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+        assert_eq!(actual.first_message.as_deref(), Some("这个会话的主题"));
+        assert!(
+            manager.load("s").is_err(),
+            "unused fields in the fixture must actually be unreadable"
+        );
+    }
 
     fn temp_manager(tag: &str) -> (std::path::PathBuf, Manager) {
         let dir = std::env::temp_dir().join(format!("future-{tag}-{}", generate_id()));

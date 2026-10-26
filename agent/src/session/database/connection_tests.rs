@@ -191,8 +191,10 @@ fn a_non_busy_transaction_failure_is_returned_instead_of_retried() {
             // An open write transaction makes the second BEGIN fail with a
             // plain SQLite error, which is not a busy condition.
             let first = super::begin_write_transaction(connection)?;
-            let error = super::begin_write_transaction(connection)
-                .expect_err("a second BEGIN IMMEDIATE cannot succeed");
+            let error = match super::begin_write_transaction(connection) {
+                Ok(_) => panic!("a second BEGIN IMMEDIATE cannot succeed"),
+                Err(error) => error,
+            };
             drop(first);
             Ok(error.to_string())
         })

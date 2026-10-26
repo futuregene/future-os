@@ -9,6 +9,7 @@ const RELEASED_SCHEMAS: &[(i64, &str)] = &[
     (4, include_str!("../../../tests/fixtures/database/v4.sql")),
     (5, include_str!("../../../tests/fixtures/database/v5.sql")),
     (6, include_str!("../../../tests/fixtures/database/v6.sql")),
+    (7, include_str!("../../../tests/fixtures/database/v7.sql")),
 ];
 
 fn seed_history(connection: &Connection, version: i64) {
@@ -25,6 +26,9 @@ fn seed_history(connection: &Connection, version: i64) {
          INSERT INTO legacy_imports(session_id,status,fingerprint) VALUES ('deleted','deleted','hash');
          INSERT INTO storage_meta(key,value) VALUES ('historical-key','historical-value');",
     ).unwrap();
+    if version >= 7 {
+        connection.execute("INSERT OR IGNORE INTO storage_meta(key,value) VALUES ('database_id','original-identity'),('restore_generation','original-generation')", []).unwrap();
+    }
     if version >= 3 {
         connection
             .execute(

@@ -69,6 +69,12 @@ impl CommandRuntime for Context {
             .map(|server| server.lean_events(pair))
             .unwrap_or_default()
     }
+    fn segmented_content(&self, pair: &str) -> Arc<AtomicBool> {
+        self.server
+            .upgrade()
+            .map(|server| server.segmented_content(pair))
+            .unwrap_or_default()
+    }
     fn in_control(&self, pair: &str) -> bool {
         self.server
             .upgrade()
