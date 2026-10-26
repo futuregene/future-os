@@ -138,32 +138,16 @@ pub fn render(
         lines.push(fit(&padded, columns));
     };
 
-    // ── logo + wordmark ───────────────────────────────────────────────
-    // The official FutureOS icon sits beside a lighter, letterspaced name.
-    // Four rows keep the tagline off its baseline and leave room for the
-    // composer; short and narrow terminals retain the compact presentation.
-    let hero = widgets::launchpad_hero_rows(palette, lang);
-    let hero_text_width = hero.iter().map(|row| width(row)).max().unwrap_or(0);
-    let block_width = widgets::logo_width() + 4 + hero_text_width;
-    let room_for_wordmark = columns >= block_width + 4 && rows >= 12;
-    if room_for_wordmark {
-        let logo = widgets::logo_rows(palette);
-        let block_left = (columns - block_width) / 2;
-        for (index, hero_row) in hero.iter().enumerate() {
-            let logo_row = logo
-                .get(index)
-                .map(String::as_str)
-                .unwrap_or("             ");
-            let row = format!("{logo_row}    {hero_row}");
-            lines.push(fit(&format!("{}{}", " ".repeat(block_left), row), columns));
-        }
-    } else if rows >= 8 {
-        for row in widgets::logo_rows(palette) {
-            let block_left = (columns - widgets::logo_width()) / 2;
-            lines.push(fit(&format!("{}{}", " ".repeat(block_left), row), columns));
-        }
-    }
-    if !room_for_wordmark && rows >= 12 {
+    // ── wordmark ──────────────────────────────────────────────────────
+    // No icon. The name and tagline are centred in the conversation column,
+    // leaving the input as the visual focus of the launchpad.
+    if rows >= 12 {
+        let name = format!(
+            "{}   {}",
+            palette.strong(palette.fg, "F U T U R E"),
+            palette.strong(palette.accent, "O S")
+        );
+        push(&mut lines, center(&name, content_width));
         push(
             &mut lines,
             palette.dim(&center(t(lang, Key::LaunchpadTagline), content_width)),
@@ -325,21 +309,16 @@ mod tests {
     }
 
     #[test]
-    fn a_tall_screen_shows_the_logo_the_prompt_and_the_chips() {
+    fn a_tall_screen_shows_the_name_prompt_and_chips() {
         let data = demo::launchpad();
         let mut hit = HitMap::new();
         let (lines, cursor) = render(&data, &P, Rect::new(0, 0, 120, 38), &mut hit, LANG, None);
         let text = text_of(&lines);
-        // The lighter hero carries the name and official product icon, not
-        // the chat header's heavy block letters.
+        // Typography alone carries the brand: no block art or icon.
         assert!(text.contains("F U T U R E   O S"), "{text}");
         assert_eq!(text.matches("F U T U R E").count(), 1, "{text}");
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.contains(&widgets::logo_rows(&P)[1])),
-            "{text}"
-        );
+        assert!(!text.contains('▀'), "{text}");
+        assert!(!text.contains('▄'), "{text}");
         assert!(text.contains("一个 AI agent"), "{text}");
         assert!(text.contains("新会话"), "{text}");
         assert!(text.contains("模型"), "{text}");
@@ -350,7 +329,7 @@ mod tests {
         assert!(!text.contains("最近会话"), "{text}");
         // The cursor sits on the prompt row, inside the box.
         let (_, row) = cursor.expect("the prompt owns the cursor");
-        assert_eq!(row, 4 + 1 + 1, "hero(4) + blank + box top");
+        assert_eq!(row, 2 + 1 + 1, "name + tagline + blank + box top");
     }
 
     #[test]
@@ -442,7 +421,7 @@ mod tests {
         let mut hit = HitMap::new();
         let (lines, _) = render(&data, &P, Rect::new(0, 0, 40, 12), &mut hit, LANG, None);
         let text = text_of(&lines);
-        assert!(!text.contains("F U T U R E"), "{text}");
+        assert!(text.contains("F U T U R E"), "{text}");
         assert!(text.contains("一个 AI agent"), "{text}");
         assert!(text.contains("新会话"), "{text}");
     }
