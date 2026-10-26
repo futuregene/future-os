@@ -211,6 +211,7 @@ pub struct Terminal {
     /// — a `?1006h` left behind makes the shell swallow every drag and print an
     /// escape per click.
     mouse: bool,
+    alternate_screen: bool,
 }
 
 impl Default for Terminal {
@@ -288,6 +289,7 @@ impl Terminal {
             stderr_log,
             exit_signal_cb: Arc::new(Mutex::new(None)),
             mouse: false,
+            alternate_screen: false,
         })
     }
 
@@ -298,6 +300,22 @@ impl Terminal {
     /// callback must arrange for `stop()` (or the exit path) to do so.
     pub fn set_exit_signal_callback(&mut self, cb: Option<Box<dyn FnMut() + Send + 'static>>) {
         *self.exit_signal_cb.lock() = cb;
+    }
+
+    /// Is the full-screen terminal session active? Linear reading deliberately
+    /// runs without it so output remains in native scrollback.
+    pub fn raw_enabled(&self) -> bool {
+        self.raw_enabled
+    }
+
+    /// Whether the alternate screen is owned. Raw linear input is active too,
+    /// so raw mode alone cannot distinguish the two rendering modes.
+    pub fn alternate_screen(&self) -> bool {
+        self.alternate_screen
+    }
+
+    pub fn started(&self) -> bool {
+        self.reader_thread.is_some()
     }
 
     /// Turn mouse reporting on (or off) for this instance.
@@ -329,9 +347,15 @@ impl Terminal {
     /// Point stderr at `path` while the alternate screen is up. Production uses
     /// `~/.future/tui/stderr.log`; the seam exists so the capture can be tested
     /// against a temp file instead of the suite's real stderr.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn set_stderr_log(&mut self, path: Option<std::path::PathBuf>) {
         self.stderr_log = path;
+    }
+
+    /// Whether interactive input is a terminal. Kept separate from output
+    /// mode so notification and native-scrollback decisions share one fact.
+    pub fn is_tty(&self) -> bool {
+        self.backend.is_tty()
     }
 
     /// Enter the alternate screen, raw mode, bracketed paste; install signal
@@ -340,6 +364,26 @@ impl Terminal {
         &mut self,
         on_input: Box<dyn FnMut(String) + Send + 'static>,
         on_resize: Box<dyn FnMut() + Send + 'static>,
+    ) -> io::Result<()> {
+        self.start_mode(on_input, on_resize, true)
+    }
+
+    /// Raw key input without taking the alternate screen. Output uses CRLF so
+    /// cooked mode is not required for native-scrollback newline semantics. Native-scrollback linear
+    /// reading uses this, and therefore never throws away the shell's history.
+    pub fn start_linear(
+        &mut self,
+        on_input: Box<dyn FnMut(String) + Send + 'static>,
+        on_resize: Box<dyn FnMut() + Send + 'static>,
+    ) -> io::Result<()> {
+        self.start_mode(on_input, on_resize, false)
+    }
+
+    fn start_mode(
+        &mut self,
+        on_input: Box<dyn FnMut(String) + Send + 'static>,
+        on_resize: Box<dyn FnMut() + Send + 'static>,
+        alternate: bool,
     ) -> io::Result<()> {
         if self.reader_thread.is_some() {
             return Err(io::Error::new(
@@ -360,15 +404,14 @@ impl Terminal {
         self.backend.enable_raw()?;
         self.raw_enabled = true;
 
-        // Enter the alternate screen, enable bracketed paste + focus
-        // reporting, refresh size. On failure, restore the terminal before
-        // returning.
-        write_str(&self.write_lock, "\x1b[?1049h");
-        // Home the cursor: entering the alternate screen preserves the cursor
-        // row on some terminals (tmux, for one), so log lines printed before
-        // the screen was taken would otherwise shift the whole first frame
-        // down by however many lines they were.
-        write_str(&self.write_lock, "\x1b[H");
+        // Enable bracketed paste + focus reporting. Only the full-screen mode
+        // takes the alternate buffer; linear output stays in native scrollback.
+        self.alternate_screen = alternate;
+        if alternate {
+            write_str(&self.write_lock, "\x1b[?1049h");
+            // Entering it preserves the cursor row on some terminals.
+            write_str(&self.write_lock, "\x1b[H");
+        }
         write_str(&self.write_lock, "\x1b[?2004h");
         write_str(&self.write_lock, "\x1b[?1004h");
         if self.mouse {
@@ -665,8 +708,13 @@ impl Terminal {
             self.modify_other_keys_active.store(false, Ordering::SeqCst);
         }
 
-        // Exit alternate screen buffer.
-        write_str(&self.write_lock, "\x1b[?1049l");
+        // Linear mode never took the buffer, so stopping it must not restore
+        // an unrelated saved screen or discard native scrollback.
+        if self.alternate_screen {
+            write_str(&self.write_lock, "\x1b[?1049l");
+            self.alternate_screen = false;
+        }
+        write_str(&self.write_lock, "\x1b[?25h");
 
         // Restore raw mode (termios / console modes) — idempotent.
         if self.raw_enabled {

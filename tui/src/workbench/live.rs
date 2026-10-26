@@ -762,6 +762,22 @@ impl Live {
         )
     }
 
+    /// A failed terminal state also consumes the owned-run candidate.
+    pub fn take_failure_notification(&mut self, event: &AgentEvent) -> bool {
+        if event.r#type != "agent_end"
+            || event.data.get("state").and_then(Value::as_str) != Some("failed")
+        {
+            return false;
+        }
+        event.run_id.as_deref().is_some_and(|run_id| {
+            self.completion_candidates
+                .iter()
+                .position(|id| id == run_id)
+                .map(|index| self.completion_candidates.remove(index))
+                .is_some()
+        })
+    }
+
     pub fn completion_notification(&self) -> crate::notifications::NotifyEvent {
         crate::notifications::NotifyEvent::new(
             crate::notifications::NotifyKind::Completed,
@@ -776,6 +792,38 @@ impl Live {
 
     pub fn queue_is_empty(&self) -> bool {
         self.state.queued_runs.is_empty()
+    }
+
+    /// A non-recurring alert for this client, before `handle_event` consumes
+    /// the event. Completion has its own owned-run and queue gate.
+    pub fn alert_for(&self, event: &AgentEvent) -> Option<crate::notifications::NotifyEvent> {
+        let kind = match event.r#type.as_str() {
+            "approval_request" => crate::notifications::NotifyKind::ApprovalNeeded,
+            "error" => crate::notifications::NotifyKind::Failed,
+            _ => return None,
+        };
+        let body = if kind == crate::notifications::NotifyKind::ApprovalNeeded {
+            event
+                .data
+                .get("summary")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+        } else {
+            event
+                .data
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+        };
+        Some(crate::notifications::NotifyEvent::new(
+            kind,
+            t(self.lang, Key::NotificationTitle),
+            if body.trim().is_empty() {
+                kind.default_body().to_string()
+            } else {
+                body.into()
+            },
+        ))
     }
 
     pub fn data(&mut self, frame: &Frame) -> WorkbenchData {
@@ -1863,7 +1911,7 @@ fn age(updated_at_ms: i64) -> String {
     format!("{}w", days / 7)
 }
 
-/// The palette the inline TUI persisted, or the workbench default.
+/// The palette persisted in settings, or the workbench default.
 pub fn persisted_palette(settings: &crate::settings::TuiSettings) -> super::theme::Palette {
     super::theme::resolve(settings.theme_id.as_deref())
 }

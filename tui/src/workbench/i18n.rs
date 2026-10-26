@@ -288,6 +288,11 @@ pub enum Key {
     MouseOff,
     NotificationTitle,
     NotificationBody,
+    LinearYou,
+    LinearApproval,
+    LinearTool,
+    LinearError,
+    LinearUnknownError,
     ChatNewOutput,
     CmdSessions,
     CmdModel,
@@ -516,6 +521,11 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         MouseOff => ("鼠标捕获已关闭，可使用终端原生选择", "Mouse capture disabled; native terminal selection is available"),
         NotificationTitle => ("FutureOS：运行完成", "FutureOS: run complete"),
         NotificationBody => ("本轮已成功完成。", "This turn finished successfully."),
+        LinearYou => ("你：{}", "You: {}"),
+        LinearApproval => ("需要审批：{}", "Approval needed: {}"),
+        LinearTool => ("工具执行", "tool execution"),
+        LinearError => ("错误：{}", "Error: {}"),
+        LinearUnknownError => ("未知错误", "unknown error"),
         ChatNewOutput => ("↓ 新输出 · esc 回到最新", "↓ new output · esc returns to latest"),
         CmdSessions => ("浏览并切换会话", "Browse and switch sessions"),
         CmdModel => ("选择模型", "Choose a model"),
@@ -773,7 +783,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 188] = {
+    const ALL_KEYS: [Key; 193] = {
         use Key::*;
         [
             TabTodo,
@@ -905,6 +915,11 @@ mod tests {
             MouseOff,
             NotificationTitle,
             NotificationBody,
+            LinearYou,
+            LinearApproval,
+            LinearTool,
+            LinearError,
+            LinearUnknownError,
             ChatNewOutput,
             CmdSessions,
             CmdModel,
