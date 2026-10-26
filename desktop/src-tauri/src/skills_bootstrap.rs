@@ -211,6 +211,12 @@ mod tests {
             return;
         }
         let _home = crate::auth_store::test_support::HomeGuard::new("bootstrap-spawn");
+        // This arm asserts what discovery *captured*, so it must not be decided by
+        // the probe's 3 s production budget: on a busy host the fixture shell
+        // script can lose that race against the scheduler and the failure reads
+        // `CLI discovery timed out` (measured 2026-10-26 on a 32-core host, in a
+        // suite run at 1.6x its normal wall time).
+        let _deadline = future_host::cli_tool::ProbeDeadlineGuard::without_deadline();
         let root = std::env::temp_dir().join(format!("futureos-bootstrap-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let marker = root.join("init-ran");
@@ -434,6 +440,11 @@ mod block_fixtures {
         let Ok(case) = std::env::var(CASE) else {
             return;
         };
+        // Every case here needs discovery to succeed before it can test what it is
+        // about (a vanished interpreter, a stop, an unconfirmed exit). With the
+        // production 3 s budget that prerequisite is a race against this host's
+        // scheduler rather than a property of the code under test.
+        let _deadline = future_host::cli_tool::ProbeDeadlineGuard::without_deadline();
         if case == "spawn-failure" {
             let root = scoped("spawn-failure");
             let bin = root.join("bin");

@@ -932,10 +932,22 @@ mod tests {
 
     /// A minimal POSIX MCP server: answers `initialize` and `tools/list`, and
     /// exits when its stdin closes.
+    ///
+    /// The request id is taken with shell parameter expansion, never by piping
+    /// through `sed`: the child inherits this process's environment, and other
+    /// tests in the same binary call `std::env::set_var` while it is being
+    /// spawned (libtest runs them in parallel, and `set_var` is `unsafe` in Rust
+    /// 2024 for exactly this reason). When the copy of `environ` that `spawn`
+    /// makes came out torn, the inherited `PATH` lost `/bin`, and this server
+    /// died with `/bin/sh: line 8: sed: command not found` — measured twice on a
+    /// 32-core host, always
+    /// `the_stderr_tail_keeps_the_last_lines_and_drops_the_oldest`, which then
+    /// failed its handshake assertion. Builtins alone cannot be affected.
     #[cfg(unix)]
     const SERVE_ONCE: &str = r#"
 while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  id=${line#*\"id\":}
+  id=${id%%,*}
   case "$line" in
     *notifications/initialized*) ;;
     *'"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
@@ -1063,7 +1075,8 @@ done
         async fn a_poisoned_stderr_tail_is_tolerated_by_the_drain_and_the_reader() {
             const ON_DEMAND_STDERR: &str = r#"
 while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  id=${line#*\"id\":}
+  id=${id%%,*}
   case "$line" in
     *notifications/initialized*) ;;
     *'"initialize"'*)

@@ -180,7 +180,7 @@ fn decode_probe(path: &Path, source: &str, bytes: &[u8]) -> Result<Descriptor, S
 const PROBE_DEADLINE: Duration = Duration::from_secs(3);
 
 fn probe_deadline() -> Option<Duration> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if let Some(overridden) = PROBE_DEADLINE_OVERRIDE.with(|cell| *cell.borrow()) {
         return overridden;
     }
@@ -220,7 +220,16 @@ fn kill_without_blocking(child: &mut std::process::Child) {
 // each test on its own thread, so a value that outlives the test that set it
 // cannot reach another test's probe - the leak class this file already had to fix
 // once (`EnvGuard`, `docs/testing/flaky-tauri.md` item 27).
-#[cfg(test)]
+//
+// `test-support` is part of the gate, not just `test`: an entry crate (Desktop)
+// compiles this crate as a *dependency* of its own test binary, where `cfg(test)`
+// is false. Those entry tests assert what the probe captured too — the onboarding
+// bootstrap waits for the discovered CLI to run `init` — and without the seam they
+// were decided by the 3 s production budget defeating a busy host's scheduler:
+// measured 2026-10-26, `Rust macOS test / desktop` red on
+// `skills_bootstrap::tests::the_bootstrap_spawns_the_cli_through_the_shell_plugin`
+// with `CLI discovery timed out` on a 32-core host at 1.6x the normal runtime.
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static PROBE_DEADLINE_OVERRIDE: std::cell::RefCell<Option<Option<Duration>>> =
         const { std::cell::RefCell::new(None) };
@@ -228,18 +237,26 @@ thread_local! {
 
 /// Arms [`PROBE_DEADLINE_OVERRIDE`] and clears it on drop, so even a panicking
 /// test cannot hand its deadline to the next test on the same thread.
-#[cfg(test)]
-struct ProbeDeadlineGuard;
+#[cfg(any(test, feature = "test-support"))]
+#[must_use = "the deadline is restored when the guard is dropped; bind it to a variable"]
+pub struct ProbeDeadlineGuard;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl ProbeDeadlineGuard {
-    fn set(deadline: Option<Duration>) -> Self {
+    /// `None` = no deadline, so the probe child's own exit decides.
+    pub fn set(deadline: Option<Duration>) -> Self {
         PROBE_DEADLINE_OVERRIDE.with(|cell| *cell.borrow_mut() = Some(deadline));
         ProbeDeadlineGuard
     }
+
+    /// No deadline: the seam for a test that asserts what the probe *captured*
+    /// rather than how long it may take.
+    pub fn without_deadline() -> Self {
+        Self::set(None)
+    }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for ProbeDeadlineGuard {
     fn drop(&mut self) {
         PROBE_DEADLINE_OVERRIDE.with(|cell| *cell.borrow_mut() = None);
