@@ -2049,8 +2049,14 @@ mod mention_tests {
         let prompt = expand_mentions("看一下 @note.md 的结论", &cwd);
         assert!(prompt.starts_with("看一下 "), "{prompt}");
         assert!(prompt.contains("hello from the file"), "{prompt}");
+        // The name in the block is the absolute path the code actually opened,
+        // so build the expectation the same way instead of pasting a separator:
+        // `Path::join` yields `\` on Windows and `/` elsewhere.
         assert!(
-            prompt.contains(&format!("<file name=\"{}/note.md\">", cwd)),
+            prompt.contains(&format!(
+                "<file name=\"{}\">",
+                dir.path().join("note.md").display()
+            )),
             "{prompt}"
         );
         assert!(prompt.contains("</file>"), "{prompt}");
@@ -2098,10 +2104,31 @@ mod mention_tests {
         let prompt = expand_mentions("see @note.md, then the test", &cwd);
         assert!(prompt.contains("</file>, then the test"), "{prompt}");
         // A full stop is deliberately *not* trimmed: it is part of a filename as
-        // often as it is the end of a sentence, so `@note.md.` names nothing and
-        // stays exactly as typed rather than guessing.
+        // often as it is the end of a sentence. What that costs depends on the
+        // filesystem — and in both cases the assertions below hold the same
+        // invariant, that the stop reached the filesystem instead of being cut.
         let prompt = expand_mentions("see @note.md.", &cwd);
-        assert!(prompt.contains("@note.md."), "{prompt}");
+        #[cfg(windows)]
+        {
+            // Win32 strips trailing dots, so `note.md.` *does* resolve here. The
+            // block therefore names the path with the stop still on it: a trimmer
+            // would have produced `note.md` and left the stop outside the tag.
+            assert!(
+                prompt.contains(&format!(
+                    "<file name=\"{}\">",
+                    dir.path().join("note.md.").display()
+                )),
+                "the trailing stop is passed through untrimmed: {prompt}"
+            );
+            assert!(!prompt.contains("@note.md."), "{prompt}");
+        }
+        #[cfg(not(windows))]
+        {
+            // A trailing dot is a legal file name here, so this names nothing in
+            // the directory: the token stays exactly as the reader typed it.
+            assert!(prompt.contains("@note.md."), "{prompt}");
+            assert!(!prompt.contains("<file"), "{prompt}");
+        }
     }
 }
 

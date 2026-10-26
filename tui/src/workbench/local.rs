@@ -742,18 +742,36 @@ mod tests {
         write(&dir.path().join("node_modules/pkg/index.js"), "x");
         write(&dir.path().join(".hidden"), "x");
         let files = workspace_files(dir.path());
-        assert!(files.contains(&"README.md".to_string()), "{files:?}");
-        assert!(files.contains(&"src/main.rs".to_string()), "{files:?}");
+        // `workspace_files` reports each file relative to `cwd` in the platform's
+        // own form (`src\main.rs` on Windows), because that is what the menu
+        // hands back to the reader to type. Join the expectation the same way
+        // rather than pasting a `/` the walk never produces.
+        let relative = |parts: &[&str]| {
+            let mut path = std::path::PathBuf::new();
+            for part in parts {
+                path.push(part);
+            }
+            path.display().to_string()
+        };
+        assert!(files.contains(&relative(&["README.md"])), "{files:?}");
+        assert!(files.contains(&relative(&["src", "main.rs"])), "{files:?}");
         assert!(
-            files.contains(&"src/nested/deep.rs".to_string()),
+            files.contains(&relative(&["src", "nested", "deep.rs"])),
             "the walk descends: {files:?}"
         );
+        // Compared by path components, so this is not a vacuous pass on Windows
+        // (where `target\debug\junk`.starts_with("target/") is false because of
+        // the separator, not because the directory was pruned).
         assert!(
-            !files.iter().any(|file| file.starts_with("target/")),
+            !files
+                .iter()
+                .any(|file| std::path::Path::new(file).starts_with("target")),
             "build output is pruned: {files:?}"
         );
         assert!(
-            !files.iter().any(|file| file.starts_with("node_modules/")),
+            !files
+                .iter()
+                .any(|file| std::path::Path::new(file).starts_with("node_modules")),
             "{files:?}"
         );
         assert!(
