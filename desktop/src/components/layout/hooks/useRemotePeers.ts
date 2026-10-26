@@ -374,6 +374,23 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
       // jumped up and back for the length of the run. The phone draws the host's
       // rows in the host's own order and never had it; this list is the one
       // place a client could disagree with the host about a row's place in it.
+      //
+      // What it also does not settle is whether there is a run at all, when the
+      // event belongs to the *conversation* rather than to one of its runs. The
+      // Agent clears `runId` for exactly those — a model or title change, a
+      // standing compaction — and the host replays that part of its journal
+      // whenever a conversation's observer is created
+      // (`agent_bridge::observer::replay_session_events`), which is what opening
+      // a conversation does. Read as the guess below (an event arrived, so a run
+      // is in flight — right for a run's own events, whose types are open-ended),
+      // a `model_changed` from days ago filed the row the reader had just clicked
+      // under the recent view's "active" stretch, and the next catalogue read
+      // moved it back out: the reported session that "jumped to active and back"
+      // without ever running. A prompt that has not started needs no guess
+      // either: the host's catalogue states its run's `status`, and `isActiveRun`
+      // reads it.
+      if (!readString(payload, "runId"))
+        return;
       setCatalogs(current => current.map((catalog) => {
         if (catalog.desktopId !== desktopId)
           return catalog;
