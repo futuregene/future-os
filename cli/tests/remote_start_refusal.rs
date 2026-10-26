@@ -77,6 +77,44 @@ use serde_json::{json, Value};
 /// removes a load dependency the campaign has already paid for once (INCIDENTS F.105).
 const READY_BUDGET: Duration = Duration::from_secs(90);
 
+/// Backstop for waiting on a line the child must *eventually* print — not a budget.
+///
+/// These children print their verdict only after an embedded agent has started, a
+/// credential has been fetched and a broker has answered. That prologue is bounded by the
+/// host's own work, not by this test's clock, and on a shared runner it is slow: Windows CI
+/// spent **26.2 s** inside it (run 40267289153, job 121392429655 — the child's first line at
+/// `04:15:21.249`, `Agent startup: loading the model catalogue and credentials` at
+/// `04:15:47.414`, and the test's own 30 s window closed at `04:15:51.25` with the broker
+/// never reached). A fixed window that also contains the prologue therefore judges the
+/// runner's speed as well as the product's behaviour, which is a false failure waiting to
+/// happen. So the wait ends on an *outcome* ([`Verdict`]) and this cap exists only to stop a
+/// genuinely stuck child from hanging the suite: it is ~11x the prologue measured above.
+const TERMINAL_CAP: Duration = Duration::from_secs(300);
+
+/// What became of waiting for a line the child must print.
+///
+/// The point of naming the outcome is the failure message: "still starting at 300 s" and
+/// "ended without saying it" are different findings, and a bare `false` erases that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verdict {
+    /// The line is in the transcript.
+    Reported,
+    /// The child ended and its settled transcript does not contain the line.
+    EndedWithoutReport,
+    /// The cap expired with the child still running and the line still absent.
+    TimedOut,
+}
+
+impl Verdict {
+    fn describe(self) -> &'static str {
+        match self {
+            Self::Reported => "reported",
+            Self::EndedWithoutReport => "the child ended without printing it",
+            Self::TimedOut => "timed out with the child still running",
+        }
+    }
+}
+
 const B64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
@@ -559,6 +597,42 @@ impl ChildRun {
         self.text().contains(needle)
     }
 
+    /// Wait for a line the child must eventually print, ending on an outcome rather than on
+    /// a duration.
+    ///
+    /// The three terminal conditions are the child's own: the line appears, the child ends,
+    /// or its pipes close (which the reader threads turn into a transcript that stops
+    /// growing — the settled read below is what that looks like). `cap` is only the backstop
+    /// [`TERMINAL_CAP`] describes; nothing here asserts *when* the line arrives, only that it
+    /// does or that the child stopped without it.
+    fn await_line(&mut self, needle: &str, cap: Duration) -> Verdict {
+        let deadline = Instant::now() + cap;
+        loop {
+            if self.text().contains(needle) {
+                return Verdict::Reported;
+            }
+            match self.child.try_wait() {
+                // The pipes drain a moment after the process ends, so judge the settled
+                // transcript: the line may already be in the buffer the reader has not
+                // finished appending.
+                Ok(Some(_)) => {
+                    return if self.settled_text().contains(needle) {
+                        Verdict::Reported
+                    } else {
+                        Verdict::EndedWithoutReport
+                    };
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                // Losing the handle does not tell us the child ended, so this is not a
+                // report and not an end either: the cap is the honest verdict.
+                Err(_) => return Verdict::TimedOut,
+            }
+            if Instant::now() >= deadline {
+                return Verdict::TimedOut;
+            }
+        }
+    }
+
     /// Wait for the child to end *by itself*, returning its exit status.
     ///
     /// `None` means it was still running when the budget ran out, which is what an
@@ -848,14 +922,30 @@ fn a_broker_that_refuses_the_credential_is_reported() {
     .expect("write corrupt revoke queue");
 
     let mut child = ChildRun::spawn(home);
-    let reported = child.wait_for("Remote connection stopped", Duration::from_secs(30));
-    let transcript = child.text();
-    let status = child.child.wait().expect("wait for the child");
+    // The intent is "a refused credential is reported", not "within half a minute": the
+    // child's own prologue is what a fixed window would have been measuring (see
+    // TERMINAL_CAP). Wait for the verdict the entry prints when it stops.
+    let verdict = child.await_line("Remote connection stopped", TERMINAL_CAP);
+    let exit = match verdict {
+        // The line ends the entry, so the process follows it. Bounded by the same backstop
+        // rather than by `wait`, which would hang if it did not.
+        Verdict::Reported => child.wait_for_exit(TERMINAL_CAP),
+        // Nothing more is coming. Ending the child here is what makes the failure below
+        // the timeout it is, instead of a test that never returns.
+        Verdict::EndedWithoutReport | Verdict::TimedOut => {
+            let _ = child.child.kill();
+            child.child.wait().ok()
+        }
+    };
+    let transcript = child.settled_text();
 
-    assert!(
-        reported,
-        "the refused start must be reported by name; transcript:\n{transcript}"
+    assert_eq!(
+        verdict,
+        Verdict::Reported,
+        "the refused start must be reported by name ({}); transcript:\n{transcript}",
+        verdict.describe()
     );
+    let status = exit.expect("the run must end once it has stopped the remote connection");
     assert!(
         transcript.contains("ServiceAuthorization"),
         "the report must name the authorization class; transcript:\n{transcript}"
@@ -1343,9 +1433,15 @@ fn a_retry_that_cannot_be_classified_ends_the_worker_and_rearms_it() {
     write_pairing(&home, &broker.url, true);
 
     let mut child = ChildRun::spawn(home);
-    assert!(
-        child.wait_for("Remote: Reconnecting", Duration::from_secs(30)),
-        "the first start must report the retryable failure; transcript:\n{}",
+    // This line follows the child's own prologue (agent start, then the first start
+    // attempt), so the wait ends on the child's outcome rather than on a window the
+    // prologue could consume — see TERMINAL_CAP.
+    let reconnecting = child.await_line("Remote: Reconnecting", TERMINAL_CAP);
+    assert_eq!(
+        reconnecting,
+        Verdict::Reported,
+        "the first start must report the retryable failure ({}); transcript:\n{}",
+        reconnecting.describe(),
         child.text()
     );
     assert!(
@@ -1783,9 +1879,15 @@ fn a_reconnect_refreshes_the_credential_and_rebuilds_the_slot() {
     );
 
     let mut child = ChildRun::spawn(home);
-    assert!(
-        child.wait_for("rebuilding generation (1/3)", Duration::from_secs(40)),
-        "the live refusal must reach the reconnect worker; transcript:\n{}",
+    // Reaching the reconnect worker takes the child's prologue plus the broker's own error
+    // timer, so this wait ends on the child's outcome (TERMINAL_CAP) instead of budgeting the
+    // prologue at a fixed 40 s.
+    let rebuilding = child.await_line("rebuilding generation (1/3)", TERMINAL_CAP);
+    assert_eq!(
+        rebuilding,
+        Verdict::Reported,
+        "the live refusal must reach the reconnect worker ({}); transcript:\n{}",
+        rebuilding.describe(),
         child.text()
     );
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -1944,9 +2046,14 @@ fn a_reconnect_whose_rebuild_cannot_connect_is_retryable() {
     );
 
     let mut child = ChildRun::spawn(home);
-    assert!(
-        child.wait_for("rebuilding generation (1/3)", Duration::from_secs(40)),
-        "the live refusal must reach the reconnect worker; transcript:\n{}",
+    // Same shape as the rebuild test above: the window would otherwise be spending the
+    // child's prologue, which is the failure TERMINAL_CAP exists to stop.
+    let rebuilding = child.await_line("rebuilding generation (1/3)", TERMINAL_CAP);
+    assert_eq!(
+        rebuilding,
+        Verdict::Reported,
+        "the live refusal must reach the reconnect worker ({}); transcript:\n{}",
+        rebuilding.describe(),
         child.text()
     );
     // `start_failure` records the code it classified, so this line is the proof that
