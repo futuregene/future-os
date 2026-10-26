@@ -396,7 +396,7 @@ async fn uninstall_skill(skill_id: &str, out: &Output) -> Result<(), String> {
 const SKILL_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn skill_http_client(timeout: std::time::Duration) -> Result<reqwest::Client, String> {
-    future_agent::http::client_builder()
+    crate::dns::client_builder()
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(timeout)
         .build()
@@ -410,7 +410,7 @@ pub async fn fetch_skills(platform_url: &str) -> Result<Vec<SkillInfo>, String> 
         .get(&url)
         .send()
         .await
-        .map_err(|e| format!("Failed to fetch skills: {e}"))?;
+        .map_err(|e| format!("Failed to fetch skills: {}", crate::dns::describe(&e)))?;
     if !response.status().is_success() {
         return Err(format!(
             "Failed to fetch skills: {} {}",
