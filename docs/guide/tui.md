@@ -35,8 +35,8 @@ cargo run -p future-tui --example workbench_semantics
 ```
 
 Scenarios: `launchpad` (no session yet), `chat` (a conversation with the work
-folded into one summary row), `todo` (a long goal list, to see the sidebar
-window and its `↓ N more` row).
+folded into one summary row), `workspaces` (twelve workspaces and their
+conversations, to see the rail's window and its `↓ N more` row).
 
 ## The frame
 
@@ -44,14 +44,23 @@ window and its `↓ N more` row).
  focused header (2 rows: session · workspace · backend dot, then hairline)
  comfortable header (optional 6 rows: pixel whale and full identity)
  ──────────────────────────────────────────┬──────────────────────
- conversation (bottom-anchored, ↑ 更早)     │ sidebar: 待办 任务 会话
-                                            │          用量 技能
+ conversation (bottom-anchored, ↑ 更早)     │ rail: 最近 工作区
+                                            │ ▸ the conversation's name
+                                            │   ~/future-os · 2m
  ──────────────────────────────────────────┴──────────────────────
  input box (❯ multiline draft, grows to 8 visual rows)
  activity: ⠋ 思考 … · 3s · 2 工具                   42 tok/s · 缓存 96%
  status:   model · effort · permission   ░░ ctx 6.9k/1.0M 0.7% · ≈¥0.01
- hint:     Esc 回到聊天 · ctrl+b 侧栏 · / 命令 · ? 帮助
+ hint:     Esc 回到聊天 · ctrl+b 侧栏 · tab 焦点 · ctrl+r 会话 · ctrl+p 命令
 ```
+
+The rail is a *task* panel, in two tabs. **最近** (the default) lists every
+conversation — its name, then the workspace it is filed under and when it was
+last refreshed — newest first. **工作区** files the same conversations the way
+the desktop's rail does: 置顶 (the workspaces pinned with `p`), then 工作区 (one
+heading per workspace, its conversations beneath), then 对话会话 (conversations
+that belong to no workspace — the app's own scratch directories). Usage figures
+live on the status bar, so no panel repeats them; skills are the palette's.
 
 The launchpad is the *body*, not a dialog over the conversation: with no session
 attached the composer fills the surface (logo, wordmark, box, model / effort /
@@ -142,9 +151,11 @@ ASCII letter or digit, F1–F24, Tab, navigation keys and Enter/Escape.
 
 | Key | Action |
 |---|---|
-| `tab` / `shift+tab` | Launchpad: move between the prompt and the parameter chips. Conversation: move focus to / from the sidebar |
+| `tab` / `shift+tab` | Launchpad: move between the prompt and the parameter chips. Conversation: take the keys into the rail (the cursor lands on the conversation on screen) and back |
 | `←` `→` | Move the draft cursor |
-| `↑` `↓` | Move through draft lines / submission history; scroll a focused sidebar |
+| `↑` `↓` | Move through draft lines / submission history; in a focused rail, move to the previous / next conversation (headings are skipped) and `enter` opens it |
+| `shift+←` / `shift+→` | Switch to the previous / next conversation in the rail's order, wherever the keys are: the transcript follows, and so does the rail's cursor |
+| `p` | Rails: pin / unpin the workspace the selected conversation belongs to |
 | `shift+enter` / `alt+enter` | Insert a newline (`ctrl+j` is the terminal fallback; Shift+Enter requires an enhanced keyboard protocol) |
 | `ctrl+w`, `alt+d`, `ctrl+u`, `ctrl+k`, `ctrl+y` | Delete a word, kill to line start/end, yank |
 | `ctrl+z` / `ctrl+shift+z` (or `alt+y`) | Undo / redo draft edits |
@@ -156,17 +167,17 @@ ASCII letter or digit, F1–F24, Tab, navigation keys and Enter/Escape.
 | `F9` | Toggle reduced motion independently |
 | `ctrl+b` | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal |
 | `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run |
-| `ctrl+r` | Session picker |
+| `ctrl+r` | Session picker (name, workspace and age of each conversation; the footer names the key) |
 | `ctrl+o` | Preferences and shortcut editor |
 | `F1` or `?` | Help overlay (effective keys + commands; `?` requires an empty draft) |
 | `/lang` | Interface language: follow the system, Chinese or English |
-| `ctrl+e` | Ask the app for the final-answer / detailed reading level |
+| `ctrl+e` | Final-answer / full-process reading level: a settled reply folds its whole work — the calls and reasoning before *and* after its last prose — into one summary row |
 | `ctrl+c` | Quit |
 
 | Mouse | Action |
 |---|---|
 | Click a sidebar tab | Switch panel |
-| Click a session row | Open that conversation |
+| Click a session row | Open that conversation (a workspace heading only takes the keys) |
 | Drag the divider | Resize the sidebar (30–48 columns), persisted on release |
 | Click anywhere in the input box | Focus it |
 | Wheel over the conversation | Scroll; at the top it asks for an older page |
@@ -207,7 +218,7 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | Fork | `/fork` lists real user-message points from `get_fork_messages`; enter calls `fork` and opens the child |
 | Worktrees | `/worktree` lists real git worktrees and enter sets the session cwd. `/worktree new <branch>` creates under `.worktrees/` and moves the session. No remove/prune/reset/clean operations |
 | Existing settings | `/sandbox`, `/permission [all|workspace|none]`, `/compact [instructions]`, `/tools a,b` or `/tools off`, `/providers`; `/skills` and `/model` retain their existing surfaces |
-| Sessions panel | `list_sessions`, newest first, click to switch |
+| Sessions panel | `list_sessions`, newest first: 最近 as a flat list, 工作区 filed by directory with the pinned ones leading. Pins persist in `settings.json` (`pinnedWorkspaces`) |
 | Usage / context / cost | `get_state`'s usage block, refreshed on the same events |
 | `ctrl+n` / `/new`, `ctrl+x` stop, `F5` refresh | |
 | Launchpad chips | Click 模型 / 强度 / 权限 / 模式 to cycle them on the agent; the first message from the launchpad creates the session |
@@ -215,16 +226,12 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 
 ## What is not here yet
 
-- **Todo / jobs panels.** The goal plane is a local CLI (`future goal`) and the
-  workbench does not read it yet; the panels say "no todos" rather than
-  inventing rows.
-- **Skills panel** lists the session's loaded skills by name only (no browser,
-  no install).
 - **`@` file mentions** — not implemented; pasted image paths and folded pastes use `tui/src/paste.rs`.
 - **The command palette** lists the commands the adapter implements. Provider
   and tool management is intentionally compact (`/providers` and `/tools`);
-  `/skills` remains the installed-skills panel. Approval allow rules are
-  runtime-only; persistent approval-rule file editing remains in the desktop.
+  `/skills` remains the installed-skills list in the palette. Approval allow
+  rules are runtime-only; persistent approval-rule file editing remains in the
+  desktop.
 - Further enhancements: timeline rail, image preview, full-screen session
   manager, full-screen draft editor.
 
@@ -243,7 +250,7 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | `tui/src/workbench/layout.rs` | Band rectangles, the two breakpoints, the hit map |
 | `tui/src/workbench/ansi.rs` | Width-safe text: `fit`, `pad`, `clip`, column slicing |
 | `tui/src/workbench/widgets.rs` | Rules, boxes, tabs, bars, badges, spinner, logo, wordmark, the input box |
-| `tui/src/workbench/panels.rs` | The five sidebar panels (pure renderers) |
+| `tui/src/workbench/panels.rs` | The rail's two panels (pure renderers over one row model) |
 | `tui/src/workbench/picker.rs` | The `/model`, `/theme` and `/sessions` list picker |
 | `tui/src/workbench/launchpad.rs` | The first screen |
 | `tui/src/workbench/state.rs` | `WorkbenchData` and its parts |
