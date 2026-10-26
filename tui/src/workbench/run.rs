@@ -658,6 +658,11 @@ async fn quit(
                         ReplyDetail::Detailed => ReplyDetail::Default,
                     };
                     live.set_detail(next);
+                    // A key the reader pressed is a choice like any other: it
+                    // goes to `settings.json` now, so the level survives the
+                    // terminal (the `/reply-detail` verb does the same).
+                    settings.reply_detail = Some(next.as_wire().to_string());
+                    save_settings(settings_path, settings);
                     return Ok(false);
                 }
                 Some(super::preferences::Action::NewSession) => {

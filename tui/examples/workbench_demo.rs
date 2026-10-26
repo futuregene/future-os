@@ -141,9 +141,9 @@ fn main() {
                     _ => Overlay::Worktree,
                 });
             }
-            "usage" | "skills" | "sessions" | "jobs" => {
+            "recent" | "workspaces" => {
                 workbench.panel = match name {
-                    "usage" | "skills" | "jobs" => PanelId::Workspaces,
+                    "workspaces" => PanelId::Workspaces,
                     _ => PanelId::Recent,
                 };
             }
