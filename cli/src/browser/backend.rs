@@ -226,6 +226,8 @@ pub enum InternalTabsResult {
 // ── BrowserSession ──────────────────────────────────────────────────
 
 /// `BrowserSession` — object-safe session interface (async-trait).
+// async-trait adds must_use to methods returning already-must-use boxed futures.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait BrowserSession: Send {
     fn kind(&self) -> &'static str;

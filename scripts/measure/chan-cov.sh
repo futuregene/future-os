@@ -82,7 +82,10 @@ cleanup_lock() { rm -rf "$lock_dir"; }
 trap cleanup_lock EXIT INT TERM
 
 unset CARGO_HOME CARGO_TARGET_DIR CARGO_BUILD_TARGET 2>/dev/null || true
-export PATH="$HOME/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin:$PATH"
+# Resolve the repository's pinned toolchain before isolating HOME. This also
+# works on non-macOS hosts and follows rust-toolchain.toml after an upgrade.
+toolchain_bin="$(dirname "$(rustup which rustc)")"
+export PATH="$toolchain_bin:$PATH"
 export HOME="$PWD/target/chan-cov-home"
 mkdir -p "$HOME"
 

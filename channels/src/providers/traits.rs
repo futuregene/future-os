@@ -153,6 +153,8 @@ impl ChannelDefinition {
 /// Implementations talk to the platform and nothing more: no chunking (the
 /// bridge splits against [`ChannelDefinition::max_text_len`]), no throttling, no
 /// retry policy (the bridge and the delivery queue own those).
+// async-trait adds must_use to methods returning already-must-use boxed futures.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait ChannelSender: Send + Sync {
     /// This sender's channel declaration — the bridge reads limits from here.
@@ -200,6 +202,8 @@ pub trait ChannelSender: Send + Sync {
 }
 
 /// A channel implementation.
+// async-trait adds must_use to methods returning already-must-use boxed futures.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait Provider: Send + Sync {
     /// The declarative half: identity, capabilities, limits.

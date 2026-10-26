@@ -20,6 +20,7 @@ impl AgentClient {
         Self { inner }
     }
 
+    #[allow(clippy::result_large_err)] // Tonic request APIs expose Status directly.
     pub async fn execute_command(
         &mut self,
         command: RpcCommand,
