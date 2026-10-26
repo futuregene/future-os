@@ -1,6 +1,6 @@
 # Compact session storage and streaming development plan
 
-Status: M0 has landed; M1–M5 source wiring is complete and the task branch is in M6 local verification and repair. The task branch now defaults new conversations to format 2; it is not merged/installed or ready for manual acceptance.
+Status: M0–M5 implementation and M6 local verification/repair are complete; the candidate is handed off for manual acceptance. New conversations default to format 2 and existing conversations retain their format. Physical-device and cross-platform release acceptance remain.
 Date: 2026-10-26. This document describes a target architecture, not measured performance results.
 Chinese: [精简会话存储与流式传输重构开发计划](stream-storage-development.zh-CN.md).
 

@@ -1,6 +1,6 @@
 # 分段会话存储：人工验收单
 
-状态：候选版本仍在最终验证；完成集成后再按本单验收。
+状态：实现与本地验证完成；按交付提交启动候选版本进行人工验收。
 开发范围：[M1–M6 计划](../architecture/stream-storage-development.zh-CN.md)。
 自动化测量：[原始数据与限制](segmented-storage-acceptance-2026-10-26.json)。
 
