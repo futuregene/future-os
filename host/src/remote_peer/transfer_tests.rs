@@ -1124,3 +1124,54 @@ async fn a_chunk_write_on_a_dropped_broker_is_recorded() {
 
     teardown(&fx.pair_id).await;
 }
+
+/// The installer that split the tiers: 12.5 MiB, and a type no phone reader opens.
+///
+/// This is the acceptance path itself — a real host bridge, the real
+/// `download_prepare`, the real chunk pull and the client's own hash check — and
+/// the two halves are asserted together because the change is exactly the
+/// difference between them: the desktop save-as now completes, and the phone's
+/// own mode on the same file still refuses it with the phone's message.
+#[tokio::test]
+async fn a_desktop_save_takes_a_file_the_phone_must_refuse() {
+    use future_remote_protocol::files::VARIANT_ORIGINAL;
+
+    let (_home, fx) = fixture("peer-xfer-desktop-tier").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    connect_with_stream(&desktop_id).await;
+
+    let path = scratch("desktop-tier").join("app-debug.apk");
+    // 12.5 MiB, non-repeating within each chunk so a mis-ordered append cannot
+    // still compare equal.
+    let contents: Vec<u8> = (0..12_usize * 1024 * 1024 + 512 * 1024)
+        .map(|index| (index % 251) as u8)
+        .collect();
+    std::fs::write(&path, &contents).expect("write the served file");
+    let path = path.to_string_lossy().into_owned();
+
+    let fetched =
+        transfer::download_for_desktop(&desktop_id, "sess_unused", &path, Some("app-debug.apk"))
+            .await
+            .expect("a desktop save-as of a file the phone's limits exclude");
+    assert_eq!(fetched.name, "app-debug.apk");
+    assert_eq!(fetched.bytes.len(), contents.len());
+    assert_eq!(fetched.bytes, contents, "the bytes must arrive unchanged");
+
+    let error = transfer::download(
+        &desktop_id,
+        "sess_unused",
+        &path,
+        Some("app-debug.apk"),
+        VARIANT_ORIGINAL,
+    )
+    .await
+    .expect_err("the phone's own limits still apply to the phone");
+    assert!(
+        error
+            .to_string()
+            .contains("The file is over the 10 MB download limit."),
+        "the phone's wording must not change: {error}"
+    );
+
+    teardown(&fx.pair_id).await;
+}
