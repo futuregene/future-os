@@ -113,6 +113,38 @@ pub fn queue(
     message: &str,
     key: &str,
 ) -> Result<()> {
+    queue_many(
+        store,
+        goal,
+        vec![Note {
+            kind: kind.to_string(),
+            todo: todo.to_string(),
+            message: message.to_string(),
+            key: key.to_string(),
+        }],
+    )
+}
+
+/// One ledger note waiting to be enqueued: what happened (`kind`), on which
+/// todo, the sentence the supervisor reads, and the idempotency key that makes
+/// re-observing the same episode a no-op.
+pub struct Note {
+    pub kind: String,
+    pub todo: String,
+    pub message: String,
+    pub key: String,
+}
+
+/// Enqueue a batch of notes under ONE notes lock and ONE ledger read.
+///
+/// The dedup scan is the expensive part (it replays the goal), so a sweep that
+/// has several observations to report reads the ledger once instead of once per
+/// note — a watcher tick must stay cheap enough to run every two seconds on a
+/// goal with dozens of finished todos.
+pub fn queue_many(store: &mut Store, goal: &str, notes: Vec<Note>) -> Result<()> {
+    if notes.is_empty() {
+        return Ok(());
+    }
     let lock = lock_file(store, goal, "notes.lock")?;
     // A *blocking* lock, so contention waits instead of failing: an error here is
     // the file system refusing to lock at all, and a note that never reaches the
@@ -121,17 +153,24 @@ pub fn queue(
     if let Err(error) = lock.lock_exclusive() {
         announce_lockless(&store.root_path(), &error);
     }
-    if !store
+    let mut seen: HashSet<String> = store
         .events(goal)?
-        .iter()
-        .any(|e| matches!(&e.event, Event::SupervisorNote { dedup_key, .. } if dedup_key == key))
-    {
+        .into_iter()
+        .filter_map(|entry| match entry.event {
+            Event::SupervisorNote { dedup_key, .. } => Some(dedup_key),
+            _ => None,
+        })
+        .collect();
+    for note in notes {
+        if !seen.insert(note.key.clone()) {
+            continue;
+        }
         store.append(Event::SupervisorNote {
             goal_id: goal.into(),
-            todo_id: todo.into(),
-            note_kind: kind.into(),
-            message: message.into(),
-            dedup_key: key.into(),
+            todo_id: note.todo,
+            note_kind: note.kind,
+            message: note.message,
+            dedup_key: note.key,
             ts: now_epoch(),
         })?;
     }
@@ -287,6 +326,180 @@ pub fn pending_delivery(store: &Store, goal_id: &str) -> Result<bool> {
     Ok(events.iter().any(|e| matches!(&e.event, Event::SupervisorNote { dedup_key, .. } if !delivered.contains(dedup_key.as_str()))))
 }
 
+/// Note kind for "this advancement work is finished and awaits acceptance".
+///
+/// The two other note kinds this module produces are both failures
+/// (`host_died`, `verification_due`): a goal whose work simply landed and was
+/// accepted on time produced **no** note at all, so a supervisor that is not
+/// already polling learns nothing when a worker finishes cleanly. This kind is
+/// the missing half — a report, not a verdict: it never records or implies
+/// verified/failed, and it does not age (see `record_completions`).
+pub const TODO_DONE_NOTE_KIND: &str = "todo_done";
+
+/// The note kind the run loop already emits when a turn completes a todo
+/// (`console::notify_supervisor(..., "completed", ...)`). `record_completions`
+/// reads it so one completion is reported once, whichever path observed it.
+const COMPLETION_REPORT_KIND: &str = "completed";
+
+/// How far back `record_completions` will look for a completion nobody has
+/// reported yet.
+///
+/// The note is normally enqueued by the command that completed the todo (and by
+/// the watcher's next tick, two seconds later), so this window only covers a
+/// completion whose process died between the ledger write and the note — a
+/// restart catch-up, not a historical backfill. Without a bound, the first tick
+/// after an upgrade would queue one note per advancement todo ever finished,
+/// and the supervisor would be woken about work it accepted weeks ago.
+const COMPLETION_NOTE_WINDOW_SECS: u64 = 900;
+
+/// Queue the acceptance reminder for advancement todos that reached `done` and
+/// have not been reported yet.
+///
+/// This is deliberately independent of the delivery/verification verdict: a
+/// note says "this work is finished, look at it", and it stays in the ledger
+/// when the supervisor later records `verified` — nothing here invalidates it,
+/// and the dedup key (`todo id` + `completed_at`) keeps the next sweep from
+/// repeating it.
+pub fn record_completions(store: &mut Store, goal_id: &str) -> Result<()> {
+    use crate::state::{TaskClass, TodoStatus};
+    let Some(goal) = store.replay(goal_id)? else {
+        return Ok(());
+    };
+    let now = now_epoch();
+    let finished: Vec<(String, u64)> = goal
+        .todos
+        .iter()
+        .filter(|todo| todo.class == TaskClass::Advancement && todo.status == TodoStatus::Done)
+        .filter_map(|todo| {
+            let completed_at = todo.completed_at?;
+            if now.saturating_sub(completed_at) > COMPLETION_NOTE_WINDOW_SECS {
+                return None;
+            }
+            Some((todo.id.clone(), completed_at))
+        })
+        .collect();
+    if finished.is_empty() {
+        return Ok(());
+    }
+    // One completion is one report. The run loop already reports the turn that
+    // completed the todo (`completed`, carrying the evidence pointer), so a
+    // second note for that same completion would wake the supervisor about an
+    // event it has just been told about. A report from BEFORE this completion
+    // does not count — a rework cycle that completes again gets its own note,
+    // because the completion timestamp it is keyed on is newer.
+    let already_reported: HashSet<(String, u64)> = store
+        .events(goal_id)?
+        .into_iter()
+        .filter_map(|entry| match entry.event {
+            Event::SupervisorNote {
+                todo_id,
+                note_kind,
+                ts,
+                ..
+            } if note_kind == COMPLETION_REPORT_KIND => Some((todo_id, ts)),
+            _ => None,
+        })
+        .collect();
+    let notes: Vec<Note> = finished
+        .into_iter()
+        .filter(|(todo_id, completed_at)| {
+            !already_reported
+                .iter()
+                .any(|(reported, ts)| reported == todo_id && ts >= completed_at)
+        })
+        .map(|(todo_id, completed_at)| Note {
+            kind: TODO_DONE_NOTE_KIND.to_string(),
+            message: format!(
+                "[future-goal] goal {goal_id}: todo {todo_id} completed — the work landed and \
+                 awaits acceptance; record verified/failed/rework. This note reports the \
+                 completion, it is not a verdict."
+            ),
+            key: format!("todo_done:{todo_id}:{completed_at}"),
+            todo: todo_id,
+        })
+        .collect();
+    queue_many(store, goal_id, notes)
+}
+
+/// One observation pass over a goal: dead holders, overdue verifications, and
+/// finished work nobody has reported. Every step is idempotent, which is what
+/// lets the watcher tick and the cheap command paths run it unconditionally.
+pub fn sweep(store: &mut Store, goal_id: &str) -> Result<()> {
+    record_dead_holders(store, goal_id)?;
+    record_completions(store, goal_id)
+}
+
+/// Re-arm supervision on a path an operator or orchestrator already runs.
+///
+/// The point is the failure mode this closes: the watcher is a detached process
+/// with two spawn sites, and when it dies (host restart, a crash, an operator
+/// killing it) nothing ever started another one — the goal then kept accepting
+/// work while its notes sat in the outbox forever.
+///
+/// Cheap by construction, because this runs on ordinary commands:
+///
+/// * the watcher lock is probed **first** — `Held` returns immediately, with no
+///   ledger replay, no child process and no added latency (that is the normal
+///   case, and `status` polling it repeatedly must stay free);
+/// * a goal with no registered supervisor is left alone: nothing to watch, and
+///   nothing to deliver to. Its notes are still recorded by the watcher of any
+///   goal that has one and by `scheduler tick`;
+/// * otherwise it replays the goal, runs the observation `sweep` nobody else is
+///   running, and spawns a watcher;
+/// * a terminal goal with a drained outbox has nothing left to watch, so it is
+///   left alone — but a terminal goal with a pending delivery is delivered
+///   inline first (that is the last note of a finished goal).
+///
+/// Failures are split deliberately: a note the ledger refuses to take is
+/// returned to the caller (a real fault — the operator is owed the message),
+/// while a watcher that could not be spawned is reported and dropped, because a
+/// command must never fail over its sidecar.
+pub async fn rearm(store: &mut Store, goal_id: &str) -> Result<()> {
+    match watcher(store, goal_id) {
+        // Somebody owns the loop; its next tick (2 s) reports what is pending.
+        Ok(Watcher::Held) => return Ok(()),
+        Ok(Watcher::Absent | Watcher::Unknown) => {}
+        // No watcher can hold a lock that cannot be opened, so this is still a
+        // reason to re-arm and deliver — said below rather than swallowed here.
+        Err(error) => eprintln!("supervisor: cannot probe the watcher lock: {error}"),
+    }
+    let Some(goal) = store.replay(goal_id)? else {
+        return Ok(());
+    };
+    if goal.status == "cancelled" || goal.supervisor_session_id.is_none() {
+        return Ok(());
+    }
+    let terminal = goal.is_terminal();
+    if terminal && !pending_delivery(store, goal_id)? {
+        return Ok(());
+    }
+    sweep(store, goal_id)?;
+    if !terminal {
+        if let Err(error) = ensure_watchdog(store, goal_id) {
+            // Already reported where it happened (a job that refuses breakaway,
+            // a binary that cannot be re-executed); the command proceeds.
+            eprintln!("supervisor: no watcher for {goal_id}: {error:#}");
+        }
+    }
+    // The inline delivery, and the reason "the watcher died" is not the same as
+    // "never reported": an environment that cannot spawn a watcher (the
+    // documented opt-out, an embedder whose `current_exe` is not the CLI) still
+    // pushes what is waiting, exactly as `notify_supervisor` does.
+    if !running(store, goal_id) && pending_delivery(store, goal_id)? {
+        let connected = tokio::time::timeout(
+            Duration::from_secs(5),
+            AgentClient::connect(&crate::agent_client::agent_addr()),
+        )
+        .await;
+        if let Ok(Ok(mut client)) = connected {
+            if let Err(error) = flush(store, goal_id, &mut client).await {
+                eprintln!("supervisor outbox retained for retry: {error}");
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn record_dead_holders(store: &mut Store, goal_id: &str) -> Result<()> {
     let Some(goal) = store.replay(goal_id)? else {
         return Ok(());
@@ -335,6 +548,10 @@ pub async fn watch(store: &mut Store, goal_id: &str, once: bool) -> Result<()> {
             return Ok(());
         }
         record_dead_holders(store, goal_id)?;
+        // The completion half of the same pass: finshed advancement work is
+        // reported here too, so a `todo complete` from a worker that then died
+        // still reaches the supervisor.
+        record_completions(store, goal_id)?;
         if goal.supervisor_session_id.is_some() && pending_delivery(store, goal_id)? {
             let connected = tokio::time::timeout(
                 Duration::from_secs(5),
@@ -384,21 +601,11 @@ pub fn ensure_watchdog(store: &Store, goal: &str) -> Result<()> {
     }
     cmd.args(["supervisor", "watch", "--goal", goal]);
     cmd.env("FUTURE_GOAL_ROOT", store.root_path());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0000_0200 | 0x0000_0008);
-    }
     let log = lock_file(store, goal, "watch.log")?;
     cmd.stdin(std::process::Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
-    let mut child = cmd.spawn()?;
+    let mut child = crate::detach::spawn(&mut cmd)?;
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
     loop {
         // The child's own exit is checked first: it is the one signal that stays
@@ -534,6 +741,145 @@ mod tests {
         child.kill().unwrap();
         child.wait().unwrap();
         pid
+    }
+
+    /// The batch writer is what keeps a sweep cheap: one ledger read for many
+    /// observations, and the same dedup the single-note path had — a key already
+    /// in the ledger is skipped, and a key repeated inside one batch is written
+    /// once.
+    #[test]
+    fn a_batch_of_notes_dedupes_against_the_ledger_and_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path().to_str().unwrap()).unwrap();
+        store.register(&Goal::new("g", "goal", ".")).unwrap();
+        let note = |key: &str| Note {
+            kind: TODO_DONE_NOTE_KIND.to_string(),
+            todo: "t1".to_string(),
+            message: format!("note {key}"),
+            key: key.to_string(),
+        };
+        let count = |store: &Store| {
+            store
+                .events("g")
+                .unwrap()
+                .iter()
+                .filter(|e| matches!(e.event, Event::SupervisorNote { .. }))
+                .count()
+        };
+
+        queue_many(&mut store, "g", vec![note("k1"), note("k1"), note("k2")]).unwrap();
+        assert_eq!(count(&store), 2, "the repeated key is written once");
+        queue_many(&mut store, "g", vec![note("k1"), note("k3")]).unwrap();
+        assert_eq!(count(&store), 3, "the ledger key k1 is not rewritten");
+    }
+
+    /// A completion inside the catch-up window is reported exactly once; an
+    /// older one is not: the sweep is a restart net, not a history replay (an
+    /// upgrade must not wake the supervisor about work accepted weeks ago).
+    #[test]
+    fn completions_are_reported_once_within_the_window_and_never_backfilled() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path().to_str().unwrap()).unwrap();
+        store.register(&Goal::new("g", "goal", ".")).unwrap();
+        let now = now_epoch();
+        for (id, ts) in [("recent", now), ("ancient", 1)] {
+            store
+                .append(Event::TodoAdded {
+                    goal_id: "g".into(),
+                    todo: crate::state::Todo::advancement(id, "work"),
+                    ts,
+                })
+                .unwrap();
+            store
+                .append(Event::TodoCompleted {
+                    goal_id: "g".into(),
+                    todo_id: id.into(),
+                    no_follow_up: true,
+                    successor_ids: vec![],
+                    evidence: Some("landed".into()),
+                    ts,
+                })
+                .unwrap();
+        }
+        let keys = |store: &Store| -> Vec<String> {
+            store
+                .events("g")
+                .unwrap()
+                .into_iter()
+                .filter_map(|e| match e.event {
+                    Event::SupervisorNote { dedup_key, .. } => Some(dedup_key),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        record_completions(&mut store, "g").unwrap();
+        assert_eq!(
+            keys(&store),
+            vec![format!("todo_done:recent:{now}")],
+            "only the completion inside the window is reported"
+        );
+        // A second pass (the watcher's next tick) adds nothing.
+        record_completions(&mut store, "g").unwrap();
+        assert_eq!(keys(&store).len(), 1, "the completed todo is not re-noted");
+        // And a goal that does not exist is a no-op, not an error.
+        record_completions(&mut store, "goal_missing").unwrap();
+    }
+
+    /// One completion is one report: a completion the run loop already reported
+    /// (`completed`, with its evidence) must not also produce an acceptance
+    /// reminder for the same moment — that would wake the supervisor twice about
+    /// one event. A *newer* completion after a rework cycle is a different
+    /// moment and does get its own note.
+    #[test]
+    fn a_completion_the_run_loop_already_reported_is_not_reported_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path().to_str().unwrap()).unwrap();
+        store.register(&Goal::new("g", "goal", ".")).unwrap();
+        let completed_at = now_epoch();
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: crate::state::Todo::advancement("t1", "work"),
+                ts: completed_at,
+            })
+            .unwrap();
+        store
+            .append(Event::TodoCompleted {
+                goal_id: "g".into(),
+                todo_id: "t1".into(),
+                no_follow_up: true,
+                successor_ids: vec![],
+                evidence: Some("landed".into()),
+                ts: completed_at,
+            })
+            .unwrap();
+        store
+            .append(Event::SupervisorNote {
+                goal_id: "g".into(),
+                todo_id: "t1".into(),
+                note_kind: COMPLETION_REPORT_KIND.into(),
+                message: "turn completed t1".into(),
+                dedup_key: "completed:t1:run-1".into(),
+                ts: completed_at,
+            })
+            .unwrap();
+
+        record_completions(&mut store, "g").unwrap();
+        let kinds: Vec<String> = store
+            .events("g")
+            .unwrap()
+            .into_iter()
+            .filter_map(|e| match e.event {
+                Event::SupervisorNote { note_kind, .. } => Some(note_kind),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![COMPLETION_REPORT_KIND.to_string()],
+            "the run loop's report already covers this completion: {kinds:?}"
+        );
     }
 
     #[test]
