@@ -335,6 +335,8 @@ async fn event_loop(
                         let mut output = linear.sync_session(&data.session.id, &data.messages);
                         output.push_str(&std::mem::take(&mut linear_deferred));
                         terminal.write(&linear.frame(&output, &data.input.text, frame.width));
+                    } else if !linear_now && was_linear {
+                        linear_deferred.push_str(&linear.take_partial());
                     }
                 }
                 paint = true;
@@ -458,7 +460,7 @@ async fn event_loop(
 
 /// Output produced while a full-screen overlay owns the terminal is not
 /// discarded: returning to linear mode flushes it into scrollback exactly once.
-fn emit_linear(output: String, deferred: &mut String, visible: bool) -> String {
+pub(crate) fn emit_linear(output: String, deferred: &mut String, visible: bool) -> String {
     if visible {
         let mut combined = std::mem::take(deferred);
         combined.push_str(&output);

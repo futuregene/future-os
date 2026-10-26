@@ -112,6 +112,13 @@ impl LinearReader {
         }
     }
 
+    /// Keep a partial streamed answer while an alternate-screen overlay is
+    /// visible. The final event's prefix still matches `streamed`, so it is
+    /// emitted once when the reader returns to native scrollback.
+    pub fn take_partial(&mut self) -> String {
+        std::mem::take(&mut self.pending)
+    }
+
     fn take_lines(&mut self) -> String {
         let end = self
             .pending
@@ -245,6 +252,27 @@ mod tests {
         let frame = reader.frame("new\n", "draft", 80);
         assert!(frame.contains("new\r\nfuture> draft"));
         assert!(!frame.contains("\x1b[31m"));
+    }
+
+    #[test]
+    fn an_interrupted_line_survives_an_overlay_and_finishes_only_once() {
+        let mut reader = LinearReader::default();
+        reader.sync_session("a", &[]);
+        assert_eq!(read(&mut reader, &event("text_chunk", "partial")), "");
+        assert_eq!(reader.take_partial(), "partial");
+        let mut deferred = String::from("partial");
+        assert_eq!(
+            crate::workbench::run::emit_linear(
+                read(&mut reader, &event("agent_end", "partial answer")),
+                &mut deferred,
+                false,
+            ),
+            ""
+        );
+        assert_eq!(
+            crate::workbench::run::emit_linear(String::new(), &mut deferred, true),
+            "partial answer\n"
+        );
     }
 
     #[test]
