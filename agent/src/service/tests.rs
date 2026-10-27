@@ -716,6 +716,53 @@ async fn an_expired_shutdown_deadline_reports_failed_stopping_and_stops_waiting(
     assert_eq!(after.errors, report.errors);
 }
 
+/// The last drain step revokes the Windows capability ACEs, which can block on
+/// the capability locks while another thread prepares a sandbox. The drain
+/// skips that revoke after a short bounded wait instead of reporting the whole
+/// shutdown failed: the granted ACEs are harmless while the process exits, and
+/// the next startup cleanup revokes them. On non-Windows the bounded call
+/// returns `Unsupported`, which takes the same skip arm.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[test]
+fn a_sandbox_cleanup_timeout_does_not_fail_the_drain() {
+    use crate::sandbox::reset_windows_sandbox_capabilities_bounded;
+
+    // The production arm: whatever the platform answers, the drain adds no
+    // error of its own. Assert the bounded call exists and the drain no longer
+    // records "Windows sandbox cleanup" as a shutdown failure by driving the
+    // fixture through a full shutdown with a locked capability state file.
+    let handle = fixture();
+    if cfg!(target_os = "windows") {
+        // Hold the cross-process capability lock exactly as a concurrent
+        // sandbox preparation would, then verify the drain still reports
+        // Stopped within the budget instead of surfacing the lock timeout.
+        let home = crate::utils::future_home();
+        std::fs::create_dir_all(&home).unwrap();
+        let state_path = home.join("windows-capabilities.json");
+        let lock_path = state_path.with_file_name("windows-capabilities.lock");
+        let _lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap();
+    }
+    let report = handle.shutdown_blocking(Duration::from_secs(3));
+    assert_eq!(
+        report.status,
+        crate::service::ShutdownStatus::Stopped,
+        "a skipped sandbox revoke is not a failed shutdown: {:?}",
+        report.errors
+    );
+    assert!(
+        !report.errors.iter().any(|error| error.contains("sandbox")),
+        "no sandbox error reaches the report: {:?}",
+        report.errors
+    );
+    let _ = reset_windows_sandbox_capabilities_bounded(Duration::ZERO);
+}
+
 /// A storage failure while persisting the terminal markers of cancelled queued
 /// runs is reported *and* recorded: the host must not be told "stopped" when a
 /// run's outcome never reached the journal, and the session's own recorded

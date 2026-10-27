@@ -81,6 +81,43 @@ function routeCommands(handlers: Record<string, () => unknown>) {
   });
 }
 
+it.each(["cleanup-failed", "failed-restored"])("keeps %s retryable: the install control stays live and a manual fallback appears", async (outcome) => {
+  // A failed pre-install cleanup (or a restored failure) records no installer
+  // handoff, so the journal accepts a new attempt. The page must show the
+  // problem *and* leave both the install control and the manual download
+  // reachable — a dead end here is what once stranded the app on an old
+  // version until its update pointer was removed by hand.
+  routeCommands({
+    app_maintenance_status: () => Promise.resolve(maintenance({ outcome, restartSafe: outcome === "failed-restored" })),
+  });
+  const page = await mountPage();
+  try {
+    expect(page.container.textContent).not.toBe("");
+    const install = page.button("Download and install");
+    expect(install).not.toBeUndefined();
+    expect(install!.disabled).toBe(false);
+    expect(page.button("Download installer")).not.toBeUndefined();
+  }
+  finally {
+    page.unmount();
+  }
+});
+
+it("keeps an acknowledged repair gated until its record clears, but still offers the manual download", async () => {
+  routeCommands({
+    app_maintenance_status: () => Promise.resolve(maintenance({ outcome: "repair-required", repairAcknowledged: false })),
+  });
+  const page = await mountPage();
+  try {
+    const install = page.button("Download and install");
+    expect(install!.disabled).toBe(true);
+    expect(page.button("Download installer")).not.toBeUndefined();
+  }
+  finally {
+    page.unmount();
+  }
+});
+
 async function mountPage() {
   const container = document.createElement("div");
   document.body.append(container);

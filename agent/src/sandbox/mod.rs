@@ -1261,6 +1261,34 @@ pub(crate) fn reset_windows_sandbox_capabilities() -> std::io::Result<usize> {
     }
 }
 
+/// Bounded variant of [`reset_windows_sandbox_capabilities`].
+///
+/// Shutdown callers pass a budget so a contended capability lock can never
+/// consume their whole drain deadline: on timeout this returns `WouldBlock`
+/// and the granted ACEs are left on the filesystem, where the next startup
+/// cleanup revokes them. Skipping the revoke at shutdown is safe — the ACEs
+/// only grant the FutureOS capability SID access to paths it already owns,
+/// and no restricted process is alive after the drain.
+pub(crate) fn reset_windows_sandbox_capabilities_bounded(
+    budget: std::time::Duration,
+) -> std::io::Result<usize> {
+    #[cfg(target_os = "windows")]
+    {
+        windows::runner::reset_capabilities_bounded(
+            &windows::runner::capability_state_path()?,
+            Some(budget),
+        )
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = budget;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Windows sandbox reset is only available on Windows",
+        ))
+    }
+}
+
 /// Expose the generated Seatbelt profile (for smoke tests and diagnostics).
 #[cfg(target_os = "macos")]
 pub fn seatbelt_profile(sandbox: &ResolvedSandbox) -> String {
