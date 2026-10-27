@@ -1,0 +1,358 @@
+{
+  "record_version": 1,
+  "recorded_date_local": "2026-10-27",
+  "timezone": "Asia/Shanghai",
+  "policy": "Preserve records; future measurements receive new IDs/files. Never replace previous measured values with newer results. Personal dialogue text and IDs are excluded.",
+  "previous_plan_snapshots": {
+    "zh-CN": {
+      "source_commit": "e339334ed61db649d01790539dfa726dbf4d408a",
+      "original_path": "docs/architecture/stream-storage-development.zh-CN.md",
+      "original_sha256": "a59480385d21f6fa2c370d186d0ffdb03c71f8e32cece7b921c447d29d8b5b92",
+      "archive": "docs/architecture/stream-storage-development-unreleased-2026-10-26.zh-CN.md",
+      "archive_sha256": "7419950319af4e547a4a96128be1fcf2541eac7a5568d1877c50de8de1e64e70"
+    },
+    "en": {
+      "source_commit": "e339334ed61db649d01790539dfa726dbf4d408a",
+      "original_path": "docs/architecture/stream-storage-development.md",
+      "original_sha256": "fc1925f9c21abbf7197ad65732c65ae646922b819f9506a984a04b6ee7301b8a",
+      "archive": "docs/architecture/stream-storage-development-unreleased-2026-10-26.md",
+      "archive_sha256": "11c8bdf1074499b99042196df64e50c03373887db55d4d0faf6e87f23a38e09b"
+    }
+  },
+  "preserved_acceptance_artifact": {
+    "path": "docs/testing/segmented-storage-acceptance-2026-10-26.json",
+    "sha256": "564045f7ca4bc9389ac6532c63ce3f47a6e57524c132d3b8e99fed2cb318a6be",
+    "source_commit": "3f9e2208",
+    "unchanged": true
+  },
+  "baselines": [
+    {
+      "id": "B0-original-survey",
+      "status": "historical observation; rounded values only",
+      "source": "e339334e:docs/architecture/stream-storage-development.zh-CN.md section 2",
+      "agent_database_approx_mib": 96.8,
+      "raw_events_and_indices_approx_mib": 85.2,
+      "reasoning_fragment_events": 181480,
+      "reasoning_event_json_approx_mib": 38.7,
+      "actual_reasoning_text_approx_mib": 1.68,
+      "limitations": [
+        "Historical personal-data survey; original exact byte counts and original DB snapshot are not archived here.",
+        "Do not infer missing byte counts or compare this different workload to synthetic samples.",
+        "Any earlier 83% historical-compaction experiment is not a new-write acceptance result."
+      ]
+    },
+    {
+      "id": "B1a-first-segmented-acceptance",
+      "status": "previous unpublished implementation, earlier sample",
+      "source_part": "preserved_acceptance_artifact:earlierStorageSample",
+      "workload": "synthetic-reasoning-55-byte-fragments-128-event-batches",
+      "cases": [
+        {
+          "format": 1,
+          "bodyBytes": 1048630,
+          "fragments": 19066,
+          "writeMicros": 869968,
+          "foregroundBatchMicros": {
+            "p95": 5408,
+            "p99": 6240,
+            "max": 8047
+          },
+          "finishMicros": 39555,
+          "finalDatabaseAndWalBytes": 19382456,
+          "sampledPeakDatabaseAndWalBytes": 19382456,
+          "rows": {
+            "run_events": 19070,
+            "run_snapshots": 0,
+            "stream_changes": 0,
+            "content_segments": 0,
+            "content_objects": 0,
+            "contentBytes": 0
+          }
+        },
+        {
+          "format": 2,
+          "bodyBytes": 1048630,
+          "fragments": 19066,
+          "writeMicros": 609622,
+          "foregroundBatchMicros": {
+            "p95": 3176,
+            "p99": 4724,
+            "max": 5712
+          },
+          "finishMicros": 1661,
+          "finalDatabaseAndWalBytes": 8972824,
+          "sampledPeakDatabaseAndWalBytes": 8972824,
+          "rows": {
+            "run_events": 0,
+            "run_snapshots": 0,
+            "stream_changes": 154,
+            "content_segments": 150,
+            "content_objects": 2,
+            "contentBytes": 1048646
+          }
+        },
+        {
+          "format": 1,
+          "bodyBytes": 10485805,
+          "fragments": 190651,
+          "writeMicros": 9333831,
+          "foregroundBatchMicros": {
+            "p95": 6294,
+            "p99": 6508,
+            "max": 9672
+          },
+          "finishMicros": 60283,
+          "finalDatabaseAndWalBytes": 200795664,
+          "sampledPeakDatabaseAndWalBytes": 200795664,
+          "rows": {
+            "run_events": 190655,
+            "run_snapshots": 0,
+            "stream_changes": 0,
+            "content_segments": 0,
+            "content_objects": 0,
+            "contentBytes": 0
+          }
+        },
+        {
+          "format": 2,
+          "bodyBytes": 10485805,
+          "fragments": 190651,
+          "writeMicros": 6124030,
+          "foregroundBatchMicros": {
+            "p95": 3263,
+            "p99": 3559,
+            "max": 7840
+          },
+          "finishMicros": 1633,
+          "finalDatabaseAndWalBytes": 21868544,
+          "sampledPeakDatabaseAndWalBytes": 21868544,
+          "rows": {
+            "run_events": 0,
+            "run_snapshots": 0,
+            "stream_changes": 1495,
+            "content_segments": 1491,
+            "content_objects": 2,
+            "contentBytes": 10485821
+          }
+        }
+      ],
+      "limitations": [
+        "This earlier storage run overlapped regression activity.",
+        "Database plus WAL is sampled; no VACUUM or historical compaction.",
+        "Preserve separately from the later quiet sample."
+      ]
+    },
+    {
+      "id": "B1b-final-segmented-acceptance",
+      "status": "previous unpublished implementation, final quiet sample",
+      "source_part": "preserved_acceptance_artifact:storage",
+      "environment": {
+        "platform": "macOS-27.0.1-arm64-arm-64bit",
+        "machine": "arm64",
+        "rust": "1.99.1"
+      },
+      "workload": "synthetic-reasoning-55-byte-fragments-128-event-batches",
+      "cases": [
+        {
+          "format": 1,
+          "bodyBytes": 1048630,
+          "fragments": 19066,
+          "writeMicros": 837012,
+          "foregroundBatchMicros": {
+            "p95": 4605,
+            "p99": 4704,
+            "max": 4747
+          },
+          "finishMicros": 33564,
+          "finalDatabaseAndWalBytes": 19566776,
+          "sampledPeakDatabaseAndWalBytes": 19566776,
+          "rows": {
+            "run_events": 19070,
+            "run_snapshots": 0,
+            "stream_changes": 0,
+            "content_segments": 0,
+            "content_objects": 0,
+            "contentBytes": 0
+          }
+        },
+        {
+          "format": 2,
+          "bodyBytes": 1048630,
+          "fragments": 19066,
+          "writeMicros": 540839,
+          "foregroundBatchMicros": {
+            "p95": 2545,
+            "p99": 2640,
+            "max": 2722
+          },
+          "finishMicros": 1464,
+          "finalDatabaseAndWalBytes": 6087936,
+          "sampledPeakDatabaseAndWalBytes": 6087936,
+          "rows": {
+            "run_events": 0,
+            "run_snapshots": 0,
+            "stream_changes": 154,
+            "content_segments": 150,
+            "content_objects": 2,
+            "contentBytes": 1048646
+          }
+        },
+        {
+          "format": 1,
+          "bodyBytes": 10485805,
+          "fragments": 190651,
+          "writeMicros": 8389985,
+          "foregroundBatchMicros": {
+            "p95": 4614,
+            "p99": 4832,
+            "max": 7091
+          },
+          "finishMicros": 54323,
+          "finalDatabaseAndWalBytes": 200381968,
+          "sampledPeakDatabaseAndWalBytes": 200381968,
+          "rows": {
+            "run_events": 190655,
+            "run_snapshots": 0,
+            "stream_changes": 0,
+            "content_segments": 0,
+            "content_objects": 0,
+            "contentBytes": 0
+          }
+        },
+        {
+          "format": 2,
+          "bodyBytes": 10485805,
+          "fragments": 190651,
+          "writeMicros": 5421782,
+          "foregroundBatchMicros": {
+            "p95": 2578,
+            "p99": 2707,
+            "max": 3026
+          },
+          "finishMicros": 1448,
+          "finalDatabaseAndWalBytes": 21993656,
+          "sampledPeakDatabaseAndWalBytes": 21993656,
+          "rows": {
+            "run_events": 0,
+            "run_snapshots": 0,
+            "stream_changes": 1495,
+            "content_segments": 1491,
+            "content_objects": 2,
+            "contentBytes": 10485821
+          }
+        }
+      ],
+      "limitations": [
+        "Synthetic temporary databases only; no personal conversation data.",
+        "The final storage sample ran after regression processes exited; it remains a single synthetic sample per body size, not a release guarantee.",
+        "Database/WAL peaks are sampled and include unreclaimed WAL; no VACUUM or historical compaction.",
+        "Headless desktop Chrome is not native Tauri IPC, a mobile device, or physical power-loss verification."
+      ]
+    },
+    {
+      "id": "B1c-segmented-live-audit",
+      "status": "read-only aggregate observation of four test turns; no private content retained",
+      "all_session_entries": 54,
+      "content_objects": 75,
+      "content_bytes": 66086,
+      "content_segment_rows": 1542,
+      "stream_changes": 1730,
+      "latest_turn": {
+        "entryKinds": {
+          "user": 1,
+          "run_started": 1,
+          "assistant": 6,
+          "tool": 5,
+          "run_terminal": 1
+        },
+        "toolCalls": 5,
+        "toolResults": 5,
+        "bodyObjects": 15,
+        "bodyBytes": 26925,
+        "segmentRows": 550,
+        "entryReferences": 17,
+        "streamContentReferences": 562,
+        "bodiesSharedByTranscriptAndReplay": 15,
+        "maxChangeMetadataBytes": 1331,
+        "eventTypes": {
+          "user_message": 1,
+          "agent_start": 1,
+          "message_start": 6,
+          "thinking_start": 3,
+          "thinking_delta": 95,
+          "tool_start": 10,
+          "tool_delta": 390,
+          "thinking_end": 3,
+          "tool_input_end": 5,
+          "usage": 6,
+          "message_end": 6,
+          "tool_end": 5,
+          "tool_sandboxed": 2,
+          "text_start": 1,
+          "text_chunk": 59,
+          "text_end": 1,
+          "agent_end": 1
+        }
+      },
+      "latest_turn_metadata_json_bytes": 209787,
+      "allocated_structure_bytes": {
+        "stream_changes": 675840,
+        "content_segments": 106496,
+        "stream_changes_entry_tool": 90112,
+        "stream_change_content": 57344,
+        "stream_change_content_body": 40960
+      },
+      "limitations": [
+        "Allocated page bytes are table/index totals for the observed canonical data, not the latest turn alone.",
+        "Segment count is not page count; the table uses packed SQLite B-tree pages.",
+        "No whole-database saving can be inferred from these aggregates."
+      ]
+    },
+    {
+      "id": "B2-compact-metadata-prototype",
+      "status": "in-memory layout experiment; not implemented or release-validated",
+      "result": {
+        "scope": "In-memory metadata-only layout model; original timestamp strings and unknown JSON retained; no user DB changes or body copies; excludes WAL, body storage, migration and latency effects. Typed event kind IDs here are experimental only.",
+        "changes": 1730,
+        "fastPathChanges": 1522,
+        "channelHeaders": 214,
+        "spillFieldRows": 70,
+        "baselineAllocatedBytes": 921600,
+        "candidateAllocatedBytes": 385024,
+        "metadataStructureReductionPercent": 58.2,
+        "baselineTablesAndIndices": {
+          "sqlite_autoindex_stream_changes_1": 28672,
+          "sqlite_autoindex_stream_runs_1": 4096,
+          "stream_change_content": 57344,
+          "stream_change_content_body": 40960,
+          "stream_changes": 675840,
+          "stream_changes_entry_key": 4096,
+          "stream_changes_entry_kind": 12288,
+          "stream_changes_entry_tool": 90112,
+          "stream_changes_pricing": 4096,
+          "stream_runs": 4096
+        },
+        "candidateTablesAndIndices": {
+          "changes": 192512,
+          "changes_channel": 36864,
+          "changes_cursor": 28672,
+          "changes_pricing": 4096,
+          "channels": 36864,
+          "channels_body": 4096,
+          "channels_entry": 16384,
+          "channels_key": 24576,
+          "channels_stream": 4096,
+          "channels_tool": 20480,
+          "fields": 4096,
+          "fields_body": 4096
+        },
+        "semanticJsonRoundtrip": "all records equal"
+      },
+      "limitations": [
+        "Metadata tables and indices only; excludes bodies, WAL, CPU, durability, migration and UI latency.",
+        "The prototype verifies semantic JSON round-trip on the observed records, not full RPC/recovery/GC behavior.",
+        "The same sample must be regenerated synthetically for final automated acceptance; personal records are not CI fixtures."
+      ]
+    }
+  ]
+}
