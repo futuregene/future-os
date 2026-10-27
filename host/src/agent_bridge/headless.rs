@@ -179,15 +179,24 @@ async fn run_prepared_prompt_inner(
     match result {
         // Stream closed before `agent_end`: the text is a truncated prefix, not
         // a finished answer. Persist it (so the partial isn't lost) but mark the
-        // run failed rather than completed.
+        // run failed rather than completed — and *return* that failure, because
+        // a caller that only sees `Ok` records the run as a success with an
+        // empty answer (a cancelled or restarted run reached the task ledger as
+        // `completed` exactly this way).
         Ok(response) if !response.complete => {
+            let message = super::stream::termination_error(response.termination_kind.as_deref());
             let _ = store::update_run_status_if_active(store::UpdateRunStatusInput {
                 run_id: run_id.clone(),
                 status: "failed".to_string(),
-                error_message: Some("Response interrupted before completion.".to_string()),
-                error_type: Some("stream_interrupted".to_string()),
+                error_message: Some(message.to_string()),
+                error_type: Some(
+                    response
+                        .termination_kind
+                        .clone()
+                        .unwrap_or_else(|| "stream_interrupted".to_string()),
+                ),
             });
-            Ok(())
+            Err(crate::Error::Message(message.to_string()))
         }
         Ok(_) => {
             let _ = store::update_run_status_if_active(store::UpdateRunStatusInput {
@@ -477,7 +486,16 @@ mod tests {
             None,
         ));
 
-        run_prepared_prompt(prepared).await.expect("run");
+        // The run row is failed *and* the caller hears about it: a caller that
+        // only saw `Ok` here recorded the run as a success with an empty answer
+        // (a cancelled or restarted run reached the task ledger as `completed`).
+        let error = run_prepared_prompt(prepared)
+            .await
+            .expect_err("an incomplete run is a failure, not a quiet success");
+        assert!(
+            error.to_string().contains("[RESPONSE_UNCONFIRMED]"),
+            "{error}"
+        );
         let run = crate::store::get_run(&run_id)
             .expect("get run")
             .expect("some");

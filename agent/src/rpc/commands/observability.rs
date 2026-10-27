@@ -319,11 +319,19 @@ pub(crate) fn handle_get_last_assistant_text(
     session: &Arc<parking_lot::RwLock<ServerSession>>,
     id: &str,
 ) -> String {
-    let text = session.read().get_last_assistant_text();
+    let (text, last_tool) = {
+        let session = session.read();
+        (session.get_last_assistant_text(), session.last_tool_name())
+    };
+    // `lastTool` lets a caller that is about to delete the conversation record
+    // one clue about how far the run got, instead of only an empty answer.
     RpcResponse::ok(
         id,
         "get_last_assistant_text",
-        serde_json::json!({"text": if text.is_empty() { None } else { Some(text) }}),
+        serde_json::json!({
+            "text": if text.is_empty() { None } else { Some(text) },
+            "lastTool": last_tool,
+        }),
     )
 }
 
