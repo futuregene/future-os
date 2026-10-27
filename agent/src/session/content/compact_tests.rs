@@ -290,6 +290,32 @@ fn context_ownership_and_fixed_kind_codes_are_database_constraints() {
 }
 
 #[test]
+fn scope_guards_reject_foreign_owner_updates_and_noop_replacements() {
+    let mut db = db();
+    stream::commit_batch(
+        &mut db,
+        &scope(),
+        vec![append(0, "key")],
+        vec![change(0, "key")],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO stream_runs(id,session_id,run_id,epoch) VALUES (2,'s','other',1)",
+        [],
+    )
+    .unwrap();
+    assert!(db
+        .execute("UPDATE stream_body_owners SET stream_id=2", [])
+        .is_err());
+    assert!(db.execute("INSERT INTO stream_body_owners SELECT 2,key_id,content_id,byte_offset,byte_length,encoding FROM stream_body_owners", []).is_err());
+    assert!(db
+        .execute("UPDATE stream_changes SET event_kind=9", [])
+        .is_err());
+    db.execute_batch("DROP TRIGGER stream_change_scope_insert; CREATE TRIGGER stream_change_scope_insert BEFORE INSERT ON stream_changes BEGIN SELECT 1; END;").unwrap();
+    assert!(validate_layout(&db).is_err());
+}
+
+#[test]
 fn query_plans_use_short_context_cursor_and_reverse_body_indices() {
     let db = db();
     for (sql,expected) in [

@@ -33,22 +33,15 @@ pub(super) fn get(
     key: &str,
 ) -> Result<Option<(ContentRange, Encoding)>> {
     let scope = stream.bind(db)?;
-    let raw: Option<(i64, i64, i64, String)> = db
-        .query_row(
-            "SELECT b.content_id,b.byte_offset,b.byte_length,b.encoding
-        FROM stream_runs r JOIN stream_symbols s ON s.stream_id=r.id
-        JOIN stream_body_owners b ON b.stream_id=r.id AND b.key_id=s.id
-        WHERE r.session_id=?1 AND r.run_id=?2 AND r.epoch=?3 AND s.value=?4 COLLATE BINARY
-        AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=r.id)",
-            params![
-                scope.session_id,
-                scope.run_id,
-                scope.epoch,
-                super::symbols::key(key)
-            ],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )
-        .optional()?;
+    let id: Option<i64> = db.query_row("SELECT id FROM stream_runs r WHERE session_id=?1 AND run_id=?2 AND epoch=?3 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=r.id)", params![scope.session_id,scope.run_id,scope.epoch], |r|r.get(0)).optional()?;
+    let Some(id) = id else {
+        return Ok(None);
+    };
+    get_in(db, id, key)
+}
+
+fn get_in(db: &Connection, stream: i64, key: &str) -> Result<Option<(ContentRange, Encoding)>> {
+    let raw: Option<(i64, i64, i64, String)> = db.prepare_cached("SELECT b.content_id,b.byte_offset,b.byte_length,b.encoding FROM stream_symbols s JOIN stream_body_owners b ON b.stream_id=s.stream_id AND b.key_id=s.id WHERE s.stream_id=?1 AND s.value=?2 COLLATE BINARY")?.query_row(params![stream,super::symbols::key(key)], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
     raw.map(|(id, offset, length, encoding)| {
         Ok((
             ContentRange { id, offset, length },
@@ -70,6 +63,16 @@ pub(super) fn bind(
     encoding: Encoding,
 ) -> Result<()> {
     let stream = super::stream::stream_id(tx, stream)?;
+    bind_in(tx, stream, key, range, encoding)
+}
+
+fn bind_in(
+    tx: &Transaction<'_>,
+    stream: i64,
+    key: &str,
+    range: ContentRange,
+    encoding: Encoding,
+) -> Result<()> {
     let key = super::symbols::intern_value(tx, stream, key)?;
     let old:Option<(i64,i64,i64,String)>=tx.query_row("SELECT content_id,byte_offset,byte_length,encoding FROM stream_body_owners WHERE stream_id=?1 AND key_id=?2",params![stream,key],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
     if let Some(old) = old {
@@ -100,10 +103,12 @@ pub(super) fn extend(
     next: i64,
 ) -> Result<()> {
     let scope = stream.bind(tx)?;
-    let current:Option<(i64,i64,i64)>=tx.query_row("SELECT r.id,s.id,b.byte_length FROM stream_runs r
-        JOIN stream_symbols s ON s.stream_id=r.id JOIN stream_body_owners b ON b.stream_id=r.id AND b.key_id=s.id
-        WHERE r.session_id=?1 AND r.run_id=?2 AND r.epoch=?3 AND s.value=?4 COLLATE BINARY AND b.content_id=?5
-        AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=r.id)",params![scope.session_id,scope.run_id,scope.epoch,super::symbols::key(key),body],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+    let id = tx.query_row("SELECT id FROM stream_runs r WHERE session_id=?1 AND run_id=?2 AND epoch=?3 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=r.id)", params![scope.session_id,scope.run_id,scope.epoch], |r|r.get(0))?;
+    extend_in(tx, id, key, body, next)
+}
+
+fn extend_in(tx: &Transaction<'_>, stream: i64, key: &str, body: i64, next: i64) -> Result<()> {
+    let current:Option<(i64,i64,i64)>=tx.prepare_cached("SELECT b.stream_id,s.id,b.byte_length FROM stream_symbols s JOIN stream_body_owners b ON b.stream_id=s.stream_id AND b.key_id=s.id WHERE s.stream_id=?1 AND s.value=?2 COLLATE BINARY AND b.content_id=?3")?.query_row(params![stream,super::symbols::key(key),body],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
     let (stream, key, length) = current.context("staged stream body owner changed")?;
     ensure!(
         next <= length || !closed(tx, stream)?,
@@ -112,4 +117,26 @@ pub(super) fn extend(
     let changed=tx.execute("UPDATE stream_body_owners SET byte_length=max(byte_length,?4) WHERE stream_id=?1 AND key_id=?2 AND content_id=?3",params![stream,key,body,next])?;
     ensure!(changed == 1, "staged stream body owner changed");
     Ok(())
+}
+
+/// Resolved ownership is borrowed from one live publication transaction. It
+/// cannot survive COMMIT/rollback, and never becomes a process-wide ID cache.
+/// Construct only after stream_id has checked format, identity and retirement.
+pub(super) struct TransactionOwners<'tx, 'connection> {
+    tx: &'tx Transaction<'connection>,
+    stream: i64,
+}
+impl<'tx, 'connection> TransactionOwners<'tx, 'connection> {
+    pub(super) fn new(tx: &'tx Transaction<'connection>, stream: i64) -> Self {
+        Self { tx, stream }
+    }
+    pub(super) fn get(&self, key: &str) -> Result<Option<(ContentRange, Encoding)>> {
+        get_in(self.tx, self.stream, key)
+    }
+    pub(super) fn bind(&self, key: &str, range: ContentRange, encoding: Encoding) -> Result<()> {
+        bind_in(self.tx, self.stream, key, range, encoding)
+    }
+    pub(super) fn extend(&self, key: &str, body: i64, next: i64) -> Result<()> {
+        extend_in(self.tx, self.stream, key, body, next)
+    }
 }

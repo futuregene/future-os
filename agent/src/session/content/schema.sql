@@ -53,9 +53,9 @@ CREATE TABLE IF NOT EXISTS stream_runs (
 -- Draft layout identity: old schema-8 candidates are rejected, never converted.
 CREATE TABLE IF NOT EXISTS stream_layout (
     singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-    layout TEXT NOT NULL CHECK(layout='compact-owned-stream-v1')
+    layout TEXT NOT NULL CHECK(layout='compact-owned-stream-v2')
 );
-INSERT OR IGNORE INTO stream_layout VALUES(1,'compact-owned-stream-v1');
+INSERT OR IGNORE INTO stream_layout VALUES(1,'compact-owned-stream-v2');
 -- Dictionary values are exact strings, including empty/NUL and Unicode.
 CREATE TABLE IF NOT EXISTS stream_symbols (
     id INTEGER PRIMARY KEY,
@@ -63,7 +63,6 @@ CREATE TABLE IF NOT EXISTS stream_symbols (
     value BLOB NOT NULL CHECK((typeof(value)='blob' AND length(value)=16) OR (typeof(value)='text' AND length(CAST(value AS BLOB))<=16384)),
     UNIQUE(stream_id,value)
 );
-CREATE UNIQUE INDEX IF NOT EXISTS stream_symbols_identity ON stream_symbols(id,stream_id);
 CREATE TRIGGER IF NOT EXISTS stream_symbol_immutable BEFORE UPDATE ON stream_symbols BEGIN
     SELECT RAISE(ABORT,'stream symbols are immutable');
 END;
@@ -77,8 +76,16 @@ CREATE TABLE IF NOT EXISTS stream_body_owners (
     byte_length INTEGER NOT NULL CHECK(byte_length>=0),
     encoding TEXT NOT NULL CHECK(encoding IN ('text','json','shell_summary','tool_args_string_v1')),
     PRIMARY KEY(stream_id,key_id),
-    FOREIGN KEY(key_id,stream_id) REFERENCES stream_symbols(id,stream_id)
+    FOREIGN KEY(key_id) REFERENCES stream_symbols(id)
 ) WITHOUT ROWID;
+CREATE TRIGGER IF NOT EXISTS stream_body_owner_scope_insert BEFORE INSERT ON stream_body_owners BEGIN
+    SELECT RAISE(ABORT,'stream body key belongs to another stream') WHERE EXISTS
+        (SELECT 1 FROM stream_symbols WHERE id=NEW.key_id AND stream_id!=NEW.stream_id);
+END;
+CREATE TRIGGER IF NOT EXISTS stream_body_owner_scope_update BEFORE UPDATE OF stream_id,key_id ON stream_body_owners BEGIN
+    SELECT RAISE(ABORT,'stream body key belongs to another stream') WHERE EXISTS
+        (SELECT 1 FROM stream_symbols WHERE id=NEW.key_id AND stream_id!=NEW.stream_id);
+END;
 CREATE INDEX IF NOT EXISTS stream_body_owners_content ON stream_body_owners(content_id);
 CREATE TRIGGER IF NOT EXISTS stream_body_owner_removed AFTER DELETE ON stream_body_owners BEGIN
     INSERT OR IGNORE INTO content_collection(content_id) VALUES (OLD.content_id);
@@ -101,14 +108,21 @@ CREATE TABLE IF NOT EXISTS stream_contexts (
     tc_index INTEGER GENERATED ALWAYS AS (json_extract(descriptor_json,'$[0].data.tc_index')) VIRTUAL,
     direct_field TEXT GENERATED ALWAYS AS (json_extract(descriptor_json,'$[1]')) VIRTUAL,
     direct_encoding TEXT GENERATED ALWAYS AS (json_extract(descriptor_json,'$[2]')) VIRTUAL,
-    FOREIGN KEY(entry_id,stream_id) REFERENCES stream_symbols(id,stream_id),
-    FOREIGN KEY(tool_id,stream_id) REFERENCES stream_symbols(id,stream_id),
-    FOREIGN KEY(content_key,stream_id) REFERENCES stream_symbols(id,stream_id),
-    FOREIGN KEY(block_key,stream_id) REFERENCES stream_symbols(id,stream_id),
-    FOREIGN KEY(tool_name_key,stream_id) REFERENCES stream_symbols(id,stream_id),
-    FOREIGN KEY(tool_type_key,stream_id) REFERENCES stream_symbols(id,stream_id)
+    FOREIGN KEY(entry_id) REFERENCES stream_symbols(id),
+    FOREIGN KEY(tool_id) REFERENCES stream_symbols(id),
+    FOREIGN KEY(content_key) REFERENCES stream_symbols(id),
+    FOREIGN KEY(block_key) REFERENCES stream_symbols(id),
+    FOREIGN KEY(tool_name_key) REFERENCES stream_symbols(id),
+    FOREIGN KEY(tool_type_key) REFERENCES stream_symbols(id)
 );
-CREATE UNIQUE INDEX IF NOT EXISTS stream_contexts_identity ON stream_contexts(id,stream_id,event_kind);
+-- Integer primary keys already ensure global uniqueness. Scoped checks use
+-- primary-key reads rather than redundant composite unique write indices.
+CREATE TRIGGER IF NOT EXISTS stream_context_symbol_scope BEFORE INSERT ON stream_contexts BEGIN
+    SELECT RAISE(ABORT,'context symbol belongs to another stream') WHERE EXISTS
+        (SELECT 1 FROM stream_symbols WHERE id IN
+            (NEW.entry_id,NEW.tool_id,NEW.content_key,NEW.block_key,NEW.tool_name_key,NEW.tool_type_key)
+            AND stream_id!=NEW.stream_id);
+END;
 CREATE TRIGGER IF NOT EXISTS stream_context_immutable BEFORE UPDATE ON stream_contexts BEGIN
     SELECT RAISE(ABORT,'stream contexts are immutable');
 END;
@@ -132,9 +146,17 @@ CREATE TABLE IF NOT EXISTS stream_changes (
     byte_length INTEGER CHECK(byte_length>=0),
     CHECK((content_id IS NULL AND byte_offset IS NULL AND byte_length IS NULL AND flags=0)
        OR (content_id IS NOT NULL AND byte_offset IS NOT NULL AND byte_length IS NOT NULL)),
-    FOREIGN KEY(context_id,stream_id,event_kind) REFERENCES stream_contexts(id,stream_id,event_kind) ON DELETE CASCADE,
+    FOREIGN KEY(context_id) REFERENCES stream_contexts(id) ON DELETE CASCADE,
     UNIQUE(stream_id,last_cursor)
 );
+CREATE TRIGGER IF NOT EXISTS stream_change_scope_insert BEFORE INSERT ON stream_changes BEGIN
+    SELECT RAISE(ABORT,'change context scope or kind mismatch') WHERE EXISTS
+        (SELECT 1 FROM stream_contexts WHERE id=NEW.context_id AND (stream_id!=NEW.stream_id OR event_kind!=NEW.event_kind));
+END;
+CREATE TRIGGER IF NOT EXISTS stream_change_scope_update BEFORE UPDATE OF context_id,stream_id,event_kind ON stream_changes BEGIN
+    SELECT RAISE(ABORT,'change context scope or kind mismatch') WHERE EXISTS
+        (SELECT 1 FROM stream_contexts WHERE id=NEW.context_id AND (stream_id!=NEW.stream_id OR event_kind!=NEW.event_kind));
+END;
 CREATE INDEX IF NOT EXISTS stream_changes_context ON stream_changes(context_id,event_kind,last_cursor);
 CREATE INDEX IF NOT EXISTS stream_changes_body ON stream_changes(content_id) WHERE content_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS stream_changes_pricing ON stream_changes(stream_id,id)

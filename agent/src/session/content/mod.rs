@@ -81,10 +81,14 @@ impl ContentDigest {
 
 pub(crate) fn format(db: &Connection, session: &str) -> Result<i64> {
     let stored = super::identity::session_key(db, session)?;
+    format_bound(db, &stored)
+}
+
+pub(super) fn format_bound(db: &Connection, session: &impl rusqlite::ToSql) -> Result<i64> {
     Ok(db
         .query_row(
             "SELECT format FROM session_formats WHERE session_id=?1",
-            [stored],
+            [session],
             |r| r.get(0),
         )
         .optional()?

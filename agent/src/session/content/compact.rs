@@ -11,7 +11,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
-pub(crate) const LAYOUT: &str = "compact-owned-stream-v1";
+pub(crate) const LAYOUT: &str = "compact-owned-stream-v2";
 // Frozen wire-independent codes. Append only; never use enum ordinals.
 const KINDS: &[&str] = &[
     "agent_start",
@@ -394,12 +394,7 @@ pub(crate) fn validate_layout(db: &Connection) -> Result<()> {
         .context("unsupported unpublished Agent storage layout; preserve agent.db and use the matching candidate or a released backup")?;
     ensure!(marker.as_deref()==Some(LAYOUT),"unsupported unpublished Agent storage layout; preserve agent.db and use the matching candidate or a released backup");
     for (name, columns) in [
-        ("stream_symbols_identity", vec!["id", "stream_id"]),
         ("stream_body_owners_content", vec!["content_id"]),
-        (
-            "stream_contexts_identity",
-            vec!["id", "stream_id", "event_kind"],
-        ),
         ("stream_contexts_digest", vec!["stream_id", "digest"]),
         ("stream_contexts_entry", vec!["stream_id", "entry_id", "id"]),
         (
@@ -480,35 +475,53 @@ pub(crate) fn validate_layout(db: &Connection) -> Result<()> {
         "tool_name_key",
         "tool_type_key",
     ] {
-        let owned:bool=db.query_row(r#"SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_list('stream_contexts') p JOIN pragma_foreign_key_list('stream_contexts') q ON p.id=q.id WHERE p."from"=?1 AND p."table"='stream_symbols' AND p."to"='id' AND q."from"='stream_id' AND q."to"='stream_id')"#,[column],|r|r.get(0))?;
+        let referenced: bool=db.query_row(r#"SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_list('stream_contexts') WHERE "from"=?1 AND "table"='stream_symbols' AND "to"='id')"#,[column],|r|r.get(0))?;
         ensure!(
-            owned,
-            "missing scoped symbol ownership; preserve database for recovery"
+            referenced,
+            "missing symbol reference; preserve database for recovery"
         );
     }
     for trigger in [
+        "stream_body_owner_scope_insert",
+        "stream_body_owner_scope_update",
+        "stream_context_symbol_scope",
+        "stream_change_scope_insert",
+        "stream_change_scope_update",
         "stream_body_owner_removed",
         "stream_direct_removed",
         "stream_content_removed",
         "stream_context_immutable",
         "stream_symbol_immutable",
     ] {
-        let exists: bool = db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='trigger' AND name=?1)",
+        let installed: String = db.query_row(
+            "SELECT sql FROM sqlite_schema WHERE type='trigger' AND name=?1",
             [trigger],
             |r| r.get(0),
         )?;
+        let prefix = format!("CREATE TRIGGER IF NOT EXISTS {trigger} ");
+        let source = include_str!("schema.sql");
+        let start = source.find(&prefix).context("missing trigger contract")?;
+        let end = source[start..]
+            .find("END;")
+            .context("missing trigger terminator")?;
+        let expected = &source[start..start + end + 3];
+        let normalize = |sql: &str| {
+            sql.replace("IF NOT EXISTS ", "")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
         ensure!(
-            exists,
-            "incomplete compact storage collection trigger; preserve database for recovery"
+            normalize(&installed) == normalize(expected),
+            "incompatible compact storage trigger {trigger}; preserve database for recovery"
         );
     }
     db.prepare("SELECT change_id,field,encoding,content_id,byte_offset,byte_length FROM stream_content_ranges LIMIT 0")?;
     db.prepare("SELECT stream_id,key_id,content_id,byte_offset,byte_length,encoding FROM stream_body_owners LIMIT 0")?;
-    let owned:bool=db.query_row(r#"SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_list('stream_body_owners') p JOIN pragma_foreign_key_list('stream_body_owners') q ON p.id=q.id WHERE p."from"='key_id' AND p."table"='stream_symbols' AND p."to"='id' AND q."from"='stream_id' AND q."to"='stream_id')"#,[],|r|r.get(0))?;
+    let referenced:bool=db.query_row(r#"SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_list('stream_body_owners') WHERE "from"='key_id' AND "table"='stream_symbols' AND "to"='id')"#,[],|r|r.get(0))?;
     ensure!(
-        owned,
-        "missing stream body key ownership; preserve database for recovery"
+        referenced,
+        "missing stream body key reference; preserve database for recovery"
     );
     Ok(())
 }

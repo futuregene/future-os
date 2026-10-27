@@ -114,11 +114,11 @@ pub(crate) fn owner(stream: &StreamIdentity, key: &str) -> String {
 }
 
 pub(super) fn stream_id(tx: &Transaction<'_>, stream: &StreamIdentity) -> Result<i64> {
+    let stream = stream.bind(tx)?;
     ensure!(
-        super::format(tx, &stream.session_id)? == super::FORMAT_VERSION,
+        super::format_bound(tx, &stream.session_id)? == super::FORMAT_VERSION,
         "conversation does not use segmented storage"
     );
-    let stream = stream.bind(tx)?;
     tx.execute(
         "INSERT INTO stream_runs(session_id,run_id,epoch) VALUES (?1,?2,?3) ON CONFLICT DO NOTHING",
         params![stream.session_id, stream.run_id, stream.epoch],
@@ -156,6 +156,7 @@ pub(crate) fn commit_batch(
     );
     let tx = crate::session::database::begin_write_transaction(db)?;
     let id = stream_id(&tx, stream)?;
+    let owners = super::stream_body::TransactionOwners::new(&tx, id);
     let last: Option<(i64,String)> = tx.query_row(
         "SELECT last_cursor,event_type FROM stream_changes WHERE stream_id=?1 ORDER BY last_cursor DESC LIMIT 1",
         [id], |row| Ok((row.get(0)?,row.get(1)?)),
@@ -174,7 +175,8 @@ pub(crate) fn commit_batch(
         );
     }
     for piece in appends {
-        let prior = super::stream_body::get(&tx, stream, &piece.key)?
+        let prior = owners
+            .get(&piece.key)?
             .map(|(range, encoding)| {
                 ensure!(encoding == Encoding::Text, "stream append encoding changed");
                 Ok(range)
@@ -203,11 +205,9 @@ pub(crate) fn commit_batch(
             // The stream owner grows with its durable body. Published change
             // and transcript references remain immutable independent ranges.
             let length = prior.length.max(end);
-            super::stream_body::extend(&tx, stream, &piece.key, body, length)?;
+            owners.extend(&piece.key, body, length)?;
         } else {
-            super::stream_body::bind(
-                &tx,
-                stream,
+            owners.bind(
                 &piece.key,
                 ContentRange {
                     id: body,
@@ -246,7 +246,8 @@ pub(crate) fn commit_batch(
                 change.metadata.pointer(&body.field).is_some(),
                 "content link does not name a metadata field"
             );
-            let range = super::stream_body::get(&tx, stream, &body.key)?
+            let range = owners
+                .get(&body.key)?
                 .context("semantic change references missing content")?
                 .0;
             let end = body

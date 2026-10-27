@@ -79,6 +79,75 @@ struct WalWrites {
     pages: u64,
     page_size: u64,
 }
+
+/// Optional diagnostic: retain WAL frames behind a read snapshot, then attribute
+/// frame page numbers to the final dbstat page owners. This changes checkpoint
+/// behavior and is deliberately separate from acceptance latency measurements.
+struct WalPageProfile {
+    snapshot: rusqlite::Connection,
+    path: std::path::PathBuf,
+    first_frame: u64,
+}
+impl WalPageProfile {
+    fn begin(path: &Path) -> Option<Self> {
+        std::env::var_os("FUTURE_COMPACT_WAL_PROFILE")?;
+        let snapshot =
+            rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+        snapshot.execute_batch("BEGIN").unwrap();
+        snapshot
+            .query_row("SELECT count(*) FROM sqlite_schema", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap();
+        let path = std::path::PathBuf::from(format!("{}-wal", path.display()));
+        let bytes = std::fs::metadata(&path).unwrap().len();
+        let first_frame = bytes.saturating_sub(32) / (4096 + 24);
+        Some(Self {
+            snapshot,
+            path,
+            first_frame,
+        })
+    }
+
+    fn finish(self, store: &SqliteStore) -> Value {
+        use std::io::{Read, Seek, SeekFrom};
+        let pages = store
+            .db
+            .read(|db| {
+                let mut query = db.prepare("SELECT pageno,name FROM dbstat")?;
+                let rows =
+                    query.query_map([], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, String>(1)?)))?;
+                Ok(rows.collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()?)
+            })
+            .unwrap();
+        let mut wal = std::fs::File::open(&self.path).unwrap();
+        let mut header = [0u8; 32];
+        wal.read_exact(&mut header).unwrap();
+        let page_size = u32::from_be_bytes(header[8..12].try_into().unwrap());
+        assert_eq!(page_size, 4096);
+        let frame_bytes = u64::from(page_size) + 24;
+        wal.seek(SeekFrom::Start(32 + self.first_frame * frame_bytes))
+            .unwrap();
+        let mut counts = std::collections::BTreeMap::<String, u64>::new();
+        let mut frame = [0u8; 24];
+        while wal.read_exact(&mut frame).is_ok() {
+            assert_eq!(
+                &frame[8..16],
+                &header[16..24],
+                "WAL was reset during profile"
+            );
+            let page = u32::from_be_bytes(frame[..4].try_into().unwrap());
+            let name = pages
+                .get(&page)
+                .map_or("unmapped-final-page", String::as_str);
+            *counts.entry(name.into()).or_default() += 1;
+            wal.seek(SeekFrom::Current(i64::from(page_size))).unwrap();
+        }
+        self.snapshot.execute_batch("ROLLBACK").unwrap();
+        json!({"scope":"diagnostic only: WAL frames retained by a read snapshot, attributed using final dbstat page owners; not acceptance latency", "framesByFinalOwner":counts})
+    }
+}
 impl WalWrites {
     fn capture(store: &SqliteStore) -> Self {
         store
@@ -568,6 +637,7 @@ fn compact_context_metadata_workloads() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("agent.db");
         let store = open(&path, true);
+        let wal_profile = WalPageProfile::begin(&path);
         let before_writes = WalWrites::capture(&store);
         let mut writer = Writer::default();
         let mut cursor = 0i64;
@@ -628,7 +698,7 @@ fn compact_context_metadata_workloads() {
             std::fs::metadata(&path).unwrap().len(),
             std::fs::metadata(path.with_extension("db-wal")).map_or(0, |m| m.len()),
         );
-        cases.push(json!({"contextChurn":churn,"bodyBytes":body_bytes,"fragmentBytes":fragment.len(),"fragmentsPerFlush":4,"elapsedMicros":elapsed,"batchMicros":{"p95":latencies[latencies.len()*95/100],"p99":latencies[latencies.len()*99/100],"max":latencies.last()},"readerMicros":{"p95":reads[reads.len()*95/100],"max":reads.last()},"readerWork":read_work,"walWrites":wal_writes,"databaseBytes":database,"walBytes":wal,"rows":structures,"io":store.db.metrics()}));
+        cases.push(json!({"walPageProfile":wal_profile.map(|profile| profile.finish(&store)),"contextChurn":churn,"bodyBytes":body_bytes,"fragmentBytes":fragment.len(),"fragmentsPerFlush":4,"elapsedMicros":elapsed,"batchMicros":{"p95":latencies[latencies.len()*95/100],"p99":latencies[latencies.len()*99/100],"max":latencies.last()},"readerMicros":{"p95":reads[reads.len()*95/100],"max":reads.last()},"readerWork":read_work,"walWrites":wal_writes,"databaseBytes":database,"walBytes":wal,"rows":structures,"io":store.db.metrics()}));
     }
     let report = json!({"workload":"synthetic-long-identities-1MiB-four-fragment-flushes","cases":cases,"limitations":"Direct writer batches and bounded replay; timer cadence, admission backlog, native UI and physical power loss are not simulated. No VACUUM, historical compression or completion rewrite."});
     println!("COMPACT_METADATA_ACCEPTANCE={report}");
@@ -636,3 +706,6 @@ fn compact_context_metadata_workloads() {
         std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     }
 }
+
+#[path = "acceptance_realistic.rs"]
+mod realistic;

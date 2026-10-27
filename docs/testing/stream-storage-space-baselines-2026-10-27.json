@@ -376,6 +376,13 @@
       "artifact": "docs/testing/compact-storage-candidate-3-2026-10-27.json",
       "artifactSha256": "7fd4bf6737dcb4e7923bed2d5e642043b5840d841c0338d2ec59d03780b0c767",
       "scope": "single intermediate stress sample; ownership category changed; see artifact and bilingual baselines for limitations"
+    },
+    {
+      "id": "B3.4-bounded-facts-scoped-identities",
+      "status": "intermediate: reduced allocations and WAL; first-read regression under investigation",
+      "artifact": "docs/testing/compact-storage-candidate-4-2026-10-27.json",
+      "artifactSha256": "7c5ec5ce97da9a1d46b729fb6a67f6b92226bb4d48aa1cc709d738a5b01d3e22",
+      "scope": "three paired valid UUID transcript repetitions, identical logical content digests; intermediate stress and diagnostic results retained"
     }
   ]
 }

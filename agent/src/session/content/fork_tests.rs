@@ -1,5 +1,6 @@
 //! Fork ownership/checkpoint specs, authored for the final validation phase.
 use super::*;
+use crate::session::content::FORMAT_VERSION;
 use crate::session::{ForkPoint, Manager};
 use serde_json::json;
 
@@ -21,6 +22,99 @@ fn setup() -> (tempfile::TempDir, Manager) {
         json!({"id":"cp","type":"compaction","role":"system","timestamp":"2026-10-26T00:00:03Z","content":{"schema_version":3,"checkpoint_id":"checkpoint-v3","covered_from_entry_id":"u","cutoff_entry_id":"a","protected_entry_ids":(["u","a"].repeat(600)),"summary":[{"type":"text","text":summary}],"tokens_before":100000,"tokens_after":10000,"trigger":"manual","algorithm_version":"deterministic-evidence-v1","model":"mock","context_window":128000}})
     ]).unwrap();
     (root, manager)
+}
+
+#[test]
+fn legacy_parent_forks_into_native_compact_child_without_rewriting_history() {
+    let root = tempfile::tempdir().unwrap();
+    let sessions = root.path().join("sessions");
+    let manager = Manager::new(sessions.clone());
+    let store = manager.storage().unwrap();
+    let parent = uuid::Uuid::new_v4().to_string();
+    let id = parent.clone();
+    store
+        .db
+        .call(move |db| {
+            db.execute("INSERT INTO sessions(id) VALUES (?1)", [id])?;
+            Ok(())
+        })
+        .unwrap();
+    let text = "historical body🙂".repeat(10000);
+    store.replace(&parent, vec![
+        json!({"id":"legacy-info","type":"session_info","timestamp":"2026-10-09T00:00:00Z","content":{"cwd":".","model":"mock"}}),
+        json!({"id":"legacy-user","type":"user","role":"user","timestamp":"2026-10-09T00:00:01Z","content":"old input"}),
+        json!({"id":"legacy-answer","type":"assistant","role":"assistant","timestamp":"2026-10-09T00:00:02Z","provider_state":{"opaque":"unchanged"},"content":[{"type":"text","text":text}]}),
+    ]).unwrap();
+    let before = store.entries(&parent).unwrap();
+    let request = ForkRequest {
+        request_id: "legacy-to-compact".into(),
+        parent_session_id: parent.clone(),
+        point: ForkPoint::ThroughEntry("legacy-answer".into()),
+        created_by: "test".into(),
+        creator_id: "device".into(),
+    };
+    let result = manager.create_fork_identity(request.clone()).unwrap();
+    assert!(result.created);
+    assert_eq!(
+        store.storage_format(&result.session_id).unwrap(),
+        FORMAT_VERSION
+    );
+    assert_eq!(store.storage_format(&parent).unwrap(), 1);
+    assert_eq!(store.entries(&parent).unwrap(), before);
+    let child = store.entries(&result.session_id).unwrap();
+    let answer = child
+        .iter()
+        .find(|e| e["meta"]["fork_origin"]["entry_id"] == "legacy-answer")
+        .unwrap();
+    assert_eq!(answer["content"][0]["text"], text);
+    assert_eq!(answer["provider_state"]["opaque"], "unchanged");
+    assert!(uuid::Uuid::parse_str(answer["id"].as_str().unwrap()).is_ok());
+    let (p, child_id) = (parent.clone(), result.session_id.clone());
+    store
+        .db
+        .read(move |db| {
+            assert_eq!(
+                db.query_row("SELECT typeof(id) FROM sessions WHERE id=?1", [p], |r| {
+                    r.get::<_, String>(0)
+                })?,
+                "text"
+            );
+            let key = crate::session::identity::BoundIdentity::session(db, &child_id)?;
+            assert_eq!(
+                db.query_row(
+                    "SELECT typeof(id),length(id) FROM sessions WHERE id=?1",
+                    [key],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+                )?,
+                ("blob".into(), 16)
+            );
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+                    .get::<_, i64>(
+                    0
+                ))?,
+                0
+            );
+            Ok(())
+        })
+        .unwrap();
+    let retry = manager.create_fork_identity(request).unwrap();
+    assert!(!retry.created);
+    assert_eq!(retry.session_id, result.session_id);
+    drop(manager);
+    let reopened = Manager::new(sessions);
+    assert_eq!(
+        reopened.storage().unwrap().entries(&parent).unwrap(),
+        before
+    );
+    assert_eq!(
+        reopened
+            .storage()
+            .unwrap()
+            .entries(&result.session_id)
+            .unwrap(),
+        child
+    );
 }
 fn request() -> ForkRequest {
     ForkRequest {

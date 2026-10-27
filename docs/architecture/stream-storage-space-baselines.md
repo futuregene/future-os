@@ -126,3 +126,19 @@ High-reuse logical WAL page bytes remain 177,676,288. Delivery remains withheld 
 
 Ownership moved from `content_references` to `stream_body_owners`; a `stream_` name subtotal is no longer comparable with earlier candidates.
 These figures use complete database files and the same page-write counter scope. Raw evidence retains all structure allocations; final acceptance still needs matched ownership totals, repeated samples and equal-work reads.
+
+## B3.4: bounded batches and scoped identities, before first-read optimization
+
+[Candidate 4 raw evidence](../testing/compact-storage-candidate-4-2026-10-27.json) retains staged diagnostics, three paired valid UUID transcript repetitions, per-process resources, binary/source hashes and the source patch.
+The workloads publish 20/150 assistant messages and matching tool results, with thinking and a tool call per assistant, eight original fragments per admitted batch and synthetic lengths shaped by historical aggregates. No private bodies are included.
+Each pair has identical SHA-256 over message IDs, types, roles and complete content; thinking, arguments and tool outputs also match explicit expected values.
+
+| Scenario | Old/new complete allocation bytes | Old/new logical WAL page bytes | Allocation / write change |
+|---|---:|---:|---:|
+| 20 tool calls | 1,712,128 / 1,032,192 | 104,177,664 / 95,350,784 | −39.7% / −8.5% |
+| 150 tool calls | 10,522,624 / 4,972,544 | 795,967,488 / 728,698,880 | −52.7% / −8.5% |
+
+Allocation includes all dbstat structures, avoiding ownership-table renaming bias. Allocation and logical writes match across all three repetitions. Matching debug toolchains run sequentially without concurrent compilation or heavy tests.
+Unthrottled write-time medians remain approximately 27%/31% above the old implementation. Producer cadence, queue responsiveness and UI need separate measurement; submillisecond commits do not erase CPU cost.
+Old/new first-read samples are `[2377,2180,2216]` / `[5861,3010,2754]` microseconds for 20 tools and `[3104,3187,3634]` / `[3548,4536,3667]` for 150 tools, still a regression.
+This is not final acceptance. Later reader schema-readiness initialization is outside this frozen candidate and requires separate evidence rather than overwriting these results.

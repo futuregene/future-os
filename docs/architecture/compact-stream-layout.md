@@ -7,7 +7,7 @@ This is the implementation contract; verification results are recorded separatel
 ## Layout and release boundary
 
 Agent schema 8 directly replaces the unpublished target; logical conversation format remains 2.
-The `stream_layout` singleton is `compact-owned-stream-v1`. There is no draft conversion, dual codec,
+The `stream_layout` singleton is `compact-owned-stream-v2`. There is no draft conversion, dual codec,
 dual writing or historical body compression. Released schema 2–7 and released Desktop SQL/checksums
 remain unchanged, and existing conversations continue using format 1.
 Admission checks the marker, authoritative columns, index definitions, foreign keys and collection
@@ -43,14 +43,13 @@ The extraction whitelist is envelope `run_sequence` and data `type`, `entry_id`,
 Changed fields create another context; a database trigger rejects UPDATE. Descriptors are capped at 16 KiB.
 
 Lookup uses `(stream_id, SHA-256)` and compares the complete descriptor before reuse. Hash equality
-alone is insufficient; collision candidates are bounded and overflow fails explicitly. A composite
-foreign key requires the change and context to share a stream and event kind. No short-ID cache crosses transaction
+alone is insufficient; collision candidates are bounded and overflow fails explicitly. A single-column foreign key and primary-key lookup triggers require the change and context to share a stream and event kind. No short-ID cache crosses transaction
 boundaries, so aborted allocations cannot leak into later publications; SQLite's statement cache
 contains statements only.
 
 `stream_symbols` interns entry_id, tool_id, content_key, block_id, tool_name and tool_type within each stream.
 Canonical UUIDs use lossless 16-byte storage; other strings retain their exact TEXT. Symbol UPDATE is refused.
-Contexts contain integer symbol references whose composite foreign keys enforce the owning stream.
+Contexts contain integer symbol references; foreign keys check existence and primary-key lookup triggers enforce the owning stream.
 The descriptor and expanded symbols each have a 16 KiB limit. Long identifiers no longer repeat in every
 context or source index. `stream_contexts_entry/tool/key` find source identities and
 `stream_changes_context` finds their event types and cursors. Partial source indices cover only the
@@ -114,3 +113,6 @@ and source boundaries may decode one bounded fact, without reading bodies or com
 The 16 KiB segment / 64 KiB write / 256 KiB range read budgets, 25 ms/128 event/64 KiB scheduling,
 WAL+FULL, independent checkpoints and backpressure remain unchanged. Savings require joint migration,
 fault, WAL, read and responsiveness evidence.
+
+Scoped references use single-column foreign keys for existence and primary-key lookup triggers for stream/kind ownership; immutable symbols/contexts prevent later ownership changes. Redundant composite unique indices over globally unique integer primary keys are removed. Admission verifies exact trigger definitions.
+Bounded batches retain separate semantic facts while sharing a SQLite transaction. Encoding explicitly flushes prepared facts before body reads or independent staging; agent_end flushes immediately, and persist returns with no uncommitted pending batch. Byte, event and metadata bounds remain unchanged, without extending producer acknowledgement windows.

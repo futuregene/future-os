@@ -73,7 +73,7 @@ impl Snapshot {
     pub(crate) fn capture_from(db: &Connection, session: &str) -> Result<Self> {
         let session = BoundIdentity::session(db, session)?;
         ensure!(
-            super::format(db, &session)? == super::FORMAT_VERSION,
+            super::format_bound(db, &session)? == super::FORMAT_VERSION,
             "wrong transcript reader format"
         );
         let live:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1 AND revision>=0) AND NOT EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1)",[&session],|row|row.get(0))?;
@@ -616,11 +616,10 @@ fn decode(encoding: Encoding, raw: String) -> Result<Value> {
     })
 }
 
-fn generation(db: &Connection, session: &str) -> Result<i64> {
-    let stored_session = crate::session::identity::session_key(db, session)?;
+fn generation(db: &Connection, session: &BoundIdentity) -> Result<i64> {
     Ok(db.query_row(
         "SELECT coalesce((SELECT generation FROM content_history_versions WHERE session_id=?1),0)",
-        [&stored_session],
+        [session],
         |row| row.get(0),
     )?)
 }
