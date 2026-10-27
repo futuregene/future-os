@@ -248,7 +248,7 @@ alt screen、鼠标模式与帧时钟 `[F:tui/src/workbench/run.rs:92]`；旧内
 | 布局 | `NARROW_WIDTH = 88`、`SMALL_HEIGHT = 24`、`SIDEBAR_DEFAULT/MIN/MAX = 36/30/48`、聊天左右各 2 格内边距；绘制与命中用同一份 `Metrics` | `[F:tui/src/workbench/layout.rs:65]` |
 | 侧栏 | 五个页签 `待办 任务 会话 用量 技能`，≥88 列常驻，以下 `ctrl+b` 开全屏面板；分隔条拖 30..48 并在松手后持久化 | `[F:tui/src/workbench/panels.rs:18]`、`[S:workbench-panel-full-60x20.png]` |
 | 面板数据 | 待办读 `events.jsonl`（✔/◉/○/✖ + 优先级）、技能读 `get_state` + 两个技能目录、任务读只读 `tasks.db`、会话读 `list_sessions`、用量读 `get_state` | `[F:tui/src/workbench/local.rs:92]`、`[F:tui/src/workbench/live.rs:201]`、`[S:workbench-panel-todo.png]`、`[S:workbench-panel-skills.png]` |
-| 启动台 | 字标 + 主张句、带框输入框、整块上下居中、参数 chip（工作区/模型/强度/审批）、快捷键行、最近会话 | `[F:tui/src/workbench/launchpad.rs]`、`[S:workbench-launchpad.png]` |
+| 启动台 | 字标 + 主张句、带框输入框、整块上下居中、参数 chip（工作区/模型/强度/审批）；这一块自己不列按键行（底部提示行负责），`/` `@` `#` 写在 placeholder 上 | `[F:tui/src/workbench/launchpad.rs]`、`[S:workbench-launchpad.png]` |
 | 状态 / activity | `模型 · 强度 · 权限 | 进度条 + ctx 用量/总量 + % · ≈¥`；activity 为 `转轮 + 动词 + 用时 + 工具数 + tok/s`，另有 `缓存 N%` | `[F:tui/src/workbench/screen.rs:468]`、`[F:tui/src/workbench/screen.rs:430]`、`[S:workbench-chat.png]` |
 | 主题 | 六套 256 色调色板（`dark`、`light`、`one-dark`、`one-light`、`high-contrast`、`dracula`），沿用内联目录的 id，因为 `themeId` 是两个界面共用的一把键；`/theme` 打开选择器，高亮移动即预览，`esc` 恢复，只有 `enter` 持久化 | `[F:tui/src/workbench/theme.rs:54]`、`[F:tui/src/workbench/picker.rs:312]`、`[S:workbench-picker-theme.png]`、`[S:workbench-light-120x38.png]` |
 | 选择器 | `/model`、`/theme`、`/sessions` 共用同一张浮层：搜索行、分组标题、当前值上的 `✓`、模型选择器的强度滑杆，点击行会**同时**移动高亮并应用 | `[F:tui/src/workbench/picker.rs]`、`[F:tui/src/workbench/screen.rs:721]`、`[S:workbench-picker-model.png]`、`[S:workbench-picker-sessions.png]` |

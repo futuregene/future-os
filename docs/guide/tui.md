@@ -105,15 +105,16 @@ the rail focused, `←`/`→` move between the two tabs.
 
 The launchpad is the *body*, not a dialog over the conversation: with no session
 attached the composer fills the surface (wordmark, box, workspace / model /
-effort / approval chips, shortcut entries) and there is no second input band.
-The block is centred in the body rather than pinned to its top, and the
-conversations are the rail's — the launchpad does not repeat them. `tab` walks
-the prompt and the chips, `enter` cycles the chip under the cursor, and typing
-(or `escape`) hands the keys back to the prompt. The shortcut entries carry the
-*effective* bindings, so a rebound key is shown rebound. The four chips are the
-desktop composer's own controls (model, thinking effort, approval mode) plus the
-workspace this TUI starts from; there is no separate permission level, because
-no other client offers one.
+effort / approval chips) and there is no second input band. The block is centred
+in the body rather than pinned to its top, and the conversations are the rail's —
+the launchpad does not repeat them. `tab` walks the prompt and the chips, `enter`
+cycles the chip under the cursor, and typing (or `escape`) hands the keys back to
+the prompt. The block teaches no key of its own: the footer's hint row already
+names them, and what the box takes beyond a sentence — `/` commands, `@` files,
+`#` sessions — is in the placeholder, where the reader is about to type it. The
+four chips are the desktop composer's own controls (model, thinking effort,
+approval mode) plus the workspace this TUI starts from; there is no separate
+permission level, because no other client offers one.
 
 No default shortcut is a function key: `F1`–`F12` need an `Fn` modifier on a
 laptop keyboard and are absent on a compact one, so the defaults are
