@@ -500,6 +500,8 @@ pub enum Key {
     HelpKeyPanelRecent,
     HelpKeyPanelWorkspaces,
     HelpKeyPanelFiles,
+    HelpKeyPrevPanel,
+    HelpKeyNextPanel,
     // ── the preview box and clipboard paste ──────────────────────────
     PreviewHintImage,
     PreviewHintText,
@@ -673,8 +675,8 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         HintNewChat => ("新会话", "New Chat"),
         HintSettings => ("偏好设置", "Preferences"),
         RailHint => (
-            "↑↓ 选择 · ⏎ 打开 · ←→ 页签",
-            "↑↓ choose · enter opens · ←→ tabs",
+            "shift+←→ 页签 · shift+↑↓ 切换会话",
+            "shift+←→ tabs · shift+↑↓ switches session",
         ),
         // Shorter than `RailHint` on purpose: the rail is not wide enough for
         // four hints spelled out (`… · ⌫ closes · …` is cut at ~36 cells), and a
@@ -886,6 +888,8 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         HelpKeyPanelRecent => ("切到「最近」面板", "Show the Recent panel"),
         HelpKeyPanelWorkspaces => ("切到「工作区」面板", "Show the Workspaces panel"),
         HelpKeyPanelFiles => ("切到「文件」面板", "Show the Files panel"),
+        HelpKeyPrevPanel => ("上一个页签：最近 / 工作区 / 文件", "Previous tab: Recent / Workspaces / Files"),
+        HelpKeyNextPanel => ("下一个页签：最近 / 工作区 / 文件", "Next tab: Recent / Workspaces / Files"),
         HelpKeyPasteImage => (
             "粘贴：图片直接成为草稿附件，文字粘进草稿",
             "Paste: an image becomes a draft attachment, text is pasted",
@@ -1173,7 +1177,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 270] = {
+    const ALL_KEYS: [Key; 272] = {
         use Key::*;
         [
             TabTodo,
@@ -1406,6 +1410,8 @@ mod tests {
             HelpKeyPanelRecent,
             HelpKeyPanelWorkspaces,
             HelpKeyPanelFiles,
+            HelpKeyPrevPanel,
+            HelpKeyNextPanel,
             HelpKeyPasteImage,
             HelpKeyPreviewAttachment,
             PreviewHintImage,

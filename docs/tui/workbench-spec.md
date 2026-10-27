@@ -270,8 +270,13 @@ text is pasted); `alt+v` preview the newest attached image;
 with one click, and leaves a `‹` in the same column when the rail is closed);
 `tab` focus within a panel; `shift+tab`
 reverse; `ctrl+q` collapse todos; `alt+z` enlarge the sidebar; `/` command
-palette; `?` help; `esc` close one layer at a time. A focused rail spends its
-last row on the keys it answers (`↑↓ 选择 · ⏎ 打开 · ←→ 页签`), and 文件 spends it
+palette; `?` help; `esc` close one layer at a time. `shift+←` / `shift+→` walk
+the rail's three tabs from anywhere — they show a hidden rail and take the keys —
+and `shift+↑` / `shift+↓` switch to the previous / next conversation. A focused
+rail spends its last row on exactly those two chords
+(`shift+←→ 页签 · shift+↑↓ 切换会话`): `↑↓` alone only moves the list cursor and
+`⏎` only opens the row it stands on, so the row that says how to *change* the
+conversation is the one thing the rail cannot leave to guesswork. 文件 spends it
 on its own set (`↑↓ · ⏎ 打开 · ⌫ 收起 · ←→ 页签`) — the one key the other two do
 not answer has no other teacher.
 
@@ -282,8 +287,9 @@ reduced motion). Rebinding to an F key stays supported.
 The help overlay lists `ACTIONS` **grouped** (chats / choices / panels /
 interface), then the non-rebindable inline keys, then the commands.
 
-A held `shift+←`/`shift+→` is one switch, not one per key repeat: the key returns
-`WbAction::SessionStep(delta)`, the driver reads the whole input burst andapplies the net step once through `Workbench::step_session`.
+A held `shift+↑`/`shift+↓` is one switch, not one per key repeat: the key returns
+`WbAction::SessionStep(delta)`, the driver reads the whole input burst and
+applies the net step once through `Workbench::step_session`.
 
 ### Pictures in a text surface
 
