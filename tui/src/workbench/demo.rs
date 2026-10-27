@@ -81,6 +81,7 @@ fn base() -> WorkbenchData {
                 current: true,
                 parent_id: None,
                 streaming: false,
+                created_at_ms: 0,
             },
             SessionRow {
                 id: "s2".into(),
@@ -90,6 +91,7 @@ fn base() -> WorkbenchData {
                 current: false,
                 parent_id: None,
                 streaming: false,
+                created_at_ms: 0,
             },
             SessionRow {
                 id: "s3".into(),
@@ -99,6 +101,7 @@ fn base() -> WorkbenchData {
                 current: false,
                 parent_id: None,
                 streaming: false,
+                created_at_ms: 0,
             },
             SessionRow {
                 id: "s4".into(),
@@ -108,6 +111,7 @@ fn base() -> WorkbenchData {
                 current: false,
                 parent_id: None,
                 streaming: false,
+                created_at_ms: 0,
             },
             SessionRow {
                 id: "s5".into(),
@@ -117,6 +121,7 @@ fn base() -> WorkbenchData {
                 current: false,
                 parent_id: None,
                 streaming: false,
+                created_at_ms: 0,
             },
         ],
         workspaces: vec![
@@ -543,6 +548,7 @@ pub fn workspaces() -> WorkbenchData {
             current: index == 0,
             parent_id: None,
             streaming: false,
+            created_at_ms: 0,
         });
         data.workspaces.push(WorkspaceGroup {
             name: (*name).to_string(),

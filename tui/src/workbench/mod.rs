@@ -6535,6 +6535,7 @@ mod tests {
             current: false,
             parent_id: None,
             streaming: false,
+            created_at_ms: 0,
         });
         let (mut workbench, _rows) = frame(&data, 120, 38);
         workbench.panel = PanelId::Recent;
