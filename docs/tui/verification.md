@@ -26,6 +26,12 @@ What was checked, what the screens show, and what is still wrong. Every row of
 
 ## 1. Figure index
 
+> **Stale after the canvas change.** These frames were captured before the
+> workbench painted its own canvas, so they show the reader's terminal
+> background rather than the palette's. Re-shoot with the recipe in §7 when the
+> next verification pass runs; the numbers in the visual spec
+> (`docs/tui/workbench-spec.md` §3) are current even where these images are not.
+
 | 图 | File | Size | Source | What it shows |
 |---|---|---|---|---|
 | 图 1 | `workbench-launchpad.png` | 120×38 | live | the launchpad: whale + block wordmark + tagline, framed composer, parameter chips, recent sessions, empty 待办 |

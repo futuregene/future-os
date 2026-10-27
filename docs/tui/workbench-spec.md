@@ -141,11 +141,11 @@ Content — a conversation, a session title, a path — is never translated.
 
 | Semantic | dark | light | one-dark | one-light | high-contrast | dracula | Use |
 |---|---|---|---|---|---|---|
-| bg | 233 | 254 | 236 | 231 | 16 | 236 | canvas |
-| panel | 235 | 252 | 237 | 254 | 17 | 237 | menu, picker and overlay fill (the rail, the chat and the composer keep the canvas) |
+| bg | 232 | 254 | 232 | 231 | 16 | 232 | canvas |
+| panel | 234 | 252 | 234 | 254 | 17 | 234 | menu, picker and overlay fill (the rail, the chat and the composer keep the canvas) |
 | border | 238 | 246 | 240 | 250 | 250 | 239 | borders, dividers |
 | fg | 252 | 236 | 249 | 236 | 231 | 255 | body text |
-| muted | 245 | 243 | 243 | 245 | 246 | 243 | secondary notes |
+| muted | 245 | 240 | 245 | 241 | 246 | 245 | secondary notes |
 | accent | 80 (teal) | 30 | 75 | 25 | 51 | 141 | brand, selection, progress |
 | iris | 111 | 62 | 73 | 30 | 123 | 117 | links, active tab |
 | amber | 179 | 130 | 180 | 130 | 226 | 228 | thinking, warning |
@@ -161,11 +161,42 @@ renditions of five of them — are the same `Palette` shape in
 `crate::themes::THEME_SPECS`), with their hues taken from
 `desktop/src/theme/palettes.json` and their backgrounds stepped the same way.
 
+Two rules hold across the whole table, pinned by
+`workbench::theme::tests::text_roles_clear_aa_on_their_own_canvas` and
+`every_dark_canvas_is_the_same_near_black`:
+
+- **The canvas is the surface's, and it is black.** The frame paints `bg` on
+every row to the last column (`workbench::run::canvas_rows`). It used to paint
+only the panels, so the canvas was whatever the reader's terminal profile drew
+— Ghostty ships `#282c34`, a mid slate — and every dark theme read washed out
+regardless of the palette. Every dark palette now uses the same near-black
+`232` with `panel` one step above (`234`); `high-contrast` keeps true black
+(`16`/`17`). A theme's identity is its hues, not a lighter canvas.
+- **Every text role clears WCAG AA (4.5:1)** against both the canvas and the
+panel, and `fg` clears 7:1 on the canvas. This is what lifted `muted` — at
+2.9:1 on `one-dark`'s and `dracula`'s own panel it was decoration rather than
+text — and, where a dark palette's accent colour sat below 4.0, that colour too
+(`gruvbox` iris, `nord` red, `solarized` purple).
+
+The **light** palettes keep their hues because the numbers are shared with the
+desktop app's table; only their `fg`/`muted` were lifted. Four of them still
+carry an accent below AA on their own canvas, reported rather than silently
+changed: `light` accent 30 (2.8:1), iris 62 (3.3:1), amber 130 (3.1:1), green
+28 (3.1:1); `one-light` iris 30 (3.4:1), amber 130 (3.7:1), green 28 (3.7:1);
+`catppuccin-light` iris 31 (3.6:1), purple 99 (3.5:1); `everforest-light` iris
+66 (3.4:1), green 64 (3.7:1), red 131 (3.9:1), purple 132 (3.8:1);
+`gruvbox-light` iris 66 (2.9:1), amber 94 (4.3:1), purple 95 (4.1:1);
+`rose-pine-light` red 131 (3.9:1), purple 99 (3.5:1); `solarized-light` iris 30
+(3.4:1), purple 61 (4.4:1). Raising them means editing the desktop's palette
+table as well, which is a separate change.
+
 Every palette mirrors `crate::themes`' colours wherever the inline
 `Theme` has the same semantic (`accent`, `fg`, `border`, `dim`, `error`,
-`success`, `md_link`, `md_heading`, `md_code`); `bg` and `panel` are the
-workbench's own, because a full-screen canvas paints an explicit background
-step where the inline theme inherits the terminal's. Ids older workbench builds
+`success`, `md_link`, `md_heading`, `md_code`), except where the inline value
+was below AA on this surface's canvas and the workbench lifted it (`muted`,
+and three dark palettes' accent colours). `bg` and `panel` are the workbench's
+own, because a full-screen canvas paints an explicit background step where the
+inline theme inherits the terminal's. Ids older workbench builds
 wrote (`future-dark`, `future-light`) still resolve, to `dark` and `light`.
 
 There is no logo or icon in the TUI. The chat header's wordmark `FUTURE OS`
@@ -495,6 +526,14 @@ nothing here is ever clipped mid-value.
 ## 10. Screenshots
 
 `docs/tui/assets/`, all rendered from the real compositor:
+
+> **Pending re-shoot.** The 19 frames below were captured before the canvas was
+> painted (`232`/`234` on every row, §3) and before the AA pass on `muted`, so
+> they still show the old per-terminal canvas. The colours in §3 are the source
+> of truth; re-shoot with the recipe in `docs/tui/verification.md` (§7 there,
+> `FUTURE_AGENT_GRPC_ADDR` + `tui/scripts/shot.sh`), not with the demo agent. A
+> single `shot.sh chat 120x38` against the new build shows the difference: the
+> frame owns its background instead of inheriting the profile's.
 
 | File | Size | What it proves |
 |---|---|---|
