@@ -166,12 +166,9 @@ pub const ALLOW: &[Allow] = &[
         "  … {hidden} more line{plural} · {hint}",
         "the folded-output footer: pluralised inline and cut to width",
     ),
-    Allow::known_gap(
-        "components/chat_area.rs",
-        "ctrl+g to expand",
-        "the footer's hint half (the other half is `truncated`, one word, so the rule \
-         does not reach it)",
-    ),
+    // The tool-output footer used to need a row here: its hint half named a
+    // chord, and a chord is chrome. It names `/tool-output` now, which the
+    // guard reads as a command rather than as a sentence to translate.
     // The notice row. One row per message rather than one per call site: the
     // same sentence is drawn from two places in `live.rs`.
     Allow::known_gap(
@@ -306,4 +303,8 @@ pub const FILES: &[FileExempt] = &[FileExempt {
 /// spelling matched in the dispatch, never drawn (the help table and the footer
 /// spell the ASCII mark), so it has nothing to translate — the same reason
 /// `ctrl+d` has no row in the table.
-pub const BUDGET: usize = 43;
+///
+/// 43 → 42: the tool-output footer's hint half names `/tool-output` now, a
+/// command spelling the scanner does not read as a sentence to translate, so
+/// the `ctrl+g to expand` row it needed went away.
+pub const BUDGET: usize = 42;
