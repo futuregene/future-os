@@ -1,17 +1,23 @@
-//! The sidebar's two panels, as pure renderers.
+//! The workbench's list panels, as pure renderers.
 //!
-//! The rail is a *task* panel: 最近 lists every conversation by when it was
-//! last refreshed — a run still in flight first, under its own heading — and
-//! 工作区 files the same conversations the way the desktop does — pinned
-//! workspaces first, then the workspaces themselves, then the plain chats.
-//! Nothing else lives here: the usage figures are on the status bar, and skills
-//! are the palette's business.
+//! Two of them are the rail's tabs, and both list *conversations*: 最近 lists
+//! every conversation by when it was last refreshed — a run still in flight
+//! first, under its own heading — and 工作区 files the same conversations the way
+//! the desktop does — pinned workspaces first, then the workspaces themselves,
+//! then the plain chats. Nothing else lives here: the usage figures are on the
+//! status bar, and skills are the palette's business.
+//!
+//! The third, [`PanelId::Files`], is not a tab: it is the session workspace as a
+//! tree, painted inside the files overlay (`screen::files_box`). It shares the
+//! renderer because a tree row is a row like any other — one model, one window,
+//! one hit region per row — and differs only in the id prefix its callers pass
+//! (`sidebar.row.` for the rail, `files.row.` for the box).
 //!
 //! Each `render` receives an area, the shared data and the palette, and returns
 //! exactly as many rows as the area is tall (padded), each exactly as wide as
 //! the area — while registering a hit region per interactive row. Keeping them
-//! pure is what lets the same code serve the sidebar and the `ctrl+b`
-//! full-screen panel: only the area changes.
+//! pure is what lets the same code serve the sidebar, the `ctrl+b` full-screen
+//! panel and the files box: only the area changes.
 //!
 //! [`rows`] is the *model* behind those rows: the same list, without paint or a
 //! width. The keyboard needs it (to know which rows hold a conversation) and so
@@ -291,11 +297,15 @@ pub fn render(
         lang,
         frame,
         &Folded::new(),
+        "sidebar.row.",
     )
 }
 
 /// [`render`] with the reader's folded workspaces, so a fold is drawn as a fold
 /// (`▸`) rather than a workspace that happens to list nothing.
+/// `prefix` names the hit regions this paints (`sidebar.row.` for the rail,
+/// `files.row.` for the files overlay): the same rows are drawn on two
+/// surfaces, and a click has to be resolved against the one it landed on.
 #[allow(clippy::too_many_arguments)]
 pub fn render_with(
     panel: PanelId,
@@ -307,6 +317,7 @@ pub fn render_with(
     lang: Language,
     frame: usize,
     folded: &Folded,
+    prefix: &str,
 ) -> Vec<String> {
     let PanelView { scroll, selected } = view;
     if area.is_empty() {
@@ -379,10 +390,7 @@ pub fn render_with(
         let Some(item) = items.get(index) else { break };
         for text in item {
             let y = area.y + (TOP_GAP + painted) as u16;
-            hit.push(
-                Rect::new(area.x, y, area.w, 1),
-                format!("sidebar.row.{index}"),
-            );
+            hit.push(Rect::new(area.x, y, area.w, 1), format!("{prefix}{index}"));
             lines.push(fit(text, columns));
             painted += 1;
         }
@@ -760,6 +768,7 @@ mod tests {
             lang,
             0,
             folded,
+            "sidebar.row.",
         )
         .iter()
         .map(|line| crate::utils::strip_ansi_codes(line))
