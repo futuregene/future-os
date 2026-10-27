@@ -59,21 +59,21 @@ const SQL_DUE_TASKS: &str = "
 const RUN_COLUMNS: &str = "
     id, task_id, kind, origin, actor, due_at, status, thread_id, session_id,
     run_id, prompt_version, result_summary, feedback, feedback_note,
-    started_at, finished_at, error_message, session_deleted";
+    started_at, finished_at, error_message, session_deleted, finish_reason, finish_note";
 
 const SQL_INSERT_RUN: &str = "
     INSERT INTO task_runs (
         id, task_id, kind, origin, actor, due_at, status, thread_id, session_id,
         run_id, prompt_version, result_summary, feedback, feedback_note,
-        started_at, finished_at, error_message, session_deleted
-    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)";
+        started_at, finished_at, error_message, session_deleted, finish_reason, finish_note
+    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)";
 
 const SQL_UPDATE_RUN: &str = "
     UPDATE task_runs SET
         kind=?2, origin=?3, actor=?4, due_at=?5, status=?6, thread_id=?7, session_id=?8,
         run_id=?9, prompt_version=?10, result_summary=?11,
         feedback=?12, feedback_note=?13, started_at=?14, finished_at=?15, error_message=?16,
-        session_deleted=?17
+        session_deleted=?17, finish_reason=?18, finish_note=?19
     WHERE id=?1";
 
 const SQL_RUNS_FOR_TASK: &str = "
@@ -165,6 +165,18 @@ const MIGRATIONS: &[Migration] = &[
         "task_runs",
         "session_deleted",
         "ALTER TABLE task_runs ADD COLUMN session_deleted INTEGER NOT NULL DEFAULT 0",
+    ),
+    // Why a run ended, and the short note that outlives a deleted conversation.
+    // Rows written before these existed keep NULL: unknown, which is the truth.
+    Add(
+        "task_runs",
+        "finish_reason",
+        "ALTER TABLE task_runs ADD COLUMN finish_reason TEXT",
+    ),
+    Add(
+        "task_runs",
+        "finish_note",
+        "ALTER TABLE task_runs ADD COLUMN finish_note TEXT",
     ),
     // The zone a schedule's wall-clock times are read in. Rows written before
     // it existed keep NULL, which the kernel reads as "the host's zone, else
@@ -259,6 +271,13 @@ CREATE TABLE IF NOT EXISTS task_runs (
   result_text    TEXT,
   -- The run's conversation was deleted after it settled.
   session_deleted INTEGER NOT NULL DEFAULT 0,
+  -- Why the run ended (`answer`, `empty_answer`, `cancelled`, …). NULL means
+  -- "not settled, or written before this was recorded" — never "succeeded".
+  finish_reason   TEXT,
+  -- One short line about where the output went (tools called, answer size),
+  -- kept for runs that produced nothing usable so a deleted conversation is
+  -- not the end of the story.
+  finish_note     TEXT,
   UNIQUE(task_id, due_at)
 );
 
@@ -489,6 +508,8 @@ impl Store {
             run.finished_at,
             run.error_message,
             run.session_deleted as i64,
+            run.finish_reason,
+            run.finish_note,
         ];
         self.conn.execute(SQL_INSERT_RUN, values)?;
         Ok(())
@@ -513,6 +534,8 @@ impl Store {
             run.finished_at,
             run.error_message,
             run.session_deleted as i64,
+            run.finish_reason,
+            run.finish_note,
         ];
         self.conn.execute(SQL_UPDATE_RUN, values)?;
         Ok(())
@@ -707,6 +730,8 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRun> {
         finished_at: row.get(15)?,
         error_message: row.get(16)?,
         session_deleted: row.get::<_, i64>(17)? != 0,
+        finish_reason: row.get(18)?,
+        finish_note: row.get(19)?,
     })
 }
 
@@ -976,6 +1001,8 @@ mod tests {
             finished_at: None,
             error_message: None,
             session_deleted: false,
+            finish_reason: None,
+            finish_note: None,
         };
         s.insert_run(&run).unwrap();
         assert!(s.has_running_run(&t.id).unwrap());
@@ -1268,6 +1295,71 @@ mod tests {
         assert_eq!(third.find_task_by_name("old").unwrap().unwrap().name, "old");
     }
 
+    /// The reason a run ended survives a round trip, and a database written
+    /// before the column existed keeps `NULL` — which the readers must treat as
+    /// "unknown", never as "answered".
+    #[test]
+    fn finish_reason_and_note_round_trip_and_default_to_unknown() {
+        let (dir, s) = store();
+        let t = task("reasons");
+        s.insert_task(&t).unwrap();
+
+        let mut run = crate::types::TaskRun {
+            id: crate::types::new_run_id(),
+            task_id: t.id.clone(),
+            kind: RunKind::Main,
+            origin: RunOrigin::Schedule,
+            actor: None,
+            due_at: Some(1),
+            status: RunStatus::Running,
+            thread_id: None,
+            session_id: None,
+            run_id: None,
+            prompt_version: Some(1),
+            result_summary: None,
+            feedback: None,
+            feedback_note: None,
+            started_at: Some(1),
+            finished_at: None,
+            error_message: None,
+            finish_reason: None,
+            finish_note: None,
+            session_deleted: false,
+        };
+        s.insert_run(&run).unwrap();
+        let pending = s.get_run(&run.id).unwrap().unwrap();
+        assert!(pending.finish_reason.is_none(), "an unsettled run has none");
+
+        run.status = RunStatus::Failed;
+        run.finished_at = Some(2);
+        run.finish_reason = Some(crate::types::finish_reason::EMPTY_ANSWER.to_string());
+        run.finish_note = Some("answer: 0 chars · last tool call: shell".into());
+        s.update_run(&run).unwrap();
+        let settled = s.get_run(&run.id).unwrap().unwrap();
+        assert_eq!(
+            settled.finish_reason.as_deref(),
+            Some(crate::types::finish_reason::EMPTY_ANSWER)
+        );
+        assert_eq!(
+            settled.finish_note.as_deref(),
+            Some("answer: 0 chars · last tool call: shell")
+        );
+
+        // A database from before the column: dropping it must be repaired on
+        // the next open, and the rows already there read as unknown.
+        s.conn
+            .execute_batch(
+                "ALTER TABLE task_runs DROP COLUMN finish_reason; \
+                 ALTER TABLE task_runs DROP COLUMN finish_note",
+            )
+            .unwrap();
+        drop(s);
+        let reopened = Store::open(dir.path()).unwrap();
+        let read = reopened.get_run(&run.id).unwrap().unwrap();
+        assert!(read.finish_reason.is_none(), "{read:?}");
+        assert!(read.finish_note.is_none(), "{read:?}");
+    }
+
     /// Both conversation modes round-trip, and an unparseable value falls back
     /// to the behaviour every task had before the setting existed.
     #[test]
@@ -1451,6 +1543,8 @@ mod tests {
             finished_at: None,
             error_message: None,
             session_deleted: false,
+            finish_reason: None,
+            finish_note: None,
         }
     }
 

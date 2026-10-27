@@ -148,11 +148,20 @@ pub(super) async fn run(args: &[String], out: &Output) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
 
     let (events, text) = result;
+    // A wait that ends with nothing to print must not look like a success: an
+    // empty answer and a run the Agent cut off are the two ways a caller is
+    // left holding an empty string, and exiting 0 on them is how a delegated
+    // sub-session reported "done" without ever answering.
+    let finish = finish_of(&events, &text);
     if options.mode == "json" {
         let mut value = Map::new();
         value.insert("sessionId".to_string(), Value::String(options.session));
-        value.insert("runId".to_string(), Value::String(target_run));
+        value.insert("runId".to_string(), Value::String(target_run.clone()));
         value.insert("text".to_string(), Value::String(text));
+        value.insert(
+            "finishReason".to_string(),
+            Value::String(finish.token().to_string()),
+        );
         value.insert("messages".to_string(), Value::Array(events));
         out.log(&serde_json::to_string_pretty(&Value::Object(value)).map_err(|e| e.to_string())?);
     } else {
@@ -160,7 +169,85 @@ pub(super) async fn run(args: &[String], out: &Output) -> Result<(), String> {
             out.log(&text);
         }
     }
-    Ok(())
+    match finish {
+        Finish::Answer => Ok(()),
+        other => Err(format!(
+            "run {target_run} ended as {}: {}",
+            other.token(),
+            other.detail()
+        )),
+    }
+}
+
+/// How the waited run ended, from its terminal event as much as its text.
+#[derive(Debug, PartialEq, Eq)]
+enum Finish {
+    /// `agent_end` with a finished state and something to print.
+    Answer,
+    /// The run finished cleanly but its answer was empty or blank.
+    EmptyAnswer,
+    /// The Agent named a non-finishing terminal state (`cancelled`,
+    /// `interrupted_by_restart`, `incomplete`, …).
+    Interrupted,
+    /// The run carried an error, or the stream closed with no terminal at all.
+    Error,
+}
+
+impl Finish {
+    fn token(&self) -> &'static str {
+        match self {
+            Finish::Answer => "answer",
+            Finish::EmptyAnswer => "empty_answer",
+            Finish::Interrupted => "interrupted",
+            Finish::Error => "error",
+        }
+    }
+
+    fn detail(&self) -> &'static str {
+        match self {
+            Finish::Answer => "the run answered",
+            Finish::EmptyAnswer => {
+                "the run finished without any answer; there is nothing to hand back"
+            }
+            Finish::Interrupted => {
+                "the Agent stopped or restarted before the run finished; the answer is partial at best"
+            }
+            Finish::Error => "the run reported an error or its stream closed early",
+        }
+    }
+}
+
+/// Read the run's terminal event: its `state`, its `error`, and whether one
+/// arrived at all. Absent `state` is the older event shape and is read as a
+/// normal end — only a named non-finishing state or an error makes it abnormal.
+fn finish_of(events: &[Value], text: &str) -> Finish {
+    let terminal = events
+        .iter()
+        .rev()
+        .find(|event| event.get("type").and_then(Value::as_str) == Some("agent_end"));
+    let Some(terminal) = terminal else {
+        // No `agent_end` at all: the stream closed under the run, so whatever
+        // text arrived is a prefix, not an answer.
+        return Finish::Interrupted;
+    };
+    if terminal
+        .get("error")
+        .and_then(Value::as_str)
+        .is_some_and(|error| !error.trim().is_empty())
+    {
+        return Finish::Error;
+    }
+    match terminal.get("state").and_then(Value::as_str) {
+        None | Some("completed") => {
+            if text.trim().is_empty() {
+                Finish::EmptyAnswer
+            } else {
+                Finish::Answer
+            }
+        }
+        Some("error" | "failed") => Finish::Error,
+        Some(_) => Finish::Interrupted,
+    }
 }
 
 #[cfg(test)]
@@ -237,6 +324,71 @@ mod tests {
             .expect("wait");
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
         assert!(stdout.contains("hello"));
+    }
+
+    /// A child run that ends with nothing to hand back must not look finished.
+    /// `future session wait` used to print nothing and exit 0 in both cases, so
+    /// a delegated sub-session that was cut off read exactly like one that
+    /// answered — the same silent success the task ledger had.
+    #[tokio::test]
+    async fn wait_reports_a_run_that_ended_without_an_answer() {
+        for (terminal, expected) in [
+            (r#"{"state":"completed"}"#, "empty_answer"),
+            (r#"{"state":"cancelled"}"#, "interrupted"),
+            (r#"{"state":"interrupted_by_restart"}"#, "interrupted"),
+        ] {
+            let _guard = crate::test_env::lock_env().await;
+            let mut responses = std::collections::HashMap::new();
+            responses.insert(
+                "get_state".into(),
+                serde_json::json!({"activeRun": {"runId": "r-1"}}).to_string(),
+            );
+            let agent = MockAgent {
+                responses,
+                events: vec![stream_event_with_run("agent_end", terminal, "r-1")],
+                ..Default::default()
+            };
+            let (_agent, _env) = mock_env(agent).await;
+            let (out, _cap) = Output::memory();
+            let error = run(&args(&["s1", "--run", "r-1"]), &out)
+                .await
+                .expect_err("an empty or cut-off run is not a success");
+            assert!(
+                error.contains(expected),
+                "terminal {terminal} must report {expected}: {error}"
+            );
+        }
+    }
+
+    /// The JSON form still answers in full — the caller that asked for it can
+    /// read `finishReason` instead of inferring from an empty `text`.
+    #[tokio::test]
+    async fn wait_json_names_the_finish_reason() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut responses = std::collections::HashMap::new();
+        responses.insert(
+            "get_state".into(),
+            serde_json::json!({"activeRun": {"runId": "r-1"}}).to_string(),
+        );
+        let agent = MockAgent {
+            responses,
+            events: vec![stream_event_with_run(
+                "agent_end",
+                r#"{"state":"completed"}"#,
+                "r-1",
+            )],
+            ..Default::default()
+        };
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        let error = run(&args(&["s1", "--run", "r-1", "--mode", "json"]), &out)
+            .await
+            .expect_err("still a failure");
+        assert!(error.contains("empty_answer"), "{error}");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(parsed["finishReason"], "empty_answer");
+        assert_eq!(parsed["text"], "");
     }
 
     #[tokio::test]

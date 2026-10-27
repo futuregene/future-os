@@ -1925,6 +1925,16 @@ impl ServerSession {
             .map(|m| m.text())
             .unwrap_or_default()
     }
+
+    /// The name of the last tool this session ran, as a one-word clue for
+    /// readers of a run that ended without an answer: a caller that deletes the
+    /// conversation after settling keeps this, not the transcript.
+    pub fn last_tool_name(&self) -> Option<String> {
+        let msgs = self.messages.read();
+        msgs.iter()
+            .rfind(|m| m.role == "tool" && !m.name.trim().is_empty())
+            .map(|m| m.name.clone())
+    }
 }
 
 #[cfg(test)]
