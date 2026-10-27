@@ -544,6 +544,11 @@ fn conversation(
     if rows == 0 || columns == 0 {
         return Vec::new();
     }
+    // One row of air between the last line and the composer's top rule: with
+    // the transcript filling its band, the newest line sat *on* the box, which
+    // reads as a clipped message rather than as a prompt waiting below it.
+    let gap = usize::from(rows > 1);
+    let visible = rows.saturating_sub(gap);
     // One definition of the conversation's text width, shared with the driver
     // that wraps the transcript — see `layout::chat_inner`.
     let padding = layout::chat_padding(area.w);
@@ -555,12 +560,12 @@ fn conversation(
     let mut offset = workbench.chat_scroll_offset().min(total);
     // Scrolling up costs one row to the "↑ 更早" badge, so the last reachable
     // offset is one short of the first message.
-    if total > rows && offset + rows >= total {
-        offset = total - rows + 1;
+    if total > visible && offset + visible >= total {
+        offset = total - visible + 1;
     }
     workbench.set_chat_scroll(offset);
     let end = total.saturating_sub(offset);
-    let start = end.saturating_sub(rows);
+    let start = end.saturating_sub(visible);
     let mut lines: Vec<String> = Vec::new();
     if start > 0 {
         lines.push(fit(
@@ -574,19 +579,28 @@ fn conversation(
     }
     // Bottom-anchored like a chat view: a short conversation sits on the input
     // box, not against the header.
-    let mut out = vec![fit("", columns); rows.saturating_sub(lines.len())];
+    let mut out = vec![fit("", columns); visible.saturating_sub(lines.len())];
     out.extend(lines);
-    out.truncate(rows);
+    out.truncate(visible);
     if workbench.has_new_output() && !out.is_empty() {
         let badge = palette.strong(palette.accent, t(workbench.lang, Key::ChatNewOutput));
         let pad = columns.saturating_sub(width(&badge) + 1);
         let last = out.len() - 1;
         out[last] = fit(&format!("{}{}{}", " ".repeat(pad), badge, " "), columns);
         workbench.hit_map().push(
-            Rect::new(area.x, area.bottom().saturating_sub(1), area.w, 1),
+            Rect::new(
+                area.x,
+                area.bottom().saturating_sub(1 + gap as u16),
+                area.w,
+                1,
+            ),
             "chat.latest",
         );
     }
+    // The air itself: blank rows in the conversation's own width, so the band
+    // is still filled exactly as tall as the layout says it is.
+    out.extend(vec![fit("", columns); gap]);
+    out.truncate(rows);
     out
 }
 
@@ -719,18 +733,14 @@ fn workflow_box(
             if sessions.is_empty() {
                 vec![t(workbench.lang, Key::HistoryEmpty).into()]
             } else {
-                sessions
-                    .iter()
-                    .enumerate()
-                    .map(|(index, row)| {
-                        workflows::record_line(
-                            index == workbench.workflow_index,
-                            "",
-                            &[&row.title, &row.workspace, &row.id],
-                            columns.saturating_sub(4),
-                        )
-                    })
-                    .collect()
+                // One table for the whole list, so the workspace and age
+                // columns line up down the rows instead of starting wherever
+                // each title ended (`#` read as ragged text before this).
+                workflows::session_table(
+                    &sessions,
+                    workbench.workflow_index,
+                    columns.saturating_sub(4),
+                )
             }
         }
         Overlay::Tree => workflows::tree_sessions(&data.sessions)
@@ -2197,6 +2207,25 @@ mod tests {
             connected: true,
             ..WorkbenchData::default()
         }
+    }
+
+    /// The transcript's last row is blank, so the newest line is not painted on
+    /// the composer's top rule.
+    #[test]
+    fn the_transcript_keeps_a_blank_row_above_the_prompt() {
+        let mut workbench = Workbench::new();
+        let mut data = crate::workbench::demo::chat();
+        data.messages = vec!["the only line".into()];
+        let rows = conversation(&mut workbench, &data, &FUTURE_DARK, Rect::new(0, 0, 60, 6));
+        assert_eq!(rows.len(), 6);
+        assert!(
+            plain(&rows[4]).contains("the only line"),
+            "the message sits on the last content row: {rows:?}"
+        );
+        assert!(
+            plain(&rows[5]).trim().is_empty(),
+            "the row under it is the air above the box: {rows:?}"
+        );
     }
 
     #[test]
