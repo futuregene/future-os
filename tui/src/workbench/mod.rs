@@ -43,6 +43,7 @@ pub mod run;
 pub mod screen;
 pub mod scroll;
 pub mod state;
+pub mod syntax;
 pub mod theme;
 pub mod widgets;
 pub mod workflows;
@@ -4530,7 +4531,10 @@ mod tests {
         // A document has no zoom to give: the wheel scrolls it instead.
         data.preview = Some(state::PreviewView::Text {
             path: "README.md".into(),
-            lines: (0..40).map(|n| n.to_string()).collect(),
+            lines: (0..40)
+                .map(|n| super::syntax::Line::plain(n.to_string()))
+                .collect::<Vec<_>>()
+                .into(),
             truncated: false,
         });
         workbench.preview_scroll = 5;
@@ -5649,6 +5653,63 @@ mod tests {
         assert!(!text.contains('▀'), "{text}");
         assert!(workbench.image_request.is_none());
         crate::terminal_image::reset_capabilities_cache();
+    }
+
+    /// A code preview is painted in the palette's token colours — a keyword is
+    /// not body text — and switching to a light palette changes them with it,
+    /// because the classifier names tokens rather than colours.
+    #[test]
+    fn the_preview_box_colours_code_in_the_palette_in_force() {
+        let mut data = demo::chat();
+        let path = "src/main.rs";
+        let source = "pub fn main() { let s = \"hi\"; } // done";
+        data.preview = Some(state::PreviewView::Text {
+            path: path.into(),
+            lines: syntax::highlight(path, source).into(),
+            truncated: false,
+        });
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.overlay = Some(Overlay::FilePreview);
+        let frame = workbench.render(&data, 120, 38);
+        // The frame still obeys its own contract: exact rows of exact columns,
+        // with the styled runs inside them.
+        assert_eq!(frame.len(), 38);
+        for row in &frame {
+            assert_eq!(ansi::width(row), 120, "{row:?}");
+        }
+        let painted = frame.join("\n");
+        let dark = workbench.palette;
+        // A run is "in colour C": the foreground escape that opens it. The
+        // reset that closes it is the renderer's business, not this test's.
+        let in_colour = |colour: u8, run: &str| format!("\u{1b}[38;5;{colour}m{run}");
+        assert!(
+            painted.contains(&in_colour(dark.purple, "pub")),
+            "a keyword wears the keyword colour: {painted}"
+        );
+        assert!(
+            painted.contains(&in_colour(dark.green, "\"hi\"")),
+            "a string wears the string colour: {painted}"
+        );
+        assert!(
+            painted.contains(&in_colour(dark.muted, "// done")),
+            "a comment is muted: {painted}"
+        );
+        assert!(
+            !painted.contains(&in_colour(dark.purple, "main")),
+            "a called name is not a keyword: {painted}"
+        );
+
+        // A light theme has its own keyword colour, and the same text follows it.
+        workbench.set_theme("light");
+        let light = workbench.palette;
+        let painted = workbench.render(&data, 120, 38).join("\n");
+        assert_ne!(light.purple, dark.purple, "the two themes differ");
+        assert!(
+            painted.contains(&in_colour(light.purple, "pub")),
+            "{painted}"
+        );
+        // The text itself is untouched: colour is the only difference.
+        assert!(plain(&workbench.render(&data, 120, 38)).contains(source));
     }
 
     /// A preview whose bytes could not be read says why, in the reader's

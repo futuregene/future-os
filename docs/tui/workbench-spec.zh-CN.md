@@ -59,6 +59,7 @@ tui/src/workbench/screen.rs     // 全屏合成：header/body/sidebar/input/stat
 tui/src/workbench/panels.rs     // 侧栏 2 面板的渲染（纯函数，输入同一个行模型）
 tui/src/workbench/picker.rs     // /model、/thinking、/mode、/workspace、/theme、/sessions、/lang 的选择器覆盖层
 tui/src/workbench/files.rs      // 文件面板的目录树，以及一个路径能预览成什么
+tui/src/workbench/syntax.rs     // 预览框的代码着色：语言识别、token 与着色区间
 tui/src/workbench/image_view.rs // 图片转半格：适配、缩放、平移
 tui/src/workbench/state.rs      // WorkbenchData / TodoItem / SessionRow / UsageData
 tui/src/workbench/demo.rs       // 演示数据（截图/自测用，不连 agent）
@@ -234,6 +235,16 @@ TUI 不使用 logo 或图标。聊天页眉的字标 `FUTURE OS` 用 block 字�
 解码在适配层（`image`，与 agent、host、桌面端同一个 crate），每个文件只做一次，长边缩到 1024 像素：
 缩放重画的是手上已有的像素。文本预览按 `MAX_TEXT_PREVIEW_BYTES` 有界读取，并在字符边界上切。
 读不了的文件会在框里说明原因，而不是开一个空框。
+
+文本预览**按语言着色**。`syntax.rs` 把每一行分成关键字、类型、被调用的名字、字符串、数字、注释、
+属性与键；它只回答 token 是什么，从不说颜色，颜色由 `theme::Palette::token` 决定——于是高亮的代码
+跟随当前主题，而不是把深色高亮器的配色搬到浅色画布上。分词在文件打开时做一次，每一行带着自己的
+着色区间走。
+
+它刻意不是解析器。读者要的是**一行的可见形状**：注释、字面量（包括跨行的 Rust raw 字符串、Python
+docstring 与 JavaScript 模板字符串）与声明；代价是每行一次向前扫描，行间只带一点状态。不认识的扩展名
+原样绘制，不去猜。制表符展开成四个空格：绘制行里若留着真正的 `\t`，光标会跳到终端自己的 tab 位，
+整帧的列就散了。
 
 ---
 

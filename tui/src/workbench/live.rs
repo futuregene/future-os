@@ -2496,7 +2496,7 @@ pub fn read_preview(path: &str, kind: super::files::PreviewKind) -> PreviewView 
                 let (text, truncated) = read_text(path)?;
                 Ok(PreviewView::Text {
                     path: path.to_string(),
-                    lines: text.lines().map(str::to_string).collect(),
+                    lines: super::syntax::highlight(path, &text).into(),
                     truncated,
                 })
             }
@@ -3401,10 +3401,27 @@ mod tests {
             PreviewView::Text {
                 lines, truncated, ..
             } => {
-                assert_eq!(lines, vec!["one".to_string(), "two".to_string()]);
+                assert_eq!(
+                    lines.iter().map(|line| line.text()).collect::<Vec<_>>(),
+                    vec!["one", "two"]
+                );
                 assert!(!truncated);
             }
             other => panic!("text must stay text: {other:?}"),
+        }
+        // A file whose language is known arrives classified: the box paints
+        // the runs, it does not scan the text again.
+        let source = dir.path().join("lib.rs");
+        std::fs::write(&source, "pub fn f() -> u32 { 1 } // done\n").unwrap();
+        match read_preview(&source.to_string_lossy(), preview_kind(&source)) {
+            PreviewView::Text { lines, .. } => {
+                assert!(!lines[0].spans().is_empty(), "a .rs line is classified");
+                assert_eq!(
+                    lines[0].spans().last().map(|span| span.token),
+                    Some(crate::workbench::syntax::Token::Comment)
+                );
+            }
+            other => panic!("a .rs file must stay text: {other:?}"),
         }
         let long = dir.path().join("long.log");
         std::fs::write(
