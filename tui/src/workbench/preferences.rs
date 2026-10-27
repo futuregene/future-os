@@ -277,7 +277,7 @@ impl Action {
             Self::Model => Key::CmdModel,
             Self::PanelRecent => Key::HelpKeyPanelRecent,
             Self::PanelWorkspaces => Key::HelpKeyPanelWorkspaces,
-            Self::Files => Key::FilesTitle,
+            Self::Files => Key::HelpKeyFiles,
             Self::PanelPrev => Key::HelpKeyPrevPanel,
             Self::PanelNext => Key::HelpKeyNextPanel,
             Self::Git => Key::CmdGit,

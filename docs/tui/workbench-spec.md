@@ -27,7 +27,8 @@ implementation may extend it, but may not change its meaning.
 4. Sidebar with 2 real panels: recent conversations (name, workspace, age) and
    the same conversations filed by workspace (pinned / workspaces / chats).
    **文件** is not a third tab: it is the session workspace as its own overlay
-   (`ctrl+3`, the header's `[ctrl+3] 文件` button, or `/files`) — one level at a
+   (`/files`, or the 文件 button in the header; no chord — the ctrl-only map has
+   no letter left for it) — one level at a
    time, a directory read when it opens, `↑`/`↓` to walk, `enter` to open a
    directory or preview a file, `backspace` to close a directory or walk up to
    the one holding the row. It is scoped to the conversation on screen, the way
@@ -121,11 +122,11 @@ Content — a conversation, a session title, a path — is never translated.
 ├───────────────────────────────────────────────┴──────────────────────────────┤
 │ row h-3        ACTIVITY: ⠋ 思考 3s · 2 工具 · 42 tok/s · 缓存 96%            │
 │ row h-2        STATUS: model · effort · 审批模式 · ctx bar · ≈¥0.01          │
-│ row h-1        HINT: Esc 聊天 · ctrl+b 侧栏 · / 命令 · ? 帮助                │
+│ row h-1        HINT: Esc 聊天 · ctrl+s 侧栏 · / 命令 · ? 帮助                │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Width < 88: the sidebar collapses to 0; `ctrl+b` opens a full-screen overlay
+- Width < 88: the sidebar collapses to 0; `ctrl+s` opens a full-screen overlay
   panel; the divider column becomes a 2-column timeline rail.
 - Height < 24: HEADER is squeezed to 1 row (wordmark inline), INPUT to 2 rows,
   ACTIVITY is hidden.

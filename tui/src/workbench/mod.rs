@@ -4867,9 +4867,42 @@ mod tests {
         assert_eq!(workbench.overlay, None);
     }
 
+    /// The help table and the shortcut editor read the same map the keys do: an
+    /// action with no chord prints an em dash instead of an empty column, and no
+    /// row claims one of the numbered slots the ctrl-only map retired.
+    #[test]
+    fn the_help_table_names_a_chordless_action_as_such() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 60);
+        workbench.overlay = Some(Overlay::Help);
+        let text = plain(&workbench.render(&data, 120, 60));
+        for gone in ["ctrl+1", "ctrl+2", "ctrl+3"] {
+            assert!(!text.contains(gone), "the help table still lists {gone}");
+        }
+        let row = text
+            .lines()
+            .find(|line| line.contains("切到「最近」面板"))
+            .expect("the 最近 row");
+        assert!(row.contains('—'), "no chord is drawn as a dash: {row}");
+        let row = text
+            .lines()
+            .find(|line| line.contains("本会话的文件面板"))
+            .expect("the files row");
+        assert!(row.contains('—'), "the files panel has no chord: {row}");
+
+        // The shortcut editor agrees, and `enter` there is how a reader puts a
+        // chord back on one of these rows.
+        workbench.overlay = Some(Overlay::Keybindings);
+        let text = plain(&workbench.render(&data, 120, 60));
+        let row = text
+            .lines()
+            .find(|line| line.contains("切到「工作区」面板"))
+            .expect("the 工作区 row");
+        assert!(row.contains('—'), "{row}");
+    }
+
     /// The files panel is not a tab: the strip names two of them, no strip cell
-    /// opens the tree, and the doors are its own (the shortcut, the header's
-    /// button, `/files`).
+    /// opens the tree, and the doors are its own (the header's button, `/files`).
     #[test]
     fn the_files_panel_is_its_own_surface_not_a_tab() {
         let data = demo::chat();
