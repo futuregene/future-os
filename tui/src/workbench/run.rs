@@ -1078,6 +1078,21 @@ async fn quit(
             workbench.overlay = Some(super::Overlay::Approval);
             continue;
         }
+        // `enter` on a `/git` worktree row: the panel's reads are rooted in the
+        // session's workspace, so entering a worktree moves the session there
+        // (the same `set_cwd` `/worktree` uses) and then re-reads the panel in
+        // the new checkout — the rows on screen would otherwise still describe
+        // the one the reader just left.
+        if let WbAction::GitWorktree(path) = &action {
+            let path = path.clone();
+            live.select_worktree(&path).await;
+            let (section, filter) = live
+                .git()
+                .map(|git| (git.section, git.filter.clone()))
+                .unwrap_or((GitSection::Worktrees, None));
+            open_git_panel(live, frame, workbench, section, filter, 0, true).await;
+            continue;
+        }
         // `/git`: the panel's data is the driver's to read (the surface owns no
         // I/O), so every git verb lands here — the key, the palette entry, a tab
         // switch, a cursor move and `r`.

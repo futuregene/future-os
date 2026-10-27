@@ -273,6 +273,10 @@ pub enum WbAction {
     GitRefresh,
     /// The `/git` cursor moved: load that row's detail.
     SelectGit(usize),
+    /// `enter` on a `/git` worktree row: move the session's workspace to that
+    /// checkout and re-read the panel there. The same move `/worktree` makes,
+    /// expressed from the repository browser.
+    GitWorktree(String),
     /// Put this text on the clipboard (`y` in the `/git` panel copies the
     /// selected commit's sha, a ref's name or a file's path).
     CopyText(String),
@@ -440,6 +444,18 @@ struct PreviewDrag {
     pan: (i32, i32),
 }
 
+/// A `/git` divider drag: where the pointer went down and the list width at that
+/// moment, so the divider follows the hand instead of snapping to the pointer.
+///
+/// The percentage is recomputed from the *box's* own geometry (the last frame's
+/// inner columns) rather than from a per-event delta, so a drag that leaves the
+/// box and comes back still lands where the pointer is.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GitSplitDrag {
+    grab_x: u16,
+    grab_left: usize,
+}
+
 /// How many animation ticks the spinner holds one frame.
 ///
 /// The ticker fires every 120 ms (see `run`), so a frame lasts 480 ms — slow
@@ -466,6 +482,12 @@ const ZOOM_FIT: &str = "preview.fit";
 /// The box's own step buttons: the folder's previous/next picture.
 const PREV_IMAGE: &str = "preview.prev";
 const NEXT_IMAGE: &str = "preview.next";
+
+/// Columns one `←` / `→` pans a `/git` pane.
+///
+/// Neither pane wraps, and eight cells a press crosses a date or a graph lane
+/// per key instead of asking for forty presses to reach the end of a patch line.
+const GIT_HSCROLL_STEP: usize = 8;
 
 /// The surface's own state: where the panels and the pointers are.
 ///
@@ -567,10 +589,28 @@ pub struct Workbench {
     /// `pageDown` page: a detail that is on screen gets the keys even while the
     /// list holds the cursor.
     pub git_split: bool,
-    /// How many rows the painted `/git` detail body is at the pane's width —
-    /// again the renderer's number, and the one that stops a scroll at the end
-    /// instead of running past it into a blank pane.
+    /// How many rows the painted `/git` detail body is — again the renderer's
+    /// number, and the one that stops a scroll at the end instead of running
+    /// past it into a blank pane.
     pub git_detail_rows: usize,
+    /// How far the `/git` list is panned right, in columns. Nothing in either
+    /// pane wraps, so a subject that runs past the divider is read with `→`
+    /// rather than folded onto a second row.
+    pub git_list_x: usize,
+    /// How far the `/git` detail is panned right, in columns — the same verb on
+    /// the other side, kept apart so `tab` moves between two views instead of
+    /// moving both.
+    pub git_detail_x: usize,
+    /// The list's share of the split body, as a percentage. The divider between
+    /// the panes is dragged (`git.divider`), so the ratio is the reader's.
+    pub git_split_percent: u16,
+    /// The last painted split's geometry — the box's inner columns and the list
+    /// width it was drawn at. The drag reads it to turn a pointer column back
+    /// into a percentage without guessing the frame's layout.
+    pub(crate) git_split_span: (usize, usize),
+    /// A divider drag in progress: the cell the pointer went down on and the
+    /// list width at that moment.
+    pub(crate) git_drag: Option<GitSplitDrag>,
     pub history_query: String,
     session_key: String,
     pub mouse_capture: bool,
@@ -687,6 +727,11 @@ impl Workbench {
             git_detail_focus: false,
             git_split: false,
             git_detail_rows: 0,
+            git_list_x: 0,
+            git_detail_x: 0,
+            git_split_percent: 44,
+            git_split_span: (0, 0),
+            git_drag: None,
             history_query: String::new(),
             session_key: String::new(),
             mouse_capture: true,
@@ -2345,29 +2390,40 @@ impl Workbench {
                 self.overlay = None;
                 self.overlay_scroll = 0;
                 self.git_detail_focus = false;
+                self.git_drag = None;
                 vec![WbAction::Redraw]
             }
             // The tabs are numbered in the order they are painted, so the hint
             // row, the numbers and `GitSection::ALL` are one list.
-            "1" | "2" | "3" | "4" => {
+            "1" | "2" | "3" | "4" | "5" | "6" => {
                 let index = key.parse::<usize>().unwrap_or(1).saturating_sub(1);
                 let section = state::GitSection::ALL[index.min(state::GitSection::ALL.len() - 1)];
                 if section == git.section {
                     return Vec::new();
                 }
                 self.overlay_scroll = 0;
+                // Another section is another document: a pan left over from the
+                // log must not start the refs list half a row off.
+                self.git_list_x = 0;
+                self.git_detail_x = 0;
                 vec![WbAction::GitSection(section)]
             }
+            // `tab` is the pane switch and nothing else: the arrows are the
+            // pane's own horizontal scroll, so a reader can pan the list and
+            // then pan the patch without the focus moving under them.
             "tab" => {
                 self.git_detail_focus = !self.git_detail_focus;
                 vec![WbAction::Redraw]
             }
-            "left" | "h" => {
-                self.git_detail_focus = false;
-                vec![WbAction::Redraw]
-            }
-            "right" | "l" => {
-                self.git_detail_focus = true;
+            "left" | "h" => self.scroll_git_horizontal(-1),
+            "right" | "l" => self.scroll_git_horizontal(1),
+            // Back to the left edge of the pane that has the keys.
+            "0" => {
+                if self.git_detail_focus {
+                    self.git_detail_x = 0;
+                } else {
+                    self.git_list_x = 0;
+                }
                 vec![WbAction::Redraw]
             }
             "up" | "k" if !self.git_detail_focus => self.move_git(data, -1),
@@ -2410,6 +2466,7 @@ impl Workbench {
                 Some(index) => {
                     self.workflow_index = index;
                     self.overlay_scroll = 0;
+                    self.git_detail_x = 0;
                     vec![WbAction::SelectGit(index)]
                 }
                 None => Vec::new(),
@@ -2418,6 +2475,7 @@ impl Workbench {
                 Some(index) => {
                     self.workflow_index = index;
                     self.overlay_scroll = 0;
+                    self.git_detail_x = 0;
                     vec![WbAction::SelectGit(index)]
                 }
                 None => Vec::new(),
@@ -2431,12 +2489,19 @@ impl Workbench {
                 .map(|key| vec![WbAction::CopyText(git_panel::copy_text(git.section, &key))])
                 .unwrap_or_default(),
             "enter" => match (git.section, selected) {
-                // A ref is a filter, not a page: `enter` on `feature` shows the
-                // commits on it, which is what a reader scrolling refs came to
-                // do (tig's `enter` on a ref, same verb).
-                (state::GitSection::Refs, Some(reference)) => {
+                // A ref or a branch is a filter, not a page: `enter` on
+                // `feature` shows the commits on it, which is what a reader
+                // scrolling names came to do (tig's `enter` on a ref, same verb).
+                (state::GitSection::Refs | state::GitSection::Branches, Some(reference)) => {
                     self.overlay_scroll = 0;
+                    self.git_detail_x = 0;
                     vec![WbAction::GitFilter(Some(reference))]
+                }
+                // A worktree is a *place*: entering it moves the session's
+                // workspace there, exactly as `/worktree`'s `enter` does, and
+                // the panel re-reads from it.
+                (state::GitSection::Worktrees, Some(path)) => {
+                    vec![WbAction::GitWorktree(path)]
                 }
                 // A working-tree file opens in the preview box — the one verb
                 // that turns "this file changed" into "this is what changed".
@@ -2461,11 +2526,26 @@ impl Workbench {
         let next = git.step(self.workflow_index, direction);
         self.workflow_index = next;
         // Another row is another document: a patch left half-read must not carry
-        // its scroll onto one the reader has not seen.
+        // its scroll onto one the reader has not seen — nor its horizontal pan,
+        // which was measured against a different line.
         self.overlay_scroll = 0;
+        self.git_detail_x = 0;
         git.selectable(next)
             .then_some(vec![WbAction::SelectGit(next)])
             .unwrap_or_default()
+    }
+
+    /// Pan the pane that holds the keys, one step. The other pane keeps its own
+    /// offset, so `tab` moves between two views instead of moving both.
+    fn scroll_git_horizontal(&mut self, direction: isize) -> Vec<WbAction> {
+        let step = GIT_HSCROLL_STEP as isize * direction;
+        let offset = if self.git_detail_focus {
+            &mut self.git_detail_x
+        } else {
+            &mut self.git_list_x
+        };
+        *offset = (*offset as isize + step).max(0) as usize;
+        vec![WbAction::Redraw]
     }
 
     fn handle_workflow_key(
@@ -2916,6 +2996,39 @@ impl Workbench {
             );
         }
         if event.kind != mouse::MouseKind::Press {
+            // Dragging the `/git` divider re-balances the two panes. The new
+            // width is taken from the pointer's distance from where the drag
+            // began, not from the pointer's column alone, so a grab that landed
+            // a cell off the seam keeps its offset.
+            if overlay == Overlay::Git {
+                match event.kind {
+                    mouse::MouseKind::Drag => {
+                        if let Some(drag) = self.git_drag {
+                            let moved = event.x as i32 - drag.grab_x as i32;
+                            let want = (drag.grab_left as i32 + moved).max(0) as usize;
+                            let (inner, _) = self.git_split_span;
+                            // Round to the nearest percent, so the seam lands
+                            // on the cell under the pointer rather than one
+                            // left of it at every other width.
+                            if let Some(percent) = (want * 100 + inner / 2).checked_div(inner) {
+                                let percent = percent.clamp(10, 90) as u16;
+                                if percent != self.git_split_percent {
+                                    self.git_split_percent = percent;
+                                    return vec![WbAction::Redraw];
+                                }
+                            }
+                        }
+                        return Vec::new();
+                    }
+                    mouse::MouseKind::Release => {
+                        if self.git_drag.take().is_some() {
+                            return vec![WbAction::Redraw];
+                        }
+                        return Vec::new();
+                    }
+                    _ => {}
+                }
+            }
             // Dragging inside the preview box pans the picture — the pointer's
             // counterpart of the arrow keys. The delta is taken from the press
             // cell, so the picture keeps up with the hand rather than drifting
@@ -3066,6 +3179,7 @@ impl Workbench {
                     self.workflow_index = index;
                     self.git_detail_focus = false;
                     self.overlay_scroll = 0;
+                    self.git_detail_x = 0;
                     return vec![WbAction::SelectGit(index)];
                 }
                 if let Some(index) = id
@@ -3080,6 +3194,16 @@ impl Workbench {
                 if id == "git.detail" {
                     self.git_detail_focus = true;
                     return vec![WbAction::Redraw];
+                }
+                if id == "git.divider" {
+                    // The seam between the two panes is a handle: the press
+                    // remembers the cell and the width it was grabbed at, so the
+                    // divider follows the hand instead of snapping to it.
+                    self.git_drag = Some(GitSplitDrag {
+                        grab_x: event.x,
+                        grab_left: self.git_split_span.1,
+                    });
+                    return Vec::new();
                 }
                 if let Some(index) = id
                     .strip_prefix("preferences.row.")
@@ -3464,6 +3588,26 @@ impl Workbench {
     /// its end.
     pub(crate) fn set_git_detail_rows(&mut self, rows: usize) {
         self.git_detail_rows = rows;
+    }
+
+    /// The split's geometry as painted: the box's inner columns and the list's
+    /// width. The divider drag converts a pointer column back into a percentage
+    /// from these, so it never has to re-derive the frame's layout.
+    pub(crate) fn set_git_geometry(&mut self, inner: usize, left_w: usize) {
+        self.git_split_span = (inner, left_w);
+    }
+
+    /// The list's width for a split body of `inner` cells: the stored ratio,
+    /// with a floor under each pane so neither can be dragged shut.
+    pub(crate) fn git_list_width(&self, inner: usize) -> usize {
+        if inner == 0 {
+            return 0;
+        }
+        // A pane keeps about two dozen cells: enough for the graph and a word of
+        // subject on one side, and a patch line's head on the other.
+        let floor = 24.min(inner.saturating_sub(1));
+        let ceiling = inner.saturating_sub(floor).max(floor);
+        (inner * self.git_split_percent as usize / 100).clamp(floor, ceiling)
     }
 
     /// Keep the `/git` detail's offset inside its body: the last screenful is
@@ -7788,6 +7932,32 @@ mod tests {
         assert_eq!(wb.overlay_scroll, 1);
     }
 
+    /// Six sections have to stay visible when the box is narrow: the strip drops
+    /// its number prefixes before it drops a tab, because a tab the reader
+    /// cannot see is a key nobody presses.
+    #[test]
+    fn a_narrow_git_box_keeps_every_tab_visible() {
+        let mut data = demo::chat();
+        data.git = Some(demo::git());
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Git);
+        let rows = wb.render(&data, 60, 20);
+        let text = plain(&rows);
+        for label in ["提交", "引用", "改动", "储藏", "工作区", "分支"] {
+            assert!(text.contains(label), "`{label}` is missing: {text}");
+        }
+        assert!(!text.contains("1. 提交"), "the numbers made room: {text}");
+        let ids: Vec<&str> = wb
+            .hits()
+            .regions()
+            .iter()
+            .map(|(_, id)| id.as_str())
+            .collect();
+        for tab in 0..6 {
+            assert!(ids.contains(&format!("git.tab.{tab}").as_str()), "{ids:?}");
+        }
+    }
+
     /// The log's graph continuation rows are painted but not selectable: the
     /// cursor steps over them, so `enter` always has something to act on and the
     /// detail pane never goes blank on a row that is only a drawing.
@@ -8059,6 +8229,236 @@ mod tests {
             vec![WbAction::Redraw]
         );
         assert!(wb.git_detail_focus);
+    }
+
+    /// The two panes pan on their own axes: `←`/`→` move the pane that holds the
+    /// keys and nothing else, `tab` moves the keys and leaves both pans where
+    /// they were. Focus used to ride on the arrows, which made "scroll the
+    /// patch" and "hand the patch the keys" the same keystroke.
+    #[test]
+    fn the_git_panel_pans_each_pane_and_tab_still_switches_them() {
+        let mut data = demo::chat();
+        let mut git = demo::git();
+        // Long enough that a pan of eight cells is inside the line, not past it.
+        git.rows[0].pieces[0] =
+            "fix(tui): a subject long enough that its tail needs the arrow key to read".into();
+        data.git = Some(git);
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Git);
+        wb.render(&data, 160, 38);
+        assert!(wb.git_split, "160 columns is the split layout");
+        assert!(!wb.git_detail_focus);
+
+        assert_eq!(
+            wb.handle(WbEvent::Key("right".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(wb.git_list_x, GIT_HSCROLL_STEP);
+        assert!(
+            !wb.git_detail_focus,
+            "the arrow pans; it does not hand over the keys"
+        );
+        assert_eq!(wb.git_detail_x, 0, "the other pane keeps its own pan");
+
+        assert_eq!(
+            wb.handle(WbEvent::Key("tab".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert!(wb.git_detail_focus);
+        wb.handle(WbEvent::Key("right".into()), &data);
+        assert_eq!(wb.git_detail_x, GIT_HSCROLL_STEP);
+        assert_eq!(wb.git_list_x, GIT_HSCROLL_STEP, "each pane keeps its pan");
+
+        // Left walks back and stops at the left edge instead of wrapping.
+        for _ in 0..8 {
+            wb.handle(WbEvent::Key("left".into()), &data);
+        }
+        assert_eq!(wb.git_detail_x, 0);
+        assert_eq!(wb.git_list_x, GIT_HSCROLL_STEP);
+        // `0` is the pane's left edge, the same verb the preview box spells it.
+        wb.handle(WbEvent::Key("right".into()), &data);
+        assert_eq!(
+            wb.handle(WbEvent::Key("0".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(wb.git_detail_x, 0);
+
+        // Another row is another document: the patch's pan resets with its
+        // scroll, so a line does not arrive half-hidden.
+        wb.handle(WbEvent::Key("right".into()), &data);
+        wb.handle(WbEvent::Key("tab".into()), &data);
+        wb.handle(WbEvent::Key("down".into()), &data);
+        assert_eq!(wb.git_detail_x, 0);
+    }
+
+    /// The fifth and sixth tabs are the repository's places and lines of work:
+    /// a worktree row is a checkout (`enter` moves the session there), a branch
+    /// row is a revision (`enter` narrows the log to it).
+    #[test]
+    fn the_git_panel_enters_worktrees_and_branches() {
+        use state::{GitKind, GitRow, GitSection};
+
+        let mut worktrees = demo::git();
+        worktrees.section = GitSection::Worktrees;
+        worktrees.selected = 0;
+        worktrees.rows = vec![GitRow {
+            key: Some("/w/future-os/.worktrees/git-panel-layout".into()),
+            prefix: "● ".into(),
+            pieces: vec![
+                "feat/git-panel-layout".into(),
+                "/w/future-os/.worktrees/git-panel-layout".into(),
+            ],
+            kinds: vec![GitKind::Ref, GitKind::Meta],
+        }];
+        let mut data = demo::chat();
+        data.git = Some(worktrees);
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Git);
+        wb.render(&data, 120, 38);
+        let ids: Vec<&str> = wb
+            .hits()
+            .regions()
+            .iter()
+            .map(|(_, id)| id.as_str())
+            .collect();
+        assert!(ids.contains(&"git.tab.4"), "the worktree tab: {ids:?}");
+        assert!(ids.contains(&"git.tab.5"), "the branch tab: {ids:?}");
+        assert_eq!(
+            wb.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::GitWorktree(
+                "/w/future-os/.worktrees/git-panel-layout".into()
+            )]
+        );
+        // The row copies as the path, which is what a shell would take.
+        assert_eq!(
+            wb.handle(WbEvent::Key("y".into()), &data),
+            vec![WbAction::CopyText(
+                "/w/future-os/.worktrees/git-panel-layout".into()
+            )]
+        );
+
+        let mut branches = demo::git();
+        branches.section = GitSection::Branches;
+        branches.selected = 0;
+        branches.rows = vec![GitRow {
+            key: Some("dev-huichen".into()),
+            prefix: "● ".into(),
+            pieces: vec!["dev-huichen".into(), "2↑ 0↓".into()],
+            kinds: vec![GitKind::Ref, GitKind::Meta],
+        }];
+        let mut data = demo::chat();
+        data.git = Some(branches);
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Git);
+        assert_eq!(
+            wb.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::GitFilter(Some("dev-huichen".into()))]
+        );
+        assert_eq!(
+            wb.handle(WbEvent::Key("y".into()), &data),
+            vec![WbAction::CopyText("dev-huichen".into())]
+        );
+
+        // `5` and `6` open the two new sections, in the strip's own order.
+        let mut data = demo::chat();
+        data.git = Some(demo::git());
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Git);
+        assert_eq!(
+            wb.handle(WbEvent::Key("5".into()), &data),
+            vec![WbAction::GitSection(GitSection::Worktrees)]
+        );
+        assert_eq!(
+            wb.handle(WbEvent::Key("6".into()), &data),
+            vec![WbAction::GitSection(GitSection::Branches)]
+        );
+    }
+
+    /// The divider between the panes is a handle: a drag re-balances the split
+    /// in the direction the pointer went, and a release ends it (a drag that is
+    /// never released must not keep resizing on later motion).
+    #[test]
+    fn dragging_the_git_divider_re_balances_the_panes() {
+        let mut data = demo::chat();
+        data.git = Some(demo::git());
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Git);
+        wb.render(&data, 160, 38);
+        let seam = wb
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| *id == "git.divider")
+            .map(|(rect, _)| (rect.x, rect.y))
+            .expect("the divider is a hit region");
+        let inner = wb.git_split_span.0;
+        let before = wb.git_split_percent;
+        assert_eq!(wb.git_list_width(inner), inner * before as usize / 100);
+
+        let press = mouse::MouseEvent {
+            kind: mouse::MouseKind::Press,
+            x: seam.0,
+            y: seam.1,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        assert_eq!(
+            wb.handle(WbEvent::Mouse(press), &data),
+            Vec::<WbAction>::new()
+        );
+        assert!(wb.git_drag.is_some(), "the press grabs the seam");
+
+        let drag = |x: u16| mouse::MouseEvent {
+            kind: mouse::MouseKind::Drag,
+            x,
+            y: seam.1,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        assert_eq!(
+            wb.handle(WbEvent::Mouse(drag(seam.0 + 16)), &data),
+            vec![WbAction::Redraw]
+        );
+        assert!(
+            wb.git_split_percent > before,
+            "dragging right widens the list: {} -> {}",
+            before,
+            wb.git_split_percent
+        );
+        let wider = wb.git_list_width(inner);
+        assert_eq!(
+            wider,
+            inner * wb.git_split_percent as usize / 100,
+            "the list width follows the ratio"
+        );
+        assert_eq!(
+            wb.handle(WbEvent::Mouse(drag(seam.0 - 16)), &data),
+            vec![WbAction::Redraw]
+        );
+        assert!(wb.git_split_percent < before, "and left narrows it");
+        // A pane keeps a floor, so a long drag left cannot shut the list.
+        for _ in 0..20 {
+            wb.handle(WbEvent::Mouse(drag(0)), &data);
+        }
+        assert!(wb.git_list_width(inner) >= 24);
+
+        let release = mouse::MouseEvent {
+            kind: mouse::MouseKind::Release,
+            ..drag(seam.0)
+        };
+        wb.handle(WbEvent::Mouse(release), &data);
+        assert!(wb.git_drag.is_none(), "the release ends the drag");
+        let settled = wb.git_split_percent;
+        assert_eq!(
+            wb.handle(WbEvent::Mouse(drag(seam.0 + 40)), &data),
+            Vec::<WbAction>::new()
+        );
+        assert_eq!(
+            wb.git_split_percent, settled,
+            "motion after a drop is inert"
+        );
     }
 
     /// A list longer than its box must page. `pageDown` used to add to

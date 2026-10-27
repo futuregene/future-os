@@ -1302,6 +1302,7 @@ impl Live {
             | WbAction::GitFilter(_)
             | WbAction::GitRefresh
             | WbAction::SelectGit(_)
+            | WbAction::GitWorktree(_)
             | WbAction::CopyText(_)
             | WbAction::OpenHistory
             | WbAction::OpenTree
