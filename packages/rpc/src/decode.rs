@@ -498,6 +498,7 @@ pub(crate) fn session_summary_from_proto(row: &proto::SessionSummary) -> Session
         model: row.model.clone(),
         cwd: row.cwd.clone(),
         updated_at_ms: row.updated_at_ms,
+        created_at_ms: row.created_at_ms,
         parent_session_id: row.parent_session_id.clone(),
         first_message: row.first_message.clone(),
         query_count: row.query_count.max(0) as usize,
@@ -1647,6 +1648,11 @@ mod tests {
         assert_eq!(rows[0].id, "s1");
         assert_eq!(rows[0].session_name.as_deref(), Some("Demo"));
         assert_eq!(rows[0].query_count, 3);
+        assert_eq!(
+            rows[0].created_at_ms, 0,
+            "a page that predates `createdAtMs` decodes with no creation stamp \
+             rather than failing the list"
+        );
         assert_eq!(rows[1].id, "s2");
         assert!(
             rows[1].session_name.is_none(),

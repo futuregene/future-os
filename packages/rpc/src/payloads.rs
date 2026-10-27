@@ -145,6 +145,14 @@ pub struct SessionSummaryPayload {
     pub model: String,
     pub cwd: String,
     pub updated_at_ms: i64,
+    /// When the session was created. Clients order conversation lists by this;
+    /// `updated_at_ms` moves every time a run touches the session.
+    ///
+    /// Defaults to 0 for a peer that predates the stamp (a cached page, or an
+    /// older agent's JSON fallback): such a list still decodes, and the client
+    /// falls back to the activity stamp rather than sorting a page of ties.
+    #[serde(default)]
+    pub created_at_ms: i64,
     pub parent_session_id: Option<String>,
     pub first_message: Option<String>,
     pub query_count: usize,
@@ -370,6 +378,7 @@ mod tests {
             model: "m".to_string(),
             cwd: "/w".to_string(),
             updated_at_ms: 1785931200000,
+            created_at_ms: 1785900000000,
             parent_session_id: None,
             first_message: Some("hello".to_string()),
             query_count: 1,
@@ -381,6 +390,7 @@ mod tests {
         assert_eq!(value["isStreaming"], json!(true));
         assert!(value.get("is_streaming").is_none());
         assert_eq!(value["updatedAtMs"], json!(1785931200000_i64));
+        assert_eq!(value["createdAtMs"], json!(1785900000000_i64));
         assert!(value.get("updated_at").is_none());
     }
 
