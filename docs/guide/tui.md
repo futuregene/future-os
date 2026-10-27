@@ -132,9 +132,9 @@ No default shortcut is a function key: `F1`–`F12` need an `Fn` modifier on a
 laptop keyboard and are absent on a compact one, so the defaults are
 `ctrl+m` model, `ctrl+t` effort, `ctrl+s` approval mode, `ctrl+l` workspaces,
 `ctrl+1`/`ctrl+2` the rail's tabs, `alt+h` help, `alt+r` refresh, `alt+c` copy,
-`alt+m` mouse, `alt+l` linear reading, `alt+a` reduced motion. Every one of them
-is rebindable in `/preferences`, and the help overlay lists them grouped by what
-they do rather than in one flat list.
+`alt+m` mouse, `alt+a` reduced motion. Every one of them is rebindable in
+`/preferences`, and the help overlay lists them grouped by what they do rather
+than in one flat list.
 
 Two breakpoints, both from the contract:
 
@@ -177,11 +177,11 @@ The default **focused density** uses a two-row context header, reclaiming four
 rows for the conversation. `Ctrl+O` or `/preferences` opens the preference
 panel: switch to the comfortable identity header, move the sidebar left or
 right, adjust its 30–60-column width, control mouse capture and completion
-notifications, enable reduced motion or linear reading, and rebind global
+notifications, enable reduced motion, and rebind global
 shortcuts. The panel keeps the selected row and help visible on short terminals.
 Choices persist in `~/.future/tui/settings.json` as `density`, `sidebarPosition`,
-`sidebarWidth`, `sidebarVisible`, `mouseCapture`, `notify`, `reducedMotion` and
-`linearReading`; incremental shortcut overrides live beside it in
+`sidebarWidth`, `sidebarVisible`, `mouseCapture`, `notify` and `reducedMotion`;
+incremental shortcut overrides live beside it in
 `keybindings.json`.
 
 With no stored `sidebarVisible` — a first start, or a file written before the
@@ -194,19 +194,12 @@ hidden layout.
 `/theme` retains the six-theme picker, including `high-contrast`; choosing a
 theme persists `themeId`. With no stored choice, the terminal's `COLORFGBG`
 hint selects its light/dark palette (unknown hints use dark). `NO_COLOR`
-disables styling by variable presence, including an empty value. `alt+l` toggles
-**linear reading**: plain text is appended to the terminal's native scrollback,
-not to an alternate-screen single-column imitation. Entering replays the loaded
-conversation once; streaming appends complete lines without repeating tokens,
-and the single-line draft prompt redraws in place. The terminal/screen reader's
-own scrollback navigation reads history. Complex overlays (diff, history and
-preferences) still use the full-screen workflow; a fully linear menu/screen-
-reader interaction audit is not complete. `alt+a`
-independently toggles **reduced motion**. Neither delays streamed content or
-changes agent behavior. `Ctrl+B` leaves linear mode when explicitly reopening
-the sidebar. These bindings, plus copy, queue and mouse, are contextual global
-actions and can be rebound; overlays keep their local keys so a global shortcut
-never submits an approval or edits history search accidentally.
+disables styling by variable presence, including an empty value. `alt+a`
+toggles **reduced motion**: the spinner and its elapsed counter stop animating,
+and streamed content still arrives immediately. These bindings, plus copy,
+queue and mouse, are contextual global actions and can be rebound; overlays
+keep their local keys so a global shortcut never submits an approval or edits
+history search accidentally.
 
 Notifications are emitted for a successful run submitted by this TUI when no
 queued follow-up remains and the terminal reports focus-out. Approval requests
@@ -258,8 +251,7 @@ click on the rail's tab strip are the doors to the same places.
 | `+` / `-` / `0`, arrows, wheel | In the preview box: zoom a picture (up to 6×), pan it, reset; scroll a document |
 | `alt+c` or `/copy` | Copy the last assistant answer as clean content, without terminal chrome |
 | `alt+m` or `/mouse` | Toggle and persist mouse capture off/on for native terminal selection |
-| `alt+l` | Toggle native-scrollback linear reading |
-| `alt+a` | Toggle reduced motion independently |
+| `alt+a` | Toggle reduced motion |
 | `ctrl+t` | Thinking effort: opens the six-level chooser (`/thinking`); on the launchpad the level is staged for the session the first message creates |
 | `ctrl+s` | Approval mode: opens the four-tier chooser (`/mode`), the desktop composer's own values — 手动审批 / 沙箱保护 / 自动审批 / 完全访问 |
 | `ctrl+l` | Workspaces: opens the workspace chooser (`/workspace`) — every directory this client has a conversation in, plus a row that creates one from the path typed into its search line |
@@ -293,7 +285,7 @@ Mouse reporting is SGR 1006 and starts with the persisted preference (enabled by
 
 The conversation follows new output by default. Scrolling up detaches from the tail; further output leaves the reading position unchanged and shows a new-output badge. Scroll back to the bottom or press `esc` to follow again.
 
-The driver only repaints dirty frames: there is no idle 120ms repaint timer. Streaming and spinner updates coalesce at 80ms, input and resize repaint immediately, and transcript rendering is cached by width/content revision. Reduced-motion does not schedule animation repaints; actual stream and state changes still repaint. Linear reading bypasses full-screen repaint entirely and appends only new transcript content, redrawing its one-line prompt.
+The driver only repaints dirty frames: there is no idle 120ms repaint timer. Streaming and spinner updates coalesce at 80ms, input and resize repaint immediately, and transcript rendering is cached by width/content revision. Reduced-motion does not schedule animation repaints; actual stream and state changes still repaint.
 
 ## What is wired to the agent
 

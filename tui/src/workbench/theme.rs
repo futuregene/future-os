@@ -192,12 +192,28 @@ pub fn resolve(id: Option<&str>) -> Palette {
             .iter()
             .copied()
             .find(|palette| {
-                palette.id
-                    == super::accessibility::system_theme_id(
-                        std::env::var("COLORFGBG").ok().as_deref(),
-                    )
+                palette.id == system_theme_id(std::env::var("COLORFGBG").ok().as_deref())
             })
             .unwrap_or(FUTURE_DARK),
+    }
+}
+
+/// `COLORFGBG` is the portable, query-free system light/dark hint supported by
+/// terminals such as xterm. Unknown or malformed values keep the dark default.
+fn system_theme_id(colorfgbg: Option<&str>) -> &'static str {
+    let Some(background) = colorfgbg
+        .and_then(|value| value.rsplit(';').next())
+        .and_then(|value| value.trim().parse::<u8>().ok())
+    else {
+        return "dark";
+    };
+    // The conventional xterm default is 0 on 15. The xterm 256-colour cube's
+    // entries 0..=7 are dark and 8..=15 are bright; high cube/grey entries are
+    // light enough that a dark foreground is the useful system match.
+    if background == 15 || background >= 231 || (8..=15).contains(&background) {
+        "light"
+    } else {
+        "dark"
     }
 }
 
@@ -298,6 +314,15 @@ mod tests {
                 PALETTES[(index + 1) % PALETTES.len()].id
             );
         }
+    }
+
+    #[test]
+    fn system_theme_uses_colorfgbg_and_has_safe_fallbacks() {
+        assert_eq!(system_theme_id(Some("0;15")), "light");
+        assert_eq!(system_theme_id(Some("15;0")), "dark");
+        assert_eq!(system_theme_id(Some("0;255")), "light");
+        assert_eq!(system_theme_id(Some("bad")), "dark");
+        assert_eq!(system_theme_id(None), "dark");
     }
 
     #[test]

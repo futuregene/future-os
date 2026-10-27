@@ -36,7 +36,7 @@ pub(crate) fn compose(
     if w == 0 || h == 0 {
         return rows;
     }
-    let sidebar_w = if workbench.sidebar_visible && !workbench.linear_reading {
+    let sidebar_w = if workbench.sidebar_visible {
         workbench.sidebar_w
     } else {
         0
@@ -45,20 +45,14 @@ pub(crate) fn compose(
         w,
         h,
         sidebar_w,
-        workbench.effective_density(),
+        workbench.density,
         workbench.sidebar_position,
     );
 
     paint(
         &mut rows,
         frame.header,
-        header(
-            &palette,
-            data,
-            &frame,
-            columns,
-            workbench.effective_density(),
-        ),
+        header(&palette, data, &frame, columns, workbench.density),
     );
 
     workbench.composer_width = widgets::input_content_width(frame.input.w as usize).max(1);
@@ -121,7 +115,7 @@ pub(crate) fn compose(
             sidebar,
             sidebar_rows(workbench, data, &palette, sidebar),
         );
-    } else if !workbench.linear_reading && layout::sidebar_fits(w) {
+    } else if layout::sidebar_fits(w) {
         // The reader closed the rail: leave its edge behind as a one-column
         // button that brings it back. A screen with no trace of the rail at all
         // makes `ctrl+b` the only way to find it, and a key nobody knows is the
@@ -1632,7 +1626,6 @@ fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
             PreferenceRow::Notifications => enabled(workbench.notify.enabled, lang),
             PreferenceRow::NotificationBell => enabled(workbench.notify.bell, lang),
             PreferenceRow::Motion => enabled(workbench.reduced_motion, lang),
-            PreferenceRow::Linear => enabled(workbench.linear_reading, lang),
             PreferenceRow::Shortcuts => "›",
             PreferenceRow::Reset => "↺",
         };
@@ -1646,7 +1639,6 @@ fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
                 | PreferenceRow::Notifications
                 | PreferenceRow::NotificationBell
                 | PreferenceRow::Motion
-                | PreferenceRow::Linear
         ) {
             format!("‹ {value} ›")
         } else {
@@ -2721,7 +2713,7 @@ mod tests {
     }
 
     #[test]
-    fn accessibility_preferences_fit_short_frames_and_hide_the_auxiliary_rail() {
+    fn accessibility_preferences_fit_short_frames() {
         let mut workbench = Workbench::new();
         let data = crate::workbench::demo::chat();
         workbench.set_language(crate::workbench::i18n::LanguagePreference::En);
@@ -2735,27 +2727,6 @@ mod tests {
             .join("\n");
         assert!(text.contains("Restore defaults"), "{text}");
         assert!(text.contains("choose"), "{text}");
-
-        workbench.overlay = None;
-        workbench.linear_reading = true;
-        workbench.density = crate::workbench::preferences::Density::Comfortable;
-        let rows = workbench.render(&data, 120, 38);
-        assert!(!workbench
-            .hits()
-            .regions()
-            .iter()
-            .any(|(_, id)| id.starts_with("sidebar.tab.")));
-        assert!(!rows.iter().any(|row| plain(row).contains("To-do")));
-        let busy = WorkbenchData {
-            activity: crate::workbench::state::Activity {
-                kind: ActivityKind::Thinking,
-                ..Default::default()
-            },
-            ..data
-        };
-        workbench.tick = 8;
-        let text = workbench.render(&busy, 120, 38).join("\n");
-        assert!(plain(&text).contains("… Thinking"), "{text}");
     }
 
     #[test]

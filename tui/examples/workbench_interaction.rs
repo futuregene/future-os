@@ -131,7 +131,6 @@ const PAGES: &[&str] = &[
     "picker-theme",
     "picker-sessions",
     "picker-language",
-    "linear",
 ];
 
 /// The fixture each page needs, and the call that opens it.
@@ -306,7 +305,6 @@ fn fixture(name: &str) -> (WorkbenchData, fn(&mut Workbench, &WorkbenchData)) {
         "picker-language" => (chat(), |wb, data| {
             wb.open_picker(PickerKind::Language, data);
         }),
-        "linear" => (chat(), |wb, _| wb.linear_reading = true),
         other => panic!("no fixture for {other}"),
     }
 }
