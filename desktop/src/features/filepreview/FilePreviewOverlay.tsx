@@ -1,3 +1,4 @@
+import type { ImageNavigation } from "./ImagePreview";
 import type { PreviewKind } from "./previewKind";
 import { X } from "lucide-react";
 import { useCallback } from "react";
@@ -18,6 +19,10 @@ import { TextPreview } from "./TextPreview";
  * also falls back to opening the file with the OS default handler.
  * `unavailableMessage` overrides the default toast (e.g. an attachment whose
  * original is gone, where there's nothing to open externally).
+ *
+ * `navigation` is image-only: callers that know the folders their file came from
+ * (the file tree) pass the previous/next picture so the overlay can step through
+ * them in place.
  */
 export function FilePreviewOverlay({
   path,
@@ -27,6 +32,7 @@ export function FilePreviewOverlay({
   onClose,
   onOpenExternal,
   unavailableMessage,
+  navigation,
 }: {
   path: string;
   name: string;
@@ -35,6 +41,7 @@ export function FilePreviewOverlay({
   onClose: () => void;
   onOpenExternal?: () => void;
   unavailableMessage?: string;
+  navigation?: ImageNavigation;
 }) {
   const { t } = useTranslation("markdown");
 
@@ -61,7 +68,7 @@ export function FilePreviewOverlay({
       {kind === "image"
         ? (
             <div className="relative z-10 flex max-h-full max-w-full items-center justify-center">
-              <ImagePreview key={path} name={name} onError={handleError} path={path} />
+              <ImagePreview key={path} name={name} navigation={navigation} onError={handleError} path={path} />
             </div>
           )
         : null}
