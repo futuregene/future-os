@@ -4813,11 +4813,12 @@ mod tests {
             .find(|(_, id)| id == "sidebar.toggle")
             .expect("the collapse button");
         assert_eq!(rect.x + rect.w, 120, "it sits on the rail's outer edge");
-        assert_eq!((rect.y, rect.h), (3, 1), "on the tab-strip row");
+        // Row 2: straight under the two-row header (title + hairline).
+        assert_eq!((rect.y, rect.h), (2, 1), "on the tab-strip row");
         assert!(
-            crate::utils::strip_ansi_codes(&rows[3]).ends_with('›'),
+            crate::utils::strip_ansi_codes(&rows[2]).ends_with('›'),
             "{}",
-            crate::utils::strip_ansi_codes(&rows[3])
+            crate::utils::strip_ansi_codes(&rows[2])
         );
 
         // One click closes it, and it asks the driver to remember that.
@@ -4837,7 +4838,7 @@ mod tests {
         assert_eq!(rect.x + rect.w, 120);
         // The edge runs the body *and* the composer band: from under the header
         // down to the footer, so nothing beside the box is bare canvas.
-        assert_eq!((rect.y, rect.h), (3, 29), "{rect:?}");
+        assert_eq!((rect.y, rect.h), (2, 30), "{rect:?}");
         assert!(plain(&rows).contains('‹'), "{}", plain(&rows));
 
         // A second click brings it back, focused, with the cursor on the
@@ -4873,9 +4874,9 @@ mod tests {
             .expect("the expand button");
         assert_eq!((rect.x, rect.w), (0, 1), "{rect:?}");
         assert!(
-            crate::utils::strip_ansi_codes(&rows[3]).starts_with('›'),
+            crate::utils::strip_ansi_codes(&rows[2]).starts_with('›'),
             "{}",
-            crate::utils::strip_ansi_codes(&rows[3])
+            crate::utils::strip_ansi_codes(&rows[2])
         );
     }
 

@@ -262,8 +262,8 @@ pub fn layout_with_preferences(
         };
     }
 
-    // Tall layout: header 6 rows (five identity rows, then the hairline), a blank
-    // row, the body, then the input block, activity, status and hint.
+    // Tall layout: header 6 rows (five identity rows, then the hairline), the
+    // body, then the input block, activity, status and hint.
     //
     // Six, not five: the header's identity block is the 5-row `FUTURE OS` block
     // font, so a 5-row header drew only the top four rows
@@ -276,7 +276,11 @@ pub fn layout_with_preferences(
         2
     };
     let header = Rect::new(0, 0, w, header_h);
-    let body_y = header_h + 1;
+    // The body starts on the row after the header's hairline — no gap row. It
+    // used to be `header_h + 1`, one unpainted row of "air" under the rule: it
+    // cost the conversation a row on every frame, and the frame diagram in
+    // `docs/guide/tui.md` draws the transcript directly beneath the hairline.
+    let body_y = header_h;
     // The composer band is exactly the box it draws: a top rule, the prompt
     // row, the closing rule. It used to reserve four rows for three, and the
     // spare one stayed canvas — a blank line between the box and the activity
@@ -447,14 +451,11 @@ mod tests {
                 rows.iter().all(|count| *count <= 1),
                 "{w}x{h}: overlapping bands: {rows:?}"
             );
-            // The gap between the header and the body in the tall layout is the
-            // one deliberate blank row; everything else is covered.
-            let expected_blank = if l.compact { 0 } else { 1 };
+            // Every row belongs to a band: the header's hairline is the last
+            // row of the tall layout's header, and the conversation starts on
+            // the row right below it.
             let blank = rows.iter().filter(|count| **count == 0).count();
-            assert!(
-                blank <= expected_blank,
-                "{w}x{h}: {blank} unpainted rows: {rows:?}"
-            );
+            assert_eq!(blank, 0, "{w}x{h}: {blank} unpainted rows: {rows:?}");
         }
     }
 
