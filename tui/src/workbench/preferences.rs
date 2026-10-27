@@ -350,10 +350,16 @@ impl Action {
             // find the file the agent just mentioned.
             Self::Files => "ctrl+f",
             Self::PasteImage => "ctrl+v",
+            // Settings sit on the one chord left over: `s` is the approval
+            // chooser's and `o` (options) the model's, and this is the action
+            // whose absence a reader notices first — `/preferences` is three
+            // keystrokes if you have to look it up every week. `q` is also shown
+            // in the footer hint row, so the key is written where the reader
+            // stands.
+            Self::Preferences => "ctrl+q",
             // No chord: a typed door and a visible control instead.
             Self::Copy => "",
             Self::Help => "",
-            Self::Preferences => "",
             // Deleting a conversation is the one destructive verb on the
             // surface; it asks first, and it is rare enough that its doors are
             // `/delete` and the rail's own `delete` key rather than a chord that

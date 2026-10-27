@@ -2973,6 +2973,9 @@ impl Workbench {
         if id == "header.files" {
             return vec![WbAction::OpenFiles];
         }
+        if id == "header.git" {
+            return vec![WbAction::OpenGit];
+        }
         if let Some(panel) = id.strip_prefix("sidebar.tab.").and_then(PanelId::parse) {
             self.panel = panel;
             // Clicking the sidebar means working in it; the same click that
@@ -4008,7 +4011,12 @@ mod tests {
     fn help_opens_the_key_table() {
         let data = demo::chat();
         let (mut workbench, rows) = frame(&data, 120, 38);
-        assert!(!plain(&rows).contains("ctrl+q"));
+        // The queue gave up `ctrl+q`; the settings door took it.
+        assert!(!plain(&rows).contains("排队"));
+        assert_eq!(
+            workbench.keys.action("ctrl+q"),
+            Some(preferences::Action::Preferences)
+        );
         assert_eq!(
             workbench.surface_command("/help", &data),
             VerbOutcome::Done { notice: None }
@@ -4964,6 +4972,29 @@ mod tests {
         assert_eq!(
             click_region(&mut workbench, &data, 120, 38, "header.files"),
             vec![WbAction::OpenFiles]
+        );
+
+        // Its neighbour is the repository browser: same `[key] label` shape, its
+        // own region, and its own verb.
+        let (rect, _) = workbench
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "header.git")
+            .cloned()
+            .expect("the header's git door");
+        let painted = crate::workbench::ansi::slice_cols(
+            &rows[rect.y as usize],
+            rect.x as usize,
+            rect.right() as usize,
+        );
+        assert_eq!(
+            crate::utils::strip_ansi_codes(&painted).trim_end(),
+            format!("[{}] git", workbench.keys.key(preferences::Action::Git))
+        );
+        assert_eq!(
+            click_region(&mut workbench, &data, 120, 38, "header.git"),
+            vec![WbAction::OpenGit]
         );
         // Opened, it paints the tree and takes the keys; `esc` gives them back.
         workbench.overlay = Some(Overlay::Files);
