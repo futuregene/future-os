@@ -142,3 +142,17 @@ Allocation includes all dbstat structures, avoiding ownership-table renaming bia
 Unthrottled write-time medians remain approximately 27%/31% above the old implementation. Producer cadence, queue responsiveness and UI need separate measurement; submillisecond commits do not erase CPU cost.
 Old/new first-read samples are `[2377,2180,2216]` / `[5861,3010,2754]` microseconds for 20 tools and `[3104,3187,3634]` / `[3548,4536,3667]` for 150 tools, still a regression.
 This is not final acceptance. Later reader schema-readiness initialization is outside this frozen candidate and requires separate evidence rather than overwriting these results.
+
+## B3.5: reader schema readiness, final full acceptance still in progress
+
+[Candidate 5 raw evidence](../testing/compact-storage-candidate-5-2026-10-27.json) references implementation checkpoint `cc0ae84b`; every frozen-program source hash was verified against that checkpoint.
+The same valid transcripts and logical-content digest checks run for three new sequential old/new repetitions. Complete allocation and logical WAL values remain identical to B3.4.
+
+| Scenario | Old first page/body microseconds, three runs | New first page/body microseconds, three runs | Maximum per-run complete-read p95, old/new microseconds |
+|---|---|---|---:|
+| 20 tools | 3491 / 2214 / 2441 | 1206 / 1054 / 1094 | 25,756 / 25,526 |
+| 150 tools | 3063 / 3256 / 3120 | 1406 / 1566 / 1802 | 192,631 / 195,868 |
+
+Read workers only parse schema before advertising readiness; they do not read historical bodies. Reopen times are retained too, so shifted initialization cost is not hidden.
+There are only three first-read samples/scenario, not a robust population p95. New direct-batch p99 is below 1 ms in every run, but unthrottled write-time medians remain approximately 29%/32% higher. Interpret CPU/RSS, queue responsiveness and UI together.
+This artifact preserves its contemporaneous acceptance status; running full regressions and pending fault/concurrency/UI checks are not recorded as passing.

@@ -327,24 +327,37 @@ fn shared_writer_and_history_reader_concurrency() {
     for sessions in [1, 4, 16] {
         let root = tempfile::tempdir().unwrap();
         let store = SqliteStore::open(&root.path().join("agent.db")).unwrap();
-        for index in 0..sessions {
-            let session = format!("s{index}");
-            store.reserve_segmented(&session).unwrap();
-            store.replace(&session,vec![
-                json!({"id":"info","type":"session_info","timestamp":"2026-10-26T00:00:00Z","content":{"cwd":".","model":"synthetic"}}),
-                json!({"id":"start","type":"run_started","timestamp":"2026-10-26T00:00:00Z","content":{"run_id":"r","epoch":1}}),
+        let identities: Vec<_> = (0..sessions)
+            .map(|_| {
+                (
+                    uuid::Uuid::new_v4().to_string(),
+                    uuid::Uuid::new_v4().to_string(),
+                    uuid::Uuid::new_v4().to_string(),
+                )
+            })
+            .collect();
+        for (session, run, _) in &identities {
+            store.reserve_segmented(session).unwrap();
+            store.replace(session,vec![
+                json!({"id":uuid::Uuid::new_v4().to_string(),"type":"session_info","timestamp":"2026-10-26T00:00:00Z","content":{"cwd":".","model":"synthetic"}}),
+                json!({"id":uuid::Uuid::new_v4().to_string(),"type":"run_started","timestamp":"2026-10-26T00:00:00Z","content":{"run_id":run,"epoch":1}}),
             ]).unwrap();
         }
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(sessions + 1));
         let handles: Vec<_> = (0..sessions).map(|index| {
             let store = store.clone();
             let barrier = barrier.clone();
+            let (session, run, message) = identities[index].clone();
             std::thread::spawn(move || {
-                let session = format!("s{index}");
-                let scope = stream::StreamIdentity {session_id:session.clone(),run_id:"r".into(),epoch:1};
+                let key = format!("{message}:thinking:b");
+                let scope = stream::StreamIdentity {session_id:session.clone(),run_id:run.clone(),epoch:1};
+                let scoped_event = |idx, kind: &str, data: Value| {
+                    let mut value = event(idx,kind,data);
+                    value["session_id"]=json!(session);value["run_id"]=json!(run);
+                    value["event_id"]=json!(format!("{session}:{run}:1:{idx}"));value
+                };
                 let mut writer = Writer::default();
-                let mut initial = vec![event(0,"message_start",json!({"entry_id":"m"})),event(1,"thinking_start",json!({"entry_id":"m","content_key":"m:thinking:b","content_offset":0,"content_bytes":0}))];
-                for event in &mut initial { event["session_id"] = json!(session); }
+                let initial = vec![scoped_event(0,"message_start",json!({"entry_id":message})),scoped_event(1,"thinking_start",json!({"entry_id":message,"content_key":key,"content_offset":0,"content_bytes":0}))];
                 barrier.wait();
                 let start = Instant::now();
                 writer.persist(&store,&session,&initial).unwrap();
@@ -354,9 +367,7 @@ fn shared_writer_and_history_reader_concurrency() {
                 let mut reads = Vec::new();
                 for batch in (0..fragments).step_by(128) {
                     let events: Vec<_> = (batch..(batch+128).min(fragments)).map(|part| {
-                        let mut event = event(part as i64+2,"thinking_delta",json!({"entry_id":"m","content_key":"m:thinking:b","content_offset":part*fragment.len(),"content_bytes":fragment.len(),"text":fragment}));
-                        event["session_id"] = json!(session);
-                        event
+                        scoped_event(part as i64+2,"thinking_delta",json!({"entry_id":message,"content_key":key,"content_offset":part*fragment.len(),"content_bytes":fragment.len(),"text":fragment}))
                     }).collect();
                     let commit = Instant::now();
                     writer.persist(&store,&session,&events).unwrap();
@@ -368,7 +379,7 @@ fn shared_writer_and_history_reader_concurrency() {
                     }
                 }
                 commits.sort_unstable();
-                json!({"session":session,"bodyBytes":fragments*fragment.len(),"elapsedMicros":start.elapsed().as_micros(),
+                json!({"session":session,"message":message,"bodyBytes":fragments*fragment.len(),"elapsedMicros":start.elapsed().as_micros(),
                     "batchP99Micros":commits[(commits.len()*99/100).min(commits.len()-1)],"batchMaxMicros":commits.last(),"readerMaxMicros":reads.iter().max()})
             })
         }).collect();
@@ -380,12 +391,20 @@ fn shared_writer_and_history_reader_concurrency() {
         store.recover_segmented_runs().unwrap();
         for worker in &workers {
             let entries = store.entries(worker["session"].as_str().unwrap()).unwrap();
-            let message = entries.iter().find(|entry| entry["id"] == "m").unwrap();
+            let message = entries
+                .iter()
+                .find(|entry| entry["id"] == worker["message"])
+                .unwrap();
             assert_eq!(
                 message["content"][0]["text"].as_str().unwrap().len() as u64,
                 worker["bodyBytes"].as_u64().unwrap()
             );
         }
+        store.db.read(move |db| {
+            assert_eq!(db.query_row("SELECT count(*) FROM sessions WHERE typeof(id)='blob' AND length(id)=16",[],|r|r.get::<_,i64>(0))?,sessions as i64);
+            assert_eq!(db.query_row("SELECT count(*) FROM stream_runs WHERE typeof(run_id)='blob' AND length(run_id)=16",[],|r|r.get::<_,i64>(0))?,sessions as i64);
+            assert_eq!(db.query_row("SELECT count(*) FROM pragma_foreign_key_check",[],|r|r.get::<_,i64>(0))?,0);Ok(())
+        }).unwrap();
         cases.push(json!({"sessions":sessions,"workers":workers,"io":store.db.metrics()}));
     }
     println!(
