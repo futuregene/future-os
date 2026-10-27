@@ -290,4 +290,15 @@ pub const FILES: &[FileExempt] = &[FileExempt {
 /// 37 → 35 → 34: the folded-thinking placeholder's exemption closed, then the
 /// header's `no workspace yet` — the five-row identity header it belonged to
 /// went away, leaving the two-row context line as the only header.
-pub const BUDGET: usize = 41;
+/// 37 → 35 → 34: the folded-thinking placeholder's exemption closed, then the
+/// header's `no workspace yet` — the five-row identity header it belonged to
+/// went away, leaving the two-row context line as the only header.
+///
+/// 34 → 41: the `/theme` picker, the files panel's entry and the rest of the
+/// work that landed beside this change.
+///
+/// 41 → 42: the `/git` panel's `does not have any commits`, matched against
+/// git's own stderr to turn an empty repository into an empty log. It is a
+/// comparison, never drawn; the panel's other copy (the silent failure, the
+/// ahead/behind counts, the tip template) went into the table instead.
+pub const BUDGET: usize = 42;

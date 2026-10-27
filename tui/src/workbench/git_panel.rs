@@ -27,6 +27,7 @@
 use std::path::Path;
 use std::time::Duration;
 
+use super::i18n::{t, Key, Language};
 use super::state::{GitRow, GitSection, GitView};
 
 /// How many commits one log read asks for. A page, not the history: the reader
@@ -44,6 +45,11 @@ pub const SHOW_TIMEOUT: Duration = Duration::from_secs(10);
 const FIELD: char = '\u{1f}';
 const RECORD: char = '\u{1e}';
 
+/// A failed `git` that printed nothing at all. The read carries it as an empty
+/// message — git's own words are content and travel verbatim — and [`spoken`]
+/// turns it into the reader's copy at the one point an error is stored.
+const SILENT: &str = "";
+
 /// `git -C <cwd> <args…>` under a deadline. Non-zero exit is an error carrying
 /// git's own message, which is what the panel shows instead of an empty list:
 /// "not a repository" and "no commits yet" are different answers and a reader
@@ -56,7 +62,7 @@ fn git(cwd: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
         Ok((_, _, stderr)) => {
             let message = stderr.trim();
             Err(if message.is_empty() {
-                "git exited without a message".to_string()
+                SILENT.to_string()
             } else {
                 message.to_string()
             })
@@ -65,13 +71,24 @@ fn git(cwd: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
     }
 }
 
+/// The text a failed read is shown with: git's own message, which is content
+/// and stays exactly as git wrote it, or the panel's words in `lang` when git
+/// said nothing at all.
+fn spoken(lang: Language, error: String) -> String {
+    if error.is_empty() {
+        t(lang, Key::GitNoMessage).to_string()
+    } else {
+        error
+    }
+}
+
 /// The repository's own name — the last component of its toplevel — for the
 /// box title. `Err` when `cwd` is not inside a repository (or `git` is missing).
-pub fn repo_name(cwd: &Path) -> Result<String, String> {
+pub fn repo_name(cwd: &Path, lang: Language) -> Result<String, String> {
     let toplevel = git(cwd, &["rev-parse", "--show-toplevel"], QUERY_TIMEOUT)?;
     let toplevel = toplevel.trim();
     if toplevel.is_empty() {
-        return Err("not a git repository".to_string());
+        return Err(t(lang, Key::GitNoRepo).to_string());
     }
     Ok(Path::new(toplevel)
         .file_name()
@@ -118,7 +135,7 @@ fn commits(cwd: &Path, filter: Option<&str>) -> Result<Vec<GitRow>, String> {
         // A repository with no commit is not an error the reader can act on; it
         // is an empty log, and every other panel in this surface says "nothing
         // here" rather than showing git's fatal message.
-        Err(error) if error.contains("does not have any commits") => Ok(Vec::new()),
+        Err(error) if error.contains("does not have any commits") => Ok(Vec::new()), // i18n: matches git's own stderr, never drawn
         Err(error) => Err(error),
     }
 }
@@ -302,9 +319,15 @@ pub fn copy_text(section: GitSection, key: &str) -> String {
 }
 
 /// The detail pane for one row: a commit's stat and patch, a ref's tip, a file's
-/// working-tree patch, or a stash's patch.
-pub fn detail(cwd: &Path, section: GitSection, key: &str) -> Result<Vec<String>, String> {
-    match section {
+/// working-tree patch, or a stash's patch. An error arrives in the reader's
+/// language, ready to be painted.
+pub fn detail(
+    cwd: &Path,
+    section: GitSection,
+    key: &str,
+    lang: Language,
+) -> Result<Vec<String>, String> {
+    let lines = match section {
         GitSection::Commits => {
             let text = git(
                 cwd,
@@ -322,17 +345,18 @@ pub fn detail(cwd: &Path, section: GitSection, key: &str) -> Result<Vec<String>,
             )?;
             Ok(bounded_lines(&text))
         }
-        GitSection::Refs => ref_detail(cwd, key),
+        GitSection::Refs => ref_detail(cwd, key, lang),
         GitSection::Status => {
             let review = super::diff_review::load(cwd, key)?;
             Ok(bounded_lines(&review.patch))
         }
         GitSection::Stash => stash_detail(cwd, key),
-    }
+    };
+    lines.map_err(|error| spoken(lang, error))
 }
 
 /// A ref's own record: which ref it is, how its upstream stands, and its tip.
-fn ref_detail(cwd: &Path, key: &str) -> Result<Vec<String>, String> {
+fn ref_detail(cwd: &Path, key: &str, lang: Language) -> Result<Vec<String>, String> {
     let mut lines = Vec::new();
     if let Ok(full) = git(
         cwd,
@@ -359,7 +383,11 @@ fn ref_detail(cwd: &Path, key: &str) -> Result<Vec<String>, String> {
     ) {
         let counts = counts.trim();
         if let Some((ahead, behind)) = counts.split_once('\t') {
-            lines.push(format!("ahead {ahead} · behind {behind}"));
+            lines.push(super::i18n::render(
+                lang,
+                Key::GitAheadBehind,
+                &[&ahead, &behind],
+            ));
         }
     }
     let tip = git(
@@ -369,7 +397,7 @@ fn ref_detail(cwd: &Path, key: &str) -> Result<Vec<String>, String> {
             "-s",
             "--no-color",
             "--date=short",
-            "--format=commit %h%nAuthor: %an <%ae>%nDate:   %ad%n%n    %s%n%n%b",
+            t(lang, Key::GitTipFormat),
             key,
             "--",
         ],
@@ -419,40 +447,46 @@ fn stash_detail(cwd: &Path, key: &str) -> Result<Vec<String>, String> {
 /// Read one section for `cwd`, put the selection on the nearest selectable row
 /// to `want` and load that row's detail — the whole panel in one call, which is
 /// what opening it, switching a tab and `r` all need.
-pub fn read(cwd: &Path, section: GitSection, filter: Option<String>, want: usize) -> GitView {
+pub fn read(
+    cwd: &Path,
+    section: GitSection,
+    filter: Option<String>,
+    want: usize,
+    lang: Language,
+) -> GitView {
     let mut view = GitView {
         section,
         filter,
         ..GitView::default()
     };
-    match repo_name(cwd) {
+    match repo_name(cwd, lang) {
         Ok(repo) => view.repo = repo,
         Err(error) => {
-            view.error = Some(error);
+            view.error = Some(spoken(lang, error));
             return view;
         }
     }
     match rows(cwd, section, view.filter.as_deref()) {
         Ok(rows) => view.rows = rows,
         Err(error) => {
-            view.error = Some(error);
+            view.error = Some(spoken(lang, error));
             return view;
         }
     }
-    focus(cwd, &mut view, want);
+    focus(cwd, &mut view, want, lang);
     view
 }
 
 /// Move `view`'s selection to the nearest selectable row at or after `want` and
 /// re-read that row's detail. A cursor move costs one `git show`, not another
 /// log read.
-pub fn focus(cwd: &Path, view: &mut GitView, want: usize) {
+pub fn focus(cwd: &Path, view: &mut GitView, want: usize, lang: Language) {
     view.selected = view.nearest(want, true);
     view.detail.clear();
     if let Some(key) = view.rows.get(view.selected).and_then(|row| row.key.clone()) {
-        match detail(cwd, view.section, &key) {
+        match detail(cwd, view.section, &key, lang) {
             Ok(lines) => view.detail = lines,
-            Err(error) => view.detail = vec![error],
+            Err(error) => view.detail = vec![spoken(lang, error)],
         }
     }
 }
@@ -557,17 +591,23 @@ mod tests {
     #[test]
     fn read_lands_on_a_selectable_row_and_loads_its_detail() {
         let dir = repo();
-        let view = read(dir.path(), GitSection::Commits, None, 0);
+        let view = read(dir.path(), GitSection::Commits, None, 0, Language::En);
         assert!(view.error.is_none(), "{:?}", view.error);
         assert!(!view.repo.is_empty());
         assert!(view.rows[view.selected].key.is_some());
         assert!(!view.detail.is_empty());
 
         // The selection follows the section, and a filter narrows the log.
-        let refs = read(dir.path(), GitSection::Refs, None, 0);
+        let refs = read(dir.path(), GitSection::Refs, None, 0, Language::En);
         assert_eq!(refs.section, GitSection::Refs);
         assert!(refs.detail.join("\n").contains("commit "));
-        let filtered = read(dir.path(), GitSection::Commits, Some("v1".into()), 0);
+        let filtered = read(
+            dir.path(),
+            GitSection::Commits,
+            Some("v1".into()),
+            0,
+            Language::En,
+        );
         assert_eq!(filtered.filter.as_deref(), Some("v1"));
         assert!(filtered
             .rows
@@ -577,9 +617,9 @@ mod tests {
 
         // A requested row that is not selectable (the graph's continuation)
         // lands on the next one that is.
-        let mut view = read(dir.path(), GitSection::Commits, None, 0);
+        let mut view = read(dir.path(), GitSection::Commits, None, 0, Language::En);
         if let Some(index) = view.rows.iter().position(|row| row.key.is_none()) {
-            focus(dir.path(), &mut view, index);
+            focus(dir.path(), &mut view, index, Language::En);
             assert!(view.rows[view.selected].key.is_some());
         }
     }
@@ -619,7 +659,7 @@ mod tests {
     #[test]
     fn a_real_repository_fills_every_section() {
         let dir = repo();
-        let name = repo_name(dir.path()).unwrap();
+        let name = repo_name(dir.path(), Language::En).unwrap();
         assert!(!name.is_empty());
 
         let log = rows(dir.path(), GitSection::Commits, None).unwrap();
@@ -632,6 +672,7 @@ mod tests {
             dir.path(),
             GitSection::Commits,
             commits[0].key.as_deref().unwrap(),
+            Language::En,
         )
         .unwrap()
         .join("\n");
@@ -650,7 +691,13 @@ mod tests {
             .iter()
             .find(|row| row.prefix == "● ")
             .expect("the checked-out branch is marked");
-        let tip = detail(dir.path(), GitSection::Refs, head.key.as_deref().unwrap()).unwrap();
+        let tip = detail(
+            dir.path(),
+            GitSection::Refs,
+            head.key.as_deref().unwrap(),
+            Language::En,
+        )
+        .unwrap();
         assert!(tip.join("\n").contains("refs/heads/main"), "{tip:?}");
 
         let status_rows = rows(dir.path(), GitSection::Status, None).unwrap();
@@ -662,6 +709,7 @@ mod tests {
             dir.path(),
             GitSection::Status,
             dirty.key.as_deref().unwrap(),
+            Language::En,
         )
         .unwrap()
         .join("\n");
@@ -674,7 +722,7 @@ mod tests {
             "{:?}",
             stashes[0].pieces
         );
-        let patch = detail(dir.path(), GitSection::Stash, "stash@{0}")
+        let patch = detail(dir.path(), GitSection::Stash, "stash@{0}", Language::En)
             .unwrap()
             .join("\n");
         assert!(patch.contains("+dirty"), "{patch}");
@@ -694,7 +742,7 @@ mod tests {
     #[test]
     fn outside_a_repository_the_read_says_so() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(repo_name(dir.path()).is_err());
+        assert!(repo_name(dir.path(), Language::En).is_err());
         assert!(rows(dir.path(), GitSection::Commits, None).is_err());
     }
 

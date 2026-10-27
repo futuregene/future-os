@@ -1282,8 +1282,9 @@ async fn open_git_panel(
         workbench.overlay = Some(super::Overlay::Git);
         return;
     }
+    let lang = live.language();
     let loaded = tokio::task::spawn_blocking(move || {
-        super::git_panel::read(std::path::Path::new(&cwd), section, filter, want)
+        super::git_panel::read(std::path::Path::new(&cwd), section, filter, want, lang)
     })
     .await;
     match loaded {
@@ -1315,8 +1316,9 @@ async fn open_git_detail(live: &mut Live, frame: &Frame, workbench: &mut Workben
         return;
     };
     let section = git.section;
+    let lang = live.language();
     let loaded = tokio::task::spawn_blocking(move || {
-        super::git_panel::detail(std::path::Path::new(&cwd), section, &key)
+        super::git_panel::detail(std::path::Path::new(&cwd), section, &key, lang)
     })
     .await;
     git.selected = index;

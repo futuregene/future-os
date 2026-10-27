@@ -5083,6 +5083,12 @@ mod tests {
     /// the box already answers, and the folder's pictures step with `[` / `]`.
     #[test]
     fn the_preview_box_controls_step_through_the_folder() {
+        // A picture's controls are the ones a terminal that can place it gets;
+        // that fact is process-global, so this test pins it and keeps every
+        // other test out of it for its whole body.
+        let _caps = crate::terminal_image::CapabilitiesGuard::pin(
+            crate::terminal_image::ImageProtocol::Kitty,
+        );
         let mut data = demo::chat();
         data.preview = Some(demo::preview_image());
         let (mut workbench, _rows) = frame(&data, 120, 38);
@@ -5150,6 +5156,9 @@ mod tests {
     /// Dragging the picture pans it: the pointer's counterpart of the arrows.
     #[test]
     fn dragging_the_picture_pans_it() {
+        let _caps = crate::terminal_image::CapabilitiesGuard::pin(
+            crate::terminal_image::ImageProtocol::Kitty,
+        );
         let mut data = demo::chat();
         data.preview = Some(demo::preview_image());
         let (mut workbench, _rows) = frame(&data, 120, 38);
@@ -6252,7 +6261,10 @@ mod tests {
     /// reader opened — or named plainly with the reason it cannot be shown.
     #[test]
     fn the_preview_box_paints_the_picture_and_stays_in_the_frame() {
-        use crate::terminal_image::{set_capabilities, ImageProtocol, TerminalCapabilities};
+        use crate::terminal_image::{CapabilitiesGuard, ImageProtocol, TerminalCapabilities};
+        // The protocol is part of what is being asserted, so this test owns the
+        // cache instead of inheriting whatever a sibling left in it.
+        let caps = CapabilitiesGuard::pin(ImageProtocol::None);
         let mut data = demo::chat();
         data.preview = Some(demo::preview_image());
         for (w, h) in [(120u16, 38u16), (88, 24), (60, 16), (24, 8), (1, 1)] {
@@ -6273,7 +6285,7 @@ mod tests {
             true_color: true,
             ..TerminalCapabilities::default()
         };
-        set_capabilities(kitty);
+        caps.install(kitty);
         let (mut workbench, _rows) = frame(&data, 120, 38);
         workbench.overlay = Some(Overlay::FilePreview);
         let rows = workbench.render(&data, 120, 38);
@@ -6304,7 +6316,7 @@ mod tests {
 
         // A terminal without the protocol gets the facts and an honest
         // sentence, and still no mosaic.
-        set_capabilities(TerminalCapabilities::default());
+        caps.install(TerminalCapabilities::default());
         let (mut workbench, _rows) = frame(&data, 120, 38);
         workbench.overlay = Some(Overlay::FilePreview);
         let text = plain(&workbench.render(&data, 120, 38));
@@ -6316,7 +6328,6 @@ mod tests {
         );
         assert!(!text.contains('▀'), "{text}");
         assert!(workbench.image_request.is_none());
-        crate::terminal_image::reset_capabilities_cache();
     }
 
     /// A code preview is painted in the palette's token colours — a keyword is

@@ -430,6 +430,13 @@ pub enum Key {
     GitCleanStatus,
     GitEmptyStash,
     GitNoRepo,
+    /// A `git` that failed with nothing on stderr.
+    GitNoMessage,
+    /// A branch's two counts against its upstream, in the detail pane's header.
+    GitAheadBehind,
+    /// The `git show --format=` template behind the tip of a ref: its labels
+    /// (`Author:`, `Date:`) are drawn, so they are the table's to spell.
+    GitTipFormat,
     GitFilter,
     GitDetail,
     GitNoSelection,
@@ -832,6 +839,12 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         GitNoRepo => (
             "当前工作区不是 git 仓库",
             "This workspace is not a git repository",
+        ),
+        GitNoMessage => ("git 没有任何输出", "git exited without a message"),
+        GitAheadBehind => ("领先 {} · 落后 {}", "ahead {} · behind {}"),
+        GitTipFormat => (
+            "--format=commit %h%n作者: %an <%ae>%n日期:   %ad%n%n    %s%n%n%b",
+            "--format=commit %h%nAuthor: %an <%ae>%nDate:   %ad%n%n    %s%n%n%b",
         ),
         GitFilter => ("过滤：{}", "filter: {}"),
         GitDetail => ("详情", "Detail"),
@@ -1241,7 +1254,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 295] = {
+    const ALL_KEYS: [Key; 298] = {
         use Key::*;
         [
             TabTodo,
@@ -1409,6 +1422,9 @@ mod tests {
             GitCleanStatus,
             GitEmptyStash,
             GitNoRepo,
+            GitNoMessage,
+            GitAheadBehind,
+            GitTipFormat,
             GitFilter,
             GitDetail,
             GitNoSelection,
