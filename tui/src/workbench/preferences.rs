@@ -130,6 +130,10 @@ pub enum Action {
     PreviewAttachment,
     PrevSession,
     NextSession,
+    /// Delete the conversation the rail's cursor stands on (the one on screen
+    /// when the rail does not have the keys). The one destructive verb on the
+    /// surface, so it opens a confirm box instead of acting.
+    DeleteSession,
 }
 
 /// An action's place in the help overlay.
@@ -162,12 +166,13 @@ impl Group {
 /// Every action, in the order the help overlay lists them: grouped, and inside
 /// a group from most to least used. `ACTIONS` is the one authority — the help
 /// table, the shortcut editor and the event dispatch all walk it.
-pub const ACTIONS: [Action; 27] = [
+pub const ACTIONS: [Action; 28] = [
     // Sessions
     Action::PrevSession,
     Action::NextSession,
     Action::Sessions,
     Action::NewSession,
+    Action::DeleteSession,
     Action::Queue,
     Action::Stop,
     Action::ReplyDetail,
@@ -217,6 +222,7 @@ impl Action {
             Self::ReduceMotion => "reduceMotion",
             Self::PrevSession => "previousSession",
             Self::NextSession => "nextSession",
+            Self::DeleteSession => "deleteSession",
             Self::Thinking => "thinking",
             Self::Approval => "approval",
             Self::Workspaces => "workspaces",
@@ -239,6 +245,7 @@ impl Action {
             | Self::NextSession
             | Self::Sessions
             | Self::NewSession
+            | Self::DeleteSession
             | Self::Queue
             | Self::Stop
             | Self::ReplyDetail => Group::Sessions,
@@ -265,6 +272,7 @@ impl Action {
         match self {
             Self::Quit => Key::HelpKeyQuit,
             Self::NewSession => Key::HelpKeyNew,
+            Self::DeleteSession => Key::HelpKeyDelete,
             Self::Palette => Key::HelpKeyPalette,
             Self::Help => Key::HelpKeyHelp,
             Self::Sidebar => Key::HelpKeySidebar,
@@ -330,6 +338,7 @@ impl Action {
             Self::PreviewAttachment => "alt+v",
             Self::PrevSession => "shift+left",
             Self::NextSession => "shift+right",
+            Self::DeleteSession => "ctrl+d",
         }
     }
 }

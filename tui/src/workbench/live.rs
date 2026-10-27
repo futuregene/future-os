@@ -1206,6 +1206,7 @@ impl Live {
             WbAction::Scroll(_) => {}
             WbAction::LoadOlder => self.load_older().await,
             WbAction::SwitchSession(id) => self.switch(&id).await,
+            WbAction::DeleteSession(id) => self.delete_session(&id).await,
             WbAction::SetModel(id) => self.set_model(&id).await,
             WbAction::SetThinking(level) => self.set_thinking(&level).await,
             // No session to apply them to: stage, do not call.
@@ -1516,8 +1517,59 @@ impl Live {
         }
     }
 
-    /// `/new`: detach from the session and show the launchpad.
+    /// Delete one conversation — its record and its file.
     ///
+    /// The conversation on screen cannot be deleted out from under the
+    /// transcript, so the row that slides into its place in the list takes
+    /// over; deleting the last one leaves the launchpad, which is where a
+    /// client with no session belongs. A refusal (the agent does not delete a
+    /// session a compaction holds) keeps everything as it was and says why on
+    /// the notice row.
+    async fn delete_session(&mut self, session_id: &str) {
+        let was_current = !self.detached() && session_id == self.state.session_id;
+        let position = self.sessions.iter().position(|row| row.id == session_id);
+        let title = self
+            .sessions
+            .iter()
+            .find(|row| row.id == session_id)
+            .map(display_name)
+            .unwrap_or_else(|| session_id.to_string());
+        if let Err(error) = self.client.delete_session(session_id).await {
+            self.notice = Some(i18n::render(self.lang, Key::NoticeDeleteFailed, &[&error]));
+            return;
+        }
+        // The list is re-read before anything is opened: the successor is named
+        // from what the agent has now, not from what the rail painted a moment
+        // ago.
+        self.refresh_sessions().await;
+        if was_current {
+            // The row that slid into the deleted one's place takes over, and
+            // the walk wraps: the last row has no successor, so it falls back
+            // to the first. The deleted id is skipped wherever it lands — a
+            // list that still names it (a stale read) must not reopen it.
+            let start = position.unwrap_or(0);
+            let successor = (start..self.sessions.len())
+                .chain(0..start)
+                .map(|index| &self.sessions[index])
+                .find(|row| row.id != session_id)
+                .map(|row| row.id.clone());
+            match successor {
+                Some(next) => self.switch(&next).await,
+                None => {
+                    self.to_launchpad();
+                    // Nothing is attached any more, and the id the agent still
+                    // knows as "current" names the conversation that is gone.
+                    self.state.session_id.clear();
+                    self.client.set_current_session_id("");
+                }
+            }
+        }
+        // Last: opening a conversation clears the notice row, and "deleted" is
+        // what the reader just asked for, so it has to survive the switch.
+        self.notice = Some(i18n::render(self.lang, Key::NoticeDeleted, &[&title]));
+    }
+
+    /// `/new`: detach from the session and show the launchpad.
     /// Nothing is created and nothing is asked of the agent — the header keeps
     /// its connection state and version, the transcript goes, and the first
     /// message starts the session (`submit` already handled that on a fresh
@@ -2896,6 +2948,52 @@ mod tests {
         assert!(
             painted.contains("hello there"),
             "the transcript keeps what was said:\n{painted}"
+        );
+    }
+
+    /// Deleting the conversation on screen opens the one that takes its place.
+    ///
+    /// The transcript must never stay on a conversation the agent no longer
+    /// has: `delete_session` reaches the agent, and the successor in the list is
+    /// opened in the same breath (`switch_session`), which is the observable
+    /// half of "the row that slid into its place opens".
+    #[tokio::test]
+    async fn deleting_the_current_session_opens_its_successor() {
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            (
+                "list_sessions",
+                r#"{"sessions":[
+                    {"id":"s1","cwd":"/tmp","updatedAt":"2026-01-02","model":"m"},
+                    {"id":"s2","cwd":"/tmp","updatedAt":"2026-01-01","model":"m"}
+                ]}"#,
+            ),
+            ("delete_session", r#"{"sessionId":"s1"}"#),
+            ("switch_session", r#"{"cancelled":false}"#),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        assert_eq!(live.state.session_id, "s1", "the fixture attaches to s1");
+
+        live.apply(WbAction::DeleteSession("s1".into())).await;
+
+        let commands = seen.lock().unwrap().clone();
+        assert!(
+            commands.iter().any(|command| command == "delete_session"),
+            "the delete must reach the agent, saw {commands:?}"
+        );
+        assert!(
+            commands.iter().any(|command| command == "switch_session"),
+            "the successor must open, saw {commands:?}"
+        );
+        // The reader is told what happened — and it has to survive the switch,
+        // which clears the notice row when it opens a conversation.
+        let notice = live.notice.unwrap_or_default();
+        assert!(
+            notice.contains("Deleted") || notice.contains("已删除"),
+            "{notice}"
         );
     }
 

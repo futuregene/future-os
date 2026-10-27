@@ -132,11 +132,23 @@ pub enum Overlay {
     Tree,
     Fork,
     Worktree,
+    /// The confirm box in front of a delete. The one destructive verb on the
+    /// surface, and the only overlay whose `enter` removes something.
+    DeleteSession,
     /// The file preview: a picture (zoomable) or a document's text.
     FilePreview,
     /// Layout, density and the entry to the shortcut editor.
     Preferences,
     Keybindings,
+}
+
+/// What the delete confirm box names: the id the agent is asked to remove, and
+/// the two strings the reader recognises it by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteTarget {
+    pub id: String,
+    pub title: String,
+    pub workspace: String,
 }
 
 /// Which pane owns the keyboard.
@@ -284,6 +296,8 @@ pub enum WbAction {
     LoadOlder,
     /// Open this conversation.
     SwitchSession(String),
+    /// Delete this conversation — the confirm box's `enter`, never a raw key.
+    DeleteSession(String),
     /// Move the rail's cursor `delta` conversations and open the one it lands
     /// on. Resolved by the driver *after* the whole input burst, so a held
     /// `shift+←`/`shift+→` pays for one switch instead of one per repeat.
@@ -445,6 +459,11 @@ pub struct Workbench {
     pub panel_scroll: [usize; PanelId::ALL.len()],
     pub overlay: Option<Overlay>,
     pub overlay_scroll: usize,
+    /// The conversation the confirm box names before it deletes it. Held here
+    /// rather than read back from [`WorkbenchData`] on every frame: the row's
+    /// title is what the reader recognises, and it must not change under a box
+    /// that is already up.
+    pub delete_target: Option<DeleteTarget>,
     pub palette_query: String,
     pub palette_index: usize,
     /// The open picker's query, highlight and slider (`/model`, `/theme`,
@@ -546,6 +565,7 @@ impl Workbench {
             panel_scroll: [0; PanelId::ALL.len()],
             overlay: None,
             overlay_scroll: 0,
+            delete_target: None,
             palette_query: String::new(),
             palette_index: 0,
             picker: Picker::new(
@@ -1011,6 +1031,15 @@ impl Workbench {
             Some(preferences::Action::PreviewAttachment) => {
                 return vec![WbAction::PreviewAttachment]
             }
+            // Deleting is the one verb on the surface that cannot be undone,
+            // so the chord names its target first: it opens the confirm box, and
+            // the box's `enter` is what produces `WbAction::DeleteSession`.
+            Some(preferences::Action::DeleteSession) => {
+                return match self.ask_delete(data) {
+                    Some(notice) => vec![WbAction::Notice(notice)],
+                    None => vec![WbAction::Redraw],
+                }
+            }
             Some(preferences::Action::Sidebar) => {
                 return self.toggle_sidebar();
             }
@@ -1121,6 +1150,15 @@ impl Workbench {
             // 置顶 section is reachable with the keyboard. Only a *focused* rail
             // takes it: elsewhere `p` is a letter in the draft.
             "p" if self.sidebar_focus => self.toggle_pin_selected(data),
+            // The rail's destructive verb, spelled the way a file tree's delete
+            // is spelled everywhere else. `ctrl+d` is the rebindable chord
+            // above; this is the door a reader finds first, and both ask before
+            // they act. Only a *focused* rail takes it — and `delete` is the one
+            // list key that can never be a character in the draft.
+            "delete" if self.sidebar_focus => match self.ask_delete(data) {
+                Some(notice) => vec![WbAction::Notice(notice)],
+                None => vec![WbAction::Redraw],
+            },
             "ctrl+up" | "pageUp" => self.scroll(-10, data),
             "ctrl+down" | "pageDown" => self.scroll(10, data),
             "end" if self.scroll.following() && data.input.text.is_empty() => self.scroll(1, data),
@@ -1403,6 +1441,45 @@ impl Workbench {
         }
     }
 
+    /// The conversation a delete would name: the row under the rail's cursor
+    /// when the rail has the keys, otherwise the conversation on screen.
+    ///
+    /// One lookup for the chord, the rail's own key and the palette verb, so
+    /// the three doors can never disagree about which conversation they mean.
+    fn delete_target_of(&self, data: &WorkbenchData) -> Option<DeleteTarget> {
+        let index = if self.sidebar_focus {
+            self.panel_rows(data).get(self.sidebar_index)?.session()?
+        } else {
+            data.sessions.iter().position(|row| row.current)?
+        };
+        let session = data.sessions.get(index)?;
+        Some(DeleteTarget {
+            id: session.id.clone(),
+            title: session.title.clone(),
+            workspace: session.workspace.clone(),
+        })
+    }
+
+    /// Open the confirm box for the conversation a delete would name, and
+    /// answer `Some(notice)` when there is none to name.
+    ///
+    /// The box, not the key, is what deletes: it says which conversation would
+    /// go and where it lives, and only its `enter` produces
+    /// [`WbAction::DeleteSession`]. That is what keeps one mistyped chord from
+    /// costing a conversation.
+    fn ask_delete(&mut self, data: &WorkbenchData) -> Option<String> {
+        match self.delete_target_of(data) {
+            Some(target) => {
+                self.delete_target = Some(target);
+                self.overlay = Some(Overlay::DeleteSession);
+                None
+            }
+            // Nothing is attached and no row is under the cursor: a box naming
+            // nothing would be a dead end, so the notice row says so instead.
+            None => Some(t(self.lang, Key::NoticeNothingToDelete).to_string()),
+        }
+    }
+
     /// Switch to the previous/next conversation as the *panel* lists it.
     ///
     /// The rail's order is the reader's order, so this walks the rows rather
@@ -1552,7 +1629,29 @@ impl Workbench {
         ) {
             return self.handle_workflow_key(overlay, key, data);
         }
+        // The confirm box answers two verbs and nothing else. `esc` is the
+        // important one: a box that can only be answered yes is not a question.
+        if overlay == Overlay::DeleteSession {
+            return match key {
+                "enter" | "y" => {
+                    let target = self.delete_target.take();
+                    self.overlay = None;
+                    match target {
+                        Some(target) => vec![WbAction::DeleteSession(target.id)],
+                        None => vec![WbAction::Redraw],
+                    }
+                }
+                "escape" | "q" | "n" => {
+                    self.delete_target = None;
+                    self.overlay = None;
+                    vec![WbAction::Redraw]
+                }
+                _ => Vec::new(),
+            };
+        }
         match overlay {
+            // Answered above, before the box's neighbours are consulted.
+            Overlay::DeleteSession => Vec::new(),
             Overlay::Queue => match key {
                 "escape" | "q" => {
                     self.overlay = None;
@@ -2682,6 +2781,12 @@ impl Workbench {
                 self.queue_index = self.queue_index.min(data.queue.len().saturating_sub(1));
                 VerbOutcome::Done { notice: None }
             }
+            // `/delete` is the typed door to the box the chord opens: the
+            // palette advertises a verb, so the verb has to ask the same
+            // question rather than delete on `enter` of the palette.
+            "delete" => VerbOutcome::Done {
+                notice: self.ask_delete(data),
+            },
             "recent" => {
                 self.focus_panel(PanelId::Recent, data);
                 VerbOutcome::Done { notice: None }
@@ -2907,8 +3012,9 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
 /// The command palette's entries: `(command, description)`. Kept here rather
 /// than in the app so the palette, the help overlay and the tests share one
 /// list.
-pub const COMMANDS: [(&str, Key); 28] = [
+pub const COMMANDS: [(&str, Key); 29] = [
     ("/new", Key::CmdNew),
+    ("/delete", Key::CmdDelete),
     ("/queue", Key::CmdQueue),
     ("/copy", Key::CmdCopy),
     ("/paste", Key::CmdPaste),
@@ -2973,9 +3079,9 @@ fn known_command(text: &str) -> Option<TypedCommand> {
 /// The help overlay's key table.
 /// The keys that are *not* configurable actions, for the help overlay: they are
 /// spelled inside the composer (`/`, `?`, `@`, `#`), or they are the pointer, or
-/// they belong to the focused rail (`p`). Everything with a `preferences::Action`
+/// they belong to the focused rail (`p`, `delete`). Everything with a `preferences::Action`
 /// is listed from that table instead, so a rebind is shown rebind.
-pub const HELP_KEYS: [(&str, Key); 11] = [
+pub const HELP_KEYS: [(&str, Key); 12] = [
     ("tab", Key::HelpKeyFocus),
     ("↑ ↓", Key::HelpKeyScroll),
     ("pageUp / pageDown", Key::HelpKeyPage),
@@ -2985,6 +3091,7 @@ pub const HELP_KEYS: [(&str, Key); 11] = [
     ("@", Key::HelpKeyMentionFile),
     ("#", Key::HelpKeyMentionSession),
     ("p", Key::HelpKeyPin),
+    ("delete", Key::HelpKeyDelete),
     ("click", Key::HelpKeyClick),
     ("drag", Key::HelpKeyDrag),
 ];
@@ -3606,6 +3713,112 @@ mod tests {
         assert_eq!(current, 1, "the fixture moved it off row 0");
         assert_eq!(workbench.sidebar_index, 1, "the cursor lands on the chat");
         assert_eq!(rows[workbench.sidebar_index].session(), Some(current));
+    }
+
+    /// The delete chord asks before it acts: it opens a box naming the
+    /// conversation on screen and removes nothing until `enter` — that is the
+    /// whole guard around the one destructive verb on the surface.
+    #[test]
+    fn the_delete_chord_names_the_conversation_before_it_deletes() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("ctrl+d".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(workbench.overlay, Some(Overlay::DeleteSession));
+        assert_eq!(
+            workbench
+                .delete_target
+                .as_ref()
+                .map(|target| target.id.as_str()),
+            Some("s1"),
+            "the conversation on screen is the one the box names"
+        );
+        // The box says what would go and where it lives, so `enter` is an
+        // informed answer rather than a blind one.
+        let text = plain(&workbench.render(&data, 120, 38));
+        assert!(text.contains("修复 parser 的 off-by-one"), "{text}");
+        assert!(text.contains("future-os"), "{text}");
+        assert!(text.contains("删除会话"), "{text}");
+        // `esc` keeps it, and produces no delete.
+        assert_eq!(
+            workbench.handle(WbEvent::Key("escape".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(workbench.overlay, None);
+        assert!(workbench.delete_target.is_none());
+        // Opened again, `enter` is the delete.
+        workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::DeleteSession("s1".into())]
+        );
+        assert_eq!(workbench.overlay, None);
+    }
+
+    /// In a focused rail `delete` names the row under the cursor, not the
+    /// conversation on screen, and opens the same box the chord does.
+    #[test]
+    fn a_focused_rail_deletes_its_cursor_row_not_the_one_on_screen() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        // `x` stays a letter in the draft even with the rail focused: the rail
+        // takes the list keys, not the alphabet.
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        workbench.handle(WbEvent::Key("x".into()), &data);
+        assert_eq!(workbench.overlay, None);
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        workbench.handle(WbEvent::Key("delete".into()), &data);
+        assert_eq!(workbench.overlay, Some(Overlay::DeleteSession));
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::DeleteSession("s2".into())]
+        );
+        // `n` is the same refusal as `esc`.
+        workbench.handle(WbEvent::Key("delete".into()), &data);
+        assert_eq!(workbench.overlay, Some(Overlay::DeleteSession));
+        assert_eq!(
+            workbench.handle(WbEvent::Key("n".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(workbench.overlay, None);
+    }
+
+    /// `/delete` opens the same box rather than deleting on the palette's
+    /// `enter`: a palette entry is a door to a verb, not a shortcut past its
+    /// confirmation.
+    #[test]
+    fn the_delete_verb_asks_the_same_question_as_the_chord() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        assert_eq!(
+            workbench.surface_command("/delete", &data),
+            VerbOutcome::Done { notice: None }
+        );
+        assert_eq!(workbench.overlay, Some(Overlay::DeleteSession));
+        assert_eq!(
+            workbench
+                .delete_target
+                .as_ref()
+                .map(|target| target.id.as_str()),
+            Some("s1")
+        );
+    }
+
+    /// With no conversation on screen and nothing under the cursor the key says
+    /// so, instead of opening a box that names nothing.
+    #[test]
+    fn the_delete_chord_without_a_conversation_is_a_notice() {
+        let mut data = demo::chat();
+        data.sessions.clear();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let actions = workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
+        assert!(
+            matches!(actions.as_slice(), [WbAction::Notice(text)] if text.contains("没有可删除")),
+            "{actions:?}"
+        );
+        assert_eq!(workbench.overlay, None);
     }
 
     /// `up`/`down` walk the rail's rows (a section heading is stepped over, a

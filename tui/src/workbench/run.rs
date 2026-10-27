@@ -1074,7 +1074,12 @@ async fn quit(
             }
             other => other,
         };
-        let switched = matches!(action, WbAction::SwitchSession(_));
+        // A delete moves the transcript too: the row that took the deleted
+        // conversation's place is what the screen is now showing.
+        let moved = matches!(
+            action,
+            WbAction::SwitchSession(_) | WbAction::DeleteSession(_)
+        );
         match live.apply(action).await {
             Outcome::Quit => return Ok(true),
             Outcome::Continue => {}
@@ -1082,7 +1087,7 @@ async fn quit(
         // A switch the rail did not make itself (a click on the launchpad's
         // recents, a `ctrl+r` pick) still has to move its cursor: the rail would
         // otherwise highlight a conversation the transcript is not showing.
-        if switched {
+        if moved {
             let data = live.data(frame);
             workbench.follow_current(&data);
         }

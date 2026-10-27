@@ -331,7 +331,7 @@ pub struct WorkbenchData {
 pub enum WbEvent { Key(KeyEvent), Mouse(MouseEvent), Resize(u16,u16), Tick }
 pub enum WbAction {
     Submit(String), Command(String), Scroll(i32), LoadOlder,
-    SwitchSession(String), SetModel(String), SetThinking(String),
+    SwitchSession(String), DeleteSession(String), SetModel(String), SetThinking(String),
     SetApproval(String), SelectWorkspace(String),
     SetTheme(String), NewSession,
     SetPanel(PanelId), ResizeSidebar(u16), FocusPane(PaneId),

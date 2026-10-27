@@ -250,6 +250,11 @@ pub(crate) fn compose(
             paint_overlay(&mut rows, &palette, lines, columns);
             workbench.set_cursor(None);
         }
+        Some(Overlay::DeleteSession) => {
+            let lines = delete_box(workbench, &palette, w, h);
+            paint_overlay(&mut rows, &palette, lines, columns);
+            workbench.set_cursor(None);
+        }
         Some(
             overlay @ (Overlay::Approval
             | Overlay::Diff
@@ -770,6 +775,35 @@ fn queue_box(
         rows.push(fit("", columns));
     }
     rows
+}
+
+/// The confirm box in front of a delete: which conversation would go, where it
+/// lives, and the two answers.
+///
+/// Small on purpose — it names one conversation and asks one question. The
+/// surface owns the question; the deletion itself is the app's (`live`), which
+/// is what lets the transcript and the rail move together afterwards.
+fn delete_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec<String> {
+    use super::i18n;
+    let lang = workbench.lang;
+    let Some(target) = workbench.delete_target.clone() else {
+        return Vec::new();
+    };
+    let content = vec![
+        String::new(),
+        format!(" {}", palette.strong(palette.fg, &target.title)),
+        format!(
+            " {}",
+            palette.dim(&i18n::render(lang, Key::DeleteWhere, &[&target.workspace]))
+        ),
+        String::new(),
+        format!(" {}", palette.body(t(lang, Key::DeleteBody))),
+        String::new(),
+        format!(" {}", palette.dim(t(lang, Key::DeleteHint))),
+    ];
+    let geometry = box_geometry(w, h, 60, content.len());
+    claim_box(workbench, &geometry);
+    framed(palette, t(lang, Key::DeleteTitle), content, w, h, &geometry)
 }
 
 fn workflow_box(
