@@ -57,6 +57,15 @@ impl Scenario {
     }
 }
 fn run(tool_calls: usize) -> Value {
+    run_sized(tool_calls, None)
+}
+fn tool_output(index: usize, bytes: Option<usize>) -> String {
+    bytes.map_or_else(
+        || "synthetic output\n".repeat(if index.is_multiple_of(10) { 1024 } else { 4 }),
+        |bytes| "x".repeat(bytes),
+    )
+}
+fn run_sized(tool_calls: usize, large_tool_bytes: Option<usize>) -> Value {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("agent.db");
     let store = SqliteStore::open(&path).unwrap();
@@ -79,6 +88,8 @@ fn run(tool_calls: usize) -> Value {
         fragments: 0,
     };
     let mut finalizations = Vec::new();
+    let mut tool_finalizations = Vec::new();
+    let mut publication_added_bytes = 0;
     let mut body_bytes = 0usize;
     let start = Instant::now();
     scenario.persist(vec![("agent_start", json!({}))]);
@@ -130,12 +141,47 @@ fn run(tool_calls: usize) -> Value {
             )
             .unwrap();
         finalizations.push(finish.elapsed().as_micros() as u64);
-        let output = "synthetic output\n".repeat(if i % 10 == 0 { 1024 } else { 4 });
+        let output = tool_output(i, large_tool_bytes);
         scenario.persist(vec![(
             "tool_end",
             json!({"tool_id":tool,"tool_name":"shell","text":output,"is_error":false}),
         )]);
+        let before_publication = if large_tool_bytes.is_some() {
+            scenario
+                .store
+                .db
+                .read(|db| {
+                    Ok(db.query_row(
+                        "SELECT coalesce(sum(byte_length),0) FROM content_objects",
+                        [],
+                        |r| r.get::<_, i64>(0),
+                    )?)
+                })
+                .unwrap()
+        } else {
+            0
+        };
+        let tool_finish = Instant::now();
         scenario.store.append(&session,vec![json!({"id":id(101+i*2),"type":"tool","role":"tool","timestamp":"2026-10-27T00:00:02Z","meta":{"run_id":run},"content":[{"type":"tool_result","tool_call_id":tool,"content":output,"is_error":false}]})]).unwrap();
+        tool_finalizations.push(tool_finish.elapsed().as_micros() as u64);
+        if large_tool_bytes.is_some() {
+            let after = scenario
+                .store
+                .db
+                .read(|db| {
+                    Ok(db.query_row(
+                        "SELECT coalesce(sum(byte_length),0) FROM content_objects",
+                        [],
+                        |r| r.get::<_, i64>(0),
+                    )?)
+                })
+                .unwrap();
+            assert_eq!(
+                after, before_publication,
+                "final tool callback copied an already durable body"
+            );
+            publication_added_bytes += after - before_publication;
+        }
         body_bytes += thinking.len() + raw_args.len() + output.len();
     }
     let finish = Instant::now();
@@ -183,7 +229,7 @@ fn run(tool_calls: usize) -> Value {
     let mut returned = 0;
     let mut result_bytes = 0;
     let mut logical_digest = String::new();
-    for _ in 0..5 {
+    for _ in 0..if large_tool_bytes.is_some() { 1 } else { 5 } {
         let start = Instant::now();
         let entries = store.entries(&session).unwrap();
         reads.push(start.elapsed().as_micros() as u64);
@@ -208,7 +254,7 @@ fn run(tool_calls: usize) -> Value {
             let tool = entries.iter().find(|e| e["id"] == id(101 + i * 2)).unwrap();
             assert_eq!(
                 tool["content"][0]["content"],
-                "synthetic output\n".repeat(if i % 10 == 0 { 1024 } else { 4 })
+                tool_output(i, large_tool_bytes)
             );
         }
         returned = entries.len();
@@ -227,7 +273,7 @@ fn run(tool_calls: usize) -> Value {
         }
         logical_digest = digest;
     }
-    json!({"toolCalls":tool_calls,"assistantMessages":tool_calls,"bodyBytes":body_bytes,"providerFragments":fragments,"fragmentBatchLimit":8,"writeAndPublicationMicros":elapsed,"batchMicros":batch,"assistantPublicationMicros":stats(finalizations),"terminalMicros":terminal_micros,"walWrites":writes,"databaseAndWalBytesBeforeClose":files,"structures":allocation,"io":io,"reopenMicros":reopen_micros,"firstPageAndFirstAssistantBodyMicros":first_micros,"firstIdentityPageEntries":page.len(),"completeTranscriptReadMicros":stats(reads),"completeTranscriptEntries":returned,"completeTranscriptSerializedBytes":result_bytes,"logicalTranscriptSha256":logical_digest})
+    json!({"largeToolOutputBytes":large_tool_bytes,"toolOutputPublicationMicros":stats(tool_finalizations),"toolPublicationAddedBodyBytes":publication_added_bytes,"toolCalls":tool_calls,"assistantMessages":tool_calls,"bodyBytes":body_bytes,"providerFragments":fragments,"fragmentBatchLimit":8,"writeAndPublicationMicros":elapsed,"batchMicros":batch,"assistantPublicationMicros":stats(finalizations),"terminalMicros":terminal_micros,"walWrites":writes,"databaseAndWalBytesBeforeClose":files,"structures":allocation,"io":io,"reopenMicros":reopen_micros,"firstPageAndFirstAssistantBodyMicros":first_micros,"firstIdentityPageEntries":page.len(),"completeTranscriptReadMicros":stats(reads),"completeTranscriptEntries":returned,"completeTranscriptSerializedBytes":result_bytes,"logicalTranscriptSha256":logical_digest})
 }
 
 #[test]
@@ -236,6 +282,16 @@ fn historical_distribution_valid_transcripts() {
     let report = json!({"workload":"historical-distribution-valid-UUID-transcripts","cases":[run(20),run(150)],"limitations":"Synthetic aggregate-shaped inputs, not replay of private history. Direct admitted batches, not timer/admission/UI latency. First read uses a reopened store with warm OS file cache. Complete transcript reads return the same logical messages/bodies; serialized envelope byte sizes may differ. No compression, VACUUM or history rewrite."});
     println!("REALISTIC_STORAGE_REPORT={report}");
     if let Some(path) = std::env::var_os("FUTURE_REALISTIC_STORAGE_REPORT") {
+        std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+    }
+}
+
+#[test]
+#[ignore = "final acceptance: 1/10 MiB tool outputs, shared final publication and exact reopen reads"]
+fn large_tool_outputs_reuse_durable_bodies() {
+    let report = json!({"workload":"valid-UUID-large-tool-outputs","cases":[run_sized(1,Some(1024*1024)),run_sized(1,Some(10*1024*1024))],"limitations":"Direct synthetic tool_end facts; explicit full transcript export reads, not inline UI transport. One sample per size; no latency percentile claim. Body hash verification is off the ordered database writer; no body compression or completion-time copying."});
+    println!("LARGE_TOOL_STORAGE_REPORT={report}");
+    if let Some(path) = std::env::var_os("FUTURE_LARGE_TOOL_STORAGE_REPORT") {
         std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     }
 }
