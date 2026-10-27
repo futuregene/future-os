@@ -426,6 +426,14 @@ pub enum Key {
     CmdCopy,
     CmdPaste,
     CmdMouse,
+    CmdDelete,
+    DeleteTitle,
+    DeleteBody,
+    DeleteWhere,
+    DeleteHint,
+    NoticeDeleted,
+    NoticeDeleteFailed,
+    NoticeNothingToDelete,
     QueueTitle,
     QueueHint,
     QueueEmpty,
@@ -484,6 +492,7 @@ pub enum Key {
     NoticePreferenceInvalid,
     // ── the help overlay's key table ──────────────────────────────────
     HelpKeyNew,
+    HelpKeyDelete,
     HelpKeySidebar,
     HelpKeyFocus,
     HelpKeyScroll,
@@ -795,6 +804,7 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         WorkflowFailed => ("操作失败：{}", "Operation failed: {}"),
         ForkEmptyId => ("fork 未返回会话 id", "Fork returned no session id"),
         CmdQueue => ("查看、取消或取回排队消息", "List, cancel or recall queued prompts"),
+        CmdDelete => ("删除这条会话（先确认）", "Delete this conversation (asks first)"),
         CmdCopy => ("复制最后一条回答", "Copy the last assistant answer"),
         CmdPaste => (
             "粘贴剪贴板（图片会变成附件）",
@@ -862,6 +872,10 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         NoticePreferenceInvalid => ("不支持的按键，请使用 Ctrl/Alt+字母、F1–F24 或 Tab", "Unsupported key — use Ctrl/Alt + a letter, F1–F24 or Tab"),
 
         HelpKeyNew => ("新会话（任意位置）", "New chat (from anywhere)"),
+        HelpKeyDelete => (
+            "删除选中的会话（先确认）",
+            "Delete the selected conversation (asks first)",
+        ),
         HelpKeySidebar => ("侧栏：打开 / 聚焦 / 收起", "Sidebar: show / focus / hide"),
         HelpKeyFocus => ("在输入框与侧栏之间移动", "Move between the input and the sidebar"),
         HelpKeyScroll => ("滚动聊天，或侧栏列表", "Scroll the chat, or the sidebar's list"),
@@ -948,6 +962,16 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         NoticePinned => ("已置顶 {} · 在 工作区 页签的 置顶 区", "Pinned {} · it leads the Workspaces tab"),
         NoticeUnpinned => ("已取消置顶 {}", "Unpinned {}"),
         NoticePinUnavailable => ("这条会话不属于工作区，无法置顶", "This conversation belongs to no workspace"),
+        DeleteTitle => ("删除会话", "Delete conversation"),
+        DeleteBody => (
+            "它会连同记录和文件一起删除，无法撤销。",
+            "Its record and its file go with it. This cannot be undone.",
+        ),
+        DeleteWhere => ("工作区：{}", "Workspace: {}"),
+        DeleteHint => ("⏎ 删除 · esc 保留", "enter deletes · esc keeps it"),
+        NoticeDeleted => ("已删除 {}", "Deleted {}"),
+        NoticeDeleteFailed => ("无法删除会话：{}", "Could not delete the conversation: {}"),
+        NoticeNothingToDelete => ("这里没有可删除的会话", "Nothing to delete here"),
         NoticeModeUnknown => (
             "未知的审批模式：{}",
             "Unknown approval mode: {}",
@@ -1173,7 +1197,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 273] = {
+    const ALL_KEYS: [Key; 282] = {
         use Key::*;
         [
             TabTodo,
@@ -1337,6 +1361,7 @@ mod tests {
             WorkflowFailed,
             ForkEmptyId,
             CmdQueue,
+            CmdDelete,
             CmdCopy,
             CmdPaste,
             CmdMouse,
@@ -1397,6 +1422,7 @@ mod tests {
             NoticePreferencesSaved,
             NoticePreferenceInvalid,
             HelpKeyNew,
+            HelpKeyDelete,
             HelpKeySidebar,
             HelpKeyFocus,
             HelpKeyScroll,
@@ -1440,6 +1466,13 @@ mod tests {
             NoticePinned,
             NoticeUnpinned,
             NoticePinUnavailable,
+            DeleteTitle,
+            DeleteBody,
+            DeleteWhere,
+            DeleteHint,
+            NoticeDeleted,
+            NoticeDeleteFailed,
+            NoticeNothingToDelete,
             NoticeModeUnknown,
             InputHintLaunchpad,
             ApprovalWaiting,
