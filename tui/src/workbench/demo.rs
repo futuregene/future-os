@@ -180,7 +180,109 @@ fn base() -> WorkbenchData {
         diff: None,
         fork_points: Vec::new(),
         worktrees: Vec::new(),
+        tree: demo_tree(),
+        preview: None,
     }
+}
+
+/// A picture for the preview box, generated rather than read from disk: a
+/// screenshot of the viewer must not depend on whose checkout is rendered.
+///
+/// It is a smooth two-axis gradient with a diagonal band, which is enough to
+/// show that the half-block renderer keeps its aspect ratio, that the 6×6×6
+/// fallback still reads as a picture, and that a zoom actually enlarges it.
+pub fn preview_image() -> crate::workbench::state::PreviewView {
+    use crate::workbench::state::PreviewView;
+    let (width, height) = (96usize, 64usize);
+    let mut rgba = Vec::with_capacity(width * height * 4);
+    for y in 0..height {
+        for x in 0..width {
+            let band = ((x + y) / 8) % 2 == 0;
+            let r = (x * 255 / width.max(1)) as u8;
+            let g = (y * 255 / height.max(1)) as u8;
+            let b = if band { 200 } else { 60 };
+            rgba.extend_from_slice(&[r, g, b, 255]);
+        }
+    }
+    PreviewView::Image {
+        path: "/home/dev/future-os/design.png".into(),
+        pixels: crate::workbench::image_view::ImagePixels {
+            width,
+            height,
+            rgba,
+        },
+    }
+}
+
+/// A workspace tree for the 文件 panel: a real checkout's shape, with one
+/// directory open, so the panel's indent and its markers can be reviewed.
+fn demo_tree() -> crate::workbench::files::FileTree {
+    use crate::workbench::files::{FileNode, FileTree, NodeKind};
+    let node = |path: &str, name: &str, depth: usize, kind: NodeKind, expanded: bool, size: u64| {
+        FileNode {
+            path: std::path::PathBuf::from(path),
+            name: name.to_string(),
+            depth,
+            kind,
+            expanded,
+            size,
+            truncated: false,
+        }
+    };
+    FileTree::from_rows(
+        "/home/dev/future-os",
+        vec![
+            node(
+                "/home/dev/future-os/docs",
+                "docs",
+                0,
+                NodeKind::Dir,
+                true,
+                0,
+            ),
+            node(
+                "/home/dev/future-os/docs/tui",
+                "tui",
+                1,
+                NodeKind::Dir,
+                false,
+                0,
+            ),
+            node(
+                "/home/dev/future-os/docs/README.md",
+                "README.md",
+                1,
+                NodeKind::File,
+                false,
+                4_096,
+            ),
+            node("/home/dev/future-os/tui", "tui", 0, NodeKind::Dir, false, 0),
+            node(
+                "/home/dev/future-os/AGENTS.md",
+                "AGENTS.md",
+                0,
+                NodeKind::File,
+                false,
+                18_900,
+            ),
+            node(
+                "/home/dev/future-os/Cargo.toml",
+                "Cargo.toml",
+                0,
+                NodeKind::File,
+                false,
+                2_100,
+            ),
+            node(
+                "/home/dev/future-os/design.png",
+                "design.png",
+                0,
+                NodeKind::File,
+                false,
+                182_400,
+            ),
+        ],
+    )
 }
 
 /// The models a believable `/model` picker lists: three providers, one of them

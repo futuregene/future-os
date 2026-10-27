@@ -106,6 +106,9 @@ const PAGES: &[&str] = &[
     "workspaces",
     "panel-recent",
     "panel-workspaces",
+    "panel-files",
+    "preview-image",
+    "preview-text",
     "queue",
     "approval",
     "approval-norule",
@@ -140,6 +143,30 @@ fn fixture(name: &str) -> (WorkbenchData, fn(&mut Workbench, &WorkbenchData)) {
         "workspaces" => (demo::data(demo::Scenario::Workspaces), noop),
         "panel-recent" => (chat(), |wb, _| wb.panel = PanelId::Recent),
         "panel-workspaces" => (chat(), |wb, _| wb.panel = PanelId::Workspaces),
+        "panel-files" => (chat(), |wb, _| {
+            wb.panel = PanelId::Files;
+            wb.sidebar_focus = true;
+        }),
+        "preview-image" => (
+            {
+                let mut data = chat();
+                data.preview = Some(demo::preview_image());
+                data
+            },
+            |wb, _| wb.overlay = Some(Overlay::FilePreview),
+        ),
+        "preview-text" => (
+            {
+                let mut data = chat();
+                data.preview = Some(future_tui::workbench::state::PreviewView::Text {
+                    path: "README.md".into(),
+                    lines: (0..60).map(|n| format!("line {n}")).collect(),
+                    truncated: true,
+                });
+                data
+            },
+            |wb, _| wb.overlay = Some(Overlay::FilePreview),
+        ),
         "queue" => (
             {
                 let mut data = chat();

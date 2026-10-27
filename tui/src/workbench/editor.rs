@@ -81,6 +81,10 @@ impl EditorState {
     pub fn record_submission(&mut self) {
         self.input.handle_key("enter");
     }
+    /// How many images the draft carries (see [`Input::image_attachment_count`]).
+    pub fn image_attachment_count(&self) -> usize {
+        self.input.image_attachment_count()
+    }
 }
 
 fn byte_to_u16(text: &str, byte: usize) -> usize {

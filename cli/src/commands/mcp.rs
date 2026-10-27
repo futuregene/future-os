@@ -84,7 +84,7 @@ pub async fn mcp_post(
     }
 
     let effective_timeout = timeout_ms.unwrap_or(60_000);
-    let client = future_agent::http::client();
+    let client = crate::dns::client();
     let request = client.post(url).headers(headers).body(
         // Serializing a Value is infallible.
         serde_json::to_string(&Value::Object(body)).expect("json body serializes"),
@@ -94,7 +94,7 @@ pub async fn mcp_post(
         let response = request
             .send()
             .await
-            .map_err(|e| format!("Request failed: {e}"))?;
+            .map_err(|e| format!("Request failed: {}", crate::dns::describe(&e)))?;
         let status = response.status().as_u16();
         // TS: `response.headers.get("mcp-session-id")`.
         let session_id = response
@@ -180,7 +180,7 @@ pub async fn mcp_notify(
             .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("")),
     );
 
-    let _ = future_agent::http::client()
+    let _ = crate::dns::client()
         .post(url)
         .headers(headers)
         .body(serde_json::to_string(&Value::Object(body)).unwrap_or_default())

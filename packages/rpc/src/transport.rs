@@ -6,8 +6,11 @@
 //! available only when a caller explicitly supplies an address.
 
 use std::fmt;
+use std::future::Future;
 use std::io;
+use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -20,6 +23,24 @@ use tower::service_fn;
 
 /// Sentinel used by CLI/config surfaces that want automatic local discovery.
 pub const AUTO_ENDPOINT: &str = "auto";
+
+/// The future a [`TcpNameResolver`] returns: every address the name has.
+pub type ResolveFuture = Pin<Box<dyn Future<Output = io::Result<Vec<SocketAddr>>> + Send>>;
+
+/// A hostname resolver an entry point supplies for TCP Agent endpoints.
+///
+/// The default — `None` on every public entry point — is `getaddrinfo` through
+/// `tokio::net::TcpStream::connect((host, port))`, so a caller that passes
+/// nothing gets exactly the resolution it got before this type existed.
+///
+/// It exists because a binary linked against musl carries a resolver that reads
+/// two hard-coded paths (`/etc/hosts`, `/etc/resolv.conf`) with no environment
+/// override, so on a system without those files every hostname lookup fails and
+/// no amount of configuration in the *rest* of the process can help. The CLI
+/// supplies its own resolver there; it must not be installed globally, because
+/// a process-global hook would also change how the desktop, the TUI and the
+/// host resolve names.
+pub type TcpNameResolver = Arc<dyn Fn(String, u16) -> ResolveFuture + Send + Sync>;
 
 /// gRPC message-size cap, shared by the Agent server and every client.
 ///
@@ -104,7 +125,7 @@ pub async fn connect_channel(
     connect_timeout: Duration,
     request_timeout: Option<Duration>,
 ) -> Result<ConnectedChannel, ConnectError> {
-    connect_channel_with_policy(configured, connect_timeout, request_timeout, false).await
+    connect_channel_with_policy(configured, connect_timeout, request_timeout, false, None).await
 }
 
 /// A verified business channel must never transparently reconnect to a
@@ -115,7 +136,18 @@ pub async fn connect_pinned_channel(
     connect_timeout: Duration,
     request_timeout: Option<Duration>,
 ) -> Result<ConnectedChannel, ConnectError> {
-    connect_channel_with_policy(configured, connect_timeout, request_timeout, true).await
+    connect_pinned_channel_with(configured, connect_timeout, request_timeout, None).await
+}
+
+/// [`connect_pinned_channel`] with an explicit hostname resolver for TCP
+/// endpoints. `None` is the default and resolves through `getaddrinfo`.
+pub async fn connect_pinned_channel_with(
+    configured: Option<&str>,
+    connect_timeout: Duration,
+    request_timeout: Option<Duration>,
+    resolver: Option<TcpNameResolver>,
+) -> Result<ConnectedChannel, ConnectError> {
+    connect_channel_with_policy(configured, connect_timeout, request_timeout, true, resolver).await
 }
 
 async fn connect_channel_with_policy(
@@ -123,9 +155,20 @@ async fn connect_channel_with_policy(
     connect_timeout: Duration,
     request_timeout: Option<Duration>,
     pinned: bool,
+    resolver: Option<TcpNameResolver>,
 ) -> Result<ConnectedChannel, ConnectError> {
-    connect_channel_with_connector(configured, connect_timeout, |endpoint| async move {
-        connect_one(&endpoint, connect_timeout, request_timeout, pinned).await
+    connect_channel_with_connector(configured, connect_timeout, |endpoint| {
+        let resolver = resolver.clone();
+        async move {
+            connect_one(
+                &endpoint,
+                connect_timeout,
+                request_timeout,
+                pinned,
+                resolver,
+            )
+            .await
+        }
     })
     .await
 }
@@ -179,6 +222,7 @@ async fn connect_one(
     connect_timeout: Duration,
     request_timeout: Option<Duration>,
     pinned: bool,
+    resolver: Option<TcpNameResolver>,
 ) -> Result<Channel, Box<dyn std::error::Error + Send + Sync>> {
     match endpoint {
         AgentEndpoint::Tcp(addr) => {
@@ -215,9 +259,13 @@ async fn connect_one(
                 .connect_with_connector(service_fn(move |_| {
                     let used = used.clone();
                     let host = host.clone();
+                    let resolver = resolver.clone();
                     async move {
                         claim_connection(&used, true)?;
-                        let stream = tokio::net::TcpStream::connect((host.as_str(), port)).await?;
+                        let stream = match resolver {
+                            None => tokio::net::TcpStream::connect((host.as_str(), port)).await?,
+                            Some(resolver) => connect_resolved(resolver, host, port).await?,
+                        };
                         stream.set_nodelay(true)?;
                         Ok::<_, io::Error>(TokioIo::new(stream))
                     }
@@ -226,6 +274,30 @@ async fn connect_one(
         }
         AgentEndpoint::Local => connect_local_with_policy(request_timeout, pinned).await,
     }
+}
+
+/// Connect to the first address the supplied resolver returns for `host`.
+///
+/// Every address is tried in the order given and the last failure is reported,
+/// which is what `TcpStream::connect((host, port))` does with the address list
+/// `getaddrinfo` hands it — the resolver replaces where the list comes from,
+/// not how it is used.
+async fn connect_resolved(
+    resolver: TcpNameResolver,
+    host: String,
+    port: u16,
+) -> io::Result<tokio::net::TcpStream> {
+    let addresses = resolver(host.clone(), port).await?;
+    let mut last_error = None;
+    for address in addresses {
+        match tokio::net::TcpStream::connect(address).await {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        io::Error::new(io::ErrorKind::NotFound, format!("no address for {host}"))
+    }))
 }
 
 fn claim_connection(used: &std::sync::atomic::AtomicBool, pinned: bool) -> io::Result<()> {
@@ -1223,6 +1295,49 @@ mod tests {
             error.details
         );
     }
+    /// A supplied resolver is the *only* lookup for a TCP endpoint: a name
+    /// that does not exist anywhere connects when the resolver knows where it
+    /// lives, and the same endpoint fails without one. Both halves matter —
+    /// the first proves the seam is used, the second proves the default path
+    /// is still `getaddrinfo` (a test that only asserts success would also
+    /// pass if the resolver were ignored and the name happened to resolve).
+    #[tokio::test]
+    async fn a_supplied_resolver_decides_where_a_tcp_endpoint_connects() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                drop(stream);
+            }
+        });
+
+        let resolver: TcpNameResolver = Arc::new(move |host: String, asked: u16| {
+            assert_eq!(host, "agent.invalid", "the resolver gets the endpoint host");
+            assert_eq!(asked, port, "and the endpoint port");
+            Box::pin(async move { Ok(vec![SocketAddr::from(([127, 0, 0, 1], port))]) })
+        });
+        let configured = format!("agent.invalid:{port}");
+
+        let connected = connect_pinned_channel_with(
+            Some(&configured),
+            Duration::from_secs(5),
+            None,
+            Some(resolver),
+        )
+        .await;
+        assert!(
+            connected.is_ok(),
+            "the resolver was not consulted: {:?}",
+            connected.err()
+        );
+
+        let without = connect_pinned_channel(Some(&configured), Duration::from_secs(5), None).await;
+        assert!(
+            without.is_err(),
+            "without a resolver this name must still go through getaddrinfo and fail"
+        );
+    }
+
     /// A pinned HTTPS endpoint has no configured TLS connector, so the client
     /// must refuse it rather than silently speaking plaintext to it.
     #[tokio::test]

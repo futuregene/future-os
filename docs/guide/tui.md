@@ -47,12 +47,50 @@ conversations, to see the rail's window and its `↓ N more` row).
  conversation (bottom-anchored, ↑ 更早)     │ rail: 最近 工作区
                                             │ ▸ the conversation's name
                                             │   ~/future-os · 2m
- ──────────────────────────────────────────┴──────────────────────
- input box (❯ multiline draft, grows to 8 visual rows)
+                                            │
+ input box (❯ multiline draft, grows)      │  (the rail runs down beside it)
  activity: ⠋ 思考 … · 3s · 2 工具                   42 tok/s · 缓存 96%
  status:   model · effort · approval   ░░ ctx 6.9k/1.0M 0.7% · ≈¥0.01
  hint:     Esc 回到聊天 · ctrl+b 侧栏 · tab 焦点 · ctrl+r 会话 · ctrl+p 命令
 ```
+
+The rail is a *column*, not a panel that stops one band early: it (and its
+divider) run from under the header down to the footer, so the space beside the
+composer is the rail's own background rather than bare canvas. The three footer
+rows — activity, status, hint — stay full width. The composer band is exactly
+the box it draws (top rule, prompt, closing rule); it used to reserve a fourth
+row and leave it blank.
+
+The rail has **three tabs**: 最近 (conversations by refresh time), 工作区 (filed
+by directory) and **文件** — a browser of the session workspace. 文件 lists one level
+at a time and reads a directory when it is opened, never before: a repository
+with a `node_modules` opens instantly, and each listing is capped at 400 entries
+with a line saying so. `↑`/`↓` walk the rows, `→` opens a directory (or steps into
+it, if it is already open), `←` closes it (or jumps to the directory that holds
+the row), `enter` opens a directory and previews a file, and a click does what
+`enter` does on the row it landed on. On this tab `←`/`→` belong to the tree; the
+tabs are `ctrl+1`…`ctrl+3` or a click on the strip.
+
+## Pictures
+
+`ctrl+v` reads the clipboard: an image becomes a **draft attachment** (the box's
+title counts it, `· 📎 2 images`), and text is pasted into the draft. A pasted
+image is carried as the `[Image #N]` marker the input already understands, so it
+is sent with the prompt the same way a dragged-in file is; `alt+v` opens the
+newest attached image. `/paste` is the same verb from the palette — it is there
+because Windows Terminal binds `ctrl+v` to its own paste (which cannot carry an
+image), so on that terminal the key never arrives.
+
+An image is *drawn in the terminal* as half blocks — one `▀` per cell, its
+foreground the top pixel of the pair and its background the bottom one — so it
+works in any 256-colour terminal with no graphics protocol: no kitty, no iTerm2,
+no sixel. Two pixels per cell is the most a text surface can show, and 24-bit
+colour is used when the terminal reports it. The preview box (`enter` on an image
+in 文件, or `alt+v` for an attachment) shows the picture with its dimensions in
+the title, zooms with `+`/`-` (or the wheel) up to 6×, pans with the arrows and
+returns with `0`. Documents — Markdown rendered, anything else as lines — scroll
+with `↑`/`↓` and `pageUp`/`pageDown` instead. A file it cannot show says why
+rather than opening an empty box.
 
 The rail is a *task* panel, in two tabs. **最近** (the default) lists every
 conversation — its name, then the workspace it is filed under and when it was
@@ -76,6 +114,14 @@ the prompt and the chips, `enter` cycles the chip under the cursor, and typing
 desktop composer's own controls (model, thinking effort, approval mode) plus the
 workspace this TUI starts from; there is no separate permission level, because
 no other client offers one.
+
+No default shortcut is a function key: `F1`–`F12` need an `Fn` modifier on a
+laptop keyboard and are absent on a compact one, so the defaults are
+`ctrl+m` model, `ctrl+t` effort, `ctrl+s` approval mode, `ctrl+l` workspaces,
+`ctrl+1`/`ctrl+2` the rail's tabs, `alt+h` help, `alt+r` refresh, `alt+c` copy,
+`alt+m` mouse, `alt+l` linear reading, `alt+a` reduced motion. Every one of them
+is rebindable in `/preferences`, and the help overlay lists them grouped by what
+they do rather than in one flat list.
 
 Two breakpoints, both from the contract:
 
@@ -126,14 +172,14 @@ Choices persist in `~/.future/tui/settings.json` as `density`, `sidebarPosition`
 `/theme` retains the six-theme picker, including `high-contrast`; choosing a
 theme persists `themeId`. With no stored choice, the terminal's `COLORFGBG`
 hint selects its light/dark palette (unknown hints use dark). `NO_COLOR`
-disables styling by variable presence, including an empty value. `F8` toggles
+disables styling by variable presence, including an empty value. `alt+l` toggles
 **linear reading**: plain text is appended to the terminal's native scrollback,
 not to an alternate-screen single-column imitation. Entering replays the loaded
 conversation once; streaming appends complete lines without repeating tokens,
 and the single-line draft prompt redraws in place. The terminal/screen reader's
 own scrollback navigation reads history. Complex overlays (diff, history and
 preferences) still use the full-screen workflow; a fully linear menu/screen-
-reader interaction audit is not complete. `F9`
+reader interaction audit is not complete. `alt+a`
 independently toggles **reduced motion**. Neither delays streamed content or
 changes agent behavior. `Ctrl+B` leaves linear mode when explicitly reopening
 the sidebar. These bindings, plus copy, queue and mouse, are contextual global
@@ -151,11 +197,23 @@ reporting is treated as focused, so foreground completions stay quiet.
 terminal's desktop-notification escape. Delivery is best-effort and depends on
 the terminal; notification payloads are sanitized, flattened and bounded.
 
-`Ctrl+P` opens the command palette, `Ctrl+R` sessions, and `F1` help. Help and
-footer hints show the effective bindings, not stale defaults. In the shortcut
+`Ctrl+P` opens the command palette, `Ctrl+R` sessions, and `alt+h` (`?` in an
+empty draft) help. No default binding is a function key: `F1`–`F12` need an
+`Fn` modifier on a laptop, a screen-reader chord on some terminals, and are
+absent on a compact keyboard — a shortcut that takes three fingers, or does not
+exist, is not a shortcut. A reader may still *rebind* one to an F key. Help and
+footer hints show the effective bindings, not stale defaults, and the help
+overlay groups them (chats / choices / panels / interface / inline keys /
+commands) instead of printing one flat list. In the shortcut
 editor, press Enter and then a chord; conflicts swap owners, `r` restores
 defaults, and Escape cancels capture. Supported chords include Ctrl/Alt plus an
 ASCII letter or digit, F1–F24, Tab, navigation keys and Enter/Escape.
+
+`Ctrl+M`, `Ctrl+1` and `Ctrl+2` are delivered only by terminals that report
+modifiers — the kitty keyboard protocol, or xterm's `modifyOtherKeys`, both of
+which the TUI negotiates at start. A terminal that reports none sends `Ctrl+M`
+and `Enter` as the same byte, and `Ctrl+1` as a plain `1`; there `/model` and a
+click on the rail's tab strip are the doors to the same places.
 
 ## Keys and mouse
 
@@ -164,17 +222,22 @@ ASCII letter or digit, F1–F24, Tab, navigation keys and Enter/Escape.
 | `tab` / `shift+tab` | Launchpad: move between the prompt and the parameter chips (`enter` cycles the chip under the cursor; `escape` or typing goes back to the prompt). Conversation: take the keys into the rail (the cursor lands on the conversation on screen) and back |
 | `←` `→` | Move the draft cursor; in a focused rail, switch between its two tabs (最近 ↔ 工作区) |
 | `↑` `↓` | Move through draft lines / submission history; in a focused rail, move to the previous / next conversation (headings are skipped) and `enter` opens it |
-| `shift+←` / `shift+→` | Switch to the previous / next conversation in the rail's order, wherever the keys are: the transcript follows, and so does the rail's cursor |
+| `shift+←` / `shift+→` | Switch to the previous / next conversation in the rail's order, wherever the keys are: the transcript follows, and so does the rail's cursor. A held key switches once per burst, not once per repeat |
 | `p` | Rails: pin / unpin the workspace the selected conversation belongs to |
 | `ctrl+j` / `ctrl+enter` | Insert a newline. `ctrl+j` is the one every terminal delivers; `ctrl+enter` arrives when the terminal reports modifiers (kitty keyboard protocol, xterm `modifyOtherKeys`, or a Windows Terminal `sendInput` binding), and `shift+enter` needs one of those too. Windows Terminal keeps `alt+enter` for fullscreen and sends plain Enter for `ctrl+enter` unless the reader binds it, e.g. `{"keys": "ctrl+enter", "command": {"action": "sendInput", "input": "\u001b[13;5u"}}` |
 | `ctrl+w`, `alt+d`, `ctrl+u`, `ctrl+k`, `ctrl+y` | Delete a word, kill to line start/end, yank |
 | `ctrl+z` / `ctrl+shift+z` (or `alt+y`) | Undo / redo draft edits |
 | `pageUp` / `pageDown` or `ctrl+↑` / `ctrl+↓` | Scroll the conversation; `esc` returns to the latest output |
 | `ctrl+g` or `/queue` | List queued prompts; `x` cancels, `r` / `enter` cancels and recalls into the draft (`ctrl+x` stops the active run, not the queue) |
-| `F6` or `/copy` | Copy the last assistant answer as clean content, without terminal chrome |
-| `F7` or `/mouse` | Toggle and persist mouse capture off/on for native terminal selection |
-| `F8` | Toggle native-scrollback linear reading |
-| `F9` | Toggle reduced motion independently |
+| `ctrl+m` | Model picker (`/model`): every model the agent offers, grouped by provider, with the reasoning slider on its first row |
+| `ctrl+1` / `ctrl+2` / `ctrl+3` | The rail's three tabs: 最近 (conversations by refresh time), 工作区 (filed by directory), 文件 (the workspace tree). The rail takes the keys and its cursor lands on the conversation on screen (or on the first row of the tree) |
+| `ctrl+v` | Read the clipboard: an image becomes a draft attachment, text is pasted. `/paste` does the same for terminals that bind the key themselves |
+| `alt+v` | Preview the newest image attached to the draft |
+| `+` / `-` / `0`, arrows, wheel | In the preview box: zoom a picture (up to 6×), pan it, reset; scroll a document |
+| `alt+c` or `/copy` | Copy the last assistant answer as clean content, without terminal chrome |
+| `alt+m` or `/mouse` | Toggle and persist mouse capture off/on for native terminal selection |
+| `alt+l` | Toggle native-scrollback linear reading |
+| `alt+a` | Toggle reduced motion independently |
 | `ctrl+t` | Thinking effort: opens the six-level chooser (`/thinking`); on the launchpad the level is staged for the session the first message creates |
 | `ctrl+s` | Approval mode: opens the four-tier chooser (`/mode`), the desktop composer's own values — 手动审批 / 沙箱保护 / 自动审批 / 完全访问 |
 | `ctrl+l` | Workspaces: opens the workspace chooser (`/workspace`) — every directory this client has a conversation in, plus a row that creates one from the path typed into its search line |
@@ -182,7 +245,7 @@ ASCII letter or digit, F1–F24, Tab, navigation keys and Enter/Escape.
 | `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run |
 | `ctrl+r` | Session picker (name, workspace and age of each conversation; the footer names the key) |
 | `ctrl+o` | Preferences and shortcut editor |
-| `F1` or `?` | Help overlay (effective keys + commands; `?` requires an empty draft) |
+| `alt+h` or `?` | Help overlay (effective keys, grouped by area, then the commands; `?` requires an empty draft) |
 | `/lang` | Interface language: follow the system, Chinese or English |
 | `ctrl+e` | Final-answer / full-process reading level: a settled reply folds its whole work — the calls and reasoning before *and* after its last prose — into one summary row |
 | `ctrl+c` | Quit |
@@ -192,6 +255,7 @@ ASCII letter or digit, F1–F24, Tab, navigation keys and Enter/Escape.
 | Click a sidebar tab | Switch panel (`←`/`→` do the same while the rail has the keys) |
 | Click the rail's `›` edge (or the `‹` it leaves behind) | Hide the rail / bring it back. `ctrl+b` does the same from the keyboard |
 | Click a session row | Open that conversation (a workspace heading only takes the keys) |
+| Click a tree row | A file previews, a directory opens — the same two verbs `enter` runs |
 | Drag the divider | Resize the sidebar (30–48 columns), persisted on release |
 | Click anywhere in the input box | Focus it |
 | Wheel over the conversation | Scroll; at the top it asks for an older page |
@@ -223,7 +287,8 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | History with paging | The newest page on attach, older pages when the top is reached (`get_session_entries`, a bounded backward cursor) |
 | Prompting and streaming | `prompt` with the coalescing policy; `text_chunk`, `thinking_*`, `tool_*` and `agent_end` drive the transcript |
 | Queue management | `/queue` reads `get_state.queuedRuns`; cancel and recall use the existing `cancel_queued_run`, with no second client-side queue |
-| Draft attachments | Reuses `components/input.rs` folded-paste and image-marker machinery; attachments travel with the prompt |
+| Draft attachments | Reuses `components/input.rs` folded-paste and image-marker machinery; attachments travel with the prompt. `ctrl+v` / `/paste` read the system clipboard through `paste::ClipboardCapture` (osascript on macOS, PowerShell `-STA` on Windows, `wl-paste`/`xclip` on Linux) on a blocking thread, and an image it writes becomes an `[Image #N]` attachment. Nothing leaves the machine |
+| File panel and preview | `alt+r` re-reads the tree; a directory is read when it opens (400 entries per level, said out loud when cut). A preview decodes an image to at most 1024 px on its long edge and draws it as half blocks; text is read bounded and cut on a character boundary |
 | Approvals | A parked request opens a full card with tool, kind, risk, action/paths, requested action and sandbox boundary. `y` / `n` allow once or deny; `a` first adds the agent-suggested **this-run** workspace rule, then approves. A rule failure leaves the request pending. Escape closes the card without deciding |
 | Diff review | `/diff` lists tracked and untracked changes from the session workspace and shows the selected real git patch. Wide terminals keep a fixed file navigator beside an independently scrolling patch. Narrow terminals switch between files and patch with `tab`; `up`/`down` operate the focused view and left/right choose a file. The arrow follows the cursor immediately, and `·` marks the file whose patch is already loaded while the reload is in flight. `r` refreshes. This is the current uncommitted working tree, not per-turn attribution; patches are preview-bounded |
 | History search and tree | `/history` filters the current `list_sessions` titles/first-message previews, workspaces and ids; `/tree` uses `parentSessionId`. Enter opens the selected session |
@@ -234,13 +299,17 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | Existing settings | `/mode` (or `/sandbox`) opens the approval-mode chooser, `/thinking` the reasoning chooser, `/compact [instructions]`, `/tools a,b` or `/tools off`, `/providers`; `/skills` and `/model` retain their existing surfaces |
 | Sessions panel | `list_sessions`, newest first: 最近 as a flat list, 工作区 filed by directory with the pinned ones leading. Pins persist in `settings.json` (`pinnedWorkspaces`) |
 | Usage / context / cost | `get_state`'s usage block, refreshed on the same events |
-| `ctrl+n` / `/new`, `ctrl+x` stop, `F5` refresh | |
+| `ctrl+n` / `/new`, `ctrl+x` stop, `alt+r` refresh | |
 | Launchpad chips | Click 工作区 / 模型 / 强度 / 审批 to cycle them. On the launchpad the workspace, model, effort and approval choices are staged for the session the first message creates (the agent has no session to set them on yet); with a session attached they go over the wire. 工作区 cycles the directories this client has conversations in, and the notice row names the full path it chose |
 | Theme, reading level | Persisted in `~/.future/tui/settings.json` (`tui/src/settings.rs`) |
 
 ## What is not here yet
 
 - **`@` file mentions** — not implemented; pasted image paths and folded pastes use `tui/src/paste.rs`.
+- **A preview is a preview.** The half-block renderer draws a picture at most a
+  couple of hundred cells wide, which is a thumbnail of a photo and a legible
+  view of a screenshot or a diagram. A reader who needs the pixels opens the
+  file in an image viewer; the TUI never transmits the image data anywhere.
 - **The command palette** lists the commands the adapter implements. Provider
   and tool management is intentionally compact (`/providers` and `/tools`);
   `/skills` remains the installed-skills list in the palette. Approval allow
@@ -264,11 +333,12 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | `tui/src/workbench/layout.rs` | Band rectangles, the two breakpoints, the hit map |
 | `tui/src/workbench/ansi.rs` | Width-safe text: `fit`, `pad`, `clip`, column slicing |
 | `tui/src/workbench/widgets.rs` | Rules, boxes, tabs, bars, badges, spinner, logo, wordmark, the input box |
-| `tui/src/workbench/panels.rs` | The rail's two panels (pure renderers over one row model) |
+| `tui/src/workbench/panels.rs` | The rail's three panels (pure renderers over one row model) |
 | `tui/src/workbench/picker.rs` | The `/model`, `/theme` and `/sessions` list picker |
 | `tui/src/workbench/launchpad.rs` | The first screen |
+| `tui/src/workbench/files.rs` | The 文件 panel's tree and what a path can be previewed as |
+| `tui/src/workbench/image_view.rs` | An image as half blocks: fit, zoom, pan, 256-colour fallback |
 | `tui/src/workbench/state.rs` | `WorkbenchData` and its parts |
-| `tui/src/workbench/mouse.rs` | SGR 1006 parsing |
 | `tui/src/workbench/theme.rs` | The six palettes: `dark`, `light`, `one-dark`, `one-light`, `high-contrast`, `dracula` |
 | `tui/src/workbench/i18n.rs` | Every piece of chrome, in Chinese and English, and the locale/preference resolution |
 | `tui/src/workbench/demo.rs` | Deterministic demo data (screenshots, tests) |
