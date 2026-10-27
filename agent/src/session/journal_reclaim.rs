@@ -1,18 +1,20 @@
 //! Journal maintenance: what the raw event journal costs, why settled runs are
-//! still holding one, and an explicit sweep that reclaims them.
+//! still holding one, and the two ways they get reclaimed.
 //!
-//! The per-run algorithm is `journal_compaction.rs`; this module answers the two
+//! The per-run algorithm is `journal_compaction.rs`; this module answers the
 //! operational questions it cannot:
 //!
 //! * **is the journal growing?** [`SqliteStore::journal_stats`] reports rows,
 //!   payload bytes, the largest run and the durable reclaim/skip counters.
 //!   Before this existed, "no reclamation happened" was a silent `Ok(0)` and the
 //!   only way to notice was to count rows in `run_events` by hand.
-//! * **how do I reclaim a database that already grew?** A completion
-//!   notification is the only automatic trigger, and it is in-process: a run
-//!   that completed under an older build, or while the compactor was stopping,
-//!   is never retried. [`SqliteStore::reclaim_settled_journals`] is the explicit,
-//!   resumable sweep — off by default, bounded per call, idempotent.
+//! * **how does a database that already grew recover?** Two entries, on purpose:
+//!   [`SqliteStore::catch_up_settled_journals`] is the bounded startup sweep —
+//!   the few runs a crash, a stop or an older build left behind — and
+//!   [`SqliteStore::reclaim_settled_journals`] is the explicit, larger one an
+//!   operator asks for. Neither runs on a timer and neither runs on a request
+//!   path: the startup one is queued to the compactor thread and logged, the
+//!   explicit one is only ever a maintenance RPC.
 use super::journal_compaction::{bump_meta, delete_raw_rows, RETIRE_CHUNK_ROWS};
 use super::sqlite_store::SqliteStore;
 use anyhow::Result;
@@ -28,8 +30,74 @@ pub(crate) const SWEEP_WORK_BUDGET: Duration = Duration::from_secs(20);
 /// Runs examined per call, so one call cannot queue an unbounded plan.
 const SWEEP_BATCH_RUNS: i64 = 64;
 
+/// Runs one startup catch-up may fold. A completion notification already
+/// handles the normal case, so this only mops up what a crash or a stop left
+/// behind; a bound keeps a large backlog from turning startup into a long
+/// maintenance job. Whatever it does not reach, the next start takes.
+pub(crate) const CATCH_UP_MAX_RUNS: usize = 16;
+/// How long one startup catch-up may hold the shared SQLite worker. Both bounds
+/// apply: the run count caps the plan, this caps the time, and the smaller one
+/// wins.
+pub(crate) const CATCH_UP_BUDGET: Duration = Duration::from_secs(10);
+
 /// The settled statuses whose journal can never be appended to again.
 const SETTLED: &str = "('completed','failed','cancelled','interrupted')";
+
+/// What one startup catch-up did. Returned so tests can assert the bounds, and
+/// logged once because "it did nothing" and "it never ran" look identical in a
+/// database that stops shrinking — that ambiguity is what let 135 settled runs
+/// sit unreclaimed.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct CatchUpReport {
+    /// Candidates actually attempted (folds plus refusals).
+    pub examined: usize,
+    pub folded: usize,
+    pub events: usize,
+    pub snapshot_bytes: usize,
+    /// Published snapshots whose stream had no `agent_end`: the runs a crash left.
+    pub truncated: usize,
+    /// Folds that returned an error. Never retried in-process.
+    pub errors: usize,
+    /// Refusals by durable reason (`not_terminal`, `provider_delta`, …).
+    pub refused: Vec<(String, usize)>,
+    /// The plan or the budget ended this pass with work left for the next start.
+    pub has_more: bool,
+    pub elapsed: Duration,
+}
+
+impl CatchUpReport {
+    /// One line, whatever the outcome: how many were folded, how many were kept
+    /// and why, and how long it took. `folded: 0` with a non-empty `refused`
+    /// means the journals were looked at and legitimately kept; no line at all
+    /// means the catch-up never ran.
+    pub(crate) fn log(&self) {
+        if self.examined == 0 {
+            tracing::debug!("run-journal catch-up: nothing settled was left to fold");
+            return;
+        }
+        let refused = if self.refused.is_empty() {
+            "none".to_string()
+        } else {
+            self.refused
+                .iter()
+                .map(|(reason, count)| format!("{reason}={count}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        tracing::info!(
+            examined = self.examined,
+            folded = self.folded,
+            events = self.events,
+            snapshot_bytes = self.snapshot_bytes,
+            truncated = self.truncated,
+            errors = self.errors,
+            refused = %refused,
+            has_more = self.has_more,
+            elapsed_ms = self.elapsed.as_millis() as u64,
+            "run-journal catch-up: folded settled journals, kept the rest"
+        );
+    }
+}
 
 fn journal_bytes(connection: &Connection) -> Result<i64> {
     let page_size: i64 = connection.pragma_query_value(None, "page_size", |row| row.get(0))?;
@@ -152,11 +220,98 @@ impl SqliteStore {
                     "atMs": meta_int(db, "journal.reclaimed_at_ms")?,
                 },
                 "oversizePublishes": meta_int(db, "journal.oversize_publishes")?,
+                "truncatedPublishes": meta_int(db, "journal.truncated_publishes")?,
                 "skipped": skip_counters(db)?,
             }))
         })
     }
 
+    /// The bounded startup catch-up: fold what a crash, a stop or an older build
+    /// left behind, without anybody remembering to ask.
+    ///
+    /// A completion notification already folds the normal case, so this exists
+    /// for the runs it structurally cannot cover — the store where 135 of 1,166
+    /// settled runs still held a raw journal. Both bounds apply (`max_runs`
+    /// candidates planned, `budget` elapsed, whichever ends first); whatever is
+    /// left is the next start's work, and the explicit sweep remains for a
+    /// backlog too large to grind through a few starts.
+    ///
+    /// Never runs on a request path: the Agent queues this to the compactor
+    /// thread at startup, so it competes with nothing but the store's own reads.
+    pub(crate) fn catch_up_settled_journals(
+        &self,
+        max_runs: usize,
+        budget: Duration,
+    ) -> Result<CatchUpReport> {
+        let planned = (max_runs.saturating_mul(4)).max(1) as i64;
+        // Index-driven on purpose: `runs` is small, and each `EXISTS` is a probe
+        // on the journal's own index. Grouping the whole journal here — the way
+        // the explicit sweep does to rank runs by size — is exactly the cost this
+        // entry cannot afford at startup.
+        let candidates = self.db.call(move |db| {
+            let mut statement = db.prepare(&format!(
+                "SELECT r.session_id,r.run_id
+                 FROM runs r
+                 WHERE r.status IN {SETTLED}
+                   AND r.completed_at_ms IS NOT NULL
+                   AND NOT EXISTS(SELECT 1 FROM run_snapshots s
+                                  WHERE s.session_id=r.session_id AND s.run_id=r.run_id)
+                   AND EXISTS(SELECT 1 FROM run_events e
+                              WHERE e.session_id=r.session_id AND e.run_id=r.run_id)
+                 ORDER BY r.started_at_ms IS NULL, r.started_at_ms, r.run_id
+                 LIMIT ?1"
+            ))?;
+            let rows = statement
+                .query_map(params![planned], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })?;
+        let planned_truncated = candidates.len() as i64 == planned;
+        // The budget starts when the plan has been read, not when the request was
+        // queued: at startup this job waits behind the storage worker's own
+        // migration and reconciliation work, and billing that wait would spend
+        // the whole budget before the first fold. What the bound promises is that
+        // *folding* stops, not that the store is idle when it begins.
+        let started = Instant::now();
+        let mut report = CatchUpReport {
+            examined: 0,
+            ..CatchUpReport::default()
+        };
+        let mut folded = 0usize;
+        for (session, run) in candidates {
+            if folded >= max_runs || started.elapsed() >= budget {
+                report.has_more = true;
+                break;
+            }
+            report.examined += 1;
+            match self.compact_run_cancellable(&session, &run, &AtomicBool::new(false)) {
+                Ok(outcome) => {
+                    if let Some(reason) = outcome.skip {
+                        let reason = reason.as_str();
+                        match report.refused.iter_mut().find(|(name, _)| name == reason) {
+                            Some((_, count)) => *count += 1,
+                            None => report.refused.push((reason.to_owned(), 1)),
+                        }
+                    } else {
+                        folded += 1;
+                        report.folded += 1;
+                        report.events += outcome.deleted;
+                        report.snapshot_bytes += outcome.snapshot_bytes;
+                        if outcome.truncated {
+                            report.truncated += 1;
+                        }
+                    }
+                }
+                Err(_) => report.errors += 1,
+            }
+        }
+        report.has_more = report.has_more || planned_truncated;
+        report.elapsed = started.elapsed();
+        report.log();
+        Ok(report)
+    }
     /// One bounded step of the explicit reclaim sweep.
     ///
     /// `dry_run` reports the same plan without writing. Each call:

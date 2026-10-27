@@ -21,6 +21,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 // than the raw journal it replaces; the raw path folds the same events anyway.
 const SNAPSHOT_BYTE_BUDGET: usize = 4 * 1024 * 1024;
 const COMPACTION_PAGE_EVENT_LIMIT: usize = 256;
+/// How long a settled run whose stream does not end with `agent_end` must have
+/// been settled before its raw journal is treated as final.
+///
+/// `agent_end` says whether a stream is *complete*, not whether its run is over:
+/// `runs` is the authority for that, and every attempt re-reads it. The two are
+/// not written together — the `run_terminal` entry that settles `runs` precedes
+/// the final event broadcast — so a stream can lack its terminal while a live
+/// producer is still appending. A minute later no such producer exists: it
+/// either finished that run or died, which is exactly the `interrupted` and
+/// `cancelled` runs whose journals used to be kept forever (measured on one real
+/// store: 50 runs, 762k events, 179 MiB). Shorter would race the append read
+/// below; longer would hold a crash's journal for no reason.
+const INCOMPLETE_STREAM_GRACE_MS: i64 = 60_000;
 // One transaction retires at most this many raw rows. A single 200k-row journal
 // therefore commits in several slices instead of holding the shared SQLite
 // worker for one unbounded delete. Publication and the first slice stay atomic
@@ -33,6 +46,10 @@ const META_RECLAIMED_RUNS: &str = "journal.reclaimed_runs";
 const META_RECLAIMED_EVENTS: &str = "journal.reclaimed_events";
 const META_RECLAIMED_AT_MS: &str = "journal.reclaimed_at_ms";
 const META_OVERSIZE_PUBLISHES: &str = "journal.oversize_publishes";
+/// Published snapshots whose stream had no `agent_end`. Durable because it is
+/// the only way to tell, later, that the truncated-stream path is doing work
+/// rather than the journals simply never being looked at.
+const META_TRUNCATED_PUBLISHES: &str = "journal.truncated_publishes";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct RunJournalSnapshot {
@@ -89,7 +106,9 @@ pub(crate) enum SkipReason {
     /// Raw provider deltas that are not provably a duplicate of the visible
     /// text stream: dropping them would change what a client renders.
     ProviderDelta,
-    /// The last event is not `agent_end`, so a producer may still append.
+    /// The stream has no `agent_end` and the run has not been settled long
+    /// enough to prove that no producer can still append to it (or the run
+    /// carries no settle time at all, as a legacy-imported one does).
     NotTerminal,
     /// Agent shutdown interrupted the build. Not evidence: the next completion
     /// (or an explicit sweep) retries the run.
@@ -136,6 +155,10 @@ pub(crate) struct CompactionOutcome {
     /// Published above [`SNAPSHOT_BYTE_BUDGET`]; visible because it is the
     /// signal that a run's visible content alone is large.
     pub oversize: bool,
+    /// Published from a stream that never sent `agent_end` — a run a crash or a
+    /// cancel cut off. Counted durably, so "the truncated path works" is
+    /// observable later rather than inferred.
+    pub truncated: bool,
     pub skip: Option<SkipReason>,
 }
 
@@ -145,6 +168,10 @@ struct CompactionSource {
     completed: Option<i64>,
     count: i64,
     last_sequence: i64,
+    /// `event_type` of the newest raw row. Read here, not after the build, so a
+    /// stream that cannot be admitted is refused for the price of one indexed
+    /// read instead of a full fold.
+    last_event_type: String,
 }
 
 /// The one gate every attempt reads, both before building and again under the
@@ -185,17 +212,28 @@ fn read_compaction_source(
     ) {
         return Ok(CompactionRead::NotSettled);
     }
-    let (count, last_sequence) = db.query_row(
-        "SELECT coalesce((SELECT idx+1 FROM run_events WHERE session_id=?1 AND run_id=?2 ORDER BY idx DESC LIMIT 1),0),
-                coalesce((SELECT sequence FROM run_events WHERE session_id=?1 AND run_id=?2 ORDER BY idx DESC LIMIT 1),0)",
-        params![session, run],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
+    let (count, last_sequence, last_event_type) = db
+        .query_row(
+            "SELECT idx+1,sequence,json_extract(payload,'$.event_type')
+             FROM run_events WHERE session_id=?1 AND run_id=?2
+             ORDER BY idx DESC LIMIT 1",
+            params![session, run],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                ))
+            },
+        )
+        .optional()?
+        .unwrap_or((0, 0, String::new()));
     Ok(CompactionRead::Source(CompactionSource {
         status,
         completed,
         count,
         last_sequence,
+        last_event_type,
     }))
 }
 
@@ -209,6 +247,21 @@ pub(crate) fn bump_meta(connection: &rusqlite::Connection, key: &str, delta: i64
         params![key, delta],
     )?;
     Ok(())
+}
+
+/// Wall clock, in the unit `runs.completed_at_ms` is stored in. Split out so a
+/// test can drive the settle-age decision without waiting a minute.
+pub(super) fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+/// Whether a run that settled at `completed_at_ms` has been settled long enough
+/// that a stream missing its `agent_end` cannot still be appended to. A run with
+/// no settle time (a legacy import) answers `false`: age is what proves the
+/// producer is gone, and there is none to read.
+fn settled_long_enough(completed_at_ms: Option<i64>, now_ms: i64) -> bool {
+    completed_at_ms
+        .is_some_and(|settled| now_ms.saturating_sub(settled) >= INCOMPLETE_STREAM_GRACE_MS)
 }
 
 impl SqliteStore {
@@ -286,6 +339,17 @@ impl SqliteStore {
             CompactionRead::NotSettled => return Ok(self.skipped(session, SkipReason::NotSettled)),
             CompactionRead::Missing => return Ok(self.skipped(session, SkipReason::MissingRun)),
         };
+        // `agent_end` decides whether the stream is complete, never whether the
+        // run is over: `runs` settles that, and `read_compaction_source` gates on
+        // it both here and again under the publish lock. A truncated stream is
+        // therefore foldable — it is what a crash leaves behind, and it is the
+        // case that most needs reclaiming — but only once no producer can still
+        // append the missing tail. Decided from the source read alone so a
+        // refusal costs one indexed read instead of a full fold.
+        let incomplete_stream = original.last_event_type != "agent_end";
+        if incomplete_stream && !settled_long_enough(original.completed, now_ms()) {
+            return Ok(self.skipped(session, SkipReason::NotTerminal));
+        }
         let mut folder = DeltaFolder::bounded();
         let mut cursor = -1i64;
         let mut epoch = None;
@@ -400,9 +464,9 @@ impl SqliteStore {
         let Some(last) = last else {
             return Ok(self.skipped(session, SkipReason::Empty));
         };
-        // A persisted transcript terminal precedes the final event broadcast.
-        // Never retire that journal while its producer may still append.
-        if last.event_type != "agent_end" {
+        // The stream the build actually read must still be the one the admission
+        // decision saw; a tail that arrived mid-build changes the answer.
+        if (last.event_type != "agent_end") != incomplete_stream {
             return Ok(self.skipped(session, SkipReason::NotTerminal));
         }
         let snapshot = RunJournalSnapshot {
@@ -462,7 +526,7 @@ impl SqliteStore {
                 #[cfg(test)]
                 crash_point("after_snapshot");
                 let deleted = delete_raw_rows(tx, &commit_session, &commit_run, RETIRE_CHUNK_ROWS)?;
-                record_reclamation(tx, deleted, true, oversize)?;
+                record_reclamation(tx, deleted, true, oversize, incomplete_stream)?;
                 #[cfg(test)]
                 crash_point("after_delete");
                 Ok(deleted)
@@ -478,7 +542,7 @@ impl SqliteStore {
                 super::database::try_maintenance_transaction(db, |tx| {
                     let deleted =
                         delete_raw_rows(tx, &chunk_session, &chunk_run, RETIRE_CHUNK_ROWS)?;
-                    record_reclamation(tx, deleted, false, false)?;
+                    record_reclamation(tx, deleted, false, false, false)?;
                     Ok(deleted)
                 })
             });
@@ -503,6 +567,7 @@ impl SqliteStore {
             deleted,
             snapshot_bytes,
             oversize,
+            truncated: incomplete_stream,
             skip: None,
         })
     }
@@ -550,6 +615,7 @@ fn record_reclamation(
     deleted: usize,
     published: bool,
     oversize: bool,
+    truncated: bool,
 ) -> Result<()> {
     if deleted > 0 {
         bump_meta(tx, META_RECLAIMED_EVENTS, deleted as i64)?;
@@ -558,6 +624,9 @@ fn record_reclamation(
         bump_meta(tx, META_RECLAIMED_RUNS, 1)?;
         if oversize {
             bump_meta(tx, META_OVERSIZE_PUBLISHES, 1)?;
+        }
+        if truncated {
+            bump_meta(tx, META_TRUNCATED_PUBLISHES, 1)?;
         }
         tx.execute(
             "INSERT INTO storage_meta(key,value) VALUES (?1,cast(?2 AS TEXT))
