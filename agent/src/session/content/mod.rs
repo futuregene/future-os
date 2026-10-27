@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 
 pub(crate) mod checkpoint;
 mod checkpoint_retirement;
+pub(crate) mod compact;
 pub(crate) mod entries;
 mod entry_stages;
 mod extensions;
@@ -449,7 +450,7 @@ pub(crate) fn collect(tx: &Transaction<'_>, candidates: &[i64]) -> Result<usize>
     let mut remaining_segments = 4i64;
     for id in candidates {
         tx.execute("INSERT OR IGNORE INTO content_collection(content_id) SELECT id FROM content_objects WHERE id=?1",[id])?;
-        let shared:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM content_references WHERE content_id=?1) OR EXISTS(SELECT 1 FROM stream_change_content WHERE content_id=?1)",[id],|r|r.get(0))?;
+        let shared:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM content_references WHERE content_id=?1) OR EXISTS(SELECT 1 FROM stream_content_ranges WHERE content_id=?1)",[id],|r|r.get(0))?;
         if shared {
             tx.execute("DELETE FROM content_collection WHERE content_id=?1", [id])?;
             continue;

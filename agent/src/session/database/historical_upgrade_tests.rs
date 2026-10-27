@@ -326,3 +326,133 @@ fn skills_only_databases_upgrade_without_losing_uninstall_tombstones() {
             .unwrap();
     }
 }
+
+#[test]
+fn upgraded_legacy_sessions_continue_beside_new_compact_streams() {
+    use crate::session::{
+        content::{self, journal::Writer},
+        sqlite_store::SqliteStore,
+    };
+    use serde_json::json;
+    for &(version, ddl) in RELEASED_SCHEMAS {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("agent.db");
+        let source = Connection::open(&path).unwrap();
+        source.execute_batch(ddl).unwrap();
+        seed_history(&source, version);
+        drop(source);
+        let store = SqliteStore::open(&path).unwrap();
+        assert_eq!(store.storage_format("kept").unwrap(), 1);
+        store.append("kept",vec![json!({"id":"followup","type":"user","role":"user","timestamp":"2026-10-27T00:00:00Z","content":"continue historical conversation"})]).unwrap();
+        let event = json!({"session_id":"kept","run_id":"continued","epoch":2,"idx":0,"session_idx":-1,"event_type":"text_chunk","timestamp":"2026-10-27T00:00:00Z","data":"{\"text\":\"legacy continuation\"}"});
+        store.append_event("kept", event).unwrap();
+        assert_eq!(store.events("kept", "continued").unwrap().len(), 1);
+        let entries = store.entries("kept").unwrap();
+        assert!(entries.iter().any(|e| e["id"] == "followup"));
+        store.bind_events("compact-new").unwrap();
+        assert_eq!(store.storage_format("compact-new").unwrap(), 2);
+        let event = json!({"session_id":"compact-new","run_id":"new-run","epoch":1,"idx":0,"session_idx":-1,"event_type":"usage","timestamp":"2026-10-27T00:00:00.123456789Z","data":json!({"input_tokens":7,"unknown":false}).to_string()});
+        Writer::default()
+            .persist(&store, "compact-new", &[event])
+            .unwrap();
+        let page = store
+            .segmented_replay("compact-new", "new-run", -1, false, Some(8))
+            .unwrap();
+        assert_eq!(page.events.len(), 1);
+        store.db.read(move |db| {
+            assert_history(db,version);
+            let (raw,compact):(i64,i64)=db.query_row("SELECT (SELECT count(*) FROM run_events WHERE session_id='compact-new'),(SELECT count(*) FROM stream_changes)",[],|r|Ok((r.get(0)?,r.get(1)?)))?;
+            assert_eq!((raw,compact),(0,1));content::compact::validate_layout(db)?;Ok(())
+        }).unwrap();
+        drop(store);
+        let reopened = SqliteStore::open(&path).unwrap();
+        assert_eq!(reopened.storage_format("kept").unwrap(), 1);
+        assert_eq!(reopened.storage_format("compact-new").unwrap(), 2);
+        assert_eq!(backups(directory.path()).len(), 1);
+        println!("COMPACT_MIGRATION_CASE={{\"sourceSchema\":{version},\"legacyContinuation\":true,\"compactNewWrite\":true,\"sourcePreserved\":true,\"reopen\":true}}");
+    }
+}
+
+#[test]
+fn old_unpublished_layout_is_rejected_before_wal_or_schema_mutation() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("agent.db");
+    let source = Connection::open(&path).unwrap();
+    source.execute_batch(include_str!("schema.sql")).unwrap();
+    source
+        .execute_batch(include_str!(
+            "../../../tests/fixtures/database/unreleased-segmented-v8.sql"
+        ))
+        .unwrap();
+    source.execute_batch("PRAGMA application_id=1179997266; PRAGMA user_version=8; INSERT INTO storage_meta(key,value) VALUES ('database_id','old-draft'),('restore_generation','kept'); INSERT INTO sessions(id) VALUES ('preserve-me');").unwrap();
+    drop(source);
+    let bytes = std::fs::read(&path).unwrap();
+    let error = match Database::open(&path) {
+        Ok(_) => panic!("old draft must not be adopted"),
+        Err(e) => format!("{e:#}"),
+    };
+    assert!(error.contains("unsupported unpublished"), "{error}");
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert!(!path.with_extension("db-wal").exists());
+    assert!(!directory.path().join("backups").exists());
+}
+
+#[test]
+fn failed_target_installation_rolls_back_and_retries_from_released_source() {
+    for &(version, ddl) in RELEASED_SCHEMAS {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("agent.db");
+        let source = Connection::open(&path).unwrap();
+        source.execute_batch(ddl).unwrap();
+        seed_history(&source, version);
+        // Conflicting target name makes installation fail after earlier target
+        // statements. It must not leave a partially upgraded authoritative DB.
+        source
+            .execute_batch("CREATE VIEW stream_contexts AS SELECT 'conflict' AS value")
+            .unwrap();
+        drop(source);
+        assert!(Database::open(&path).is_err());
+        let source = Connection::open(&path).unwrap();
+        assert_history(&source, version);
+        assert_eq!(
+            source
+                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            version
+        );
+        assert_eq!(source.query_row("SELECT count(*) FROM sqlite_schema WHERE name IN ('stream_layout','content_objects','session_formats')",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        source.execute_batch("DROP VIEW stream_contexts").unwrap();
+        drop(source);
+        let upgraded = Database::open(&path).unwrap();
+        upgraded
+            .call(move |db| {
+                assert_history(db, version);
+                crate::session::content::compact::validate_layout(db)?;
+                Ok(())
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+fn damaged_current_layout_is_refused_without_empty_repair() {
+    for removal in [
+        "DROP INDEX stream_changes_body",
+        "DROP TRIGGER stream_direct_removed",
+        "DELETE FROM stream_layout",
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("agent.db");
+        let database = Database::open(&path).unwrap();
+        drop(database);
+        let source = Connection::open(&path).unwrap();
+        source.execute_batch(removal).unwrap();
+        source
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .unwrap();
+        drop(source);
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(Database::open(&path).is_err(), "{removal}");
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+}

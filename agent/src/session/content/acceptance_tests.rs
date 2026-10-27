@@ -46,6 +46,8 @@ fn counts(store: &SqliteStore) -> Value {
                 "run_events",
                 "run_snapshots",
                 "stream_changes",
+                "stream_contexts",
+                "stream_change_content",
                 "content_segments",
                 "content_objects",
             ] {
@@ -60,6 +62,10 @@ fn counts(store: &SqliteStore) -> Value {
                 [],
                 |row| row.get(0),
             )?;
+            let mut query=db.prepare("SELECT name,sum(pgsize),sum(payload),sum(unused) FROM dbstat GROUP BY name ORDER BY name")?;
+            let allocations=query.query_map([],|row|Ok((row.get::<_,String>(0)?,json!({"allocatedBytes":row.get::<_,i64>(1)?,"payloadBytes":row.get::<_,i64>(2)?,"unusedBytes":row.get::<_,i64>(3)?}))))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            result.insert("structures".into(),Value::Object(allocations.into_iter().collect()));
+            result.insert("pragmas".into(),json!({"pageSize":db.pragma_query_value(None,"page_size",|r|r.get::<_,i64>(0))?,"journalMode":db.pragma_query_value(None,"journal_mode",|r|r.get::<_,String>(0))?,"synchronous":db.pragma_query_value(None,"synchronous",|r|r.get::<_,i64>(0))?}));
             result.insert("contentBytes".into(), json!(bytes));
             Ok(Value::Object(result))
         })
@@ -499,5 +505,80 @@ fn killed_process_retains_only_the_confirmed_prefix() {
             "STORAGE_CRASH_ACCEPTANCE={}",
             json!({"stage":stage,"committedCursor":2,"recoveredBytes":9,"processKill":true,"powerLossSimulated":false})
         );
+    }
+}
+
+#[test]
+#[ignore = "final acceptance: timer-sized batches, long source identities and context churn"]
+fn compact_context_metadata_workloads() {
+    let mut cases = Vec::new();
+    for churn in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("agent.db");
+        let store = open(&path, true);
+        let mut writer = Writer::default();
+        let mut cursor = 0i64;
+        let mut offset = 0usize;
+        let mut body_bytes = 0usize;
+        let fragment = "思考🙂x".repeat(5);
+        let fragments = (1024_usize * 1024).div_ceil(fragment.len());
+        let entry = format!("message-{}", "e".repeat(80));
+        let tool = format!("tool-{}", "t".repeat(80));
+        let mut latencies = Vec::new();
+        let mut reads = Vec::new();
+        let mut read_work = Vec::new();
+        let start = Instant::now();
+        for batch in (0..fragments).step_by(4) {
+            let block = if churn { batch } else { 0 };
+            let key = format!("{entry}:thinking:{block}:{}", "k".repeat(80));
+            if churn {
+                offset = 0;
+            }
+            let mut events = Vec::new();
+            for _ in batch..(batch + 4).min(fragments) {
+                events.push(event(cursor,"thinking_delta",json!({"entry_id":entry,"tool_id":tool,"content_key":key,"content_offset":offset,"content_bytes":fragment.len(),"text":fragment,"future":{"opaque":"  exact bytes  ","enabled":false}})));
+                cursor += 1;
+                offset += fragment.len();
+                body_bytes += fragment.len();
+            }
+            if churn || batch + 4 >= fragments {
+                events.push(event(cursor,"thinking_end",json!({"entry_id":entry,"content_key":key,"content_offset":offset,"content_bytes":0,"content_seal":true})));
+                cursor += 1;
+            }
+            let commit = Instant::now();
+            writer.persist(&store, "s", &events).unwrap();
+            latencies.push(commit.elapsed().as_micros() as u64);
+            if batch % (128 * 4) == 0 {
+                let read = Instant::now();
+                let page = store
+                    .segmented_stream_page(
+                        &stream::StreamIdentity {
+                            session_id: "s".into(),
+                            run_id: "r".into(),
+                            epoch: 1,
+                        },
+                        -1,
+                        128,
+                    )
+                    .unwrap();
+                assert!(!page.is_empty());
+                read_work.push(json!({"requestedEvents":128,"returnedEvents":page.len(),"dataBytes":page.iter().map(|event|event.data.len()).sum::<usize>()}));
+                reads.push(read.elapsed().as_micros() as u64);
+            }
+        }
+        let elapsed = start.elapsed().as_micros();
+        latencies.sort_unstable();
+        reads.sort_unstable();
+        let structures = counts(&store);
+        let (database, wal) = (
+            std::fs::metadata(&path).unwrap().len(),
+            std::fs::metadata(path.with_extension("db-wal")).map_or(0, |m| m.len()),
+        );
+        cases.push(json!({"contextChurn":churn,"bodyBytes":body_bytes,"fragmentBytes":fragment.len(),"fragmentsPerFlush":4,"elapsedMicros":elapsed,"batchMicros":{"p95":latencies[latencies.len()*95/100],"p99":latencies[latencies.len()*99/100],"max":latencies.last()},"readerMicros":{"p95":reads[reads.len()*95/100],"max":reads.last()},"readerWork":read_work,"databaseBytes":database,"walBytes":wal,"rows":structures,"io":store.db.metrics()}));
+    }
+    let report = json!({"workload":"synthetic-long-identities-1MiB-four-fragment-flushes","cases":cases,"limitations":"Direct writer batches and bounded replay; timer cadence, admission backlog, native UI and physical power loss are not simulated. No VACUUM, historical compression or completion rewrite."});
+    println!("COMPACT_METADATA_ACCEPTANCE={report}");
+    if let Some(path) = std::env::var_os("FUTURE_COMPACT_METADATA_REPORT") {
+        std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     }
 }

@@ -148,7 +148,7 @@ fn recovery_shares_large_provider_state_instead_of_copying_it_into_a_header() {
         .unwrap();
     assert_eq!(recovered["content"][0]["provider_metadata"], provider);
     store.db.read(|db| {
-        let (entry,stream):(i64,i64) = db.query_row("SELECT r.content_id,b.content_id FROM content_references r JOIN stream_change_content b ON b.field='/data/provider_metadata' WHERE r.session_id='s' AND r.owner_id='m' AND r.field='/content/0/provider_metadata'",[],|row|Ok((row.get(0)?,row.get(1)?)))?;
+        let (entry,stream):(i64,i64) = db.query_row("SELECT r.content_id,b.content_id FROM content_references r JOIN stream_content_ranges b ON b.field='/data/provider_metadata' WHERE r.session_id='s' AND r.owner_id='m' AND r.field='/content/0/provider_metadata'",[],|row|Ok((row.get(0)?,row.get(1)?)))?;
         assert_eq!(entry,stream);
         let bytes:i64 = db.query_row("SELECT length(metadata_json) FROM message_blocks WHERE session_id='s' AND entry_position=(SELECT position FROM entries WHERE session_id='s' AND entry_id='m') AND ordinal=0",[],|row|row.get(0))?;
         assert!(bytes < 4096);
@@ -707,4 +707,25 @@ fn recovery_releases_unpublished_fact_staging_only_in_the_interrupted_run_scope(
         .unwrap();
     assert!(missing);
     assert!(preserved);
+}
+
+#[test]
+fn coalescing_does_not_discard_changing_extension_metadata() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&directory.path().join("agent.db")).unwrap();
+    store.reserve_segmented("s").unwrap();
+    let mut writer = Writer::default();
+    writer.persist(&store,"s",&[
+        event(0,"text_chunk",json!({"content_key":"m:text:b","entry_id":"m","content_offset":0,"content_bytes":1,"text":"a","future":false})),
+        event(1,"text_chunk",json!({"content_key":"m:text:b","entry_id":"m","content_offset":1,"content_bytes":1,"text":"b","future":null})),
+    ]).unwrap();
+    let page = store
+        .segmented_replay("s", "r", -1, false, Some(8))
+        .unwrap();
+    assert_eq!(page.events.len(), 2);
+    assert_eq!(
+        serde_json::from_str::<Value>(&page.events[0].data).unwrap()["future"],
+        false
+    );
+    assert!(serde_json::from_str::<Value>(&page.events[1].data).unwrap()["future"].is_null());
 }

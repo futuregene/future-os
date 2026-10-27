@@ -1,7 +1,7 @@
 # Compact session storage and streaming development plan
 
-Status: reviewed revision, 2026-10-27. The compact-change layout is not implemented; the existing segmented candidate is the previous unpublished implementation.
-This change delivers the plan, review decisions and baseline archive, not acceptance of the new runtime layout.
+Status: compact-change implementation complete, 2026-10-27; unified acceptance in progress. The complete Agent library suite passed; performance and fault workloads remain pending.
+Exact layout: [implementation contract](compact-stream-layout.md). Implementation status does not establish delivery acceptance.
 Chinese: [精简会话存储开发计划](stream-storage-development.zh-CN.md).
 
 The complete previous plan remains in the [unpublished-plan archive](stream-storage-development-unreleased-2026-10-26.md).
@@ -155,8 +155,8 @@ Existing explicit legacy-journal maintenance remains unscheduled at startup/comp
 
 ## 10. Historical migration: mandatory rerun matrix
 
-This documentation revision runs no Rust unit/migration tests. The compact layout is not implemented, so current passes cannot validate the future layout.
-After implementation completes, run the whole matrix below. This is the requested migration revalidation; previous green results cannot substitute for it.
+Run the whole matrix after implementation and record fresh source revisions, results and fault evidence.
+This is the requested migration revalidation; previous green results cannot substitute for it.
 
 | Source/fault | Required evidence |
 |---|---|

@@ -27,3 +27,8 @@ that draft directly and requires fresh released-schema migration results after
 implementation. Existing green results do not establish the revised layout's
 correctness. Keep schema 2–7 DDL frozen; test the real upgrade, readable source
 snapshot, reopen/retry, old-session continuation and new compact conversations.
+
+`unreleased-segmented-v8.sql` freezes only the previous unpublished content
+layout at `537bcddf`, for negative admission tests. It is intentionally excluded
+from `RELEASED_SCHEMAS`: opening it must fail before WAL/schema mutation and
+preserve the original file, rather than migrate it into the compact layout.

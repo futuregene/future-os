@@ -15,12 +15,15 @@ pub(crate) fn publish(tx: &Transaction<'_>, session: &str, entry: &Value) -> Res
         "SELECT coalesce(epoch,0),coalesce(run_sequence,-1) FROM runs WHERE session_id=?1 AND run_id=?2",
         params![session,run], |row| Ok((row.get(0)?,row.get(1)?)),
     )?;
-    let prior: Option<(String, String)> = tx.query_row(
-        "SELECT c.event_type,c.metadata_json FROM stream_runs r JOIN stream_changes c ON c.stream_id=r.id WHERE r.session_id=?1 AND r.run_id=?2 AND r.epoch=?3 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=r.id) ORDER BY c.last_cursor DESC LIMIT 1",
+    let prior: Option<(i64, String)> = tx.query_row(
+        "SELECT c.id,c.event_type FROM stream_runs r JOIN stream_changes c ON c.stream_id=r.id WHERE r.session_id=?1 AND r.run_id=?2 AND r.epoch=?3 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=r.id) ORDER BY c.last_cursor DESC LIMIT 1",
         params![session,run,epoch], |row| Ok((row.get(0)?,row.get(1)?)),
     ).optional()?;
-    if let Some((kind, metadata)) = prior.filter(|(kind, _)| kind == "agent_end") {
-        let previous: Value = serde_json::from_str(&metadata)?;
+    if let Some((change, kind)) = prior.filter(|(_, kind)| kind == "agent_end") {
+        let previous = super::compact::read_ids(tx, &[change])?
+            .pop()
+            .context("terminal change missing")?
+            .metadata;
         ensure!(
             previous["terminal_entry_id"] == entry["id"],
             "run already has a different terminal boundary ({kind})"

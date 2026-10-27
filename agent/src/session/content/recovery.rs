@@ -132,7 +132,13 @@ impl SqliteStore {
                 let scope = identity.clone();
                 let page = self
                     .db
-                    .read(move |db| read_changes(db, &scope, cursor, 128))?;
+                    .read(move |db| {
+                        let tx = db.transaction()?;
+                        let page = read_encoded_changes(&tx, &scope, cursor, 128)?;
+                        tx.commit()?;
+                        Ok(page)
+                    })?
+                    .decode()?;
                 for change in page.changes {
                     cursor = change.last_cursor;
                     anyhow::ensure!(
@@ -391,7 +397,7 @@ impl SqliteStore {
                     rows
                 };
                 for (owner,field,content) in &owners {
-                    let published:bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM stream_change_content b JOIN stream_changes c ON c.id=b.change_id JOIN stream_runs r ON r.id=c.stream_id WHERE b.content_id=?1 AND r.session_id=?2 AND r.run_id=?3 AND r.epoch=?4)",params![content,scope.session_id,scope.run_id,scope.epoch],|row|row.get(0))?;
+                    let published:bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM stream_content_ranges b JOIN stream_changes c ON c.id=b.change_id JOIN stream_runs r ON r.id=c.stream_id WHERE b.content_id=?1 AND r.session_id=?2 AND r.run_id=?3 AND r.epoch=?4)",params![content,scope.session_id,scope.run_id,scope.epoch],|row|row.get(0))?;
                     if !published { tx.execute("DELETE FROM content_references WHERE session_id=?1 AND owner_kind='stream' AND owner_id=?2 AND field=?3",params![scope.session_id,owner,field])?; }
                 }
                 let next = owners.last().map(|(owner,field,_)|(owner.clone(),field.clone()));

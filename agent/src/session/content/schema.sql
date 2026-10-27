@@ -50,23 +50,57 @@ CREATE TABLE IF NOT EXISTS stream_runs (
     durable_cursor INTEGER NOT NULL DEFAULT -1 CHECK(durable_cursor>=-1),
     UNIQUE(session_id,run_id,epoch)
 );
+-- Draft layout identity: old schema-8 candidates are rejected, never converted.
+CREATE TABLE IF NOT EXISTS stream_layout (
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+    layout TEXT NOT NULL CHECK(layout='compact-context-v1')
+);
+INSERT OR IGNORE INTO stream_layout VALUES(1,'compact-context-v1');
+-- Descriptor is [stable envelope/data fields, direct field, direct encoding].
+-- Digest narrows lookup; the complete descriptor is always compared on reuse.
+CREATE TABLE IF NOT EXISTS stream_contexts (
+    id INTEGER PRIMARY KEY,
+    stream_id INTEGER NOT NULL REFERENCES stream_runs(id) ON DELETE CASCADE,
+    digest BLOB NOT NULL CHECK(length(digest)=32),
+    descriptor_json TEXT NOT NULL CHECK(json_valid(descriptor_json) AND length(CAST(descriptor_json AS BLOB))<=16384),
+    entry_id TEXT GENERATED ALWAYS AS (json_extract(descriptor_json,'$[0].data.entry_id')) VIRTUAL,
+    tool_id TEXT GENERATED ALWAYS AS (json_extract(descriptor_json,'$[0].data.tool_id')) VIRTUAL,
+    content_key TEXT GENERATED ALWAYS AS (json_extract(descriptor_json,'$[0].data.content_key')) VIRTUAL,
+    tc_index INTEGER GENERATED ALWAYS AS (json_extract(descriptor_json,'$[0].data.tc_index')) VIRTUAL,
+    direct_field TEXT GENERATED ALWAYS AS (json_extract(descriptor_json,'$[1]')) VIRTUAL,
+    direct_encoding TEXT GENERATED ALWAYS AS (json_extract(descriptor_json,'$[2]')) VIRTUAL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS stream_contexts_identity ON stream_contexts(id,stream_id);
+CREATE TRIGGER IF NOT EXISTS stream_context_immutable BEFORE UPDATE ON stream_contexts BEGIN
+    SELECT RAISE(ABORT,'stream contexts are immutable');
+END;
+CREATE INDEX IF NOT EXISTS stream_contexts_digest ON stream_contexts(stream_id,digest);
+CREATE INDEX IF NOT EXISTS stream_contexts_entry ON stream_contexts(stream_id,entry_id,id);
+CREATE INDEX IF NOT EXISTS stream_contexts_tool ON stream_contexts(stream_id,entry_id,tool_id,id);
+CREATE INDEX IF NOT EXISTS stream_contexts_key ON stream_contexts(stream_id,entry_id,content_key,id);
 CREATE TABLE IF NOT EXISTS stream_changes (
     id INTEGER PRIMARY KEY,
     stream_id INTEGER NOT NULL REFERENCES stream_runs(id) ON DELETE CASCADE,
+    context_id INTEGER NOT NULL,
     first_cursor INTEGER NOT NULL CHECK(first_cursor>=0),
     last_cursor INTEGER NOT NULL CHECK(last_cursor>=first_cursor),
-    event_type TEXT NOT NULL,
-    metadata_json TEXT NOT NULL CHECK(json_valid(metadata_json)),
+    event_kind INTEGER NOT NULL CHECK(event_kind BETWEEN 0 AND 18),
+    unknown_kind TEXT CHECK((event_kind=0 AND unknown_kind IS NOT NULL) OR (event_kind!=0 AND unknown_kind IS NULL)),
+    event_type TEXT GENERATED ALWAYS AS (CASE event_kind WHEN 1 THEN 'agent_start' WHEN 2 THEN 'agent_end' WHEN 3 THEN 'message_start' WHEN 4 THEN 'message_end' WHEN 5 THEN 'text_start' WHEN 6 THEN 'text_chunk' WHEN 7 THEN 'text_end' WHEN 8 THEN 'thinking_start' WHEN 9 THEN 'thinking_delta' WHEN 10 THEN 'thinking_end' WHEN 11 THEN 'tool_start' WHEN 12 THEN 'tool_delta' WHEN 13 THEN 'tool_input_end' WHEN 14 THEN 'tool_end' WHEN 15 THEN 'tool_result' WHEN 16 THEN 'usage' WHEN 17 THEN 'model_changed' WHEN 18 THEN 'tool_sandboxed' ELSE unknown_kind END) VIRTUAL,
+    flags INTEGER NOT NULL CHECK(flags BETWEEN 0 AND 7),
+    metadata_json TEXT NOT NULL CHECK(json_valid(metadata_json) AND length(CAST(metadata_json AS BLOB))<=16384),
+    content_id INTEGER REFERENCES content_objects(id),
+    byte_offset INTEGER CHECK(byte_offset>=0),
+    byte_length INTEGER CHECK(byte_length>=0),
+    CHECK((content_id IS NULL AND byte_offset IS NULL AND byte_length IS NULL AND flags=0)
+       OR (content_id IS NOT NULL AND byte_offset IS NOT NULL AND byte_length IS NOT NULL)),
+    FOREIGN KEY(context_id,stream_id) REFERENCES stream_contexts(id,stream_id) ON DELETE CASCADE,
     UNIQUE(stream_id,last_cursor)
 );
+CREATE INDEX IF NOT EXISTS stream_changes_context ON stream_changes(context_id,event_kind,last_cursor);
+CREATE INDEX IF NOT EXISTS stream_changes_body ON stream_changes(content_id) WHERE content_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS stream_changes_pricing ON stream_changes(stream_id,id)
     WHERE event_type IN ('usage','model_changed');
-CREATE INDEX IF NOT EXISTS stream_changes_entry_kind ON stream_changes(stream_id,json_extract(metadata_json,'$.data.entry_id'),event_type,last_cursor)
-    WHERE event_type IN ('message_end','tool_start','tool_input_end');
-CREATE INDEX IF NOT EXISTS stream_changes_entry_key ON stream_changes(stream_id,json_extract(metadata_json,'$.data.entry_id'),json_extract(metadata_json,'$.data.content_key'),event_type,last_cursor)
-    WHERE event_type='thinking_end';
-CREATE INDEX IF NOT EXISTS stream_changes_entry_tool ON stream_changes(stream_id,json_extract(metadata_json,'$.data.entry_id'),coalesce(json_extract(metadata_json,'$.data.tool_id'),''),last_cursor)
-    WHERE event_type IN ('tool_start','tool_delta','tool_input_end');
 CREATE TABLE IF NOT EXISTS stream_change_content (
     change_id INTEGER NOT NULL REFERENCES stream_changes(id) ON DELETE CASCADE,
     field TEXT NOT NULL,
@@ -77,6 +111,18 @@ CREATE TABLE IF NOT EXISTS stream_change_content (
     PRIMARY KEY(change_id,field)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS stream_change_content_body ON stream_change_content(content_id);
+-- One authority for range lookup, recovery and collection, covering the fast
+-- path and uncommon multi-field facts without duplicating persisted ranges.
+CREATE VIEW IF NOT EXISTS stream_content_ranges AS
+    SELECT c.id AS change_id,x.direct_field AS field,x.direct_encoding AS encoding,
+           c.content_id,c.byte_offset,c.byte_length
+      FROM stream_changes c JOIN stream_contexts x ON x.id=c.context_id AND x.stream_id=c.stream_id
+      WHERE c.content_id IS NOT NULL
+    UNION ALL SELECT change_id,field,encoding,content_id,byte_offset,byte_length FROM stream_change_content;
+CREATE TRIGGER IF NOT EXISTS stream_direct_removed AFTER DELETE ON stream_changes
+WHEN OLD.content_id IS NOT NULL BEGIN
+    INSERT OR IGNORE INTO content_collection(content_id) VALUES (OLD.content_id);
+END;
 -- Only explicit reference removal queues collection. No historical sweep.
 CREATE TABLE IF NOT EXISTS content_collection (
     content_id INTEGER PRIMARY KEY REFERENCES content_objects(id) ON DELETE CASCADE

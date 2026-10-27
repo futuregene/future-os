@@ -203,36 +203,17 @@ pub(crate) fn commit_batch(
             change.first_cursor >= 0 && change.last_cursor >= change.first_cursor,
             "invalid change cursor range"
         );
-        let metadata = change.metadata.to_string();
-        let existing: Option<(i64,i64,String,String)>=tx.query_row("SELECT id,first_cursor,event_type,metadata_json FROM stream_changes WHERE stream_id=?1 AND last_cursor=?2",params![id,change.last_cursor],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
-        let (change_id, retry) = if let Some((change_id, first, kind, stored)) = existing {
-            ensure!(
-                first == change.first_cursor
-                    && kind == change.event_type
-                    && serde_json::from_str::<Value>(&stored)? == change.metadata,
-                "conflicting semantic change retry"
-            );
-            (change_id, true)
-        } else {
-            ensure!(
-                change.first_cursor == cursor + 1,
-                "semantic change has a gap or conflicting overlap"
-            );
-            tx.execute("INSERT INTO stream_changes(stream_id,first_cursor,last_cursor,event_type,metadata_json) VALUES (?1,?2,?3,?4,?5)",params![id,change.first_cursor,change.last_cursor,change.event_type,metadata])?;
-            (tx.last_insert_rowid(), false)
-        };
-        let previous_links: i64 = tx.query_row(
-            "SELECT count(*) FROM stream_change_content WHERE change_id=?1",
-            [change_id],
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM stream_changes WHERE stream_id=?1 AND last_cursor=?2)",
+            params![id, change.last_cursor],
             |r| r.get(0),
         )?;
-        if retry {
-            ensure!(
-                previous_links == i64::try_from(change.bodies.len())?,
-                "conflicting semantic content link count"
-            );
-        }
-        for body in change.bodies {
+        ensure!(
+            exists || change.first_cursor == cursor + 1,
+            "semantic change has a gap or conflicting overlap"
+        );
+        let mut bodies = Vec::new();
+        for body in &change.bodies {
             ensure!(
                 change.metadata.pointer(&body.field).is_some(),
                 "content link does not name a metadata field"
@@ -253,21 +234,17 @@ pub(crate) fn commit_batch(
                 body.offset >= 0 && body.length >= 0 && end <= range.length,
                 "semantic content link exceeds committed body"
             );
-            if retry {
-                let old: (i64,i64,i64,String)=tx.query_row("SELECT content_id,byte_offset,byte_length,encoding FROM stream_change_content WHERE change_id=?1 AND field=?2",params![change_id,body.field],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
-                ensure!(
-                    old == (
-                        range.id,
-                        body.offset,
-                        body.length,
-                        body.encoding.name().to_owned()
-                    ),
-                    "conflicting semantic content link"
-                );
-            } else {
-                tx.execute("INSERT INTO stream_change_content(change_id,field,content_id,byte_offset,byte_length,encoding) VALUES (?1,?2,?3,?4,?5,?6)",params![change_id,body.field,range.id,body.offset,body.length,body.encoding.name()])?;
-            }
+            bodies.push((
+                body.field.clone(),
+                ContentRange {
+                    id: range.id,
+                    offset: body.offset,
+                    length: body.length,
+                },
+                body.encoding,
+            ));
         }
+        super::compact::publish(&tx, id, &change, bodies)?;
         cursor = cursor.max(change.last_cursor);
     }
     tx.execute(
@@ -278,64 +255,67 @@ pub(crate) fn commit_batch(
     Ok(cursor)
 }
 
-/// Metadata-only page, inside the caller's read transaction. Body transport
-/// uses explicit bounded reads rather than hydrating a whole tool result here.
+#[derive(Debug)]
+pub(crate) struct EncodedChangePage {
+    changes: super::compact::EncodedPage,
+    durable_cursor: i64,
+    has_more: bool,
+}
+impl EncodedChangePage {
+    pub(crate) fn decode(self) -> Result<ChangePage> {
+        Ok(ChangePage {
+            changes: self.changes.decode()?,
+            durable_cursor: self.durable_cursor,
+            has_more: self.has_more,
+        })
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn read_changes(
     db: &Connection,
     stream: &StreamIdentity,
     since: i64,
     limit: usize,
 ) -> Result<ChangePage> {
+    read_encoded_changes(db, stream, since, limit)?.decode()
+}
+
+/// Metadata-only page, inside the caller's read transaction. Body transport
+/// uses explicit bounded reads rather than hydrating a whole tool result here.
+pub(crate) fn read_encoded_changes(
+    db: &Connection,
+    stream: &StreamIdentity,
+    since: i64,
+    limit: usize,
+) -> Result<EncodedChangePage> {
     ensure!((1..=256).contains(&limit), "invalid change page limit");
     let row: Option<(i64,i64)>=db.query_row("SELECT id,durable_cursor FROM stream_runs WHERE session_id=?1 AND run_id=?2 AND epoch=?3 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=stream_runs.id)",params![stream.session_id,stream.run_id,stream.epoch],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
     let Some((id, cursor)) = row else {
-        return Ok(ChangePage {
-            changes: Vec::new(),
+        return Ok(EncodedChangePage {
+            changes: super::compact::EncodedPage::default(),
             durable_cursor: -1,
             has_more: false,
         });
     };
-    let mut stmt=db.prepare("SELECT id,first_cursor,last_cursor,event_type,metadata_json FROM stream_changes WHERE stream_id=?1 AND last_cursor>?2 ORDER BY last_cursor LIMIT ?3")?;
+    let mut stmt=db.prepare("SELECT c.id,length(CAST(c.metadata_json AS BLOB))+length(CAST(x.descriptor_json AS BLOB)) FROM stream_changes c JOIN stream_contexts x ON x.id=c.context_id AND x.stream_id=c.stream_id WHERE c.stream_id=?1 AND c.last_cursor>?2 ORDER BY c.last_cursor LIMIT ?3")?;
     let mut rows = stmt.query(params![id, since, i64::try_from(limit + 1)?])?;
-    let mut changes = Vec::new();
-    let mut bytes = 0;
+    let mut ids = Vec::new();
+    let mut bytes = 0usize;
     let mut more = false;
     while let Some(row) = rows.next()? {
-        let metadata: String = row.get(4)?;
-        if changes.len() == limit
-            || (!changes.is_empty() && bytes + metadata.len() > CHANGE_METADATA_BYTES)
+        let size = usize::try_from(row.get::<_, i64>(1)?)?;
+        if ids.len() == limit
+            || (!ids.is_empty() && bytes.saturating_add(size) > CHANGE_METADATA_BYTES)
         {
             more = true;
             break;
         }
-        let change_id: i64 = row.get(0)?;
-        let mut links=db.prepare("SELECT field,content_id,byte_offset,byte_length,encoding FROM stream_change_content WHERE change_id=?1 ORDER BY field")?;
-        let bodies = links
-            .query_map([change_id], |r| {
-                Ok((
-                    r.get(0)?,
-                    ContentRange {
-                        id: r.get(1)?,
-                        offset: r.get(2)?,
-                        length: r.get(3)?,
-                    },
-                    r.get::<_, String>(4)?,
-                ))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        bytes += metadata.len();
-        changes.push(StoredChange {
-            first_cursor: row.get(1)?,
-            last_cursor: row.get(2)?,
-            event_type: row.get(3)?,
-            metadata: serde_json::from_str(&metadata)?,
-            bodies: bodies
-                .into_iter()
-                .map(|(field, range, encoding)| Ok((field, range, Encoding::parse(&encoding)?)))
-                .collect::<Result<_>>()?,
-        });
+        bytes = bytes.saturating_add(size);
+        ids.push(row.get::<_, i64>(0)?);
     }
-    Ok(ChangePage {
+    let changes = super::compact::read_encoded(db, &ids)?;
+    Ok(EncodedChangePage {
         changes,
         durable_cursor: cursor,
         has_more: more,
@@ -360,7 +340,18 @@ pub(crate) fn append_boundary(
         [id],
         |row| row.get(0),
     )?;
-    tx.execute("INSERT INTO stream_changes(stream_id,first_cursor,last_cursor,event_type,metadata_json) VALUES (?1,?2,?2,?3,?4)",params![id,cursor,event_type,metadata.to_string()])?;
+    super::compact::publish(
+        tx,
+        id,
+        &Change {
+            first_cursor: cursor,
+            last_cursor: cursor,
+            event_type: event_type.into(),
+            metadata,
+            bodies: Vec::new(),
+        },
+        Vec::new(),
+    )?;
     tx.execute(
         "UPDATE stream_runs SET durable_cursor=?2 WHERE id=?1",
         params![id, cursor],

@@ -260,9 +260,10 @@ pub(crate) fn reclaim_retired(db: &mut Connection) -> Result<bool> {
     database::try_maintenance_transaction(db, |tx| {
         tx.execute("DELETE FROM stream_change_content WHERE (change_id,field) IN (SELECT b.change_id,b.field FROM stream_change_content b JOIN stream_changes c ON c.id=b.change_id WHERE c.stream_id=?1 LIMIT 64)",[id])?;
         tx.execute("DELETE FROM stream_changes WHERE id IN (SELECT c.id FROM stream_changes c WHERE c.stream_id=?1 AND NOT EXISTS(SELECT 1 FROM stream_change_content b WHERE b.change_id=c.id) LIMIT 64)",[id])?;
+        tx.execute("DELETE FROM stream_contexts WHERE id IN (SELECT x.id FROM stream_contexts x WHERE x.stream_id=?1 AND NOT EXISTS(SELECT 1 FROM stream_changes c WHERE c.context_id=x.id) LIMIT 64)",[id])?;
         let prefix = format!("[{},{epoch},", serde_json::to_string(&run)?);
         tx.execute("DELETE FROM content_references WHERE (session_id,owner_kind,owner_id,field) IN (SELECT session_id,owner_kind,owner_id,field FROM content_references WHERE session_id=?1 AND owner_kind='stream' AND owner_id>=?2 AND owner_id<?3 LIMIT 64)",params![session,prefix,format!("{prefix}\u{10ffff}")])?;
-        let remaining: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM stream_changes WHERE stream_id=?1) OR EXISTS(SELECT 1 FROM content_references WHERE session_id=?2 AND owner_kind='stream' AND owner_id>=?3 AND owner_id<?4)",params![id,session,prefix,format!("{prefix}\u{10ffff}")],|row|row.get(0))?;
+        let remaining: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM stream_changes WHERE stream_id=?1) OR EXISTS(SELECT 1 FROM stream_contexts WHERE stream_id=?1) OR EXISTS(SELECT 1 FROM content_references WHERE session_id=?2 AND owner_kind='stream' AND owner_id>=?3 AND owner_id<?4)",params![id,session,prefix,format!("{prefix}\u{10ffff}")],|row|row.get(0))?;
         if !remaining {
             tx.execute("DELETE FROM stream_runs WHERE id=?1", [id])?;
         }

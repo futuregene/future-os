@@ -21,6 +21,31 @@ struct Group {
     change: Change,
 }
 
+// Delta clocks denote the last fragment of a coalesced range. All other
+// metadata must match; otherwise collapsing it would discard a semantic fact.
+fn same_delta_metadata(left: &Value, right: &Value) -> bool {
+    fn object_eq(left: &Value, right: &Value, skip: &[&str], data: bool) -> bool {
+        let (Some(left), Some(right)) = (left.as_object(), right.as_object()) else {
+            return left == right;
+        };
+        let keys = left
+            .keys()
+            .chain(right.keys())
+            .filter(|key| !skip.contains(&key.as_str()));
+        keys.into_iter()
+            .all(|key| match (left.get(key), right.get(key)) {
+                (Some(a), Some(b)) if data && key == "data" => object_eq(
+                    a,
+                    b,
+                    &["content_offset", "content_bytes", "content_first_idx"],
+                    false,
+                ),
+                (a, b) => a == b,
+            })
+    }
+    object_eq(left, right, &["timestamp"], true)
+}
+
 impl Writer {
     /// A failed attempt retains the caller's immutable batch. Rolling hashes
     /// advance only after all commits succeed; partial commits retry verbatim.
@@ -51,6 +76,7 @@ impl Writer {
             let combine = group.as_ref().is_some_and(|g| {
                 g.stream == stream
                     && g.change.event_type == change.event_type
+                    && same_delta_metadata(&g.change.metadata, &change.metadata)
                     && g.change.last_cursor + 1 == change.first_cursor
                     && g.change.bodies.len() == 1
                     && change.bodies.len() == 1
@@ -65,6 +91,7 @@ impl Writer {
                         change.event_type.as_str(),
                         "text_chunk" | "thinking_delta" | "tool_delta"
                     )
+                    && g.change.metadata["data"]["snapshot"] != true
                     && change.metadata["data"]["snapshot"] != true
             });
             if combine {
@@ -569,13 +596,14 @@ impl SqliteStore {
         limit: usize,
     ) -> Result<Vec<crate::rpc::SseEvent>> {
         let scope = stream.clone();
-        let page = self.db.read(move |db| {
+        let (page, identity) = self.db.read(move |db| {
             let tx = db.transaction()?;
-            let page = read_changes(&tx, &scope, since, limit)?;
+            let identity = super::transport::storage_identity(&tx)?;
+            let page = read_encoded_changes(&tx, &scope, since, limit)?;
             tx.commit()?;
-            Ok(page)
+            Ok((page, identity))
         })?;
-        let identity = self.storage_identity()?;
+        let page = page.decode()?;
         let mut events = Vec::new();
         let mut bytes = 0usize;
         for change in page.changes {
@@ -656,12 +684,18 @@ impl SqliteStore {
                     break;
                 }
                 let identity = stream.clone();
+                let expected_storage = storage_identity.clone();
                 let page = self.db.read(move |db| {
                     let tx = db.transaction()?;
-                    let page = read_changes(&tx, &identity, cursor, remaining.min(128))?;
+                    ensure!(
+                        super::transport::storage_identity(&tx)? == expected_storage,
+                        "storage identity changed during replay"
+                    );
+                    let page = read_encoded_changes(&tx, &identity, cursor, remaining.min(128))?;
                     tx.commit()?;
                     Ok(page)
                 })?;
+                let page = page.decode()?;
                 for change in page.changes {
                     ensure!(
                         change.last_cursor <= page.durable_cursor,

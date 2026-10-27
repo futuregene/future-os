@@ -179,7 +179,7 @@ impl SqliteStore {
         let id = recipe.header.id.clone();
         let (s, r, entry) = (scope.clone(), recipe.run.clone(), id.clone());
         let boundary=self.db.read(move |db| {
-            let cursor:Option<i64>=db.query_row("SELECT c.last_cursor FROM stream_runs r JOIN stream_changes c ON c.stream_id=r.id WHERE r.session_id=?1 AND r.run_id=?2 AND r.epoch=?3 AND json_extract(c.metadata_json,'$.data.entry_id')=?4 AND c.event_type='message_end' AND c.event_type IN ('message_end','tool_start','tool_input_end') AND c.last_cursor<=r.durable_cursor AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=r.id) ORDER BY c.last_cursor DESC LIMIT 1",
+            let cursor:Option<i64>=db.query_row("SELECT c.last_cursor FROM stream_runs r JOIN stream_changes c ON c.stream_id=r.id JOIN stream_contexts x ON x.id=c.context_id AND x.stream_id=r.id WHERE r.session_id=?1 AND r.run_id=?2 AND r.epoch=?3 AND x.entry_id=?4 AND c.event_kind=4 AND c.event_kind IN (4,11,13) AND c.last_cursor<=r.durable_cursor AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=r.id) ORDER BY c.last_cursor DESC LIMIT 1",
                 params![s.session_id,r,s.epoch,entry],|row|row.get(0)).optional()?;
             cursor.context("assistant message end is not committed")
         })?;
@@ -350,7 +350,7 @@ impl SqliteStore {
         let session = session.to_owned();
         self.db.call(move |db| {
             let tx=crate::session::database::begin_write_transaction(db)?;
-            let valid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM stream_runs r JOIN stream_changes c ON c.stream_id=r.id WHERE r.session_id=?1 AND r.run_id=?2 AND r.epoch=?3 AND c.last_cursor=?4 AND c.event_type='message_end' AND json_extract(c.metadata_json,'$.data.entry_id')=?5 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=r.id))",
+            let valid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM stream_runs r JOIN stream_changes c ON c.stream_id=r.id JOIN stream_contexts x ON x.id=c.context_id AND x.stream_id=r.id WHERE r.session_id=?1 AND r.run_id=?2 AND r.epoch=?3 AND c.last_cursor=?4 AND c.event_kind=4 AND x.entry_id=?5 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=r.id))",
                 params![session,scope.run_id,scope.epoch,boundary,id],|row|row.get(0))?;
             ensure!(valid,"source changed before assistant header publication");
             crate::session::sqlite_store::insert_transcript_entries(&tx,&session,vec![value])?;
@@ -404,29 +404,27 @@ impl SqliteStore {
         self.db.read(move |db| {
             let tx=db.transaction()?;
             let kind_filter=match kind.as_str() {
-                "thinking_end" => "c.event_type='thinking_end'",
-                "tool_input_end" => "c.event_type='tool_input_end' AND c.event_type IN ('message_end','tool_start','tool_input_end')",
-                "tool_start" => "c.event_type='tool_start' AND c.event_type IN ('message_end','tool_start','tool_input_end')",
-                "tool_input" => "c.event_type IN ('tool_start','tool_delta') AND c.event_type IN ('tool_start','tool_delta','tool_input_end')",
+                "thinking_end" => "c.event_kind=10",
+                "tool_input_end" => "c.event_kind=13 AND c.event_kind IN (4,11,13)",
+                "tool_start" => "c.event_kind=11 AND c.event_kind IN (4,11,13)",
+                "tool_input" => "c.event_kind IN (11,12) AND c.event_kind IN (11,12,13)",
                 _ => anyhow::bail!("unknown source field selector"),
             };
-            let key_filter=if key.is_some() {"json_extract(c.metadata_json,'$.data.content_key')=?7"} else {"?7 IS NULL"};
-            let tool_filter=if tool.is_some() {"coalesce(json_extract(c.metadata_json,'$.data.tool_id'),'')=?8"} else {"?8 IS NULL"};
-            let index_filter=if index.is_some() {"coalesce(json_extract(c.metadata_json,'$.data.tc_index'),0)=?9"} else {"?9 IS NULL"};
+            let key_filter=if key.is_some() {"x.content_key=?7"} else {"?7 IS NULL"};
+            let tool_filter=if tool.is_some() {"coalesce(x.tool_id,'')=?8"} else {"?8 IS NULL"};
+            let index_filter=if index.is_some() {"coalesce(x.tc_index,0)=?9"} else {"?9 IS NULL"};
             // Only static clauses vary. Direct equality lets the expression
             // indexes find a single end/key/tool without scanning token rows.
-            let sql=format!("SELECT c.id,c.last_cursor,c.metadata_json FROM stream_runs r JOIN stream_changes c ON c.stream_id=r.id WHERE r.session_id=?1 AND r.run_id=?2 AND r.epoch=?3 AND json_extract(c.metadata_json,'$.data.entry_id')=?4 AND c.last_cursor<=?5 AND c.last_cursor<=r.durable_cursor
+            let context_index=if key.is_some() {"stream_contexts_key"} else if tool.is_some() {"stream_contexts_tool"} else {"stream_contexts_entry"};
+            let sql=format!("SELECT c.id,c.last_cursor FROM stream_runs r JOIN stream_contexts x INDEXED BY {context_index} ON x.stream_id=r.id JOIN stream_changes c INDEXED BY stream_changes_context ON c.context_id=x.id AND c.stream_id=r.id WHERE r.session_id=?1 AND r.run_id=?2 AND r.epoch=?3 AND x.entry_id=?4 AND c.last_cursor<=?5 AND c.last_cursor<=r.durable_cursor
                 AND ?6 IS NOT NULL AND {kind_filter} AND {key_filter} AND {tool_filter} AND {index_filter}
                 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=r.id) ORDER BY c.last_cursor DESC LIMIT 1");
-            let row:Option<(i64,i64,String)>=tx.query_row(&sql,
-                params![scope.session_id,scope.run_id,scope.epoch,entry,until,kind,key,tool,index],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
-            let Some((change,cursor,metadata))=row else {return Ok(None);};
-            let metadata:Value=serde_json::from_str(&metadata)?;
-            let mut query=tx.prepare("SELECT field,content_id,byte_offset,byte_length,encoding FROM stream_change_content WHERE change_id=?1")?;
-            let links=query.query_map([change],|row|Ok((row.get::<_,String>(0)?,ContentRange{id:row.get(1)?,offset:row.get(2)?,length:row.get(3)?},row.get::<_,String>(4)?)))?
-                .collect::<rusqlite::Result<Vec<_>>>()?.into_iter().map(|(field,range,encoding)|Ok((field,range,Encoding::parse(&encoding)?))).collect::<Result<Vec<_>>>()?;
-            drop(query);tx.commit()?;
-            Ok(Some(Source {cursor,data:metadata["data"].clone(),links}))
+            let row:Option<(i64,i64)>=tx.query_row(&sql,
+                params![scope.session_id,scope.run_id,scope.epoch,entry,until,kind,key,tool,index],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+            let Some((change,cursor))=row else {return Ok(None);};
+            let source = super::compact::read_ids(&tx,&[change])?.pop().context("source change is missing")?;
+            tx.commit()?;
+            Ok(Some(Source {cursor,data:source.metadata["data"].clone(),links:source.bodies}))
         })
     }
 }
