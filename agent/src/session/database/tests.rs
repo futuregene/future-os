@@ -360,3 +360,56 @@ fn a_panicking_job_leaves_later_callers_with_a_disconnected_worker() {
         "shutdown after a worker panic must report it, not report success"
     );
 }
+
+/// A database written by an older build carries metadata snapshots as its
+/// activity stamps. Opening it repairs them once, and the marker keeps a later
+/// open from reading the whole transcript again.
+#[test]
+fn opening_recovers_activity_stamps_pushed_forward_by_a_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("agent.db");
+    let db = Database::open(&path).unwrap();
+    db.call(|connection| {
+        connection.execute_batch(
+            "INSERT INTO sessions(id,created_at_ms,updated_at_ms) VALUES ('s',1000,9000);
+             INSERT INTO entries(session_id,position,entry_id,entry_type,role,timestamp_ms,metadata_json)
+                 VALUES ('s',0,'u','user','user',1000,'{}'),
+                        ('s',1,'i','session_info','system',9000,'{}');",
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let stamp = |db: &Database| -> (i64, bool) {
+        db.call(|connection| {
+            Ok(connection.query_row(
+                "SELECT (SELECT updated_at_ms FROM sessions WHERE id='s'),
+                        EXISTS(SELECT 1 FROM storage_meta WHERE key='activity_stamps_repaired')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .unwrap()
+    };
+    // The open that created the rows already ran the pass, so replay the
+    // pre-fix state: a snapshot stamp above the newest message, no marker.
+    db.call(|connection| {
+        connection.execute_batch(
+            "UPDATE sessions SET updated_at_ms=9000 WHERE id='s';
+             DELETE FROM storage_meta WHERE key='activity_stamps_repaired';",
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    drop(db);
+
+    let reopened = Database::open(&path).unwrap();
+    assert_eq!(
+        stamp(&reopened),
+        (1000, true),
+        "the newest message is the activity stamp, and the repair is marked done"
+    );
+    drop(reopened);
+    // A second open finds the marker and leaves the stamp alone.
+    let again = Database::open(&path).unwrap();
+    assert_eq!(stamp(&again), (1000, true));
+}

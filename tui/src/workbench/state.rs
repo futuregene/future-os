@@ -680,11 +680,25 @@ pub enum GitSection {
     Status,
     /// `git stash list`.
     Stash,
+    /// The repository's checkouts — `git worktree list`. `enter` moves the
+    /// session's workspace to the chosen one, so the other tabs read it.
+    Worktrees,
+    /// Local branches, with the current one marked. `enter` narrows the log to
+    /// the chosen branch — entering its line of work without leaving the
+    /// checkout alone.
+    Branches,
 }
 
 impl GitSection {
     /// Every section, in tab order.
-    pub const ALL: [GitSection; 4] = [Self::Commits, Self::Refs, Self::Status, Self::Stash];
+    pub const ALL: [GitSection; 6] = [
+        Self::Commits,
+        Self::Refs,
+        Self::Status,
+        Self::Stash,
+        Self::Worktrees,
+        Self::Branches,
+    ];
 }
 
 /// What one field of a `/git` row *is*, so the painter colours it by meaning

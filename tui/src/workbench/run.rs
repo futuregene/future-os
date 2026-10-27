@@ -109,6 +109,9 @@ pub async fn run(options: Options) -> Result<(), String> {
     workbench.set_theme(&live.theme_id);
     workbench.set_language(live::persisted_language(&settings));
     workbench.set_preferences(layout_preferences(&settings, mouse_capture));
+    // The folds are the rail's own memory, not the layout's, so they are applied
+    // beside it: a rail the reader organised comes back organised.
+    workbench.set_folded_workspaces(settings.folded_workspaces.clone().unwrap_or_default());
     workbench.keys = super::preferences::Keybindings::load(&super::preferences::keybindings_path(
         &options.settings_path,
     ));
@@ -428,12 +431,18 @@ async fn event_loop(
                     sessions_poll = Instant::now();
                     changed = live.refresh_sessions().await;
                 }
+                // The workspace's branch and the `@` menu's files are read on
+                // their own threads (see `Live::poll_local_reads`): a workspace
+                // that moved pays no process spawn in the loop, and this clock
+                // is what puts the answer on screen when it arrives.
+                let arrived = live.poll_local_reads();
                 paint = clock.tick(
                     animating,
                     workbench.spinner_frame(),
                     ages_on_screen(&frame),
                     Instant::now(),
-                ) || changed;
+                ) || changed
+                    || arrived;
             }
         }
     }
@@ -1076,6 +1085,21 @@ async fn quit(
         }
         if matches!(action, WbAction::OpenApproval) {
             workbench.overlay = Some(super::Overlay::Approval);
+            continue;
+        }
+        // `enter` on a `/git` worktree row: the panel's reads are rooted in the
+        // session's workspace, so entering a worktree moves the session there
+        // (the same `set_cwd` `/worktree` uses) and then re-reads the panel in
+        // the new checkout — the rows on screen would otherwise still describe
+        // the one the reader just left.
+        if let WbAction::GitWorktree(path) = &action {
+            let path = path.clone();
+            live.select_worktree(&path).await;
+            let (section, filter) = live
+                .git()
+                .map(|git| (git.section, git.filter.clone()))
+                .unwrap_or((GitSection::Worktrees, None));
+            open_git_panel(live, frame, workbench, section, filter, 0, true).await;
             continue;
         }
         // `/git`: the panel's data is the driver's to read (the surface owns no
@@ -1849,6 +1873,9 @@ fn persist_preferences(workbench: &Workbench, settings: &mut TuiSettings, path: 
     settings.mouse_capture = Some(preferences.mouse_capture);
     settings.notify = Some(preferences.notify);
     settings.reduced_motion = Some(preferences.reduced_motion);
+    // Which workspaces the reader folded shut survives a restart; the search text
+    // does not (see `TuiSettings::folded_workspaces`).
+    settings.folded_workspaces = Some(workbench.folded_workspaces());
     save_settings(path, settings);
 }
 
@@ -2359,6 +2386,31 @@ mod tests {
         assert!(layout_preferences(&shown, true).sidebar_visible);
         let hidden = TuiSettings::from_json(&serde_json::json!({"sidebarVisible": false}));
         assert!(!layout_preferences(&hidden, true).sidebar_visible);
+    }
+
+    /// The workspaces the reader folded shut survive a restart through the same
+    /// file the layout uses.
+    #[test]
+    fn folded_workspaces_reach_the_settings_file_and_come_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+
+        let mut workbench = super::super::Workbench::new();
+        workbench.set_folded_workspaces(["/src/future-os".to_string(), "/src/mobile".into()]);
+        let mut settings = TuiSettings::default();
+        persist_preferences(&workbench, &mut settings, &path);
+
+        // Read the file back, not the value the writer kept: the point is that a
+        // *next start* sees the folds.
+        let written = load_settings(&path);
+        assert_eq!(
+            written.folded_workspaces,
+            Some(vec!["/src/future-os".into(), "/src/mobile".into()])
+        );
+
+        let mut restored = super::super::Workbench::new();
+        restored.set_folded_workspaces(written.folded_workspaces.unwrap_or_default());
+        assert_eq!(restored.folded_workspaces(), workbench.folded_workspaces());
     }
 
     /// A held `shift+↑/↓` opens one conversation, the one the reader stops on.

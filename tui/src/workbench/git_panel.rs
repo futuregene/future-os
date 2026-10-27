@@ -1,4 +1,5 @@
-//! `/git` — a read-only repository browser: log, refs, working tree, stashes.
+//! `/git` — a repository browser: log, refs, working tree, stashes, worktrees,
+//! branches.
 //!
 //! The shape is tig's: one panel whose tab decides what the list holds, a
 //! detail pane beside it, and the graph drawn in the log because a log without
@@ -8,6 +9,12 @@
 //! `/worktree` follow, for the same reason — a panel that can rewrite the
 //! reader's tree is a footgun one keypress away, and every one of those verbs
 //! already belongs to the agent or to a shell.
+//!
+//! Two tabs do reach past the current checkout without writing to it: 工作区
+//! lists the repository's worktrees and `enter` moves the session to one (the
+//! same `set_cwd` `/worktree` uses), and 分支 lists the local branches with
+//! `enter` narrowing the log to one. Both only change what the panel reads —
+//! no branch is switched, nothing is staged, no tree is touched.
 //!
 //! Three properties the reads keep:
 //!
@@ -106,6 +113,8 @@ pub fn rows(cwd: &Path, section: GitSection, filter: Option<&str>) -> Result<Vec
         GitSection::Refs => refs(cwd),
         GitSection::Status => status(cwd),
         GitSection::Stash => stashes(cwd),
+        GitSection::Worktrees => worktrees(cwd),
+        GitSection::Branches => branches(cwd),
     }
 }
 
@@ -286,6 +295,160 @@ pub fn parse_refs(text: &str) -> Vec<GitRow> {
         .collect()
 }
 
+/// The repository's checkouts, from `git worktree list --porcelain`: the main
+/// worktree first, then every other, each with the branch it holds.
+///
+/// A worktree row is a *place*, not a commit: `enter` moves the session's
+/// workspace there (`set_cwd`, the verb `/worktree` already uses), which is the
+/// only way this panel reads another checkout — the reads themselves stay
+/// rooted in one directory.
+fn worktrees(cwd: &Path) -> Result<Vec<GitRow>, String> {
+    let text = git(cwd, &["worktree", "list", "--porcelain"], QUERY_TIMEOUT)?;
+    Ok(parse_worktrees(&text, cwd))
+}
+
+/// Parse `git worktree list --porcelain` into one row per worktree.
+///
+/// Porcelain prints blank-line-separated blocks of `key value` lines; the keys
+/// this panel reads are `worktree`, `branch`, `detached`, `bare` and `locked`.
+/// The block's path is both the key and the row's own name — a worktree is
+/// identified by where it is, and two branches with the same short name can be
+/// checked out in two places.
+pub fn parse_worktrees(text: &str, cwd: &Path) -> Vec<GitRow> {
+    let current = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    let mut rows = Vec::new();
+    // A block is the stretch between blank lines; the trailing blank line
+    // leaves one empty stretch, which has no `worktree` line and is skipped.
+    for block in text.split("\n\n") {
+        let mut path = None;
+        let mut branch = None;
+        let mut detached = false;
+        let mut bare = false;
+        let mut locked = false;
+        for line in block.lines() {
+            if let Some(rest) = line.strip_prefix("worktree ") {
+                path = Some(rest.trim().to_string());
+            } else if let Some(rest) = line.strip_prefix("branch ") {
+                let name = rest.trim();
+                branch = Some(name.strip_prefix("refs/heads/").unwrap_or(name).to_string());
+            } else if line == "detached" {
+                detached = true;
+            } else if line == "bare" {
+                bare = true;
+            } else if line == "locked" || line.starts_with("locked ") {
+                locked = true;
+            }
+        }
+        let Some(path) = path else {
+            continue;
+        };
+        // What the worktree *holds* leads: the branch is the reason a reader
+        // looks at this tab, and the path is the long part beside it.
+        let state = match (branch, detached, bare) {
+            (Some(branch), _, _) => branch,
+            (None, true, _) => "detached".to_string(),
+            (None, _, true) => "bare".to_string(),
+            (None, _, _) => String::new(),
+        };
+        let mut pieces = Vec::new();
+        let mut kinds = Vec::new();
+        if !state.is_empty() {
+            pieces.push(state);
+            kinds.push(GitKind::Ref);
+        }
+        pieces.push(path.clone());
+        kinds.push(GitKind::Meta);
+        if locked {
+            pieces.push("locked".to_string());
+            kinds.push(GitKind::Meta);
+        }
+        // Both spellings of the same place: the path git printed and the path
+        // the session was moved to may differ by a symlink or a `..`.
+        let here = Path::new(&path)
+            .canonicalize()
+            .map(|resolved| resolved == current)
+            .unwrap_or(false)
+            || Path::new(&path) == cwd;
+        rows.push(GitRow {
+            key: Some(path),
+            prefix: if here {
+                "● ".to_string()
+            } else {
+                String::new()
+            },
+            pieces,
+            kinds,
+        });
+    }
+    rows
+}
+
+/// Local branches, most recently committed first.
+///
+/// The refs tab lists everything (`refs/heads`, `refs/remotes`, `refs/tags`) in
+/// one timeline. This one is the working set: only the branches this checkout
+/// can enter, named the way a reader types them, keyed by that short name so
+/// the log filter it feeds is the same string.
+fn branches(cwd: &Path) -> Result<Vec<GitRow>, String> {
+    const FORMAT: &str =
+        "--format=%(refname:short)\u{1f}%(objectname:short)\u{1f}%(committerdate:short)\u{1f}%(upstream:short)\u{1f}%(upstream:track)\u{1f}%(HEAD)\u{1f}%(subject)";
+    let text = git(
+        cwd,
+        &[
+            "for-each-ref",
+            "--sort=-committerdate",
+            FORMAT,
+            "refs/heads",
+        ],
+        QUERY_TIMEOUT,
+    )?;
+    Ok(parse_branches(&text))
+}
+
+/// Parse [`branches`]' output into `name · upstream · sha · date · subject`
+/// rows keyed by the short branch name, which is what the log filter and
+/// `git show` both take.
+pub fn parse_branches(text: &str) -> Vec<GitRow> {
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let fields: Vec<&str> = line.split(FIELD).collect();
+            let name = fields.first().copied().unwrap_or("").to_string();
+            let sha = fields.get(1).copied().unwrap_or("");
+            let date = fields.get(2).copied().unwrap_or("");
+            let upstream = fields.get(3).copied().unwrap_or("");
+            let track = fields.get(4).copied().unwrap_or("");
+            let head = fields.get(5).copied().unwrap_or("");
+            let subject = fields.get(6).copied().unwrap_or("").trim();
+            let mut pieces = Vec::new();
+            let mut kinds = Vec::new();
+            for (piece, kind) in [
+                (name.as_str(), GitKind::Ref),
+                (track, GitKind::Meta),
+                (upstream, GitKind::Meta),
+                (sha, GitKind::Sha),
+                (date, GitKind::Meta),
+                (subject, GitKind::Plain),
+            ] {
+                if !piece.is_empty() {
+                    pieces.push(piece.to_string());
+                    kinds.push(kind);
+                }
+            }
+            GitRow {
+                key: Some(name),
+                prefix: if head == "*" {
+                    "● ".to_string()
+                } else {
+                    String::new()
+                },
+                pieces,
+                kinds,
+            }
+        })
+        .collect()
+}
+
 /// The working tree, from the same porcelain read `/diff` uses: tracked edits
 /// and untracked files, in git's order.
 fn status(cwd: &Path) -> Result<Vec<GitRow>, String> {
@@ -396,8 +559,42 @@ pub fn detail(
             Ok(bounded_lines(&review.patch))
         }
         GitSection::Stash => stash_detail(cwd, key),
+        GitSection::Branches => ref_detail(cwd, key, lang),
+        GitSection::Worktrees => worktree_detail(key, lang),
     };
     lines.map_err(|error| spoken(lang, error))
+}
+
+/// A worktree's own record: its status and its tip, read *in* that directory.
+///
+/// The row's key is the worktree's path, so this is the one detail read that
+/// starts somewhere other than the session's workspace — and it is still a
+/// read: `status --short --branch` and `log -1` write nothing. A path that has
+/// been deleted out from under the list answers with git's own error, which is
+/// the truth the reader needs.
+fn worktree_detail(path: &str, lang: Language) -> Result<Vec<String>, String> {
+    let dir = Path::new(path);
+    let status = git(dir, &["status", "--short", "--branch"], SHOW_TIMEOUT)?;
+    let mut lines = bounded_lines(&status);
+    let tip = git(
+        dir,
+        &[
+            "log",
+            "-1",
+            "--no-color",
+            "--no-ext-diff",
+            "--date=short",
+            "--stat",
+            t(lang, Key::GitTipFormat),
+            "--",
+        ],
+        SHOW_TIMEOUT,
+    )?;
+    if !lines.is_empty() && !tip.trim().is_empty() {
+        lines.push(String::new());
+    }
+    lines.extend(bounded_lines(&tip));
+    Ok(lines)
 }
 
 /// A ref's own record: which ref it is, how its upstream stands, and its tip.
@@ -782,6 +979,122 @@ mod tests {
             .iter()
             .filter_map(|row| row.pieces.first())
             .any(|subject| subject == "second commit"));
+    }
+
+    /// Worktree blocks: the branch leads, the path is the key, and the checkout
+    /// the session is in is marked — including a detached one and a locked one.
+    #[test]
+    fn worktree_blocks_keep_their_branch_and_mark_this_checkout() {
+        let cwd = Path::new("/w/future-os/.worktrees/git-panel-layout");
+        let rows = parse_worktrees(
+            "worktree /w/future-os\nHEAD abc1234\nbranch refs/heads/dev-huichen\n\n\
+             worktree /w/future-os/.worktrees/git-panel-layout\nHEAD def5678\nbranch refs/heads/feat/git-panel-layout\n\n\
+             worktree /w/detached\nHEAD 1234567\ndetached\n\n\
+             worktree /w/bare\nbare\n\n\
+             worktree /w/locked\nHEAD 89abcde\ndetached\nlocked another session\n",
+            cwd,
+        );
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows[0].pieces[0], "dev-huichen", "the branch leads");
+        assert_eq!(rows[0].key.as_deref(), Some("/w/future-os"));
+        assert_eq!(rows[0].prefix, "", "the main worktree is elsewhere");
+        assert_eq!(rows[1].prefix, "● ", "this checkout is marked");
+        assert_eq!(rows[1].pieces[1], cwd.display().to_string());
+        assert_eq!(rows[2].pieces[0], "detached");
+        assert_eq!(rows[2].pieces.len(), 2, "a detached worktree has no branch");
+        assert_eq!(rows[3].pieces[0], "bare");
+        assert_eq!(rows[4].pieces.last().map(String::as_str), Some("locked"));
+    }
+
+    /// Branch rows are keyed by the short name — the same string the log filter
+    /// and `git show` take — and mark the branch this checkout is on.
+    #[test]
+    fn branch_rows_keep_the_short_name_the_log_filter_takes() {
+        let rows = parse_branches(
+            "dev-huichen\u{1f}abc1234\u{1f}2026-10-27\u{1f}origin/dev-huichen\u{1f}[ahead 2]\u{1f}*\u{1f}second commit\n\
+             feature\u{1f}def5678\u{1f}2026-10-26\u{1f}\u{1f}\u{1f}\u{1f}a feature\n",
+        );
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].key.as_deref(), Some("dev-huichen"));
+        assert_eq!(rows[0].prefix, "● ");
+        assert_eq!(
+            rows[0].pieces,
+            vec![
+                "dev-huichen",
+                "[ahead 2]",
+                "origin/dev-huichen",
+                "abc1234",
+                "2026-10-27",
+                "second commit"
+            ]
+        );
+        assert_eq!(rows[1].prefix, "");
+        assert_eq!(rows[1].key.as_deref(), Some("feature"));
+        // The empty upstream fields were dropped rather than painted as gaps.
+        assert!(!rows[1].pieces.iter().any(|piece| piece.is_empty()));
+    }
+
+    /// The two new sections against a real repository: a worktree added beside
+    /// this one is listed and its detail reads *in* that checkout, and the
+    /// branches are the local ones with the current one marked.
+    #[test]
+    fn a_real_repository_lists_worktrees_and_branches() {
+        let dir = repo();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            output
+        };
+        git(&["worktree", "add", "-q", "second", "feature"]);
+
+        let worktrees = rows(dir.path(), GitSection::Worktrees, None).unwrap();
+        assert_eq!(worktrees.len(), 2);
+        let here = worktrees
+            .iter()
+            .find(|row| row.prefix == "● ")
+            .expect("the checkout this test runs in is marked");
+        assert_eq!(here.pieces[0], "main");
+        let other = worktrees
+            .iter()
+            .find(|row| row.pieces[0] == "feature")
+            .expect("the added worktree is listed with its branch");
+        let text = detail(
+            dir.path(),
+            GitSection::Worktrees,
+            other.key.as_deref().unwrap(),
+            Language::En,
+        )
+        .unwrap()
+        .join("\n");
+        assert!(text.contains("feature"), "its own status is read: {text}");
+
+        let branches = rows(dir.path(), GitSection::Branches, None).unwrap();
+        let names: Vec<&str> = branches.iter().map(|row| row.pieces[0].as_str()).collect();
+        assert!(names.contains(&"main"), "{names:?}");
+        assert!(names.contains(&"feature"), "{names:?}");
+        assert_eq!(
+            branches
+                .iter()
+                .find(|row| row.prefix == "● ")
+                .expect("the checked-out branch is marked")
+                .pieces[0],
+            "main"
+        );
+        // A branch is a revision the log can be filtered to.
+        let log = rows(dir.path(), GitSection::Commits, Some("feature")).unwrap();
+        assert!(log
+            .iter()
+            .filter_map(|row| row.pieces.first())
+            .any(|subject| subject == "feature commit"));
     }
 
     #[test]

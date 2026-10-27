@@ -288,6 +288,7 @@ pub enum Key {
     PanelEmptyGoalTodo,
     PanelEmptyJobs,
     PanelEmptySessions,
+    PanelEmptySearch,
     PanelEmptySkills,
     // ── the picker overlay ────────────────────────────────────────────
     PickerTitleModel,
@@ -326,6 +327,9 @@ pub enum Key {
     ModeAutoDesc,
     ModeOffDesc,
     RailHint,
+    /// The search line's placeholder, and the keys it answers while it is open.
+    RailSearch,
+    RailSearchHint,
     // ── the files panel (its own overlay, not a rail tab) ──────────
     FilesHint,
     FilesNoWorkspace,
@@ -427,10 +431,14 @@ pub enum Key {
     GitTabRefs,
     GitTabStatus,
     GitTabStash,
+    GitTabWorktrees,
+    GitTabBranches,
     GitEmptyCommits,
     GitEmptyRefs,
     GitCleanStatus,
     GitEmptyStash,
+    GitEmptyWorktrees,
+    GitEmptyBranches,
     GitNoRepo,
     /// A `git` that failed with nothing on stderr.
     GitNoMessage,
@@ -624,6 +632,7 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         PanelEmptyGoalTodo => ("这个目标还没有待办", "this goal has no todos yet"),
         PanelEmptyJobs => ("没有定时任务", "no scheduled jobs"),
         PanelEmptySessions => ("没有会话", "no sessions"),
+        PanelEmptySearch => ("没有匹配的会话", "no matching sessions"),
         PanelEmptySkills => ("没有技能", "no skills"),
 
         PickerTitleModel => ("模型", "Models"),
@@ -720,6 +729,11 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         RailHint => (
             "shift+←→ 页签 · shift+↑↓ 切换会话",
             "shift+←→ tabs · shift+↑↓ switches session",
+        ),
+        RailSearch => ("搜索会话", "Search sessions"),
+        RailSearchHint => (
+            "输入筛选 · ⏎ 保留 · esc 清除",
+            "type to filter · enter keeps · esc clears",
         ),
         FilesHint => (
             "↑↓ 选择 · ⏎ 打开 · ⌫ 上一层 · r 刷新 · esc 关闭",
@@ -833,25 +847,29 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         WorktreeEmpty => ("没有可显示的 worktree", "No worktrees to show"),
         WorktreeCreating => ("正在创建 worktree…", "Creating worktree…"),
         CmdGit => (
-            "浏览 git 仓库：提交、引用、改动、stash",
-            "Browse the git repository: commits, refs, changes, stashes",
+            "浏览 git 仓库：提交、引用、改动、stash、worktree、分支",
+            "Browse the git repository: commits, refs, changes, stashes, worktrees, branches",
         ),
         CmdFiles => (
             "打开本会话的工作区文件树",
             "Open this conversation's workspace files",
         ),
         GitHint => (
-            "1-4 视图 · ↑↓ 选择 · tab 列表/详情 · PgUp/PgDn 详情翻页 · ⏎ 打开 · y 复制 · r 刷新 · esc 关闭",
-            "1-4 views · ↑↓ select · tab list/detail · PgUp/PgDn pages the detail · enter opens · y copies · r refreshes · esc closes",
+            "1-6 视图 · ↑↓ 选择 · tab 列表/详情 · ←→ 横向滚动 · PgUp/PgDn 详情翻页 · ⏎ 打开 · y 复制 · r 刷新 · esc 关闭",
+            "1-6 views · ↑↓ select · tab list/detail · ←→ scrolls horizontally · PgUp/PgDn pages the detail · enter opens · y copies · r refreshes · esc closes",
         ),
         GitTabCommits => ("提交", "commits"),
         GitTabRefs => ("引用", "refs"),
         GitTabStatus => ("改动", "changes"),
         GitTabStash => ("储藏", "stash"),
+        GitTabWorktrees => ("工作区", "worktrees"),
+        GitTabBranches => ("分支", "branches"),
         GitEmptyCommits => ("没有提交", "No commits"),
         GitEmptyRefs => ("没有分支或标签", "No branches or tags"),
         GitCleanStatus => ("工作区没有未提交改动", "No uncommitted changes"),
         GitEmptyStash => ("没有 stash", "No stashes"),
+        GitEmptyWorktrees => ("没有 worktree", "No worktrees"),
+        GitEmptyBranches => ("没有分支", "No branches"),
         GitNoRepo => (
             "当前工作区不是 git 仓库",
             "This workspace is not a git repository",
@@ -1281,7 +1299,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 305] = {
+    const ALL_KEYS: [Key; 312] = {
         use Key::*;
         [
             TabTodo,
@@ -1315,6 +1333,7 @@ mod tests {
             PanelEmptyGoalTodo,
             PanelEmptyJobs,
             PanelEmptySessions,
+            PanelEmptySearch,
             PanelEmptySkills,
             PickerTitleModel,
             PickerTitleTheme,
@@ -1352,6 +1371,8 @@ mod tests {
             ModeAutoDesc,
             ModeOffDesc,
             RailHint,
+            RailSearch,
+            RailSearchHint,
             FilesHint,
             FilesNoWorkspace,
             LangSystem,
@@ -1446,10 +1467,14 @@ mod tests {
             GitTabRefs,
             GitTabStatus,
             GitTabStash,
+            GitTabWorktrees,
+            GitTabBranches,
             GitEmptyCommits,
             GitEmptyRefs,
             GitCleanStatus,
             GitEmptyStash,
+            GitEmptyWorktrees,
+            GitEmptyBranches,
             GitNoRepo,
             GitNoMessage,
             GitAheadBehind,

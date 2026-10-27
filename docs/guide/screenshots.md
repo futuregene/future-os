@@ -235,6 +235,13 @@ What the flags are for:
   repository to look at: `FUTURE_DEMO_CWD=$PWD tui/scripts/shot.sh git`. Unset,
   the scripted session keeps its fictional `/Users/you/future-os` and the panel
   says the directory is not there.
+- `--scenario streaming` is the one frame that is *in motion*: it types a prompt
+  and submits it, and the demo agent answers with a scripted turn — one
+  `text_chunk` every 120 ms, never an `agent_end` — so the picture is a reply
+  still arriving, with the activity row live and the transcript stopping
+  mid-sentence. Give it long enough to reach the deltas (`--seconds 6`). It is
+  the frame to look at when a change touches streaming, the activity row or the
+  transcript's incremental rendering; a finished reply shows none of that.
 - `--addr <host:port>` attaches to an agent that is already running (a *real*
   session) instead of starting `demo_agent`, and leaves the caller's
   `FUTURE_HOME` alone.

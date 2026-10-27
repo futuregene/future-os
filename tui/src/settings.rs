@@ -57,6 +57,14 @@ pub struct TuiSettings {
     /// Workspace paths pinned in the rail's 置顶 section (`pinnedWorkspaces`),
     /// in the order they were pinned.
     pub pinned_workspaces: Option<Vec<String>>,
+    /// Workspace paths whose conversations the reader folded away in the rail
+    /// (`foldedWorkspaces`), by path — the group's identity, not its name.
+    ///
+    /// A fold is how a long rail is made readable, so it outlives the process
+    /// the way the rail's width does. A search query does not: that is written
+    /// nowhere, because a filter left over from yesterday reads as conversations
+    /// that went missing.
+    pub folded_workspaces: Option<Vec<String>>,
 }
 
 impl TuiSettings {
@@ -125,6 +133,17 @@ impl TuiSettings {
                 ),
             );
         }
+        if let Some(folded) = &self.folded_workspaces {
+            obj.insert(
+                "foldedWorkspaces".into(),
+                Value::Array(
+                    folded
+                        .iter()
+                        .map(|path| Value::String(path.clone()))
+                        .collect(),
+                ),
+            );
+        }
         Value::Object(obj)
     }
 
@@ -167,6 +186,15 @@ impl TuiSettings {
                         .collect()
                 },
             ),
+            folded_workspaces: value.get("foldedWorkspaces").and_then(Value::as_array).map(
+                |paths| {
+                    paths
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                },
+            ),
         }
     }
 }
@@ -198,6 +226,7 @@ mod tests {
             }),
             reduced_motion: Some(true),
             pinned_workspaces: Some(vec!["/src/future-os".into()]),
+            folded_workspaces: Some(vec!["/src/mobile".into()]),
         };
         let back = TuiSettings::from_json(&settings.to_json());
         assert_eq!(back.default_model.as_deref(), Some("future/deepseek-flash"));
@@ -214,6 +243,7 @@ mod tests {
         assert!(!back.notify.unwrap().bell);
         assert_eq!(back.reduced_motion, Some(true));
         assert_eq!(back.pinned_workspaces, Some(vec!["/src/future-os".into()]));
+        assert_eq!(back.folded_workspaces, Some(vec!["/src/mobile".into()]));
     }
 
     #[test]

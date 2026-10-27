@@ -133,6 +133,18 @@ that belong to no workspace — the app's own scratch directories). Usage figure
 live on the status bar, so no panel repeats them; skills are the palette's. With
 the rail focused, `←`/`→` move between the two tabs.
 
+Both tabs list the same conversations, so **one search narrows both**: `/` while
+the rail has the keys opens the line under its tabs (`/ 搜索会话` while it is
+empty and closed, `❯ <query>▏` while it is taking keys), typing narrows the list
+to the conversations whose title, workspace or id matches — case-insensitively —
+and `enter` hands the keys back to the list with the filter still on, `esc`
+clears it. A workspace whose name matches keeps its conversations, and a search
+opens folded groups, because a match the reader cannot see is not a result. A
+fold (`enter` on a workspace heading, or a click) is remembered in
+`~/.future/tui/settings.json` (`foldedWorkspaces`) and is already in force on
+the next start; the query is not written anywhere, since a filter left over from
+yesterday reads as sessions that went missing.
+
 The launchpad is the *body*, not a dialog over the conversation: with no session
 attached the composer fills the surface (the name, the box, workspace / model /
 effort / approval chips) and there is no second input band. The block is centred
@@ -317,7 +329,7 @@ click on the rail's tab strip are the doors to the same places.
 | `ctrl+q` or `/preferences` | Preferences: sidebar position, width and visibility, mouse capture, notifications, reduced motion, interface language, color theme and the shortcut editor. The key is also printed in the footer hint row, so it is on screen while the reader is wondering |
 | `?` (or the full-width `？`) | Help overlay (effective keys, grouped by area, then the commands; the key requires an empty draft). Rows are listed only where an action has a chord — the verbs with none keep their typed door in the command list at the end of the same box |
 | `/lang` | Interface language: opens the picker — follow the system, Chinese or English |
-| `ctrl+e` | Final-answer / full-process reading level: every reply folds its work — the calls and reasoning before its last prose, and, once it settles, the work after it too — into one summary row (`▸ 4 tool calls · 2 thoughts`). A reply that is still running folds the same way, keeping only the call in flight as a row; a reply that never writes prose folds onto the slice it stopped at. Reasoning is collapsed to a `▸ thinking` row at the default level (the way the desktop and the phone show it) while the full-process level prints its text. A view toggle for the run it is pressed in, not a preference: every start opens folded, so a peek at the process cannot leave the next terminal expanded |
+| `ctrl+e` | Final-answer / full-process reading level. A reply that is **still running** reads the way the desktop's live turn does: each burst of finished calls and reasoning folds into its own summary row (`▸ 2 tool calls · 1 thought`), the call in flight stays a row, and every piece of prose the model has written stays on screen, in order — the output between the calls is the reply, not its process. Once a reply **settles**, its whole process — the calls, the reasoning and the notes between them — folds into one summary row above the answer it ends on; a reply that never wrote prose folds onto the slice it stopped at. History loaded from a session folds the same way, so a reopened conversation reads as one answer per reply. Reasoning is collapsed to a `▸ thinking` row at the default level (the way the desktop and the phone show it) while the full-process level prints its text. A view toggle for the run it is pressed in, not a preference: every start opens folded, so a peek at the process cannot leave the next terminal expanded |
 | `ctrl+c` | Quit |
 
 | Mouse | Action |
