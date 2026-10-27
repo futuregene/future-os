@@ -9,7 +9,7 @@
 ## 1. 契约
 
 - 生效列表 = `["default"] + normalize(declared)`；`normalize` 做 trim、去空、去重、去掉保留的
-  `default`、保留声明顺序、上限 16 项 / 每项 32 字符。
+  `default`、按固定展示顺序排序（off → minimal → low → medium → high → xhigh → max，未知 wire 值排在已知值之后并保持声明顺序）、上限 16 项 / 每项 32 字符。
 - 未声明（缺失或空数组）= 只有 `default`；客户端在 `thinkingLevels` **字段缺失**时回退旧六档，
   且绝不向旧 agent 发送字面量 `default`。
 - 存储/请求：不在列表内的档位收敛为 `default`（不再按深度就近吸附）。

@@ -1443,7 +1443,8 @@ mod tests {
         let model = convert_future_model(entry, "https://api.example.com/v1");
         assert_eq!(
             model.thinking_levels,
-            vec!["high".to_string(), "low".to_string()]
+            vec!["low".to_string(), "high".to_string()],
+            "catalogue order is normalized to the fixed display order"
         );
     }
 

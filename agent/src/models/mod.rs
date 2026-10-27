@@ -573,7 +573,7 @@ fn load_user_models_with_overrides(
             }
             // Thinking levels: the model-level list wins the provider-level one;
             // an absent list means "only the implicit default". Entries are wire
-            // values and are kept in declaration order.
+            // values and are normalized into the fixed display order.
             let declared = model
                 .thinking_levels
                 .clone()

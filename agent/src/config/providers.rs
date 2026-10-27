@@ -544,7 +544,7 @@ pub fn apply_provider_upsert(
                     });
                 }
                 if let Some(levels) = model.thinking_levels.as_ref() {
-                    // Entries are wire values, stored in declaration order. The
+                    // Entries are wire values, stored in the fixed display order. The
                     // reserved `default` is implicit and never persisted.
                     entry["thinkingLevels"] = json!(crate::llm::schema::normalize_thinking_levels(
                         &spec.id,

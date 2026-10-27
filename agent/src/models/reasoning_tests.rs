@@ -143,19 +143,38 @@ fn an_explicit_empty_list_means_only_default() {
 }
 
 #[test]
-fn declaration_order_is_kept_and_reserved_entries_are_dropped() {
+fn levels_are_normalized_into_the_fixed_display_order() {
     let model = configured_model(
         "openai-completions",
-        json!({"id": "messy", "thinkingLevels": ["high", " default ", "", "high", "low"]}),
+        json!({"id": "messy", "thinkingLevels": ["high", " default ", "", "high", "xhigh", "low", "max"]}),
     );
     assert_eq!(
         levels(&model),
         vec![
             DEFAULT_THINKING_LEVEL.to_string(),
+            "low".to_string(),
             "high".to_string(),
-            "low".to_string()
+            "xhigh".to_string(),
+            "max".to_string(),
         ],
-        "order is the declaration's, `default` is implicit and duplicates collapse"
+        "known levels follow the product scale; `default` is implicit and duplicates collapse"
+    );
+}
+
+#[test]
+fn unknown_wire_values_keep_their_order_after_known_levels() {
+    let model = configured_model(
+        "openai-completions",
+        json!({"id": "custom-vocab-order", "thinkingLevels": ["turbo", "low", "deep"]}),
+    );
+    assert_eq!(
+        levels(&model),
+        vec![
+            DEFAULT_THINKING_LEVEL.to_string(),
+            "low".to_string(),
+            "turbo".to_string(),
+            "deep".to_string(),
+        ]
     );
 }
 

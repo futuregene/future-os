@@ -191,10 +191,25 @@ pub struct ReasoningCapabilities {
     pub supported: bool,
 }
 
-/// Normalize a configured level list: trim, drop empties and the reserved
-/// `default`, dedupe preserving declared order, cap the count and each name's
-/// length. A dropped entry is logged against the provider/model so a typo is
-/// visible without failing the whole model.
+/// Position of a known level on the fixed display scale, weakest first.
+/// Returns `None` for a wire value the product does not name.
+pub fn thinking_level_rank(name: &str) -> Option<usize> {
+    KNOWN_THINKING_LEVELS
+        .iter()
+        .position(|known| *known == name)
+}
+
+/// Normalize a configured level list into the fixed display order.
+///
+/// Trim, drop empties and the reserved `default`, dedupe, cap the count and
+/// each name's length, then sort: known levels follow [`KNOWN_THINKING_LEVELS`]
+/// (off → … → max), unknown wire values keep their declaration order after the
+/// known ones. Declaration order is a set, not a display sequence — every
+/// picker shows this list untouched, so sorting here is what keeps the order
+/// identical regardless of how the configuration was written.
+///
+/// A dropped entry is logged against the provider/model so a typo is visible
+/// without failing the whole model.
 pub fn normalize_thinking_levels(
     provider: &str,
     model: &str,
@@ -225,6 +240,19 @@ pub fn normalize_thinking_levels(
         }
         out.push(level);
     }
+    // Fixed display order: known levels weakest → strongest, then unknown wire
+    // values in the order the configuration listed them.
+    let mut known: Vec<String> = Vec::new();
+    let mut unknown: Vec<String> = Vec::new();
+    for level in out {
+        if thinking_level_rank(&level).is_some() {
+            known.push(level);
+        } else {
+            unknown.push(level);
+        }
+    }
+    known.sort_by_key(|level| thinking_level_rank(level).unwrap_or(usize::MAX));
+    let out = known.into_iter().chain(unknown).collect();
     if dropped_reserved {
         tracing::warn!(
             provider,
