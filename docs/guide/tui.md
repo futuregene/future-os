@@ -255,7 +255,7 @@ click on the rail's tab strip are the doors to the same places.
 | `ctrl+o` | Preferences and shortcut editor |
 | `alt+h` or `?` | Help overlay (effective keys, grouped by area, then the commands; `?` requires an empty draft) |
 | `/lang` | Interface language: follow the system, Chinese or English |
-| `ctrl+e` | Final-answer / full-process reading level: a settled reply folds its whole work — the calls and reasoning before *and* after its last prose — into one summary row |
+| `ctrl+e` | Final-answer / full-process reading level: a settled reply folds its whole work — the calls and reasoning before *and* after its last prose — into one summary row. A view toggle for the run it is pressed in, not a preference: every start opens folded, so a peek at the process cannot leave the next terminal expanded |
 | `ctrl+c` | Quit |
 
 | Mouse | Action |
@@ -309,7 +309,7 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | Usage / context / cost | `get_state`'s usage block, refreshed on the same events |
 | `ctrl+n` / `/new`, `ctrl+x` stop, `alt+r` refresh | |
 | Launchpad chips | Click 工作区 / 模型 / 强度 / 审批 to cycle them. On the launchpad the workspace, model, effort and approval choices are staged for the session the first message creates (the agent has no session to set them on yet); with a session attached they go over the wire. 工作区 cycles the directories this client has conversations in, and the notice row names the full path it chose |
-| Theme, reading level | Persisted in `~/.future/tui/settings.json` (`tui/src/settings.rs`) |
+| Theme | Persisted in `~/.future/tui/settings.json` (`tui/src/settings.rs`); the reading level is deliberately not — `ctrl+e` is per run |
 
 ## What is not here yet
 
