@@ -389,6 +389,7 @@ fn demo_models() -> Vec<ModelChoice> {
             thinking_level: "default".into(),
             thinking_levels: declared(&["default", "off", "low", "medium", "high", "xhigh"]),
             default_thinking_level: Some("default".into()),
+            is_default: true,
         },
         ModelChoice {
             id: "Qwen".into(),
@@ -398,6 +399,7 @@ fn demo_models() -> Vec<ModelChoice> {
             thinking_level: "default".into(),
             thinking_levels: declared(&["default", "off", "low", "medium", "high"]),
             default_thinking_level: Some("default".into()),
+            is_default: false,
         },
         ModelChoice {
             id: "gpt-6-astra".into(),
@@ -407,6 +409,7 @@ fn demo_models() -> Vec<ModelChoice> {
             thinking_level: "default".into(),
             thinking_levels: declared(&["default", "medium", "high", "max"]),
             default_thinking_level: Some("default".into()),
+            is_default: false,
         },
         // Declares only the implicit default: the picker's slider has one stop.
         ModelChoice {
@@ -417,6 +420,7 @@ fn demo_models() -> Vec<ModelChoice> {
             thinking_level: "default".into(),
             thinking_levels: declared(&["default"]),
             default_thinking_level: Some("default".into()),
+            is_default: false,
         },
         // Same shapes as the real `/models` list, including a level the product
         // has no translation for (`max` is known, but it is still a wire value).
@@ -430,18 +434,29 @@ fn demo_models() -> Vec<ModelChoice> {
                 "default", "off", "minimal", "low", "medium", "high", "xhigh", "max",
             ]),
             default_thinking_level: Some("default".into()),
+            is_default: false,
         },
     ]
 }
 
 /// The launchpad: nothing attached yet, so the header has no session and the
 /// body is the composer.
+///
+/// It carries the product defaults a fresh screen starts from, not the values of
+/// the conversation `/new` left behind: the plain chat (no workspace), the
+/// agent's default model at the level it starts at, and 完全访问.
 pub fn launchpad() -> WorkbenchData {
     let mut data = base();
     data.input.text.clear();
     data.sessions[0].current = false;
     // The workspace chip names the directory the first message would run in.
-    data.session.cwd = "~/future-os".into();
+    data.session.cwd = "~/.future/agent/workspace".into();
+    data.session.chat = true;
+    // The agent's default model at the level it starts at, and 完全访问 — the
+    // other three product defaults a fresh screen opens on.
+    data.model = "westlakehpc/deepseek-flash".into();
+    data.effort = "default".into();
+    data.mode = "off".into();
     data
 }
 

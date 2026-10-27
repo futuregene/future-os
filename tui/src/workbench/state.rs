@@ -123,6 +123,11 @@ pub struct ModelChoice {
     /// The level the agent starts a conversation at on this model, already
     /// clamped to [`Self::thinking_levels`]. `None` on an older agent.
     pub default_thinking_level: Option<String>,
+    /// Is this the agent's *default* model — the one a session created without
+    /// asking for a model gets (`isDefault` in `list_models`, resolved by the
+    /// same function `new_session` uses)? The launchpad names it while nothing
+    /// is staged, so the chip and the session agree.
+    pub is_default: bool,
 }
 
 impl ModelChoice {

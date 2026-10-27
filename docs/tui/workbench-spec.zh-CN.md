@@ -227,6 +227,13 @@ TUI 不使用 logo 或图标。聊天页眉只有一行文字品牌 `FUTURE OS`�
 `/new` 回到启动台，而不是立刻建会话：头部自己的状态（连接点、版本）留着，对话清空，
 第一条消息才按启动台上显示的模型/强度建会话。
 
+什么都没暂存的启动台显示的是**产品默认值**，而不是 `/new` 刚离开的那个会话的值：**对话会话**
+（不绑工作区——agent 自己的 `agent/workspace`，也就是侧栏「对话会话」一节归的目录，用时才建）、
+agent 的默认模型以及它起步的那一档强度（都从 `list_models` 读：`isDefault` 与
+`defaultThinkingLevel`——和 `new_session` 自己用的是同一套解析）、以及 **完全访问**（`off`）。
+把上一个会话的目录、模型、审批带进下一个，会让 `/new` 变成前一间的副本而不是新开一间；默认审批
+不只是写在参数上，建会话后会真的下发，所以参数不会写着会话实际不走的值。
+
 还没有会话时（启动台，或 TUI 起来时 agent 手上没有会话），选择器里的 `enter` **只暂存**，
 不发请求：agent 在没有会话时对 `set_model`/`set_thinking_level` 一律回
 `session not found — pass a valid session_id`，所以这一对选择变成 `SetPending*`——头部与启动台

@@ -403,7 +403,11 @@ impl Live {
     /// `.worktrees/<name>` must show that checkout's goal, and moving to another
     /// workspace must re-read rather than keep painting the old one's list.
     fn refresh_local(&mut self) {
-        let cwd = self.state.cwd.clone().unwrap_or_default();
+        // The directory in force — the staged one on the launchpad, the session's
+        // own once one exists. A staged workspace the local facts did not follow
+        // made `@` list (and `@a-file` expand against) the directory `/new` left
+        // behind, while the chip and the session that got created named another.
+        let cwd = self.shown_cwd().unwrap_or_default();
         self.local_cwd = cwd;
         // The `@` menu's candidates belong to the directory, not to the session:
         // read them when the directory changes and not once per keystroke.
@@ -1179,6 +1183,7 @@ impl Live {
                     thinking_level: model.thinking_level.clone(),
                     thinking_levels: model.thinking_levels.clone(),
                     default_thinking_level: model.default_thinking_level.clone(),
+                    is_default: model.is_default,
                 })
                 .collect(),
             skills,
@@ -1863,6 +1868,10 @@ impl Live {
         self.forget_run();
         self.approval = None;
         self.notice = None;
+        // The launchpad's own directory (`@` and the files panel read it, see
+        // `refresh_local`): the chat the chip now names, not the workspace the
+        // reader just left.
+        self.refresh_local();
     }
 
     /// Is the surface on the launchpad (no session attached)?
@@ -1881,30 +1890,55 @@ impl Live {
 
     /// The model the surface should name: the staged one while the launchpad
     /// has no session to read it from, otherwise the agent's own.
+    ///
+    /// A launchpad with nothing staged names the agent's *default* model — the
+    /// one `new_session` would pick for a session that asks for none (the same
+    /// model `list_models` flags `isDefault`) — rather than the model of the
+    /// conversation `/new` just left behind. A fresh screen is a fresh choice:
+    /// carrying the last conversation's model into the next one made `/new` a
+    /// copy of what came before instead of a clean start.
     fn shown_model(&self) -> Option<String> {
         if self.detached() {
             return self
                 .pending_model
                 .clone()
+                .or_else(|| self.default_model_id())
                 .or_else(|| self.state.model.clone());
         }
         self.state.model.clone()
+    }
+
+    /// The agent's default model, as `list_models` flags it (`isDefault` — the
+    /// agent resolves it with the same function `new_session` uses, so the chip
+    /// and the session that gets created agree). `None` on an agent that flags
+    /// nothing.
+    fn default_model_id(&self) -> Option<String> {
+        let model = self.models.iter().find(|model| model.is_default)?;
+        Some(if model.provider.is_empty() {
+            model.id.clone()
+        } else {
+            format!("{}/{}", model.provider, model.id)
+        })
     }
 
     /// The reasoning level the surface should name (see [`Self::shown_model`]).
     ///
     /// A launchpad with nothing staged starts at the reserved `default` (the
     /// provider default, i.e. no thinking parameter): an empty agent state is
-    /// not "no level", it is the implicit one.
+    /// not "no level", it is the implicit one. The default model's own starting
+    /// level is what the agent would hand a session created without one, so that
+    /// is what the chip names.
     fn shown_effort(&self) -> String {
         if self.detached() {
+            if let Some(level) = self.pending_effort.clone() {
+                return level;
+            }
             return self
-                .pending_effort
-                .clone()
-                .or_else(|| {
-                    (!self.state.thinking_level.trim().is_empty())
-                        .then(|| self.state.thinking_level.clone())
-                })
+                .models
+                .iter()
+                .find(|model| model.is_default)
+                .and_then(|model| model.default_thinking_level.clone())
+                .filter(|level| !level.trim().is_empty())
                 .unwrap_or_else(|| DEFAULT_THINKING_LEVEL_NAME.to_string());
         }
         self.state.thinking_level.clone()
@@ -1915,12 +1949,15 @@ impl Live {
     /// The agent reports the sandbox *tier* only, and `auto` is that tier with
     /// the model reviewer — so a mode chosen in this process is named from what
     /// was chosen, and a fresh attach reads the tier (`sandbox` rather than
-    /// `auto`). The empty state is the product default the desktop starts on.
+    /// `auto`). The launchpad starts from the product default it was asked for —
+    /// 完全访问 (`off`) — and [`Self::new_session`] applies it, so the chip is not
+    /// naming something the session will not run under.
     fn shown_mode(&self) -> String {
         if self.detached() {
-            if let Some(mode) = self.pending_mode.clone() {
-                return mode;
-            }
+            return self
+                .pending_mode
+                .clone()
+                .unwrap_or_else(|| "off".to_string());
         }
         self.state
             .sandbox_tier
@@ -1930,17 +1967,29 @@ impl Live {
     }
 
     /// The workspace the surface should name (see [`Self::shown_model`]).
+    ///
+    /// A launchpad with nothing staged names the plain chat: a fresh screen is a
+    /// conversation with no workspace until the reader picks one, not a copy of
+    /// the directory `/new` just left behind (see [`chat_workspace`]).
     fn shown_cwd(&self) -> Option<String> {
         if self.detached() {
-            return self.pending_cwd.clone().or_else(|| self.state.cwd.clone());
+            return Some(self.pending_cwd.clone().unwrap_or_else(chat_workspace));
         }
         self.state.cwd.clone()
     }
 
-    /// The directories a new session can be started in: the one that would be
-    /// used now, then every workspace this client has a conversation in, newest
-    /// first. Deduplicated by the same trailing-slash-insensitive comparison
-    /// the 工作区 filing uses, so one directory is one choice.
+    /// The directories a new session can be started in, as one *stable* ring:
+    /// the plain chat first (the launchpad's own default, the same row the
+    /// workspace picker lists), then every workspace this client has a
+    /// conversation in, newest first. Deduplicated by the same
+    /// trailing-slash-insensitive comparison the 工作区 filing uses, so one
+    /// directory is one choice.
+    ///
+    /// Stable rather than "the one in force first": the chip's `enter` walks
+    /// this list, and a list that reordered itself around the current choice made
+    /// two presses bounce between the same pair instead of walking the ring — and
+    /// it left the chat (the default it starts on) unreachable once the reader
+    /// stepped off it.
     pub fn workspace_choices(&self) -> Vec<String> {
         let mut choices: Vec<String> = Vec::new();
         let mut push = |path: &str| {
@@ -1952,9 +2001,7 @@ impl Live {
             }
             choices.push(path.to_string());
         };
-        if let Some(cwd) = self.shown_cwd() {
-            push(&cwd);
-        }
+        push(&chat_workspace());
         for session in &self.sessions {
             push(&session.cwd);
         }
@@ -1986,19 +2033,19 @@ impl Live {
             Key::WorkspaceChosen,
             &[&shorten(&path)],
         ));
+        // `@` and the files panel follow the directory the next session will run
+        // in (see `refresh_local`).
+        self.refresh_local();
     }
 
     /// The model a picker choice is made for: the staged one while detached,
     /// otherwise the agent's own.
     fn choice_model(&self) -> Option<&ModelInfo> {
-        let id = if self.detached() {
-            self.pending_model
-                .as_deref()
-                .or(self.state.model.as_deref())
-        } else {
-            self.state.model.as_deref()
-        }?;
-        find_model(&self.models, id)
+        // The model in force, staged or not: on the launchpad that is the
+        // agent's default (see `shown_model`), and the launchpad's own choice of
+        // wire vocabulary has to follow the model the chip names.
+        let id = self.shown_model()?;
+        find_model(&self.models, &id)
     }
 
     /// The level to send over the wire.
@@ -2048,9 +2095,26 @@ impl Live {
     async fn new_session(&mut self) {
         let cwd = self.shown_cwd().unwrap_or_default();
         // What the reader chose on the launchpad is what this session starts
-        // with; with nothing staged this is the state the agent already has.
+        // with; with nothing staged those are the product defaults the chips
+        // already name — the agent's default model and starting level, the plain
+        // chat, 完全访问.
         let model = self.shown_model().unwrap_or_default();
         let level = self.wire_thinking_level(&self.shown_effort());
+        let mode = crate::approval_mode::ApprovalMode::from_wire(&self.shown_mode());
+        // A chat runs in the app's own directory, which a fresh home does not
+        // have yet, and a session parked in a directory that is not there has no
+        // tool that works. Only a chat is created here: a directory the reader
+        // typed is theirs to have made, and a typo deserves the agent's error.
+        if !cwd.trim().is_empty() && is_chat_directory(&cwd) {
+            if let Err(error) = std::fs::create_dir_all(&cwd) {
+                self.notice = Some(i18n::render(
+                    self.lang,
+                    Key::WorkflowFailed,
+                    &[&error.to_string()],
+                ));
+                return;
+            }
+        }
         match self
             .client
             .new_session(
@@ -2069,16 +2133,17 @@ impl Live {
                 self.pending_model = None;
                 self.pending_effort = None;
                 self.pending_cwd = None;
+                self.pending_mode = None;
                 // The approval mode has no `new_session` argument: it is one
-                // call after the session exists.
-                if let Some(mode) = self.pending_mode.take() {
-                    if let Some(mode) = crate::approval_mode::ApprovalMode::from_wire(&mode) {
-                        match self.client.set_sandbox_policy(mode).await {
-                            Ok(_) => self.state.sandbox_tier = Some(mode.as_str().to_string()),
-                            Err(error) => {
-                                self.notice =
-                                    Some(format!("Could not set the approval mode: {error}"))
-                            }
+                // call after the session exists. The launchpad always names one
+                // (its default is 完全访问), so every session this surface
+                // starts is told — a chip that named a mode the session did not
+                // run under would be a lie.
+                if let Some(mode) = mode {
+                    match self.client.set_sandbox_policy(mode).await {
+                        Ok(_) => self.state.sandbox_tier = Some(mode.as_str().to_string()),
+                        Err(error) => {
+                            self.notice = Some(format!("Could not set the approval mode: {error}"))
                         }
                     }
                 }
@@ -2453,6 +2518,9 @@ impl Live {
         if self.detached() {
             self.pending_cwd = Some(path);
             self.notice = Some(notice);
+            // `@` and the files panel follow the directory the next session
+            // will run in (see `refresh_local`).
+            self.refresh_local();
             return;
         }
         match self.client.set_cwd(&path).await {
@@ -2483,6 +2551,9 @@ impl Live {
         if self.detached() {
             self.pending_cwd = Some(path.to_string());
             self.notice = Some(notice);
+            // `@` and the files panel follow the directory the next session
+            // will run in (see `refresh_local`).
+            self.refresh_local();
             return;
         }
         if same_path(&self.state.cwd.clone().unwrap_or_default(), path) {
@@ -3546,6 +3617,56 @@ mod tests {
         assert_eq!(live.notice, None);
     }
 
+    /// A launchpad names the *product* defaults, not the conversation `/new`
+    /// left behind: the plain chat, the agent's default model and the level that
+    /// model starts at, and 完全访问. The state the client came from says
+    /// otherwise on every one of those ("future/old", high thinking, manual
+    /// approval in a project directory) — which is exactly what must not leak
+    /// into a fresh screen.
+    #[tokio::test]
+    async fn a_fresh_launchpad_names_the_product_defaults() {
+        let state = r#"{"sessionId":"s-1","cwd":"/work/alpha","model":"future/old","thinkingLevel":"high","sandboxTier":"manual"}"#;
+        let models = r#"{"models":[
+            {"id":"old","label":"old","provider":"future","thinkingLevel":"default",
+             "thinkingLevels":["default","high"],"defaultThinkingLevel":"high"},
+            {"id":"gpt-9","label":"gpt-9","provider":"future","isDefault":true,
+             "thinkingLevel":"default","thinkingLevels":["default","high"],
+             "defaultThinkingLevel":"default"}
+        ]}"#;
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("get_state", state),
+            ("list_models", models),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        live.to_launchpad();
+
+        let frame = crate::workbench::layout::Frame::new(
+            120,
+            38,
+            36,
+            crate::workbench::preferences::SidebarPosition::Right,
+        );
+        let data = live.data(&frame);
+        assert_eq!(data.session.cwd, chat_workspace());
+        assert!(data.session.chat, "the chip names the plain chat");
+        assert_eq!(data.model, "future/gpt-9", "the agent's default model");
+        assert_eq!(data.effort, "default", "the level that model starts at");
+        assert_eq!(data.mode, "off", "完全访问 / full access");
+
+        // What the reader picks still wins — the defaults are a starting point,
+        // not an override.
+        live.set_pending_model("future/old");
+        live.set_pending_effort("high");
+        live.set_approval("manual").await;
+        let data = live.data(&frame);
+        assert_eq!(data.model, "future/old");
+        assert_eq!(data.effort, "high");
+        assert_eq!(data.mode, "manual");
+    }
+
     /// The rail, the `ctrl+r` list and the 工作区 tab name a workspace by its
     /// own name; the path is what the *group* is filed under, not what the row
     /// has room for. On the launchpad the 工作区 chip stages the directory the
@@ -3586,23 +3707,39 @@ mod tests {
         assert!(names.contains(&"alpha"), "{names:?}");
         assert!(names.contains(&"beta"), "{names:?}");
 
-        // The chip starts on the directory the session would run in…
-        assert_eq!(data.session.cwd, "/work/alpha");
-        assert_eq!(live.workspace_choices(), vec!["/work/alpha", "/other/beta"]);
+        // The chip starts on the plain chat: a fresh launchpad is a conversation
+        // with no workspace, not a copy of the directory `/new` left behind.
+        assert_eq!(data.session.cwd, chat_workspace());
+        assert!(data.session.chat, "the chip names it as 对话会话");
+        assert_eq!(
+            live.workspace_choices(),
+            vec![
+                chat_workspace(),
+                "/work/alpha".to_string(),
+                "/other/beta".to_string()
+            ]
+        );
 
         // …cycles to the next *distinct* one…
         live.cycle_pending_workspace();
-        assert_eq!(live.pending_cwd.as_deref(), Some("/other/beta"));
-        let data = live.data(&frame);
-        assert_eq!(data.session.cwd, "/other/beta");
-
-        // …and wraps back.
-        live.cycle_pending_workspace();
         assert_eq!(live.pending_cwd.as_deref(), Some("/work/alpha"));
+        let data = live.data(&frame);
+        assert_eq!(data.session.cwd, "/work/alpha");
+        assert!(!data.session.chat, "a workspace is not a chat");
+
+        // …and the `@` list, the files panel and the header's branch follow it,
+        // not the directory `/new` left behind.
+        assert_eq!(live.local_cwd, "/work/alpha");
+
+        // …and on to the next, then back to the chat it started on.
+        live.cycle_pending_workspace();
+        assert_eq!(live.pending_cwd.as_deref(), Some("/other/beta"));
+        live.cycle_pending_workspace();
+        assert_eq!(live.pending_cwd.as_deref(), Some(chat_workspace().as_str()));
     }
 
-    /// With a single workspace there is nothing to cycle: the chip says so
-    /// instead of silently keeping the only choice.
+    /// With a single choice there is nothing to cycle: the chip says so instead
+    /// of silently keeping the only one.
     #[tokio::test]
     async fn cycling_one_workspace_reports_that_there_is_nothing_else() {
         let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
@@ -3610,8 +3747,9 @@ mod tests {
         let (mut live, _events) = Live::attach(&addr, None, false, None)
             .await
             .expect("attach to the test agent");
-        live.sessions = vec![row("s-1", Some("only"), "/work/alpha")];
-        live.state.cwd = Some("/work/alpha".into());
+        // No conversation anywhere: the launchpad's own chat is the only choice
+        // left, and cycling it would be a chip that does nothing.
+        live.sessions = Vec::new();
         live.to_launchpad();
         live.cycle_pending_workspace();
         assert_eq!(live.pending_cwd, None);
