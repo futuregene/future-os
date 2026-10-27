@@ -39,6 +39,9 @@ pub enum Row {
     Workspace(usize),
     /// A conversation; the index is into `data.sessions`.
     Session(usize),
+    /// A file or directory in the workspace tree; the index is into
+    /// `data.tree.rows()`.
+    File(usize),
 }
 
 impl Row {
@@ -48,6 +51,21 @@ impl Row {
             Self::Session(index) => Some(index),
             _ => None,
         }
+    }
+
+    /// The tree row this row is, if it is one.
+    pub fn file(self) -> Option<usize> {
+        match self {
+            Self::File(index) => Some(index),
+            _ => None,
+        }
+    }
+
+    /// Can `↑`/`↓` land here? A section heading and a workspace title cannot —
+    /// they name a group, and a cursor on a name that opens nothing is a cursor
+    /// the reader has to step over.
+    pub fn selectable(self) -> bool {
+        matches!(self, Self::Session(_) | Self::File(_))
     }
 }
 
@@ -79,6 +97,7 @@ impl Section {
 pub fn rows(panel: PanelId, data: &WorkbenchData) -> Vec<Row> {
     match panel {
         PanelId::Recent => (0..data.sessions.len()).map(Row::Session).collect(),
+        PanelId::Files => (0..data.tree.rows().len()).map(Row::File).collect(),
         PanelId::Workspaces => {
             let mut rows: Vec<Row> = Vec::new();
             // One heading per section, not one per group inside it: the pinned
@@ -116,7 +135,7 @@ pub fn rows(panel: PanelId, data: &WorkbenchData) -> Vec<Row> {
     }
 }
 
-/// The first row holding a conversation, starting at `from` and wrapping; `None`
+/// The first row the cursor can stand on, starting at `from` and wrapping; `None`
 /// when the panel has nothing to select.
 pub fn first_session(rows: &[Row], from: usize) -> Option<usize> {
     if rows.is_empty() {
@@ -124,13 +143,23 @@ pub fn first_session(rows: &[Row], from: usize) -> Option<usize> {
     }
     (0..rows.len())
         .map(|offset| (from + offset) % rows.len())
-        .find(|index| rows[*index].session().is_some())
+        .find(|index| rows[*index].selectable())
 }
 
 /// The next row holding a conversation in `delta`'s direction, stopping (not
 /// wrapping) at either end: a list that jumps from its last row back to its
 /// first is a list the reader cannot tell the ends of.
 pub fn step_session(rows: &[Row], from: usize, delta: i32) -> Option<usize> {
+    step(rows, from, delta, |row| row.session().is_some())
+}
+
+/// The next row the cursor can stand on, in any panel: a conversation in 最近 /
+/// 工作区, a file or directory in 文件.
+pub fn step_row(rows: &[Row], from: usize, delta: i32) -> Option<usize> {
+    step(rows, from, delta, |row| row.selectable())
+}
+
+fn step(rows: &[Row], from: usize, delta: i32, keep: impl Fn(Row) -> bool) -> Option<usize> {
     let mut index = from;
     loop {
         if delta < 0 {
@@ -144,7 +173,7 @@ pub fn step_session(rows: &[Row], from: usize, delta: i32) -> Option<usize> {
                 return None;
             }
         }
-        if rows[index].session().is_some() {
+        if keep(rows[index]) {
             return Some(index);
         }
     }
@@ -187,7 +216,7 @@ pub fn render(
     lines.push(palette.panel_row("", columns));
 
     let body_rows = rows.saturating_sub(HEADING_ROWS);
-    let items = item_rows(panel, data, palette, columns, lang);
+    let items = item_rows(panel, data, palette, columns, lang, selected);
     let total = items.len();
 
     // The window: `scroll` items in, filled a whole item at a time (a
@@ -280,6 +309,7 @@ fn summary(panel: PanelId, data: &WorkbenchData, lang: Language) -> String {
         PanelId::Workspaces => {
             i18n::render(lang, Key::SummaryWorkspaces, &[&data.workspaces.len()])
         }
+        PanelId::Files => i18n::render(lang, Key::SummaryFiles, &[&data.tree.rows().len()]),
     }
 }
 
@@ -296,9 +326,20 @@ fn item_rows(
     palette: &Palette,
     columns: usize,
     lang: Language,
+    selected: usize,
 ) -> Vec<Vec<String>> {
     let model = rows(panel, data);
     if model.is_empty() {
+        // A tree with no rows is either an empty directory or a directory the
+        // reader cannot read; both say what they are instead of painting blank
+        // rows.
+        if panel == PanelId::Files {
+            let message = match data.tree.error.as_deref() {
+                Some(error) => error.to_string(),
+                None => t(lang, Key::PanelEmptyFiles).to_string(),
+            };
+            return vec![vec![palette.dim(&fit(&format!("  {message}"), columns))]];
+        }
         return vec![vec![palette.dim(&format!(
             "  {}",
             t(
@@ -306,24 +347,116 @@ fn item_rows(
                 match panel {
                     PanelId::Recent => Key::PanelEmptySessions,
                     PanelId::Workspaces => Key::PanelEmptyWorkspaces,
+                    PanelId::Files => Key::PanelEmptyFiles,
                 }
             )
         ))]];
     }
-    model
+    let items: Vec<Vec<String>> = model
         .iter()
-        .map(|row| match row {
+        .enumerate()
+        .map(|(index, row)| match row {
             Row::Section(section) => vec![section_row(*section, palette, columns, lang)],
-            Row::Workspace(index) => match data.workspaces.get(*index) {
+            Row::Workspace(at) => match data.workspaces.get(*at) {
                 Some(workspace) => vec![workspace_row(workspace, palette, columns, lang)],
                 None => vec![palette.panel_row("", columns)],
             },
-            Row::Session(index) => match data.sessions.get(*index) {
+            Row::Session(at) => match data.sessions.get(*at) {
                 Some(session) => session_rows(panel, session, palette, columns),
                 None => vec![palette.panel_row("", columns)],
             },
+            Row::File(at) => match data.tree.get(*at) {
+                Some(node) => vec![file_row(node, index == selected, palette, columns)],
+                None => vec![palette.panel_row("", columns)],
+            },
         })
-        .collect()
+        .collect();
+    // A root listing that stopped at the cap says so, in the reader's language:
+    // the count is the tree's, the sentence is the panel's.
+    if panel == PanelId::Files && data.tree.truncated {
+        let mut items = items;
+        items.push(vec![palette.dim(&fit(
+            &format!(
+                "  {}",
+                i18n::render(
+                    lang,
+                    Key::PanelTreeTruncated,
+                    &[&crate::workbench::files::MAX_ENTRIES_PER_DIR]
+                )
+            ),
+            columns,
+        ))]);
+        return items;
+    }
+    items
+}
+
+/// One tree row: the indent, the open/closed marker for a directory, the name,
+/// and (for files) the size.
+///
+/// The cursor is drawn as `▸` on the row it stands on — the same glyph the
+/// conversation list uses for the conversation on screen — so "where the keys
+/// will act" is one visual language across the rail's three tabs.
+fn file_row(
+    node: &crate::workbench::files::FileNode,
+    selected: bool,
+    palette: &Palette,
+    columns: usize,
+) -> String {
+    // `› ` is the cursor and its space, then two columns per depth, then the
+    // directory marker.
+    let depth = node.depth.min(columns.saturating_sub(6) / 2);
+    let marker = if node.is_dir() {
+        if node.expanded {
+            "▾"
+        } else {
+            "▸"
+        }
+    } else {
+        " "
+    };
+    let cursor = if selected { "›" } else { " " };
+    let tail = if node.is_dir() {
+        String::new()
+    } else {
+        crate::workbench::files::short_size(node.size)
+    };
+    let tail_width = if tail.is_empty() { 0 } else { width(&tail) + 1 };
+    let lead = 2 + depth * 2 + 1;
+    let name_width = columns.saturating_sub(lead + tail_width).max(1);
+    let name = fit(&node.name, name_width);
+    // A truncated directory says so where the name would be cut, so a listing
+    // that stopped early is not read as a directory that ended.
+    let name = if node.truncated {
+        format!("{}…", name.trim_end())
+    } else {
+        name
+    };
+    let pad = columns.saturating_sub(lead + width(&name) + tail_width);
+    let painted = format!(
+        "{} {}{}{}{}{}",
+        palette.text(
+            if selected {
+                palette.accent
+            } else {
+                palette.border
+            },
+            cursor
+        ),
+        " ".repeat(depth * 2),
+        palette.text(
+            if node.is_dir() {
+                palette.iris
+            } else {
+                palette.border
+            },
+            marker
+        ),
+        palette.body(&name),
+        " ".repeat(pad),
+        palette.dim(&tail)
+    );
+    fit(&painted, columns)
 }
 
 /// A section heading with a dim rule to the edge, so the three blocks read as
@@ -423,6 +556,9 @@ fn session_rows(
                 palette.dim(&tail)
             )]
         }
+        // The file tree paints one row per entry, so a conversation's own two-row
+        // shape does not apply here; `file_row` is the painter.
+        PanelId::Files => vec![palette.panel_row("", columns)],
     }
 }
 

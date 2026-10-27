@@ -113,30 +113,78 @@ pub enum Action {
     Mouse,
     LinearReading,
     ReduceMotion,
+    Model,
     Thinking,
     Approval,
     Workspaces,
+    PanelRecent,
+    PanelWorkspaces,
+    PanelFiles,
+    /// Read the clipboard into the draft: an image becomes an attachment.
+    PasteImage,
+    /// Show the image already attached to the draft.
+    PreviewAttachment,
     PrevSession,
     NextSession,
 }
 
-pub const ACTIONS: [Action; 20] = [
-    Action::Palette,
-    Action::NewSession,
+/// An action's place in the help overlay.
+///
+/// The table is longer than one screen of prose, and a flat list of two dozen
+/// rows sorted by nothing in particular is a list a reader has to scan whole.
+/// Grouping is the only structure it carries: the keys that move between
+/// conversations, the ones that pick what runs next, the ones that change the
+/// frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Group {
+    Sessions,
+    Choice,
+    Panels,
+    Interface,
+}
+
+impl Group {
+    /// The heading the help overlay prints above this group's rows.
+    pub fn title(self) -> Key {
+        match self {
+            Self::Sessions => Key::HelpGroupSessions,
+            Self::Choice => Key::HelpGroupChoice,
+            Self::Panels => Key::HelpGroupPanels,
+            Self::Interface => Key::HelpGroupInterface,
+        }
+    }
+}
+
+/// Every action, in the order the help overlay lists them: grouped, and inside
+/// a group from most to least used. `ACTIONS` is the one authority — the help
+/// table, the shortcut editor and the event dispatch all walk it.
+pub const ACTIONS: [Action; 26] = [
+    // Sessions
+    Action::PrevSession,
+    Action::NextSession,
     Action::Sessions,
-    Action::Sidebar,
-    Action::Help,
-    Action::Preferences,
+    Action::NewSession,
+    Action::Queue,
+    Action::Stop,
+    Action::ReplyDetail,
+    // What the next message runs with
+    Action::Model,
     Action::Thinking,
     Action::Approval,
     Action::Workspaces,
+    // Panels
+    Action::Sidebar,
+    Action::PanelRecent,
+    Action::PanelWorkspaces,
+    Action::PanelFiles,
+    // Interface
+    Action::Palette,
+    Action::Help,
+    Action::Preferences,
     Action::Refresh,
-    Action::ReplyDetail,
-    Action::PrevSession,
-    Action::NextSession,
-    Action::Stop,
     Action::Copy,
-    Action::Queue,
+    Action::PasteImage,
+    Action::PreviewAttachment,
     Action::Mouse,
     Action::LinearReading,
     Action::ReduceMotion,
@@ -166,10 +214,43 @@ impl Action {
             Self::Thinking => "thinking",
             Self::Approval => "approval",
             Self::Workspaces => "workspaces",
+            Self::Model => "model",
+            Self::PanelRecent => "panelRecent",
+            Self::PanelWorkspaces => "panelWorkspaces",
+            Self::PanelFiles => "panelFiles",
+            Self::PasteImage => "pasteImage",
+            Self::PreviewAttachment => "previewAttachment",
         }
     }
     fn from_id(id: &str) -> Option<Self> {
         ACTIONS.into_iter().find(|action| action.id() == id)
+    }
+    /// The heading this action is listed under in the help overlay.
+    pub fn group(self) -> Group {
+        match self {
+            Self::PrevSession
+            | Self::NextSession
+            | Self::Sessions
+            | Self::NewSession
+            | Self::Queue
+            | Self::Stop
+            | Self::ReplyDetail => Group::Sessions,
+            Self::Model | Self::Thinking | Self::Approval | Self::Workspaces => Group::Choice,
+            Self::Sidebar | Self::PanelRecent | Self::PanelWorkspaces | Self::PanelFiles => {
+                Group::Panels
+            }
+            Self::Palette
+            | Self::Help
+            | Self::Preferences
+            | Self::Refresh
+            | Self::Copy
+            | Self::PasteImage
+            | Self::PreviewAttachment
+            | Self::Mouse
+            | Self::LinearReading
+            | Self::ReduceMotion
+            | Self::Quit => Group::Interface,
+        }
     }
     pub fn description(self) -> Key {
         match self {
@@ -193,30 +274,51 @@ impl Action {
             Self::Thinking => Key::HelpKeyThinking,
             Self::Approval => Key::HelpKeyApproval,
             Self::Workspaces => Key::HelpKeyWorkspaces,
+            Self::Model => Key::CmdModel,
+            Self::PanelRecent => Key::HelpKeyPanelRecent,
+            Self::PanelWorkspaces => Key::HelpKeyPanelWorkspaces,
+            Self::PanelFiles => Key::HelpKeyPanelFiles,
+            Self::PasteImage => Key::HelpKeyPasteImage,
+            Self::PreviewAttachment => Key::HelpKeyPreviewAttachment,
         }
     }
+    /// The key an action answers to when the reader has not rebound it.
+    ///
+    /// No function key is a default: F1–F12 sit behind an `Fn` modifier on a
+    /// laptop keyboard, behind a screen-reader chord on some terminals, and are
+    /// simply absent on a compact one — a shortcut that needs three fingers to
+    /// reach, or that does not exist, is not a shortcut. `alt` + a letter is one
+    /// keystroke everywhere the modifier reporting works (see `keys::parse_key`),
+    /// and everywhere else these actions keep a typed command or a visible
+    /// control as the second door.
     pub fn default_key(self) -> &'static str {
         match self {
             Self::Quit => "ctrl+c",
             Self::NewSession => "ctrl+n",
             Self::Palette => "ctrl+p",
-            Self::Help => "f1",
+            Self::Help => "alt+h",
             Self::Sidebar => "ctrl+b",
             Self::Sessions => "ctrl+r",
             Self::Preferences => "ctrl+o",
-            Self::Refresh => "f5",
+            Self::Refresh => "alt+r",
             Self::ReplyDetail => "ctrl+e",
             Self::Stop => "ctrl+x",
-            Self::Copy => "f6",
+            Self::Copy => "alt+c",
             Self::Queue => "ctrl+g",
-            Self::Mouse => "f7",
-            Self::LinearReading => "f8",
-            Self::ReduceMotion => "f9",
-            Self::PrevSession => "shift+left",
-            Self::NextSession => "shift+right",
+            Self::Mouse => "alt+m",
+            Self::LinearReading => "alt+l",
+            Self::ReduceMotion => "alt+a",
+            Self::Model => "ctrl+m",
             Self::Thinking => "ctrl+t",
             Self::Approval => "ctrl+s",
             Self::Workspaces => "ctrl+l",
+            Self::PanelRecent => "ctrl+1",
+            Self::PanelWorkspaces => "ctrl+2",
+            Self::PanelFiles => "ctrl+3",
+            Self::PasteImage => "ctrl+v",
+            Self::PreviewAttachment => "alt+v",
+            Self::PrevSession => "shift+left",
+            Self::NextSession => "shift+right",
         }
     }
 }
@@ -430,6 +532,41 @@ mod tests {
         }
         for position in [SidebarPosition::Left, SidebarPosition::Right] {
             assert_eq!(SidebarPosition::from_wire(position.as_wire()), position);
+        }
+    }
+
+    /// No function key is a default. `F1`–`F12` sit behind an `Fn` modifier on a
+    /// laptop, behind a screen-reader chord on some terminals, and are absent on
+    /// a compact keyboard — a shortcut that needs three fingers, or that does not
+    /// exist, is not a shortcut. A reader may still *rebind* to one.
+    #[test]
+    fn no_default_binding_is_a_function_key() {
+        for action in ACTIONS {
+            let key = action.default_key();
+            assert!(
+                !key.starts_with('f') || !key[1..].chars().all(|ch| ch.is_ascii_digit()),
+                "{action:?} defaults to {key}"
+            );
+            assert!(
+                validate_key(key).is_ok(),
+                "{action:?} defaults to a chord the editor would reject: {key}"
+            );
+        }
+    }
+
+    /// Two defaults on one chord would make one of them dead: the map resolves a
+    /// chord to the first action that claims it.
+    #[test]
+    fn every_default_binding_is_claimed_by_one_action() {
+        for (index, action) in ACTIONS.iter().enumerate() {
+            for other in &ACTIONS[index + 1..] {
+                assert_ne!(
+                    action.default_key(),
+                    other.default_key(),
+                    "{action:?} and {other:?} both default to {}",
+                    action.default_key()
+                );
+            }
         }
     }
 }

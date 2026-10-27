@@ -349,9 +349,33 @@ pub async fn connect_verified(
     connect_timeout: Duration,
     handshake_timeout: Duration,
 ) -> Result<VerifiedAgentClient, ConnectionError> {
-    let connected = transport::connect_pinned_channel(Some(configured), connect_timeout, None)
-        .await
-        .map_err(ConnectionError::Transport)?;
+    connect_verified_with(
+        configured,
+        version,
+        connect_timeout,
+        handshake_timeout,
+        None,
+    )
+    .await
+}
+
+/// [`connect_verified`] with a hostname resolver of the caller's own.
+///
+/// `resolver: None` is byte-for-byte the behaviour above; a caller supplies one
+/// only when this process cannot rely on libc's resolver (a static musl build
+/// on a system with no `/etc/resolv.conf`). The desktop, the TUI and the host
+/// all call [`connect_verified`] and keep resolving through `getaddrinfo`.
+pub async fn connect_verified_with(
+    configured: &str,
+    version: &str,
+    connect_timeout: Duration,
+    handshake_timeout: Duration,
+    resolver: Option<transport::TcpNameResolver>,
+) -> Result<VerifiedAgentClient, ConnectionError> {
+    let connected =
+        transport::connect_pinned_channel_with(Some(configured), connect_timeout, None, resolver)
+            .await
+            .map_err(ConnectionError::Transport)?;
     let mut inner = transport::agent_client(connected.channel);
     let requirements = CompatibilityRequirements::for_endpoint(configured, version);
     let readiness = read_readiness(&mut inner, handshake_timeout).await?;

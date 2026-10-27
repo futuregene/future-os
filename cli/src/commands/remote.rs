@@ -2442,7 +2442,7 @@ async fn revoke_platform(platform: &str, key: &str, pair_id: &str) -> Result<(),
         .json(&json!({ "pair_id": pair_id }))
         .send()
         .await
-        .map_err(|error| format!("revoke remote pairing: {error}"))?;
+        .map_err(|error| format!("revoke remote pairing: {}", crate::dns::describe(&error)))?;
     // A pairing the platform no longer knows is the outcome the caller wanted.
     if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(());
@@ -2477,7 +2477,7 @@ async fn revoke_relay(device: &Device) -> Result<(), String> {
         .header("x-future-signature", signature)
         .send()
         .await
-        .map_err(|error| format!("delete the relay room: {error}"))?;
+        .map_err(|error| format!("delete the relay room: {}", crate::dns::describe(&error)))?;
     if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(());
     }
@@ -2512,7 +2512,7 @@ fn client() -> Result<reqwest::Client, String> {
 /// a removal it could not deliver, on a machine where the room is the only thing
 /// keeping the pairing alive.
 fn client_trusting(ca: Option<&Path>) -> Result<reqwest::Client, String> {
-    let mut builder = future_agent::http::client_builder().timeout(REQUEST_TIMEOUT);
+    let mut builder = crate::dns::client_builder().timeout(REQUEST_TIMEOUT);
     if let Some(ca) = ca {
         let pem = std::fs::read(ca)
             .map_err(|error| format!("Cannot read the relay CA {}: {error}", ca.display()))?;

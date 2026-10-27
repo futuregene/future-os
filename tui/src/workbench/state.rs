@@ -7,7 +7,9 @@
 //! what keeps the drawing code from growing a second source of truth for "how
 //! many sessions are there".
 
+use crate::workbench::files::FileTree;
 use crate::workbench::i18n::{t, Key, Language};
+use crate::workbench::image_view::ImagePixels;
 
 /// Who the session is: the four facts the header and the launchpad print.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -235,7 +237,7 @@ impl Activity {
     }
 }
 
-/// The sidebar's two panels, in tab order.
+/// The sidebar's three panels, in tab order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PanelId {
     /// Every conversation by when it was refreshed — the default landing panel.
@@ -243,10 +245,12 @@ pub enum PanelId {
     Recent,
     /// The same conversations filed the way the desktop's rail files them.
     Workspaces,
+    /// The workspace as a tree: directories open and close, files preview.
+    Files,
 }
 
 impl PanelId {
-    pub const ALL: [PanelId; 2] = [PanelId::Recent, PanelId::Workspaces];
+    pub const ALL: [PanelId; 3] = [PanelId::Recent, PanelId::Workspaces, PanelId::Files];
 
     /// The tab label.
     pub fn label(self, lang: Language) -> &'static str {
@@ -255,6 +259,7 @@ impl PanelId {
             match self {
                 Self::Recent => Key::TabRecent,
                 Self::Workspaces => Key::TabWorkspaces,
+                Self::Files => Key::TabFiles,
             },
         )
     }
@@ -264,6 +269,7 @@ impl PanelId {
         match self {
             Self::Recent => "recent",
             Self::Workspaces => "workspaces",
+            Self::Files => "files",
         }
     }
 
@@ -277,6 +283,7 @@ impl PanelId {
             .or(match id.to_ascii_lowercase().as_str() {
                 "sessions" | "session" => Some(Self::Recent),
                 "workspace" | "todo" | "jobs" | "usage" | "skills" => Some(Self::Workspaces),
+                "file" | "tree" | "explorer" => Some(Self::Files),
                 _ => None,
             })
     }
@@ -356,6 +363,60 @@ pub struct WorkbenchData {
     /// directory. Filled by the adapter once per directory; empty disables the
     /// menu's file half rather than suggesting nothing.
     pub files: Vec<String>,
+    /// The 文件 panel's tree of the session workspace.
+    pub tree: FileTree,
+    /// What the preview box is showing, if it is open — written by the adapter
+    /// when the reader asks for a file, read by the surface to paint it.
+    pub preview: Option<PreviewView>,
+}
+
+/// What the preview box holds: a picture's pixels, a document's text, or the
+/// reason there is nothing to show.
+///
+/// The pixels travel with the frame rather than being re-read per paint: a
+/// zoom is a redraw of the same bytes, and decoding on every keypress would
+/// make `+` feel like a disk seek.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreviewView {
+    Image {
+        path: String,
+        pixels: ImagePixels,
+    },
+    /// Markdown is kept as its source and rendered by the box, so the heading
+    /// levels follow the theme in force like the transcript does.
+    Markdown {
+        path: String,
+        text: String,
+    },
+    Text {
+        path: String,
+        lines: Vec<String>,
+        /// The file was longer than the preview cap.
+        truncated: bool,
+    },
+    Unavailable {
+        path: String,
+        reason: String,
+    },
+}
+
+impl PreviewView {
+    /// The path this preview is about — what the box's title names.
+    pub fn path(&self) -> &str {
+        match self {
+            Self::Image { path, .. }
+            | Self::Markdown { path, .. }
+            | Self::Text { path, .. }
+            | Self::Unavailable { path, .. } => path,
+        }
+    }
+
+    /// The last path segment, for a title that fits the box.
+    pub fn name(&self) -> &str {
+        let path = self.path();
+        let trimmed = path.trim_end_matches(['/', '\\']);
+        trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -473,10 +534,11 @@ mod tests {
 
     #[test]
     fn panels_cycle_in_the_contracts_order() {
-        assert_eq!(PanelId::ALL.len(), 2);
+        assert_eq!(PanelId::ALL.len(), 3);
         assert_eq!(PanelId::Recent.next(), PanelId::Workspaces);
-        assert_eq!(PanelId::Workspaces.next(), PanelId::Recent);
-        assert_eq!(PanelId::Recent.previous(), PanelId::Workspaces);
+        assert_eq!(PanelId::Workspaces.next(), PanelId::Files);
+        assert_eq!(PanelId::Files.next(), PanelId::Recent);
+        assert_eq!(PanelId::Recent.previous(), PanelId::Files);
         for panel in PanelId::ALL {
             assert_eq!(PanelId::parse(panel.id()), Some(panel));
             assert_eq!(PanelId::parse(&panel.id().to_uppercase()), Some(panel));
@@ -485,6 +547,7 @@ mod tests {
         // sessions` from habit lands somewhere real rather than nowhere.
         assert_eq!(PanelId::parse("sessions"), Some(PanelId::Recent));
         assert_eq!(PanelId::parse("workspace"), Some(PanelId::Workspaces));
+        assert_eq!(PanelId::parse("files"), Some(PanelId::Files));
         assert_eq!(PanelId::parse("nope"), None);
     }
 

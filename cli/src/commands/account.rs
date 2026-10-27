@@ -87,14 +87,14 @@ async fn load_account_auth() -> Result<AccountAuth, String> {
 
 /// `platformGet<T>(url, apiKey)` — GET with Bearer auth, 30s timeout.
 async fn platform_get(url: &str, api_key: &str) -> Result<Value, String> {
-    let response = future_agent::http::client()
+    let response = crate::dns::client()
         .get(url)
         .bearer_auth(api_key)
         .header("Accept", "application/json")
         .timeout(Duration::from_secs(30))
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| crate::dns::describe(&e))?;
 
     let status = response.status();
     let body: Value = response.json().await.map_err(|e| e.to_string())?;

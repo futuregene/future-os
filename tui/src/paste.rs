@@ -642,10 +642,15 @@ fn applescript_literal(value: &str) -> String {
 }
 
 /// Reads the system clipboard for a `ctrl+v`.
+///
+/// `Clone` because the capture runs on a blocking thread (a subprocess, a file
+/// write) while the event loop keeps painting: what is cloned is the runner
+/// handle and the directory, not any capture state.
+#[derive(Clone)]
 pub struct ClipboardCapture {
-    runner: CaptureRunner,
+    runner: std::sync::Arc<CaptureRunner>,
     dir: PathBuf,
-    seq: AtomicU64,
+    seq: std::sync::Arc<AtomicU64>,
 }
 
 impl ClipboardCapture {
@@ -660,9 +665,9 @@ impl ClipboardCapture {
     /// Test seam: an injected runner and an explicit output directory.
     pub fn with_runner(runner: CaptureRunner, dir: PathBuf) -> Self {
         Self {
-            runner,
+            runner: std::sync::Arc::new(runner),
             dir,
-            seq: AtomicU64::new(0),
+            seq: std::sync::Arc::new(AtomicU64::new(0)),
         }
     }
 

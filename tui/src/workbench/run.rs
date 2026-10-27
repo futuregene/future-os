@@ -313,14 +313,38 @@ async fn event_loop(
         // input or agent event paints, and the ticker asks the clock.
         tokio::select! {
             Some(input) = input_rx.recv() => {
-                let events = match &input {
+                let mut events = match &input {
                     TerminalEvent::Resize => vec![WbEvent::Resize(terminal.columns(), terminal.rows())],
                     TerminalEvent::Data(data) => events_of(data),
                 };
+                // Read the rest of the burst before doing anything with it. A
+                // held key arrives as one terminal event per repeat, and every
+                // repeat used to cost its own round trip, transcript load and
+                // full repaint — which is what made a held `shift+→` look stuck.
+                // A batch is still handled in order; what changes is that the
+                // session steps in it collapse into one switch, and the frame is
+                // painted once at the end instead of once per keystroke.
+                while events.len() < INPUT_BURST_LIMIT {
+                    match input_rx.try_recv() {
+                        Ok(TerminalEvent::Resize) => events.push(WbEvent::Resize(
+                            terminal.columns(),
+                            terminal.rows(),
+                        )),
+                        Ok(TerminalEvent::Data(data)) => events.extend(events_of(&data)),
+                        Err(_) => break,
+                    }
+                }
+                let mut session_steps = 0i32;
                 for event in events {
                     linear_dirty |= workbench.linear_reading;
                     if let WbEvent::Focus(focused) = event {
                         notifications.set_focused(focused);
+                        continue;
+                    }
+                    // The rail's cursor moves now; the conversation it lands on
+                    // is opened once, after the burst, below.
+                    if let Some(delta) = session_step_of(workbench, &event) {
+                        session_steps += delta;
                         continue;
                     }
                     let was_linear = workbench.linear_reading && workbench.overlay.is_none();
@@ -337,6 +361,19 @@ async fn event_loop(
                     } else if !linear_now && was_linear {
                         linear_deferred.push_str(&linear.take_partial());
                     }
+                }
+                if session_steps != 0 {
+                    // One switch for the whole burst. `step_session` moves the
+                    // surface's cursor the accumulated number of rows and names
+                    // the conversation it landed on; the app opens that one.
+                    let data = live.data(&frame);
+                    let target = workbench.step_session(session_steps, &data).into_iter().next();
+                    if let Some(WbAction::SwitchSession(id)) = target {
+                        let _ = live.apply(WbAction::SwitchSession(id)).await;
+                        let data = live.data(&frame);
+                        workbench.follow_current(&data);
+                    }
+                    sync_mode(terminal, input_tx, workbench)?;
                 }
                 paint = true;
             }
@@ -490,6 +527,35 @@ const IDLE_REFRESH: Duration = Duration::from_secs(60);
 /// coalesced into one frame and the cap is only ever reached when something has
 /// gone wrong upstream.
 const COALESCE_LIMIT: usize = 4096;
+
+/// How many terminal events one batch may hold before the loop acts on them.
+///
+/// A held key arrives as one event per repeat, and each one used to cost its own
+/// round trip, transcript load and repaint. Reading the burst first lets the
+/// session steps in it collapse into one switch and the frame paint once. The
+/// cap keeps a flood (a very fast paste, a repeating terminal report) from
+/// starving the agent events that share this loop.
+const INPUT_BURST_LIMIT: usize = 64;
+
+/// The net step a *session* key asks for, if this event is one.
+///
+/// The driver reads this before the key reaches `quit`, so a held `shift+←` /
+/// `shift+→` becomes one switch instead of one per repeat. The guards are the
+/// same ones that decide whether any global shortcut fires: an overlay owns the
+/// keys it paints.
+fn session_step_of(workbench: &Workbench, event: &WbEvent) -> Option<i32> {
+    let WbEvent::Key(key) = event else {
+        return None;
+    };
+    if workbench.overlay.is_some() {
+        return None;
+    }
+    match workbench.keys.action(key) {
+        Some(super::preferences::Action::PrevSession) => Some(-1),
+        Some(super::preferences::Action::NextSession) => Some(1),
+        _ => None,
+    }
+}
 
 /// Apply every agent event that is already queued, stopping at
 /// [`COALESCE_LIMIT`] so the loop always gets back to painting and reading the
@@ -674,6 +740,9 @@ async fn quit(
                 Some(super::preferences::Action::Refresh) => {
                     live.refresh_sessions().await;
                     live.refresh_state().await;
+                    // The tree is a live view of a directory a build may have
+                    // written to since it was read.
+                    live.refresh_tree();
                     return Ok(false);
                 }
                 _ => {}
@@ -778,6 +847,13 @@ async fn quit(
                     copy_last(live).await;
                     continue;
                 }
+                "/paste" => {
+                    // The typed door to the clipboard, for terminals that take
+                    // `ctrl+v` for themselves (Windows Terminal pastes with it,
+                    // so the key never arrives here).
+                    live.paste_clipboard().await;
+                    continue;
+                }
                 "/mouse" => {
                     toggle_mouse(live, terminal, workbench, settings, settings_path);
                     continue;
@@ -862,6 +938,21 @@ async fn quit(
             save_settings(settings_path, settings);
             continue;
         }
+        // The preview box is the driver's to open: the adapter reads the bytes
+        // and the surface paints them, but only this loop knows both.
+        if let WbAction::PreviewFile(path) = &action {
+            live.load_preview(path).await;
+            workbench.reset_preview();
+            workbench.overlay = Some(super::Overlay::FilePreview);
+            continue;
+        }
+        if matches!(action, WbAction::PreviewAttachment) {
+            if live.load_attachment() {
+                workbench.reset_preview();
+                workbench.overlay = Some(super::Overlay::FilePreview);
+            }
+            continue;
+        }
         if matches!(action, WbAction::OpenQueue) {
             live.refresh_state().await;
             if let VerbOutcome::Done { notice } =
@@ -924,6 +1015,21 @@ async fn quit(
         // read an empty draft and return without reaching the agent, and it also
         // threw away the attachments — and when the session cannot be started
         // the reader's text has to survive so it can be sent again.
+        //
+        // `SessionStep` is the rail's cursor moving between conversations: the
+        // surface deferred the switch to us, so it is resolved here against the
+        // data of *this* moment (the driver hands a whole burst of them over as
+        // one net step, see `event_loop`).
+        let action = match action {
+            WbAction::SessionStep(delta) => {
+                let data = live.data(frame);
+                match workbench.step_session(delta, &data).into_iter().next() {
+                    Some(next) => next,
+                    None => continue,
+                }
+            }
+            other => other,
+        };
         let switched = matches!(action, WbAction::SwitchSession(_));
         match live.apply(action).await {
             Outcome::Quit => return Ok(true),
