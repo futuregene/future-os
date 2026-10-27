@@ -180,8 +180,11 @@ pub(crate) fn compose(
             // The box is drawn at `frame.input.x`; the cursor has to be offset
             // by the same column or it lands in the rail's cells (the bug that
             // only showed once the rail was on the left, where `x` is not 0).
+            // `- 2`, not `- 1`: the last column of a framed row is its right
+            // border, and a caret parked on the border of a full line reads as
+            // a stray block in the rail's gutter.
             let column =
-                (cursor_column as usize).min(frame.input.w.saturating_sub(1) as usize) as u16;
+                (cursor_column as usize).min(frame.input.w.saturating_sub(2) as usize) as u16;
             // The cursor's row is the box's own (it counts the title rule), not
             // "the last row the box grew to": a cursor above the draft's last
             // line sits above the box's bottom, and the two only coincide when
