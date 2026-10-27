@@ -1476,6 +1476,10 @@ TUI_SCENARIO_KEYS: dict[str, str] = {
     # checkout's own log — the same one `git log` would print — and the capture
     # needs `FUTURE_DEMO_CWD` for the scripted session to have one.
     "git": "\x07",
+    # The rail's own search: `ctrl+d` gives the rail the keys, `/` opens its
+    # search line, and the word narrows both panels to the conversations that
+    # answer it. `workbench` matches one of the demo agent's three sessions.
+    "rail-search": "\x04/workbench",
 }
 # Each entry lists the label in every language the surface ships: the capture
 # pins one language (`--lang`), and a tab the frame spells differently is a

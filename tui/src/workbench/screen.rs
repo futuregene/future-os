@@ -1263,12 +1263,13 @@ fn sidebar_rows(
         );
         x = x.saturating_add(tab_width + 1);
     }
-    // A focused rail says which two keys walk it from here: `shift+←→` the
-    // tabs, `shift+↑↓` the conversations, with the chat following the cursor.
-    // `↑↓` alone only moves the list cursor and `⏎` only opens what it stands
-    // on, so a reader who guessed wrong learns the chords here. It costs the
-    // list one row and saves the guesswork, so it is only shown while the rail
-    // actually owns the keys.
+    // A focused rail says which keys work from here: `shift+←→` the tabs,
+    // `shift+↑↓` the conversations, with the chat following the cursor. `↑↓`
+    // alone only moves the list cursor and `⏎` only opens what it stands on, so
+    // a reader who guessed wrong learns the chords here. It costs the list one
+    // row and saves the guesswork, so it is only shown while the rail actually
+    // owns the keys — and while the search line is open it names that surface's
+    // keys instead, because the chords above are not what the next key does.
     let footer = usize::from(workbench.sidebar_focus && area.h >= 4);
     let content = Rect::new(area.x, area.y + 1, area.w, area.h - 1 - footer as u16);
     let index = workbench.panel.index();
@@ -1278,7 +1279,11 @@ fn sidebar_rows(
     };
     let lang = workbench.lang;
     let panel = workbench.panel;
-    let folded = workbench.folded_workspaces.clone();
+    let filter = workbench.rail.clone();
+    // The search line lives in the row the panel already spends under its tabs,
+    // so it costs the list nothing: it is drawn while the rail has the keys (as
+    // the one thing that names `/`), and whenever a filter is in force.
+    let search_row = workbench.sidebar_focus || filter.open || !filter.query.is_empty();
     let frame = workbench.spinner_frame();
     let body = panels::render_with(
         panel,
@@ -1289,12 +1294,18 @@ fn sidebar_rows(
         workbench.hit_map(),
         lang,
         frame,
-        &folded,
+        &filter,
+        search_row,
         "sidebar.row.",
     );
     lines.extend(body);
     if footer == 1 {
-        let hint = fit(t(lang, Key::RailHint), columns);
+        let key = if workbench.rail.open {
+            Key::RailSearchHint
+        } else {
+            Key::RailHint
+        };
+        let hint = fit(t(lang, key), columns);
         lines.push(fit(&palette.dim(&hint), columns));
     }
     lines.truncate(area.h as usize);
@@ -2644,7 +2655,10 @@ fn files_box(
             workbench.hit_map(),
             lang,
             frame,
-            &panels::Folded::new(),
+            // A tree is filtered by nothing but its own expansion: the rail's
+            // search belongs to its two conversation panels.
+            &panels::Filter::default(),
+            false,
             "files.row.",
         )
     };
@@ -3526,7 +3540,7 @@ fn panel_box(
         scroll: workbench.panel_scroll[index],
         selected: workbench.sidebar_index,
     };
-    let folded = workbench.folded_workspaces.clone();
+    let filter = workbench.rail.clone();
     let frame = workbench.spinner_frame();
     let body = panels::render_with(
         panel,
@@ -3537,7 +3551,11 @@ fn panel_box(
         workbench.hit_map(),
         lang,
         frame,
-        &folded,
+        &filter,
+        // The box is where the search is reachable on a terminal too narrow for
+        // a rail, so its line is always on screen: the box has the room, and one
+        // row spent naming the key is what teaches it.
+        true,
         "sidebar.row.",
     );
     let geometry = box_geometry(w, h, PANEL_WIDTH, body.len());

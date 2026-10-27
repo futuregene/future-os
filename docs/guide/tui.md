@@ -133,6 +133,18 @@ that belong to no workspace — the app's own scratch directories). Usage figure
 live on the status bar, so no panel repeats them; skills are the palette's. With
 the rail focused, `←`/`→` move between the two tabs.
 
+Both tabs list the same conversations, so **one search narrows both**: `/` while
+the rail has the keys opens the line under its tabs (`/ 搜索会话` while it is
+empty and closed, `❯ <query>▏` while it is taking keys), typing narrows the list
+to the conversations whose title, workspace or id matches — case-insensitively —
+and `enter` hands the keys back to the list with the filter still on, `esc`
+clears it. A workspace whose name matches keeps its conversations, and a search
+opens folded groups, because a match the reader cannot see is not a result. A
+fold (`enter` on a workspace heading, or a click) is remembered in
+`~/.future/tui/settings.json` (`foldedWorkspaces`) and is already in force on
+the next start; the query is not written anywhere, since a filter left over from
+yesterday reads as sessions that went missing.
+
 The launchpad is the *body*, not a dialog over the conversation: with no session
 attached the composer fills the surface (the name, the box, workspace / model /
 effort / approval chips) and there is no second input band. The block is centred

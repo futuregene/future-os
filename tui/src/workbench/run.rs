@@ -109,6 +109,9 @@ pub async fn run(options: Options) -> Result<(), String> {
     workbench.set_theme(&live.theme_id);
     workbench.set_language(live::persisted_language(&settings));
     workbench.set_preferences(layout_preferences(&settings, mouse_capture));
+    // The folds are the rail's own memory, not the layout's, so they are applied
+    // beside it: a rail the reader organised comes back organised.
+    workbench.set_folded_workspaces(settings.folded_workspaces.clone().unwrap_or_default());
     workbench.keys = super::preferences::Keybindings::load(&super::preferences::keybindings_path(
         &options.settings_path,
     ));
@@ -1837,6 +1840,9 @@ fn persist_preferences(workbench: &Workbench, settings: &mut TuiSettings, path: 
     settings.mouse_capture = Some(preferences.mouse_capture);
     settings.notify = Some(preferences.notify);
     settings.reduced_motion = Some(preferences.reduced_motion);
+    // Which workspaces the reader folded shut survives a restart; the search text
+    // does not (see `TuiSettings::folded_workspaces`).
+    settings.folded_workspaces = Some(workbench.folded_workspaces());
     save_settings(path, settings);
 }
 
@@ -2297,6 +2303,31 @@ mod tests {
         assert!(layout_preferences(&shown, true).sidebar_visible);
         let hidden = TuiSettings::from_json(&serde_json::json!({"sidebarVisible": false}));
         assert!(!layout_preferences(&hidden, true).sidebar_visible);
+    }
+
+    /// The workspaces the reader folded shut survive a restart through the same
+    /// file the layout uses.
+    #[test]
+    fn folded_workspaces_reach_the_settings_file_and_come_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+
+        let mut workbench = super::super::Workbench::new();
+        workbench.set_folded_workspaces(["/src/future-os".to_string(), "/src/mobile".into()]);
+        let mut settings = TuiSettings::default();
+        persist_preferences(&workbench, &mut settings, &path);
+
+        // Read the file back, not the value the writer kept: the point is that a
+        // *next start* sees the folds.
+        let written = load_settings(&path);
+        assert_eq!(
+            written.folded_workspaces,
+            Some(vec!["/src/future-os".into(), "/src/mobile".into()])
+        );
+
+        let mut restored = super::super::Workbench::new();
+        restored.set_folded_workspaces(written.folded_workspaces.unwrap_or_default());
+        assert_eq!(restored.folded_workspaces(), workbench.folded_workspaces());
     }
 
     /// A held `shift+↑/↓` opens one conversation, the one the reader stops on.

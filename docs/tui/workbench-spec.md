@@ -407,6 +407,30 @@ the transcript. That pair replaces the three sequential round trips a switch use
 to take — `switch_session`, `get_state`, then the page — because `get_state`
 already hydrates the session it is asked about.
 
+### The rail's search line and remembered folds
+
+Both tabs list conversations, so one query searches both. `/` while the rail has
+the keys opens the line the panel already spends on the blank row under its tabs
+(`/ 搜索会话` while it is closed and empty, `❯ <query>▏` while it is taking
+keys), every printable key joins the query, and the list narrows to the
+conversations whose title, workspace or id contains it — case-insensitively, the
+same three facts the history picker matches (`workflows::filtered_sessions`). A
+workspace whose own name matches keeps every conversation under it, and a search
+opens folded groups: a match the reader cannot see is not a result. (While a
+query is in force a heading is context, not a control — its group is already
+open — so `enter` on one folds nothing, now or later.) `enter` hands
+the keys back to the list and keeps the filter (`↑`/`↓` walk the matches, `⏎`
+opens the row); `esc` clears it and closes the line, because a filter whose end
+the reader cannot see is conversations that went missing. Nothing matched says
+`没有匹配的会话` rather than `没有会话`. The full-screen panel (`ctrl+d` on a
+terminal too narrow for a rail) is the same list and the same search.
+
+A fold (`enter` on a workspace heading, or a click on one) outlives the process:
+the paths are written to `~/.future/tui/settings.json` as `foldedWorkspaces`, and
+the next start hides their conversations before anything is pressed. The query
+is not written anywhere — a filter left over from yesterday reads as sessions
+that went missing overnight, the same rule the desktop's rail follows.
+
 ### Pictures in a text surface
 
 An image is drawn as **half blocks**: one `▀` per cell, foreground the top pixel

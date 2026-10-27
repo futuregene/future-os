@@ -23,6 +23,10 @@
 //! width. The keyboard needs it (to know which rows hold a conversation) and so
 //! does the pointer (a click names a row index), so both read one definition
 //! instead of re-deriving "what is selectable" beside it.
+//!
+//! What the reader has done to the list — a folded group, a search text — is
+//! the surface's own state, and arrives as one [`Filter`], so the rows a key
+//! moves through and the rows a frame paints are always the same list.
 
 use std::collections::BTreeSet;
 
@@ -42,6 +46,42 @@ const TOP_GAP: usize = 1;
 /// the *surface's* memory, not the agent's: a fold is a view of the list, and
 /// the list itself is rebuilt from the agent every frame.
 pub type Folded = BTreeSet<String>;
+
+/// What the rail is showing: which workspaces are folded shut, and the text its
+/// search line holds.
+///
+/// The same argument as [`Folded`]: a filter is the reader's view of the list,
+/// not a fact about the agent's — so it travels to the painter and the keyboard
+/// as one value instead of being re-derived in each.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Filter {
+    /// The workspaces folded shut (see [`Folded`]).
+    pub folded: Folded,
+    /// What the search line holds, exactly as typed: it is trimmed and lowered
+    /// where it is matched ([`Filter::needle`]), never stored that way, so the
+    /// reader's capitals survive in the line they are still editing.
+    pub query: String,
+    /// Is the search line taking keystrokes? Painting only — an open line with
+    /// an empty query filters nothing out.
+    pub open: bool,
+}
+
+impl Filter {
+    /// The query as it is matched.
+    fn needle(&self) -> String {
+        self.query.trim().to_lowercase()
+    }
+}
+
+/// Does this conversation answer the rail's search text? Its title, the
+/// workspace it is filed under, and its id — the same three facts the history
+/// picker matches (`workflows::filtered_sessions`), so "search my sessions"
+/// means one thing in this client.
+fn matches(session: &SessionRow, needle: &str) -> bool {
+    session.title.to_lowercase().contains(needle)
+        || session.workspace.to_lowercase().contains(needle)
+        || session.id.to_lowercase().contains(needle)
+}
 
 /// One row of the sidebar, in paint order.
 ///
@@ -138,12 +178,15 @@ impl Section {
 
 /// The panel's rows, in paint order.
 pub fn rows(panel: PanelId, data: &WorkbenchData) -> Vec<Row> {
-    rows_with(panel, data, &Folded::new())
+    rows_with(panel, data, &Filter::default())
 }
 
-/// The panel's rows with the folded workspaces taken into account: a folded
-/// workspace paints its heading and none of its conversations.
-pub fn rows_with(panel: PanelId, data: &WorkbenchData, folded: &Folded) -> Vec<Row> {
+/// The panel's rows as the reader is looking at them: a folded workspace paints
+/// its heading and none of its conversations, and a search text narrows every
+/// block to what matches it.
+pub fn rows_with(panel: PanelId, data: &WorkbenchData, filter: &Filter) -> Vec<Row> {
+    let needle = filter.needle();
+    let matches_at = |at: &usize| matches(&data.sessions[*at], &needle);
     match panel {
         PanelId::Recent => {
             // The desktop's recent view, in the rail's own shape: a run that is
@@ -160,10 +203,12 @@ pub fn rows_with(panel: PanelId, data: &WorkbenchData, folded: &Folded) -> Vec<R
             // that same fact, so the tail of the rail reads as one clock.
             let mut streaming: Vec<usize> = (0..data.sessions.len())
                 .filter(|index| data.sessions[*index].streaming)
+                .filter(&matches_at)
                 .collect();
             streaming.sort_by_key(|index| std::cmp::Reverse(data.sessions[*index].created_at_ms));
             let quiet: Vec<usize> = (0..data.sessions.len())
                 .filter(|index| !data.sessions[*index].streaming)
+                .filter(&matches_at)
                 .collect();
             let split = !streaming.is_empty() && !quiet.is_empty();
             let mut rows: Vec<Row> = Vec::with_capacity(data.sessions.len() + 2);
@@ -189,7 +234,24 @@ pub fn rows_with(panel: PanelId, data: &WorkbenchData, folded: &Folded) -> Vec<R
             for (pinned, kind) in [(true, Section::Pinned), (false, Section::Workspaces)] {
                 let mut headed = false;
                 for index in 0..data.workspaces.len() {
-                    if data.workspaces[index].pinned != pinned {
+                    let workspace = &data.workspaces[index];
+                    if workspace.pinned != pinned {
+                        continue;
+                    }
+                    // A workspace whose own name matches keeps every
+                    // conversation it holds — the desktop's rule, and the one
+                    // a reader means by typing a folder name.
+                    let group_hit =
+                        !needle.is_empty() && workspace.name.to_lowercase().contains(&needle);
+                    let listed: Vec<usize> = workspace
+                        .session_ids
+                        .iter()
+                        .filter_map(|id| data.sessions.iter().position(|row| &row.id == id))
+                        .filter(|at| group_hit || needle.is_empty() || matches_at(at))
+                        .collect();
+                    // A search that matched nothing here drops the group
+                    // rather than leaving an empty heading to scroll past.
+                    if !needle.is_empty() && listed.is_empty() {
                         continue;
                     }
                     if !headed {
@@ -200,19 +262,22 @@ pub fn rows_with(panel: PanelId, data: &WorkbenchData, folded: &Folded) -> Vec<R
                     // A folded workspace is its heading alone, which is what
                     // makes a rail with two hundred conversations scrollable:
                     // one line per group instead of one per conversation.
-                    if folded.contains(&data.workspaces[index].path) {
+                    //
+                    // A search opens every group: a match the reader cannot
+                    // see is not a result, and the fold is still there when the
+                    // query goes away.
+                    if needle.is_empty() && filter.folded.contains(&workspace.path) {
                         continue;
                     }
-                    for id in &data.workspaces[index].session_ids {
-                        if let Some(at) = data.sessions.iter().position(|row| &row.id == id) {
-                            rows.push(Row::Session(at));
-                        }
-                    }
+                    rows.extend(listed.into_iter().map(Row::Session));
                 }
             }
             let mut headed = false;
             for id in &data.chats {
                 if let Some(at) = data.sessions.iter().position(|row| &row.id == id) {
+                    if !needle.is_empty() && !matches_at(&at) {
+                        continue;
+                    }
                     if !headed {
                         rows.push(Row::Section(Section::Chats));
                         headed = true;
@@ -302,13 +367,21 @@ pub fn render(
         hit,
         lang,
         frame,
-        &Folded::new(),
+        &Filter::default(),
+        false,
         "sidebar.row.",
     )
 }
 
-/// [`render`] with the reader's folded workspaces, so a fold is drawn as a fold
-/// (`▸`) rather than a workspace that happens to list nothing.
+/// [`render`] with the reader's own view of the list: folded workspaces (a fold
+/// is drawn as a fold, `▸`, rather than a workspace that happens to list
+/// nothing) and the text its search line holds.
+///
+/// `search_row` paints that line in the blank row above the first item, so it
+/// costs the list nothing: the rail shows it while it has the keys or while a
+/// filter is still in force, and the full-screen panel (where the search is one
+/// of the box's own keys) shows it always.
+///
 /// `prefix` names the hit regions this paints (`sidebar.row.` for the rail,
 /// `files.row.` for the files overlay): the same rows are drawn on two
 /// surfaces, and a click has to be resolved against the one it landed on.
@@ -322,7 +395,8 @@ pub fn render_with(
     hit: &mut HitMap,
     lang: Language,
     frame: usize,
-    folded: &Folded,
+    filter: &Filter,
+    search_row: bool,
     prefix: &str,
 ) -> Vec<String> {
     let PanelView { scroll, selected } = view;
@@ -335,11 +409,17 @@ pub fn render_with(
 
     // The panel has no heading of its own: the tab strip above names it, and a
     // count printed under that name cost a row of every list. What is left is
-    // the blank row that keeps the first item off the tabs.
-    lines.push(fit("", columns));
+    // the blank row that keeps the first item off the tabs — which is where the
+    // search line goes when there is one, so it costs the list nothing.
+    if search_row {
+        lines.push(search_line(filter, palette, columns, lang));
+        hit.push(Rect::new(area.x, area.y, area.w, 1), "sidebar.search");
+    } else {
+        lines.push(fit("", columns));
+    }
 
     let body_rows = rows.saturating_sub(TOP_GAP);
-    let items = item_rows(panel, data, palette, columns, lang, selected, folded, frame);
+    let items = item_rows(panel, data, palette, columns, lang, selected, filter, frame);
     let total = items.len();
 
     // The window: `scroll` items in, filled a whole item at a time (a
@@ -436,10 +516,10 @@ fn item_rows(
     columns: usize,
     lang: Language,
     selected: usize,
-    folded: &Folded,
+    filter: &Filter,
     frame: usize,
 ) -> Vec<Vec<String>> {
-    let model = rows_with(panel, data, folded);
+    let model = rows_with(panel, data, filter);
     if model.is_empty() {
         // A tree with no rows is either an empty directory or a directory the
         // reader cannot read; both say what they are instead of painting blank
@@ -456,6 +536,10 @@ fn item_rows(
             t(
                 lang,
                 match panel {
+                    // A filter that matched nothing is not an empty agent: the
+                    // line has to say which of the two it is, or a search with
+                    // a typo reads as "my sessions are gone".
+                    _ if !filter.needle().is_empty() => Key::PanelEmptySearch,
                     PanelId::Recent => Key::PanelEmptySessions,
                     PanelId::Workspaces => Key::PanelEmptyWorkspaces,
                     PanelId::Files => Key::PanelEmptyFiles,
@@ -482,7 +566,19 @@ fn item_rows(
             Row::Workspace(at) => match data.workspaces.get(*at) {
                 Some(workspace) => vec![workspace_row(
                     workspace,
-                    folded.contains(&workspace.path),
+                    // A group is open while a search is in force: its rows are on
+                    // screen, so a `▸` over them would be a marker about a fold
+                    // whose effect the reader cannot see.
+                    filter.needle().is_empty() && filter.folded.contains(&workspace.path),
+                    // A heading counts its matches while a search is on: the
+                    // group's own count would name conversations the list no
+                    // longer shows.
+                    (!filter.needle().is_empty()).then(|| {
+                        model[index + 1..]
+                            .iter()
+                            .take_while(|row| row.session().is_some())
+                            .count()
+                    }),
                     index == selected,
                     palette,
                     columns,
@@ -588,6 +684,30 @@ fn file_row(
     fit(&painted, columns)
 }
 
+/// The rail's search line: the text it holds, with a prompt in front.
+///
+/// The prompt is the key: `/` while the line is closed (so the row names how it
+/// is opened instead of only looking like a field), `❯` while it is taking
+/// keys — the same glyph the pickers type at — with a caret bar to say so. It
+/// lives in the blank row the panel already spent under its tabs, so the list
+/// pays nothing for it.
+fn search_line(filter: &Filter, palette: &Palette, columns: usize, lang: Language) -> String {
+    let text = if filter.query.is_empty() {
+        palette.dim(t(lang, Key::RailSearch))
+    } else {
+        palette.body(&filter.query)
+    };
+    let (prompt, caret) = if filter.open {
+        (
+            palette.text(palette.accent, "❯"),
+            palette.text(palette.accent, "▏"),
+        )
+    } else {
+        (palette.text(palette.muted, "/"), String::new())
+    };
+    fit(&format!(" {prompt} {text}{caret}"), columns)
+}
+
 /// A section heading with a dim rule to the edge, so the three blocks read as
 /// blocks rather than as more rows.
 ///
@@ -616,17 +736,22 @@ fn section_row(
 
 /// A workspace's heading: the fold marker, its name, and how many
 /// conversations sit under it.
+///
+/// `count` overrides that number while a search is on (see [`item_rows`]);
+/// without a search the group's own count is the heading's, folded or not.
 fn workspace_row(
     workspace: &crate::workbench::state::WorkspaceGroup,
     folded: bool,
+    count: Option<usize>,
     selected: bool,
     palette: &Palette,
     columns: usize,
     lang: Language,
 ) -> String {
+    let units = count.unwrap_or(workspace.session_ids.len());
     let tail_text = format!(
         "{} {} · {}",
-        workspace.session_ids.len(),
+        units,
         t(lang, Key::SummaryUnitsSessions),
         workspace.age
     );
@@ -754,14 +879,14 @@ mod tests {
     }
 
     fn panel_text(panel: PanelId, data: &WorkbenchData, lang: Language) -> String {
-        panel_text_with(panel, data, lang, &Folded::new())
+        panel_text_with(panel, data, lang, &Filter::default())
     }
 
     fn panel_text_with(
         panel: PanelId,
         data: &WorkbenchData,
         lang: Language,
-        folded: &Folded,
+        filter: &Filter,
     ) -> String {
         let mut hit = HitMap::new();
         render_with(
@@ -773,7 +898,8 @@ mod tests {
             &mut hit,
             lang,
             0,
-            folded,
+            filter,
+            false,
             "sidebar.row.",
         )
         .iter()
@@ -1178,8 +1304,8 @@ mod tests {
         let open = rows(PanelId::Workspaces, &data);
         let open_sessions = open.iter().filter(|row| row.session().is_some()).count();
 
-        let mut folded = Folded::new();
-        folded.insert(group.path.clone());
+        let mut folded = Filter::default();
+        folded.folded.insert(group.path.clone());
         let closed = rows_with(PanelId::Workspaces, &data, &folded);
         let closed_sessions = closed.iter().filter(|row| row.session().is_some()).count();
         assert_eq!(
@@ -1192,5 +1318,180 @@ mod tests {
         // And it is drawn as folded rather than as an empty workspace.
         let text = panel_text_with(PanelId::Workspaces, &data, LANG, &folded);
         assert!(text.contains('▸'), "{text}");
+    }
+
+    /// A search text narrows 最近 to the conversations that answer it, and the
+    /// count above each stretch is the count that is left.
+    #[test]
+    fn a_search_narrows_the_recent_panel_to_the_matches() {
+        let data = demo::chat();
+        let filter = Filter {
+            query: "mobile".into(),
+            ..Filter::default()
+        };
+        let model = rows_with(PanelId::Recent, &data, &filter);
+        let listed: Vec<usize> = model.iter().filter_map(|row| row.session()).collect();
+        assert_eq!(listed.len(), 1, "{model:?}");
+        assert_eq!(data.sessions[listed[0]].id, "s3", "the mobile conversation");
+        assert!(
+            !model.iter().any(|row| matches!(row, Row::Section(_))),
+            "one match is not a split list: {model:?}"
+        );
+
+        // A run in flight leads whatever is left, and its stretch counts only
+        // the matches — the reader is looking at a narrowed list, not at a
+        // heading that names conversations it no longer shows.
+        let mut busy = data.clone();
+        busy.sessions[0].streaming = true;
+        let filter = Filter {
+            query: "future".into(),
+            ..Filter::default()
+        };
+        let text = panel_text_with(PanelId::Recent, &busy, LANG, &filter);
+        // s1/s2 say `future-os` and s4 says `futureos-wechat-articles`; the
+        // blog conversation and the NATS one do not answer the query at all.
+        assert!(text.contains("活跃 1"), "{text}");
+        assert!(text.contains("更早 2"), "{text}");
+        assert!(!text.contains("把 NATS"), "{text}");
+    }
+
+    /// The search is case-insensitive and reads the title, the workspace it is
+    /// filed under and the id — the same three facts the history picker matches.
+    #[test]
+    fn a_search_matches_title_workspace_and_id_without_caring_about_case() {
+        let data = demo::chat();
+        for (query, expected) in [("MOBILE", "s3"), ("FUTURE-OS", "s1"), ("s5", "s5")] {
+            let filter = Filter {
+                query: query.into(),
+                ..Filter::default()
+            };
+            let listed: Vec<usize> = rows_with(PanelId::Recent, &data, &filter)
+                .iter()
+                .filter_map(|row| row.session())
+                .collect();
+            assert!(
+                listed.iter().any(|at| data.sessions[*at].id == expected),
+                "{query}: {listed:?}"
+            );
+        }
+    }
+
+    /// A search opens every group and drops the ones that matched nothing: the
+    /// fold the reader made is still there when the query goes away, and a
+    /// heading with no conversations under it is not a result.
+    #[test]
+    fn a_search_opens_folded_workspaces_and_drops_the_empty_ones() {
+        let data = demo::chat();
+        let group = data.workspaces[0].clone();
+        let mut filter = Filter::default();
+        filter.folded.insert(group.path.clone());
+        assert!(
+            !rows_with(PanelId::Workspaces, &data, &filter)
+                .iter()
+                .any(|row| row.session() == Some(0)),
+            "the fixture's fold really hides this conversation"
+        );
+
+        // The folded group's own session still answers a search: a fold is a
+        // view, and a match the reader cannot see is not a result.
+        filter.query = group.name.clone();
+        let rows = rows_with(PanelId::Workspaces, &data, &filter);
+        assert!(rows.iter().any(|row| row.session() == Some(0)), "{rows:?}");
+        // Every group that did not match is gone, headings included.
+        let headings: Vec<usize> = rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Workspace(at) => Some(*at),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(headings, vec![0], "{rows:?}");
+
+        // A group whose name matches keeps every conversation in it — typing a
+        // folder name means the folder, not only the titles that repeat it.
+        let filter = Filter {
+            query: data.workspaces[0].name.clone(),
+            ..Filter::default()
+        };
+        let listed = rows_with(PanelId::Workspaces, &data, &filter)
+            .iter()
+            .filter_map(|row| row.session())
+            .count();
+        assert_eq!(listed, data.workspaces[0].session_ids.len());
+    }
+
+    /// A query nothing answers says so, instead of reading as an agent with no
+    /// sessions at all.
+    #[test]
+    fn a_search_with_no_match_says_it_found_nothing() {
+        let data = demo::chat();
+        for panel in [PanelId::Recent, PanelId::Workspaces] {
+            let filter = Filter {
+                query: "nothing-answers-this".into(),
+                ..Filter::default()
+            };
+            assert!(rows_with(panel, &data, &filter).is_empty(), "{panel:?}");
+            let text = panel_text_with(panel, &data, LANG, &filter);
+            assert!(text.contains("没有匹配的会话"), "{panel:?}: {text}");
+        }
+    }
+
+    /// The search line is painted in the row the panel already spent under its
+    /// tabs, so the list loses nothing — and while it is closed its prompt is
+    /// the key that opens it.
+    #[test]
+    fn the_search_line_names_its_key_and_shows_the_query() {
+        let data = demo::chat();
+        let mut hit = HitMap::new();
+        let closed = Filter::default();
+        let lines = render_with(
+            PanelId::Recent,
+            &data,
+            &P,
+            area(10),
+            PanelView::default(),
+            &mut hit,
+            LANG,
+            0,
+            &closed,
+            true,
+            "sidebar.row.",
+        );
+        let first = crate::utils::strip_ansi_codes(&lines[0]);
+        assert_eq!(first.trim(), "/ 搜索会话", "{first:?}");
+        assert!(
+            hit.regions().iter().any(|(_, id)| id == "sidebar.search"),
+            "the line is a pointer target"
+        );
+
+        let open = Filter {
+            open: true,
+            query: "mobile".into(),
+            ..Filter::default()
+        };
+        let mut hit = HitMap::new();
+        let lines = render_with(
+            PanelId::Recent,
+            &data,
+            &P,
+            area(10),
+            PanelView::default(),
+            &mut hit,
+            LANG,
+            0,
+            &open,
+            true,
+            "sidebar.row.",
+        );
+        let first = crate::utils::strip_ansi_codes(&lines[0]);
+        assert!(first.starts_with(" ❯ mobile"), "{first:?}");
+        // The rest of the panel is the narrowed list, not the whole one.
+        let body: String = lines[1..]
+            .iter()
+            .map(|line| crate::utils::strip_ansi_codes(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(body.contains("mobile 恢复会话"), "{body}");
+        assert!(!body.contains("修复 parser"), "{body}");
     }
 }
