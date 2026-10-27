@@ -372,6 +372,8 @@ pub enum Key {
     LaunchpadNewChat,
     LaunchpadNewChatIn,
     WorkspaceChosen,
+    WorkspaceChat,
+    WorkspaceChatDetail,
     WorkspaceNone,
     // ── the palette's verbs ───────────────────────────────────────────
     CmdNew,
@@ -763,6 +765,12 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         LaunchpadNewChat => ("新会话", "New Chat"),
         LaunchpadNewChatIn => ("新会话 · {}", "New Chat · {}"),
         WorkspaceChosen => ("工作区 · {}", "Workspace · {}"),
+        // The one chooser row that is not a directory, and the name the rail's
+        // last section already gives such a conversation.
+        WorkspaceChat => ("对话会话", "Chat"),
+        // Beside it, where the workspaces print their paths: the sentence that
+        // makes the row a *choice* rather than a folder.
+        WorkspaceChatDetail => ("不绑工作区", "no workspace"),
         WorkspaceNone => (
             "没有其它工作区可切换",
             "No other workspace to switch to",
@@ -1259,7 +1267,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 299] = {
+    const ALL_KEYS: [Key; 301] = {
         use Key::*;
         [
             TabTodo,
@@ -1371,6 +1379,8 @@ mod tests {
             LaunchpadNewChat,
             LaunchpadNewChatIn,
             WorkspaceChosen,
+            WorkspaceChat,
+            WorkspaceChatDetail,
             WorkspaceNone,
             CmdNew,
             CmdDiff,

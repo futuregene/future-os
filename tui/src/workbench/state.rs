@@ -12,13 +12,20 @@ use crate::workbench::i18n::{t, Key, Language};
 use crate::workbench::image_view::ImagePixels;
 use crate::workbench::syntax;
 
-/// Who the session is: the four facts the header and the launchpad print.
+/// Who the session is: the facts the header and the launchpad print.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionMeta {
     /// Empty means "no session yet" — which is exactly the launchpad state.
     pub id: String,
     pub title: String,
     pub cwd: String,
+    /// Is `cwd` one of the app's own scratch directories rather than a
+    /// workspace the reader chose — a plain chat, the one the rail files under
+    /// 对话会话? The workspace picker ticks its "no workspace" row with it and
+    /// the launchpad's chip names the chat instead of the directory's last
+    /// segment, because `agent/workspace` is not a name a reader would
+    /// recognise as theirs.
+    pub chat: bool,
     /// Short git branch name, or empty outside a repository.
     pub branch: String,
 }

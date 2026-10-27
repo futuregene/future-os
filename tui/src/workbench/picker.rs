@@ -28,6 +28,14 @@ use crate::workbench::state::{
 };
 use crate::workbench::theme::{self, Palette};
 
+/// The workspace picker's row for "no workspace at all" — the plain chat.
+///
+/// It is a *key*, not a path: the caller reads it and moves the conversation to
+/// the app's own scratch directory, which the reader never typed. A NUL byte is
+/// the one character no path can carry, so a row keyed by a directory the reader
+/// typed can never be mistaken for this one.
+pub const CHAT_WORKSPACE_KEY: &str = "\0chat";
+
 /// Which picker is open. The id is what `Overlay::Picker` carries and what the
 /// hit regions name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,8 +48,9 @@ pub enum PickerKind {
     Thinking,
     /// The desktop composer's four approval tiers (`/mode`, `ctrl+s`).
     Approval,
-    /// Every workspace this client has a conversation in, plus a row that
-    /// creates one from the path typed into the search line (`ctrl+l`).
+    /// Every workspace this client has a conversation in, a row that creates
+    /// one from the path typed into the search line, and a row that is a plain
+    /// chat instead — no workspace at all (`ctrl+l`).
     Workspace,
 }
 
@@ -578,6 +587,11 @@ pub fn rows(
         // Every workspace this client has a conversation in, then — once the
         // search line names a directory that is not one of them — a row that
         // switches to it. Enter on that row is "create a workspace here".
+        //
+        // Above the workspaces and below the typed path sits the one row that
+        // is not a directory: a plain chat, the conversation nobody picked a
+        // workspace for. It is what makes "I did not choose a workspace" a
+        // choice the reader can make instead of one the menu omits.
         PickerKind::Workspace => {
             let cwd = data.session.cwd.as_str();
             // The tick follows the directory, and an exact path wins. The
@@ -608,6 +622,20 @@ pub fn rows(
                     label: i18n::render(lang, Key::PickerNewWorkspace, &[&typed]),
                     detail: String::new(),
                     current: false,
+                });
+            }
+            // After the typed row, never before it: `enter` straight after
+            // typing a path is "create this workspace", and a chat row above it
+            // would answer that keystroke with a chat instead.
+            let chat = t(lang, Key::WorkspaceChat);
+            if matches(&[chat]) {
+                rows.push(PickerRow::Item {
+                    key: CHAT_WORKSPACE_KEY.to_string(),
+                    label: chat.to_string(),
+                    // Where the workspaces print the path they run in, this row
+                    // says the one thing it has instead: no directory of its own.
+                    detail: t(lang, Key::WorkspaceChatDetail).to_string(),
+                    current: data.session.chat,
                 });
             }
             for workspace in &data.workspaces {
@@ -908,7 +936,7 @@ mod tests {
     /// own default is English, and a case that asserted Chinese would otherwise
     /// be asserting the machine's locale.
     const LANG: Language = Language::Zh;
-    use crate::workbench::state::{ModelChoice, SessionRow};
+    use crate::workbench::state::{ModelChoice, SessionRow, WorkspaceGroup};
     use crate::workbench::theme::FUTURE_DARK;
 
     fn data() -> WorkbenchData {
@@ -979,6 +1007,104 @@ mod tests {
             },
         ];
         data
+    }
+
+    /// "No workspace" is a row, not an absence. It sits under a typed path (so
+    /// `enter` straight after typing still creates the directory) and above the
+    /// workspaces, and it carries the `✓` while the conversation is a chat — the
+    /// one choice the picker used to leave out, which left a reader wanting a
+    /// plain conversation with nothing to press.
+    #[test]
+    fn the_workspace_picker_offers_a_plain_chat() {
+        let mut data = data();
+        data.workspaces = vec![WorkspaceGroup {
+            name: "future-os".into(),
+            path: "/home/dev/future-os".into(),
+            pinned: false,
+            age: "5m".into(),
+            session_ids: vec!["s1".into()],
+        }];
+        let view = rows(
+            PickerKind::Workspace,
+            &data,
+            "",
+            0,
+            &fallback_thinking_levels(),
+            "",
+            LANG,
+            LanguagePreference::System,
+        );
+        let chat = PickerRow::Item {
+            key: CHAT_WORKSPACE_KEY.into(),
+            label: t(LANG, Key::WorkspaceChat).into(),
+            detail: t(LANG, Key::WorkspaceChatDetail).into(),
+            current: false,
+        };
+        assert_eq!(view.rows.first(), Some(&chat), "the chat leads the list");
+        assert!(
+            matches!(&view.rows[1], PickerRow::Item { label, .. } if label == "future-os"),
+            "the workspaces follow it: {:?}",
+            view.rows
+        );
+
+        // The tick follows the conversation: a chat ticks the chat row, and a
+        // session in a workspace ticks its own row instead.
+        data.session.chat = true;
+        let view = rows(
+            PickerKind::Workspace,
+            &data,
+            "",
+            0,
+            &fallback_thinking_levels(),
+            "",
+            LANG,
+            LanguagePreference::System,
+        );
+        let ticked: Vec<&str> = view
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                PickerRow::Item {
+                    label,
+                    current: true,
+                    ..
+                } => Some(label.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ticked, vec![t(LANG, Key::WorkspaceChat)]);
+
+        // A path typed into the search line keeps the first row, and the chat
+        // row steps out of its way: `enter` right after typing must create the
+        // directory the reader just named, not start a chat.
+        let typed = "/work/gamma";
+        let view = rows(
+            PickerKind::Workspace,
+            &data,
+            typed,
+            0,
+            &fallback_thinking_levels(),
+            "",
+            LANG,
+            LanguagePreference::System,
+        );
+        assert_eq!(
+            view.rows.first(),
+            Some(&PickerRow::Item {
+                key: typed.into(),
+                label: i18n::render(LANG, Key::PickerNewWorkspace, &[&typed]),
+                detail: String::new(),
+                current: false,
+            })
+        );
+        assert!(
+            !view.rows.iter().any(|row| matches!(
+                row,
+                PickerRow::Item { key, .. } if key.as_str() == CHAT_WORKSPACE_KEY
+            )),
+            "a typed path filters the chat row out: {:?}",
+            view.rows
+        );
     }
 
     #[test]

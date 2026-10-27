@@ -264,7 +264,14 @@ well. `/thinking` lists the six levels, `/mode` the desktop composer's four
 approval tiers with their one-line explanations, and `/workspace` every
 directory this client has a conversation in plus a first row that creates one
 from the path typed into its search line (`enter` there is `set_cwd`, the same
-verb as choosing an existing one). The approval tiers are the desktop's own
+verb as choosing an existing one). Under that typed row sits the one row that is
+not a directory: 对话会话, a plain chat — the conversation nobody picked a
+workspace for. `enter` there parks the session in the agent's own
+`agent/workspace` (the directory the rail's 对话会话 section already names), or
+stages it for the session the next message creates, and the app makes that
+directory itself: a directory the reader typed is theirs to have created, and a
+typo deserves the agent's error, but this path is nobody's to make. The
+approval tiers are the desktop's own
 values — manual / sandboxed / automatic review / full access; there is no
 separate TUI "permission level" chip, because no other client offers that
 choice.
@@ -353,7 +360,7 @@ cursor to the terminal's own tab stop and tear the frame's columns.
 pub struct WorkbenchData {
     pub app_name: String, pub version: String,
     pub connected: bool,
-    pub session: SessionMeta,          // id/title/cwd/branch
+    pub session: SessionMeta,          // id/title/cwd/chat/branch
     pub model: String, pub effort: String,
     pub mode: String,                  // manual|sandbox|auto|off (the desktop's four tiers)
     pub usage: UsageData,              // ctx_used/ctx_total/cost/cache/tps

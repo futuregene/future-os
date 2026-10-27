@@ -1036,6 +1036,10 @@ impl Live {
                 .collect()
         };
 
+        // The directory the header and the launchpad chip name: the staged one
+        // while nothing is attached, the agent's own otherwise.
+        let cwd = self.shown_cwd().unwrap_or_default();
+
         WorkbenchData {
             app_name: "future-tui".into(),
             version: crate::version::VERSION.to_string(),
@@ -1050,7 +1054,12 @@ impl Live {
                 // On the launchpad the chip names the workspace the first
                 // message will create the session in, not whatever session the
                 // client left behind.
-                cwd: self.shown_cwd().unwrap_or_default(),
+                cwd: cwd.clone(),
+                // A directory this client has not chosen (the launchpad's empty
+                // cwd) is not a chat yet: `is_chat_directory` answers "no
+                // workspace" for the empty string too, and a surface that has
+                // decided nothing must not tick a row either.
+                chat: !cwd.trim().is_empty() && is_chat_directory(&cwd),
                 branch: self.branch.for_cwd(&self.local_cwd).to_string(),
             },
             model: self
@@ -1200,6 +1209,7 @@ impl Live {
             WbAction::Compact(instructions) => self.compact(instructions).await,
             WbAction::SetApproval(mode) => self.set_approval(&mode).await,
             WbAction::SelectWorkspace(path) => self.select_workspace(&path).await,
+            WbAction::SelectChatWorkspace => self.select_chat_workspace().await,
             WbAction::ToggleFolder(path) => self.toggle_folder(&path),
             WbAction::RefreshFiles => self.refresh_tree(),
             // The preview itself is opened by the driver, which owns the
@@ -2155,6 +2165,56 @@ impl Live {
         }
     }
 
+    /// Move the session to no workspace at all — the plain chat the workspace
+    /// picker lists above the directories.
+    ///
+    /// Two roads again, decided by whether anything is attached: staged for the
+    /// session the next message creates, or moved with `set_cwd` and re-filed by
+    /// the rail under 对话会话. The directory is the agent's own scratch
+    /// workspace (see [`chat_workspace`]) and is created here rather than left to
+    /// the agent: a session parked in a directory that is not there has no tool
+    /// that works, and nobody else is going to make this one — a directory the
+    /// reader typed is theirs, a typo deserves the agent's error, but this path
+    /// is the app's.
+    pub async fn select_chat_workspace(&mut self) {
+        if !self.detached() && is_chat_directory(&self.state.cwd.clone().unwrap_or_default()) {
+            // Already a chat: the row the reader would leave is the row they are
+            // on, which is what `esc` gives too.
+            self.notice = None;
+            return;
+        }
+        let path = chat_workspace();
+        if let Err(error) = std::fs::create_dir_all(&path) {
+            self.notice = Some(i18n::render(
+                self.lang,
+                Key::WorkflowFailed,
+                &[&error.to_string()],
+            ));
+            return;
+        }
+        let notice = i18n::render(
+            self.lang,
+            Key::WorkspaceChosen,
+            &[&t(self.lang, Key::WorkspaceChat)],
+        );
+        if self.detached() {
+            self.pending_cwd = Some(path);
+            self.notice = Some(notice);
+            return;
+        }
+        match self.client.set_cwd(&path).await {
+            Ok(()) => {
+                self.refresh_state().await;
+                self.refresh_worktrees();
+                self.diff = None;
+                self.notice = Some(notice);
+            }
+            Err(error) => {
+                self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
+            }
+        }
+    }
+
     /// Move the session to a workspace the reader picked (or typed).
     ///
     /// Two roads, decided by whether anything is attached — the same split the
@@ -2667,6 +2727,21 @@ fn is_chat_directory(cwd: &str) -> bool {
         || normalized.starts_with(&format!("{root}/workspaces/chat/"))
 }
 
+/// The directory a conversation with no workspace runs in: the same
+/// `agent/workspace` [`is_chat_directory`] names, spelled as a path this process
+/// can hand the agent.
+///
+/// It is the agent's own home rather than one the reader chose, which is why a
+/// chat is the one workspace this surface creates itself (see
+/// [`Live::select_chat_workspace`]).
+fn chat_workspace() -> String {
+    crate::home::future_state_dir()
+        .join("agent")
+        .join("workspace")
+        .to_string_lossy()
+        .to_string()
+}
+
 fn age(updated_at_ms: i64) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3142,6 +3217,74 @@ mod tests {
             is_streaming: None,
             first_message: None,
         }
+    }
+
+    /// The workspace picker's "no workspace" row: a chat, staged while nothing
+    /// is attached and applied once a session exists, in a directory this
+    /// surface makes itself — a fresh home has no `agent/workspace`, and a
+    /// session parked in a directory that is not there has no tool that works.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // FUTURE_HOME is process-global and must stay pinned across awaits.
+    async fn the_chat_row_stages_a_session_then_moves_it() {
+        let _guard = crate::test_env::lock();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_env::EnvVarGuard::set("FUTURE_HOME", home.path());
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        let scratch = home.path().join("agent").join("workspace");
+        let notice = i18n::render(
+            live.lang,
+            Key::WorkspaceChosen,
+            &[&t(live.lang, Key::WorkspaceChat)],
+        );
+
+        // Nothing attached: the directory is staged for the session the next
+        // message creates.
+        live.to_launchpad();
+        live.select_chat_workspace().await;
+        assert_eq!(
+            live.pending_cwd.as_deref(),
+            Some(scratch.to_string_lossy().as_ref())
+        );
+        assert!(scratch.is_dir(), "the chat's directory is created for it");
+        assert_eq!(live.notice.as_deref(), Some(notice.as_str()));
+
+        // A session attached: the agent is told to move, and the rail re-files
+        // the conversation under 对话会话 because the directory is the app's.
+        live.launchpad = false;
+        live.state.session_id = "s-1".into();
+        live.state.cwd = Some("/work/alpha".into());
+        live.select_chat_workspace().await;
+        let commands = seen.lock().unwrap().clone();
+        assert!(
+            commands.iter().any(|command| command == "set_cwd"),
+            "a chat moves an attached session: {commands:?}"
+        );
+        assert_eq!(live.notice.as_deref(), Some(notice.as_str()));
+
+        // Already a chat: the row is where the reader stands, so nothing moves
+        // (the same no-op `esc` gives).
+        let before = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|command| *command == "set_cwd")
+            .count();
+        live.notice = None;
+        live.state.session_id = "s-1".into();
+        live.state.cwd = Some(scratch.to_string_lossy().to_string());
+        live.select_chat_workspace().await;
+        let after = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|command| *command == "set_cwd")
+            .count();
+        assert_eq!(after, before, "already a chat: no second move");
+        assert_eq!(live.notice, None);
     }
 
     /// The rail, the `ctrl+r` list and the 工作区 tab name a workspace by its

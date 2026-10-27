@@ -453,6 +453,7 @@ pub fn chat() -> WorkbenchData {
         id: "s1".into(),
         title: "修复 parser 的 off-by-one".into(),
         cwd: "~/future-os".into(),
+        chat: false,
         branch: "dev-huichen".into(),
     };
     data.activity = Activity {

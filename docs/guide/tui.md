@@ -132,8 +132,10 @@ the prompt. The block teaches no key of its own: the footer's hint row already
 names them, and what the box takes beyond a sentence — `/` commands, `@` files,
 `#` sessions — is in the placeholder, where the reader is about to type it. The
 four chips are the desktop composer's own controls (model, thinking effort,
-approval mode) plus the workspace this TUI starts from; there is no separate
-permission level, because no other client offers one.
+approval mode) plus the workspace this TUI starts from — and that chip reads
+对话会话 when the next session is a plain chat, which is what the workspace
+chooser's "no workspace" row stages; there is no separate permission level,
+because no other client offers one.
 
 **One prefix: `ctrl`.** No default uses `alt` — on macOS the Option key composes
 a character unless the reader turns on "Use Option as Meta", so an `alt`
@@ -284,7 +286,7 @@ click on the rail's tab strip are the doors to the same places.
 | 偏好设置 → 动态 | Toggle reduced motion (persisted; no chord) |
 | `ctrl+t` | Thinking effort: opens the six-level chooser (`/thinking`); on the launchpad the level is staged for the session the first message creates |
 | `ctrl+s` | Approval mode: opens the four-tier chooser, the desktop composer's own values — 手动审批 / 沙箱保护 / 自动审批 / 完全访问 |
-| `ctrl+l` | Workspaces: opens the workspace chooser — every directory this client has a conversation in, plus a row that creates one from the path typed into its search line |
+| `ctrl+l` | Workspaces: opens the workspace chooser — every directory this client has a conversation in, a row that creates one from the path typed into its search line, and a row that is a plain chat instead: no workspace at all, which runs in the agent's own `agent/workspace` and is filed under 对话会话 |
 | `ctrl+d` | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal. The rail's own `›` edge button does the same hide/show with one click. The show/hide choice is written to `sidebarVisible` and is where the next start begins (a first start begins hidden) |
 | `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run |
 | `ctrl+r` | Session picker (name, workspace and age of each conversation; the footer names the key) |

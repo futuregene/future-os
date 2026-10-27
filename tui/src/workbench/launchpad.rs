@@ -51,7 +51,7 @@ pub fn chips(data: &WorkbenchData, lang: Language) -> Vec<Chip> {
         Chip {
             id: "launchpad.workspace",
             title: t(lang, Key::ChipWorkspace),
-            value: workspace_label(&data.session.cwd),
+            value: workspace_value(data, lang),
         },
         Chip {
             id: "launchpad.model",
@@ -98,6 +98,17 @@ fn short_model(model: &str) -> String {
         .filter(|tail| !tail.is_empty())
         .unwrap_or(model)
         .to_string()
+}
+
+/// The 工作区 chip's value: the workspace's own name, or 对话会话 when the next
+/// session is a plain chat — `agent/workspace` is the directory a chat runs in,
+/// and printing its last segment would name the app's own scratch folder as if
+/// it were a project.
+fn workspace_value(data: &WorkbenchData, lang: Language) -> String {
+    if data.session.chat {
+        return t(lang, Key::WorkspaceChat).to_string();
+    }
+    workspace_label(&data.session.cwd)
 }
 
 /// The workspace's own name, which is what a chip has room for (`D:/work/x` →
@@ -365,6 +376,25 @@ mod tests {
                 assert_eq!(width(line), w as usize, "{w}x{h}: {line:?}");
             }
         }
+    }
+
+    /// The 工作区 chip names a directory by its last segment, and a chat by the
+    /// name the rail already gives it: `agent/workspace` is the app's own scratch
+    /// folder, and printing "workspace" would present it as a project the reader
+    /// never chose.
+    #[test]
+    fn the_workspace_chip_names_a_chat_as_one() {
+        let mut data = demo::launchpad();
+        data.session.chat = true;
+        data.session.cwd = "/home/dev/.future/agent/workspace".into();
+        let row = chips(&data, LANG);
+        assert_eq!(row[0].id, "launchpad.workspace");
+        assert_eq!(row[0].value, t(LANG, Key::WorkspaceChat));
+
+        // A workspace keeps its own name.
+        data.session.chat = false;
+        data.session.cwd = "/home/dev/future-os".into();
+        assert_eq!(chips(&data, LANG)[0].value, "future-os");
     }
 
     #[test]

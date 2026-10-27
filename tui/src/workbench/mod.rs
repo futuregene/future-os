@@ -294,6 +294,11 @@ pub enum WbAction {
     /// typed into its search line. The app moves the session there, or stages it
     /// for the session the next message creates.
     SelectWorkspace(String),
+    /// The workspace menu chose its "no workspace" row: a plain chat, which the
+    /// app runs in its own scratch directory. The reader named no directory —
+    /// nobody did — so the app moves the session to that one, or stages it for
+    /// the session the next message creates.
+    SelectChatWorkspace,
     /// The 文件 panel opened or closed a directory: the app re-reads it and the
     /// next frame paints the new shape.
     ToggleFolder(String),
@@ -2532,9 +2537,15 @@ impl Workbench {
             }
             // The first row of the workspace menu is a directory typed into the
             // search line; an existing workspace is the same action, so "switch"
-            // and "create" cannot take two different roads.
+            // and "create" cannot take two different roads. The plain-chat row
+            // is its own verb: the directory it moves to is the app's, not one
+            // the reader named.
             (PickerKind::Workspace, Some(PickerRow::Item { key, .. })) => {
-                vec![WbAction::SelectWorkspace(key)]
+                if key == picker::CHAT_WORKSPACE_KEY {
+                    vec![WbAction::SelectChatWorkspace]
+                } else {
+                    vec![WbAction::SelectWorkspace(key)]
+                }
             }
             _ => vec![WbAction::Redraw],
         }
@@ -3951,6 +3962,36 @@ mod tests {
         // line carries no footer of its own.
         workbench.handle(WbEvent::Key("escape".into()), &data);
         assert_eq!(workbench.overlay, None);
+    }
+
+    /// Two kinds of row share the workspace picker but not one verb: the chat
+    /// row moves the conversation to no workspace (the app's own directory, which
+    /// the reader never named), and a typed path still creates the directory the
+    /// reader did name. One is `SelectChatWorkspace`, the other `SelectWorkspace`.
+    #[test]
+    fn the_workspace_picker_separates_the_chat_from_a_typed_path() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        // Nothing is typed, so the chat leads the list; the highlight is put
+        // there (a click, or `↑` from the ticked workspace row, lands the same).
+        workbench.open_picker(PickerKind::Workspace, &data);
+        workbench.picker.index = 0;
+        assert_eq!(
+            workbench.apply_picker(PickerKind::Workspace, &data),
+            vec![WbAction::SelectChatWorkspace]
+        );
+        assert_eq!(workbench.overlay, None, "applying it closes the box");
+
+        // A path typed into the search line keeps the first row, and its verb is
+        // unchanged: `set_cwd` on the directory named.
+        workbench.open_picker(PickerKind::Workspace, &data);
+        for ch in "/work/gamma".chars() {
+            workbench.picker.push(ch, &data);
+        }
+        assert_eq!(
+            workbench.apply_picker(PickerKind::Workspace, &data),
+            vec![WbAction::SelectWorkspace("/work/gamma".into())]
+        );
     }
 
     /// The verbs that cannot be carried out here answer with what *is* true

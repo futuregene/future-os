@@ -233,8 +233,11 @@ TUI 不使用 logo 或图标。聊天页眉只有一行文字品牌 `FUTURE OS`�
 `ctrl+l` 直接打开它们。`/thinking` 列六档强度；`/mode` 列桌面端输入框的那四档审批模式（手动 /
 沙箱 / 自动 / 完全访问），每行带一句解释；`/workspace` 列本客户端有会话的全部目录，并在最前面
 多一行「用搜索框里的路径新建工作区」——在那一行按 `enter` 就是 `set_cwd`，和选一个已有工作区
-同一个动作。审批模式就是桌面端自己的那四个值；没有单独的 TUI「权限级别」芯片，因为别的客户端
-都没有这个选择。
+同一个动作。那一行下面还有唯一一行不是目录的选项：**对话会话**，也就是「不选工作区」——在它上面
+按 `enter` 会把会话挪到 agent 自己的 `agent/workspace`（侧栏「对话会话」一节认的就是这个目录），
+或者给下一条消息要建的会话暂存下来；这个目录由 TUI 自己创建：读者输入的路径是读者的事，打错了
+该由 agent 报错，而这个路径没人会替他建。审批模式就是桌面端自己的那四个值；没有单独的 TUI
+「权限级别」芯片，因为别的客户端都没有这个选择。
 
 行的绘制与命中区域来自同一份列表和同一份几何（`screen::picker_box` 用 `box_geometry`），
 所以点击一定落在指针下面那一行，而不是旁边一行。
@@ -268,7 +271,7 @@ docstring 与 JavaScript 模板字符串）与声明；代价是每行一次向�
 pub struct WorkbenchData {
     pub app_name: String, pub version: String,
     pub connected: bool,
-    pub session: SessionMeta,          // id/title/cwd/branch
+    pub session: SessionMeta,          // id/title/cwd/chat/branch
     pub model: String, pub effort: String,
     pub mode: String,                  // manual|sandbox|auto|off（桌面端那四档）
     pub usage: UsageData,              // ctx_used/ctx_total/cost/cache/tps
