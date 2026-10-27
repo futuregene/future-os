@@ -136,7 +136,7 @@ impl Manager {
         let fingerprint = serde_json::to_string(&request)?;
         let request_id = request.request_id.clone();
         let prior=store.db.read(move|db| {
-            Ok(db.query_row("SELECT f.request_fingerprint,f.child_session_id,s.revision FROM fork_operations f JOIN sessions s ON s.id=f.child_session_id WHERE f.request_id=?1",[request_id],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)?))).optional()?)
+            Ok(db.query_row("SELECT f.request_fingerprint,f.child_session_id,s.revision FROM fork_operations f JOIN sessions s ON s.id=f.child_session_id WHERE f.request_id=?1",[request_id],|row|Ok((row.get::<_,String>(0)?,row.get::<_,crate::session::identity::BoundIdentity>(1)?.to_string(),row.get::<_,i64>(2)?))).optional()?)
         })?;
         if let Some((stored, child, revision)) = prior {
             anyhow::ensure!(
@@ -190,6 +190,8 @@ impl Manager {
         store.db.call(move |db| {
             let tx=crate::session::database::begin_write_transaction(db)?;
             check.check(&tx)?;
+            let parent=crate::session::identity::BoundIdentity::session(&tx,&parent)?;
+            let id=crate::session::identity::BoundIdentity::fresh_session(&tx,&id)?;
             tx.execute("INSERT INTO sessions(id,revision) VALUES (?1,-1)",[&id])?;
             crate::session::content::enable(&tx,&id)?;
             tx.execute("INSERT INTO fork_operations(request_id,request_fingerprint,parent_session_id,child_session_id,created_at_ms) VALUES (?1,?2,?3,?4,?5)",params![operation,input,parent,id,created])?;
@@ -238,6 +240,7 @@ impl Manager {
                 store.db.call(move |db| {
                     let tx = crate::session::database::begin_write_transaction(db)?;
                     check.check(&tx)?;
+                    let id = crate::session::identity::BoundIdentity::session(&tx, &id)?;
                     let hidden: bool = tx.query_row(
                         "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1 AND revision=-1)",
                         [&id],
@@ -252,6 +255,7 @@ impl Manager {
             let (id, check) = (child_id.clone(), scope.clone());
             store.db.call(move |db| {
                 let tx=crate::session::database::begin_write_transaction(db)?;check.check(&tx)?;
+                let id=crate::session::identity::BoundIdentity::session(&tx,&id)?;
                 anyhow::ensure!(tx.execute("UPDATE sessions SET revision=0,created_at_ms=?2,updated_at_ms=?2 WHERE id=?1 AND revision=-1",params![id,created])?==1,"fork publication state changed");
                 tx.commit()?;Ok(())
             })

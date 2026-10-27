@@ -396,7 +396,7 @@ impl Loop {
             } else {
                 crate::compaction::CompactionTrigger::Automatic
             };
-            let automatic_operation_id = format!("cmp_{}", crate::utils::generate_entry_id());
+            let automatic_operation_id = crate::utils::generate_entry_id();
             let emit_automatic_started = || {
                 on_event(RunEvent::CompactionStarted {
                     operation_id: automatic_operation_id.clone(),
@@ -643,8 +643,7 @@ impl Loop {
                             } else {
                                 crate::compaction::CompactionPhase::MidTurn
                             };
-                            let provider_limit_operation_id =
-                                format!("cmp_{}", crate::utils::generate_entry_id());
+                            let provider_limit_operation_id = crate::utils::generate_entry_id();
                             let Some(manager) = &context_manager else {
                                 let error = anyhow!(
                                     "context compaction is unavailable for provider-limit recovery"
@@ -895,7 +894,7 @@ impl Loop {
                 if ctx.segmented_storage {
                     match &mut model_event {
                         ModelStreamEvent::ToolInputStart { id, .. } if id.is_empty() => {
-                            *id = format!("future_call_{}", crate::utils::generate_entry_id());
+                            *id = crate::utils::generate_entry_id();
                         }
                         ModelStreamEvent::ToolInputDelta { index, id, .. }
                         | ModelStreamEvent::ToolInputEnd { index, id, .. }
@@ -906,9 +905,7 @@ impl Loop {
                                 .and_then(Option::as_ref)
                                 .map(|tool| tool.id.clone())
                                 .filter(|id| !id.is_empty())
-                                .unwrap_or_else(|| {
-                                    format!("future_call_{}", crate::utils::generate_entry_id())
-                                });
+                                .unwrap_or_else(crate::utils::generate_entry_id);
                         }
                         _ => {}
                     }

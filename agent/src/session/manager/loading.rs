@@ -14,6 +14,7 @@ impl Manager {
         let session = id.to_owned();
         let canonical=self.storage()?.db.read(move |db| {
             let tx=db.transaction()?;
+            let session=crate::session::identity::BoundIdentity::session(&tx,&session)?;
             if crate::session::content::format(&tx,&session)?!=crate::session::content::FORMAT_VERSION {return Ok(None);}
             let parent:Option<String>=tx.query_row("SELECT CASE WHEN json_type(current_metadata_json,'$.parent_session_id')='text' THEN json_extract(current_metadata_json,'$.parent_session_id') END FROM sessions WHERE id=?1 AND revision>=0",[&session],|row|row.get(0))?;
             let count:i64=tx.query_row("SELECT count(*) FROM entries WHERE session_id=?1 AND entry_type='user'",[&session],|row|row.get(0))?;
@@ -114,6 +115,7 @@ impl Manager {
         let id = session.id.clone();
         let (created, updated): (Option<i64>, Option<i64>) =
             self.storage()?.db.read(move |db| {
+                let id = crate::session::identity::BoundIdentity::session(db, &id)?;
                 Ok(db.query_row(
                     "SELECT created_at_ms,updated_at_ms FROM sessions WHERE id=?1",
                     [id],

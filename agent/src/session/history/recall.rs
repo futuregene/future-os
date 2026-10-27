@@ -1,4 +1,5 @@
 //! Bounded, session-scoped reads of original journal text (not display/summary projections).
+use crate::session::identity::BoundIdentity;
 use crate::session::Manager;
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -12,7 +13,13 @@ pub const HISTORY_MAX_MATCHES: i64 = 20;
 pub const HISTORY_DEFAULT_SESSIONS: i64 = 50;
 pub const HISTORY_MAX_SESSIONS: i64 = 500;
 
-type EntryMetadata = (i64, String, Option<String>, Option<String>, Option<i64>);
+type EntryMetadata = (
+    i64,
+    String,
+    Option<String>,
+    Option<BoundIdentity>,
+    Option<i64>,
+);
 
 /// SQLite slices the snippet with `substr(CAST(body AS BLOB), ...)`, which is a
 /// *byte* window and therefore can begin or end inside a multi-byte character.
@@ -35,9 +42,10 @@ fn trim_partial_characters(bytes: &[u8]) -> &[u8] {
 }
 
 fn require_session(db: &Connection, session: &str) -> Result<()> {
+    let stored_session = crate::session::identity::session_key(db, session)?;
     let exists: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1 AND revision>=0) AND NOT EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='skipped')",
-        [session], |row| row.get(0),
+        [&stored_session], |row| row.get(0),
     )?;
     if !exists {
         bail!("session not found or history unavailable");
@@ -72,6 +80,7 @@ fn search_session_matches(
     query: &str,
     limit: i64,
 ) -> Result<Vec<Value>> {
+    let session = BoundIdentity::session(db, session)?;
     let mut stmt = db.prepare(
         "WITH hits AS (
             SELECT e.entry_id,e.position,e.role,e.run_id,e.timestamp_ms,b.ordinal,b.kind,b.tool_call_id,b.tool_name,
@@ -95,8 +104,8 @@ fn search_session_matches(
     while let Some(row) = rows.next()? {
         let snippet = row.get::<_, Option<Vec<u8>>>(9)?.unwrap_or_default();
         matches.push(json!({
-            "entryId":row.get::<_,String>(0)?,"entryPosition":row.get::<_,i64>(1)?,
-            "role":row.get::<_,Option<String>>(2)?,"runId":row.get::<_,Option<String>>(3)?,
+            "entryId":row.get::<_,BoundIdentity>(0)?,"entryPosition":row.get::<_,i64>(1)?,
+            "role":row.get::<_,Option<String>>(2)?,"runId":row.get::<_,Option<BoundIdentity>>(3)?,
             "timestampMs":row.get::<_,Option<i64>>(4)?,"blockIndex":row.get::<_,i64>(5)?,
             "kind":row.get::<_,String>(6)?,"toolCallId":row.get::<_,Option<String>>(7)?,
             "toolName":row.get::<_,Option<String>>(8)?,
@@ -162,7 +171,7 @@ impl Manager {
                 LEFT JOIN session_formats f ON f.session_id=s.id
                 WHERE s.revision>=0 AND NOT EXISTS(SELECT 1 FROM legacy_imports li WHERE li.session_id=s.id AND li.status='skipped')
                 ORDER BY s.updated_at_ms DESC,s.id DESC LIMIT ?1")?;
-            let rows=stmt.query_map([max_sessions+1],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
+            let rows=stmt.query_map([max_sessions+1],|row|Ok((row.get::<_,BoundIdentity>(0)?.to_string(),row.get(1)?,row.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
             Ok(rows)
         })?;
         let truncated = sessions.len() as i64 > max_sessions;

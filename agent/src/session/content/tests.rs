@@ -3,7 +3,7 @@ use super::*;
 
 fn connection() -> Connection {
     let db = Connection::open_in_memory().unwrap();
-    db.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE sessions(id TEXT PRIMARY KEY,revision INTEGER NOT NULL DEFAULT 0); CREATE TABLE entries(session_id TEXT,entry_id TEXT,UNIQUE(session_id,entry_id)); CREATE TABLE compaction_operations(session_id TEXT,input_key TEXT,PRIMARY KEY(session_id,input_key)); INSERT INTO sessions(id) VALUES('parent'),('child');").unwrap();
+    db.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE sessions(id TEXT PRIMARY KEY,revision INTEGER NOT NULL DEFAULT 0); CREATE TABLE entries(session_id TEXT,entry_id TEXT,UNIQUE(session_id,entry_id)); CREATE TABLE compaction_operations(session_id TEXT,input_key TEXT,PRIMARY KEY(session_id,input_key)); CREATE TABLE runs(session_id TEXT,run_id TEXT,PRIMARY KEY(session_id,run_id)); CREATE TABLE queued_run_receipts(session_id TEXT,run_id TEXT,PRIMARY KEY(session_id,run_id)); INSERT INTO sessions(id) VALUES('parent'),('child');").unwrap();
     db.execute_batch(include_str!("schema.sql")).unwrap();
     db
 }

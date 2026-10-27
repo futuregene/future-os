@@ -37,30 +37,39 @@ pub(crate) fn with_history_index<T>(
 }
 
 pub(super) fn history_index_ready(db: &Connection, session: &str) -> Result<bool> {
+    let stored_session = crate::session::identity::session_key(db, session)?;
     Ok(db.query_row(
         "SELECT EXISTS(SELECT 1 FROM history_index_state WHERE session_id=?1 AND projection_version=?2)",
-        params![session, PROJECTION_VERSION],
+        params![&stored_session, PROJECTION_VERSION],
         |row| row.get(0),
     )?)
 }
 
 pub(crate) fn mark_history_index_ready(db: &Connection, session: &str) -> Result<()> {
+    let stored_session = crate::session::identity::session_key(db, session)?;
     db.execute(
         "INSERT INTO history_index_state(session_id,projection_version)
         SELECT id,?2 FROM sessions WHERE id=?1
         ON CONFLICT(session_id) DO UPDATE SET projection_version=excluded.projection_version",
-        params![session, PROJECTION_VERSION],
+        params![&stored_session, PROJECTION_VERSION],
     )?;
     Ok(())
 }
 
 /// Caller owns a transaction, so readers cannot observe a partial rebuild.
 pub(crate) fn ensure_history_index(db: &Connection, session: &str) -> Result<()> {
+    let stored_session = crate::session::identity::session_key(db, session)?;
     if history_index_ready(db, session)? {
         return Ok(());
     }
-    db.execute("DELETE FROM history_shapes WHERE session_id=?1", [session])?;
-    db.execute("DELETE FROM history_display WHERE session_id=?1", [session])?;
+    db.execute(
+        "DELETE FROM history_shapes WHERE session_id=?1",
+        [&stored_session],
+    )?;
+    db.execute(
+        "DELETE FROM history_display WHERE session_id=?1",
+        [&stored_session],
+    )?;
     let canonical =
         crate::session::content::format(db, session)? == crate::session::content::FORMAT_VERSION;
     let source = if canonical {
@@ -73,7 +82,7 @@ pub(crate) fn ensure_history_index(db: &Connection, session: &str) -> Result<()>
         let rows: Vec<(i64, String)> = {
             let mut query = db.prepare(&format!("SELECT position,payload FROM {source} WHERE session_id=?1 AND position>?2 ORDER BY position LIMIT 64"))?;
             let rows = query
-                .query_map(params![session, position], |row| {
+                .query_map(params![&stored_session, position], |row| {
                     Ok((row.get(0)?, row.get(1)?))
                 })?
                 .collect::<rusqlite::Result<_>>()?;

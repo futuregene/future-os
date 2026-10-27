@@ -81,6 +81,7 @@ pub(crate) fn prepare_shared_fork(
 ) -> Result<Vec<Value>> {
     let id = session.to_owned();
     store.db.read(move |db| {
+        let id=crate::session::identity::BoundIdentity::session(db,&id)?;
         let hidden:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM fork_operations f JOIN sessions s ON s.id=f.child_session_id JOIN session_formats v ON v.session_id=s.id WHERE s.id=?1 AND s.revision=-1 AND v.format=2)",[id],|row|row.get(0))?;
         ensure!(hidden,"shared entry preparation requires an unpublished fork receipt");Ok(())
     })?;
@@ -117,6 +118,8 @@ fn prepare_owned(
             loop {
                 let (session, owner, cursor) = (session.to_owned(), entry.clone(), after.clone());
                 let page=store.db.read(move |db| {
+                    let owner=super::owner_key(db,&session,owner_kind,&owner)?;
+                    let session=crate::session::identity::session_key(db,&session)?;
                     let mut query=db.prepare("SELECT field,encoding FROM content_references WHERE session_id=?1 AND owner_kind=?2 AND owner_id=?3 AND field>?4 ORDER BY field LIMIT 64")?;
                     let rows=query.query_map(params![session,owner_kind,owner,cursor],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
                     ensure!(rows.iter().map(|(field,encoding)|field.len()+encoding.len()).sum::<usize>()<=super::READ_BYTES,"shared field identity page exceeds budget");Ok(rows)
@@ -177,10 +180,12 @@ fn prepare_owned(
             let published = store.db.read(move |db| {
                 use rusqlite::OptionalExtension;
                 let tx = db.transaction()?;
+                let id = crate::session::identity::BoundIdentity::entry(&tx, &session, &id)?;
+                let stored_session = crate::session::identity::session_key(&tx, &session)?;
                 let position: Option<i64> = tx
                     .query_row(
                         "SELECT position FROM entries WHERE session_id=?1 AND entry_id=?2",
-                        params![session, id],
+                        params![stored_session, &id],
                         |row| row.get(0),
                     )
                     .optional()?;
@@ -372,15 +377,19 @@ pub(crate) fn stage_named(
     };
     let (body, mut offset, complete) = store.db.call(move |db| {
         let tx = crate::session::database::begin_write_transaction(db)?;
+        let owner_key=super::owner_key(&tx,&scope.0,kind,&scope.1)?;
+        let stored_session=crate::session::identity::session_key(&tx,&scope.0)?;
         let prior = resolve(&tx, &scope.0, kind, &scope.1, &scope.2)?;
         if kind == "stream" && prior.is_none() {
             let owner: Value = serde_json::from_str(&scope.1)?;
+            let run=crate::session::identity::BoundIdentity::run(&tx,&scope.0,owner[0].as_str().context("stream owner run is missing")?)?;
+            let session=crate::session::identity::session_key(&tx,&scope.0)?;
             let closed: bool = tx.query_row("SELECT coalesce((SELECT c.event_type='agent_end' FROM stream_runs r JOIN stream_changes c ON c.stream_id=r.id WHERE r.session_id=?1 AND r.run_id=?2 AND r.epoch=?3 ORDER BY c.last_cursor DESC LIMIT 1),0)",
-                params![scope.0,owner[0].as_str(),owner[1].as_i64()],|row|row.get(0))?;
+                params![session,run,owner[1].as_i64()],|row|row.get(0))?;
             ensure!(!closed,"terminal stream cannot stage a new content owner");
         }
         let result = if let Some(prior) = prior {
-            let prior_encoding:String=tx.query_row("SELECT encoding FROM content_references WHERE session_id=?1 AND owner_kind=?2 AND owner_id=?3 AND field=?4",params![scope.0,kind,scope.1,scope.2],|row|row.get(0))?;
+            let prior_encoding:String=tx.query_row("SELECT encoding FROM content_references WHERE session_id=?1 AND owner_kind=?2 AND owner_id=?3 AND field=?4",params![stored_session,kind,&owner_key,scope.2],|row|row.get(0))?;
             ensure!(prior_encoding==encoding.name(),"conflicting content field encoding");
             let sealed: Option<String> = tx.query_row(
                 "SELECT sha256 FROM content_objects WHERE id=?1",
@@ -388,7 +397,7 @@ pub(crate) fn stage_named(
                 |r| r.get(0),
             )?;
             if kind=="entry" && sealed.is_none() {
-                let published:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM entries WHERE session_id=?1 AND entry_id=?2)",params![scope.0,scope.1],|row|row.get(0))?;
+                let published:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM entries WHERE session_id=?1 AND entry_id=?2)",params![stored_session,&owner_key],|row|row.get(0))?;
                 ensure!(!published,"published entry content is immutable; preserve its committed prefix");
             }
             if json {
@@ -529,9 +538,11 @@ pub(crate) fn verify_boundary_retry(
     let id = entry["id"]
         .as_str()
         .context("boundary entry identity missing")?;
+    let stored_id = crate::session::identity::BoundIdentity::entry(db, session, id)?;
+    let stored_session = crate::session::identity::session_key(db, session)?;
     let existing: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM entries WHERE session_id=?1 AND entry_id=?2)",
-        params![session, id],
+        params![stored_session, stored_id],
         |row| row.get(0),
     )?;
     if !existing {
@@ -540,8 +551,9 @@ pub(crate) fn verify_boundary_retry(
     let mut query=db.prepare("SELECT field,content_id,byte_offset,byte_length,encoding FROM content_references WHERE session_id=?1 AND owner_kind=?2 AND owner_id=?3 ORDER BY field LIMIT 129")?;
     type BoundaryReference = (String, i64, i64, i64, String);
     let mut read = |kind: &str, owner: &str| -> Result<Vec<BoundaryReference>> {
+        let owner = super::owner_key(db, session, kind, owner)?;
         Ok(query
-            .query_map(params![session, kind, owner], |row| {
+            .query_map(params![stored_session, kind, owner], |row| {
                 Ok((
                     row.get(0)?,
                     row.get(1)?,
@@ -568,8 +580,10 @@ fn append_piece(
     piece: &str,
 ) -> Result<()> {
     let tx = crate::session::database::begin_write_transaction(db)?;
+    let owner_key = super::owner_key(&tx, &scope.session, scope.kind, &scope.owner)?;
+    let stored_session = crate::session::identity::session_key(&tx, &scope.session)?;
     let current:(i64,String)=tx.query_row("SELECT byte_length,encoding FROM content_references WHERE session_id=?1 AND owner_kind=?2 AND owner_id=?3 AND field=?4 AND content_id=?5",
-        params![scope.session,scope.kind,scope.owner,scope.field,scope.body],|row|Ok((row.get(0)?,row.get(1)?)))?;
+        params![stored_session,scope.kind,&owner_key,scope.field,scope.body],|row|Ok((row.get(0)?,row.get(1)?)))?;
     ensure!(
         current.1 == scope.encoding.name(),
         "staged content encoding changed"
@@ -580,7 +594,7 @@ fn append_piece(
     if scope.kind == "entry" && next > current.0 {
         let published: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM entries WHERE session_id=?1 AND entry_id=?2)",
-            params![scope.session, scope.owner],
+            params![stored_session, &owner_key],
             |row| row.get(0),
         )?;
         ensure!(
@@ -593,7 +607,7 @@ fn append_piece(
     // concurrent retry finished/published. Its already-committed prefix is
     // idempotent; it must never move a visible reference length backwards.
     tx.execute("UPDATE content_references SET byte_length=max(byte_length,?6) WHERE session_id=?1 AND owner_kind=?2 AND owner_id=?3 AND field=?4 AND content_id=?5",
-        params![scope.session,scope.kind,scope.owner,scope.field,scope.body,next])?;
+        params![stored_session,scope.kind,&owner_key,scope.field,scope.body,next])?;
     tx.commit()?;
     Ok(())
 }
@@ -668,7 +682,7 @@ b.is_error,b.metadata_json FROM message_blocks b JOIN entries e ON e.session_id=
     sql.push_str(
         "\nSELECT a.session_id,a.position,a.entry_id,a.entry_type,a.payload FROM assembled a;\n",
     );
-    sql
+    crate::session::entry_records::render_id_expressions(&sql)
 }
 
 #[cfg(test)]

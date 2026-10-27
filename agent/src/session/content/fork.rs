@@ -31,10 +31,12 @@ impl SqliteStore {
             let (check, owner, cursor) = (scope.clone(), source_id.to_owned(), after.clone());
             let page=self.db.read(move |db| {
                 let tx=db.transaction()?;check.check(&tx)?;
-                let source:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM entries WHERE session_id=?1 AND entry_id=?2 AND position<=?3)",params![check.session_id(),owner,check.end_position()],|row|row.get(0))?;
+                let session=crate::session::identity::BoundIdentity::session(&tx,check.session_id())?;
+                let owner=crate::session::identity::BoundIdentity::entry(&tx,check.session_id(),&owner)?;
+                let source:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM entries WHERE session_id=?1 AND entry_id=?2 AND position<=?3)",params![session,owner,check.end_position()],|row|row.get(0))?;
                 ensure!(source,"fork source is outside its captured transcript");
                 let mut query=tx.prepare("SELECT r.field,r.content_id,r.byte_offset,r.byte_length,r.encoding FROM content_references r JOIN entries e ON e.session_id=r.session_id AND e.entry_id=r.owner_id WHERE r.session_id=?1 AND r.owner_kind='entry' AND r.owner_id=?2 AND r.field>?3 ORDER BY r.field LIMIT 64")?;
-                let rows=query.query_map(params![check.session_id(),owner,cursor],|row|Ok((row.get::<_,String>(0)?,ContentRange{id:row.get(1)?,offset:row.get(2)?,length:row.get(3)?},row.get::<_,String>(4)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                let rows=query.query_map(params![session,owner,cursor],|row|Ok((row.get::<_,String>(0)?,ContentRange{id:row.get(1)?,offset:row.get(2)?,length:row.get(3)?},row.get::<_,String>(4)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
                 ensure!(rows.iter().map(|(field,_,encoding)|field.len()+encoding.len()+64).sum::<usize>()<=READ_BYTES,"fork field identity page exceeds budget");
                 drop(query);tx.commit()?;Ok(rows)
             })?;
@@ -56,7 +58,8 @@ impl SqliteStore {
             let (scope, child, target) = (scope.clone(), child.to_owned(), target_id.to_owned());
             self.db.call(move |db| {
                 let tx=database::begin_write_transaction(db)?;scope.check(&tx)?;
-                let hidden:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM fork_operations f JOIN sessions s ON s.id=f.child_session_id WHERE f.child_session_id=?1 AND f.parent_session_id=?2 AND s.revision=-1)",params![child,scope.session_id()],|row|row.get(0))?;
+                let child=crate::session::identity::BoundIdentity::session(&tx,&child)?;
+                let hidden:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM fork_operations f JOIN sessions s ON s.id=f.child_session_id WHERE f.child_session_id=?1 AND f.parent_session_id=?2 AND s.revision=-1)",params![child,scope.session_key()],|row|row.get(0))?;
                 ensure!(hidden,"fork staging receipt changed");
                 for (field,range,encoding) in links {
                     super::bind_encoded(&tx,&child,"entry",&target,&field,range,Encoding::parse(&encoding)?)?;
@@ -78,7 +81,8 @@ impl SqliteStore {
     ) -> Result<()> {
         let id = child.to_owned();
         let receipt=self.db.read(move |db| {
-            let raw:Option<(String,String,String)>=db.query_row("SELECT f.request_id,f.parent_session_id,f.request_fingerprint FROM fork_operations f JOIN sessions s ON s.id=f.child_session_id JOIN session_formats v ON v.session_id=s.id WHERE f.child_session_id=?1 AND s.revision=-1 AND v.format=2",[id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
+            let id=crate::session::identity::BoundIdentity::session(db,&id)?;
+            let raw:Option<(String,crate::session::identity::BoundIdentity,String)>=db.query_row("SELECT f.request_id,f.parent_session_id,f.request_fingerprint FROM fork_operations f JOIN sessions s ON s.id=f.child_session_id JOIN session_formats v ON v.session_id=s.id WHERE f.child_session_id=?1 AND s.revision=-1 AND v.format=2",[id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
             Ok(raw)
         })?;
         let Some((request, parent, fingerprint)) = receipt else {
@@ -87,7 +91,7 @@ impl SqliteStore {
         let parsed: ForkRequest = serde_json::from_str(&fingerprint)
             .context("invalid hidden fork receipt; preserve staging")?;
         ensure!(
-            parsed.request_id == request && parsed.parent_session_id == parent,
+            parsed.request_id == request && parent == parsed.parent_session_id,
             "invalid hidden fork ownership; preserve staging"
         );
         loop {
@@ -98,6 +102,7 @@ impl SqliteStore {
                 (child.to_owned(), request.clone(), fingerprint.clone());
             let done=self.db.call(move |db| {
                 let tx=database::begin_write_transaction(db)?;
+                let id=crate::session::identity::BoundIdentity::session(&tx,&id)?;
                 let revision:Option<i64>=tx.query_row("SELECT revision FROM sessions WHERE id=?1",[&id],|row|row.get(0)).optional()?;
                 if revision!=Some(-1) {return Ok(true);}
                 let owned:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM fork_operations f JOIN session_formats v ON v.session_id=f.child_session_id WHERE f.child_session_id=?1 AND f.request_id=?2 AND f.request_fingerprint=?3 AND v.format=2)",params![id,request,fingerprint],|row|row.get(0))?;
@@ -130,13 +135,15 @@ impl SqliteStore {
         &self,
         cancellation: &crate::service::StartupCancellation,
     ) -> Result<()> {
-        let mut after = String::new();
+        let mut after = crate::session::identity::BoundIdentity::from_stored(
+            crate::session::identity::StoredIdentity::Legacy(String::new()),
+        );
         loop {
             cancellation.check()?;
             let cursor = after.clone();
             let children=self.db.read(move |db| {
                 let mut query=db.prepare("SELECT s.id FROM sessions s JOIN fork_operations f ON f.child_session_id=s.id JOIN session_formats v ON v.session_id=s.id WHERE s.revision=-1 AND v.format=2 AND s.id>?1 ORDER BY s.id LIMIT 32")?;
-                let rows=query.query_map([cursor],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;Ok(rows)
+                let rows=query.query_map([cursor],|row|row.get::<_,crate::session::identity::BoundIdentity>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;Ok(rows)
             })?;
             if children.is_empty() {
                 return Ok(());

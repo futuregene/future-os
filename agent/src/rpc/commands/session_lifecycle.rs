@@ -86,6 +86,7 @@ pub(crate) fn cmd_session_storage_format(state: &AppState, cmd: &RpcCommand, id:
         let session = cmd.session_id.clone();
         let (exists, format) = store.db.read(move |db| {
             let tx = db.transaction()?;
+            let session=crate::session::identity::BoundIdentity::session(&tx,&session)?;
             let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sessions s WHERE s.id=?1 AND NOT EXISTS(SELECT 1 FROM session_tombstones t WHERE t.session_id=s.id))", [&session], |row| row.get(0))?;
             let format = crate::session::content::format(&tx, &session)?;
             tx.commit()?;

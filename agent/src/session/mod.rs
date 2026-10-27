@@ -32,6 +32,7 @@ pub(crate) mod database;
 mod database_backup;
 pub use database_backup::create_database_snapshot;
 pub(crate) mod history;
+pub(crate) mod identity;
 pub(crate) mod journal_compaction;
 #[cfg(test)]
 mod journal_compactor;

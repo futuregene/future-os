@@ -235,6 +235,7 @@ impl Manager {
             // at BEGIN, or a concurrent connection's commit invalidates this
             // snapshot and the upgrade fails instantly (SQLITE_BUSY_SNAPSHOT).
             let tx = crate::session::database::begin_write_transaction(db)?;
+            let id=super::identity::BoundIdentity::session(&tx,&id)?;
             let existing: Vec<SessionEntry> = super::sqlite_store::read_run_marker_headers(&tx, &id)?
                 .into_iter()
                 .map(serde_json::from_value)
@@ -252,13 +253,15 @@ impl Manager {
                 }
             }
             super::sqlite_store::insert_transcript_entries(&tx, &id, values)?;
-            let mut retired=tx.execute("DELETE FROM content_references WHERE session_id=?1 AND owner_kind='entry' AND owner_id=(SELECT json_extract(user_entry_json,'$.id') FROM queued_run_receipts WHERE session_id=?1 AND run_id=?2) AND NOT EXISTS(SELECT 1 FROM entries e WHERE e.session_id=?1 AND e.entry_id=content_references.owner_id)",params![id,run_id])?;
+            let mut retired=retire_unpublished_queued_entry(&tx,&id,&run_id)?;
+            let run_id=super::identity::BoundIdentity::run(&tx,&id,&run_id)?;
             tx.execute("UPDATE queued_run_receipts SET status='started',payload_json=NULL,user_entry_json=NULL WHERE session_id=?1 AND run_id=?2",params![id,run_id])?;
             for merged_run in merged.iter().filter_map(serde_json::Value::as_str) {
                 // A coalesced queued input may never publish its original
                 // entry header. Release exactly that receipt's staged owner,
                 // preserving any entry that was actually published.
-                retired+=tx.execute("DELETE FROM content_references WHERE session_id=?1 AND owner_kind='entry' AND owner_id=(SELECT json_extract(user_entry_json,'$.id') FROM queued_run_receipts WHERE session_id=?1 AND run_id=?2) AND NOT EXISTS(SELECT 1 FROM entries e WHERE e.session_id=?1 AND e.entry_id=content_references.owner_id)",params![id,merged_run])?;
+                retired+=retire_unpublished_queued_entry(&tx,&id,merged_run)?;
+                let merged_run=super::identity::BoundIdentity::run(&tx,&id,merged_run)?;
                 tx.execute("UPDATE queued_run_receipts SET status='merged',payload_json=NULL,user_entry_json=NULL WHERE session_id=?1 AND run_id=?2",params![id,merged_run])?;
             }
             tx.execute("UPDATE sessions SET revision=revision+1 WHERE id=?1", [&id])?;
@@ -306,6 +309,8 @@ impl Manager {
                 use rusqlite::OptionalExtension;
                 let tx=db.transaction()?;
                 let scope=super::content::reader::Snapshot::capture_from(&tx,&session)?;
+                let run=super::identity::BoundIdentity::run(&tx,&session,&run)?;
+                let session=super::identity::BoundIdentity::session(&tx,&session)?;
                 let entry=tx.query_row("SELECT position,entry_id FROM entries WHERE session_id=?1 AND run_id=?2 AND entry_type='run_terminal' ORDER BY position DESC LIMIT 1",
                     params![session,run],|row|Ok(super::content::reader::Entry {position:row.get(0)?,id:row.get(1)?})).optional()?;
                 tx.commit()?;Ok((scope,entry))
@@ -345,6 +350,8 @@ impl Manager {
             let source = if super::content::format(&tx,&id)? == super::content::FORMAT_VERSION {
                 "entry_header_records"
             } else { "entry_records" };
+            let run_id=super::identity::BoundIdentity::run(&tx,&id,&run_id)?;
+            let id=super::identity::BoundIdentity::session(&tx,&id)?;
             let previous:Option<String> = tx.query_row(&format!("SELECT payload FROM {source} WHERE session_id=?1 AND position=(SELECT max(position) FROM entries WHERE session_id=?1 AND run_id=?2 AND entry_type='run_terminal')"),
                 params![id,run_id],|row|row.get(0)).optional()?;
             if let Some(previous) = previous {
@@ -427,6 +434,23 @@ impl Manager {
         }
         Ok(())
     }
+}
+
+/// JSON receipts carry the public spelling; published headers and body owners
+/// carry the typed key. Bind each at its own boundary, including an input that
+/// was coalesced without ever publishing its original entry header.
+fn retire_unpublished_queued_entry(
+    db: &rusqlite::Connection,
+    session: &str,
+    run: &str,
+) -> Result<usize> {
+    use rusqlite::OptionalExtension as _;
+    let stored_session = super::identity::session_key(db, session)?;
+    let run = super::identity::BoundIdentity::run(db, session, run)?;
+    let entry:Option<String>=db.query_row("SELECT json_extract(user_entry_json,'$.id') FROM queued_run_receipts WHERE session_id=?1 AND run_id=?2",params![stored_session,run],|row|row.get(0)).optional()?.flatten();
+    let Some(entry) = entry else { return Ok(0) };
+    let entry = super::identity::BoundIdentity::entry(db, session, &entry)?;
+    Ok(db.execute("DELETE FROM content_references WHERE session_id=?1 AND owner_kind='entry' AND owner_id=?2 AND NOT EXISTS(SELECT 1 FROM entries e WHERE e.session_id=?1 AND e.entry_id=content_references.owner_id)",params![stored_session,entry])?)
 }
 
 mod display_cache;

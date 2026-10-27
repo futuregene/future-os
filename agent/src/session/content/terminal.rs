@@ -11,13 +11,22 @@ pub(crate) fn publish(tx: &Transaction<'_>, session: &str, entry: &Value) -> Res
     let run = content["run_id"]
         .as_str()
         .context("terminal run identity missing")?;
+    let stored_session = crate::session::identity::session_key(tx, session)?;
+    let stored_run = crate::session::identity::BoundIdentity::run(tx, session, run)?;
     let (epoch, sequence): (i64, i64) = tx.query_row(
         "SELECT coalesce(epoch,0),coalesce(run_sequence,-1) FROM runs WHERE session_id=?1 AND run_id=?2",
-        params![session,run], |row| Ok((row.get(0)?,row.get(1)?)),
+        params![stored_session,stored_run], |row| Ok((row.get(0)?,row.get(1)?)),
+    )?;
+    let stored_entry = crate::session::identity::BoundIdentity::entry(
+        tx,
+        session,
+        entry["id"]
+            .as_str()
+            .context("terminal entry identity missing")?,
     )?;
     let prior: Option<(i64, String)> = tx.query_row(
         "SELECT c.id,c.event_type FROM stream_runs r JOIN stream_changes c ON c.stream_id=r.id WHERE r.session_id=?1 AND r.run_id=?2 AND r.epoch=?3 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=r.id) ORDER BY c.last_cursor DESC LIMIT 1",
-        params![session,run,epoch], |row| Ok((row.get(0)?,row.get(1)?)),
+        params![stored_session,stored_run,epoch], |row| Ok((row.get(0)?,row.get(1)?)),
     ).optional()?;
     if let Some((change, kind)) = prior.filter(|(_, kind)| kind == "agent_end") {
         let previous = super::compact::read_ids(tx, &[change])?
@@ -66,13 +75,13 @@ pub(crate) fn publish(tx: &Transaction<'_>, session: &str, entry: &Value) -> Res
         let field = format!("/content/{name}");
         let range: Option<(i64,i64,i64,String)> = tx.query_row(
             "SELECT content_id,byte_offset,byte_length,encoding FROM content_references WHERE session_id=?1 AND owner_kind='entry' AND owner_id=?2 AND field=?3",
-            params![session,entry["id"].as_str(),field], |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
+            params![stored_session,stored_entry,field], |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
         ).optional()?;
         if let Some((body, offset, length, encoding)) = range {
             let linked = tx.execute("INSERT INTO stream_change_content(change_id,field,encoding,content_id,byte_offset,byte_length)
                 SELECT c.id,?5,?6,?7,?8,?9 FROM stream_runs r JOIN stream_changes c ON c.stream_id=r.id
                 WHERE r.session_id=?1 AND r.run_id=?2 AND r.epoch=?3 AND c.last_cursor=?4",
-                params![session,run,epoch,cursor,format!("/data/{name}"),encoding,body,offset,length])?;
+                params![stored_session,stored_run,epoch,cursor,format!("/data/{name}"),encoding,body,offset,length])?;
             ensure!(linked == 1, "terminal field has no published change");
         }
     }

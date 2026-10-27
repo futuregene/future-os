@@ -461,7 +461,9 @@ fn list_session_ids_reports_all_files_including_corrupt() {
         .map(|v| v.as_str().unwrap().to_string())
         .collect();
     ids.sort();
-    assert_eq!(ids, vec![session.id.clone(), corrupt_id.to_string()]);
+    let mut expected = vec![session.id.clone(), corrupt_id.to_string()];
+    expected.sort();
+    assert_eq!(ids, expected);
 }
 
 /// Audit item 1 contract: list_sessions rows carry canonical camelCase

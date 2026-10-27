@@ -1,14 +1,14 @@
 //! Cooperative canonical transcript reads. SQL jobs return bounded raw pages;
 //! JSON assembly and derived representations run outside the read workers.
 use super::{stream::Encoding, ContentRange, READ_BYTES};
-use crate::session::sqlite_store::SqliteStore;
+use crate::session::{identity::BoundIdentity, sqlite_store::SqliteStore};
 use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
 #[derive(Clone)]
 pub(crate) struct Snapshot {
-    session: String,
+    session: BoundIdentity,
     identity: future_rpc::content_range::StorageIdentity,
     generation: i64,
     until: i64,
@@ -16,12 +16,12 @@ pub(crate) struct Snapshot {
 #[derive(Debug, Clone)]
 pub(crate) struct Entry {
     pub position: i64,
-    pub id: String,
+    pub id: BoundIdentity,
 }
 struct Header {
     kind: String,
     role: Option<String>,
-    run: Option<String>,
+    run: Option<BoundIdentity>,
     metadata_generation: i64,
 }
 #[derive(Clone)]
@@ -51,6 +51,9 @@ impl Snapshot {
     pub(crate) fn session_id(&self) -> &str {
         &self.session
     }
+    pub(crate) fn session_key(&self) -> &BoundIdentity {
+        &self.session
+    }
     pub(crate) fn end_position(&self) -> i64 {
         self.until
     }
@@ -68,19 +71,20 @@ impl Snapshot {
     /// rows. A history rewrite between two independently captured snapshots
     /// must never combine old ordinals with new entry bodies.
     pub(crate) fn capture_from(db: &Connection, session: &str) -> Result<Self> {
+        let session = BoundIdentity::session(db, session)?;
         ensure!(
-            super::format(db, session)? == super::FORMAT_VERSION,
+            super::format(db, &session)? == super::FORMAT_VERSION,
             "wrong transcript reader format"
         );
-        let live:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1 AND revision>=0) AND NOT EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1)",[session],|row|row.get(0))?;
+        let live:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1 AND revision>=0) AND NOT EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1)",[&session],|row|row.get(0))?;
         ensure!(live, "session is missing or not published");
         Ok(Self {
-            session: session.to_owned(),
+            session: session.clone(),
             identity: super::transport::storage_identity(db)?,
-            generation: generation(db, session)?,
+            generation: generation(db, &session)?,
             until: db.query_row(
                 "SELECT coalesce(max(position),-1) FROM entries WHERE session_id=?1",
-                [session],
+                [&session],
                 |row| row.get(0),
             )?,
         })
@@ -613,9 +617,10 @@ fn decode(encoding: Encoding, raw: String) -> Result<Value> {
 }
 
 fn generation(db: &Connection, session: &str) -> Result<i64> {
+    let stored_session = crate::session::identity::session_key(db, session)?;
     Ok(db.query_row(
         "SELECT coalesce((SELECT generation FROM content_history_versions WHERE session_id=?1),0)",
-        [session],
+        [&stored_session],
         |row| row.get(0),
     )?)
 }

@@ -1,9 +1,10 @@
 # Compact session storage and streaming development plan
 
-Status: first implementation passed functional/migration/fault checks, 2026-10-27, but high context churn regresses space; delivery is blocked pending further optimization.
+Status: dictionary and business UUID integration is implemented and the complete Agent regression passes, 2026-10-27. High context churn still regresses logical WAL page writes; delivery is withheld while body ownership is normalized.
 Exact layout: [implementation contract](compact-stream-layout.md). Implementation status does not establish delivery acceptance.
 [Candidate 1 raw results](../testing/compact-storage-candidate-1-2026-10-27.json) include a fresh previous-layout control.
-Metadata improves 74.1% with high reuse but grows 60.5% under frequent new contexts; this candidate must not land. Next, intern stable long identities into per-stream short-key dictionaries to remove repeated strings in contexts and indices, then rerun affected verification and comparisons.
+[Candidate 2](../testing/compact-storage-candidate-2-2026-10-27.json) records binary/source validation, real UUID migration cases and page-write comparisons without replacing candidate 1.
+Candidate 1 metadata improves 74.1% with high reuse but grows 60.5% under frequent new contexts; that result must not land. Per-stream short-key dictionaries and partial source indices are now implemented, with 16-byte business UUID integration continuing (section 14). Final space, write-volume and responsiveness comparisons must use the same completed version rather than reusing candidate 1's passing acceptance.
 Chinese: [精简会话存储开发计划](stream-storage-development.zh-CN.md).
 
 The complete previous plan remains in the [unpublished-plan archive](stream-storage-development-unreleased-2026-10-26.md).
@@ -199,6 +200,8 @@ This document task runs `make check-docs`, which is not runtime/migration verifi
 - Sharing/collection: context-only/direct-range references, deleting a parent while a child remains, reset retirement and staged recovery cannot collect live bytes or leak another session's content.
 - Performance: same machine/build/workload; 1/10 MiB bodies, small/large tools, 1/4/16 conversations plus history reads. Include high reuse and rapidly changing contexts/unknown-field-heavy worst cases.
 - Separately measure B-tree pages/payload for bodies/changes/links/contexts/each index; DB/WAL peaks, write volume, CPU/RSS, queue/transaction/COMMIT p95/p99/max, reads/first-visible latency, frames/input/cancel and finalization. In-memory page counts are not WAL write volume.
+- For successful performance workloads, sample `SQLITE_DBSTATUS_CACHE_WRITE` before/after on the same writer connection. Report page deltas and logical page bytes (delta times page_size) separately from WAL file length; these are not physical device I/O, fsync counts or checkpoint writes. Do not use the undefined post-error counter for fault workloads. See [SQLite status-counter definitions](https://sqlite.org/c3ref/c_dbstatus_options.html).
+- Do not identify a new/old worktree build solely from Cargo's up-to-date result in a shared target directory. Use isolated targets or freeze and verify binary hashes, test inventories and source records. One run that reused the old binary was identified and explicitly invalidated; it is excluded from new-version acceptance.
 - Retain previous targets: normal-disk backlog p99 100 ms; Desktop incremental update p95 16.7 ms/mobile 33 ms; first-visible p95 regression no greater than 10%; approximately constant finalization work at fixed tail load for 1/10 MiB. Confirm on frozen devices/workloads, not from batch period.
 - No space gains from longer commit intervals, weaker FULL, lost fields/recovery, final compaction or VACUUM. Prove latency/WAL do not materially regress alongside space savings. Retain the previous approximately 31 ms 3000-row-table rendering limitation rather than claiming every render meets one frame.
 
@@ -224,3 +227,29 @@ cargo test -p future-agent --lib acceptance_tests -- --ignored --nocapture --tes
 
 Migration evidence identifies each source version, failure point, snapshot validation, reopen and post-upgrade use separately.
 A total test count or correct target version does not replace that evidence.
+
+## 14. Business identities: 16-byte storage, standard UUID output
+
+User decision: new generated identities omit time and use the complete UUID v4. Store 16-byte values and expose canonical lowercase 36-character UUIDs; no Base64URL or packed timestamps. SQLite uses constrained BLOBs; time stays in record fields. A future PostgreSQL adapter can use native uuid; multiple backends are outside this implementation.
+
+- Model generated session/message/run identities separately from opaque provider IDs and local integer keys. Preserve provider values. Generated approval/operation identities also omit classification prefixes; their owning module controls storage adaptation.
+- Preserve and return released historical identities exactly, including time-prefixed IDs and UUID-looking TEXT. Never truncate suffixes, infer type from string length, batch-convert on startup or rewrite historical foreign keys.
+- The typed storage boundary handles UUID BLOBs versus historical TEXT. Decode actual storage classes and preserve legacy writer semantics.
+- Integrate primary/foreign-key bindings, indexed lookups, JSON projections, fork/reset, deletion, queued receipts and reopen together. A single converted column or symbol-table BLOB test is not completion of business identity storage.
+- Store business keys as 16-byte UUIDs, intern stable per-stream values and retain integer references for high-frequency changes. Audit parent duplication in content keys and body owners structurally; removing prefixes cannot break client deduplication or recovery.
+- Supply read-only inspection views using built-in SQLite SQL, rendering the same UUID as the API without another persisted text copy.
+
+Compatibility boundary: the 36-character output guarantee applies to newly generated UUIDs. Historical API IDs and opaque provider IDs keep their original values. A historical non-UUID cannot become a UUID while retaining its original value; this implementation does not add a historical alias catalog. Historical conversations retain their existing write contract; new conversations use the new format from their first write.
+
+In SQLite, equally spelled TEXT and UUID BLOB values are different index keys. Resolve the session's actual storage representation and bind consistent types for child primary/foreign keys. Parsing an API string alone cannot determine the historical key type; casting whole columns must not hide mismatches. If historical UUID-looking TEXT and its corresponding UUID BLOB create an ambiguous public identity, reject that ambiguity explicitly and preserve the database for recovery.
+
+For a future backend change, the new UUID branch can map to PostgreSQL's native uuid type. Historical non-UUID strings still require a separate compatibility field or mapping; the mixed historical column cannot simply be altered to uuid. This implementation does not rewrite history for a future backend.
+
+Capacity estimates concern the identity value alone: changing a UTF-8 36-character UUID to 16 bytes saves 20 bytes per occurrence (about 55.6%); measure total tables, indexes and WAL separately. Encoding is a fixed-size boundary conversion and adds no historical scan, compression job or volatile uncommitted identity mapping. Durable acknowledgment and crash-recovery boundaries remain as specified above.
+
+Progress: session/identity.rs connects session/message/run keys, primary/foreign-key bindings and the main read/write lifecycle. Real UUID tests inspect storage classes/lengths and foreign-key integrity for sessions, entries, runs, stream_runs, body ownership, fingerprints and history projections. Coverage includes replay, range authorization, terminal retries, tools, search, sidebar/pages, fork sharing, reset, coalesced-input cleanup, checkpoint receipts, deletion and reopen. Unscoped new-format entries allocate UUID runs and reuse committed ownership on retry instead of composing history:session:message; historical rules remain.
+
+The added Agent 2–7 matrix retains UUID-looking historical TEXT, raw JSON and pre-upgrade snapshots while new BLOB sessions coexist. Session resolution includes tombstones/import registrations; old JSONL sources cannot overwrite canonical owners or resurrect deleted identities. Recovery of 35 binary hidden-fork identities crosses a page boundary and preserves shared parent bodies.
+
+After forced rebuilding and test-inventory validation, the complete Agent pass has 2686 passing tests, no failures and nine explicit acceptances not run. Fmt, all-target Clippy and documentation checks pass. Candidate 2 reduces high-churn stream metadata 24.9% but increases logical WAL page writes 47.8%, so delivery remains withheld. Normalize body owners, then rerun final migration, fault and performance acceptance against the same completed source.
+Acceptance must create real UUID sessions and inspect actual storage class/length and references before exercising the complete lifecycle. Green fixtures using only s/m do not establish native UUID integration.

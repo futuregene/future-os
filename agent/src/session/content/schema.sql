@@ -53,31 +53,53 @@ CREATE TABLE IF NOT EXISTS stream_runs (
 -- Draft layout identity: old schema-8 candidates are rejected, never converted.
 CREATE TABLE IF NOT EXISTS stream_layout (
     singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-    layout TEXT NOT NULL CHECK(layout='compact-context-v1')
+    layout TEXT NOT NULL CHECK(layout='compact-native-uuid-v1')
 );
-INSERT OR IGNORE INTO stream_layout VALUES(1,'compact-context-v1');
--- Descriptor is [stable envelope/data fields, direct field, direct encoding].
+INSERT OR IGNORE INTO stream_layout VALUES(1,'compact-native-uuid-v1');
+-- Dictionary values are exact strings, including empty/NUL and Unicode.
+CREATE TABLE IF NOT EXISTS stream_symbols (
+    id INTEGER PRIMARY KEY,
+    stream_id INTEGER NOT NULL REFERENCES stream_runs(id) ON DELETE CASCADE,
+    value BLOB NOT NULL CHECK((typeof(value)='blob' AND length(value)=16) OR (typeof(value)='text' AND length(CAST(value AS BLOB))<=16384)),
+    UNIQUE(stream_id,value)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS stream_symbols_identity ON stream_symbols(id,stream_id);
+CREATE TRIGGER IF NOT EXISTS stream_symbol_immutable BEFORE UPDATE ON stream_symbols BEGIN
+    SELECT RAISE(ABORT,'stream symbols are immutable');
+END;
+-- Descriptor is [stable fields, direct field, direct encoding, symbol map, kind].
 -- Digest narrows lookup; the complete descriptor is always compared on reuse.
 CREATE TABLE IF NOT EXISTS stream_contexts (
     id INTEGER PRIMARY KEY,
     stream_id INTEGER NOT NULL REFERENCES stream_runs(id) ON DELETE CASCADE,
     digest BLOB NOT NULL CHECK(length(digest)=32),
     descriptor_json TEXT NOT NULL CHECK(json_valid(descriptor_json) AND length(CAST(descriptor_json AS BLOB))<=16384),
-    entry_id TEXT GENERATED ALWAYS AS (json_extract(descriptor_json,'$[0].data.entry_id')) VIRTUAL,
-    tool_id TEXT GENERATED ALWAYS AS (json_extract(descriptor_json,'$[0].data.tool_id')) VIRTUAL,
-    content_key TEXT GENERATED ALWAYS AS (json_extract(descriptor_json,'$[0].data.content_key')) VIRTUAL,
+    symbol_bytes INTEGER NOT NULL CHECK(symbol_bytes BETWEEN 0 AND 16384),
+    event_kind INTEGER GENERATED ALWAYS AS (json_extract(descriptor_json,'$[4]')) VIRTUAL NOT NULL CHECK(event_kind BETWEEN 0 AND 18),
+    entry_id INTEGER GENERATED ALWAYS AS (json_extract(descriptor_json,'$[3].entry_id')) VIRTUAL,
+    tool_id INTEGER GENERATED ALWAYS AS (json_extract(descriptor_json,'$[3].tool_id')) VIRTUAL,
+    content_key INTEGER GENERATED ALWAYS AS (json_extract(descriptor_json,'$[3].content_key')) VIRTUAL,
+    block_key INTEGER GENERATED ALWAYS AS (json_extract(descriptor_json,'$[3].block_id')) VIRTUAL,
+    tool_name_key INTEGER GENERATED ALWAYS AS (json_extract(descriptor_json,'$[3].tool_name')) VIRTUAL,
+    tool_type_key INTEGER GENERATED ALWAYS AS (json_extract(descriptor_json,'$[3].tool_type')) VIRTUAL,
     tc_index INTEGER GENERATED ALWAYS AS (json_extract(descriptor_json,'$[0].data.tc_index')) VIRTUAL,
     direct_field TEXT GENERATED ALWAYS AS (json_extract(descriptor_json,'$[1]')) VIRTUAL,
-    direct_encoding TEXT GENERATED ALWAYS AS (json_extract(descriptor_json,'$[2]')) VIRTUAL
+    direct_encoding TEXT GENERATED ALWAYS AS (json_extract(descriptor_json,'$[2]')) VIRTUAL,
+    FOREIGN KEY(entry_id,stream_id) REFERENCES stream_symbols(id,stream_id),
+    FOREIGN KEY(tool_id,stream_id) REFERENCES stream_symbols(id,stream_id),
+    FOREIGN KEY(content_key,stream_id) REFERENCES stream_symbols(id,stream_id),
+    FOREIGN KEY(block_key,stream_id) REFERENCES stream_symbols(id,stream_id),
+    FOREIGN KEY(tool_name_key,stream_id) REFERENCES stream_symbols(id,stream_id),
+    FOREIGN KEY(tool_type_key,stream_id) REFERENCES stream_symbols(id,stream_id)
 );
-CREATE UNIQUE INDEX IF NOT EXISTS stream_contexts_identity ON stream_contexts(id,stream_id);
+CREATE UNIQUE INDEX IF NOT EXISTS stream_contexts_identity ON stream_contexts(id,stream_id,event_kind);
 CREATE TRIGGER IF NOT EXISTS stream_context_immutable BEFORE UPDATE ON stream_contexts BEGIN
     SELECT RAISE(ABORT,'stream contexts are immutable');
 END;
 CREATE INDEX IF NOT EXISTS stream_contexts_digest ON stream_contexts(stream_id,digest);
-CREATE INDEX IF NOT EXISTS stream_contexts_entry ON stream_contexts(stream_id,entry_id,id);
-CREATE INDEX IF NOT EXISTS stream_contexts_tool ON stream_contexts(stream_id,entry_id,tool_id,id);
-CREATE INDEX IF NOT EXISTS stream_contexts_key ON stream_contexts(stream_id,entry_id,content_key,id);
+CREATE INDEX IF NOT EXISTS stream_contexts_entry ON stream_contexts(stream_id,entry_id,id) WHERE event_kind IN (4,11,13);
+CREATE INDEX IF NOT EXISTS stream_contexts_tool ON stream_contexts(stream_id,entry_id,tool_id,id) WHERE event_kind IN (11,12,13);
+CREATE INDEX IF NOT EXISTS stream_contexts_key ON stream_contexts(stream_id,entry_id,content_key,id) WHERE event_kind=10;
 CREATE TABLE IF NOT EXISTS stream_changes (
     id INTEGER PRIMARY KEY,
     stream_id INTEGER NOT NULL REFERENCES stream_runs(id) ON DELETE CASCADE,
@@ -94,7 +116,7 @@ CREATE TABLE IF NOT EXISTS stream_changes (
     byte_length INTEGER CHECK(byte_length>=0),
     CHECK((content_id IS NULL AND byte_offset IS NULL AND byte_length IS NULL AND flags=0)
        OR (content_id IS NOT NULL AND byte_offset IS NOT NULL AND byte_length IS NOT NULL)),
-    FOREIGN KEY(context_id,stream_id) REFERENCES stream_contexts(id,stream_id) ON DELETE CASCADE,
+    FOREIGN KEY(context_id,stream_id,event_kind) REFERENCES stream_contexts(id,stream_id,event_kind) ON DELETE CASCADE,
     UNIQUE(stream_id,last_cursor)
 );
 CREATE INDEX IF NOT EXISTS stream_changes_context ON stream_changes(context_id,event_kind,last_cursor);

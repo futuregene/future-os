@@ -353,6 +353,20 @@
         "The prototype verifies semantic JSON round-trip on the observed records, not full RPC/recovery/GC behavior.",
         "The same sample must be regenerated synthetically for final automated acceptance; personal records are not CI fixtures."
       ]
+    },
+    {
+      "id": "B3.1-first-compact-candidate",
+      "status": "withheld: high-context-churn allocation regression",
+      "artifact": "docs/testing/compact-storage-candidate-1-2026-10-27.json",
+      "artifactSha256": "cd0d91234fca8724fbc48bc222dc47a4f8f8534f6644ef4bca117a8da3e59766",
+      "scope": "same-machine synthetic metadata stress; see raw artifact for measurements and limitations"
+    },
+    {
+      "id": "B3.2-native-uuid-dictionary-candidate",
+      "status": "withheld: high-context-churn logical WAL page-write regression",
+      "artifact": "docs/testing/compact-storage-candidate-2-2026-10-27.json",
+      "artifactSha256": "11521cdd5ee751c3454d9e512b742dae36c987c9be437878e331336eda7d3094",
+      "scope": "same-machine synthetic metadata stress; see raw artifact for measurements and limitations"
     }
   ]
 }

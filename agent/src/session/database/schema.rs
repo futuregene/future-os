@@ -15,6 +15,7 @@ pub(super) fn initialize_schema(
     )?;
     tx.execute_batch(include_str!("schema.sql"))?;
     tx.execute_batch(include_str!("../content/schema.sql"))?;
+    tx.execute_batch(&crate::session::identity::inspection_views_sql())?;
     if missing_projection {
         tx.execute("DELETE FROM history_index_state", [])?;
     }
@@ -29,7 +30,7 @@ pub(super) fn initialize_schema(
     cancellation.check()?;
     tx.execute_batch(crate::skills::registry::SKILLS_TABLE_SQL)?;
     tx.execute_batch(crate::session::content::entries::RESOLVED_BLOCKS_SQL)?;
-    tx.execute_batch(crate::session::entry_records::ENTRY_RECORD_VIEWS_SQL)?;
+    tx.execute_batch(&crate::session::entry_records::entry_record_views_sql())?;
     tx.execute_batch(&crate::session::content::entries::header_views_sql())?;
     tx.execute_batch(
         "CREATE UNIQUE INDEX IF NOT EXISTS run_events_custom_id
@@ -97,7 +98,8 @@ pub(super) fn validate_authoritative_history(connection: &Connection, version: i
             "SELECT session_id,owner_kind,owner_id,field,encoding,content_id,byte_offset,byte_length FROM content_references LIMIT 0",
             "SELECT id,session_id,run_id,epoch,durable_cursor FROM stream_runs LIMIT 0",
             "SELECT id,stream_id,context_id,first_cursor,last_cursor,event_kind,unknown_kind,event_type,flags,metadata_json,content_id,byte_offset,byte_length FROM stream_changes LIMIT 0",
-            "SELECT id,stream_id,digest,descriptor_json,entry_id,tool_id,content_key,tc_index,direct_field,direct_encoding FROM stream_contexts LIMIT 0",
+            "SELECT id,stream_id,value FROM stream_symbols LIMIT 0",
+            "SELECT id,stream_id,digest,descriptor_json,symbol_bytes,event_kind,entry_id,tool_id,content_key,block_key,tool_name_key,tool_type_key,tc_index,direct_field,direct_encoding FROM stream_contexts LIMIT 0",
             "SELECT change_id,field,encoding,content_id,byte_offset,byte_length FROM stream_change_content LIMIT 0",
             "SELECT content_id FROM content_collection LIMIT 0",
             "SELECT session_id,entry_id,digest FROM entry_fingerprints LIMIT 0",

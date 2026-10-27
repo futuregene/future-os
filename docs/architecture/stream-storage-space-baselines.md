@@ -100,3 +100,19 @@ The ledger also records original-plan hashes and source commits for later preser
 | Frequent new contexts | 7,639,040 | 12,259,328 | +60.5% | 794 / 1014 |
 
 The latter also grows the WAL file. Delivery is withheld while stable identities are normalized further. Each scenario is a single sample, so timing differences cannot be attributed to one cause. Keep these failed boundaries too; future candidates append records instead of replacing them. Functional/migration/fault passes do not establish space/performance acceptance.
+
+## B3.2: dictionary and UUID candidate, withheld for write amplification
+
+[Candidate 2 raw record](../testing/compact-storage-candidate-2-2026-10-27.json) retains the same long-identity workload, previous `537bcddf` control, current source hashes, binary hashes and test inventory. Frozen binaries run sequentially, old then new, excluding compilation; each scenario is one sample. B0/B1/B2/B3.1 are not replaced.
+
+| Scenario | Previous/new stream metadata bytes | Allocation change | Previous/new logical WAL page bytes | Write change | Previous/new batch p99 µs |
+|---|---:|---:|---:|---:|---:|
+| High reuse | 3,649,536 / 958,464 | −73.7% | 187,793,408 / 177,676,288 | −5.4% | 445 / 518 |
+| Frequent new contexts | 7,639,040 / 5,738,496 | −24.9% | 415,535,104 / 614,146,048 | +47.8% | 693 / 939 |
+
+Stream metadata still sums tables/indices whose names contain `stream_`, excluding body segments and `content_references`. A future ownership-table change must redefine matching comparison scopes explicitly. Logical page bytes are successful WAL-mode writer `SQLITE_DBSTATUS_CACHE_WRITE` deltas times 4096, excluding WAL frame/header bytes, checkpoint copies and device I/O. Raw records separately retain WAL file lengths and whole-process CPU/RSS; neither is cumulative writes or per-case resource consumption.
+
+This is low-level staging stress: high-churn blocks in one message exceed the final entry's 1024-field limit, and that oversized assistant header is not published. It is not a normal UI conversation or a production UUID-shape workload: source identifiers are long opaque strings. Readers request 128 events but return different byte-budgeted work; `readerWork` is retained and reader timing alone does not establish equal-work latency.
+One regression run that reused the old binary in a shared Cargo target was explicitly invalidated. Valid results verify source records, distinct binary hashes and the new 2695-test inventory.
+
+The dictionary removes candidate 1's allocation regression but still increases cumulative writes. Normalize body ownership and remeasure; allocation savings cannot hide write amplification.

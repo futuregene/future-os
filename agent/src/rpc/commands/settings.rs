@@ -262,7 +262,7 @@ pub(crate) fn handle_compact(
         return RpcResponse::build_fail(id, "compact", "context compaction is already running");
     }
 
-    let operation_id = format!("cmp_{}", crate::utils::generate_entry_id());
+    let operation_id = crate::utils::generate_entry_id();
     *session.read().compaction_request.lock() = Some((cmd.id.clone(), operation_id.clone()));
     let worker_operation_id = operation_id.clone();
     let instructions = cmd.custom_instructions.clone();

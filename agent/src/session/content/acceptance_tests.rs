@@ -72,10 +72,61 @@ fn counts(store: &SqliteStore) -> Value {
         .unwrap()
 }
 
+/// Writer-connection page writes in WAL mode, independent of file reuse and
+/// checkpoint high-water length. Count only successful performance workloads.
+#[derive(Clone, Copy)]
+struct WalWrites {
+    pages: u64,
+    page_size: u64,
+}
+impl WalWrites {
+    fn capture(store: &SqliteStore) -> Self {
+        store
+            .db
+            .call(|db| {
+                let mode: String = db.pragma_query_value(None, "journal_mode", |r| r.get(0))?;
+                anyhow::ensure!(mode == "wal", "write meter requires WAL mode");
+                let (mut current, mut high_water) = (0, 0);
+                // SAFETY: this job exclusively owns the live writer connection;
+                // both output pointers are valid, and no pointer escapes the call.
+                let status = unsafe {
+                    rusqlite::ffi::sqlite3_db_status(
+                        db.handle(),
+                        rusqlite::ffi::SQLITE_DBSTATUS_CACHE_WRITE,
+                        &mut current,
+                        &mut high_water,
+                        0,
+                    )
+                };
+                anyhow::ensure!(
+                    status == rusqlite::ffi::SQLITE_OK && current >= 0,
+                    "SQLite cache-write counter unavailable"
+                );
+                Ok(Self {
+                    pages: u64::try_from(current)?,
+                    page_size: u64::try_from(
+                        db.pragma_query_value(None, "page_size", |r| r.get::<_, i64>(0))?,
+                    )?,
+                })
+            })
+            .unwrap()
+    }
+    fn since(self, before: Self) -> Value {
+        assert_eq!(self.page_size, before.page_size);
+        let pages = self
+            .pages
+            .checked_sub(before.pages)
+            .expect("cache-write counter overflow/reset");
+        json!({"cacheWritePages":pages,"logicalPageBytes":pages*self.page_size,"pageSize":self.page_size,
+            "scope":"writer SQLITE_DBSTATUS_CACHE_WRITE in WAL mode; logical page payload only, excludes WAL frame/header bytes, checkpoint copies, fsync counts and physical device IO; not used after IO failures"})
+    }
+}
+
 fn workload(canonical: bool, target_bytes: usize) -> Value {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("agent.db");
     let store = open(&path, canonical);
+    let before_writes = WalWrites::capture(&store);
     let mut writer = Writer::default();
     let fragment = "思考🙂x".repeat(5);
     let fragments = target_bytes.div_ceil(fragment.len());
@@ -154,6 +205,7 @@ fn workload(canonical: bool, target_bytes: usize) -> Value {
     }
     store.commit_terminal_entries("s", vec![json!({"id":"end","type":"run_terminal","timestamp":"2026-10-26T00:00:02Z","content":{"run_id":"r","state":"completed","run_tokens":17}})]).unwrap();
     let finish_micros = finish.elapsed().as_micros();
+    let wal_writes = WalWrites::capture(&store).since(before_writes);
     let after = counts(&store);
     if canonical {
         assert_eq!(after["run_events"], 0);
@@ -179,7 +231,7 @@ fn workload(canonical: bool, target_bytes: usize) -> Value {
         .sum::<u64>();
     json!({"format":if canonical {2}else{1},"bodyBytes":body.len(),"fragments":fragments,"writeMicros":write_micros,
         "foregroundBatchMicros":{"p95":percentile(95),"p99":percentile(99),"max":latencies.last()},
-        "finishMicros":finish_micros,"finalDatabaseAndWalBytes":final_files,"sampledPeakDatabaseAndWalBytes":peak_files.max(final_files),"rows":after,"io":store.db.metrics()})
+        "finishMicros":finish_micros,"walWrites":wal_writes,"finalDatabaseAndWalBytes":final_files,"sampledPeakDatabaseAndWalBytes":peak_files.max(final_files),"rows":after,"io":store.db.metrics()})
 }
 
 #[test]
@@ -516,6 +568,7 @@ fn compact_context_metadata_workloads() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("agent.db");
         let store = open(&path, true);
+        let before_writes = WalWrites::capture(&store);
         let mut writer = Writer::default();
         let mut cursor = 0i64;
         let mut offset = 0usize;
@@ -567,6 +620,7 @@ fn compact_context_metadata_workloads() {
             }
         }
         let elapsed = start.elapsed().as_micros();
+        let wal_writes = WalWrites::capture(&store).since(before_writes);
         latencies.sort_unstable();
         reads.sort_unstable();
         let structures = counts(&store);
@@ -574,7 +628,7 @@ fn compact_context_metadata_workloads() {
             std::fs::metadata(&path).unwrap().len(),
             std::fs::metadata(path.with_extension("db-wal")).map_or(0, |m| m.len()),
         );
-        cases.push(json!({"contextChurn":churn,"bodyBytes":body_bytes,"fragmentBytes":fragment.len(),"fragmentsPerFlush":4,"elapsedMicros":elapsed,"batchMicros":{"p95":latencies[latencies.len()*95/100],"p99":latencies[latencies.len()*99/100],"max":latencies.last()},"readerMicros":{"p95":reads[reads.len()*95/100],"max":reads.last()},"readerWork":read_work,"databaseBytes":database,"walBytes":wal,"rows":structures,"io":store.db.metrics()}));
+        cases.push(json!({"contextChurn":churn,"bodyBytes":body_bytes,"fragmentBytes":fragment.len(),"fragmentsPerFlush":4,"elapsedMicros":elapsed,"batchMicros":{"p95":latencies[latencies.len()*95/100],"p99":latencies[latencies.len()*99/100],"max":latencies.last()},"readerMicros":{"p95":reads[reads.len()*95/100],"max":reads.last()},"readerWork":read_work,"walWrites":wal_writes,"databaseBytes":database,"walBytes":wal,"rows":structures,"io":store.db.metrics()}));
     }
     let report = json!({"workload":"synthetic-long-identities-1MiB-four-fragment-flushes","cases":cases,"limitations":"Direct writer batches and bounded replay; timer cadence, admission backlog, native UI and physical power loss are not simulated. No VACUUM, historical compression or completion rewrite."});
     println!("COMPACT_METADATA_ACCEPTANCE={report}");

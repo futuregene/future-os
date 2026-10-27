@@ -374,6 +374,112 @@ fn upgraded_legacy_sessions_continue_beside_new_compact_streams() {
 }
 
 #[test]
+fn released_uuid_text_remains_exact_beside_native_uuid_sessions() {
+    use crate::session::sqlite_store::SqliteStore;
+    use serde_json::json;
+    const OLD: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const MESSAGE: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const RUN: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    const RAW: &str =
+        r#"{"timestamp":"2020-01-01T00:00:00Z","opaque":{"spelling":"  keep exact  "}}"#;
+    for &(version, ddl) in RELEASED_SCHEMAS {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("agent.db");
+        let source = Connection::open(&path).unwrap();
+        source.execute_batch(ddl).unwrap();
+        source.execute("INSERT INTO sessions(id,revision,current_metadata_json) VALUES (?1,3,'{\"model\":\"mock\"}')",[OLD]).unwrap();
+        source.execute("INSERT INTO entries(session_id,position,entry_id,entry_type,role,run_id,metadata_json,content_json) VALUES (?1,0,?2,'user','user',?3,?4,'\"historical UUID input\"')",params![OLD,MESSAGE,RUN,RAW]).unwrap();
+        source
+            .execute(
+                "INSERT INTO runs(session_id,run_id,status) VALUES (?1,?2,'completed')",
+                params![OLD, RUN],
+            )
+            .unwrap();
+        drop(source);
+        let store = SqliteStore::open(&path).unwrap();
+        store.bind_events(OLD).unwrap();
+        assert_eq!(store.storage_format(OLD).unwrap(), 1);
+        store.append(OLD,vec![json!({"id":uuid::Uuid::new_v4().to_string(),"type":"assistant","role":"assistant","timestamp":"2026-10-27T00:00:00Z","meta":{"run_id":RUN},"content":"legacy continuation"})]).unwrap();
+        let new = uuid::Uuid::new_v4().to_string();
+        store.bind_events(&new).unwrap();
+        // Deliberately reuse public child spellings in another session: the
+        // parent format must select each child's own physical representation.
+        store.replace(&new,vec![
+            json!({"id":uuid::Uuid::new_v4().to_string(),"type":"session_info","timestamp":"2026-10-27T00:00:00Z","content":{"model":"mock"}}),
+            json!({"id":MESSAGE,"type":"user","role":"user","timestamp":"2026-10-27T00:00:01Z","meta":{"run_id":RUN},"content":"native UUID input"}),
+        ]).unwrap();
+        for (session, kind) in [(OLD, "text"), (new.as_str(), "blob")] {
+            let entries = store.entries(session).unwrap();
+            assert_eq!(
+                entries.iter().find(|e| e["id"] == MESSAGE).unwrap()["meta"]["run_id"],
+                RUN
+            );
+            let (s, kind) = (session.to_owned(), kind.to_owned());
+            store.db.read(move|db| {
+                let key=crate::session::identity::session_key(db,&s)?;
+                assert_eq!(db.query_row("SELECT typeof(id) FROM sessions WHERE id=?1",[&key],|r|r.get::<_,String>(0))?,kind);
+                assert_eq!(db.query_row("SELECT count(*) FROM entries WHERE session_id=?1 AND (typeof(entry_id)!=?2 OR (run_id IS NOT NULL AND typeof(run_id)!=?2))",params![key,kind],|r|r.get::<_,i64>(0))?,0);
+                assert_eq!(db.query_row("SELECT count(*) FROM runs WHERE session_id=?1 AND typeof(run_id)!=?2",params![key,kind],|r|r.get::<_,i64>(0))?,0);
+                assert_eq!(db.query_row("SELECT count(*) FROM pragma_foreign_key_check",[],|r|r.get::<_,i64>(0))?,0);
+                Ok(())
+            }).unwrap();
+        }
+        store
+            .db
+            .read(|db| {
+                assert_eq!(
+                    db.query_row(
+                        "SELECT metadata_json FROM entries WHERE session_id=?1 AND entry_id=?2",
+                        params![OLD, MESSAGE],
+                        |r| r.get::<_, String>(0)
+                    )?,
+                    RAW
+                );
+                Ok(())
+            })
+            .unwrap();
+        drop(store);
+        let reopened = SqliteStore::open(&path).unwrap();
+        assert_eq!(reopened.storage_format(OLD).unwrap(), 1);
+        assert_eq!(reopened.storage_format(&new).unwrap(), 2);
+        assert!(reopened
+            .entries(OLD)
+            .unwrap()
+            .iter()
+            .any(|e| e["id"] == MESSAGE));
+        assert!(reopened
+            .entries(&new)
+            .unwrap()
+            .iter()
+            .any(|e| e["id"] == MESSAGE));
+        let snapshots = backups(root.path());
+        assert_eq!(snapshots.len(), 1);
+        let snapshot =
+            Connection::open_with_flags(&snapshots[0], rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+        assert_eq!(
+            snapshot
+                .query_row("SELECT typeof(id) FROM sessions WHERE id=?1", [OLD], |r| {
+                    r.get::<_, String>(0)
+                })
+                .unwrap(),
+            "text"
+        );
+        assert_eq!(
+            snapshot
+                .query_row(
+                    "SELECT metadata_json FROM entries WHERE session_id=?1 AND entry_id=?2",
+                    params![OLD, MESSAGE],
+                    |r| r.get::<_, String>(0)
+                )
+                .unwrap(),
+            RAW
+        );
+        println!("NATIVE_UUID_MIGRATION_CASE={{\"sourceSchema\":{version},\"historicalTextPreserved\":true,\"nativeKeys\":true,\"foreignKeys\":true,\"sourceSnapshot\":true,\"reopen\":true}}");
+    }
+}
+
+#[test]
 fn old_unpublished_layout_is_rejected_before_wal_or_schema_mutation() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("agent.db");

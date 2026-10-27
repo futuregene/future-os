@@ -6,7 +6,7 @@ use crate::session::content::{
 
 fn db() -> Connection {
     let mut db = Connection::open_in_memory().unwrap();
-    db.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE sessions(id TEXT PRIMARY KEY,revision INTEGER NOT NULL DEFAULT 0); CREATE TABLE entries(session_id TEXT,entry_id TEXT,UNIQUE(session_id,entry_id)); CREATE TABLE compaction_operations(session_id TEXT,input_key TEXT,PRIMARY KEY(session_id,input_key)); INSERT INTO sessions(id) VALUES ('s');").unwrap();
+    db.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE sessions(id TEXT PRIMARY KEY,revision INTEGER NOT NULL DEFAULT 0); CREATE TABLE entries(session_id TEXT,entry_id TEXT,UNIQUE(session_id,entry_id)); CREATE TABLE compaction_operations(session_id TEXT,input_key TEXT,PRIMARY KEY(session_id,input_key)); CREATE TABLE runs(session_id TEXT,run_id TEXT,PRIMARY KEY(session_id,run_id)); CREATE TABLE queued_run_receipts(session_id TEXT,run_id TEXT,PRIMARY KEY(session_id,run_id)); INSERT INTO sessions(id) VALUES ('s');").unwrap();
     db.execute_batch(include_str!("schema.sql")).unwrap();
     let tx = db.transaction().unwrap();
     content::enable(&tx, "s").unwrap();
@@ -228,7 +228,10 @@ fn generic_multi_field_unknown_event_and_digest_collision_are_lossless() {
         Encoding::Text,
     );
     let (descriptor, _, _) = encode(&next, Some(&body)).unwrap();
-    db.execute("INSERT INTO stream_contexts(stream_id,digest,descriptor_json) VALUES (1,?1,'[{},null,null]')",[Sha256::digest(descriptor.as_bytes()).as_slice()]).unwrap();
+    let tx = db.transaction().unwrap();
+    let (descriptor, _) = content::symbols::intern(&tx, 1, descriptor).unwrap();
+    tx.execute("INSERT INTO stream_contexts(stream_id,digest,descriptor_json,symbol_bytes) VALUES (1,?1,'[{},null,null,{},0]',0)",[Sha256::digest(descriptor.as_bytes()).as_slice()]).unwrap();
+    tx.commit().unwrap();
     stream::commit_batch(
         &mut db,
         &scope(),
@@ -290,7 +293,7 @@ fn context_ownership_and_fixed_kind_codes_are_database_constraints() {
 fn query_plans_use_short_context_cursor_and_reverse_body_indices() {
     let db = db();
     for (sql,expected) in [
-        ("SELECT c.id FROM stream_contexts x INDEXED BY stream_contexts_tool JOIN stream_changes c INDEXED BY stream_changes_context ON c.context_id=x.id WHERE x.stream_id=1 AND x.entry_id='m' AND x.tool_id='t' AND c.event_kind=13 ORDER BY c.last_cursor DESC LIMIT 1", "stream_changes_context"),
+        ("SELECT c.id FROM stream_contexts x INDEXED BY stream_contexts_tool JOIN stream_changes c INDEXED BY stream_changes_context ON c.context_id=x.id WHERE x.stream_id=1 AND x.entry_id='m' AND x.tool_id='t' AND x.event_kind IN (11,12,13) AND c.event_kind=13 ORDER BY c.last_cursor DESC LIMIT 1", "stream_changes_context"),
         ("SELECT c.id FROM stream_changes c WHERE c.stream_id=1 AND c.last_cursor>3 ORDER BY c.last_cursor LIMIT 128", "sqlite_autoindex_stream_changes_1"),
         ("SELECT 1 FROM stream_content_ranges WHERE content_id=1", "stream_changes_body"),
         ("SELECT id FROM stream_changes WHERE stream_id=1 AND event_type IN ('usage','model_changed') ORDER BY id", "stream_changes_pricing"),
@@ -300,4 +303,70 @@ fn query_plans_use_short_context_cursor_and_reverse_body_indices() {
         assert!(plan.contains(expected),"missing {expected}: {plan}");
         println!("COMPACT_QUERY_PLAN={plan}");
     }
+}
+
+#[test]
+fn long_identities_are_interned_across_changing_contexts_without_losing_nul_or_presence() {
+    let mut db = db();
+    for cursor in 0..64 {
+        let mut event = change(cursor, "unused");
+        event.bodies.clear();
+        event.metadata["data"]["entry_id"] = json!("long-消息\0identity");
+        event.metadata["data"]["tool_id"] = json!("");
+        event.metadata["data"]["content_key"] = json!(format!("block-{cursor}"));
+        stream::commit_batch(&mut db, &scope(), vec![], vec![event.clone()]).unwrap();
+        assert_eq!(
+            read_ids(&db, &[cursor + 1]).unwrap()[0].metadata,
+            event.metadata
+        );
+    }
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM stream_symbols", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        66
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM stream_contexts", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        64
+    );
+    assert!(db
+        .execute("UPDATE stream_symbols SET value='corrupt'", [])
+        .is_err());
+    db.execute(
+        "INSERT INTO stream_runs(id,session_id,run_id,epoch) VALUES (2,'s','other',1)",
+        [],
+    )
+    .unwrap();
+    let tx = db.transaction().unwrap();
+    let mut event = change(0, "unused");
+    event.bodies.clear();
+    publish(&tx, 2, &event, vec![]).unwrap();
+    tx.commit().unwrap();
+    let symbol: i64 = db
+        .query_row(
+            "SELECT id FROM stream_symbols WHERE stream_id=1 LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let tx = db.transaction().unwrap();
+    let bad = json!([{"data":{}},null,null,{"entry_id":symbol},0]).to_string();
+    assert!(context(&tx, 2, &bad, 0).is_err());
+    drop(tx);
+    validate_layout(&db).unwrap();
+}
+
+#[test]
+fn damaged_context_is_an_error_instead_of_an_empty_successful_page() {
+    let mut db = db();
+    let mut event = change(0, "unused");
+    event.bodies.clear();
+    stream::commit_batch(&mut db, &scope(), vec![], vec![event]).unwrap();
+    db.pragma_update(None, "foreign_keys", false).unwrap();
+    db.execute("DELETE FROM stream_contexts", []).unwrap();
+    assert!(stream::read_changes(&db, &scope(), -1, 8).is_err());
+    assert!(read_ids(&db, &[1]).is_err());
 }

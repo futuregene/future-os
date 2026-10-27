@@ -62,6 +62,7 @@ impl Manager {
             )?;
             let mut results = Vec::new();
             for id in ids {
+                let key = super::identity::BoundIdentity::session(&tx, &id)?;
                 // Presence answers ONE question: does this id belong to this
                 // database? Any row in `sessions` is proof that it does —
                 // including the `revision=-1` placeholder `bind_events` writes
@@ -85,7 +86,7 @@ impl Manager {
                      EXISTS(SELECT 1 FROM sessions WHERE id=?1 AND revision>=0),
                      EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1),
                      EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='skipped')",
-                        [&id],
+                        [&key],
                         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                     )?;
                 ensure!(

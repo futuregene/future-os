@@ -16,6 +16,28 @@ pub(crate) struct StreamIdentity {
     pub epoch: i64,
 }
 
+pub(crate) struct BoundStreamIdentity {
+    pub session_id: crate::session::identity::BoundIdentity,
+    pub run_id: crate::session::identity::BoundIdentity,
+    pub epoch: i64,
+}
+
+impl StreamIdentity {
+    /// Resolve keys within the caller's transaction, never cache an allocation
+    /// across commit/rollback. The producer's wire identity stays unchanged.
+    pub(crate) fn bind(&self, db: &Connection) -> Result<BoundStreamIdentity> {
+        Ok(BoundStreamIdentity {
+            session_id: crate::session::identity::BoundIdentity::session(db, &self.session_id)?,
+            run_id: crate::session::identity::BoundIdentity::run(
+                db,
+                &self.session_id,
+                &self.run_id,
+            )?,
+            epoch: self.epoch,
+        })
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ContentAppend {
     pub key: String,
@@ -94,6 +116,7 @@ fn stream_id(tx: &Transaction<'_>, stream: &StreamIdentity) -> Result<i64> {
         super::format(tx, &stream.session_id)? == super::FORMAT_VERSION,
         "conversation does not use segmented storage"
     );
+    let stream = stream.bind(tx)?;
     tx.execute(
         "INSERT INTO stream_runs(session_id,run_id,epoch) VALUES (?1,?2,?3) ON CONFLICT DO NOTHING",
         params![stream.session_id, stream.run_id, stream.epoch],
@@ -131,6 +154,7 @@ pub(crate) fn commit_batch(
     );
     let tx = crate::session::database::begin_write_transaction(db)?;
     let id = stream_id(&tx, stream)?;
+    let stored_session = crate::session::identity::session_key(&tx, &stream.session_id)?;
     let last: Option<(i64,String)> = tx.query_row(
         "SELECT last_cursor,event_type FROM stream_changes WHERE stream_id=?1 ORDER BY last_cursor DESC LIMIT 1",
         [id], |row| Ok((row.get(0)?,row.get(1)?)),
@@ -174,7 +198,7 @@ pub(crate) fn commit_batch(
             // The stream owner grows with its durable body. Published change
             // and transcript references remain immutable independent ranges.
             let length = prior.length.max(end);
-            tx.execute("UPDATE content_references SET byte_length=?5 WHERE session_id=?1 AND owner_kind='stream' AND owner_id=?2 AND field='' AND content_id=?3 AND byte_length=?4",params![stream.session_id,key,body,prior.length,length])?;
+            tx.execute("UPDATE content_references SET byte_length=?5 WHERE session_id=?1 AND owner_kind='stream' AND owner_id=?2 AND field='' AND content_id=?3 AND byte_length=?4",params![stored_session,key,body,prior.length,length])?;
         } else {
             bind(
                 &tx,
@@ -290,6 +314,7 @@ pub(crate) fn read_encoded_changes(
     limit: usize,
 ) -> Result<EncodedChangePage> {
     ensure!((1..=256).contains(&limit), "invalid change page limit");
+    let stream = stream.bind(db)?;
     let row: Option<(i64,i64)>=db.query_row("SELECT id,durable_cursor FROM stream_runs WHERE session_id=?1 AND run_id=?2 AND epoch=?3 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=stream_runs.id)",params![stream.session_id,stream.run_id,stream.epoch],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
     let Some((id, cursor)) = row else {
         return Ok(EncodedChangePage {
@@ -298,7 +323,7 @@ pub(crate) fn read_encoded_changes(
             has_more: false,
         });
     };
-    let mut stmt=db.prepare("SELECT c.id,length(CAST(c.metadata_json AS BLOB))+length(CAST(x.descriptor_json AS BLOB)) FROM stream_changes c JOIN stream_contexts x ON x.id=c.context_id AND x.stream_id=c.stream_id WHERE c.stream_id=?1 AND c.last_cursor>?2 ORDER BY c.last_cursor LIMIT ?3")?;
+    let mut stmt=db.prepare("SELECT c.id,length(CAST(c.metadata_json AS BLOB))+length(CAST(x.descriptor_json AS BLOB))+x.symbol_bytes FROM stream_changes c LEFT JOIN stream_contexts x ON x.id=c.context_id AND x.stream_id=c.stream_id AND x.event_kind=c.event_kind WHERE c.stream_id=?1 AND c.last_cursor>?2 ORDER BY c.last_cursor LIMIT ?3")?;
     let mut rows = stmt.query(params![id, since, i64::try_from(limit + 1)?])?;
     let mut ids = Vec::new();
     let mut bytes = 0usize;
@@ -366,7 +391,7 @@ mod tests {
 
     fn db() -> Connection {
         let mut db = Connection::open_in_memory().unwrap();
-        db.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE sessions(id TEXT PRIMARY KEY,revision INTEGER NOT NULL DEFAULT 0); CREATE TABLE entries(session_id TEXT,entry_id TEXT,UNIQUE(session_id,entry_id)); CREATE TABLE compaction_operations(session_id TEXT,input_key TEXT,PRIMARY KEY(session_id,input_key)); INSERT INTO sessions(id) VALUES('s');").unwrap();
+        db.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE sessions(id TEXT PRIMARY KEY,revision INTEGER NOT NULL DEFAULT 0); CREATE TABLE entries(session_id TEXT,entry_id TEXT,UNIQUE(session_id,entry_id)); CREATE TABLE compaction_operations(session_id TEXT,input_key TEXT,PRIMARY KEY(session_id,input_key)); CREATE TABLE runs(session_id TEXT,run_id TEXT,PRIMARY KEY(session_id,run_id)); CREATE TABLE queued_run_receipts(session_id TEXT,run_id TEXT,PRIMARY KEY(session_id,run_id)); INSERT INTO sessions(id) VALUES('s');").unwrap();
         db.execute_batch(include_str!("schema.sql")).unwrap();
         let tx = db.transaction().unwrap();
         enable(&tx, "s").unwrap();

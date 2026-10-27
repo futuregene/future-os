@@ -7,7 +7,7 @@ This is the implementation contract; verification results are recorded separatel
 ## Layout and release boundary
 
 Agent schema 8 directly replaces the unpublished target; logical conversation format remains 2.
-The `stream_layout` singleton is `compact-context-v1`. There is no draft conversion, dual codec,
+The `stream_layout` singleton is `compact-native-uuid-v1`. There is no draft conversion, dual codec,
 dual writing or historical body compression. Released schema 2–7 and released Desktop SQL/checksums
 remain unchanged, and existing conversations continue using format 1.
 Admission checks the marker, authoritative columns, index definitions, foreign keys and collection
@@ -16,23 +16,45 @@ are refused and preserved. Use an isolated data root rather than clearing person
 
 Exact DDL: `agent/src/session/content/schema.sql`; codec: `compact.rs` in the same directory.
 
+## Business identities and historical compatibility
+
+New-format generated session, message and run UUIDs retain their complete 16-byte values in storage.
+APIs and read-only inspection views render canonical lowercase 36-character UUIDs. Released historical
+TEXT remains exact, including UUID-looking strings; opaque provider IDs retain their spelling.
+Historical SQL declarations may still say TEXT: the actual storage class (`typeof`) is authoritative,
+not the declaration or string length. `session/identity.rs` owns typed primary/foreign-key bindings;
+internal stream, context and symbol references continue using integers.
+
+Session lookup includes sessions, deletion tombstones and import registrations. Ambiguous TEXT/BLOB
+representations of one public identity fail explicitly. Creation checks identity reservations in the
+same transaction before selecting native UUID storage; existing conversations keep their format.
+Restored JSONL sources cannot compete with an existing new-format conversation: preserve the file
+and skip import, rechecking session/tombstone ownership under the commit lock. Never create another
+representation, overwrite committed history or resurrect a deleted conversation.
+`sessions_inspect`, `entries_inspect`, `runs_inspect` and `stream_symbols_inspect` compute readable
+projections without persisting another UUID string copy.
+
 ## Immutable contexts
 
 `stream_contexts` assigns a short integer ID to a descriptor scoped to one stream/run/epoch:
-`[stable metadata object, direct field or null, direct encoding or null]`.
+`[stable metadata object, direct field or null, direct encoding or null, symbol-reference object, kind code]`.
 The extraction whitelist is envelope `run_sequence` and data `type`, `entry_id`, `tool_id`,
 `tool_name`, `tool_type`, `tc_index`, `content_key`, `block_id`. Missing and explicit null remain distinct.
 Changed fields create another context; a database trigger rejects UPDATE. Descriptors are capped at 16 KiB.
 
 Lookup uses `(stream_id, SHA-256)` and compares the complete descriptor before reuse. Hash equality
 alone is insufficient; collision candidates are bounded and overflow fails explicitly. A composite
-foreign key requires the change and context to share a stream. No short-ID cache crosses transaction
+foreign key requires the change and context to share a stream and event kind. No short-ID cache crosses transaction
 boundaries, so aborted allocations cannot leak into later publications; SQLite's statement cache
 contains statements only.
 
-Long entry/tool/content identifiers reside in descriptors and their context lookup indices; change
-indices use short IDs. `stream_contexts_entry/tool/key` find source identities and
-`stream_changes_context` finds their event types and cursors. Source lookups filter contexts before changes.
+`stream_symbols` interns entry_id, tool_id, content_key, block_id, tool_name and tool_type within each stream.
+Canonical UUIDs use lossless 16-byte storage; other strings retain their exact TEXT. Symbol UPDATE is refused.
+Contexts contain integer symbol references whose composite foreign keys enforce the owning stream.
+The descriptor and expanded symbols each have a 16 KiB limit. Long identifiers no longer repeat in every
+context or source index. `stream_contexts_entry/tool/key` find source identities and
+`stream_changes_context` finds their event types and cursors. Partial source indices cover only the
+corresponding event kinds rather than every delta. Source lookups filter contexts before changes.
 
 ## Changes and ranges
 
@@ -62,7 +84,7 @@ low-frequency terminal extensions also read through this authority.
 
 ## Publication and lifecycle
 
-Body staging, watermarks and confirmation boundaries retain the segmented contract. Contexts,
+Body staging, watermarks and confirmation boundaries retain the segmented contract. Symbols, contexts,
 changes, body references and watermarks become visible atomically. Retries compare first cursor,
 kind, complete decoded metadata and all body ranges/encodings; differing data conflicts explicitly.
 Delta coalescing requires all metadata except derived range fields and the last-fragment envelope
@@ -72,16 +94,16 @@ Range authorization still requires session/run/epoch/cursor/field and database i
 are not access credentials. Metadata pages capture identity and watermark in the same snapshot,
 rejecting restore-generation changes rather than mixing old metadata and new bodies.
 Recovery and collection use the unified range authority; direct removal has its own reverse index
-and collection trigger. Reset/prune retire changes, contexts and owners in bounded slices without
+and collection trigger. Reset/prune retire changes, contexts, symbols and owners in bounded slices without
 new historical scans or completion-time rewriting.
 
 ## Bounded pages
 
-Cursor selection estimates remainder plus descriptor bytes using the 16 KiB page budget, existing
-single-row exception and a 256-row limit. Changes, distinct contexts and extra fields are then fetched
+Cursor selection estimates remainder, descriptor and expanded symbol bytes using the 16 KiB page budget, existing
+single-row exception and a 256-row limit. Changes, distinct contexts, extra fields and distinct symbols are then fetched
 in batches; query count does not grow linearly with event count. Database workers return strings and
 ranges; replay/recovery callers parse each context once and assemble events off the database worker.
-Raw selections have a separate 256 KiB hard memory cap including extra fields. Transactional terminal
+Raw selections have a separate 256 KiB hard memory cap including extra fields and expanded symbols. Transactional terminal
 and source boundaries may decode one bounded fact, without reading bodies or complete runs.
 
 The 16 KiB segment / 64 KiB write / 256 KiB range read budgets, 25 ms/128 event/64 KiB scheduling,

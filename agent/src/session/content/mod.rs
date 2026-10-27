@@ -22,6 +22,7 @@ mod recovery;
 pub(crate) mod reset;
 pub(crate) mod stream;
 pub(crate) mod stream_entry;
+mod symbols;
 pub(crate) mod terminal;
 pub(crate) mod transport;
 
@@ -78,10 +79,11 @@ impl ContentDigest {
 }
 
 pub(crate) fn format(db: &Connection, session: &str) -> Result<i64> {
+    let stored = super::identity::session_key(db, session)?;
     Ok(db
         .query_row(
             "SELECT format FROM session_formats WHERE session_id=?1",
-            [session],
+            [stored],
             |r| r.get(0),
         )
         .optional()?
@@ -90,9 +92,10 @@ pub(crate) fn format(db: &Connection, session: &str) -> Result<i64> {
 
 /// Called only in the transaction creating a session, never on a legacy open.
 pub(crate) fn enable(tx: &Transaction<'_>, session: &str) -> Result<()> {
+    let stored = super::identity::session_key(tx, session)?;
     let has_history: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM entries WHERE session_id=?1)",
-        [session],
+        [&stored],
         |r| r.get(0),
     )?;
     ensure!(
@@ -101,7 +104,7 @@ pub(crate) fn enable(tx: &Transaction<'_>, session: &str) -> Result<()> {
     );
     tx.execute(
         "INSERT INTO session_formats(session_id,format) VALUES (?1,?2)",
-        params![session, FORMAT_VERSION],
+        params![stored, FORMAT_VERSION],
     )?;
     Ok(())
 }
@@ -330,6 +333,23 @@ pub(crate) fn bind(
     )
 }
 
+/// Entry owners share the authoritative entry key representation. Stream and
+/// operation staging names remain opaque until their structured owner adapter.
+pub(crate) fn owner_key(
+    db: &Connection,
+    session: &str,
+    kind: &str,
+    owner: &str,
+) -> Result<super::identity::BoundIdentity> {
+    if kind == "entry" {
+        super::identity::BoundIdentity::entry(db, session, owner)
+    } else {
+        Ok(super::identity::BoundIdentity::from_stored(
+            super::identity::StoredIdentity::Legacy(owner.into()),
+        ))
+    }
+}
+
 pub(crate) fn bind_encoded(
     tx: &Transaction<'_>,
     session: &str,
@@ -339,6 +359,8 @@ pub(crate) fn bind_encoded(
     range: ContentRange,
     encoding: stream::Encoding,
 ) -> Result<()> {
+    let stored_session = super::identity::session_key(tx, session)?;
+    let stored_owner = owner_key(tx, session, kind, owner)?;
     ensure!(
         range.offset >= 0 && range.length >= 0,
         "invalid content reference"
@@ -353,7 +375,7 @@ pub(crate) fn bind_encoded(
         .checked_add(range.length)
         .context("content range overflow")?;
     ensure!(end <= total, "content reference exceeds durable bytes");
-    let old: Option<(i64,i64,i64,String)>=tx.query_row("SELECT content_id,byte_offset,byte_length,encoding FROM content_references WHERE session_id=?1 AND owner_kind=?2 AND owner_id=?3 AND field=?4",params![session,kind,owner,field],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+    let old: Option<(i64,i64,i64,String)>=tx.query_row("SELECT content_id,byte_offset,byte_length,encoding FROM content_references WHERE session_id=?1 AND owner_kind=?2 AND owner_id=?3 AND field=?4",params![&stored_session,kind,&stored_owner,field],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
     if let Some(old) = old {
         ensure!(
             old == (
@@ -365,7 +387,7 @@ pub(crate) fn bind_encoded(
             "conflicting content reference"
         );
     } else {
-        tx.execute("INSERT INTO content_references(session_id,owner_kind,owner_id,field,content_id,byte_offset,byte_length,encoding) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",params![session,kind,owner,field,range.id,range.offset,range.length,encoding.name()])?;
+        tx.execute("INSERT INTO content_references(session_id,owner_kind,owner_id,field,content_id,byte_offset,byte_length,encoding) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",params![&stored_session,kind,&stored_owner,field,range.id,range.offset,range.length,encoding.name()])?;
     }
     Ok(())
 }
@@ -379,7 +401,9 @@ pub(crate) fn resolve(
     owner: &str,
     field: &str,
 ) -> Result<Option<ContentRange>> {
-    Ok(db.query_row("SELECT content_id,byte_offset,byte_length FROM content_references WHERE session_id=?1 AND owner_kind=?2 AND owner_id=?3 AND field=?4",params![session,kind,owner,field],|r|Ok(ContentRange{id:r.get(0)?,offset:r.get(1)?,length:r.get(2)?})).optional()?)
+    let stored_session = super::identity::session_key(db, session)?;
+    let stored_owner = owner_key(db, session, kind, owner)?;
+    Ok(db.query_row("SELECT content_id,byte_offset,byte_length FROM content_references WHERE session_id=?1 AND owner_kind=?2 AND owner_id=?3 AND field=?4",params![stored_session,kind,stored_owner,field],|r|Ok(ContentRange{id:r.get(0)?,offset:r.get(1)?,length:r.get(2)?})).optional()?)
 }
 
 pub(crate) fn read(db: &Connection, id: i64, offset: i64, max_bytes: usize) -> Result<ContentPage> {
@@ -556,3 +580,6 @@ mod extension_tests;
 mod journal_tests;
 #[cfg(test)]
 mod stream_entry_tests;
+
+#[cfg(test)]
+mod native_identity_tests;

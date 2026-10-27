@@ -917,10 +917,7 @@ impl ServerSession {
     }
 
     pub fn compact(&self, instructions: &str) -> Result<serde_json::Value> {
-        self.compact_with_operation_id(
-            instructions,
-            format!("cmp_{}", crate::utils::generate_entry_id()),
-        )
+        self.compact_with_operation_id(instructions, crate::utils::generate_entry_id())
     }
 
     /// Manual compaction. Runs on a plain thread (the RPC worker or a test), so a

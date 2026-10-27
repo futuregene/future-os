@@ -11,7 +11,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
-pub(crate) const LAYOUT: &str = "compact-context-v1";
+pub(crate) const LAYOUT: &str = "compact-native-uuid-v1";
 // Frozen wire-independent codes. Append only; never use enum ordinals.
 const KINDS: &[&str] = &[
     "agent_start",
@@ -42,7 +42,7 @@ fn kind_code(kind: &str) -> i64 {
 
 type Body = (String, ContentRange, Encoding);
 
-fn encode(change: &Change, direct: Option<&Body>) -> Result<(String, String, i64)> {
+fn encode(change: &Change, direct: Option<&Body>) -> Result<(Value, String, i64)> {
     let mut remainder = change.metadata.clone();
     let mut stable = Map::new();
     if let Some(object) = remainder.as_object_mut() {
@@ -88,11 +88,7 @@ fn encode(change: &Change, direct: Option<&Body>) -> Result<(String, String, i64
     let (field, encoding) = direct.map_or((None, None), |(field, _, encoding)| {
         (Some(field.as_str()), Some(encoding.name()))
     });
-    let descriptor = json!([stable, field, encoding]).to_string();
-    ensure!(
-        descriptor.len() <= super::stream::CHANGE_METADATA_BYTES,
-        "context exceeds metadata budget"
-    );
+    let descriptor = json!([stable, field, encoding, kind_code(&change.event_type)]);
     Ok((descriptor, remainder.to_string(), flags))
 }
 
@@ -147,7 +143,12 @@ fn decode(
 /// All callers are in the publication transaction. A lookup always compares
 /// the complete descriptor, including field presence/null and direct encoding.
 /// No cross-transaction ID cache exists to leak an aborted allocation.
-fn context(tx: &Transaction<'_>, stream: i64, descriptor: &str) -> Result<i64> {
+fn context(
+    tx: &Transaction<'_>,
+    stream: i64,
+    descriptor: &str,
+    symbol_bytes: usize,
+) -> Result<i64> {
     let digest = Sha256::digest(descriptor.as_bytes());
     let mut stmt = tx.prepare_cached(
         "SELECT id,descriptor_json FROM stream_contexts WHERE stream_id=?1 AND digest=?2 LIMIT 9",
@@ -165,8 +166,8 @@ fn context(tx: &Transaction<'_>, stream: i64, descriptor: &str) -> Result<i64> {
         return Ok(*id);
     }
     tx.execute(
-        "INSERT INTO stream_contexts(stream_id,digest,descriptor_json) VALUES (?1,?2,?3)",
-        params![stream, digest.as_slice(), descriptor],
+        "INSERT INTO stream_contexts(stream_id,digest,descriptor_json,symbol_bytes) VALUES (?1,?2,?3,?4)",
+        params![stream, digest.as_slice(), descriptor, i64::try_from(symbol_bytes)?],
     )?;
     Ok(tx.last_insert_rowid())
 }
@@ -203,7 +204,8 @@ pub(crate) fn publish(
     }
     let direct = (bodies.len() == 1).then(|| &bodies[0]);
     let (descriptor, metadata, flags) = encode(change, direct)?;
-    let context = context(tx, stream, &descriptor)?;
+    let (descriptor, symbol_bytes) = super::symbols::intern(tx, stream, descriptor)?;
+    let context = context(tx, stream, &descriptor, symbol_bytes)?;
     let code = kind_code(&change.event_type);
     let range = direct.map(|(_, range, _)| *range);
     tx.execute("INSERT INTO stream_changes(stream_id,context_id,first_cursor,last_cursor,event_kind,unknown_kind,flags,metadata_json,content_id,byte_offset,byte_length) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",params![stream,context,change.first_cursor,change.last_cursor,code,(code==0).then_some(&change.event_type),flags,metadata,range.map(|r|r.id),range.map(|r|r.offset),range.map(|r|r.length)])?;
@@ -231,7 +233,8 @@ struct Row {
 #[derive(Debug, Default)]
 pub(crate) struct EncodedPage {
     rows: Vec<Row>,
-    contexts: Vec<(i64, String)>,
+    contexts: Vec<(i64, i64, String)>,
+    symbols: super::symbols::Symbols,
     links: HashMap<i64, Vec<Body>>,
 }
 
@@ -249,9 +252,10 @@ pub(crate) fn read_encoded(db: &Connection, ids: &[i64]) -> Result<EncodedPage> 
         return Ok(EncodedPage::default());
     }
     let selection = serde_json::to_string(ids)?;
-    let mut query = db.prepare_cached("SELECT c.id,c.context_id,c.first_cursor,c.last_cursor,c.event_type,c.flags,c.metadata_json,c.content_id,c.byte_offset,c.byte_length FROM stream_changes c JOIN json_each(?1) selected ON c.id=selected.value ORDER BY CAST(selected.key AS INTEGER)")?;
+    let mut query = db.prepare_cached("SELECT c.id,c.context_id,c.first_cursor,c.last_cursor,c.event_type,c.flags,c.metadata_json,c.content_id,c.byte_offset,c.byte_length,x.id FROM stream_changes c JOIN json_each(?1) selected ON c.id=selected.value LEFT JOIN stream_contexts x ON x.id=c.context_id AND x.stream_id=c.stream_id AND x.event_kind=c.event_kind ORDER BY CAST(selected.key AS INTEGER)")?;
     let mut bytes = 0usize;
     let mapped = query.query_map([&selection], |r| {
+        let _: i64 = r.get(10)?;
         let content: Option<i64> = r.get(7)?;
         Ok(Row {
             id: r.get(0)?,
@@ -282,19 +286,23 @@ pub(crate) fn read_encoded(db: &Connection, ids: &[i64]) -> Result<EncodedPage> 
         );
         rows.push(row);
     }
-    let mut query = db.prepare_cached("SELECT x.id,x.descriptor_json FROM stream_contexts x WHERE x.id IN (SELECT context_id FROM stream_changes WHERE id IN (SELECT value FROM json_each(?1)))")?;
+    let mut query = db.prepare_cached("SELECT x.id,x.stream_id,x.descriptor_json FROM stream_contexts x WHERE x.id IN (SELECT context_id FROM stream_changes WHERE id IN (SELECT value FROM json_each(?1)))")?;
     let mapped = query.query_map([&selection], |r| {
-        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, String>(2)?,
+        ))
     })?;
     let mut contexts = Vec::new();
     for context in mapped {
-        let (id, raw) = context?;
+        let (id, stream, raw) = context?;
         bytes = bytes.saturating_add(raw.len());
         ensure!(
             bytes <= super::READ_BYTES,
             "change page exceeds context byte budget"
         );
-        contexts.push((id, raw));
+        contexts.push((id, stream, raw));
     }
     let mut query = db.prepare_cached("SELECT change_id,field,content_id,byte_offset,byte_length,encoding FROM stream_change_content WHERE change_id IN (SELECT value FROM json_each(?1)) ORDER BY change_id,field")?;
     let mut links: HashMap<i64, Vec<Body>> = HashMap::new();
@@ -316,10 +324,12 @@ pub(crate) fn read_encoded(db: &Connection, ids: &[i64]) -> Result<EncodedPage> 
             Encoding::parse(&r.get::<_, String>(5)?)?,
         ));
     }
+    let symbols = super::symbols::read(db, &selection, &mut bytes)?;
     Ok(EncodedPage {
         rows,
         contexts,
         links,
+        symbols,
     })
 }
 
@@ -329,10 +339,15 @@ impl EncodedPage {
             rows,
             contexts,
             mut links,
+            symbols,
         } = self;
         let parsed = contexts
             .into_iter()
-            .map(|(id, raw)| Ok((id, serde_json::from_str::<Value>(&raw)?)))
+            .map(|(id, stream, raw)| {
+                let mut descriptor = serde_json::from_str::<Value>(&raw)?;
+                super::symbols::restore(&mut descriptor, stream, &symbols)?;
+                Ok((id, descriptor))
+            })
             .collect::<Result<HashMap<_, _>>>()?;
         rows.into_iter()
             .map(|row| {
@@ -379,7 +394,11 @@ pub(crate) fn validate_layout(db: &Connection) -> Result<()> {
         .context("unsupported unpublished Agent storage layout; preserve agent.db and use the matching candidate or a released backup")?;
     ensure!(marker.as_deref()==Some(LAYOUT),"unsupported unpublished Agent storage layout; preserve agent.db and use the matching candidate or a released backup");
     for (name, columns) in [
-        ("stream_contexts_identity", vec!["id", "stream_id"]),
+        ("stream_symbols_identity", vec!["id", "stream_id"]),
+        (
+            "stream_contexts_identity",
+            vec!["id", "stream_id", "event_kind"],
+        ),
         ("stream_contexts_digest", vec!["stream_id", "digest"]),
         ("stream_contexts_entry", vec!["stream_id", "entry_id", "id"]),
         (
@@ -437,6 +456,7 @@ pub(crate) fn validate_layout(db: &Connection) -> Result<()> {
         ("stream_changes", "stream_id", "stream_runs"),
         ("stream_changes", "content_id", "content_objects"),
         ("stream_contexts", "stream_id", "stream_runs"),
+        ("stream_symbols", "stream_id", "stream_runs"),
     ] {
         let valid: bool=db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_list(?1) WHERE \"from\"=?2 AND \"table\"=?3 AND \"to\"='id')",params![table,column,target],|r|r.get(0))?;
         ensure!(
@@ -444,10 +464,30 @@ pub(crate) fn validate_layout(db: &Connection) -> Result<()> {
             "incomplete compact storage foreign key; preserve database for recovery"
         );
     }
+    let dictionary_key:bool=db.query_row(r#"SELECT EXISTS(SELECT 1 FROM pragma_index_list('stream_symbols') i WHERE i."unique"=1 AND (SELECT count(*) FROM pragma_index_info(i.name))=2 AND EXISTS(SELECT 1 FROM pragma_index_info(i.name) WHERE seqno=0 AND name='stream_id') AND EXISTS(SELECT 1 FROM pragma_index_info(i.name) WHERE seqno=1 AND name='value'))"#,[],|r|r.get(0))?;
+    ensure!(
+        dictionary_key,
+        "missing exact symbol lookup index; preserve database for recovery"
+    );
+    for column in [
+        "entry_id",
+        "tool_id",
+        "content_key",
+        "block_key",
+        "tool_name_key",
+        "tool_type_key",
+    ] {
+        let owned:bool=db.query_row(r#"SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_list('stream_contexts') p JOIN pragma_foreign_key_list('stream_contexts') q ON p.id=q.id WHERE p."from"=?1 AND p."table"='stream_symbols' AND p."to"='id' AND q."from"='stream_id' AND q."to"='stream_id')"#,[column],|r|r.get(0))?;
+        ensure!(
+            owned,
+            "missing scoped symbol ownership; preserve database for recovery"
+        );
+    }
     for trigger in [
         "stream_direct_removed",
         "stream_content_removed",
         "stream_context_immutable",
+        "stream_symbol_immutable",
     ] {
         let exists: bool = db.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='trigger' AND name=?1)",

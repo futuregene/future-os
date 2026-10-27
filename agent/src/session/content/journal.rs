@@ -633,6 +633,8 @@ impl SqliteStore {
     ) -> Result<Vec<crate::rpc::SseEvent>> {
         let (s, r) = (session.to_owned(), run.to_owned());
         let first = self.db.read(move |db| {
+            let r=crate::session::identity::BoundIdentity::run(db,&s,&r)?;
+            let s=crate::session::identity::BoundIdentity::session(db,&s)?;
             let latest: Option<(i64,i64)> = db.query_row("SELECT id,epoch FROM stream_runs WHERE session_id=?1 AND run_id=?2 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=stream_runs.id) ORDER BY epoch DESC LIMIT 1", rusqlite::params![s,r], |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
             let Some((id, stored_epoch)) = latest else { return Ok(None); };
             ensure!(stored_epoch == epoch, "a restarted run requires a new identity; stored run epoch differs");
@@ -663,6 +665,8 @@ impl SqliteStore {
         let (session, run) = (session.to_owned(), run.to_owned());
         let (s, r) = (session.clone(), run.clone());
         let epochs = self.db.read(move |db| {
+            let r=crate::session::identity::BoundIdentity::run(db,&s,&r)?;
+            let s=crate::session::identity::BoundIdentity::session(db,&s)?;
             let mut query = db.prepare("SELECT epoch FROM stream_runs WHERE session_id=?1 AND run_id=?2 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=stream_runs.id) AND (?3=0 OR epoch=-1 OR ?4 < -1) ORDER BY epoch")?;
             let epochs = query.query_map(rusqlite::params![s,r,session_scope,since],|row|row.get::<_,i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(epochs)
