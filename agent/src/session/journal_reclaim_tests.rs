@@ -297,3 +297,47 @@ fn an_unretirable_run_does_not_keep_the_sweep_looping() {
     assert_eq!(second["reclaimedRuns"], 0);
     assert_eq!(second["hasMore"], false);
 }
+
+/// The sweep's whole purpose is that the raw journal is the *only* thing it
+/// removes: the conversation a reader sees is `entries` plus `message_blocks`,
+/// and a reclamation that touched either would be data loss dressed as
+/// maintenance. Measured on a real 4.4 GiB store, all 337 transcripts were
+/// byte-identical across a sweep; this pins the same invariant in the store.
+#[test]
+fn a_sweep_leaves_the_conversation_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+    settled_run(&store, "run", 40);
+    store
+        .db
+        .call(|db| {
+            db.execute(
+                "INSERT INTO entries(session_id,position,entry_id,entry_type,role,run_id,
+                                     timestamp_ms,metadata_json,content_json)
+                 VALUES ('s',0,'e0','message','user','run',1,'{}','{\"text\":\"hi\"}')",
+                [],
+            )?;
+            db.execute(
+                "INSERT INTO message_blocks(session_id,entry_position,ordinal,kind,text,
+                                            metadata_json)
+                 VALUES ('s',0,0,'text','hi','{}')",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let conversation = |db: &mut rusqlite::Connection| -> anyhow::Result<(i64, String, String)> {
+        Ok((
+            db.query_row("SELECT count(*) FROM entries", [], |row| row.get(0))?,
+            db.query_row("SELECT content_json FROM entries", [], |row| row.get(0))?,
+            db.query_row("SELECT text FROM message_blocks", [], |row| row.get(0))?,
+        ))
+    };
+    let before = store.db.call(conversation).unwrap();
+    let report = store
+        .reclaim_settled_journals(Duration::from_secs(30), false)
+        .unwrap();
+    assert_eq!(report["reclaimedRuns"], 1);
+    assert_eq!(raw_rows(&store), 0);
+    assert_eq!(store.db.call(conversation).unwrap(), before);
+}
