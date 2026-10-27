@@ -27,9 +27,10 @@ implementation may extend it, but may not change its meaning.
 4. Sidebar with 2 real panels: recent conversations (name, workspace, age) and
    the same conversations filed by workspace (pinned / workspaces / chats).
    A third, **文件**, browses the session workspace: one level at a time, a
-   directory read when it opens, `↑`/`↓` to walk, `←`/`→` to close/open, `enter`
-   to open a directory or preview a file. Its rows are the same `HitMap` rows
-   every other panel registers, so a click opens what it landed on.
+   directory read when it opens, `↑`/`↓` to walk, `enter` to open a directory or
+   preview a file, `backspace` to close a directory or walk up to the one holding
+   the row. `←`/`→` stay the tab strip's on all three tabs. Its rows are the same
+   `HitMap` rows every other panel registers, so a click opens what it landed on.
 5. Real metrics in the status bar: model · effort · cwd · git branch · context
    gauge · tokens · cost / cache.
 6. `/` command palette (with descriptions, Tab completion), `?` help overlay,
@@ -269,7 +270,9 @@ with one click, and leaves a `‹` in the same column when the rail is closed);
 `tab` focus within a panel; `shift+tab`
 reverse; `ctrl+q` collapse todos; `alt+z` enlarge the sidebar; `/` command
 palette; `?` help; `esc` close one layer at a time. A focused rail spends its
-last row on the keys it answers (`↑↓ 选择 · ⏎ 打开 · ←→ 页签`).
+last row on the keys it answers (`↑↓ 选择 · ⏎ 打开 · ←→ 页签`), and 文件 spends it
+on its own set (`↑↓ · ⏎ 打开 · ⌫ 收起 · ←→ 页签`) — the one key the other two do
+not answer has no other teacher.
 
 No **default** is a function key: `F1`–`F12` need an `Fn` modifier on a laptop
 and are absent on a compact keyboard, so those actions default to `alt` + a

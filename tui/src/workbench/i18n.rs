@@ -325,6 +325,7 @@ pub enum Key {
     ModeAutoDesc,
     ModeOffDesc,
     RailHint,
+    RailHintFiles,
     LangSystem,
     // ── the conversation surface ──────────────────────────────────────
     InputHintChat,
@@ -675,6 +676,13 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         RailHint => (
             "↑↓ 选择 · ⏎ 打开 · ←→ 页签",
             "↑↓ choose · enter opens · ←→ tabs",
+        ),
+        // Shorter than `RailHint` on purpose: the rail is not wide enough for
+        // four hints spelled out (`… · ⌫ closes · …` is cut at ~36 cells), and a
+        // hint the reader cannot finish reading is not a hint.
+        RailHintFiles => (
+            "↑↓ · ⏎ 打开 · ⌫ 收起 · ←→ 页签",
+            "↑↓ · ⏎ open · ⌫ close · ←→ tabs",
         ),
         ShortcutRefresh => ("刷新会话和用量", "Refresh sessions and usage"),
         ShortcutStop => ("停止当前生成", "Stop the current run"),
@@ -1160,7 +1168,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 270] = {
+    const ALL_KEYS: [Key; 271] = {
         use Key::*;
         [
             TabTodo,
@@ -1232,6 +1240,7 @@ mod tests {
             ModeAutoDesc,
             ModeOffDesc,
             RailHint,
+            RailHintFiles,
             LangSystem,
             InputHintChat,
             ChatOlder,

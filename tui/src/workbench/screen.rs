@@ -1105,7 +1105,16 @@ fn sidebar_rows(
     );
     lines.extend(body);
     if footer == 1 {
-        let hint = fit(t(lang, Key::RailHint), columns);
+        // The 文件 panel answers one key the other two do not (`backspace`
+        // closes a directory or walks up to the one holding the row), so its
+        // hint names it: a key that only the hint row can teach is a key that
+        // does not exist otherwise.
+        let hint_key = if panel == PanelId::Files {
+            Key::RailHintFiles
+        } else {
+            Key::RailHint
+        };
+        let hint = fit(t(lang, hint_key), columns);
         lines.push(palette.panel_row(&palette.dim(&hint), columns));
     }
     lines.truncate(area.h as usize);
