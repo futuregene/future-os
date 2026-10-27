@@ -336,13 +336,27 @@ pub fn colors_disabled(no_color: Option<std::ffi::OsString>) -> bool {
     no_color.is_some()
 }
 
+/// The colour policy for this call: the process environment's `NO_COLOR`, or
+/// whatever a test injected for **its own thread** (see [`tests::INJECTED`]).
+///
+/// Every styling helper below goes through here, so a test can decide it without
+/// writing the process environment — which it must not do: `cargo test` runs a
+/// binary's tests in parallel threads of *one* process, so a test that set
+/// `NO_COLOR` would strip the ANSI codes every neighbouring test asserts for as
+/// long as it held the variable. That is exactly how CI run 40475346830 failed
+/// `theme::tests::fg_wraps_with_256_color_and_reset` (`left: "hi"`) while the
+/// same tree passed standalone, and how it can fail any of the ~90 colour
+/// assertions in this crate.
+fn colors_disabled_here() -> bool {
+    #[cfg(test)]
+    if let Some(disabled) = tests::injected_colors_disabled() {
+        return disabled;
+    }
+    colors_disabled(std::env::var_os("NO_COLOR"))
+}
+
 fn styled(sequence: &str, text: &str, reset: bool) -> String {
-    styled_with_policy(
-        sequence,
-        text,
-        reset,
-        colors_disabled(std::env::var_os("NO_COLOR")),
-    )
+    styled_with_policy(sequence, text, reset, colors_disabled_here())
 }
 
 fn styled_with_policy(sequence: &str, text: &str, reset: bool, disabled: bool) -> String {
@@ -437,7 +451,7 @@ pub fn style(text: &str, fns: &[&dyn Fn(&str) -> String]) -> String {
     for f in fns {
         result = f(&result);
     }
-    if colors_disabled(std::env::var_os("NO_COLOR")) {
+    if colors_disabled_here() {
         result
     } else {
         result + RESET
@@ -466,6 +480,41 @@ pub fn thinking_color(level: &str) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+
+    thread_local! {
+        /// Per-thread colour policy: `Some(true)` forces "no styling",
+        /// `Some(false)` forces styling, `None` reads the real environment.
+        ///
+        /// Thread-local on purpose. The obvious alternative — writing the
+        /// *process* environment — is a window in which every other test thread
+        /// loses the codes it asserts (`NO_COLOR` is process-global state that
+        /// belongs to no test in particular), and a lock cannot shrink that
+        /// window below the assertion itself. Here a test's override cannot
+        /// reach a peer at all, so the assertion below needs no lock and no
+        /// ambient cooperation.
+        pub(super) static INJECTED: Cell<Option<bool>> = const { Cell::new(None) };
+    }
+
+    /// The injected policy for this thread, or `None` to read the environment.
+    pub(super) fn injected_colors_disabled() -> Option<bool> {
+        INJECTED.with(Cell::get)
+    }
+
+    /// Run `f` with the colour policy forced for this thread, restoring the
+    /// previous value on drop — including when an assertion inside `f` panics
+    /// (`FLAKES.md` §4c: a guard that only restores on the success path is
+    /// destructive).
+    fn with_colors_disabled<T>(disabled: bool, f: impl FnOnce() -> T) -> T {
+        struct Restore(Option<bool>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                INJECTED.with(|slot| slot.set(self.0));
+            }
+        }
+        let _restore = Restore(INJECTED.with(|slot| slot.replace(Some(disabled))));
+        f()
+    }
 
     #[test]
     fn fg_wraps_with_256_color_and_reset() {
@@ -520,11 +569,27 @@ mod tests {
 
     #[test]
     fn no_color_applies_to_composed_styles_and_reverse_video() {
+        with_colors_disabled(true, || {
+            let fns: [&dyn Fn(&str) -> String; 2] = [&|t| fg_raw(151, t), &|t| bold_raw(t)];
+            assert_eq!(style("plain", &fns), "plain");
+            assert_eq!(reverse_raw("plain"), "plain");
+        });
+    }
+
+    #[test]
+    fn styling_follows_the_process_no_color_flag() {
+        // The injection above is the *test* seam; this proves the production
+        // read still happens — the public helper's output answers to the real
+        // `NO_COLOR`, whichever way the ambient environment has it. No test in
+        // this binary writes that variable, so the two reads below agree; the
+        // lock only stops a future writer from landing between them.
         let _lock = crate::test_env::lock();
-        let _no_color = crate::test_env::EnvVarGuard::set("NO_COLOR", "");
-        let fns: [&dyn Fn(&str) -> String; 2] = [&|t| fg_raw(151, t), &|t| bold_raw(t)];
-        assert_eq!(style("plain", &fns), "plain");
-        assert_eq!(reverse_raw("plain"), "plain");
+        let expected = if colors_disabled(std::env::var_os("NO_COLOR")) {
+            "hi"
+        } else {
+            "\x1b[38;5;151mhi\x1b[m"
+        };
+        assert_eq!(fg(151, "hi"), expected);
     }
 
     #[test]
