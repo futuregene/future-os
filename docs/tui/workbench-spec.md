@@ -125,7 +125,7 @@ Content — a conversation, a session title, a path — is never translated.
 ├───────────────────────────────────────────────┴──────────────────────────────┤
 │ row h-3        ACTIVITY: ⠋ 思考 3s · 2 工具 · 42 tok/s · 缓存 96%            │
 │ row h-2        STATUS: model · effort · 审批模式 · ctx bar · ≈¥0.01          │
-│ row h-1        HINT: Esc 聊天 · ctrl+r 会话 · / 命令 · ? 帮助                │
+│ row h-1        HINT: Esc 聊天 · ctrl+d 侧栏 · ctrl+r 会话 · ctrl+p 命令      │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -279,7 +279,7 @@ the row under the pointer rather than one beside it.
 `shift`): `ctrl+o` model chooser; `ctrl+t` thinking-effort chooser; `ctrl+s`
 approval-mode chooser; `ctrl+l` workspace chooser; `ctrl+f` the files panel
 (this session's own workspace); `ctrl+g` the git browser; `ctrl+d` the rail's
-open/focus/hide; `ctrl+v` read the clipboard (an image becomes a draft attachment, text is pasted); `tab` focus
+open/focus/hide; `ctrl+q` preferences; `ctrl+v` read the clipboard (an image becomes a draft attachment, text is pasted); `tab` focus
 within a panel; `shift+tab` reverse; `/` command palette; `?` help; `esc` close
 one layer at a time. `shift+←`/`shift+→` walk the rail's two tabs and do the
 sidebar's open/focus/hide job when the rail is closed.
@@ -289,10 +289,9 @@ turns on "Use Option as Meta" — and the letters left over after the collisions
 run out, so the remaining actions have **no chord**: deleting a conversation (`/delete`, or
 `delete` in the rail — it asks first), the queue (`/queue` — the prompts sent
 while a run was in flight), the interface language (`/lang`), a refresh
-(`/refresh`), copy (`/copy`), mouse capture (`/mouse`), preferences
-(`/preferences`), the newest attachment (`/preview`), the rail's two panels
-(a click, or `shift+←`/`shift+→`), and reduced motion (the preferences
-overlay). The
+(`/refresh`), copy (`/copy`), mouse capture (`/mouse`), the newest attachment
+(`/preview`), the rail's two panels (a click, or `shift+←`/`shift+→`), and
+reduced motion (the preferences overlay). The
 help overlay prints `—` in the key column for those. The collisions are the
 reason: a terminal sends Backspace, Tab, `\n` and Enter for `ctrl+h`/`i`/`j`/`m`;
 `ctrl+a`/`ctrl+b` are the `screen` and `tmux` prefixes; `ctrl+z` is suspend;

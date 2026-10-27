@@ -49,7 +49,7 @@ conversations, to see the rail's window and its `↓ N more` row).
  input box (❯ multiline draft, grows)      │  (the rail runs down beside it)
  activity: ⠋ 思考 … · 3s · 2 工具                   42 tok/s · 缓存 96%
  status:   model · effort · approval   ░░ ctx 6.9k/1.0M 0.7% · ≈¥0.01
- hint:     Esc 回到聊天 · tab 焦点 · ctrl+r 会话 · ctrl+p 命令 · ctrl+n 新会话
+ hint:     Esc 回到聊天 · ctrl+d 侧栏 · ctrl+r 会话 · ctrl+p 命令 · ctrl+q 偏好设置
 ```
 
 The rail is a *column*, not a panel that stops one band early: it (and its
@@ -141,14 +141,14 @@ shortcut is one that silently does nothing on the terminal this surface is
 developed against — and no default is a function key (`F1`–`F12` need `Fn` on a
 laptop and are absent on a compact keyboard).
 
-The fourteen chords are `ctrl+c` quit, `ctrl+n` new chat, `ctrl+r` sessions,
+The fifteen chords are `ctrl+c` quit, `ctrl+n` new chat, `ctrl+r` sessions,
 `ctrl+d` the rail, `ctrl+x` stop, `ctrl+e` fold/unfold the process, `ctrl+p`
 commands, `ctrl+o` model, `ctrl+t` effort (thinking), `ctrl+s` approval mode,
 `ctrl+l` workspaces, `ctrl+f` the files panel, `ctrl+g` the git browser,
-`ctrl+v` paste. Everything else is a typed verb or a pointer target: `/delete`,
-`/queue`, `/copy`, `/mouse`, `/preferences`, `/preview`, `/refresh`, `/lang`, and
-`?` for help — the help overlay prints `—` in the key column for those, and its
-command list names the door.
+`ctrl+v` paste, `ctrl+q` preferences. Everything else is a typed verb or a
+pointer target: `/delete`, `/queue`, `/copy`, `/mouse`, `/preview`, `/refresh`,
+`/lang`, and `?` for help — the help overlay prints `—` in the key column for
+those, and its command list names the door.
 
 The map stops there because the letters do: a terminal sends Backspace, Tab,
 `\n` and Enter for `ctrl+h`/`i`/`j`/`m`; `ctrl+a` and `ctrl+b` are the default
@@ -271,10 +271,10 @@ click on the rail's tab strip are the doors to the same places.
 | `ctrl+z` / `ctrl+shift+z` (or `alt+y`) | Undo / redo draft edits |
 | `pageUp` / `pageDown` or `ctrl+↑` / `ctrl+↓` | Scroll the conversation; `esc` returns to the latest output |
 | `/queue` | List queued prompts — the ones sent while a run was in flight; `x` cancels, `r` / `enter` cancels and recalls into the draft (`ctrl+x` stops the active run, not the queue) |
-| `ctrl+g` or `/git` | The repository browser: 提交 / 引用 / 改动 / 暂存 tabs, a graph log, and the selected row's patch. `1`–`4` pick a tab, `tab` switches list/detail, `y` copies the row |
+| `ctrl+g` or `[ctrl+g] git` in the header | The repository browser: 提交 / 引用 / 改动 / 暂存 tabs, a graph log, and the selected row's patch. `1`–`4` pick a tab, `tab` switches list/detail, `y` copies the row |
 | `ctrl+o` | Model picker (`/model`): every model the agent offers, grouped by provider, with the reasoning slider on its first row |
 | `shift+left` / `shift+right` | The rail's two tabs, one step at a time: 最近 (conversations by refresh time) and 工作区 (filed by directory). The rail takes the keys and its cursor lands on the conversation on screen; clicking a tab is the same switch |
-| `ctrl+f` or `/files` | The **files panel**: this conversation's workspace as a tree, in a box over the frame — the same session scope as `/git`. `↑`/`↓` walk it, `⏎`/`→` open, `⌫`/`←` go up a level, `r` re-reads the directory, `esc` closes. The header's `[ctrl+f] 文件` button is the pointer's door to it |
+| `ctrl+f` or `/files` | The **files panel**: this conversation's workspace as a tree, in a box over the frame — the same session scope as `/git`. `↑`/`↓` walk it, `⏎`/`→` open, `⌫`/`←` go up a level, `r` re-reads the directory, `esc` closes. The header's `[ctrl+f] 文件` button is the pointer's door to it, and `[ctrl+g] git` sits beside it |
 | `ctrl+v` | Read the clipboard: an image becomes a draft attachment, text is pasted. `/paste` does the same for terminals that bind the key themselves |
 | `/preview` | Preview the newest image attached to the draft (no chord: the fifteen go to the actions pressed while working) |
 | `+` / `-` / `0`, arrows, drag, wheel | In the preview box: zoom a picture (up to 6×), pan it, reset; scroll a document |
@@ -288,7 +288,7 @@ click on the rail's tab strip are the doors to the same places.
 | `ctrl+d` | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal. The rail's own `›` edge button does the same hide/show with one click. The show/hide choice is written to `sidebarVisible` and is where the next start begins (a first start begins hidden) |
 | `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run |
 | `ctrl+r` | Session picker (name, workspace and age of each conversation; the footer names the key) |
-| `/preferences` | Preferences and shortcut editor (no chord) |
+| `ctrl+q` or `/preferences` | Preferences and shortcut editor. The key is also printed in the footer hint row, so it is on screen while the reader is wondering |
 | `?` | Help overlay (effective keys, grouped by area, then the commands; `?` requires an empty draft) |
 | `/lang` | Interface language: opens the picker — follow the system, Chinese or English |
 | `ctrl+e` | Final-answer / full-process reading level: every reply folds its work — the calls and reasoning before its last prose, and, once it settles, the work after it too — into one summary row (`▸ 4 tool calls · 2 thoughts`). A reply that is still running folds the same way, keeping only the call in flight as a row; a reply that never writes prose folds onto the slice it stopped at. Reasoning is collapsed to a `▸ thinking` row at the default level (the way the desktop and the phone show it) while the full-process level prints its text. A view toggle for the run it is pressed in, not a preference: every start opens folded, so a peek at the process cannot leave the next terminal expanded |
