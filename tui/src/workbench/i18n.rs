@@ -511,6 +511,7 @@ pub enum Key {
     HelpKeyPreviewAttachment,
     NoticeClipboardEmpty,
     NoticeClipboardUnavailable,
+    NoticeSessionNotStarted,
     HelpGroupSessions,
     HelpGroupChoice,
     HelpGroupPanels,
@@ -905,12 +906,16 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ),
         PreviewTruncated => ("（只显示开头）", "(showing the beginning)"),
         PreviewEmptyFile => ("空文件", "empty file"),
-        AttachmentsInDraft => ("· 📎 {} 张图片", "· 📎 {} images"),
+        AttachmentsInDraft => (" · 📎 {} 张图片", " · 📎 {} images"),
         NoticeClipboardEmpty => (
             "剪贴板里没有图片也没有文本",
             "The clipboard has no image and no text",
         ),
         NoticeClipboardUnavailable => ("读不到剪贴板：{}", "Could not read the clipboard: {}"),
+        NoticeSessionNotStarted => (
+            "没能开启新会话：代理没有返回可用的会话（草稿还在，可以直接再发一次）",
+            "Could not start a session: the agent returned none (the draft is kept, try again)",
+        ),
         HelpGroupSessions => ("会话", "Chats"),
         HelpGroupChoice => ("选择", "Choices"),
         HelpGroupPanels => ("面板", "Panels"),
@@ -1155,7 +1160,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 269] = {
+    const ALL_KEYS: [Key; 270] = {
         use Key::*;
         [
             TabTodo,
@@ -1406,6 +1411,7 @@ mod tests {
             AttachmentsInDraft,
             NoticeClipboardEmpty,
             NoticeClipboardUnavailable,
+            NoticeSessionNotStarted,
             HelpGroupSessions,
             HelpGroupChoice,
             HelpGroupPanels,

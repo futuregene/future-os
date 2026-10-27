@@ -67,10 +67,19 @@ impl EditorState {
         self.width.max(76)
     }
     /// Rows without the reusable component's old `> ` prompt, plus cursor cell.
+    ///
+    /// Only the draft's own rows: [`Input::render_value`] leaves the attachment
+    /// line out. The old code took [`Component::render`], which puts that line
+    /// first, and then cut two *bytes* off every row to remove the prompt — a
+    /// cut that cannot succeed on a row with no prompt, and that an emoji's four
+    /// bytes make impossible, so a draft with pictures pasted into it painted a
+    /// blank first row and pushed the text down one. The box names the attached
+    /// pictures in its title instead (see `screen::compose` and
+    /// `launchpad::render`), so there is no line to give them here.
     pub fn rows(&self, width: usize) -> (Vec<String>, usize, usize) {
         let mut input = self.input.clone();
         input.set_focused(false);
-        let rendered = input.render(width.saturating_add(2).max(3));
+        let rendered = input.render_value(width.saturating_add(2).max(3));
         let (row, col) = input.visual_cursor(width.max(1));
         let rows = rendered
             .into_iter()
@@ -113,6 +122,32 @@ mod tests {
         assert_eq!(editor.text(), "first\n");
         editor.key("ctrl+shift+z");
         assert_eq!(editor.text(), "first\nsecond");
+    }
+
+    /// The box paints the draft's rows and nothing above them: a pasted picture
+    /// is named in the title, not in a row of its own (see [`EditorState::rows`]).
+    #[test]
+    fn rows_start_at_the_draft_even_when_pictures_are_attached() {
+        let dir = std::env::temp_dir().join(format!("future-editor-rows-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let path = dir.join("shot.png");
+        std::fs::write(&path, b"\x89PNG\r\n\x1a\nrest of the file").expect("a png header");
+
+        let mut editor = EditorState::default();
+        editor.paste(&path.to_string_lossy());
+        assert_eq!(editor.image_attachment_count(), 1);
+
+        let (rows, cursor_row, _) = editor.rows(72);
+        assert_eq!(cursor_row, 0, "the cursor stays on the first draft row");
+        assert_eq!(
+            rows.len(),
+            1,
+            "one visual line, no attachment row: {rows:?}"
+        );
+        assert!(
+            rows[0].starts_with("[Image #1]"),
+            "the marker is the first thing painted: {rows:?}"
+        );
     }
 
     #[test]
