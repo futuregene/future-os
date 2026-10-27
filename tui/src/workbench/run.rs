@@ -431,12 +431,18 @@ async fn event_loop(
                     sessions_poll = Instant::now();
                     changed = live.refresh_sessions().await;
                 }
+                // The workspace's branch and the `@` menu's files are read on
+                // their own threads (see `Live::poll_local_reads`): a workspace
+                // that moved pays no process spawn in the loop, and this clock
+                // is what puts the answer on screen when it arrives.
+                let arrived = live.poll_local_reads();
                 paint = clock.tick(
                     animating,
                     workbench.spinner_frame(),
                     ages_on_screen(&frame),
                     Instant::now(),
-                ) || changed;
+                ) || changed
+                    || arrived;
             }
         }
     }

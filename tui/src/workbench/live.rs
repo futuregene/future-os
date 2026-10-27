@@ -252,12 +252,15 @@ pub struct Live {
     /// `~/.future/tui/settings.json` last recorded them.
     pinned_workspaces: Vec<String>,
     /// The `@` menu's candidates for `local_cwd`, read once per directory: a
-    /// listing per keystroke would be a `git ls-files` per keystroke.
+    /// listing per keystroke would be a `git ls-files` per keystroke. Empty
+    /// until [`LocalReads`] answers for the directory in force.
     files: Vec<String>,
-    /// Which directory `files` describes, so a session that moved reloads them.
-    files_for: String,
-    /// The 文件 panel's tree, rooted at the session workspace. Re-scanned when
-    /// the directory moves and when the reader asks for it — never per frame.
+    /// The process-bound reads for `local_cwd` — the `@` menu's files and the
+    /// header's branch — running off the frame (see [`LocalReads`]).
+    local_reads: Option<LocalReads>,
+    /// The 文件 panel's tree, rooted at the session workspace. Scanned when the
+    /// directory moves (beside the frame, see [`LocalReads`]) and when the reader
+    /// asks for it — never per frame.
     tree: crate::workbench::files::FileTree,
     /// What the preview box is holding, if anything.
     preview: Option<PreviewView>,
@@ -345,7 +348,7 @@ impl Live {
                 .and_then(|settings| settings.pinned_workspaces.clone())
                 .unwrap_or_default(),
             files: Vec::new(),
-            files_for: String::new(),
+            local_reads: None,
             tree: crate::workbench::files::FileTree::default(),
             preview: None,
             clipboard: paste::ClipboardCapture::default(),
@@ -421,22 +424,62 @@ impl Live {
         // behind, while the chip and the session that got created named another.
         let cwd = self.shown_cwd().unwrap_or_default();
         self.local_cwd = cwd;
-        // The `@` menu's candidates belong to the directory, not to the session:
-        // read them when the directory changes and not once per keystroke.
-        if self.files_for != self.local_cwd {
-            self.files = super::local::workspace_files(std::path::Path::new(&self.local_cwd));
-            self.files_for = self.local_cwd.clone();
-            // The file panel's tree follows the workspace: a session that moved
-            // (a worktree switch, a new cwd) must not keep showing the old one.
-            self.tree = super::files::FileTree::scan(&self.local_cwd);
+        // The workspace's process-bound facts belong to the directory, not to the
+        // session, and they are read on their own threads: a workspace change
+        // used to spawn `git ls-files` (24 ms in this repository) and
+        // `git rev-parse` (up to `BRANCH_TIMEOUT` when a repository is locked)
+        // *inside the driver loop*, so the first frame after a switch to another
+        // workspace waited for them. Nothing of the previous workspace may stay
+        // on screen while the answer is out: the files and the branch go with it.
+        if self.local_reads.as_ref().map(|reads| reads.cwd.as_str())
+            != Some(self.local_cwd.as_str())
+        {
+            self.files = Vec::new();
+            // The 文件 panel's tree is a directory listing too, and a directory
+            // with thousands of entries in it (`/tmp`) takes as long as the git
+            // read this replaced. It arrives with the listing.
+            self.tree = super::files::FileTree::default();
+            self.local_reads = Some(LocalReads::start(&self.local_cwd));
         }
-        // The header's second line names the workspace *and its branch*. The
-        // cache keys on the cwd, so this is a no-op on every refresh that did
-        // not move the session.
-        self.branch.for_cwd(&self.local_cwd);
         if self.local_skills.is_none() {
             self.local_skills = Some(super::local::installed_skills());
         }
+    }
+
+    /// Install whatever a workspace's background reads have answered, and answer
+    /// whether anything arrived — which is when the driver owes a frame.
+    ///
+    /// Called from the loop's clock (see `run::TICK`), never from `data`: one
+    /// place decides that a frame is owed, and a read that lands between two
+    /// keystrokes still reaches the screen.
+    pub fn poll_local_reads(&mut self) -> bool {
+        let Some(reads) = self.local_reads.as_mut() else {
+            return false;
+        };
+        let cwd = reads.cwd.clone();
+        let mut landed = false;
+        if let Some(rx) = reads.branch.take() {
+            match rx.try_recv() {
+                Ok(branch) => {
+                    self.branch.install(&cwd, branch);
+                    landed = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => reads.branch = Some(rx),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+            }
+        }
+        if let Some(rx) = reads.files.take() {
+            match rx.try_recv() {
+                Ok((files, tree)) => {
+                    self.files = files;
+                    self.tree = tree;
+                    landed = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => reads.files = Some(rx),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+            }
+        }
+        landed
     }
 
     /// Re-read the conversation list, and answer whether anything the rail
@@ -1239,7 +1282,7 @@ impl Live {
                 // workspace" for the empty string too, and a surface that has
                 // decided nothing must not tick a row either.
                 chat: !cwd.trim().is_empty() && is_chat_directory(&cwd),
-                branch: self.branch.for_cwd(&self.local_cwd).to_string(),
+                branch: self.branch.get(&self.local_cwd).to_string(),
             },
             model: self
                 .shown_model()
@@ -2926,6 +2969,61 @@ fn token_field(usage: &Value, key: &str) -> i64 {
         .unwrap_or(0)
 }
 
+/// The reads that cost a process, running beside the frame instead of in it.
+///
+/// Both belong to a workspace, both answer "what is in this directory", and both
+/// were paid on the frame path: `git ls-files` for the `@` menu's candidates and
+/// `git rev-parse` for the header's branch — 24 ms and up to
+/// [`super::git::BRANCH_TIMEOUT`] respectively, spawned inside the driver loop by
+/// [`Live::refresh_local`]. A reader who stepped through the rail's 工作区 tab paid
+/// that per workspace, on the frame that opened the conversation.
+///
+/// Two threads rather than one: the branch is a fast read the header wants now,
+/// the listing is a slow one only `@` needs, and coupling them would blank the
+/// header while a large repository was listed.
+struct LocalReads {
+    /// The workspace these are for. An answer for another one is dropped: the
+    /// reader has moved on and it must not paint over the workspace on screen.
+    cwd: String,
+    branch: Option<std::sync::mpsc::Receiver<String>>,
+    files: Option<std::sync::mpsc::Receiver<(Vec<String>, super::files::FileTree)>>,
+}
+
+impl LocalReads {
+    fn start(cwd: &str) -> Self {
+        Self {
+            cwd: cwd.to_string(),
+            branch: Self::spawn(cwd, super::git::branch),
+            files: Self::spawn(cwd, |path| {
+                (
+                    super::local::workspace_files(path),
+                    super::files::FileTree::scan(&path.display().to_string()),
+                )
+            }),
+        }
+    }
+
+    /// Run `read` on its own thread and hand back the channel its answer arrives
+    /// on. A directory that is not there has nothing to read, so no thread is
+    /// started and no answer is owed.
+    fn spawn<T: Send + 'static>(
+        cwd: &str,
+        read: impl FnOnce(&std::path::Path) -> T + Send + 'static,
+    ) -> Option<std::sync::mpsc::Receiver<T>> {
+        let path = std::path::PathBuf::from(cwd);
+        if cwd.trim().is_empty() || !path.is_dir() {
+            return None;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            // A reader that has moved on is gone: sending into a closed channel
+            // is how the thread learns to stop caring, not an error.
+            let _ = tx.send(read(&path));
+        });
+        Some(rx)
+    }
+}
+
 /// The conversation list as the client holds it, with the version a cached view
 /// of it is keyed on.
 ///
@@ -4478,6 +4576,101 @@ mod tests {
         );
     }
 
+    /// A workspace's process-bound facts are read *beside* the frame, not in it.
+    ///
+    /// Changing workspace used to spawn `git ls-files` (24 ms in this repository)
+    /// and `git rev-parse` on the loop's own thread, so the frame that opened a
+    /// conversation in another workspace waited for two processes — the stutter a
+    /// reader felt when stepping through the rail's 工作区 tab. [`refresh_local`]
+    /// starts the reads and returns; the clock that drives the loop
+    /// ([`Live::poll_local_reads`]) installs the answers.
+    #[tokio::test]
+    async fn a_workspace_change_reads_off_the_frame() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            ("list_sessions", r#"{"sessions":[]}"#),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+
+        // The checkout this test runs in: a real workspace with real files.
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the crate sits inside the repository")
+            .display()
+            .to_string();
+        live.state.cwd = Some(repo.clone());
+        live.refresh_local();
+
+        // Nothing was read on this thread: the call returned with the previous
+        // workspace's facts gone rather than with the new one's read.
+        assert_eq!(live.local_cwd, repo);
+        assert!(
+            live.files.is_empty(),
+            "the listing must not be read on the frame's thread"
+        );
+        assert_eq!(
+            live.branch.get(&live.local_cwd),
+            "",
+            "and neither must the branch"
+        );
+
+        // The answers arrive through the clock the driver keeps, one at a time
+        // (`true` is the driver's "a frame is owed").
+        let mut waited = std::time::Duration::ZERO;
+        let mut landed = 0;
+        while waited < std::time::Duration::from_secs(10) {
+            if live.poll_local_reads() {
+                landed += 1;
+            }
+            if !live.files.is_empty() && !live.branch.get(&live.local_cwd).is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            waited += std::time::Duration::from_millis(5);
+        }
+        assert!(
+            live.files.iter().any(|file| file == "Cargo.toml"),
+            "the listing is this repository's: {} entries after {landed} answers",
+            live.files.len()
+        );
+        assert!(
+            !live.branch.get(&live.local_cwd).is_empty(),
+            "and the header can name the branch"
+        );
+        // A workspace that has not moved asks for nothing more.
+        assert!(!live.poll_local_reads(), "nothing left to install");
+    }
+
+    /// A directory that is not there — or none at all — is not a read: the frame
+    /// that shows an empty workspace spawns nothing.
+    #[tokio::test]
+    async fn an_emptied_workspace_starts_no_read() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            ("list_sessions", r#"{"sessions":[]}"#),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        live.state.cwd = Some("/definitely/not/a/workspace/here".into());
+        live.refresh_local();
+        assert!(live.files.is_empty());
+        let reads = live
+            .local_reads
+            .as_ref()
+            .expect("a workspace was asked for");
+        assert!(
+            reads.branch.is_none() && reads.files.is_none(),
+            "a directory that is not there starts no read"
+        );
+        assert!(!live.poll_local_reads(), "there was nothing to read");
+        assert!(live.branch.get(&live.local_cwd).is_empty());
+    }
+
     /// A plain chat has no workspace to name. Its directory is the app's own
     /// scratch tree, and printing that directory's name is how
     /// `thread-20261026-121352-6627dd` came to read like a project in the rail.
@@ -5212,6 +5405,64 @@ mod tests {
             );
             live.client.disconnect();
         }
+    }
+
+    /// Meter, not a check: what a workspace change costs the frame, and what it
+    /// costs the threads beside it.
+    ///
+    /// `cargo test -p future-tui --release --lib -- --ignored --nocapture workspace_change_cost_meter`
+    #[ignore = "meter, not a check"]
+    #[tokio::test]
+    async fn workspace_change_cost_meter() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            ("list_sessions", r#"{"sessions":[]}"#),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None).await.unwrap();
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .display()
+            .to_string();
+
+        // The two reads on their own, in this repository.
+        let start = std::time::Instant::now();
+        let files = super::super::local::workspace_files(std::path::Path::new(&repo));
+        let ls_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let start = std::time::Instant::now();
+        let branch = super::super::git::branch(std::path::Path::new(&repo));
+        let rev_ms = start.elapsed().as_secs_f64() * 1000.0;
+        println!(
+            "read on this thread: ls-files = {ls_ms:.2} ms ({} files), rev-parse = {rev_ms:.2} ms ({branch})",
+            files.len()
+        );
+
+        // What the frame pays now: the change plus the first data() after it.
+        for round in 0..3 {
+            let target = if round % 2 == 0 { &repo } else { "/tmp" };
+            live.state.cwd = Some(target.to_string());
+            let start = std::time::Instant::now();
+            live.refresh_local();
+            let change_us = start.elapsed().as_secs_f64() * 1_000_000.0;
+            let start = std::time::Instant::now();
+            let _ = live.data(&frame());
+            let frame_us = start.elapsed().as_secs_f64() * 1_000_000.0;
+            // The answers, whenever their threads are done.
+            let start = std::time::Instant::now();
+            while start.elapsed() < std::time::Duration::from_secs(5)
+                && !(live.poll_local_reads()
+                    && !live.files.is_empty()
+                    && !live.branch.get(&live.local_cwd).is_empty())
+            {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            println!(
+                "  workspace -> {target}: refresh_local = {change_us:.1} us, first frame = {frame_us:.1} us, background answered in {:.1} ms",
+                start.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+        live.client.disconnect();
     }
 
     /// Meter, not a check: the first frame after a conversation the reader has

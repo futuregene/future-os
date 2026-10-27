@@ -106,7 +106,34 @@ every conversation the reader had, on top of everything else. At 393
 conversations that was several milliseconds per frame — for the rest of the
 session, not just once.
 
-## 4. What this did not change
+## 4. A switch that crosses workspaces
+
+`Live::refresh_local` runs on every state refresh and whenever the workspace
+moves. It used to spend that on the loop's own thread: `git ls-files` for the `@`
+menu's candidates, `git rev-parse` for the header's branch, and a directory
+listing for the 文件 panel. A reader stepping through the rail's 工作区 tab paid
+one of those per workspace, on the frame that opened the conversation.
+`BranchCache`'s own doc already said a read "must not freeze the frame that
+asked", and its 600 ms deadline existed precisely because one can — but the
+implementation did wait.
+
+Those three reads are now started, not awaited (`LocalReads`): two threads per
+workspace change, and `Live::poll_local_reads` installs their answers from the
+loop's clock, so a late answer still reaches the screen. Nothing of the previous
+workspace stays on screen while a read is out — the files, the tree and the
+branch all read empty until the answer for the workspace on screen arrives.
+
+| workspace → | `refresh_local` before | after | first frame after it |
+|---|---:|---:|---:|
+| this repository (3887 files) | ≈ **40 ms** (`ls-files` 26–35 ms + `rev-parse` 13–15 ms) | **37 µs** | 85 µs |
+| `/tmp` (not a repository, thousands of entries) | **> 5 s** (the listing falls back to a tree walk, plus the panel's own scan) | **82 µs** | 13 µs |
+| back to the repository | ≈ 40 ms | 153 µs | 19 µs |
+
+The answers arrive 24–27 ms later on their threads (and, for a directory that is
+not a repository, whenever the fallback walk finishes). Measured with
+`cargo test -p future-tui --release --lib -- --ignored --nocapture workspace_change_cost_meter`.
+
+## 5. What this did not change
 
 * **Compose.** §2: 0.43 ms, flat in transcript length and in scenario
   (`Launchpad`, `Chat`, `Workspaces` all land within 0.01 ms of each other).
@@ -115,8 +142,8 @@ session, not just once.
 * **The transcript clone.** `render_all` hands over a `Vec<String>` per frame;
   at a real tail page that is 0.01 ms, and only a session with hundreds of
   loaded pages notices it (0.19 ms at 14400 rows).
-* **`refresh_local`'s workspace reads.** A switch that crosses workspaces spawns
-  `git ls-files` (≈ 24 ms in this repository, 3886 files) and
-  `git rev-parse` in the loop. Measured but left alone here: it is a different
-  kind of cost (a process spawn, not a per-frame one) and moving it off the loop
-  is its own change.
+* **Loading older history.** `ChatArea::prepend_messages` calls `rerender()`,
+  which re-parses and re-wraps the transcript it already had, so paging back
+  through a long session re-renders everything rather than appending the page.
+  Not measured separately here; it is bounded by the pages a reader actually
+  loaded, and by the same per-message cost as a switch (§3).
