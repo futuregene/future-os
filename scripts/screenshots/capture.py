@@ -1621,9 +1621,16 @@ def tui(args: argparse.Namespace) -> int:
             # locale, and a capture whose chrome depends on who ran it is not a
             # baseline. Same file the TUI itself writes, so the flag goes
             # through the real settings path rather than a special case.
+            #
+            # The rail is pinned for the same reason. A first start hides it
+            # (the shipped default), while the workbench figures in
+            # `docs/tui/assets/` are of a reader who has it open — so whether a
+            # frame carries the rail stays the scenario's choice instead of
+            # following a product default that can change under it.
             (home / "tui").mkdir(parents=True, exist_ok=True)
             (home / "tui" / "settings.json").write_text(
-                json.dumps({"language": args.lang}), encoding="utf-8"
+                json.dumps({"language": args.lang, "sidebarVisible": True}),
+                encoding="utf-8",
             )
         argv = [str(tui_bin), "tui", "--offline", "--grpc-addr", addr]
         if args.session:

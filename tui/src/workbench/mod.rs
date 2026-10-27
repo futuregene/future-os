@@ -505,6 +505,10 @@ impl Workbench {
             panel: PanelId::Recent,
             sidebar_focus: false,
             sidebar_index: 0,
+            // Visible until the driver applies the stored preference: a first
+            // start is hidden (see `run::layout_preferences`), and a bare
+            // surface still paints its rail so tests can address it without a
+            // settings file.
             sidebar_visible: true,
             sidebar_w: layout::SIDEBAR_DEFAULT,
             density: preferences::Density::Focused,

@@ -169,6 +169,13 @@ Choices persist in `~/.future/tui/settings.json` as `density`, `sidebarPosition`
 `linearReading`; incremental shortcut overrides live beside it in
 `keybindings.json`.
 
+With no stored `sidebarVisible` — a first start, or a file written before the
+key existed — the rail starts **hidden**: the conversation gets the whole
+width, and `ctrl+b` (or `ctrl+1`/`ctrl+2`/`ctrl+3`, which show the rail to reach
+their panel) brings it back. Once the reader has shown or hidden it, that choice
+is what the next start begins with, and `Restore defaults` lands back on the
+hidden layout.
+
 `/theme` retains the six-theme picker, including `high-contrast`; choosing a
 theme persists `themeId`. With no stored choice, the terminal's `COLORFGBG`
 hint selects its light/dark palette (unknown hints use dark). `NO_COLOR`
@@ -241,7 +248,7 @@ click on the rail's tab strip are the doors to the same places.
 | `ctrl+t` | Thinking effort: opens the six-level chooser (`/thinking`); on the launchpad the level is staged for the session the first message creates |
 | `ctrl+s` | Approval mode: opens the four-tier chooser (`/mode`), the desktop composer's own values — 手动审批 / 沙箱保护 / 自动审批 / 完全访问 |
 | `ctrl+l` | Workspaces: opens the workspace chooser (`/workspace`) — every directory this client has a conversation in, plus a row that creates one from the path typed into its search line |
-| `ctrl+b` | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal. The rail's own `›` edge button does the same hide/show with one click. The show/hide choice is written to `sidebarVisible` and is where the next start begins |
+| `ctrl+b` | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal. The rail's own `›` edge button does the same hide/show with one click. The show/hide choice is written to `sidebarVisible` and is where the next start begins (a first start begins hidden) |
 | `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run |
 | `ctrl+r` | Session picker (name, workspace and age of each conversation; the footer names the key) |
 | `ctrl+o` | Preferences and shortcut editor |

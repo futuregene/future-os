@@ -104,6 +104,38 @@ fn sync_mode(
     Ok(())
 }
 
+/// The layout a stored [`TuiSettings`] stands for, before the first frame.
+///
+/// An absent key is the shipped default, not an error: a reader who never
+/// touched a setting (a first start, or a `settings.json` written by an older
+/// build) gets the same layout every time. The rail starts hidden — the body
+/// is the conversation, and the rail is a thing the reader opens on purpose
+/// (`ctrl+b`, or `ctrl+1`/`ctrl+2`/`ctrl+3` to name a panel) rather than
+/// something to close before typing.
+fn layout_preferences(
+    settings: &TuiSettings,
+    mouse_capture: bool,
+) -> super::preferences::LayoutPreferences {
+    super::preferences::LayoutPreferences {
+        density: settings
+            .density
+            .as_deref()
+            .map(super::preferences::Density::from_wire)
+            .unwrap_or_default(),
+        sidebar_position: settings
+            .sidebar_position
+            .as_deref()
+            .map(super::preferences::SidebarPosition::from_wire)
+            .unwrap_or_default(),
+        sidebar_width: settings.sidebar_width.unwrap_or(layout::SIDEBAR_DEFAULT),
+        sidebar_visible: settings.sidebar_visible.unwrap_or(false),
+        mouse_capture,
+        notify: settings.notify.unwrap_or_default(),
+        reduced_motion: settings.reduced_motion.unwrap_or(false),
+        linear_reading: settings.linear_reading.unwrap_or(false),
+    }
+}
+
 /// Run the workbench until the reader quits. Returns an error only for a
 /// failure that makes the surface impossible (no TTY, no agent).
 pub async fn run(options: Options) -> Result<(), String> {
@@ -121,24 +153,7 @@ pub async fn run(options: Options) -> Result<(), String> {
     live.set_mouse_capture(mouse_capture);
     workbench.set_theme(&live.theme_id);
     workbench.set_language(live::persisted_language(&settings));
-    workbench.set_preferences(super::preferences::LayoutPreferences {
-        density: settings
-            .density
-            .as_deref()
-            .map(super::preferences::Density::from_wire)
-            .unwrap_or_default(),
-        sidebar_position: settings
-            .sidebar_position
-            .as_deref()
-            .map(super::preferences::SidebarPosition::from_wire)
-            .unwrap_or_default(),
-        sidebar_width: settings.sidebar_width.unwrap_or(layout::SIDEBAR_DEFAULT),
-        sidebar_visible: settings.sidebar_visible.unwrap_or(true),
-        mouse_capture,
-        notify: settings.notify.unwrap_or_default(),
-        reduced_motion: settings.reduced_motion.unwrap_or(false),
-        linear_reading: settings.linear_reading.unwrap_or(false),
-    });
+    workbench.set_preferences(layout_preferences(&settings, mouse_capture));
     workbench.keys = super::preferences::Keybindings::load(&super::preferences::keybindings_path(
         &options.settings_path,
     ));
@@ -1628,5 +1643,23 @@ mod tests {
             frame_bytes(&rows, None),
             "\x1b[?25l\x1b[0m\x1b[1;1Ha\x1b[0m\x1b[2;1Hb\x1b[0m"
         );
+    }
+
+    /// A first start — no `settings.json`, or one whose `sidebarVisible` an
+    /// older build never wrote — opens on the conversation, not on the rail.
+    /// The choice is a preference once it is made: whoever hid or showed the
+    /// rail keeps exactly that on the next start.
+    #[test]
+    fn a_first_start_hides_the_rail_and_a_choice_survives() {
+        let fresh = layout_preferences(&TuiSettings::default(), true);
+        assert!(!fresh.sidebar_visible, "a fresh start hides the rail");
+        // A file with other keys but no `sidebarVisible` is the same start.
+        let older = TuiSettings::from_json(&serde_json::json!({"density": "comfortable"}));
+        assert!(!layout_preferences(&older, true).sidebar_visible);
+
+        let shown = TuiSettings::from_json(&serde_json::json!({"sidebarVisible": true}));
+        assert!(layout_preferences(&shown, true).sidebar_visible);
+        let hidden = TuiSettings::from_json(&serde_json::json!({"sidebarVisible": false}));
+        assert!(!layout_preferences(&hidden, true).sidebar_visible);
     }
 }
