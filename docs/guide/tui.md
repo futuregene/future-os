@@ -163,7 +163,7 @@ the same line: a key added in one language only does not compile.
 The default **focused density** uses a two-row context header, reclaiming four
 rows for the conversation. `Ctrl+O` or `/preferences` opens the preference
 panel: switch to the comfortable identity header, move the sidebar left or
-right, adjust its 30–48-column width, control mouse capture and completion
+right, adjust its 30–60-column width, control mouse capture and completion
 notifications, enable reduced motion or linear reading, and rebind global
 shortcuts. The panel keeps the selected row and help visible on short terminals.
 Choices persist in `~/.future/tui/settings.json` as `density`, `sidebarPosition`,
@@ -265,7 +265,7 @@ click on the rail's tab strip are the doors to the same places.
 | Click the rail's `›` edge (or the `‹` it leaves behind) | Hide the rail / bring it back. `ctrl+b` does the same from the keyboard |
 | Click a session row | Open that conversation (a workspace heading only takes the keys) |
 | Click a tree row | A file previews, a directory opens — the same two verbs `enter` runs |
-| Drag the divider | Resize the sidebar (30–48 columns), persisted on release |
+| Drag the divider | Resize the sidebar (30–60 columns), persisted on release |
 | Click anywhere in the input box | Focus it |
 | Wheel over the conversation | Scroll; at the top it asks for an older page |
 | Wheel over the sidebar | Scroll the panel |

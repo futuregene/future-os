@@ -244,9 +244,9 @@ alt screen、鼠标模式与帧时钟 `[F:tui/src/workbench/run.rs:92]`；旧内
 | 帧 | 恰好 `h` 行的一整帧：页眉（+细线）、主体、输入带、activity、状态、提示；浮层整张覆盖 | `[F:tui/src/workbench/screen.rs:29]`、`[S:workbench-chat.png]` |
 | 终端会话 | alt screen、括号粘贴、Kitty 键盘、鼠标模式随 alt screen 一起写入并在 stop/崩溃时写回 | `[F:tui/src/terminal.rs:233]`、`[F:tui/src/workbench/run.rs:92]`、`[V]`（运行中 `mouse_any_flag=1`，退出后 `0`） |
 | 帧字节 | 每行都用绝对定位（`CSI row;1H`），帧从不让光标前进；底行换行会把 alt screen 顶上去一行、所有点击整体错一格 | `[F:tui/src/workbench/run.rs:368]` |
-| 鼠标 | SGR 1006 解析（`Press/Release/Drag/Move/WheelUp/WheelDown`），绘制与命中共用一张 hit map；可点输入框/聊天/分隔条/页签/行/选择器行；聊天与聚焦面板可滚轮；分隔条可拖（边缘跟着指针走，`30..48` 钳住）；选择器点行即应用；只开 `?1000h?1002h?1006h`（不开 hover） | `[F:tui/src/workbench/mouse.rs:56]`、`[F:tui/src/workbench/mod.rs:534]`、`[V]`（点 `用量` 切了面板）、`[S:workbench-panel-usage.png]`、`[S:workbench-drag-fixed.png]` |
-| 布局 | `NARROW_WIDTH = 88`、`SMALL_HEIGHT = 24`、`SIDEBAR_DEFAULT/MIN/MAX = 36/30/48`、聊天左右各 2 格内边距；绘制与命中用同一份 `Metrics` | `[F:tui/src/workbench/layout.rs:65]` |
-| 侧栏 | 五个页签 `待办 任务 会话 用量 技能`，≥88 列常驻，以下 `ctrl+b` 开全屏面板；分隔条拖 30..48 并在松手后持久化 | `[F:tui/src/workbench/panels.rs:18]`、`[S:workbench-panel-full-60x20.png]` |
+| 鼠标 | SGR 1006 解析（`Press/Release/Drag/Move/WheelUp/WheelDown`），绘制与命中共用一张 hit map；可点输入框/聊天/分隔条/页签/行/选择器行；聊天与聚焦面板可滚轮；分隔条可拖（边缘跟着指针走，`30..60` 钳住）；选择器点行即应用；只开 `?1000h?1002h?1006h`（不开 hover） | `[F:tui/src/workbench/mouse.rs:56]`、`[F:tui/src/workbench/mod.rs:534]`、`[V]`（点 `用量` 切了面板）、`[S:workbench-panel-usage.png]`、`[S:workbench-drag-fixed.png]` |
+| 布局 | `NARROW_WIDTH = 88`、`SMALL_HEIGHT = 24`、`SIDEBAR_DEFAULT/MIN/MAX = 36/30/60`、聊天左右各 2 格内边距；绘制与命中用同一份 `Metrics` | `[F:tui/src/workbench/layout.rs:65]` |
+| 侧栏 | 五个页签 `待办 任务 会话 用量 技能`，≥88 列常驻，以下 `ctrl+b` 开全屏面板；分隔条拖 30..60 并在松手后持久化 | `[F:tui/src/workbench/panels.rs:18]`、`[S:workbench-panel-full-60x20.png]` |
 | 面板数据 | 待办读 `events.jsonl`（✔/◉/○/✖ + 优先级）、技能读 `get_state` + 两个技能目录、任务读只读 `tasks.db`、会话读 `list_sessions`、用量读 `get_state` | `[F:tui/src/workbench/local.rs:92]`、`[F:tui/src/workbench/live.rs:201]`、`[S:workbench-panel-todo.png]`、`[S:workbench-panel-skills.png]` |
 | 启动台 | 字标 + 主张句、带框输入框、整块上下居中、参数 chip（工作区/模型/强度/审批）；这一块自己不列按键行（底部提示行负责），`/` `@` `#` 写在 placeholder 上 | `[F:tui/src/workbench/launchpad.rs]`、`[S:workbench-launchpad.png]` |
 | 状态 / activity | `模型 · 强度 · 权限 | 进度条 + ctx 用量/总量 + % · ≈¥`；activity 为 `转轮 + 动词 + 用时 + 工具数 + tok/s`，另有 `缓存 N%` | `[F:tui/src/workbench/screen.rs:468]`、`[F:tui/src/workbench/screen.rs:430]`、`[S:workbench-chat.png]` |
