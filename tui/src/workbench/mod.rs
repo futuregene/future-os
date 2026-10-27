@@ -913,6 +913,14 @@ impl Workbench {
                 return actions;
             }
         }
+        // Leaving is never an overlay's to swallow. Every other key belongs to
+        // whoever owns the screen, but a modal that eats `ctrl+c` leaves the
+        // user with no way out except a signal — and a signalled TUI is exactly
+        // the exit that cannot restore the terminal properly (alt screen and
+        // keyboard protocol left behind).
+        if self.keys.action(key) == Some(preferences::Action::Quit) {
+            return vec![WbAction::Quit];
+        }
         if let Some(overlay) = self.overlay {
             return self.handle_overlay_key(overlay, key, data);
         }
@@ -5280,19 +5288,28 @@ mod tests {
     }
 
     #[test]
-    fn quit_is_reachable_and_only_from_the_surface() {
+    fn quit_is_reachable_from_the_surface_and_from_inside_an_overlay() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         assert_eq!(
             workbench.handle(WbEvent::Key("ctrl+c".into()), &data),
             vec![WbAction::Quit]
         );
-        // With the palette open, ctrl+c is not text and does not quit either —
-        // the palette owns the keys, and escape is its way out.
+        // Inside the palette every other key belongs to the palette, and escape
+        // is its way out — but quitting still has to work: a modal that ate
+        // `ctrl+c` would leave a signal as the only exit, and a signalled TUI is
+        // the exit that cannot hand the terminal back cleanly.
         workbench.handle(WbEvent::Key("/".into()), &data);
-        assert!(workbench
-            .handle(WbEvent::Key("ctrl+c".into()), &data)
-            .is_empty());
+        assert!(workbench.overlay.is_some());
+        assert_eq!(
+            workbench.handle(WbEvent::Key("ctrl+c".into()), &data),
+            vec![WbAction::Quit]
+        );
+        workbench.overlay = Some(Overlay::Help);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("ctrl+c".into()), &data),
+            vec![WbAction::Quit]
+        );
     }
 
     // ─── language ──────────────────────────────────────────────────────────
