@@ -1789,16 +1789,16 @@ fn diff_review_box(
     let available = (h as usize).saturating_sub(3);
 
     if available == 0 {
-        rows.push(widgets::box_bottom(palette, columns));
-        return rows;
+        close_box(&mut rows, palette, columns, h);
+        return indent(rows, left, w as usize);
     }
     let Some(diff) = &data.diff else {
-        rows.push(widgets::box_bottom(palette, columns));
+        close_box(&mut rows, palette, columns, h);
         return indent(rows, left, w as usize);
     };
     if let Some(error) = &diff.error {
         rows.push(widgets::box_row(palette, error, columns));
-        rows.push(widgets::box_bottom(palette, columns));
+        close_box(&mut rows, palette, columns, h);
         return indent(rows, left, w as usize);
     }
     if diff.files.is_empty() {
@@ -1807,7 +1807,7 @@ fn diff_review_box(
             t(workbench.lang, Key::DiffClean),
             columns,
         ));
-        rows.push(widgets::box_bottom(palette, columns));
+        close_box(&mut rows, palette, columns, h);
         return indent(rows, left, w as usize);
     }
     // The cursor is the reader's position and moves with the key; the patch
@@ -1898,11 +1898,22 @@ fn diff_review_box(
             );
         }
     }
-    rows.push(widgets::box_bottom(palette, columns));
-    while rows.len() < h as usize {
-        rows.push(fit("", columns));
-    }
+    close_box(&mut rows, palette, columns, h);
     indent(rows, left, w as usize)
+}
+
+/// Close an overlay box that has nothing to list, or that stopped at an error.
+///
+/// The box is the screen, not a window onto the rows: a section with no rows (a
+/// clean working tree, no stash) or a failed read still fills its rectangle. A
+/// box that stopped after its own four rows left the conversation underneath
+/// showing through the rest of the panel — measured on the 改动 and 储藏 tabs of a
+/// clean checkout.
+fn close_box(rows: &mut Vec<String>, palette: &Palette, columns: usize, h: u16) {
+    while rows.len() + 1 < h as usize {
+        rows.push(widgets::box_row(palette, "", columns));
+    }
+    rows.push(widgets::box_bottom(palette, columns));
 }
 
 fn git_box(
@@ -1959,12 +1970,12 @@ fn git_box(
     rows.push(widgets::box_row(palette, t(lang, Key::GitHint), columns));
     let available = (h as usize).saturating_sub(4);
     if available == 0 {
-        rows.push(widgets::box_bottom(palette, columns));
+        close_box(&mut rows, palette, columns, h);
         return indent(rows, left, w as usize);
     }
     let Some(git) = &data.git else {
         rows.push(widgets::box_row(palette, t(lang, Key::GitNoRepo), columns));
-        rows.push(widgets::box_bottom(palette, columns));
+        close_box(&mut rows, palette, columns, h);
         return indent(rows, left, w as usize);
     };
     if let Some(error) = &git.error {
@@ -1976,7 +1987,7 @@ fn git_box(
         ) {
             rows.push(widgets::box_row(palette, &line, columns));
         }
-        rows.push(widgets::box_bottom(palette, columns));
+        close_box(&mut rows, palette, columns, h);
         return indent(rows, left, w as usize);
     }
 
@@ -2001,7 +2012,7 @@ fn git_box(
             t(lang, git_empty_key(git.section)),
             columns,
         ));
-        rows.push(widgets::box_bottom(palette, columns));
+        close_box(&mut rows, palette, columns, h);
         return indent(rows, left, w as usize);
     }
 
@@ -2158,10 +2169,7 @@ fn git_box(
     // The box is the screen, not a window onto the rows: a list shorter than the
     // box is padded inside it, so the bottom border stays on the last row and a
     // short repository does not paint a half-height panel.
-    while rows.len() + 1 < h as usize {
-        rows.push(widgets::box_row(palette, "", columns));
-    }
-    rows.push(widgets::box_bottom(palette, columns));
+    close_box(&mut rows, palette, columns, h);
     indent(rows, left, w as usize)
 }
 
