@@ -929,10 +929,26 @@ impl Workbench {
         self.tick
     }
 
-    /// The spinner frame the activity row draws right now: the tick divided by
-    /// [`SPINNER_TICKS`], so four ticks make one drawn frame.
+    /// The frame the activity glyph is on, and the clock the whole surface's
+    /// spinners share (see [`SPINNER_TICKS`]).
     pub fn spinner_frame(&self) -> usize {
         self.tick / SPINNER_TICKS
+    }
+
+    /// The frame a *list row's* own spinner is on — `None` when the reader asked
+    /// for less motion.
+    ///
+    /// `None` does not mean "draw no spinner": the row paints a still mark
+    /// instead (`panels::STILL_MARKER`). Nothing advances the tick under reduced
+    /// motion, so handing the painter [`Self::spinner_frame`] there leaves a
+    /// braille frame frozen on screen, which reads as a spinner that has died
+    /// rather than as a run that is still writing.
+    pub fn row_spinner(&self) -> Option<usize> {
+        if self.motion_enabled() {
+            Some(self.spinner_frame())
+        } else {
+            None
+        }
     }
 
     /// The activity glyph is the only thing a tick animates, so a reader who
@@ -7984,6 +8000,18 @@ mod tests {
             workbench.reduced_motion,
             "sidebar navigation does not reset accessibility choices"
         );
+    }
+
+    /// The rail's row spinner reads the same switch the activity glyph obeys:
+    /// under reduced motion it hands the painter no frame at all, so the row
+    /// draws its still mark instead of a braille frame nothing will advance.
+    #[test]
+    fn the_row_spinner_holds_still_under_reduced_motion() {
+        let mut workbench = Workbench::new();
+        workbench.advance_tick();
+        assert_eq!(workbench.row_spinner(), Some(workbench.spinner_frame()));
+        workbench.reduced_motion = true;
+        assert_eq!(workbench.row_spinner(), None);
     }
 
     /// The picker marks the preference in force, not the bundle it resolved to:

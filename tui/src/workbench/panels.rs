@@ -39,6 +39,15 @@ use crate::workbench::theme::Palette;
 /// The blank row between the tab strip and the list.
 const TOP_GAP: usize = 1;
 
+/// What a conversation row draws in its state slot while a run is in flight and
+/// the reader asked for less motion (see the `frame` argument of [`render`]).
+///
+/// It must not be a braille frame held still: a spinner that does not turn reads
+/// as a *stuck* spinner rather than as "this one is still writing", which is the
+/// one fact the slot exists to carry. `…` is the same still mark the activity row
+/// falls back to when motion is off, so both places say "working" alike.
+pub const STILL_MARKER: &str = "…";
+
 /// The workspace headings the reader has folded shut, by path — the group's
 /// identity (`two checkouts can share a name`).
 ///
@@ -346,7 +355,9 @@ pub struct PanelView {
 }
 
 /// `frame` is the animation frame the spinner is on — the same one the activity
-/// row draws (`Workbench::spinner_frame`), so the two spinners turn together.
+/// row draws (`Workbench::spinner_frame`), so the two spinners turn together — or
+/// `None` when the reader asked for less motion, which paints [`STILL_MARKER`]
+/// instead of a frame nothing will advance.
 #[allow(clippy::too_many_arguments)]
 pub fn render(
     panel: PanelId,
@@ -356,7 +367,7 @@ pub fn render(
     view: PanelView,
     hit: &mut HitMap,
     lang: Language,
-    frame: usize,
+    frame: Option<usize>,
 ) -> Vec<String> {
     render_with(
         panel,
@@ -394,7 +405,7 @@ pub fn render_with(
     view: PanelView,
     hit: &mut HitMap,
     lang: Language,
-    frame: usize,
+    frame: Option<usize>,
     filter: &Filter,
     search_row: bool,
     prefix: &str,
@@ -517,7 +528,7 @@ fn item_rows(
     lang: Language,
     selected: usize,
     filter: &Filter,
-    frame: usize,
+    frame: Option<usize>,
 ) -> Vec<Vec<String>> {
     let model = rows_with(panel, data, filter);
     if model.is_empty() {
@@ -789,7 +800,7 @@ fn session_rows(
     session: &SessionRow,
     palette: &Palette,
     columns: usize,
-    frame: usize,
+    frame: Option<usize>,
 ) -> Vec<String> {
     // The leading cell is the row's state slot, the desktop rail's indicator
     // seen from a terminal: a run still in flight spins there (the one thing in
@@ -797,8 +808,16 @@ fn session_rows(
     // quiet row leaves it blank. A streaming row that is *also* the one on
     // screen draws the spinner — the title is already accent-bold, so nothing
     // is lost, and "this one is still writing" is the fact worth the cell.
+    //
+    // `frame` is `None` under reduced motion, and then the slot holds
+    // [`STILL_MARKER`] instead: nothing advances the clock, so a braille frame
+    // would sit there looking like a spinner that had died.
     let marker = if session.streaming {
-        palette.text(palette.accent, crate::workbench::widgets::spinner(frame))
+        let glyph = match frame {
+            Some(frame) => crate::workbench::widgets::spinner(frame),
+            None => STILL_MARKER,
+        };
+        palette.text(palette.accent, glyph)
     } else if session.current {
         palette.text(palette.accent, "▸")
     } else {
@@ -897,7 +916,7 @@ mod tests {
             PanelView::default(),
             &mut hit,
             lang,
-            0,
+            Some(0),
             filter,
             false,
             "sidebar.row.",
@@ -922,7 +941,7 @@ mod tests {
                     PanelView::default(),
                     &mut hit,
                     LANG,
-                    0,
+                    Some(0),
                 );
                 assert_eq!(lines.len(), rows as usize, "{panel:?} at {rows} rows");
                 for line in &lines {
@@ -945,7 +964,7 @@ mod tests {
                 PanelView::default(),
                 &mut hit,
                 LANG,
-                0,
+                Some(0),
             );
             assert_eq!(lines.len(), 6);
             for line in &lines {
@@ -968,7 +987,7 @@ mod tests {
             PanelView::default(),
             &mut hit,
             Language::Zh,
-            0,
+            Some(0),
         )
         .iter()
         .map(|line| crate::utils::strip_ansi_codes(line))
@@ -982,7 +1001,7 @@ mod tests {
     }
 
     /// One conversation's painted row, found by its title.
-    fn row_line(data: &WorkbenchData, title: &str, frame: usize) -> String {
+    fn row_line(data: &WorkbenchData, title: &str, frame: Option<usize>) -> String {
         let mut hit = HitMap::new();
         render(
             PanelId::Recent,
@@ -1054,8 +1073,8 @@ mod tests {
         let mut data = demo::chat();
         data.sessions[1].streaming = true;
         let title = data.sessions[1].title.clone();
-        let first = row_line(&data, &title, 0);
-        let second = row_line(&data, &title, 1);
+        let first = row_line(&data, &title, Some(0));
+        let second = row_line(&data, &title, Some(1));
         assert!(
             first.contains(crate::workbench::widgets::spinner(0)),
             "{first}"
@@ -1070,15 +1089,36 @@ mod tests {
         // accent one.
         let mut busy_current = demo::chat();
         busy_current.sessions[0].streaming = true;
-        let current = row_line(&busy_current, &busy_current.sessions[0].title, 0);
+        let current = row_line(&busy_current, &busy_current.sessions[0].title, Some(0));
         assert!(
             current.contains(crate::workbench::widgets::spinner(0)),
             "{current}"
         );
         assert!(!current.contains('▸'), "{current}");
         // …and a quiet row on screen still marks itself.
-        let quiet = row_line(&data, &data.sessions[0].title, 0);
+        let quiet = row_line(&data, &data.sessions[0].title, Some(0));
         assert!(quiet.contains('▸'), "{quiet}");
+    }
+
+    /// Under reduced motion nothing advances the clock, so a running row must
+    /// not paint an animation frame at all: it paints the same still `…` the
+    /// activity row falls back to. A frozen braille frame is exactly what a dead
+    /// spinner looks like.
+    #[test]
+    fn reduced_motion_paints_a_still_mark_not_a_frozen_frame() {
+        let mut data = demo::chat();
+        data.sessions[1].streaming = true;
+        let title = data.sessions[1].title.clone();
+        let still = row_line(&data, &title, None);
+        assert!(still.contains(STILL_MARKER), "{still}");
+        for frame in 0..crate::workbench::widgets::SPINNER.len() {
+            assert!(
+                !still.contains(crate::workbench::widgets::spinner(frame)),
+                "{still}"
+            );
+        }
+        // …and it stays put: two callers, one painting.
+        assert_eq!(still, row_line(&data, &title, None));
     }
 
     #[test]
@@ -1130,7 +1170,7 @@ mod tests {
             PanelView::default(),
             &mut hit,
             LANG,
-            0,
+            Some(0),
         );
         assert!(!lines.is_empty());
         // One blank row under the tabs; 最近 gives each conversation one row.
@@ -1171,7 +1211,7 @@ mod tests {
             PanelView::default(),
             &mut hit,
             LANG,
-            0,
+            Some(0),
         );
         let text: String = lines
             .iter()
@@ -1194,7 +1234,7 @@ mod tests {
             },
             &mut hit,
             LANG,
-            0,
+            Some(0),
         );
         let text: String = lines
             .iter()
@@ -1235,7 +1275,7 @@ mod tests {
             },
             &mut hit,
             LANG,
-            0,
+            Some(0),
         );
         let text: String = lines
             .iter()
@@ -1452,7 +1492,7 @@ mod tests {
             PanelView::default(),
             &mut hit,
             LANG,
-            0,
+            Some(0),
             &closed,
             true,
             "sidebar.row.",
@@ -1478,7 +1518,7 @@ mod tests {
             PanelView::default(),
             &mut hit,
             LANG,
-            0,
+            Some(0),
             &open,
             true,
             "sidebar.row.",

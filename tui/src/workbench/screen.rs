@@ -1284,7 +1284,7 @@ fn sidebar_rows(
     // so it costs the list nothing: it is drawn while the rail has the keys (as
     // the one thing that names `/`), and whenever a filter is in force.
     let search_row = workbench.sidebar_focus || filter.open || !filter.query.is_empty();
-    let frame = workbench.spinner_frame();
+    let frame = workbench.row_spinner();
     let body = panels::render_with(
         panel,
         data,
@@ -2645,7 +2645,7 @@ fn files_box(
                 .files_index
                 .min(data.tree.rows().len().saturating_sub(1)),
         };
-        let frame = workbench.spinner_frame();
+        let frame = workbench.row_spinner();
         panels::render_with(
             PanelId::Files,
             data,
@@ -3541,7 +3541,7 @@ fn panel_box(
         selected: workbench.sidebar_index,
     };
     let filter = workbench.rail.clone();
-    let frame = workbench.spinner_frame();
+    let frame = workbench.row_spinner();
     let body = panels::render_with(
         panel,
         data,
