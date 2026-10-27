@@ -204,21 +204,28 @@ the same line: a key added in one language only does not compile.
 
 The header is a two-row context line — session, workspace and the backend dot,
 with the hairline under it — leaving the rest of the frame to the conversation.
-`Ctrl+O` or `/preferences` opens the preference panel: move the sidebar left or
-right, adjust its 30–60-column width, control mouse capture and completion
-notifications, enable reduced motion, and rebind global
-shortcuts. The panel keeps the selected row and help visible on short terminals.
-Choices persist in `~/.future/tui/settings.json` as `sidebarPosition`,
-`sidebarWidth`, `sidebarVisible`, `mouseCapture`, `notify` and `reducedMotion`;
-incremental shortcut overrides live beside it in
-`keybindings.json`.
+`Ctrl+Q` or `/preferences` opens the preference panel, and the panel is the
+list of everything this terminal client remembers: move the sidebar left or
+right, adjust its 30–60-column width, show or hide it, control mouse capture and
+completion notifications, enable reduced motion, pick the interface language and
+the color theme, and rebind global shortcuts. Rows that step through a few values
+change in place; the two that are menus — the language and the palette — open the
+same pickers `/lang` and `/theme` do and close back onto the panel, on the row
+that opened them. The panel keeps the selected row and help visible on short
+terminals. Choices persist immediately in `~/.future/tui/settings.json` as
+`sidebarPosition`, `sidebarWidth`, `sidebarVisible`, `mouseCapture`, `notify`,
+`reducedMotion`, `language` and `themeId`; incremental shortcut overrides live
+beside it in `keybindings.json`. A width the reader dragged is written back as it
+was — the file's range is the divider's own 30–60, so the next start opens the
+rail exactly as wide as it was left.
 
 With no stored `sidebarVisible` — a first start, or a file written before the
 key existed — the rail starts **hidden**: the conversation gets the whole
 width, and `shift+←`/`shift+→` (which show the rail to reach
 their panel) brings it back. Once the reader has shown or hidden it, that choice
 is what the next start begins with, and `Restore defaults` lands back on the
-hidden layout.
+hidden layout, hands the language back to the system and the palette back to the
+terminal's light/dark hint.
 `/theme` opens the theme picker: the six palettes the TUI has always shipped
 (`dark`, `light`, `one-dark`, `one-light`, `high-contrast`, `dracula`) plus the
 desktop's palette family (`ayu`, `catppuccin`, `everforest`, `gruvbox`,
@@ -295,7 +302,7 @@ click on the rail's tab strip are the doors to the same places.
 | `ctrl+d` | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal. The rail's own `›` edge button does the same hide/show with one click. The show/hide choice is written to `sidebarVisible` and is where the next start begins (a first start begins hidden) |
 | `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run |
 | `ctrl+r` | Session picker (name, workspace and age of each conversation; the footer names the key) |
-| `ctrl+q` or `/preferences` | Preferences and shortcut editor. The key is also printed in the footer hint row, so it is on screen while the reader is wondering |
+| `ctrl+q` or `/preferences` | Preferences: sidebar position, width and visibility, mouse capture, notifications, reduced motion, interface language, color theme and the shortcut editor. The key is also printed in the footer hint row, so it is on screen while the reader is wondering |
 | `?` (or the full-width `？`) | Help overlay (effective keys, grouped by area, then the commands; the key requires an empty draft). Rows are listed only where an action has a chord — the verbs with none keep their typed door in the command list at the end of the same box |
 | `/lang` | Interface language: opens the picker — follow the system, Chinese or English |
 | `ctrl+e` | Final-answer / full-process reading level: every reply folds its work — the calls and reasoning before its last prose, and, once it settles, the work after it too — into one summary row (`▸ 4 tool calls · 2 thoughts`). A reply that is still running folds the same way, keeping only the call in flight as a row; a reply that never writes prose folds onto the slice it stopped at. Reasoning is collapsed to a `▸ thinking` row at the default level (the way the desktop and the phone show it) while the full-process level prints its text. A view toggle for the run it is pressed in, not a preference: every start opens folded, so a peek at the process cannot leave the next terminal expanded |

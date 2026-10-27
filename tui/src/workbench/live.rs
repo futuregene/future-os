@@ -1327,8 +1327,9 @@ impl Live {
             WbAction::SetPendingThinking(level) => self.set_pending_effort(&level),
             WbAction::NewSession => self.to_launchpad(),
             // The surface owns its own palette; the driver persists it (it is
-            // the one that knows where `settings.json` is).
-            WbAction::SetTheme(_) => {}
+            // the one that knows where `settings.json` is). `ResetTheme` is the
+            // same split: forgetting the stored id is the driver's business.
+            WbAction::SetTheme(_) | WbAction::ResetTheme => {}
             // Same split for the language: the driver resolves the preference,
             // hands the bundle back here and persists it.
             WbAction::SetLanguage(_) => {}

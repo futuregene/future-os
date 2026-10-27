@@ -346,6 +346,9 @@ pub enum WbAction {
     SetPendingThinking(String),
     /// The theme picker committed a palette: adopt it and persist it.
     SetTheme(String),
+    /// The theme follows the terminal again: forget the stored id rather than
+    /// pinning the palette the hint resolves to today.
+    ResetTheme,
     /// The language picker committed a preference: adopt it and persist it. The
     /// driver owns the resolution (a `system` choice re-reads the locale) and
     /// the settings file; the surface only knows the two bundles.
@@ -523,6 +526,10 @@ pub struct Workbench {
     /// The palette in force when the theme picker opened: `esc` restores it, so
     /// previewing cannot change what the reader ends up with.
     picker_restore: Option<&'static str>,
+    /// The picker was opened from the preferences box: committing or dismissing
+    /// it puts the reader back there rather than on the conversation, so the
+    /// rows that are menus (`语言`, `配色`) behave like `快捷键` does.
+    picker_from_preferences: bool,
     pub launch_field: LaunchField,
     pub chat_scroll: usize,
     pub scroll: scroll::ScrollState,
@@ -640,6 +647,7 @@ impl Workbench {
                 LanguagePreference::default(),
             ),
             picker_restore: None,
+            picker_from_preferences: false,
             launch_field: LaunchField::Prompt,
             chat_scroll: 0,
             scroll: scroll::ScrollState::default(),
@@ -714,6 +722,14 @@ impl Workbench {
         // reporting "unknown" for a palette that was in fact applied is the
         // kind of lie that made the settings file drift.
         theme::is_known(id)
+    }
+
+    /// Follow the terminal's light/dark hint again — the palette a reader who
+    /// never chose one gets. The driver forgets the stored id alongside it, so
+    /// this is "no choice", not "today's hint pinned forever".
+    pub fn reset_theme(&mut self) -> &'static str {
+        self.palette = theme::resolve(None);
+        self.palette.id
     }
 
     /// Adopt a language preference: `system` resolves against the locale now.
@@ -1844,6 +1860,16 @@ impl Workbench {
                                 .clamp(layout::SIDEBAR_MIN as i32, layout::SIDEBAR_MAX as i32)
                                 as u16;
                         }
+                        preferences::PreferenceRow::SidebarVisible => {
+                            // The menu is a second door to what the rail's own
+                            // button does, minus the focus: a box that handed
+                            // the keys to the rail would lose the row the
+                            // reader is standing on.
+                            self.sidebar_visible = !self.sidebar_visible;
+                            if !self.sidebar_visible {
+                                self.sidebar_focus = false;
+                            }
+                        }
                         preferences::PreferenceRow::Mouse => {
                             return vec![WbAction::ToggleMouse];
                         }
@@ -1855,6 +1881,20 @@ impl Workbench {
                         }
                         preferences::PreferenceRow::Motion => {
                             self.reduced_motion = !self.reduced_motion;
+                        }
+                        // A menu, not a toggle: the boxes `/lang` and `/theme`
+                        // open, reached from the box the reader is already in.
+                        preferences::PreferenceRow::Language => {
+                            if key != "enter" {
+                                return Vec::new();
+                            }
+                            return self.open_preference_picker(PickerKind::Language, data);
+                        }
+                        preferences::PreferenceRow::Theme => {
+                            if key != "enter" {
+                                return Vec::new();
+                            }
+                            return self.open_preference_picker(PickerKind::Theme, data);
                         }
                         preferences::PreferenceRow::Shortcuts => {
                             if key != "enter" {
@@ -1868,7 +1908,20 @@ impl Workbench {
                             if key != "enter" {
                                 return Vec::new();
                             }
+                            // "Restore defaults" is every row above it: the
+                            // layout, the language and the palette that
+                            // follows the terminal again. Leaving the two
+                            // rows the menu now shows untouched is what made
+                            // the verb a half-truth.
                             self.set_preferences(preferences::LayoutPreferences::default());
+                            self.sidebar_focus = false;
+                            self.set_language(LanguagePreference::System);
+                            self.reset_theme();
+                            return vec![
+                                WbAction::SetPreferences,
+                                WbAction::SetLanguage(LanguagePreference::System),
+                                WbAction::ResetTheme,
+                            ];
                         }
                     }
                     vec![WbAction::SetPreferences]
@@ -2474,9 +2527,31 @@ impl Workbench {
     pub fn open_picker(&mut self, kind: PickerKind, data: &WorkbenchData) -> Vec<WbAction> {
         self.picker = Picker::new(kind, data, self.palette.id, self.lang, self.language_pref);
         self.picker_restore = (kind == PickerKind::Theme).then_some(self.palette.id);
+        self.picker_from_preferences = false;
         self.overlay = Some(Overlay::Picker(kind));
         self.overlay_scroll = 0;
         vec![WbAction::Redraw]
+    }
+
+    /// Open a picker from the preferences box.
+    ///
+    /// The box's `语言` and `配色` rows are menus, not toggles, so they open the
+    /// picker the same command does — and close back onto the row that opened
+    /// them, the way `快捷键` returns to the box. A reader who was adjusting a
+    /// preference is not sent back to the conversation for it.
+    fn open_preference_picker(&mut self, kind: PickerKind, data: &WorkbenchData) -> Vec<WbAction> {
+        let actions = self.open_picker(kind, data);
+        self.picker_from_preferences = true;
+        actions
+    }
+
+    /// The overlay a just-closed picker leaves behind.
+    fn picker_closed_overlay(&mut self) -> Option<Overlay> {
+        if std::mem::take(&mut self.picker_from_preferences) {
+            Some(Overlay::Preferences)
+        } else {
+            None
+        }
     }
 
     /// Close the picker. `esc` and a click outside it are the same gesture, and
@@ -2488,7 +2563,7 @@ impl Workbench {
                 self.set_theme(id);
             }
         }
-        self.overlay = None;
+        self.overlay = self.picker_closed_overlay();
         vec![WbAction::Redraw]
     }
 
@@ -2515,7 +2590,7 @@ impl Workbench {
     fn apply_picker(&mut self, kind: PickerKind, data: &WorkbenchData) -> Vec<WbAction> {
         let selected = self.picker.selected(data, self.committed_theme());
         let launchpad = data.on_launchpad();
-        self.overlay = None;
+        self.overlay = self.picker_closed_overlay();
         self.picker_restore = None;
         match (kind, selected) {
             // The slider *is* the choice on its own row: `enter` there applies
@@ -2751,6 +2826,17 @@ impl Workbench {
             "preferences.shortcuts" => {
                 self.overlay = Some(Overlay::Keybindings);
                 vec![WbAction::Redraw]
+            }
+            // The two rows that are menus behave like the key: the click lands
+            // the highlight on the row it hit, then opens what it names — so
+            // closing the menu leaves the reader where the pointer left them.
+            "preferences.language" => {
+                self.preferences_index = preferences::PreferenceRow::Language.index();
+                self.open_preference_picker(PickerKind::Language, data)
+            }
+            "preferences.theme" => {
+                self.preferences_index = preferences::PreferenceRow::Theme.index();
+                self.open_preference_picker(PickerKind::Theme, data)
             }
             "preferences.reset" => self.handle_overlay_key(Overlay::Preferences, "enter", data),
             // The preview box's own controls, drawn in its top row. They are the
@@ -6231,6 +6317,122 @@ mod tests {
             ]
         );
         assert_eq!(workbench.overlay, None, "applying closes the box");
+    }
+
+    /// The box's two menu rows open the same pickers `/lang` and `/theme` open,
+    /// and closing one lands back on the box — on the row that opened it —
+    /// rather than on the conversation underneath.
+    #[test]
+    fn the_preferences_box_opens_the_language_and_theme_menus() {
+        let data = demo::chat();
+        let mut workbench = workbench();
+        workbench.open_preferences();
+
+        // `←`/`→` are for the rows that step through their own values; a row
+        // that is a menu ignores them, the same way 快捷键 does.
+        workbench.preferences_index = preferences::PreferenceRow::Language.index();
+        assert!(workbench
+            .handle(WbEvent::Key("right".into()), &data)
+            .is_empty());
+        assert_eq!(workbench.overlay, Some(Overlay::Preferences));
+
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(
+            workbench.overlay,
+            Some(Overlay::Picker(PickerKind::Language))
+        );
+        // It opens on the preference in force (中文) and commits through the
+        // same action `/lang` produces.
+        assert_eq!(workbench.picker.kind, PickerKind::Language);
+        assert_eq!(workbench.picker.index, 1);
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::SetLanguage(LanguagePreference::En)]
+        );
+        assert_eq!(workbench.overlay, Some(Overlay::Preferences));
+        assert_eq!(
+            workbench.preferences_index,
+            preferences::PreferenceRow::Language.index()
+        );
+
+        // `esc` on the theme menu is the same return, and the palette it was
+        // previewing is restored on the way out.
+        workbench.set_language(LanguagePreference::Zh);
+        let committed = workbench.palette;
+        workbench.preferences_index = preferences::PreferenceRow::Theme.index();
+        workbench.handle(WbEvent::Key("enter".into()), &data);
+        assert_eq!(workbench.overlay, Some(Overlay::Picker(PickerKind::Theme)));
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        workbench.handle(WbEvent::Key("escape".into()), &data);
+        assert_eq!(workbench.overlay, Some(Overlay::Preferences));
+        assert_eq!(workbench.palette, committed, "the preview was undone");
+        assert_eq!(
+            workbench.preferences_index,
+            preferences::PreferenceRow::Theme.index()
+        );
+    }
+
+    /// "Restore defaults" is every row above it — the layout, the language and
+    /// the palette that follows the terminal again — and the keys stay with the
+    /// box instead of being handed to a rail that is no longer up.
+    #[test]
+    fn restoring_defaults_also_restores_language_and_theme() {
+        let data = demo::chat();
+        let mut workbench = workbench();
+        workbench.set_theme("dracula");
+        workbench.sidebar_position = preferences::SidebarPosition::Left;
+        workbench.sidebar_visible = true;
+        workbench.sidebar_focus = true;
+        workbench.open_preferences();
+        workbench.preferences_index = preferences::PreferenceRow::Reset.index();
+
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &data),
+            vec![
+                WbAction::SetPreferences,
+                WbAction::SetLanguage(LanguagePreference::System),
+                WbAction::ResetTheme,
+            ]
+        );
+        assert_eq!(workbench.language_pref, LanguagePreference::System);
+        assert_eq!(workbench.palette.id, theme::resolve(None).id);
+        assert_eq!(
+            workbench.sidebar_position,
+            preferences::SidebarPosition::Right
+        );
+        assert!(
+            !workbench.sidebar_visible,
+            "the shipped layout hides the rail"
+        );
+        assert!(!workbench.sidebar_focus, "a hidden rail keeps no keys");
+    }
+
+    /// The rail's visibility has a row in the box as well as a chord and a
+    /// button: a reader whose rail is hidden should not have to know `ctrl+d`.
+    #[test]
+    fn the_box_can_show_and_hide_the_rail_without_taking_its_keys() {
+        let data = demo::chat();
+        let mut workbench = workbench();
+        workbench.sidebar_visible = true;
+        workbench.open_preferences();
+        workbench.preferences_index = preferences::PreferenceRow::SidebarVisible.index();
+
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::SetPreferences]
+        );
+        assert!(!workbench.sidebar_visible);
+        assert!(!workbench.sidebar_focus);
+        workbench.handle(WbEvent::Key("enter".into()), &data);
+        assert!(workbench.sidebar_visible);
+        assert!(
+            !workbench.sidebar_focus,
+            "the box keeps the keys while it is open"
+        );
     }
 
     /// The reported bug: `/model` listed `future/deepseek-flash` and
