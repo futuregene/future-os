@@ -162,3 +162,25 @@ This artifact preserves its contemporaneous acceptance status; running full regr
 [C6 raw final evidence](../testing/compact-storage-acceptance-2026-10-27.json) records fresh 1/10 MiB, small/large tools, native UUID 1/4/16 concurrency, actual admission, browser and migration/fault results, plus exact synthetic baseline overlays. C5's three paired realistic runs remain unchanged: allocations fall approximately 39.7%/52.7% for 20/150 tools and logical WAL approximately 8.5%; unthrottled total write/publication median wall time rises approximately 29%/32%.
 
 Observed admission-to-durable p99 stays within 39.5/36.5/44.2 ms for 1/4/16 sessions. Terminal work for 1/10 MiB takes 1.65/1.78 ms. Large tool publication appends no duplicate bodies but full hash verification still takes approximately 26.5/268.8 ms; single-tool WAL rises about 3.4%/0.4%. File length, logical page writes and UI blocking are distinct metrics; checkpoint differences are not savings. See C6 and plan section15 for raw values, resource use, failures and limitations.
+
+## B5: native ID recheck and three-generation storage comparison
+
+Read-only review after testing application `80bea897`, 2026-10-27. The [machine-readable review](../testing/storage-id-and-savings-review-2026-10-27.json) retains exact bytes, formulas and evidence hashes. B0–B4 remain unchanged.
+
+The latest five-prompt conversation has one session key,42 message keys,41 message/run references,five run keys and49 body-owner keys, all BLOB16 UUIDv4. All runs completed; ownership, foreign-key and integrity checks pass. The five Host run UUIDs exactly match the Agent, but Host run keys remain TEXT36 and Host thread IDs remain timestamp-prefixed TEXT29. Agent business identities and Host default run generation are covered; not every self-generated identity in every database is unified. Historical TEXT, provider opaque IDs, integer technical keys and auxiliary empty run keys remain unchanged.
+
+Allocation sums every recorded dbstat structure, including indices, schema and fixed empty pages. Reduction is `(1 - current_bytes / baseline_bytes) * 100%`; negative means growth. Long-body and tool workloads differ, so reductions cannot be added or multiplied. WAL file length is excluded.
+
+| Identical continuous body | Original event layout MiB | Previous segmented MiB | Current MiB | Reduction vs original | Change vs previous |
+|---|---:|---:|---:|---:|---:|
+| About1 MiB | 7.8984 | 1.6563 | 1.6758 | 78.78% | 1.18% growth (20 KiB) |
+| About10 MiB | 76.0625 | 13.2539 | 13.0625 | 82.83% | 1.44% reduction (196 KiB) |
+
+Raw inputs are C6 final-space-old formats1/2 and final-space-new format2. Fixed new-layout overhead slightly increases the small1 MiB case. Multi-tool savings must not be generalized to continuous large bodies.
+
+| Identical tools, three paired runs | Previous KiB | Current KiB | Allocation reduction | Logical WAL page-write reduction |
+|---|---:|---:|---:|---:|
+| 20 calls | 1672 | 1008 | 39.71% | 8.47% |
+| 150 calls | 10,276 | 4856 | 52.74% | 8.45% |
+
+These use C5 three-run medians with matching logical-content digests. Logical WAL bytes are not physical device I/O. The observed whole personal Agent database is102,359,040 bytes (about97.62 MiB), including unchanged history; whole-file differences do not measure new-conversation savings. The actual new conversation has37,431 body bytes,54 objects and751 segments. It is an observation, not a saving comparison against an older conversation with different content.
