@@ -21,13 +21,20 @@ sessions, entries or message blocks.
   (`get_state`) and `session transcript` measured the same at 4.43 GiB and at
   1.30 GiB; they are index-driven reads of one session, so they never touch the
   journal pages that grew.
-- The journal is still unbounded by construction: only a run-completion
-  notification folds it, so a store that missed those notifications keeps every
+- The journal used to be unbounded by construction: only a run-completion
+  notification folded it, so a store that missed those notifications kept every
   row. On this store **135 of 1,166 settled runs** still held their raw journal.
+  Two entries now cover that: a **bounded startup catch-up** (16 runs / 10 s, one
+  pass, logged) and the explicit sweep.
 - `future session journal --reclaim --yes` folded **6,958,103 events of 85 runs**
   in about **70 s**; a single `VACUUM` then took **5.4 s** and took the file from
   **4.43 GiB to 1.30 GiB**. All **337** session transcripts were **byte-identical**
   before and after.
+- A later copy of the same store (**4.77 GiB**) held stream runs that had never
+  sent `agent_end` — 50 `interrupted`/`cancelled` runs a crash had cut off. `runs`
+  is what decides a run is over, so they fold too once their stream has been
+  quiet for a minute: 138 runs / 8.16 M events reclaimed, `0 reclaimable` after,
+  **77.6 %** off the file, and all 363 transcripts byte-identical.
 
 ## What the file was made of
 
@@ -108,20 +115,85 @@ diagnose.
 does on completion, but explicitly and in bounded slices (20 s of work per RPC,
 `hasMore` until the sweep ends):
 
-- **Folded, not truncated.** For a settled run whose raw journal ends with
-  `agent_end`, the delta stream is folded into one `run_snapshots` row (the
-  `DeltaFolder` keeps the visible text stream and the pricing events), and only
-  then are the raw rows deleted — publication and the first delete slice share
-  one transaction, so a crash cannot leave a reader without either.
+- **Folded, not truncated.** For a foldable settled run, the delta stream is
+  folded into one `run_snapshots` row (the `DeltaFolder` keeps the visible text
+  stream, the pricing events and every non-delta event verbatim), and only then
+  are the raw rows deleted — publication and the first delete slice share one
+  transaction, so a crash cannot leave a reader without either.
 - **Never touched:** `entries`, `message_blocks`, `history_*`, `sessions`,
   `runs`, and the journal of any run that is still `running` or has not settled.
-- **Refused instead of guessed:** a journal whose last event is not `agent_end`,
-  or that contains provider deltas that cannot be proven duplicates, is kept and
-  counted (`Kept journals` in the report).
 
-Why the fold is smaller: on this store `run_e4a62a1c…`'s 45.8 MiB of `thinking_delta`
-and `tool_delta` became a **952 KiB** snapshot, and 6.96 M raw events
-(≈ 1.7 GiB of payload) became 85 snapshots (≈ 114 MiB).
+### What makes a run foldable
+
+`runs` is the authority on whether a run is over; `agent_end` only says whether
+its stream is *complete*. Those are different questions, and the first version of
+this code answered the second one and refused to reclaim anything whose stream
+had been cut off — which is precisely what a crash leaves behind.
+
+| Run state | Stream | Folded? |
+| --- | --- | --- |
+| `completed` / `failed` / `cancelled` / `interrupted` | ends with `agent_end` | yes, immediately |
+| same, settled **more than 60 s ago** | no `agent_end` (truncated) | yes — a minute later no producer can still be appending the missing tail |
+| same, settled **less than 60 s ago** | no `agent_end` | no: the `run_terminal` entry that settles `runs` is written *before* the final event broadcast, so the tail may still be in flight. Counted as `not_terminal` |
+| any settled status | no `agent_end` and no `completed_at_ms` (a legacy import) | no: age is the evidence that the producer is gone, and there is none to read. Counted as `not_terminal` |
+| any settled status | provider deltas that cannot be proven duplicates of the visible text | no: dropping them would change what a client renders. Counted as `provider_delta` |
+| `running` | anything | no: the journal is still being appended to. Counted as `not_settled` |
+
+A fold of a truncated stream publishes exactly the events that were there — it
+does not invent a terminal — and the durable counter `Truncated` in the report
+counts how many of the published snapshots came from one. Nothing diagnostic is
+dropped: `error`, `tool_start` without its `tool_end`, the partial tool-argument
+fragments of a cancelled call and every other non-delta event survive verbatim.
+The only events a fold ever removes are the ones it merged into a longer segment.
+
+Measured on a copy taken 2026-10-27 12:21 (4.77 GiB), where 148 settled runs held
+raw journals — 62 `interrupted` (1.34 M events), 29 `cancelled` (1.28 M), 56
+`completed` (5.63 M), 1 `failed` (70 k) — the sweep folded **138 runs /
+8,162,910 events** in 20 slices (7 min 49 s) and the store reported **0
+reclaimable runs** afterwards, with `Truncated` = 50: the 50 runs that the
+first version of this page listed as permanently unreclaimable are now folded.
+
+Why the fold is smaller: on the earlier store `run_e4a62a1c…`'s 45.8 MiB of
+`thinking_delta` and `tool_delta` became a **952 KiB** snapshot, and 6.96 M raw
+events (≈ 1.7 GiB of payload) became 85 snapshots (≈ 114 MiB).
+
+## The startup catch-up
+
+A completion notification only covers a run whose process is still running when
+it ends. Everything else — a crash, a stop, an older build, a compaction that
+failed — used to stay a raw journal until somebody remembered to run the sweep,
+which is how a store reached 4.43 GiB with 135 settled runs still holding their
+streams.
+
+So the compactor thread runs one bounded catch-up at startup (`CatchUp` on the
+same queue that already handles completions), and logs what it did:
+
+```
+run-journal catch-up: folded settled journals, kept the rest
+  examined=10 folded=10 events=162544 snapshot_bytes=3143781
+  truncated=8 errors=0 refused=none has_more=true elapsed_ms=10050
+```
+
+- **Bounds:** at most 16 runs folded (`CATCH_UP_MAX_RUNS`) and at most 10 s of
+  folding (`CATCH_UP_BUDGET`), whichever ends first; the budget starts after the
+  candidate plan is read, so a startup that queues the job behind its own
+  migration does not spend the whole budget waiting. One fold is never
+  interrupted, so a single very large run can exceed the time bound — the next
+  start continues where this one stopped (`has_more=true`).
+- **Not a timer and not a request path:** it is one pass, queued by
+  `initialize`, executed on the compactor thread. Nothing schedules a second one,
+  and no RPC waits for it.
+- **Diagnosable by construction:** `folded: 0` with a non-empty `refused` means
+  the journals were looked at and legitimately kept; `examined: 0` logs at debug
+  and means there was nothing settled left to fold; no line at all means the
+  catch-up never ran. Before this, "quiet" and "broken" looked identical in a
+  store that stopped shrinking.
+- **Backlog too big for one start is fine:** the explicit sweep is still the
+  entry for that, and it is the same fold with a larger reach.
+
+On the 4.77 GiB copy above the first start after the upgrade folded 10 runs
+(162,544 events, 8 of them truncated) in 10.05 s and reported `has_more=true`;
+the explicit sweep took the remaining 138.
 
 ## Procedure
 
@@ -166,7 +238,10 @@ sqlite3 invocation from a shell that has `sqlite3.exe` on `PATH`.
 ## What the verification looked like
 
 The property that matters is "removing events must not change what a reader
-sees", so the check is a diff, not a promise:
+sees", so the check is a diff, not a promise. Measured twice, on two copies of a
+live store; the second run is the one that includes the truncated streams.
+
+First store (2026-10-27 11:18, 4.43 GiB, no truncated journals folded):
 
 - `future session transcript --session <id> --select all --all --max-bytes 0
   --json` for **all 337** session ids (235 MB of output) — identical before the
@@ -174,27 +249,41 @@ sees", so the check is a diff, not a promise:
   single byte to one dump makes it report that file.
 - `entries` (116,281 rows) and `message_blocks` (154,295 rows) dumped in primary
   key order — identical MD5 before and after (`1be02f36…`, `0e0dcae1…`).
-- `PRAGMA quick_check` = `ok` after the sweep and after `VACUUM`.
-- `cargo test -p future-agent journal_reclaim` covers the same invariants on a
-  synthetic store, including that a sweep leaves `entries` and `message_blocks`
+
+Second store (2026-10-27 12:21, 4.77 GiB, **148** settled runs holding raw
+journals, **47 sessions** holding an `interrupted`/`cancelled` run that a crash
+cut off):
+
+- The same transcript dump for **all 363** session ids (249 MB), taken before
+  anything ran, after the startup catch-up, after the full sweep, and after
+  `VACUUM` — **0 differences** at every step. All 47 truncated-run sessions had
+  non-empty transcripts and all 47 are byte-identical.
+- `entries` (123,258 rows) and `message_blocks` (163,526 rows): identical MD5
+  before and after (`5e634326…`, `0a084e58…`).
+- `run_events` 8,397,370 → 71,916 rows; `run_snapshots` 1,057 → 1,205;
+  `PRAGMA quick_check` = `ok`; then `VACUUM` 5.5 s shrank the file from 4.83 GiB
+  to **1.07 GiB** (from the original 4.77 GiB copy: −77.6 %).
+- `cargo test -p future-agent journal` covers the same invariants on synthetic
+  stores, including that a sweep leaves `entries` and `message_blocks`
   byte-identical.
 
 ## What is left behind
 
-Measured on the store above after the fold — these are known limits, not bugs
-being worked around here:
+Measured on the second store after the full sweep — these are known limits, not
+bugs being worked around here:
 
 | Leftover | Size | Why |
 | --- | --- | --- |
-| 50 settled runs whose journal does not end with `agent_end` (49 `interrupted`, 1 `cancelled`) | 761,984 events · 179 MiB | The fold refuses a journal a producer may still append to. These runs were cut off mid-stream (the last event on the largest one is a `tool_start`), so they stay until a future decision lets a settled run's stream be folded regardless of its tail. |
+| Settled runs with no `completed_at_ms` (a legacy import) and a truncated stream | none on this store | With no settle time there is no age to prove the producer is gone; counted as `not_terminal` until one can be established. |
+| Provider deltas that cannot be proven duplicates of the visible text | none on this store | Dropping them would change what a client renders; counted as `provider_delta`. |
+| Runs that settled inside the 60 s grace window | — | Their tail may still be in flight; the next start (or the next sweep) takes them. |
 | 5 `running` runs | — | Live runs are never candidates, by design. |
-| Free pages inside the file | 3.08 GiB before `VACUUM` | The sweep hands pages to SQLite's freelist; idle incremental vacuum returns them in 10 ms slices, and only `VACUUM` rewrites the file. |
+| Free pages inside the file | 3.4 GiB before `VACUUM` | The sweep hands pages to SQLite's freelist; idle incremental vacuum returns them in 10 ms slices, and only `VACUUM` rewrites the file. |
 
-Also worth knowing when reading the numbers: the automatic fold is triggered by
-a completion notification and has no startup sweep and no retry, so a store that
-was closed mid-run, upgraded, or simply busy keeps its raw journals. That is how
-this one reached 4.43 GiB with `journal.reclaimed_runs` = 62 before the explicit
-sweep took it to 147.
+The store no longer drifts into a 4.4 GiB journal on its own: the startup
+catch-up folds what a stop or a crash left behind, and the `Truncated` counter
+in `future session journal` is the durable evidence that it is doing so (50 on
+the second store, and `Reclaimable 0 settled runs` once the sweep finished).
 
 ## Reproducing the measurement
 
