@@ -152,6 +152,7 @@ python3 scripts/screenshots/capture.py tui tui-chat.png
   `help`（`?`）、`palette`（`/`）、`palette-filter`（按下 `/` 再输入查询、不回车）、
   侧栏面板 `todo` / `usage` / `skills` / `sessions`（靠点击页签切换，没有对应按键）、
   两条指面板的命令 `command-usage` / `command-skills`、`launchpad`（`/new`）、
+  `mention-sessions`（草稿里敲 `#`：会话提及菜单）、
   `full-panel`（窄终端上的 `ctrl+b`）、`scrolled`（点一下聊天再滚轮上滚三次）、
   `light`（`/theme` 后下移一行回车；它会持久化，所以放在最后）以及 `drag`
   （抓住分隔条往右拖六列）。所有坐标都在步骤执行时从当时屏幕上的帧算出来——点页签按
