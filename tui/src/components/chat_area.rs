@@ -26,6 +26,16 @@ const COLLAPSED_TOOL_OUTPUT_ROWS: usize = 4;
 /// make the diff renderer walk megabytes on every frame.
 const EXPANDED_TOOL_OUTPUT_ROWS: usize = 200;
 
+/// Widest a user bubble gets, borders and padding included. The desktop sizes
+/// the same message as a `max-w-2xl` bubble inside a `max-w-3xl` column, so the
+/// prompt reads as its own block there and not as a wall of text; 64 columns is
+/// that proportion in a full-width terminal.
+const USER_BUBBLE_MAX_COLS: usize = 64;
+/// Narrowest bubble body worth framing. Below this the two borders and the two
+/// padding columns leave so little room for the words that the plain band is
+/// the honest rendering.
+const USER_BUBBLE_MIN_CONTENT: usize = 8;
+
 // ─── Types ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1718,9 +1728,97 @@ impl ChatArea {
         end - msg_idx
     }
 
-    // ─── User message (markdown + full-width background Box) ────────────
+    // ─── User message (right-aligned bubble) ────────────────────────────
 
     fn render_user_message(&mut self, msg: &ChatMessage) {
+        // The run state describes the prompt itself (`queued (#2)`, `cancelled`,
+        // `merged into the previous run`), so it is the bubble's last row rather
+        // than a line under it: the box then holds everything about this one
+        // message and nothing else.
+        let status = match msg.run_state {
+            Some(RunState::Queued) => {
+                let suffix = match msg.queue_position {
+                    Some(q) => format!(" (#{q})"),
+                    None => String::new(),
+                };
+                // TS: dim(`queued${suffix}`) — suffix inside the dim.
+                Some(format!("queued{suffix}"))
+            }
+            Some(
+                state @ (RunState::Cancelled
+                | RunState::Superseded
+                | RunState::Merged
+                | RunState::LostOnAgentRestart),
+            ) => Some(state.label().to_string()),
+            _ => None,
+        };
+
+        // Room the words get: the column, minus the two borders, minus one
+        // column of margin, capped at the bubble's share of the width.
+        let content_max = self.width.saturating_sub(5).min(USER_BUBBLE_MAX_COLS - 4);
+        if content_max < USER_BUBBLE_MIN_CONTENT {
+            self.render_user_message_band(msg, status.as_deref());
+            return;
+        }
+
+        let mut rows: Vec<(String, bool)> = self
+            .md
+            .render_text(&msg.content, content_max)
+            .into_iter()
+            .map(|line| (line, false))
+            .collect();
+        if let Some(status) = status {
+            rows.push((status, true));
+        }
+        let widest = rows
+            .iter()
+            .map(|(text, _)| visible_width_of(text))
+            .max()
+            .unwrap_or(0);
+        // Hug the widest row — a one-word prompt gets a small bubble, the way a
+        // chat client sizes it, instead of a full-width bar with a word in it.
+        let content_w = widest.clamp(1, content_max);
+        let inner = content_w + 2;
+        let total = inner + 2;
+        let indent = " ".repeat(self.width.saturating_sub(total + 1));
+        let accent = self.theme.accent as u8;
+        let border = |text: &str| fg(accent, &dim(text));
+
+        self.push_user_bubble_row(&indent, border(&format!("╭{}╮", "─".repeat(inner))), total);
+        for (text, is_status) in rows {
+            let text = truncate_to_width(&text, content_w, &TruncateOptions::default());
+            let padding = content_w.saturating_sub(visible_width_of(&text));
+            let text = if is_status { dim(&text) } else { text };
+            self.push_user_bubble_row(
+                &indent,
+                format!(
+                    "{} {text}{} {}",
+                    border("│"),
+                    " ".repeat(padding),
+                    border("│")
+                ),
+                total,
+            );
+        }
+        self.push_user_bubble_row(&indent, border(&format!("╰{}╯", "─".repeat(inner))), total);
+    }
+
+    /// Paint one bubble row: `indent` stays outside the fill, so the box stops at
+    /// its own right border and the rest of the row keeps the terminal
+    /// background. That is the difference between a bubble and the full-width
+    /// band this prompt used to be — the prompt is one block of text, not a
+    /// full-row highlight.
+    fn push_user_bubble_row(&mut self, indent: &str, body: String, bubble_width: usize) {
+        let filled = apply_background_to_line(&body, bubble_width, self.theme.user_bg);
+        self.rendered_lines.push(RenderedLine {
+            text: format!("{indent}{filled}"),
+            dim: false,
+        });
+    }
+
+    /// The prompt as a plain full-width band: the fallback for a column too
+    /// narrow to frame, where the borders would leave almost nothing for words.
+    fn render_user_message_band(&mut self, msg: &ChatMessage, status: Option<&str>) {
         let rendered = self
             .md
             .render_text(&msg.content, self.width.saturating_sub(2).max(1));
@@ -1732,27 +1830,8 @@ impl ChatArea {
                 dim: false,
             });
         }
-        if msg.run_state == Some(RunState::Queued) {
-            let suffix = match msg.queue_position {
-                Some(q) => format!(" (#{q})"),
-                None => String::new(),
-            };
-            // TS: dim(`queued${suffix}`) — suffix inside the dim.
-            let t = format!(" {}", dim(&format!("queued{suffix}")));
-            self.rendered_lines.push(RenderedLine {
-                text: apply_background_to_line(&t, self.width, self.theme.user_bg),
-                dim: true,
-            });
-        }
-        if matches!(
-            msg.run_state,
-            Some(RunState::Cancelled)
-                | Some(RunState::Superseded)
-                | Some(RunState::Merged)
-                | Some(RunState::LostOnAgentRestart)
-        ) {
-            let label = msg.run_state.unwrap().label();
-            let t = format!(" {}", dim(label));
+        if let Some(status) = status {
+            let t = format!(" {}", dim(status));
             self.rendered_lines.push(RenderedLine {
                 text: apply_background_to_line(&t, self.width, self.theme.user_bg),
                 dim: true,
@@ -2573,12 +2652,16 @@ mod tests {
 
     /// The transcript's visible rows as plain text: ANSI stripped, the UI's
     /// leading indent and background padding trimmed, blank separator rows
-    /// dropped.
+    /// dropped, and the frame around a user prompt removed.
+    ///
+    /// The frame is dropped because these tests are about *which* rows the
+    /// transcript holds — a fold, a seam, a spacer — and the prompt's box is the
+    /// same three rows whatever the assertion is checking. The box itself is
+    /// pinned by the `user_message_bubble*` tests, which read the raw rows.
     fn compact_lines(chat: &mut ChatArea) -> Vec<String> {
         render_trimmed(chat)
             .iter()
-            .map(|line| strip(line).trim().to_string())
-            .filter(|line| !line.is_empty())
+            .filter_map(|line| unframe_user_bubble(&strip(line)))
             .collect()
     }
 
@@ -3372,8 +3455,7 @@ mod tests {
         }
         lines
             .iter()
-            .map(|line| strip(line).trim().to_string())
-            .filter(|line| !line.is_empty())
+            .filter_map(|line| unframe_user_bubble(&strip(line)))
             .collect()
     }
 
@@ -4695,13 +4777,97 @@ mod tests {
         assert!(lines.iter().any(|l| l.contains("\x1b[38;5;204m")));
     }
 
+    /// The prompt is a framed block: bordered rows, one column of padding
+    /// either side, hugging its own text — not a full-width band of background.
     #[test]
-    fn user_message_gets_background() {
+    fn user_message_renders_as_a_right_aligned_bubble() {
         let mut chat = new_chat();
         chat.render(W);
         chat.add_message(ChatMessage::new("u".into(), ChatRole::User, "hi there"));
-        let lines = chat.render_all(W);
-        assert!(lines[0].starts_with("\x1b[48;5;59m"));
+        let mut lines = chat.render_all(W);
+        while lines
+            .last()
+            .is_some_and(|line| strip(line).trim().is_empty())
+        {
+            lines.pop();
+        }
+        let plain: Vec<String> = lines.iter().map(|line| strip(line)).collect();
+        assert_eq!(plain.len(), 3, "top border, body, bottom border: {plain:?}");
+
+        // Body row: `│ hi there │` — one column of padding on each side.
+        assert_eq!(plain[1].trim(), "│ hi there │", "{plain:?}");
+        // The frame hugs the text: 8 columns of words + 2 padding + 2 borders.
+        let width = visible_width_of(plain[1].trim());
+        assert_eq!(width, 12, "{plain:?}");
+        // Right-aligned, one column off the transcript's edge.
+        let indent = visible_width_of(plain[1].trim_end()) - width;
+        assert_eq!(indent + width, W - 1, "{plain:?}");
+        assert_eq!(
+            plain[0].trim(),
+            format!("╭{}╮", "─".repeat(10)),
+            "{plain:?}"
+        );
+        assert_eq!(
+            plain[2].trim(),
+            format!("╰{}╯", "─".repeat(10)),
+            "{plain:?}"
+        );
+
+        // The fill covers the bubble and stops there: the margin in front of it
+        // is plain spaces — no escape at all — which is what makes this a bubble
+        // rather than a band across the row.
+        let (margin, bubble) = lines[1].split_at(indent);
+        assert!(margin.chars().all(|c| c == ' '), "{margin:?}");
+        assert!(bubble.starts_with("\x1b[48;5;59m"), "{bubble:?}");
+    }
+
+    /// A prompt long enough to hit the cap wraps inside the bubble instead of
+    /// stretching past it.
+    #[test]
+    fn long_user_message_wraps_inside_the_bubble() {
+        let mut chat = new_chat();
+        chat.render(W);
+        let words = "word ".repeat(60);
+        chat.add_message(ChatMessage::new("u".into(), ChatRole::User, words.trim()));
+        let mut lines = chat.render_all(W);
+        while lines
+            .last()
+            .is_some_and(|line| strip(line).trim().is_empty())
+        {
+            lines.pop();
+        }
+        let plain: Vec<String> = lines.iter().map(|line| strip(line)).collect();
+        assert!(plain.len() > 3, "wrapped body rows: {plain:?}");
+        for row in &plain {
+            assert!(visible_width_of(row.trim_end()) <= W, "{row:?}");
+        }
+        // Cap: 64 columns in total, borders and padding included.
+        for row in &plain {
+            assert!(
+                visible_width_of(row.trim()) <= USER_BUBBLE_MAX_COLS,
+                "{row:?}"
+            );
+        }
+    }
+
+    /// Too narrow to frame: the words keep their room and the prompt falls back
+    /// to the plain band rather than a box with nothing inside it.
+    #[test]
+    fn narrow_column_falls_back_to_the_plain_band() {
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.add_message(ChatMessage::new("u".into(), ChatRole::User, "hi there"));
+        let mut lines = chat.render_all(USER_BUBBLE_MIN_CONTENT + 4);
+        while lines
+            .last()
+            .is_some_and(|line| strip(line).trim().is_empty())
+        {
+            lines.pop();
+        }
+        let plain: Vec<String> = lines.iter().map(|line| strip(line)).collect();
+        assert_eq!(plain.len(), 1, "one banded row, no frame: {plain:?}");
+        assert!(plain[0].contains("hi there"), "{plain:?}");
+        assert!(lines[0].starts_with("\x1b[48;5;59m"), "{:?}", lines[0]);
     }
 
     #[test]
@@ -4726,19 +4892,14 @@ mod tests {
         let mut chat = new_chat();
         chat.render(W);
         chat.upsert_queued_run("run-1", "prompt", 3);
-        let line = chat
-            .render_all(W)
-            .iter()
-            .find(|l| l.contains("queued"))
-            .unwrap()
-            .clone();
-        assert_eq!(
-            line,
-            format!(
-                "\x1b[48;5;59m \x1b[2mqueued (#3)\x1b[0m\x1b[48;5;59m\x1b[0m\x1b[48;5;59m{}\x1b[0m",
-                " ".repeat(W - 12)
-            )
-        );
+        let raw = chat.render_all(W);
+        let plain: Vec<String> = raw.iter().map(|line| strip(line)).collect();
+        // The state is the bubble's last row, inside the frame.
+        let row = plain.iter().find(|line| line.contains("queued")).unwrap();
+        assert_eq!(row.trim(), "│ queued (#3) │", "{plain:?}");
+        // …and the whole label is dimmed, the suffix included.
+        let raw_row = raw.iter().find(|line| line.contains("queued")).unwrap();
+        assert!(raw_row.contains("\x1b[2mqueued (#3)\x1b[0m"), "{raw_row:?}");
     }
 
     #[test]
@@ -4911,6 +5072,28 @@ mod tests {
 
     fn strip(s: &str) -> String {
         crate::utils::strip_ansi_codes(s)
+    }
+
+    /// One transcript row as the words it shows, with the frame around a user
+    /// prompt removed: the border rows give nothing back and a framed row gives
+    /// `│ hi │` → `hi`.
+    ///
+    /// The helpers that compare whole transcripts read through this, because a
+    /// prompt's box is three rows of chrome that no fold/seam/spacer assertion is
+    /// about; the box's geometry has its own `user_message_bubble*` tests, which
+    /// read the raw rows.
+    fn unframe_user_bubble(line: &str) -> Option<String> {
+        let text = line.trim();
+        if text.starts_with('╭') || text.starts_with('╰') {
+            return None;
+        }
+        let text = if text.starts_with('│') && text.ends_with('│') && text.len() >= 2 {
+            &text['│'.len_utf8()..text.len() - '│'.len_utf8()]
+        } else {
+            text
+        };
+        let text = text.trim();
+        (!text.is_empty()).then(|| text.to_string())
     }
 
     // ─── RunState labels / helpers ────────────────────────────────────
