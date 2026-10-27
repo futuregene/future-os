@@ -37,11 +37,14 @@ implementation may extend it, but may not change its meaning.
    gauge · tokens · cost / cache.
 6. `/` command palette (with descriptions, Tab completion), `?` help overlay,
    `/` filter, ↑↓ history.
-7. Themes: six built-in 256-colour palettes — `dark`, `light`, `one-dark`,
-   `one-light`, `high-contrast`, `dracula` — selectable with `/theme`, which
-   opens a picker that previews each one as the highlight moves. The ids are the
-   inline TUI's catalogue (`crate::themes::THEME_SPECS`), because
-   `settings.json` → `themeId` is one key for both surfaces.
+7. Themes: built-in 256-colour palettes — the six the contract shipped (`dark`,
+   `light`, `one-dark`, `one-light`, `high-contrast`, `dracula`) plus the
+   desktop's palette family (`ayu`, `catppuccin`, `everforest`, `gruvbox`,
+   `kanagawa`, `nightfox`, `nord`, `rose-pine`, `solarized`, `tokyo-night`,
+   `vesper`, and `-light` renditions for five of them) — selectable with
+   `/theme`, which opens a picker that previews each one as the highlight moves.
+   The ids are the inline TUI's catalogue (`crate::themes::THEME_SPECS`),
+   because `settings.json` → `themeId` is one key for both surfaces.
 8. **The terminal UI, and it is `future tui`**: the workbench has its own
    full-screen render loop and `future tui` starts it. The previous inline UI is
    **deleted**, not deprecated — its code, its page and its `--legacy` flag are
@@ -149,7 +152,15 @@ Content — a conversation, a session title, a path — is never translated.
 | red | 203 | 124 | 168 | 160 | 196 | 203 | error, danger |
 | purple | 141 | 91 | 176 | 91 | 213 | 212 | sub-agent / skills |
 
-The four newer palettes mirror `crate::themes`' colours wherever the inline
+The table above is the six palettes the contract froze, and those numbers are
+still binding for those ids (the acceptance screenshots were taken against
+them). The palettes added afterwards — the desktop's own family and the light
+renditions of five of them — are the same `Palette` shape in
+`tui/src/workbench/theme.rs` (`PALETTES`, one entry per id in
+`crate::themes::THEME_SPECS`), with their hues taken from
+`desktop/src/theme/palettes.json` and their backgrounds stepped the same way.
+
+Every palette mirrors `crate::themes`' colours wherever the inline
 `Theme` has the same semantic (`accent`, `fg`, `border`, `dim`, `error`,
 `success`, `md_link`, `md_heading`, `md_code`); `bg` and `panel` are the
 workbench's own, because a full-screen canvas paints an explicit background

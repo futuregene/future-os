@@ -26,8 +26,10 @@
    所以点哪行就开哪行。`←`/`→` 在两个页签上是切页签。
 5. 状态栏真实指标：模型 · 强度 · cwd · git 分支 · 上下文占用条 · token · 费用/缓存。
 6. `/` 命令面板（带说明、Tab 补全）、`?` 帮助覆盖层、`/` 过滤、历史 ↑↓。
-7. 主题：内置六套 256 色——`dark` / `light` / `one-dark` / `one-light` /
-   `high-contrast` / `dracula`——由 `/theme` 选择；选择器会把高亮所在的那套直接预览到整个界面。
+7. 主题：内置 256 色调色板——合同里的六套（`dark` / `light` / `one-dark` / `one-light` /
+   `high-contrast` / `dracula`）加上桌面端那一族（`ayu`、`catppuccin`、`everforest`、
+   `gruvbox`、`kanagawa`、`nightfox`、`nord`、`rose-pine`、`solarized`、`tokyo-night`、
+   `vesper`，其中五套另有 `-light` 版本）——由 `/theme` 选择；选择器会把高亮所在的那套直接预览到整个界面。
    id 就是行内 TUI 的目录（`crate::themes::THEME_SPECS`），因为 `settings.json` → `themeId`
    两块界面共用同一个键。
 8. **它就是终端界面，也就是 `future tui`**：workbench 有自己的全屏渲染循环，`future tui`
@@ -52,7 +54,7 @@
 ```
 tui/src/workbench/mod.rs        // 模块导出 + Workbench 状态机 + WbEvent/WbAction
 tui/src/workbench/ansi.rs       // 宽度/截断/拼接/填充（CJK 安全）
-tui/src/workbench/theme.rs      // Palette、六套主题、语义色
+tui/src/workbench/theme.rs      // Palette、内置主题、语义色
 tui/src/workbench/widgets.rs    // 边框、页签、进度条、徽标、像素 logo、spinner
 tui/src/workbench/layout.rs     // Rect、Panes、命中区域（HitMap）
 tui/src/workbench/mouse.rs      // SGR 1006 解析、MouseEvent、滚轮/拖拽状态机
@@ -134,7 +136,9 @@ live 接入只允许改：`tui/src/workbench/live.rs`、`tui/src/workbench/state
 | red | 203 | 124 | 168 | 160 | 196 | 203 | 错误、危险 |
 | purple | 141 | 91 | 176 | 91 | 213 | 212 | 子代理/技能 |
 
-后四套在行内 `Theme` 有同名语义的位置上与 `crate::themes` 一致（`accent`、`fg`、`border`、
+上表是合同冻结的六套，这些数字对这几个 id 仍然生效（验收截图就是按它拍的）。后来加的调色板——桌面端那一族以及其中五套的浅色版本——在 `tui/src/workbench/theme.rs` 的 `PALETTES` 里是同样的 `Palette` 形状，每个 `crate::themes::THEME_SPECS` 的 id 对应一项；色相取自 `desktop/src/theme/palettes.json`，背景按同样的方式分层。
+
+每套调色板在行内 `Theme` 有同名语义的位置上都与 `crate::themes` 一致（`accent`、`fg`、`border`、
 `dim`、`error`、`success`、`md_link`、`md_heading`、`md_code`）；`bg` 与 `panel` 是
 workbench 自己的——全屏画布必须自己画一层背景，而行内主题是继承终端背景的。早期
 workbench 写下的 id（`future-dark`、`future-light`）仍能解析到 `dark` / `light`。

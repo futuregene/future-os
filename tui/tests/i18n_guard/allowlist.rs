@@ -82,6 +82,41 @@ pub const ALLOW: &[Allow] = &[
         "High Contrast",
         "a theme's name — a proper noun, spelled the same in both languages",
     ),
+    Allow::not_chrome(
+        "themes.rs",
+        "Catppuccin Light",
+        "a theme's name — a proper noun, spelled the same in both languages",
+    ),
+    Allow::not_chrome(
+        "themes.rs",
+        "Everforest Light",
+        "a theme's name — a proper noun, spelled the same in both languages",
+    ),
+    Allow::not_chrome(
+        "themes.rs",
+        "Gruvbox Light",
+        "a theme's name — a proper noun, spelled the same in both languages",
+    ),
+    Allow::not_chrome(
+        "themes.rs",
+        "Rose Pine",
+        "a theme's name — a proper noun, spelled the same in both languages",
+    ),
+    Allow::not_chrome(
+        "themes.rs",
+        "Rose Pine Light",
+        "a theme's name — a proper noun, spelled the same in both languages",
+    ),
+    Allow::not_chrome(
+        "themes.rs",
+        "Solarized Light",
+        "a theme's name — a proper noun, spelled the same in both languages",
+    ),
+    Allow::not_chrome(
+        "themes.rs",
+        "Tokyo Night",
+        "a theme's name — a proper noun, spelled the same in both languages",
+    ),
     // The approval-mode chip's four rows come from the desktop's
     // `approvalTier.*` vocabulary, which is English in both languages there
     // too. `Manual` and `Sandboxed` are one word each, so the sentence rule
@@ -255,4 +290,4 @@ pub const FILES: &[FileExempt] = &[FileExempt {
 /// 37 → 35 → 34: the folded-thinking placeholder's exemption closed, then the
 /// header's `no workspace yet` — the five-row identity header it belonged to
 /// went away, leaving the two-row context line as the only header.
-pub const BUDGET: usize = 34;
+pub const BUDGET: usize = 41;

@@ -213,7 +213,7 @@ launchpad 是**正文**，不是盖在对话上的弹窗：没有会话时整块
 - **侧栏位置**：左侧 / 右侧；拖动分隔条调整 30–48 列，`ctrl+s` 显示 / 聚焦 / 收起。
 - **鼠标与通知**：保存启动及运行时的鼠标偏好。本 TUI 提交的运行成功结束、无排队后续且终端失焦时通知；审批与错误无论焦点都提醒，并按请求 id / run id 去重。取消、历史回放和其他客户端的运行不通知；不支持焦点上报时按已聚焦处理，不延迟发送前台完成通知。`notify.enabled` 是总开关，`notify.bell` 与 `notify.osc9` 分别控制提示音和终端桌面通知序列；实际投递取决于终端支持，文本会清理控制序列、压成单行并限制长度。
 - **减少动态**：关掉动画，流式正文照常立即到达，不改变 agent 行为（没有默认键，就在这一行按 `enter`）。
-- **主题**：`/theme` 保留六套主题选择器，包括 `high-contrast`，选择保存为 `themeId`。未保存主题时用 `COLORFGBG` 跟随终端浅色 / 深色（未知值回退深色）；存在 `NO_COLOR`（包括空值）即禁用样式。
+- **主题**：`/theme` 打开主题选择器，除了一直有的六套（`dark`、`light`、`one-dark`、`one-light`、`high-contrast`、`dracula`），还加上桌面端那一族（`ayu`、`catppuccin`、`everforest`、`gruvbox`、`kanagawa`、`nightfox`、`nord`、`rose-pine`、`solarized`、`tokyo-night`、`vesper`，以及 catppuccin、everforest、gruvbox、rose pine、solarized 五套的 `-light` 版本）。选择保存为 `themeId`，两块界面同时换色。未保存主题时用 `COLORFGBG` 跟随终端浅色 / 深色（未知值回退深色）；存在 `NO_COLOR`（包括空值）即禁用样式。
 - **快捷键**：`enter` 进入编辑器，选中动作后按新组合键。冲突会与原占用者交换，不会出现一个按键同时触发两个动作；`r` 恢复默认，`escape` 取消捕获或返回。复制、队列、鼠标和减少动态同样是可重绑的上下文全局动作；浮层保留局部按键，避免全局键误提交审批或误改历史搜索。
 
 偏好与快捷键列表在矮窗口中跟随当前项滚动并保留底部提示。所有选择立即写入 `~/.future/tui/settings.json`（`sidebarPosition`、`sidebarWidth`、`sidebarVisible`）；快捷键的增量覆盖在同级 `keybindings.json`，键名为稳定动作 id，例如：
@@ -298,7 +298,8 @@ launchpad 是**正文**，不是盖在对话上的弹窗：没有会话时整块
 | `tui/src/workbench/image_view.rs` | 图片转半格：适配、缩放、平移、256 色回退 |
 | `tui/src/workbench/state.rs` | `WorkbenchData` 及其组成部分 |
 | `tui/src/workbench/mouse.rs` | SGR 1006 解析 |
-| `tui/src/workbench/theme.rs` | 六套调色板：`dark`、`light`、`one-dark`、`one-light`、`high-contrast`、`dracula` |
+| `tui/src/themes.rs` | 调色板目录：`Theme` 取值，以及 `/theme` 读的 id/名称/明暗表 |
+| `tui/src/workbench/theme.rs` | 每个目录 id 对应的 workbench `Palette`（共 22 套），以及界面语义色 |
 | `tui/src/workbench/demo.rs` | 确定性演示数据（截图与测试） |
 | `tui/examples/demo_agent.rs` | 截图对话用的脚本化 gRPC agent |
 
