@@ -291,7 +291,7 @@ click on the rail's tab strip are the doors to the same places.
 | `/preferences` | Preferences and shortcut editor (no chord) |
 | `?` | Help overlay (effective keys, grouped by area, then the commands; `?` requires an empty draft) |
 | `/lang` | Interface language: opens the picker — follow the system, Chinese or English |
-| `ctrl+e` | Final-answer / full-process reading level: a settled reply folds its whole work — the calls and reasoning before *and* after its last prose — into one summary row, and reasoning is collapsed to a `▸ thinking` row at the default level (the way the desktop and the phone show it) while the full-process level prints its text. A view toggle for the run it is pressed in, not a preference: every start opens folded, so a peek at the process cannot leave the next terminal expanded |
+| `ctrl+e` | Final-answer / full-process reading level: every reply folds its work — the calls and reasoning before its last prose, and, once it settles, the work after it too — into one summary row (`▸ 4 tool calls · 2 thoughts`). A reply that is still running folds the same way, keeping only the call in flight as a row; a reply that never writes prose folds onto the slice it stopped at. Reasoning is collapsed to a `▸ thinking` row at the default level (the way the desktop and the phone show it) while the full-process level prints its text. A view toggle for the run it is pressed in, not a preference: every start opens folded, so a peek at the process cannot leave the next terminal expanded |
 | `ctrl+c` | Quit |
 
 | Mouse | Action |
