@@ -163,7 +163,7 @@ pub const ALLOW: &[Allow] = &[
     ),
     Allow::known_gap(
         "components/chat_area.rs",
-        "  … {hidden} more line{plural} · {hint}",
+        "  … {hidden} more line{plural} · truncated",
         "the folded-output footer: pluralised inline and cut to width",
     ),
     // The tool-output footer used to need a row here: its hint half named a

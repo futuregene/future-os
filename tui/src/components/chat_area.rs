@@ -19,12 +19,9 @@ use crate::utils::{
     TruncateOptions,
 };
 
-/// Body rows a *failed* call shows while collapsed — the only body a collapsed
-/// entry renders at all; `/tool-output` expands every body to the hard cap
-/// below.
-const COLLAPSED_TOOL_OUTPUT_ROWS: usize = 4;
-/// Hard cap for an expanded tool-output body — a `cat` of a huge file must not
-/// make the diff renderer walk megabytes on every frame.
+/// Body rows one call may print — the hard cap an expanded body gets, so a
+/// `cat` of a huge file cannot make the diff renderer walk megabytes on every
+/// frame.
 const EXPANDED_TOOL_OUTPUT_ROWS: usize = 200;
 
 // ─── Types ────────────────────────────────────────────────────────────────
@@ -447,22 +444,15 @@ impl ToolOutput {
     }
 
     /// Body rows plus the number of rows left out.
-    fn rows(
-        &self,
-        width: usize,
-        expanded: bool,
-        error: bool,
-        theme: &Theme,
-    ) -> (Vec<String>, usize) {
+    ///
+    /// Only an expanded body asks for these: collapsed, a call is one row and
+    /// this is never called (see `render_tool_message`).
+    fn rows(&self, width: usize, theme: &Theme) -> (Vec<String>, usize) {
         if self.is_empty() || width <= TOOL_OUTPUT_INDENT {
             return (Vec::new(), 0);
         }
         let inner = width - TOOL_OUTPUT_INDENT;
-        let limit = if expanded {
-            EXPANDED_TOOL_OUTPUT_ROWS
-        } else {
-            COLLAPSED_TOOL_OUTPUT_ROWS
-        };
+        let limit = EXPANDED_TOOL_OUTPUT_ROWS;
 
         if !self.diff.is_empty() {
             // `render_diff` reserves a row for its own `… N more lines` marker
@@ -491,11 +481,7 @@ impl ToolOutput {
         }
 
         let total = self.text_lines.len();
-        let colour = if error {
-            theme.error as u8
-        } else {
-            theme.tool_output as u8
-        };
+        let colour = theme.tool_output as u8;
         let rows = self
             .text_lines
             .iter()
@@ -575,8 +561,8 @@ pub struct ChatArea {
     theme: Theme,
     /// `/tool-output`: render each tool call's body beneath its row — the one
     /// door to a body, since the chord this used to answer (`ctrl+g`) now opens
-    /// the git browser. Collapsed, a call is one row (a failure keeps its body —
-    /// see `render_tool_message`).
+    /// the git browser. Collapsed, every call is one row, a failure included
+    /// (it carries a `✗` and nothing red — see `render_tool_message`).
     tool_output_expanded: bool,
     /// `ctrl+d`: fold runs of consecutive tool calls and thinking blocks into
     /// compact summary rows (see [`Self::compact_heads`]). Off by default: the
@@ -1069,7 +1055,7 @@ impl ChatArea {
     ///
     /// The flag comes from the agent's own structured result (`error`, or a
     /// non-zero `exit_code` that is not a soft fail), so a failure is styled —
-    /// and keeps its body — the same way a replayed one is.
+    /// one `✗` on its row — the same way a replayed one is.
     pub fn finish_tool(&mut self, tool_id: &str, output: Option<&str>, is_error: bool) {
         if let Some(idx) = self.find_tool_index(tool_id) {
             // `tool_delta` already streamed the body in the common case; a
@@ -2156,8 +2142,12 @@ impl ChatArea {
         let status = msg.tool_status.unwrap_or(ToolStatus::Running);
 
         let bg_color = match status {
-            ToolStatus::Error => self.theme.tool_error_bg,
             ToolStatus::Complete => self.theme.tool_success_bg,
+            // A failure is *not* painted red: a call that came back an error is
+            // an ordinary step of the work, and a red band across the screen
+            // made a stopped `cargo test` the loudest thing in the transcript.
+            // The neutral band plus the `✗` below says the same thing quietly.
+            ToolStatus::Error => self.theme.tool_pending_bg,
             ToolStatus::Running => self.theme.tool_pending_bg,
         };
 
@@ -2168,26 +2158,26 @@ impl ChatArea {
             line.push(' ');
             line.push_str(&summary);
         }
+        // The one mark a failed row carries. No red, and no body: whatever went
+        // wrong is in the output, which is `/tool-output` — or `/export`, or the
+        // desktop — away.
+        if status == ToolStatus::Error {
+            line.push_str(&fg(self.theme.dim as u8, " ✗"));
+        }
 
         self.rendered_lines.push(RenderedLine {
             text: apply_background_to_line(&line, self.width, bg_color),
-            dim: status == ToolStatus::Complete,
+            dim: status != ToolStatus::Running,
         });
 
-        // A call is one row — the call itself. The body is what `/tool-output`
-        // is for, so a transcript of twenty calls is twenty rows rather than
-        // twenty previews. A *failure* is the exception: its reason is not
-        // something the user should have to know a command to read.
-        if !self.tool_output_expanded && status != ToolStatus::Error {
+        // A call is one row — the call itself, however it ended. The body is
+        // what `/tool-output` is for, so a transcript of twenty calls is twenty
+        // rows rather than twenty previews, and a failure is one of the twenty.
+        if !self.tool_output_expanded {
             return;
         }
 
-        let (rows, hidden) = body.rows(
-            self.width,
-            self.tool_output_expanded,
-            status == ToolStatus::Error,
-            &self.theme,
-        );
+        let (rows, hidden) = body.rows(self.width, &self.theme);
         self.rendered_lines.extend(
             rows.into_iter()
                 .map(|text| RenderedLine { text, dim: false }),
@@ -2198,13 +2188,8 @@ impl ChatArea {
                     self.theme.dim as u8,
                     &truncate_to_width(
                         &format!(
-                            "  … {hidden} more line{plural} · {hint}",
+                            "  … {hidden} more line{plural} · truncated",
                             plural = if hidden == 1 { "" } else { "s" },
-                            hint = if self.tool_output_expanded {
-                                "truncated"
-                            } else {
-                                "/tool-output to expand"
-                            }
                         ),
                         self.width,
                         &TruncateOptions::default(),
@@ -2822,9 +2807,10 @@ mod tests {
     /// collapsed bursts: four reads of one file say `read 1 file`, because that
     /// is what happened. A call the fold cannot describe is still counted.
     /// A live failure is marked from the event's own structured result, so the
-    /// fold cannot swallow it: the failed call keeps its row and its body.
+    /// fold cannot swallow it: the failed call keeps its row — one row, like
+    /// every other call, its body behind `/tool-output`.
     #[test]
-    fn a_failed_call_is_not_folded_and_keeps_its_body() {
+    fn a_failed_call_is_not_folded() {
         let mut chat = detailed_chat();
         chat.render(W);
         chat.set_compact_activity(true);
@@ -2848,9 +2834,18 @@ mod tests {
             "the failed call is its own row: {lines:?}"
         );
         assert!(
-            lines.iter().any(|line| line.contains("permission denied")),
-            "and it keeps its body: {lines:?}"
+            !lines.iter().any(|line| line.contains("permission denied")),
+            "and its body waits for /tool-output like every other call: {lines:?}"
         );
+        chat.set_tool_output_expanded(true);
+        let expanded = compact_lines(&mut chat);
+        assert!(
+            expanded
+                .iter()
+                .any(|line| line.contains("permission denied")),
+            "the reason is one toggle away: {expanded:?}"
+        );
+        chat.set_tool_output_expanded(false);
         assert_matches_fresh_render(&mut chat);
 
         // The calls after it start a new run instead of joining the folded one.
@@ -2912,8 +2907,8 @@ mod tests {
         assert_matches_fresh_render(&mut chat);
     }
 
-    /// A failure keeps its own row and its body: the reason is not something a
-    /// fold may hide.
+    /// A failure keeps its own row — the fold may not swallow it — and, like
+    /// every other call, one row is all it shows until `/tool-output`.
     #[test]
     fn compact_view_never_folds_a_failed_call() {
         let mut chat = detailed_chat();
@@ -2930,9 +2925,16 @@ mod tests {
             "the failed call keeps its own row: {lines:?}"
         );
         assert!(
-            lines.iter().any(|line| line.contains("boom")),
-            "the failure body is visible: {lines:?}"
+            !lines.iter().any(|line| line.contains("boom")),
+            "one row is all it shows: {lines:?}"
         );
+        chat.set_tool_output_expanded(true);
+        let expanded = compact_lines(&mut chat);
+        assert!(
+            expanded.iter().any(|line| line.contains("boom")),
+            "and the reason is one toggle away: {expanded:?}"
+        );
+        chat.set_tool_output_expanded(false);
         assert_matches_fresh_render(&mut chat);
     }
 
@@ -4665,32 +4667,57 @@ mod tests {
     }
 
     #[test]
-    fn an_error_tool_body_is_coloured_with_the_error_palette() {
+    fn a_failed_call_is_one_quiet_row_and_its_body_waits_for_the_toggle() {
         let mut chat = new_chat();
         chat.render(W);
         chat.add_tool_start("c1", "shell", Some(r#"{"command":"false"}"#.into()));
         chat.append_tool_delta("c1", "boom\n");
         chat.messages.last_mut().unwrap().tool_status = Some(ToolStatus::Error);
-        // A failure keeps its body while collapsed: the reason a call failed is
-        // the one thing the one-row rule must not hide.
+
+        // Collapsed, a failure is the same one row as any other call: a `✗`,
+        // the reason in the output, and no red band across the transcript.
         let lines = render_trimmed(&mut chat);
-        assert_eq!(lines.len(), 2, "row + the error body: {lines:?}");
-        assert!(lines[1].contains(&format!("\x1b[38;5;{}m", DARK_THEME.error)));
-        assert!(lines[0].contains(&format!("\x1b[48;5;{}m", DARK_THEME.tool_error_bg)));
+        assert_eq!(lines.len(), 1, "one row, no body: {lines:?}");
+        assert!(strip(&lines[0]).contains("false"), "{lines:?}");
+        assert!(
+            strip(&lines[0]).contains('✗'),
+            "marked as failed: {lines:?}"
+        );
+        assert!(
+            !lines[0].contains(&format!("\x1b[48;5;{}m", DARK_THEME.tool_error_bg)),
+            "not painted red: {lines:?}"
+        );
+        assert!(
+            lines[0].contains(&format!("\x1b[48;5;{}m", DARK_THEME.tool_pending_bg)),
+            "the neutral band: {lines:?}"
+        );
+
+        // `/tool-output` shows the reason — in the body colour, not the error
+        // one: what went wrong is text to read, not an alarm.
+        chat.set_tool_output_expanded(true);
+        let lines = render_trimmed(&mut chat);
+        assert_eq!(lines.len(), 2, "row + the body: {lines:?}");
+        assert!(strip(&lines[1]).contains("boom"));
+        assert!(lines[1].contains(&format!("\x1b[38;5;{}m", DARK_THEME.tool_output)));
+        assert!(!lines[1].contains(&format!("\x1b[38;5;{}m", DARK_THEME.error)));
     }
 
+    /// A failed call's long body is bounded by the same cap as any other, and
+    /// the marker says the rest is cut — there is no collapsed preview left to
+    /// expand from, so it never advertises the toggle.
     #[test]
-    fn a_long_error_body_is_still_truncated_with_its_hint() {
+    fn a_long_error_body_is_truncated_at_the_same_cap() {
         let mut chat = new_chat();
         chat.render(W);
         chat.add_tool_start("c1", "shell", Some(r#"{"command":"false"}"#.into()));
-        chat.append_tool_delta("c1", &"line\n".repeat(12));
+        chat.append_tool_delta("c1", &"line\n".repeat(EXPANDED_TOOL_OUTPUT_ROWS + 12));
         chat.messages.last_mut().unwrap().tool_status = Some(ToolStatus::Error);
+        chat.set_tool_output_expanded(true);
         let lines = render_trimmed(&mut chat);
-        assert_eq!(lines.len(), 1 + COLLAPSED_TOOL_OUTPUT_ROWS + 1, "{lines:?}");
+        assert_eq!(lines.len(), 1 + EXPANDED_TOOL_OUTPUT_ROWS + 1, "{lines:?}");
         let marker = strip(lines.last().unwrap());
-        assert!(marker.contains("8 more lines"), "{marker:?}");
-        assert!(marker.contains("/tool-output to expand"), "{marker:?}");
+        assert!(marker.contains("12 more lines"), "{marker:?}");
+        assert!(marker.contains("truncated"), "{marker:?}");
     }
 
     #[test]
@@ -4778,29 +4805,23 @@ mod tests {
             assert!(parsed.summary_ansi(&DARK_THEME).is_none());
         }
         // Narrow widths produce no body rows rather than a panic.
-        assert_eq!(unified.rows(0, false, false, &DARK_THEME), (vec![], 0));
-        assert_eq!(unified.rows(2, false, false, &DARK_THEME), (vec![], 0));
-        let (narrow, hidden) = text.rows(3, false, false, &DARK_THEME);
+        assert_eq!(unified.rows(0, &DARK_THEME), (vec![], 0));
+        assert_eq!(unified.rows(2, &DARK_THEME), (vec![], 0));
+        let (narrow, hidden) = text.rows(3, &DARK_THEME);
         assert_eq!(hidden, 0);
         assert_eq!(narrow.len(), 2);
         assert_eq!(crate::utils::visible_width(&narrow[0]), 3);
     }
 
     #[test]
-    fn tool_output_rows_are_bounded_when_expanded() {
+    fn tool_output_rows_are_bounded() {
         let big: String = (0..EXPANDED_TOOL_OUTPUT_ROWS + 50)
             .map(|i| format!("line {i}\n"))
             .collect();
         let body = ToolOutput::parse(&big);
-        let (rows, hidden) = body.rows(W, true, false, &DARK_THEME);
+        let (rows, hidden) = body.rows(W, &DARK_THEME);
         assert_eq!(rows.len(), EXPANDED_TOOL_OUTPUT_ROWS);
         assert_eq!(hidden, 50);
-        let (collapsed, hidden) = body.rows(W, false, false, &DARK_THEME);
-        assert_eq!(collapsed.len(), COLLAPSED_TOOL_OUTPUT_ROWS);
-        assert_eq!(
-            hidden,
-            EXPANDED_TOOL_OUTPUT_ROWS + 50 - COLLAPSED_TOOL_OUTPUT_ROWS
-        );
     }
 
     /// `/theme light` must repaint markdown that is *already* on screen, not
