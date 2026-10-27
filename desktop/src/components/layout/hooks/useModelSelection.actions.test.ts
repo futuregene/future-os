@@ -21,8 +21,22 @@ vi.mock("../../../integrations/storage/threadStore", () => ({
   updateThreadThinkingLevel: (...args: unknown[]) => mocks.updateThreadThinkingLevel(...args),
 }));
 
-const SMART: AgentModelOption = { id: "smart", label: "Smart", provider: "future", reasoning: true };
-const PLAIN: AgentModelOption = { id: "plain", label: "Plain", provider: "future", reasoning: false };
+// A current agent's catalogue: the model's effective list always starts with
+// the implicit `default`, and a model without thinking controls lists it alone.
+const SMART: AgentModelOption = {
+  id: "smart",
+  label: "Smart",
+  provider: "future",
+  thinkingLevels: ["default", "off", "low", "medium", "high", "xhigh"],
+  defaultThinkingLevel: "default",
+};
+const PLAIN: AgentModelOption = {
+  id: "plain",
+  label: "Plain",
+  provider: "future",
+  thinkingLevels: ["default"],
+  defaultThinkingLevel: "default",
+};
 const MODELS = [SMART, PLAIN];
 
 function thread(id = "t1"): StoredThread {
@@ -77,9 +91,9 @@ describe("useModelSelection persistence", () => {
 
     expect(setSelectedModelId).toHaveBeenCalledWith("future/plain");
     expect(mocks.updateThreadModel).toHaveBeenCalledWith({ modelId: "future/plain", threadId: "t1" });
-    // A non-reasoning model pins the thread to "off".
-    expect(mocks.updateThreadThinkingLevel).toHaveBeenCalledWith({ thinkingLevel: "off", threadId: "t1" });
-    expect(mocks.updateCachedAgentState).toHaveBeenCalledWith("t1", { model: "future/plain", thinkingLevel: "off" });
+    // A single-level model pins the thread to its only level.
+    expect(mocks.updateThreadThinkingLevel).toHaveBeenCalledWith({ thinkingLevel: "default", threadId: "t1" });
+    expect(mocks.updateCachedAgentState).toHaveBeenCalledWith("t1", { model: "future/plain", thinkingLevel: "default" });
     expect(refreshStore).toHaveBeenCalledWith("t1");
     harness.unmount();
   });
@@ -121,7 +135,7 @@ describe("useModelSelection persistence", () => {
     harness.unmount();
   });
 
-  it("keeps a thinking-level change local for a draft and normalizes bad input", async () => {
+  it("keeps a thinking-level change local for a draft, and any non-empty token is a level", async () => {
     const { harness, refreshStore } = mount(null);
     await act(async () => {
       await harness.current.changeDraftThinkingLevel("high");
@@ -133,8 +147,9 @@ describe("useModelSelection persistence", () => {
     await act(async () => {
       await harness.current.changeThinkingLevel("nonsense");
     });
-    // An unknown level normalizes to the desktop default rather than persisting.
-    expect(localStorage.getItem("futureos:last-used-thinking-level")).toBe("medium");
+    // Arbitrary tokens are legal levels now; only emptiness falls back to the
+    // implicit default (whether the chosen model offers it is a separate rule).
+    expect(localStorage.getItem("futureos:last-used-thinking-level")).toBe("nonsense");
     expect(mocks.updateThreadThinkingLevel).not.toHaveBeenCalled();
     harness.unmount();
   });
@@ -152,12 +167,12 @@ describe("useModelSelection persistence", () => {
     harness.unmount();
   });
 
-  it("switches the draft model and follows that model's thinking default", () => {
+  it("switches the draft model and follows that model's starting level", () => {
     const { harness } = mount(null);
     act(() => harness.current.changeDraftModel("future/plain"));
-    expect(harness.current.selectedThinkingLevel).toBe("off");
+    expect(harness.current.selectedThinkingLevel).toBe("default");
     act(() => harness.current.changeDraftModel("future/smart"));
-    expect(harness.current.selectedThinkingLevel).toBe("medium");
+    expect(harness.current.selectedThinkingLevel).toBe("default");
     harness.unmount();
   });
 
@@ -165,6 +180,8 @@ describe("useModelSelection persistence", () => {
     const { harness, setSelectedModelId } = mount(null);
     act(() => harness.current.syncSelection("future/plain", "high"));
     expect(setSelectedModelId).toHaveBeenCalledWith("future/plain");
+    // The raw level is primed as given (the harness's model id prop does not
+    // change); the display then resolves it against whichever model is active.
     expect(harness.current.selectedThinkingLevel).toBe("high");
     harness.unmount();
   });
@@ -199,10 +216,10 @@ describe("useModelSelection derived state", () => {
     some.harness.unmount();
   });
 
-  it("forces the thinking level off for a model that cannot reason", () => {
+  it("keeps a single-option model on its only level", () => {
     const { harness } = mount(null, "future/plain");
-    expect(harness.current.activeThinkingLevel).toBe("off");
-    expect(harness.current.selectedThinkingLevel).toBe("off");
+    expect(harness.current.activeThinkingLevel).toBe("default");
+    expect(harness.current.selectedThinkingLevel).toBe("default");
     harness.unmount();
   });
 

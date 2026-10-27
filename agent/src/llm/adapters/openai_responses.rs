@@ -106,23 +106,20 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
         if let Some(prompt_cache_options) = &config.prompt_cache_options {
             body["prompt_cache_options"] = prompt_cache_options.clone();
         }
-        let level = target.generation.thinking_level.as_str();
-        let has_responses_reasoning_config =
-            config.reasoning_context.is_some() || config.reasoning_mode.is_some();
-        if target.capabilities.reasoning.supported
-            && level != "off"
-            && (!level.is_empty() || has_responses_reasoning_config)
-        {
+        let level = target.generation.thinking_level.trim();
+        // `default` means "send nothing at all" (provider default); `off` also
+        // sends no reasoning block (there is no explicit disable field here).
+        let level_is_thinking = !level.is_empty()
+            && level != crate::llm::schema::DEFAULT_THINKING_LEVEL
+            && level != "off";
+        if target.capabilities.reasoning.supported && level_is_thinking {
             let mut reasoning = Map::new();
-            if !level.is_empty() {
-                let effort = crate::llm::schema::resolve_effort(
-                    level,
-                    &target.capabilities.reasoning.levels,
-                    &target.capabilities.reasoning.effort_values,
-                );
-                if let Some(effort) = effort {
-                    reasoning.insert("effort".into(), effort);
-                }
+            // The Responses API has one location for the depth
+            // (`reasoning.effort`), so a vocabulary's `param` is not used here.
+            if let Some(effort) =
+                crate::llm::schema::effort_wire_value(level, config.reasoning_effort.as_ref())
+            {
+                reasoning.insert("effort".into(), effort);
             }
             if config.supports_reasoning_summary {
                 reasoning.insert("summary".into(), json!("auto"));

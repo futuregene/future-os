@@ -661,9 +661,28 @@ def ensure_demo_assets() -> None:
         print("  install matplotlib to fix: pip install matplotlib", file=sys.stderr)
 
 
+def serves_demo_assets(port: int) -> bool:
+    """True when `port` already answers with the demo figures."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/effect-size.png", timeout=2) as response:
+            return response.status == 200 and response.headers.get_content_type() == "image/png"
+    except (urllib.error.URLError, OSError):
+        return False
+
+
 def serve_assets(port: int):
     """Serve the demo figures for the mobile harness (its mock image source)."""
     if not port_free(port):
+        # Adopting a live port is only safe when it is a previous run's asset
+        # server. Anything else on that number answers the image request with
+        # something else (the desktop harness's terminal server, for instance),
+        # and then every demo picture renders as a broken image while the
+        # capture still reports success.
+        if not serves_demo_assets(port):
+            raise SystemExit(
+                f"port {port} is held by something that is not the demo-asset server; "
+                f"give the mobile harness a free assetsPort in scripts/screenshots/scenarios.json"
+            )
         print(f"note: port {port} is already serving assets; reusing it")
         return None
     handler = partial(http.server.SimpleHTTPRequestHandler, directory=str(ROOT / "desktop" / "shot" / "assets"))
@@ -1443,6 +1462,10 @@ TUI_SCENARIO_KEYS: dict[str, str] = {
     "picker-model": "/model\r",
     "picker-theme": "/theme\r",
     "picker-sessions": "/sessions\r",
+    # `#` in the draft opens the session-mention menu: the list that completes
+    # `#title` into a reference, one row per conversation, its workspace in the
+    # column on the right (and this is the frame the alignment bug showed in).
+    "mention-sessions": "#",
     # `ctrl+b` on a terminal too narrow for the rail: the panel takes the body.
     "full-panel": "\x02",
     # A click that hands the keys back to the conversation, then three wheel-ups:
@@ -1621,9 +1644,16 @@ def tui(args: argparse.Namespace) -> int:
             # locale, and a capture whose chrome depends on who ran it is not a
             # baseline. Same file the TUI itself writes, so the flag goes
             # through the real settings path rather than a special case.
+            #
+            # The rail is pinned for the same reason. A first start hides it
+            # (the shipped default), while the workbench figures in
+            # `docs/tui/assets/` are of a reader who has it open — so whether a
+            # frame carries the rail stays the scenario's choice instead of
+            # following a product default that can change under it.
             (home / "tui").mkdir(parents=True, exist_ok=True)
             (home / "tui" / "settings.json").write_text(
-                json.dumps({"language": args.lang}), encoding="utf-8"
+                json.dumps({"language": args.lang, "sidebarVisible": True}),
+                encoding="utf-8",
             )
         argv = [str(tui_bin), "tui", "--offline", "--grpc-addr", addr]
         if args.session:

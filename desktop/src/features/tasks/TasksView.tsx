@@ -9,7 +9,7 @@ import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { Select } from "../../components/ui/Select";
 import { TextInput } from "../../components/ui/TextInput";
-import { defaultThinkingLevel, modelSupportsThinking, modelThinkingLevels, resolveThinkingLevel } from "../../integrations/agent/agentClient";
+import { modelThinkingLevels, resolveThinkingLevel } from "../../integrations/agent/agentClient";
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { formatDateTime } from "../../lib/date";
 import { useTauriEvent } from "../../lib/useTauriEvent";
@@ -533,13 +533,11 @@ function TaskForm({
   // listed after the enabled ones so the difference is visible.
   const enabledKeys = new Set(models.map(model => `${model.provider}/${model.id}`));
   const pinned = draft.modelId && !enabledKeys.has(draft.modelId) ? draft.modelId : null;
-  // Whether the chosen model can think at all. A model that cannot
-  // (`reasoning: false`) makes the level meaningless, so the control is
-  // disabled rather than left offering a choice that does nothing.
-  const supportsThinking = modelSupportsThinking(draft.modelId, models);
   // The levels this task's model offers — the agent clamps anything else, so the
-  // form does not offer it in the first place.
+  // form does not offer it in the first place. A list holding only the implicit
+  // `default` means there is no level to choose, so the control is disabled.
   const thinkingLevels = modelThinkingLevels(draft.modelId, models);
+  const supportsThinking = thinkingLevels.length > 1;
   /**
    * Switching models keeps the level when the new model offers it and otherwise
    * resets it to that model's starting level. A task can hold a level from an
@@ -662,7 +660,7 @@ function TaskForm({
                 does not use. Not the model's `ThinkingLevelMap` (sparse, and an
                 unmapped level is still accepted) — see `modelThinkingLevels`. */}
             {thinkingLevels.map(level => (
-              <option key={level} value={level}>{t(`agent:composer.thinkingLevelLabels.${level}`)}</option>
+              <option key={level} value={level}>{t(`agent:composer.thinkingLevelLabels.${level}`, { defaultValue: level })}</option>
             ))}
           </Select>
           {!supportsThinking
@@ -984,16 +982,14 @@ function TaskDetail({
                       // per-task, so a detail page that omits them cannot answer "what
                       // does this run on?".
                       [t("colModel"), task.modelId ?? t("modelDefault")],
-                      // An unset level is not "unknown": the agent applies its own
-                      // default, so the row names that value rather than saying
-                      // "Default" and leaving the user to guess what it means. The
-                      // value comes from the constant the composer uses, so it
-                      // cannot drift from what a session actually gets.
+                      // An unset level is the implicit `default` the agent applies
+                      // (send no thinking parameter), so the row names that value
+                      // instead of leaving the user to guess what "Default" means.
                       [
                         t("colThinking"),
                         task.thinkingLevel
-                          ? t(`agent:composer.thinkingLevelLabels.${task.thinkingLevel}`)
-                          : `${t("thinkingDefault")} (${t(`agent:composer.thinkingLevelLabels.${defaultThinkingLevel}`)})`,
+                          ? t(`agent:composer.thinkingLevelLabels.${task.thinkingLevel}`, { defaultValue: task.thinkingLevel })
+                          : t("agent:composer.thinkingLevelLabels.default"),
                       ],
                       // A chat task may name no directory at all: it runs in its own
                       // conversation's workspace, and an empty row would read as "missing".

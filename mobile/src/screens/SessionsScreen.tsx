@@ -1009,6 +1009,13 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
             onSelect={() => listRef.current?.startSelecting()}
           />
           <View style={styles.topActions}>
+            {/* The sheet's rows are per machine, so the takeover has to be too:
+                it lists the machines other than the open one as well, and those
+                are exactly the rows that carry the action when a peer is the one
+                somebody else holds. `remote.takeControl` speaks only for the open
+                machine, so a peer's row asked the desktop this phone already
+                drives — granted, nothing changed, sheet closed, held machine
+                still held. `takeControlFor` resolves the row's own connection. */}
             <ConnectionBadge
               active={active}
               machines={machines}
@@ -1016,7 +1023,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
               disconnectReason={remote.presence?.reason}
               error={remote.error}
               holder={remote.presence?.holder ?? null}
-              onTakeControl={remote.takeControl}
+              onTakeControl={remote.catalogs.takeControlFor}
               standby={remote.presence?.control === "standby"}
               onReconnect={reconnect}
               onUnpair={confirmUnpair}

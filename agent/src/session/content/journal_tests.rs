@@ -15,6 +15,120 @@ fn store() -> (tempfile::TempDir, SqliteStore) {
 }
 
 #[test]
+fn metadata_byte_admission_counts_escaping_unicode_and_numeric_boundaries() {
+    let controls: String = (0u8..=31).map(char::from).collect();
+    for value in [
+        json!({"escaped\"key\\":controls,"unicode":"思考🙂\u{2028}","empty":[],"nil":null,"flags":[true,false]}),
+        json!([i64::MIN, i64::MAX, u64::MAX, 0, -1, 1.0, 1e-200, 1e200]),
+        json!({"text":"\"\\\n🙂".repeat(4096),"nested":[{"blocks":[{},[],"",null]}]}),
+    ] {
+        assert_eq!(
+            super::journal::json_bytes(&value),
+            serde_json::to_vec(&value).unwrap().len()
+        );
+    }
+}
+
+#[test]
+fn bounded_facts_and_seal_share_one_commit_and_retry_after_atomic_failure() {
+    let (_root, store) = store();
+    let events = [
+        event(
+            0,
+            "thinking_delta",
+            json!({"entry_id":"a","content_key":"a:thinking:0","content_offset":0,"content_bytes":3,"text":"one","extension":false}),
+        ),
+        event(
+            1,
+            "thinking_end",
+            json!({"entry_id":"a","content_key":"a:thinking:0","content_offset":3,"content_bytes":0,"content_seal":true}),
+        ),
+        event(2, "usage", json!({"output_tokens":1})),
+    ];
+    let mut writer = Writer::default();
+    store.db.call(|db| {
+        db.execute_batch("CREATE TRIGGER reject_usage BEFORE INSERT ON stream_changes WHEN NEW.event_kind=16 BEGIN SELECT RAISE(ABORT,'injected'); END;")?;
+        Ok(())
+    }).unwrap();
+    assert!(writer.persist(&store, "s", &events).is_err());
+    store
+        .db
+        .read(|db| {
+            for table in [
+                "stream_changes",
+                "stream_contexts",
+                "stream_symbols",
+                "stream_body_owners",
+                "content_objects",
+            ] {
+                assert_eq!(
+                    db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                        .get::<_, i64>(0))?,
+                    0
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
+    store
+        .db
+        .call(|db| {
+            db.execute_batch("DROP TRIGGER reject_usage")?;
+            Ok(())
+        })
+        .unwrap();
+    let commits = store.db.metrics()["foregroundCommit"]["count"]
+        .as_u64()
+        .unwrap();
+    writer.persist(&store, "s", &events).unwrap();
+    assert_eq!(
+        store.db.metrics()["foregroundCommit"]["count"]
+            .as_u64()
+            .unwrap()
+            - commits,
+        1
+    );
+    let replay = store.segmented_replay("s", "r", -1, false, None).unwrap();
+    assert_eq!(replay.events.len(), 3);
+    assert_eq!(replay.events[0].event_type, "thinking_delta");
+    assert_eq!(replay.events[1].event_type, "thinking_end");
+    assert_eq!(replay.events[2].event_type, "usage");
+    let data: Value = serde_json::from_str(&replay.events[0].data).unwrap();
+    assert_eq!(data["text"], "one");
+    assert_eq!(data["extension"], false);
+}
+
+#[test]
+fn oversized_fragment_flushes_its_pending_prefix_before_staging() {
+    let (_root, store) = store();
+    let large = "x".repeat(WRITE_BYTES + 7);
+    let mut writer = Writer::default();
+    writer.persist(&store, "s", &[
+        event(0, "text_chunk", json!({"content_key":"b","content_offset":0,"content_bytes":1,"text":"a"})),
+        event(1, "text_chunk", json!({"content_key":"b","content_offset":1,"content_bytes":large.len(),"text":large})),
+        event(2, "text_end", json!({"content_key":"b","content_offset":1+large.len(),"content_bytes":0,"content_seal":true})),
+    ]).unwrap();
+    let scope = StreamIdentity {
+        session_id: "s".into(),
+        run_id: "r".into(),
+        epoch: 1,
+    };
+    let range = store
+        .db
+        .read(move |db| {
+            let facts = read_changes(db, &scope, -1, 10)?;
+            assert_eq!(facts.changes.len(), 3);
+            assert_eq!(facts.changes[2].event_type, "text_end");
+            Ok(super::resolve(db, "s", "stream", &owner(&scope, "b"), "")?.unwrap())
+        })
+        .unwrap();
+    assert_eq!(
+        super::journal::read_range(&store, range).unwrap(),
+        format!("a{large}")
+    );
+}
+
+#[test]
 fn explicit_terminal_commit_is_atomic_with_replay_and_retries_without_duplicates() {
     let (_root, store) = store();
     store.append("s", vec![json!({"id":"start","type":"run_started","timestamp":"2026-10-26T00:00:00Z","content":{"run_id":"r","epoch":1,"run_sequence":4}})]).unwrap();
@@ -148,7 +262,7 @@ fn recovery_shares_large_provider_state_instead_of_copying_it_into_a_header() {
         .unwrap();
     assert_eq!(recovered["content"][0]["provider_metadata"], provider);
     store.db.read(|db| {
-        let (entry,stream):(i64,i64) = db.query_row("SELECT r.content_id,b.content_id FROM content_references r JOIN stream_change_content b ON b.field='/data/provider_metadata' WHERE r.session_id='s' AND r.owner_id='m' AND r.field='/content/0/provider_metadata'",[],|row|Ok((row.get(0)?,row.get(1)?)))?;
+        let (entry,stream):(i64,i64) = db.query_row("SELECT r.content_id,b.content_id FROM content_references r JOIN stream_content_ranges b ON b.field='/data/provider_metadata' WHERE r.session_id='s' AND r.owner_id='m' AND r.field='/content/0/provider_metadata'",[],|row|Ok((row.get(0)?,row.get(1)?)))?;
         assert_eq!(entry,stream);
         let bytes:i64 = db.query_row("SELECT length(metadata_json) FROM message_blocks WHERE session_id='s' AND entry_position=(SELECT position FROM entries WHERE session_id='s' AND entry_id='m') AND ordinal=0",[],|row|row.get(0))?;
         assert!(bytes < 4096);
@@ -707,4 +821,25 @@ fn recovery_releases_unpublished_fact_staging_only_in_the_interrupted_run_scope(
         .unwrap();
     assert!(missing);
     assert!(preserved);
+}
+
+#[test]
+fn coalescing_does_not_discard_changing_extension_metadata() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&directory.path().join("agent.db")).unwrap();
+    store.reserve_segmented("s").unwrap();
+    let mut writer = Writer::default();
+    writer.persist(&store,"s",&[
+        event(0,"text_chunk",json!({"content_key":"m:text:b","entry_id":"m","content_offset":0,"content_bytes":1,"text":"a","future":false})),
+        event(1,"text_chunk",json!({"content_key":"m:text:b","entry_id":"m","content_offset":1,"content_bytes":1,"text":"b","future":null})),
+    ]).unwrap();
+    let page = store
+        .segmented_replay("s", "r", -1, false, Some(8))
+        .unwrap();
+    assert_eq!(page.events.len(), 2);
+    assert_eq!(
+        serde_json::from_str::<Value>(&page.events[0].data).unwrap()["future"],
+        false
+    );
+    assert!(serde_json::from_str::<Value>(&page.events[1].data).unwrap()["future"].is_null());
 }

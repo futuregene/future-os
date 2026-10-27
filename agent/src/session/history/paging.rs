@@ -32,6 +32,7 @@ pub(super) fn read_display_page(
     offset: Option<i64>,
     limit: Option<i64>,
 ) -> Result<DisplayHistoryPage> {
+    let stored_session = crate::session::identity::session_key(db, session)?;
     let canonical =
         crate::session::content::format(db, session)? == crate::session::content::FORMAT_VERSION;
     let snapshot = canonical
@@ -39,13 +40,13 @@ pub(super) fn read_display_page(
         .transpose()?;
     let total: i64 = db.query_row(
         "SELECT COALESCE(MAX(ordinal)+1,0) FROM history_display WHERE session_id=?1",
-        [session],
+        [&stored_session],
         |r| r.get(0),
     )?;
     let (start, end) = if let Some(before) = before {
         let end = before.clamp(0, total);
         let count = limit.unwrap_or(10).clamp(1, 100);
-        let start: i64 = db.query_row("SELECT COALESCE((SELECT ordinal FROM history_display WHERE session_id=?1 AND is_user=1 AND ordinal<?2 ORDER BY ordinal DESC LIMIT 1 OFFSET ?3),0)",params![session,end,count-1],|r|r.get(0))?;
+        let start: i64 = db.query_row("SELECT COALESCE((SELECT ordinal FROM history_display WHERE session_id=?1 AND is_user=1 AND ordinal<?2 ORDER BY ordinal DESC LIMIT 1 OFFSET ?3),0)",params![&stored_session,end,count-1],|r|r.get(0))?;
         (start, end)
     } else {
         let start = offset.unwrap_or(0).clamp(0, total);
@@ -86,7 +87,7 @@ pub(super) fn read_display_page(
         HISTORY_PAGE_BYTE_BUDGET
     };
     let mut stmt = db.prepare(&sql)?;
-    let mut cursor = stmt.query(params![session, start, end])?;
+    let mut cursor = stmt.query(params![&stored_session, start, end])?;
     let mut rows = Vec::new();
     let mut body_bytes = 0usize;
     let mut next = if before.is_some() { end } else { start };

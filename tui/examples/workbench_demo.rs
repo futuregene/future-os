@@ -141,6 +141,11 @@ fn main() {
                     _ => Overlay::Worktree,
                 });
             }
+            // The repository browser: demo rows, not a read of this checkout.
+            "git" => {
+                data.git = Some(demo::git());
+                workbench.overlay = Some(Overlay::Git);
+            }
             "recent" | "workspaces" => {
                 workbench.panel = match name {
                     "workspaces" => PanelId::Workspaces,
@@ -158,14 +163,27 @@ fn main() {
                 workbench.overlay = Some(Overlay::FilePreview);
             }
             "preview-text" => {
+                // A code preview, coloured by the same classifier the 文件 panel
+                // uses: the screenshot is what a reader sees on `enter`.
+                let path = "tui/src/workbench/syntax.rs";
+                let source = r#"// The preview box colours code as it is read.
+use crate::workbench::syntax;
+
+/// One coloured run of a line.
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+    pub token: Token,
+}
+
+pub fn highlight(path: &str, text: &str) -> Vec<Line> {
+    let mut lexer = Lexer::new(Language::from_path(path));
+    text.lines().map(|line| lexer.line(line)).collect()
+}"#;
                 data.preview = Some(future_tui::workbench::state::PreviewView::Text {
-                    path: "docs/guide/tui.md".into(),
-                    lines: (1..=40)
-                        .map(|n| {
-                            format!("{n:>3} │ the quick brown fox jumps over the lazy dog ≈ {n}")
-                        })
-                        .collect(),
-                    truncated: true,
+                    path: path.into(),
+                    lines: future_tui::workbench::syntax::highlight(path, source).into(),
+                    truncated: false,
                 });
                 workbench.overlay = Some(Overlay::FilePreview);
             }

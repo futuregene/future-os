@@ -297,8 +297,10 @@ fn resolve_scoped(
         super::format(db, session)? == super::FORMAT_VERSION,
         "conversation does not support canonical content ranges"
     );
+    let run = crate::session::identity::BoundIdentity::run(db, session, run)?;
+    let session = crate::session::identity::BoundIdentity::session(db, session)?;
     let row: Option<(i64,i64,i64,String)> = db.query_row(
-        "SELECT b.content_id,b.byte_offset,b.byte_length,b.encoding FROM stream_runs r JOIN stream_changes c ON c.stream_id=r.id JOIN stream_change_content b ON b.change_id=c.id WHERE r.session_id=?1 AND r.run_id=?2 AND r.epoch=?3 AND c.last_cursor=?4 AND c.last_cursor<=r.durable_cursor AND b.field=?5 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=r.id)",
+        "SELECT b.content_id,b.byte_offset,b.byte_length,b.encoding FROM stream_runs r JOIN stream_changes c ON c.stream_id=r.id JOIN stream_content_ranges b ON b.change_id=c.id WHERE r.session_id=?1 AND r.run_id=?2 AND r.epoch=?3 AND c.last_cursor=?4 AND c.last_cursor<=r.durable_cursor AND b.field=?5 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=r.id)",
         params![session,run,scope.epoch,scope.cursor,scope.field], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?;
     let (id, offset, length, encoding) =
         row.context("event content is not committed or no longer exists")?;
@@ -307,7 +309,7 @@ fn resolve_scoped(
         Encoding::parse(&encoding)?,
     ))
 }
-pub(super) fn storage_identity(db: &rusqlite::Connection) -> Result<StorageIdentity> {
+pub(crate) fn storage_identity(db: &rusqlite::Connection) -> Result<StorageIdentity> {
     Ok(StorageIdentity {
         database_id: db.query_row(
             "SELECT value FROM storage_meta WHERE key='database_id'",

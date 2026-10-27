@@ -1,6 +1,6 @@
 import { createElement, type ComponentProps } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { Keyboard, Modal, ScrollView, StyleSheet, View } from "react-native";
+import { Keyboard, Modal, ScrollView, StyleSheet, Text, View } from "react-native";
 import { ModelSelectorSheet } from "../components/ModelSelectorSheet";
 
 jest.mock("lucide-react-native", () => ({ Check: "Check", X: "X" }));
@@ -119,6 +119,50 @@ test("a host that sends no list keeps all six levels", () => {
   // An older desktop (or a model that declares nothing) must not lose levels.
   act(() => tree.update(createElement(ModelSelectorSheet, { ...props, selector: "thinking" })));
   expect(options()).toHaveLength(6);
+});
+
+test("a current host's declared levels are rendered exactly, in its order", () => {
+  // The host already resolved the list — always starting with "default", and
+  // possibly carrying values this build has no vocabulary for (`max`).
+  act(() => tree.update(createElement(ModelSelectorSheet, {
+    ...props,
+    selector: "thinking",
+    remote: {
+      ...props.remote,
+      models: [{
+        id: "model-a",
+        provider: "provider",
+        thinkingLevels: ["default", "off", "low", "high", "max"],
+      }],
+      thinkingLevel: "default",
+    },
+  })));
+  const label = (index: number) => options()[index]!
+    .findAllByType(Text).map(node => node.props.children).join("");
+  expect(options().map((_, index) => label(index)))
+    .toEqual(["default", "off", "low", "high", "max"]);
+  expect(options()[0]!.props.accessibilityState.checked).toBe(true);
+  act(() => options()[4]!.props.onPress());
+  expect(remote.setThinkingLevel).toHaveBeenCalledWith("max");
+});
+
+test("a level with no translation is labelled by its raw wire value", () => {
+  const t = (key: string) => (key === "thinking.default" ? "Default" : key);
+  act(() => tree.update(createElement(ModelSelectorSheet, {
+    ...props,
+    selector: "thinking",
+    t: t as unknown as ComponentProps<typeof ModelSelectorSheet>["t"],
+    remote: {
+      ...props.remote,
+      models: [{ id: "model-a", provider: "provider", thinkingLevels: ["default", "turbo"] }],
+      thinkingLevel: "default",
+    },
+  })));
+  const labels = options().map(option =>
+    option.findAllByType(Text).map(node => node.props.children).join(""));
+  // A known level is translated; an unknown token is shown verbatim instead of
+  // leaking its translation key into the picker.
+  expect(labels).toEqual(["Default", "turbo"]);
 });
 
 test("tapping the scrim outside the sheet dismisses it without changing a setting", () => {

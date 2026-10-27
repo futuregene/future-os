@@ -1327,47 +1327,11 @@ fn any_punctuation(s: &str) -> bool {
 
 impl Component for Input {
     fn render(&mut self, screen_width: usize) -> Vec<String> {
-        let prompt_width = 2; // "> " or "  "
-        let available_width = screen_width.saturating_sub(prompt_width);
-
-        let visual_lines = self.build_visual_layout(available_width);
-        let cursor_info = if available_width > 0 {
-            Some(self.get_cursor_visual_info())
-        } else {
-            None
-        };
-
         let mut output: Vec<String> = Vec::new();
-
         if let Some(line) = self.attachment_line(screen_width) {
             output.push(line);
         }
-
-        for (vi, sub_text) in visual_lines.iter().enumerate() {
-            let is_first_line = vi == 0;
-            let prompt = if is_first_line { "> " } else { "  " };
-            let is_cursor_line = cursor_info.as_ref().is_some_and(|ci| vi == ci.visual_line);
-
-            if is_cursor_line && available_width > 0 {
-                let info = cursor_info.as_ref().unwrap();
-                output.push(format!(
-                    "{prompt}{}",
-                    self.render_cursor_in_line(sub_text, info.col_in_wrapped, available_width)
-                ));
-            } else {
-                let plain = strip_ansi_codes(sub_text);
-                let vis_w = visible_width(&plain);
-                if available_width > 0 {
-                    output.push(format!(
-                        "{prompt}{sub_text}{}",
-                        " ".repeat(available_width.saturating_sub(vis_w))
-                    ));
-                } else {
-                    output.push(prompt.to_string());
-                }
-            }
-        }
-
+        output.extend(self.render_value(screen_width));
         output
     }
 
@@ -1405,6 +1369,56 @@ impl Component for Input {
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+}
+
+impl Input {
+    /// The draft's own rows — the `> ` prompt and the text — without the
+    /// attachment line [`Input::render`] puts above them.
+    ///
+    /// A caller that draws its own frame around the draft (the workbench's
+    /// composer) names the attachments in the box's *title* and has no row to
+    /// give them, so it must get the value alone: the attachment line carries no
+    /// prompt, and a caller that strips one blindly turns it into a blank row.
+    pub fn render_value(&mut self, screen_width: usize) -> Vec<String> {
+        let prompt_width = 2; // "> " or "  "
+        let available_width = screen_width.saturating_sub(prompt_width);
+
+        let visual_lines = self.build_visual_layout(available_width);
+        let cursor_info = if available_width > 0 {
+            Some(self.get_cursor_visual_info())
+        } else {
+            None
+        };
+
+        let mut output: Vec<String> = Vec::new();
+
+        for (vi, sub_text) in visual_lines.iter().enumerate() {
+            let is_first_line = vi == 0;
+            let prompt = if is_first_line { "> " } else { "  " };
+            let is_cursor_line = cursor_info.as_ref().is_some_and(|ci| vi == ci.visual_line);
+
+            if is_cursor_line && available_width > 0 {
+                let info = cursor_info.as_ref().unwrap();
+                output.push(format!(
+                    "{prompt}{}",
+                    self.render_cursor_in_line(sub_text, info.col_in_wrapped, available_width)
+                ));
+            } else {
+                let plain = strip_ansi_codes(sub_text);
+                let vis_w = visible_width(&plain);
+                if available_width > 0 {
+                    output.push(format!(
+                        "{prompt}{sub_text}{}",
+                        " ".repeat(available_width.saturating_sub(vis_w))
+                    ));
+                } else {
+                    output.push(prompt.to_string());
+                }
+            }
+        }
+
+        output
     }
 }
 

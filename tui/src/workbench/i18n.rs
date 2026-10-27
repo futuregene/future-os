@@ -90,16 +90,39 @@ impl LanguagePreference {
     }
 }
 
-/// The reader's locale: `LC_ALL`, then `LC_MESSAGES`, then `LANG`, and the
-/// Windows user UI language when none of them is set. A tag that names Chinese
-/// (Simplified or Traditional — the bundles ship one Chinese) picks Chinese;
-/// anything else, including `C`/`POSIX` and a missing locale, is English.
+/// The reader's locale: the per-process POSIX overrides (`LC_ALL`, then
+/// `LC_MESSAGES`), then the system's own default, then `LANG`. A tag that names
+/// Chinese (Simplified or Traditional — the bundles ship one Chinese) picks
+/// Chinese; anything else, including `C`/`POSIX` and a missing locale, is
+/// English.
+///
+/// `LANG` is last on purpose. It is the broad default a terminal *environment*
+/// carries, not a choice the reader made: a Mac takes it from `/etc/zprofile`
+/// (`C.UTF-8`, or whatever the shell profile exports), so a Mac whose language
+/// is Chinese would otherwise draw English, and the same happens on Windows
+/// under a shell that exports its own `LANG`. The system's answer is the macOS
+/// preferred-language list and the Windows UI language; on the other Unixes the
+/// variables already are the system's answer, so the platform step is empty and
+/// `LANG` decides as it always did.
 pub fn system_language() -> Language {
-    env_language().unwrap_or_else(platform_language)
+    explicit_locale_language()
+        .or_else(platform_language)
+        .or_else(lang_language)
+        .unwrap_or(Language::En)
 }
 
-fn env_language() -> Option<Language> {
-    for name in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+/// `LC_ALL` and `LC_MESSAGES` are set per process, by a shell or a launcher, so
+/// they mean what they say even where `LANG` is inherited noise.
+fn explicit_locale_language() -> Option<Language> {
+    locale_language(&["LC_ALL", "LC_MESSAGES"])
+}
+
+fn lang_language() -> Option<Language> {
+    locale_language(&["LANG"])
+}
+
+fn locale_language(names: &[&str]) -> Option<Language> {
+    for name in names {
         let Ok(value) = std::env::var(name) else {
             continue;
         };
@@ -133,20 +156,97 @@ fn is_chinese_tag(tag: &str) -> bool {
     )
 }
 
-/// The OS's own answer when no locale variable is set: on Windows the user's UI
-/// language, and elsewhere English (a POSIX terminal without `LANG` is C, and
-/// C is English).
-fn platform_language() -> Language {
+/// The OS's own answer when no locale variable is set: the user's UI language
+/// on Windows, the preferred-language list on macOS, and nothing elsewhere (a
+/// POSIX terminal's locale variables *are* its answer).
+fn platform_language() -> Option<Language> {
     #[cfg(windows)]
     {
         use windows_sys::Win32::Globalization::GetUserDefaultUILanguage;
         // A LANGID's language is its low ten bits; 0x04 is Chinese.
         let langid = unsafe { GetUserDefaultUILanguage() };
-        if langid & 0x3ff == 0x04 {
-            return Language::Zh;
+        Some(if langid & 0x3ff == 0x04 {
+            Language::Zh
+        } else {
+            Language::En
+        })
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::preferred_language()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        None
+    }
+}
+
+/// The system language as the Mac's own preferences report it.
+///
+/// macOS keeps it in `AppleLanguages` (`defaults read -g AppleLanguages`) and
+/// hands it out through CoreFoundation, which is what every other bundle on the
+/// machine reads; `LC_ALL`/`LANG` describe the terminal, not the Mac, which is
+/// why they only get the last word (see [`system_language`]).
+#[cfg(target_os = "macos")]
+mod macos {
+    use super::{is_chinese_tag, Language};
+    use std::ffi::{c_char, c_void, CStr};
+
+    // CoreFoundation's own types: an array is a plain `CFTypeRef` here, and the
+    // one element we read is a string, so no stronger typing buys anything.
+    type CFTypeRef = *const c_void;
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        /// The reader's ordered language preferences, e.g. `["zh-Hans-CN"]`;
+        /// owned, so the caller releases it.
+        fn CFLocaleCopyPreferredLanguages() -> CFTypeRef;
+        fn CFArrayGetCount(array: CFTypeRef) -> isize;
+        fn CFArrayGetValueAtIndex(array: CFTypeRef, index: isize) -> *const c_void;
+        fn CFStringGetCString(
+            string: CFTypeRef,
+            buffer: *mut c_char,
+            buffer_size: isize,
+            encoding: u32,
+        ) -> u8;
+        fn CFRelease(reference: CFTypeRef);
+    }
+
+    /// `kCFStringEncodingUTF8`, which is what the tags are.
+    const UTF8: u32 = 0x0800_0100;
+
+    /// The first preferred language, or `None` if the system does not answer.
+    pub(super) fn preferred_language() -> Option<Language> {
+        // A BCP-47 tag (`zh-Hans-CN`, `en-US`) is a handful of bytes; anything
+        // longer is not a language tag and is not worth a second allocation.
+        let mut buffer = [0i8; 64];
+        // SAFETY: every call is a plain CoreFoundation getter on an object we
+        // either just created (and release) or borrowed from the returned
+        // array, and the buffer handed to `CFStringGetCString` is ours.
+        unsafe {
+            let languages = CFLocaleCopyPreferredLanguages();
+            if languages.is_null() {
+                return None;
+            }
+            let mut answer = None;
+            if CFArrayGetCount(languages) > 0 {
+                let first = CFArrayGetValueAtIndex(languages, 0);
+                if !first.is_null()
+                    && CFStringGetCString(first, buffer.as_mut_ptr(), buffer.len() as isize, UTF8)
+                        != 0
+                {
+                    let tag = CStr::from_ptr(buffer.as_ptr()).to_string_lossy();
+                    answer = Some(if is_chinese_tag(&tag) {
+                        Language::Zh
+                    } else {
+                        Language::En
+                    });
+                }
+            }
+            CFRelease(languages);
+            answer
         }
     }
-    Language::En
 }
 
 /// One piece of chrome. Every variant is a row in [`pair`].
@@ -160,13 +260,15 @@ pub enum Key {
     TabSkills,
     TabRecent,
     TabWorkspaces,
-    TabFiles,
+    /// The files panel's title, its header button and the help row's name.
+    FilesTitle,
     // ── the workspace tab's sections ──────────────────────────────────
     SectionPinned,
     SectionWorkspaces,
     SectionChats,
-    SummaryWorkspaces,
-    SummaryFiles,
+    // ── the recent tab's two stretches ────────────────────────────────
+    SectionActive,
+    SectionEarlier,
     SummaryUnitsSessions,
     PanelEmptyWorkspaces,
     PanelEmptyFiles,
@@ -174,7 +276,6 @@ pub enum Key {
     // ── the sidebar's panels ──────────────────────────────────────────
     SummaryTodo,
     SummaryJobs,
-    SummarySessions,
     SummarySkills,
     UsageContext,
     UsageCost,
@@ -225,6 +326,9 @@ pub enum Key {
     ModeAutoDesc,
     ModeOffDesc,
     RailHint,
+    // ── the files panel (its own overlay, not a rail tab) ──────────
+    FilesHint,
+    FilesNoWorkspace,
     LangSystem,
     // ── the conversation surface ──────────────────────────────────────
     InputHintChat,
@@ -264,10 +368,6 @@ pub enum Key {
     ChipModel,
     ChipEffort,
     ChipApproval,
-    ShortcutCommands,
-    ShortcutHelp,
-    ShortcutNewChat,
-    ShortcutSidebar,
     LaunchpadTagline,
     LaunchpadNewChat,
     LaunchpadNewChatIn,
@@ -317,6 +417,30 @@ pub enum Key {
     WorktreeHint,
     WorktreeEmpty,
     WorktreeCreating,
+    // ── the `/git` panel ───────────────────────────────────────────────
+    CmdGit,
+    CmdFiles,
+    GitHint,
+    GitTabCommits,
+    GitTabRefs,
+    GitTabStatus,
+    GitTabStash,
+    GitEmptyCommits,
+    GitEmptyRefs,
+    GitCleanStatus,
+    GitEmptyStash,
+    GitNoRepo,
+    /// A `git` that failed with nothing on stderr.
+    GitNoMessage,
+    /// A branch's two counts against its upstream, in the detail pane's header.
+    GitAheadBehind,
+    /// The `git show --format=` template behind the tip of a ref: its labels
+    /// (`Author:`, `Date:`) are drawn, so they are the table's to spell.
+    GitTipFormat,
+    GitFilter,
+    GitDetail,
+    GitNoSelection,
+    GitCopied,
     CompactDone,
     ToolsDone,
     ToolsUsage,
@@ -325,7 +449,17 @@ pub enum Key {
     CmdQueue,
     CmdCopy,
     CmdPaste,
+    CmdPreview,
+    CmdRefresh,
     CmdMouse,
+    CmdDelete,
+    DeleteTitle,
+    DeleteBody,
+    DeleteWhere,
+    DeleteHint,
+    NoticeDeleted,
+    NoticeDeleteFailed,
+    NoticeNothingToDelete,
     QueueTitle,
     QueueHint,
     QueueEmpty,
@@ -340,11 +474,6 @@ pub enum Key {
     MouseOff,
     NotificationTitle,
     NotificationBody,
-    LinearYou,
-    LinearApproval,
-    LinearTool,
-    LinearError,
-    LinearUnknownError,
     ChatNewOutput,
     CmdSessions,
     CmdModel,
@@ -360,20 +489,16 @@ pub enum Key {
     CmdHelp,
     CmdQuit,
     CmdPreferences,
-    PrefDensity,
     PrefPosition,
     PrefWidth,
     PrefMouse,
     PrefNotifications,
     PrefNotificationBell,
     PrefMotion,
-    PrefLinear,
     PrefEnabled,
     PrefDisabled,
     PrefShortcuts,
     PrefReset,
-    PrefFocused,
-    PrefComfortable,
     PrefLeft,
     PrefRight,
     PreferencesTitle,
@@ -384,6 +509,7 @@ pub enum Key {
     NoticePreferenceInvalid,
     // ── the help overlay's key table ──────────────────────────────────
     HelpKeyNew,
+    HelpKeyDelete,
     HelpKeySidebar,
     HelpKeyFocus,
     HelpKeyScroll,
@@ -402,11 +528,19 @@ pub enum Key {
     HelpKeyWorkspaces,
     HelpKeyPanelRecent,
     HelpKeyPanelWorkspaces,
-    HelpKeyPanelFiles,
+    HelpKeyFiles,
+    HelpKeyPrevPanel,
+    HelpKeyNextPanel,
     // ── the preview box and clipboard paste ──────────────────────────
+    PreviewZoomIn,
+    PreviewZoomOut,
+    PreviewFit,
+    PreviewPrev,
+    PreviewNext,
     PreviewHintImage,
     PreviewHintText,
     PreviewNothing,
+    PreviewImageUnsupported,
     PreviewTruncated,
     PreviewEmptyFile,
     AttachmentsInDraft,
@@ -414,6 +548,7 @@ pub enum Key {
     HelpKeyPreviewAttachment,
     NoticeClipboardEmpty,
     NoticeClipboardUnavailable,
+    NoticeSessionNotStarted,
     HelpGroupSessions,
     HelpGroupChoice,
     HelpGroupPanels,
@@ -458,17 +593,16 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         SectionPinned => ("置顶", "Pinned"),
         SectionWorkspaces => ("工作区", "Workspaces"),
         SectionChats => ("对话会话", "Chats"),
-        SummaryWorkspaces => ("{} 个工作区", "{} workspaces"),
+        SectionActive => ("活跃", "Active"),
+        SectionEarlier => ("更早", "Earlier"),
         SummaryUnitsSessions => ("会话", "chats"),
         PanelEmptyWorkspaces => ("没有工作区", "no workspaces"),
-        TabFiles => ("文件", "Files"),
-        SummaryFiles => ("{} 项", "{} items"),
+        FilesTitle => ("文件", "Files"),
         PanelEmptyFiles => ("目录是空的", "empty directory"),
         PanelTreeTruncated => ("只列出前 {} 项", "listing stopped at {} entries"),
 
         SummaryTodo => ("{} 待办 / {} 合计", "{} open / {} total"),
         SummaryJobs => ("{} 个任务", "{} jobs"),
-        SummarySessions => ("{} 个会话", "{} sessions"),
         SummarySkills => ("{} 个技能", "{} skills"),
         UsageContext => ("上下文", "Context"),
         UsageCost => ("成本", "Cost"),
@@ -575,9 +709,14 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         HintNewChat => ("新会话", "New Chat"),
         HintSettings => ("偏好设置", "Preferences"),
         RailHint => (
-            "↑↓ 选择 · ⏎ 打开 · ←→ 页签",
-            "↑↓ choose · enter opens · ←→ tabs",
+            "shift+←→ 页签 · shift+↑↓ 切换会话",
+            "shift+←→ tabs · shift+↑↓ switches session",
         ),
+        FilesHint => (
+            "↑↓ 选择 · ⏎ 打开 · ⌫ 上一层 · r 刷新 · esc 关闭",
+            "↑↓ select · enter opens · ⌫ up a level · r refreshes · esc closes",
+        ),
+        FilesNoWorkspace => ("这个会话没有工作区", "This conversation has no workspace"),
         ShortcutRefresh => ("刷新会话和用量", "Refresh sessions and usage"),
         ShortcutStop => ("停止当前生成", "Stop the current run"),
 
@@ -617,10 +756,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ChipModel => ("模型", "Model"),
         ChipEffort => ("强度", "Effort"),
         ChipApproval => ("审批", "Approval"),
-        ShortcutCommands => ("命令", "Commands"),
-        ShortcutHelp => ("帮助", "Help"),
-        ShortcutNewChat => ("新会话", "New Chat"),
-        ShortcutSidebar => ("侧栏", "Sidebar"),
         LaunchpadTagline => (
             "一个 AI agent，终端、桌面、手机都在",
             "One AI agent — terminal, desktop, phone",
@@ -682,16 +817,59 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         WorktreeHint => ("↑↓ 选择 · ⏎ 设为会话工作区 · r 刷新 · /worktree new <branch> 新建 · esc 关闭", "↑↓ choose · enter sets session cwd · r refreshes · /worktree new <branch> creates · esc closes"),
         WorktreeEmpty => ("没有可显示的 worktree", "No worktrees to show"),
         WorktreeCreating => ("正在创建 worktree…", "Creating worktree…"),
+        CmdGit => (
+            "浏览 git 仓库：提交、引用、改动、stash",
+            "Browse the git repository: commits, refs, changes, stashes",
+        ),
+        CmdFiles => (
+            "打开本会话的工作区文件树",
+            "Open this conversation's workspace files",
+        ),
+        GitHint => (
+            "1-4 视图 · ↑↓ 选择 · tab 列表/详情 · ⏎ 打开 · y 复制 · r 刷新 · esc 关闭",
+            "1-4 views · ↑↓ select · tab list/detail · enter opens · y copies · r refreshes · esc closes",
+        ),
+        GitTabCommits => ("提交", "commits"),
+        GitTabRefs => ("引用", "refs"),
+        GitTabStatus => ("改动", "changes"),
+        GitTabStash => ("储藏", "stash"),
+        GitEmptyCommits => ("没有提交", "No commits"),
+        GitEmptyRefs => ("没有分支或标签", "No branches or tags"),
+        GitCleanStatus => ("工作区没有未提交改动", "No uncommitted changes"),
+        GitEmptyStash => ("没有 stash", "No stashes"),
+        GitNoRepo => (
+            "当前工作区不是 git 仓库",
+            "This workspace is not a git repository",
+        ),
+        GitNoMessage => ("git 没有任何输出", "git exited without a message"),
+        GitAheadBehind => ("领先 {} · 落后 {}", "ahead {} · behind {}"),
+        GitTipFormat => (
+            "--format=commit %h%n作者: %an <%ae>%n日期:   %ad%n%n    %s%n%n%b",
+            "--format=commit %h%nAuthor: %an <%ae>%nDate:   %ad%n%n    %s%n%n%b",
+        ),
+        GitFilter => ("过滤：{}", "filter: {}"),
+        GitDetail => ("详情", "Detail"),
+        GitNoSelection => ("选择一个条目查看详情", "Select an entry to see its detail"),
+        GitCopied => ("已复制 {}", "copied {}"),
         CompactDone => ("上下文已压缩", "Context compacted"),
         ToolsDone => ("工具设置已更新", "Tool settings updated"),
         ToolsUsage => ("用法：/tools read,shell · /tools off", "Usage: /tools read,shell · /tools off"),
         WorkflowFailed => ("操作失败：{}", "Operation failed: {}"),
         ForkEmptyId => ("fork 未返回会话 id", "Fork returned no session id"),
         CmdQueue => ("查看、取消或取回排队消息", "List, cancel or recall queued prompts"),
+        CmdDelete => ("删除这条会话（先确认）", "Delete this conversation (asks first)"),
         CmdCopy => ("复制最后一条回答", "Copy the last assistant answer"),
         CmdPaste => (
             "粘贴剪贴板（图片会变成附件）",
             "Paste the clipboard (an image becomes an attachment)",
+        ),
+        CmdPreview => (
+            "预览草稿里最新的附件",
+            "Preview the newest attachment in the draft",
+        ),
+        CmdRefresh => (
+            "重新读取会话、用量与目录树",
+            "Re-read sessions, usage and the file tree",
         ),
         CmdMouse => ("切换鼠标捕获，便于选择复制", "Toggle mouse capture for native selection"),
         QueueTitle => ("排队消息", "Queued prompts"),
@@ -708,11 +886,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         MouseOff => ("鼠标捕获已关闭，可使用终端原生选择", "Mouse capture disabled; native terminal selection is available"),
         NotificationTitle => ("FutureOS：运行完成", "FutureOS: run complete"),
         NotificationBody => ("本轮已成功完成。", "This turn finished successfully."),
-        LinearYou => ("你：{}", "You: {}"),
-        LinearApproval => ("需要审批：{}", "Approval needed: {}"),
-        LinearTool => ("工具执行", "tool execution"),
-        LinearError => ("错误：{}", "Error: {}"),
-        LinearUnknownError => ("未知错误", "unknown error"),
         ChatNewOutput => ("↓ 新输出 · esc 回到最新", "↓ new output · esc returns to latest"),
         CmdSessions => ("浏览并切换会话", "Browse and switch sessions"),
         CmdModel => ("选择模型", "Choose a model"),
@@ -731,20 +904,16 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         CmdHelp => ("帮助与快捷键", "Help and shortcuts"),
         CmdQuit => ("退出 workbench", "Leave the workbench"),
         CmdPreferences => ("布局、通知、可访问性和快捷键", "Layout, notifications, accessibility and shortcuts"),
-        PrefDensity => ("界面密度", "Density"),
         PrefPosition => ("侧栏位置", "Sidebar position"),
         PrefWidth => ("侧栏宽度", "Sidebar width"),
         PrefMouse => ("启动与运行时使用鼠标", "Mouse capture"),
         PrefNotifications => ("完成时通知", "Completion notifications"),
         PrefNotificationBell => ("通知包含提示音", "Notification bell"),
         PrefMotion => ("减少动态", "Reduce motion"),
-        PrefLinear => ("线性阅读", "Linear reading"),
         PrefEnabled => ("开启", "On"),
         PrefDisabled => ("关闭", "Off"),
         PrefShortcuts => ("自定义快捷键", "Customize shortcuts"),
         PrefReset => ("恢复默认偏好", "Restore defaults"),
-        PrefFocused => ("专注：更多对话空间", "Focused: more room for conversation"),
-        PrefComfortable => ("舒适：完整品牌头部", "Comfortable: full identity header"),
         PrefLeft => ("左侧", "Left"),
         PrefRight => ("右侧", "Right"),
         PreferencesTitle => ("偏好设置", "Preferences"),
@@ -755,6 +924,10 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         NoticePreferenceInvalid => ("不支持的按键，请使用 Ctrl/Alt+字母、F1–F24 或 Tab", "Unsupported key — use Ctrl/Alt + a letter, F1–F24 or Tab"),
 
         HelpKeyNew => ("新会话（任意位置）", "New chat (from anywhere)"),
+        HelpKeyDelete => (
+            "删除选中的会话（先确认）",
+            "Delete the selected conversation (asks first)",
+        ),
         HelpKeySidebar => ("侧栏：打开 / 聚焦 / 收起", "Sidebar: show / focus / hide"),
         HelpKeyFocus => ("在输入框与侧栏之间移动", "Move between the input and the sidebar"),
         HelpKeyScroll => ("滚动聊天，或侧栏列表", "Scroll the chat, or the sidebar's list"),
@@ -788,7 +961,12 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ),
         HelpKeyPanelRecent => ("切到「最近」面板", "Show the Recent panel"),
         HelpKeyPanelWorkspaces => ("切到「工作区」面板", "Show the Workspaces panel"),
-        HelpKeyPanelFiles => ("切到「文件」面板", "Show the Files panel"),
+        HelpKeyFiles => (
+            "打开本会话的文件面板",
+            "Show this conversation's files",
+        ),
+        HelpKeyPrevPanel => ("上一个页签：最近 / 工作区", "Previous tab: Recent / Workspaces"),
+        HelpKeyNextPanel => ("下一个页签：最近 / 工作区", "Next tab: Recent / Workspaces"),
         HelpKeyPasteImage => (
             "粘贴：图片直接成为草稿附件，文字粘进草稿",
             "Paste: an image becomes a draft attachment, text is pasted",
@@ -797,23 +975,36 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "查看草稿里最新那张图片",
             "View the newest image attached to the draft",
         ),
+        PreviewZoomIn => ("放大", "Zoom in"),
+        PreviewZoomOut => ("缩小", "Zoom out"),
+        PreviewFit => ("适应", "Fit"),
+        PreviewPrev => ("上一张", "Previous"),
+        PreviewNext => ("下一张", "Next"),
         PreviewHintImage => (
-            "＋ / － 缩放 · 方向键平移 · 0 复位 · esc 关闭",
-            "+ / - zoom · arrows pan · 0 resets · esc closes",
+            "＋ / － 缩放 · 拖动或方向键平移 · [ ] 上一张/下一张 · 0 复位 · esc 关闭",
+            "+ / - zoom · drag or arrows to pan · [ ] previous/next · 0 resets · esc closes",
         ),
         PreviewHintText => (
             "↑↓ 滚动 · pageUp/pageDown 翻页 · esc 关闭",
             "↑↓ scroll · pageUp/pageDown page · esc closes",
         ),
         PreviewNothing => ("没有可预览的内容", "nothing to preview"),
+        PreviewImageUnsupported => (
+            "这个终端不能显示图片。在终端之外打开这个文件就能看到它。",
+            "This terminal cannot show pictures. Open the file outside the TUI to see it.",
+        ),
         PreviewTruncated => ("（只显示开头）", "(showing the beginning)"),
         PreviewEmptyFile => ("空文件", "empty file"),
-        AttachmentsInDraft => ("· 📎 {} 张图片", "· 📎 {} images"),
+        AttachmentsInDraft => (" · 📎 {} 张图片", " · 📎 {} images"),
         NoticeClipboardEmpty => (
             "剪贴板里没有图片也没有文本",
             "The clipboard has no image and no text",
         ),
         NoticeClipboardUnavailable => ("读不到剪贴板：{}", "Could not read the clipboard: {}"),
+        NoticeSessionNotStarted => (
+            "没能开启新会话：代理没有返回可用的会话（草稿还在，可以直接再发一次）",
+            "Could not start a session: the agent returned none (the draft is kept, try again)",
+        ),
         HelpGroupSessions => ("会话", "Chats"),
         HelpGroupChoice => ("选择", "Choices"),
         HelpGroupPanels => ("面板", "Panels"),
@@ -833,17 +1024,28 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         NoticePinned => ("已置顶 {} · 在 工作区 页签的 置顶 区", "Pinned {} · it leads the Workspaces tab"),
         NoticeUnpinned => ("已取消置顶 {}", "Unpinned {}"),
         NoticePinUnavailable => ("这条会话不属于工作区，无法置顶", "This conversation belongs to no workspace"),
+        DeleteTitle => ("删除会话", "Delete conversation"),
+        DeleteBody => (
+            "它会连同记录和文件一起删除，无法撤销。",
+            "Its record and its file go with it. This cannot be undone.",
+        ),
+        DeleteWhere => ("工作区：{}", "Workspace: {}"),
+        DeleteHint => ("⏎ 删除 · esc 保留", "enter deletes · esc keeps it"),
+        NoticeDeleted => ("已删除 {}", "Deleted {}"),
+        NoticeDeleteFailed => ("无法删除会话：{}", "Could not delete the conversation: {}"),
+        NoticeNothingToDelete => ("这里没有可删除的会话", "Nothing to delete here"),
         NoticeModeUnknown => (
             "未知的审批模式：{}",
             "Unknown approval mode: {}",
         ),
 
         InputHintLaunchpad => (
-            // What the *draft* can hold that the box's own title does not say.
-            // `/ 命令` used to be here too, and then the title said it again one
-            // row above; the footer names the palette as well.
-            "描述你要做的事 · @ 文件 · # 会话",
-            "Describe the task · @ files · # sessions",
+            // What the *draft* can hold, in the order the reader types it: the
+            // task itself, then the three sigils the box answers. `/ 命令` is
+            // here rather than in a shortcut row under the box, because it is
+            // typed into the box — it is not a key binding to memorize.
+            "描述你要做的事 · / 命令 · @ 文件 · # 会话",
+            "Describe the task · / commands · @ files · # sessions",
         ),
         ApprovalWaiting => (
             "等待批准：{}{} — y 允许 · n 拒绝",
@@ -959,7 +1161,15 @@ mod tests {
 
     #[test]
     fn a_chinese_system_picks_chinese() {
-        for tag in ["zh_CN.UTF-8", "zh", "zh-Hans", "ZH_TW", "zh_SG.utf8"] {
+        // `zh-Hans-CN` is what macOS's `AppleLanguages` reports.
+        for tag in [
+            "zh_CN.UTF-8",
+            "zh",
+            "zh-Hans",
+            "zh-Hans-CN",
+            "ZH_TW",
+            "zh_SG.utf8",
+        ] {
             assert_eq!(
                 env_language_of(tag),
                 Some(Language::Zh),
@@ -970,7 +1180,7 @@ mod tests {
 
     #[test]
     fn anything_else_is_english() {
-        for tag in ["en_US.UTF-8", "de_DE.UTF-8", "en"] {
+        for tag in ["en_US.UTF-8", "de_DE.UTF-8", "en", "en-US"] {
             assert_eq!(env_language_of(tag), Some(Language::En), "{tag}");
         }
         // `C` and `POSIX` are "no locale chosen", not "English chosen": they
@@ -978,6 +1188,17 @@ mod tests {
         for tag in ["C", "POSIX", "c", "  "] {
             assert_eq!(env_language_of(tag), None, "{tag}");
         }
+    }
+
+    /// The macOS path asks CoreFoundation instead of the shell, so the call
+    /// itself has to work: a wrong signature is a crash or a garbage tag, and
+    /// the locale tests above would not notice either. *Which* language it
+    /// answers belongs to the machine running the test, not to the test.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_reads_the_system_language() {
+        let language = macos::preferred_language().expect("CoreFoundation answers");
+        assert!(matches!(language, Language::Zh | Language::En));
     }
 
     #[test]
@@ -1038,7 +1259,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 272] = {
+    const ALL_KEYS: [Key; 299] = {
         use Key::*;
         [
             TabTodo,
@@ -1048,19 +1269,18 @@ mod tests {
             TabSkills,
             TabRecent,
             TabWorkspaces,
-            TabFiles,
+            FilesTitle,
             SectionPinned,
             SectionWorkspaces,
             SectionChats,
-            SummaryWorkspaces,
-            SummaryFiles,
+            SectionActive,
+            SectionEarlier,
             SummaryUnitsSessions,
             PanelEmptyWorkspaces,
             PanelEmptyFiles,
             PanelTreeTruncated,
             SummaryTodo,
             SummaryJobs,
-            SummarySessions,
             SummarySkills,
             UsageContext,
             UsageCost,
@@ -1110,6 +1330,8 @@ mod tests {
             ModeAutoDesc,
             ModeOffDesc,
             RailHint,
+            FilesHint,
+            FilesNoWorkspace,
             LangSystem,
             InputHintChat,
             ChatOlder,
@@ -1145,10 +1367,6 @@ mod tests {
             ChipModel,
             ChipEffort,
             ChipApproval,
-            ShortcutCommands,
-            ShortcutHelp,
-            ShortcutNewChat,
-            ShortcutSidebar,
             LaunchpadTagline,
             LaunchpadNewChat,
             LaunchpadNewChatIn,
@@ -1197,14 +1415,36 @@ mod tests {
             WorktreeHint,
             WorktreeEmpty,
             WorktreeCreating,
+            CmdGit,
+            CmdFiles,
+            GitHint,
+            GitTabCommits,
+            GitTabRefs,
+            GitTabStatus,
+            GitTabStash,
+            GitEmptyCommits,
+            GitEmptyRefs,
+            GitCleanStatus,
+            GitEmptyStash,
+            GitNoRepo,
+            GitNoMessage,
+            GitAheadBehind,
+            GitTipFormat,
+            GitFilter,
+            GitDetail,
+            GitNoSelection,
+            GitCopied,
             CompactDone,
             ToolsDone,
             ToolsUsage,
             WorkflowFailed,
             ForkEmptyId,
             CmdQueue,
+            CmdDelete,
             CmdCopy,
             CmdPaste,
+            CmdPreview,
+            CmdRefresh,
             CmdMouse,
             QueueTitle,
             QueueHint,
@@ -1220,11 +1460,6 @@ mod tests {
             MouseOff,
             NotificationTitle,
             NotificationBody,
-            LinearYou,
-            LinearApproval,
-            LinearTool,
-            LinearError,
-            LinearUnknownError,
             ChatNewOutput,
             CmdSessions,
             CmdModel,
@@ -1240,20 +1475,16 @@ mod tests {
             CmdHelp,
             CmdQuit,
             CmdPreferences,
-            PrefDensity,
             PrefPosition,
             PrefWidth,
             PrefMouse,
             PrefNotifications,
             PrefNotificationBell,
             PrefMotion,
-            PrefLinear,
             PrefEnabled,
             PrefDisabled,
             PrefShortcuts,
             PrefReset,
-            PrefFocused,
-            PrefComfortable,
             PrefLeft,
             PrefRight,
             PreferencesTitle,
@@ -1263,6 +1494,7 @@ mod tests {
             NoticePreferencesSaved,
             NoticePreferenceInvalid,
             HelpKeyNew,
+            HelpKeyDelete,
             HelpKeySidebar,
             HelpKeyFocus,
             HelpKeyScroll,
@@ -1281,17 +1513,26 @@ mod tests {
             HelpKeyWorkspaces,
             HelpKeyPanelRecent,
             HelpKeyPanelWorkspaces,
-            HelpKeyPanelFiles,
+            HelpKeyFiles,
+            HelpKeyPrevPanel,
+            HelpKeyNextPanel,
             HelpKeyPasteImage,
             HelpKeyPreviewAttachment,
+            PreviewZoomIn,
+            PreviewZoomOut,
+            PreviewFit,
+            PreviewPrev,
+            PreviewNext,
             PreviewHintImage,
             PreviewHintText,
             PreviewNothing,
+            PreviewImageUnsupported,
             PreviewTruncated,
             PreviewEmptyFile,
             AttachmentsInDraft,
             NoticeClipboardEmpty,
             NoticeClipboardUnavailable,
+            NoticeSessionNotStarted,
             HelpGroupSessions,
             HelpGroupChoice,
             HelpGroupPanels,
@@ -1304,6 +1545,13 @@ mod tests {
             NoticePinned,
             NoticeUnpinned,
             NoticePinUnavailable,
+            DeleteTitle,
+            DeleteBody,
+            DeleteWhere,
+            DeleteHint,
+            NoticeDeleted,
+            NoticeDeleteFailed,
+            NoticeNothingToDelete,
             NoticeModeUnknown,
             InputHintLaunchpad,
             ApprovalWaiting,

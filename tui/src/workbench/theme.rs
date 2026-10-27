@@ -18,6 +18,7 @@
 
 use crate::theme::{bold, fg};
 use crate::utils::apply_background_to_line;
+use crate::workbench::syntax;
 
 /// One palette. The numbers are 256-colour indices; `future-dark` /
 /// `future-light` are the contract's own (see `docs/tui/workbench-spec.md` §3),
@@ -28,7 +29,9 @@ pub struct Palette {
     pub id: &'static str,
     /// Canvas behind everything.
     pub bg: u8,
-    /// Sidebar and input-box background.
+    /// Sidebar, menu and overlay background. Not the composer's: that box sits
+    /// on the canvas like the chat around it, and its cursor is the focus
+    /// signal.
     pub panel: u8,
     /// Borders, dividers, box rules.
     pub border: u8,
@@ -150,15 +153,287 @@ pub const DRACULA: Palette = Palette {
     purple: 212,
 };
 
-/// Every built-in, in `/theme` picker order — the same six ids and the same
-/// order as [`crate::themes::THEME_SPECS`], default first.
-pub const PALETTES: [Palette; 6] = [
+/// Ayu, by Dmitri Voronianski.
+pub const AYU: Palette = Palette {
+    id: "ayu",
+    bg: 235,     // #262626 ≈ #1f2430
+    panel: 236,  // #303030 ≈ #242936
+    border: 240, // #585858 ≈ #505664
+    fg: 251,     // #c6c6c6 ≈ #cbccc6
+    muted: 245,  // #8a8a8a ≈ #7f8899
+    accent: 221, // #ffd75f ≈ #ffcc66
+    iris: 81,    // #5fd7ff ≈ #73d0ff
+    amber: 222,  // #ffd787 ≈ #ffd580
+    green: 150,  // #afd787 ≈ #bae67e
+    red: 210,    // #ff8787 ≈ #f28779
+    purple: 183, // #d7afff ≈ #d4bfff
+};
+
+/// Catppuccin — Mocha.
+pub const CATPPUCCIN: Palette = Palette {
+    id: "catppuccin",
+    bg: 233,     // #121212 ≈ #11111b
+    panel: 235,  // #262626 ≈ #1e1e2e
+    border: 239, // #4e4e4e ≈ #45475a
+    fg: 189,     // #d7d7ff ≈ #cdd6f4
+    muted: 103,  // #8787af ≈ #7f849c
+    accent: 111, // #87afff ≈ #89b4fa
+    iris: 117,   // #87d7ff
+    amber: 223,  // #ffd7af ≈ #f9e2af
+    green: 151,  // #afd7af ≈ #a6e3a1
+    red: 211,    // #ff87af ≈ #f38ba8
+    purple: 218, // #ffafd7 ≈ #f5c2e7
+};
+
+/// Catppuccin — Latte.
+pub const CATPPUCCIN_LIGHT: Palette = Palette {
+    id: "catppuccin-light",
+    bg: 255,     // #eeeeee ≈ #e8ebf1
+    panel: 231,  // #ffffff ≈ #ffffff
+    border: 252, // #d0d0d0 ≈ #ccd0da
+    fg: 239,     // #4e4e4e ≈ #474962
+    muted: 103,  // #8787af ≈ #81849e
+    accent: 62,  // #5f5fd7 ≈ #3b5bdb
+    iris: 31,    // #0087af
+    amber: 94,   // #875f00 ≈ #9b6200
+    green: 28,   // #008700 ≈ #2f7d1f
+    red: 125,    // #af005f ≈ #c10f33
+    purple: 99,  // #875fff ≈ #8839ef
+};
+
+/// Everforest, by sainnhe.
+pub const EVERFOREST: Palette = Palette {
+    id: "everforest",
+    bg: 236,     // #303030 ≈ #2b3339
+    panel: 237,  // #3a3a3a ≈ #323c41
+    border: 59,  // #5f5f5f ≈ #586260
+    fg: 188,     // #d7d7d7 ≈ #e2dbcb
+    muted: 245,  // #8a8a8a ≈ #87948b
+    accent: 109, // #87afaf
+    iris: 108,   // #87af87
+    amber: 180,  // #d7af87 ≈ #dbbc7f
+    green: 144,  // #afaf87 ≈ #a7c080
+    red: 174,    // #d78787 ≈ #e88a8c
+    purple: 175, // #d787af ≈ #d699b6
+};
+
+/// Everforest — Light.
+pub const EVERFOREST_LIGHT: Palette = Palette {
+    id: "everforest-light",
+    bg: 255,     // #eeeeee ≈ #f3efdf
+    panel: 230,  // #ffffd7 ≈ #fdf6e3
+    border: 188, // #d7d7d7 ≈ #e0dccc
+    fg: 239,     // #4e4e4e ≈ #414c51
+    muted: 244,  // #808080 ≈ #78857a
+    accent: 58,  // #5f5f00 ≈ #627300
+    iris: 66,    // #5f8787 ≈ #377483
+    amber: 94,   // #875f00 ≈ #8e6506
+    green: 64,   // #5f8700 ≈ #637400
+    red: 131,    // #af5f5f ≈ #c33d32
+    purple: 132, // #af5f87 ≈ #b0568c
+};
+
+/// Gruvbox, by Pavel Pertsev.
+pub const GRUVBOX: Palette = Palette {
+    id: "gruvbox",
+    bg: 234,     // #1c1c1c ≈ #1d2021
+    panel: 235,  // #262626 ≈ #282828
+    border: 239, // #4e4e4e ≈ #504945
+    fg: 187,     // #d7d7af ≈ #ebdbb2
+    muted: 138,  // #af8787 ≈ #a89984
+    accent: 108, // #87af87 ≈ #83a598
+    iris: 66,    // #5f8787
+    amber: 214,  // #ffaf00 ≈ #fabd2f
+    green: 142,  // #afaf00 ≈ #b8bb26
+    red: 209,    // #ff875f ≈ #fb7564
+    purple: 174, // #d78787 ≈ #d3869b
+};
+
+/// Gruvbox — Light.
+pub const GRUVBOX_LIGHT: Palette = Palette {
+    id: "gruvbox-light",
+    bg: 223,     // #ffd7af ≈ #f2e5bc
+    panel: 230,  // #ffffd7 ≈ #fbf1c7
+    border: 187, // #d7d7af ≈ #d5c4a1
+    fg: 237,     // #3a3a3a ≈ #3c3836
+    muted: 242,  // #6c6c6c ≈ #7e7364
+    accent: 24,  // #005f87 ≈ #076678
+    iris: 66,    // #5f8787
+    amber: 94,   // #875f00 ≈ #945e05
+    green: 58,   // #5f5f00 ≈ #4f6a12
+    red: 124,    // #af0000 ≈ #9d0006
+    purple: 95,  // #875f5f ≈ #8f3f71
+};
+
+/// Kanagawa, by rebelot.
+pub const KANAGAWA: Palette = Palette {
+    id: "kanagawa",
+    bg: 235,     // #262626 ≈ #1f1f28
+    panel: 236,  // #303030 ≈ #2a2a37
+    border: 240, // #585858 ≈ #585653
+    fg: 187,     // #d7d7af ≈ #dcd7ba
+    muted: 244,  // #808080 ≈ #8b8779
+    accent: 110, // #87afd7 ≈ #7e9cd8
+    iris: 116,   // #87d7d7
+    amber: 180,  // #d7af87 ≈ #e6c384
+    green: 107,  // #87af5f ≈ #98bb6c
+    red: 168,    // #d75f87 ≈ #e56e7b
+    purple: 103, // #8787af ≈ #957fb8
+};
+
+/// Nightfox, by EdenEast.
+pub const NIGHTFOX: Palette = Palette {
+    id: "nightfox",
+    bg: 235,     // #262626 ≈ #192330
+    panel: 236,  // #303030 ≈ #212e3f
+    border: 59,  // #5f5f5f ≈ #4e5a67
+    fg: 252,     // #d0d0d0 ≈ #cdcecf
+    muted: 245,  // #8a8a8a ≈ #7d8b98
+    accent: 74,  // #5fafd7 ≈ #719cd6
+    iris: 81,    // #5fd7ff
+    amber: 180,  // #d7af87 ≈ #dbc074
+    green: 108,  // #87af87 ≈ #81b29a
+    red: 174,    // #d78787 ≈ #d17b8c
+    purple: 140, // #af87d7 ≈ #9d79d6
+};
+
+/// Nord, by Arctic Ice Studio.
+pub const NORD: Palette = Palette {
+    id: "nord",
+    bg: 237,     // #3a3a3a ≈ #2e3440
+    panel: 238,  // #444444 ≈ #3b4252
+    border: 240, // #585858 ≈ #4c566a
+    fg: 255,     // #eeeeee ≈ #eceff4
+    muted: 109,  // #87afaf ≈ #9aa6bb
+    accent: 110, // #87afd7 ≈ #88c0d0
+    iris: 146,   // #afafd7 ≈ #a3c0dd
+    amber: 186,  // #d7d787 ≈ #ebcb8b
+    green: 144,  // #afaf87 ≈ #a3be8c
+    red: 131,    // #af5f5f
+    purple: 139, // #af87af ≈ #b48ead
+};
+
+/// Rosé Pine — Main.
+pub const ROSE_PINE: Palette = Palette {
+    id: "rose-pine",
+    bg: 234,     // #1c1c1c ≈ #191724
+    panel: 235,  // #262626 ≈ #232136
+    border: 238, // #444444 ≈ #393552
+    fg: 189,     // #d7d7ff ≈ #e0def4
+    muted: 103,  // #8787af ≈ #8f8aa8
+    accent: 182, // #d7afd7 ≈ #c4a7e7
+    iris: 74,    // #5fafd7 ≈ #6cb2cc
+    amber: 216,  // #ffaf87 ≈ #f6c177
+    green: 152,  // #afd7d7 ≈ #9ccfd8
+    red: 168,    // #d75f87 ≈ #eb6f92
+    purple: 141, // #af87ff
+};
+
+/// Rosé Pine — Dawn.
+pub const ROSE_PINE_LIGHT: Palette = Palette {
+    id: "rose-pine-light",
+    bg: 255,     // #eeeeee ≈ #faf4ed
+    panel: 231,  // #ffffff ≈ #fffaf3
+    border: 253, // #dadada ≈ #e4dcd8
+    fg: 240,     // #585858 ≈ #4f4a6e
+    muted: 245,  // #8a8a8a ≈ #87829b
+    accent: 96,  // #875f87 ≈ #76608e
+    iris: 60,    // #5f5f87 ≈ #3f7180
+    amber: 94,   // #875f00 ≈ #9a5f10
+    green: 24,   // #005f87 ≈ #286983
+    red: 131,    // #af5f5f ≈ #a4475e
+    purple: 99,  // #875fff
+};
+
+/// Solarized — Dark.
+pub const SOLARIZED: Palette = Palette {
+    id: "solarized",
+    bg: 235,    // #262626 ≈ #002b36
+    panel: 236, // #303030 ≈ #073642
+    border: 23, // #005f5f ≈ #12505f
+    fg: 254,    // #e4e4e4 ≈ #eee8d5
+    muted: 247, // #9e9e9e ≈ #8ba09c
+    accent: 74, // #5fafd7 ≈ #5fb3e8
+    iris: 36,   // #00af87
+    amber: 179, // #d7af5f ≈ #e2c261
+    green: 143, // #afaf5f ≈ #b5bb63
+    red: 210,   // #ff8787 ≈ #f08a7f
+    purple: 61, // #5f5faf
+};
+
+/// Solarized — Light.
+pub const SOLARIZED_LIGHT: Palette = Palette {
+    id: "solarized-light",
+    bg: 254,     // #e4e4e4 ≈ #f4ecd8
+    panel: 230,  // #ffffd7 ≈ #fdf6e3
+    border: 187, // #d7d7af ≈ #ded6bf
+    fg: 236,     // #303030 ≈ #073642
+    muted: 244,  // #808080 ≈ #6d7f80
+    accent: 25,  // #005faf ≈ #1e6fa8
+    iris: 30,    // #008787
+    amber: 94,   // #875f00 ≈ #8b6a00
+    green: 58,   // #5f5f00 ≈ #5f6f00
+    red: 124,    // #af0000 ≈ #b52a27
+    purple: 61,  // #5f5faf
+};
+
+/// Tokyo Night, by enkia.
+pub const TOKYO_NIGHT: Palette = Palette {
+    id: "tokyo-night",
+    bg: 234,     // #1c1c1c ≈ #1a1b26
+    panel: 235,  // #262626 ≈ #1f2335
+    border: 59,  // #5f5f5f ≈ #4f546f
+    fg: 153,     // #afd7ff ≈ #c0caf5
+    muted: 103,  // #8787af ≈ #7f87ad
+    accent: 111, // #87afff ≈ #88acf8
+    iris: 117,   // #87d7ff
+    amber: 179,  // #d7af5f ≈ #e0af68
+    green: 149,  // #afd75f ≈ #9ece6a
+    red: 210,    // #ff8787 ≈ #f8849a
+    purple: 141, // #af87ff ≈ #bb9af7
+};
+
+/// Vesper, by Rauno Freiberg.
+pub const VESPER: Palette = Palette {
+    id: "vesper",
+    bg: 233,     // #121212 ≈ #101010
+    panel: 234,  // #1c1c1c
+    border: 239, // #4e4e4e ≈ #4e4e4e
+    fg: 188,     // #d7d7d7 ≈ #d7d7d7
+    muted: 244,  // #808080 ≈ #828282
+    accent: 222, // #ffd787 ≈ #ffc799
+    iris: 116,   // #87d7d7 ≈ #8fc8e0
+    amber: 215,  // #ffaf5f
+    green: 150,  // #afd787 ≈ #a8d582
+    red: 210,    // #ff8787 ≈ #ff8080
+    purple: 182, // #d7afd7 ≈ #d4a9e8
+};
+
+/// Every built-in, in `/theme` picker order — the same ids and the same order
+/// as [`crate::themes::THEME_SPECS`], default first.
+pub const PALETTES: [Palette; 22] = [
     FUTURE_DARK,
     FUTURE_LIGHT,
     ONE_DARK,
     ONE_LIGHT,
     HIGH_CONTRAST,
     DRACULA,
+    AYU,
+    CATPPUCCIN,
+    CATPPUCCIN_LIGHT,
+    EVERFOREST,
+    EVERFOREST_LIGHT,
+    GRUVBOX,
+    GRUVBOX_LIGHT,
+    KANAGAWA,
+    NIGHTFOX,
+    NORD,
+    ROSE_PINE,
+    ROSE_PINE_LIGHT,
+    SOLARIZED,
+    SOLARIZED_LIGHT,
+    TOKYO_NIGHT,
+    VESPER,
 ];
 
 /// Ids written by workbench builds before the catalogue was shared: they name
@@ -190,12 +465,28 @@ pub fn resolve(id: Option<&str>) -> Palette {
             .iter()
             .copied()
             .find(|palette| {
-                palette.id
-                    == super::accessibility::system_theme_id(
-                        std::env::var("COLORFGBG").ok().as_deref(),
-                    )
+                palette.id == system_theme_id(std::env::var("COLORFGBG").ok().as_deref())
             })
             .unwrap_or(FUTURE_DARK),
+    }
+}
+
+/// `COLORFGBG` is the portable, query-free system light/dark hint supported by
+/// terminals such as xterm. Unknown or malformed values keep the dark default.
+fn system_theme_id(colorfgbg: Option<&str>) -> &'static str {
+    let Some(background) = colorfgbg
+        .and_then(|value| value.rsplit(';').next())
+        .and_then(|value| value.trim().parse::<u8>().ok())
+    else {
+        return "dark";
+    };
+    // The conventional xterm default is 0 on 15. The xterm 256-colour cube's
+    // entries 0..=7 are dark and 8..=15 are bright; high cube/grey entries are
+    // light enough that a dark foreground is the useful system match.
+    if background == 15 || background >= 231 || (8..=15).contains(&background) {
+        "light"
+    } else {
+        "dark"
     }
 }
 
@@ -261,6 +552,27 @@ impl Palette {
     pub fn panel_row(&self, text: &str, columns: usize) -> String {
         self.on(self.panel, text, columns)
     }
+
+    /// The colour a syntax token is painted in.
+    ///
+    /// The palette's semantic colours *are* the syntax palette, which is what
+    /// keeps highlighted code inside the theme the reader chose: a light theme
+    /// gets its own hues instead of a dark highlighter's. Two of the eight kinds
+    /// borrow a colour from one they never share a language with — a key wears
+    /// the function colour (keys belong to formats that have no functions), and
+    /// an attribute is a keyword in bold.
+    pub fn token(&self, token: syntax::Token, text: &str) -> String {
+        match token {
+            syntax::Token::Keyword => self.text(self.purple, text),
+            syntax::Token::Type => self.text(self.iris, text),
+            syntax::Token::Function => self.text(self.accent, text),
+            syntax::Token::String => self.text(self.green, text),
+            syntax::Token::Number => self.text(self.amber, text),
+            syntax::Token::Comment => self.dim(text),
+            syntax::Token::Attribute => self.strong(self.purple, text),
+            syntax::Token::Key => self.text(self.accent, text),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -268,7 +580,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_catalogue_is_the_six_themes_the_inline_ui_offers() {
+    fn the_catalogue_is_exactly_the_themes_the_inline_ui_offers() {
         let ids: Vec<&str> = PALETTES.iter().map(|palette| palette.id).collect();
         let specs: Vec<&str> = crate::themes::THEME_SPECS
             .iter()
@@ -278,7 +590,7 @@ mod tests {
         // catalogue's, so a choice made in one surface means the same in the
         // other.
         assert_eq!(ids, specs);
-        assert_eq!(ids.len(), 6);
+        assert_eq!(ids.len(), 22);
         assert_eq!(PALETTES[0].id, "dark", "the default is first");
     }
 
@@ -299,6 +611,15 @@ mod tests {
     }
 
     #[test]
+    fn system_theme_uses_colorfgbg_and_has_safe_fallbacks() {
+        assert_eq!(system_theme_id(Some("0;15")), "light");
+        assert_eq!(system_theme_id(Some("15;0")), "dark");
+        assert_eq!(system_theme_id(Some("0;255")), "light");
+        assert_eq!(system_theme_id(Some("bad")), "dark");
+        assert_eq!(system_theme_id(None), "dark");
+    }
+
+    #[test]
     fn the_ids_workbench_builds_already_wrote_still_resolve() {
         assert_eq!(resolve(Some("future-dark")).id, "dark");
         assert_eq!(resolve(Some("future-light")).id, "light");
@@ -308,16 +629,17 @@ mod tests {
     #[test]
     fn an_unknown_id_is_the_default_and_never_a_panic() {
         // A palette another build wrote is not a half-themed screen.
-        assert_eq!(resolve(Some("solarized")).id, "dark");
+        assert_eq!(resolve(Some("solarized-dark")).id, "dark");
         assert_eq!(resolve(None).id, "dark");
-        assert!(!is_known("solarized"));
+        assert!(!is_known("solarized-dark"));
         assert_eq!(label("solarized-dark"), "Solarized Dark");
     }
 
     #[test]
     fn cycling_wraps_and_comes_back() {
         assert_eq!(next(&FUTURE_DARK).id, "light");
-        assert_eq!(next(&DRACULA).id, FUTURE_DARK.id);
+        assert_eq!(next(&DRACULA).id, AYU.id);
+        assert_eq!(next(&VESPER).id, FUTURE_DARK.id);
     }
 
     #[test]

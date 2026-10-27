@@ -8,12 +8,36 @@ import { Field } from "../../components/ui/Field";
 import { IconButton } from "../../components/ui/IconButton";
 import { Select } from "../../components/ui/Select";
 import { TextInput } from "../../components/ui/TextInput";
+import { knownThinkingLevels } from "../../integrations/agent/agentClient";
 
 const API_OPTIONS = [
   { label: "OpenAI Completions", value: "openai-completions" },
   { label: "OpenAI Responses", value: "openai-responses" },
   { label: "Anthropic", value: "anthropic" },
 ];
+
+/**
+ * The thinking levels a new model row offers by default. `default` is implicit
+ * (always offered, never stored), so it is absent here; the four wire values are
+ * the common middle of the vocabulary.
+ */
+const DEFAULT_THINKING_LEVELS: string[] = ["off", "low", "medium", "high"];
+
+/**
+ * Normalize one row's selected levels for the write: trimmed, empties and the
+ * reserved `default` dropped, first occurrence of a duplicate kept. The host
+ * applies the same rules (and the caps), so this only keeps the payload clean.
+ */
+function normalizeThinkingLevels(levels: string[] | null | undefined): string[] {
+  const out: string[] = [];
+  for (const raw of levels ?? []) {
+    const level = raw.trim();
+    if (!level || level === "default" || out.includes(level))
+      continue;
+    out.push(level);
+  }
+  return out;
+}
 
 // Field-validation rules — mirror the backend (agent_providers.rs); backend is
 // authoritative, these give instant feedback.
@@ -88,13 +112,35 @@ export function CustomProviderDialog({
     setApi(initial?.api || "openai-completions");
     setBaseUrl(initial?.baseUrl ?? "");
     setApiKey("");
-    setModels(initial?.models.map(model => ({ ...model, key: crypto.randomUUID() })) ?? []);
+    setModels(initial?.models.map(model => ({
+      ...model,
+      // A host that predates the field sends none: the editor then starts from
+      // "no declared levels" and writes an explicit list on save. Stored values
+      // are copied so unknown wire tokens survive the round trip untouched.
+      thinkingLevels: [...(model.thinkingLevels ?? [])],
+      key: crypto.randomUUID(),
+    })) ?? []);
     setError(null);
     setSaving(false);
   }, [initial, open]);
 
   function updateModel(index: number, patch: Partial<CustomProviderModel>) {
     setModels(current => current.map((model, modelIndex) => (modelIndex === index ? { ...model, ...patch } : model)));
+  }
+
+  /** Add or remove one thinking level on a model row. */
+  function toggleThinkingLevel(index: number, level: string) {
+    setModels(current => current.map((model, modelIndex) => {
+      if (modelIndex !== index)
+        return model;
+      const levels = model.thinkingLevels ?? [];
+      return {
+        ...model,
+        thinkingLevels: levels.includes(level)
+          ? levels.filter(existing => existing !== level)
+          : [...levels, level],
+      };
+    }));
   }
 
   async function handleSubmit() {
@@ -166,7 +212,13 @@ export function CustomProviderDialog({
         id: model.id.trim(),
         name: model.name.trim(),
         supportsImages: model.supportsImages,
+        // No UI anymore: the flag is round-tripped exactly as it was stored (a
+        // new row starts at `true`), the way an old client would have left it.
         reasoning: model.reasoning,
+        // Always written explicitly: an empty list is a real answer ("only the
+        // implicit default"), and `default` is never stored. Unknown wire values
+        // kept from the stored list ride along untouched.
+        thinkingLevels: normalizeThinkingLevels(model.thinkingLevels),
         contextWindow: model.contextWindow,
         maxTokens: model.maxTokens,
         // Prices stay as typed; validation below rejects negative / non-finite
@@ -294,6 +346,7 @@ export function CustomProviderDialog({
                 name: "",
                 supportsImages: false,
                 reasoning: true,
+                thinkingLevels: [...DEFAULT_THINKING_LEVELS],
                 contextWindow: 128000,
                 maxTokens: 16384,
                 inputCost: 0,
@@ -351,18 +404,31 @@ export function CustomProviderDialog({
                             />
                           </label>
                         </div>
-                        <label
-                          className="flex cursor-pointer items-center gap-1.5 text-xs text-ink"
-                          title={t("customProvider.reasoningDescription")}
-                        >
-                          <input
-                            checked={model.reasoning}
-                            className="size-3.5 accent-accent"
-                            onChange={event => updateModel(index, { reasoning: event.target.checked })}
-                            type="checkbox"
-                          />
-                          {t("customProvider.reasoningLabel")}
-                        </label>
+                        {/* Multi-select of the known wire values; `default` is
+                            implicit (always offered, never stored), so it is
+                            not a chip. Unknown values already stored survive
+                            the round trip without a chip of their own. */}
+                        <fieldset className="space-y-1.5">
+                          <legend className="text-xs text-ink-muted">{t("customProvider.thinkingLevelsLabel")}</legend>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {knownThinkingLevels.map((level) => {
+                              const selected = (model.thinkingLevels ?? []).includes(level);
+                              return (
+                                <button
+                                  aria-pressed={selected}
+                                  className={selected
+                                    ? "rounded-md border border-accent bg-accent/10 px-2 py-1 text-xs font-medium text-accent"
+                                    : "rounded-md border border-line-soft px-2 py-1 text-xs font-medium text-ink-muted transition-colors hover:text-ink"}
+                                  key={level}
+                                  onClick={() => toggleThinkingLevel(index, level)}
+                                  type="button"
+                                >
+                                  {t(`agent:composer.thinkingLevelLabels.${level}`, { defaultValue: level })}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </fieldset>
                         <div className="flex items-center gap-4">
                           <span className="text-xs text-ink-muted">{t("customProvider.modalityLabel")}</span>
                           <label className="flex cursor-not-allowed items-center gap-1.5 text-xs text-ink-soft">

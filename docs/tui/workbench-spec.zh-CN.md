@@ -19,12 +19,17 @@
 3. Launchpad 首屏：大字 logo、大输入框、参数行（工作区/模型/强度/审批，可点击）、
    快捷入口、最近会话。
 4. 侧栏 2 个真实面板：最近（会话名、所在工作区、刷新时间）、工作区（同一批会话按桌面端的方式归档：置顶 / 工作区 / 对话会话）。
-   第三个 **文件** 浏览会话工作区的目录树：一次一层、目录**打开时才读**，`↑`/`↓` 走行，`←`/`→` 收/开，
-   `enter` 在目录上展开、在文件上预览。它的行与其它面板一样注册进 `HitMap`，所以点哪行就开哪行。
+   **文件** 不在这两个页签里：它是当前会话工作区的目录树，单独一块浮层
+   （`/files` / header 的「文件」按钮；这套 ctrl-only 键位没给它留键），一次一层、目录**打开时才读**，
+   `↑`/`↓` 走行，`enter` 在目录上展开、在文件上预览，`⌫` 收起目录（否则跳到它所在的目录）。
+   和 `/git` 一样只作用于当前会话，换会话后重读。它的行同样注册进 `HitMap`，
+   所以点哪行就开哪行。`←`/`→` 在两个页签上是切页签。
 5. 状态栏真实指标：模型 · 强度 · cwd · git 分支 · 上下文占用条 · token · 费用/缓存。
 6. `/` 命令面板（带说明、Tab 补全）、`?` 帮助覆盖层、`/` 过滤、历史 ↑↓。
-7. 主题：内置六套 256 色——`dark` / `light` / `one-dark` / `one-light` /
-   `high-contrast` / `dracula`——由 `/theme` 选择；选择器会把高亮所在的那套直接预览到整个界面。
+7. 主题：内置 256 色调色板——合同里的六套（`dark` / `light` / `one-dark` / `one-light` /
+   `high-contrast` / `dracula`）加上桌面端那一族（`ayu`、`catppuccin`、`everforest`、
+   `gruvbox`、`kanagawa`、`nightfox`、`nord`、`rose-pine`、`solarized`、`tokyo-night`、
+   `vesper`，其中五套另有 `-light` 版本）——由 `/theme` 选择；选择器会把高亮所在的那套直接预览到整个界面。
    id 就是行内 TUI 的目录（`crate::themes::THEME_SPECS`），因为 `settings.json` → `themeId`
    两块界面共用同一个键。
 8. **它就是终端界面，也就是 `future tui`**：workbench 有自己的全屏渲染循环，`future tui`
@@ -49,7 +54,7 @@
 ```
 tui/src/workbench/mod.rs        // 模块导出 + Workbench 状态机 + WbEvent/WbAction
 tui/src/workbench/ansi.rs       // 宽度/截断/拼接/填充（CJK 安全）
-tui/src/workbench/theme.rs      // Palette、六套主题、语义色
+tui/src/workbench/theme.rs      // Palette、内置主题、语义色
 tui/src/workbench/widgets.rs    // 边框、页签、进度条、徽标、像素 logo、spinner
 tui/src/workbench/layout.rs     // Rect、Panes、命中区域（HitMap）
 tui/src/workbench/mouse.rs      // SGR 1006 解析、MouseEvent、滚轮/拖拽状态机
@@ -58,6 +63,7 @@ tui/src/workbench/screen.rs     // 全屏合成：header/body/sidebar/input/stat
 tui/src/workbench/panels.rs     // 侧栏 2 面板的渲染（纯函数，输入同一个行模型）
 tui/src/workbench/picker.rs     // /model、/thinking、/mode、/workspace、/theme、/sessions、/lang 的选择器覆盖层
 tui/src/workbench/files.rs      // 文件面板的目录树，以及一个路径能预览成什么
+tui/src/workbench/syntax.rs     // 预览框的代码着色：语言识别、token 与着色区间
 tui/src/workbench/image_view.rs // 图片转半格：适配、缩放、平移
 tui/src/workbench/state.rs      // WorkbenchData / TodoItem / SessionRow / UsageData
 tui/src/workbench/demo.rs       // 演示数据（截图/自测用，不连 agent）
@@ -80,12 +86,12 @@ live 接入只允许改：`tui/src/workbench/live.rs`、`tui/src/workbench/state
 
 ## 3. 布局（单位：终端单元格）
 
-> **当前交互修订**：默认使用专注密度——头部为两行（上下文 + 分隔线），不再固定占用
-> 六行；舒适密度保留下面的完整品牌头部。`/preferences`（`ctrl+o`）允许读者选择密度、
-> 侧栏左/右位置与宽度；这些选择和显示状态持久化在 `settings.json`。默认快捷键新增
-> `ctrl+p` 命令面板、`ctrl+r` 会话、`alt+h` 帮助（`?` 也可），`keybindings.json` 的动作 id 映射可
-> 重映射，帮助和提示行展示当前实际键位。帮助浮层按用途分组，默认里没有功能键。本文件其余行数
-> 描述适用于舒适密度；专注密度只压缩头部，其他分区不变。
+> **当前交互修订**：头部固定为两行（上下文 + 分隔线），不再有可选的品牌头部——
+> `/preferences`（`ctrl+o`）只保留侧栏左/右位置与宽度等选择；这些选择和显示状态
+> 持久化在 `settings.json`。默认快捷键新增 `ctrl+p` 命令面板、`ctrl+r` 会话、`alt+h` 帮助
+> （`?` 也可），`keybindings.json` 的动作 id 映射可重映射，帮助和提示行展示当前实际键位。
+> 帮助浮层按用途分组，默认里没有功能键。本文件下面画的是早期的六行品牌头部；
+> 现在头部只占两行（上下文 + 分隔线），其他分区不变。
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -105,11 +111,11 @@ live 接入只允许改：`tui/src/workbench/live.rs`、`tui/src/workbench/state
 ├───────────────────────────────────────────────┴──────────────────────────────┤
 │ row h-3        ACTIVITY: ⠋ 思考 3s · 2 工具 · 42 tok/s · 缓存 96%            │
 │ row h-2        STATUS: model · effort · ctx bar 6.9k/1.0M 0.7% · ≈¥0.01      │
-│ row h-1        HINT: Esc 聊天 · ctrl+b 侧栏 · / 命令 · ? 帮助                │
+│ row h-1        HINT: Esc 聊天 · ctrl+s 侧栏 · / 命令 · ? 帮助                │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- 宽度 < 88：侧栏折叠为 0；`ctrl+b` 打开全屏覆盖面板；分隔列变为 2 列时间线轨。
+- 宽度 < 88：侧栏折叠为 0；`ctrl+s` 打开全屏覆盖面板；分隔列变为 2 列时间线轨。
 - 高度 < 24：HEADER 压成 1 行（wordmark 同行），INPUT 压成 2 行，隐藏 ACTIVITY。
 - chat 内容从底部向上排列（最新在输入框上方），向上滚动时顶部出现 `↑ 更早` 徽标。
 - 所有宽度计算必须用 `ansi::display_width`（CJK/emoji 记 2）。
@@ -119,7 +125,7 @@ live 接入只允许改：`tui/src/workbench/live.rs`、`tui/src/workbench/state
 | 语义 | dark | light | one-dark | one-light | high-contrast | dracula | 用途 |
 |---|---|---|---|---|---|---|---|
 | bg | 233 | 254 | 236 | 231 | 16 | 236 | 画布 |
-| panel | 235 | 252 | 237 | 254 | 17 | 237 | 侧栏/输入框底 |
+| panel | 235 | 252 | 237 | 254 | 17 | 237 | 侧栏/菜单底色（输入框用画布底色） |
 | border | 238 | 246 | 240 | 250 | 250 | 239 | 边框、分隔 |
 | fg | 252 | 236 | 249 | 236 | 231 | 255 | 正文 |
 | muted | 245 | 243 | 243 | 245 | 246 | 243 | 次要说明 |
@@ -130,13 +136,15 @@ live 接入只允许改：`tui/src/workbench/live.rs`、`tui/src/workbench/state
 | red | 203 | 124 | 168 | 160 | 196 | 203 | 错误、危险 |
 | purple | 141 | 91 | 176 | 91 | 213 | 212 | 子代理/技能 |
 
-后四套在行内 `Theme` 有同名语义的位置上与 `crate::themes` 一致（`accent`、`fg`、`border`、
+上表是合同冻结的六套，这些数字对这几个 id 仍然生效（验收截图就是按它拍的）。后来加的调色板——桌面端那一族以及其中五套的浅色版本——在 `tui/src/workbench/theme.rs` 的 `PALETTES` 里是同样的 `Palette` 形状，每个 `crate::themes::THEME_SPECS` 的 id 对应一项；色相取自 `desktop/src/theme/palettes.json`，背景按同样的方式分层。
+
+每套调色板在行内 `Theme` 有同名语义的位置上都与 `crate::themes` 一致（`accent`、`fg`、`border`、
 `dim`、`error`、`success`、`md_link`、`md_heading`、`md_code`）；`bg` 与 `panel` 是
 workbench 自己的——全屏画布必须自己画一层背景，而行内主题是继承终端背景的。早期
 workbench 写下的 id（`future-dark`、`future-light`）仍能解析到 `dark` / `light`。
 
-TUI 不使用 logo 或图标。聊天页眉的字标 `FUTURE OS` 用 block 字体 5 行版本，
-仅在宽度 ≥ 96 时显示；否则单行文字。启动台在对话栏中居中显示两行的宽字距
+TUI 不使用 logo 或图标。聊天页眉只有一行文字品牌 `FUTURE OS`，后面接会话标题与
+工作区，下面是细分隔线；启动台在对话栏中居中显示两行的宽字距
 名称和主张句，让输入框成为视觉焦点。
 
 ---
@@ -163,20 +171,29 @@ TUI 不使用 logo 或图标。聊天页眉的字标 `FUTURE OS` 用 block 字�
 
 ### 键盘
 
-沿用现有全局键位；新增/覆盖：
-`ctrl+m` 模型选择器；`ctrl+t` 思考强度选择器；`ctrl+s` 审批模式选择器；`ctrl+l` 工作区选择器；
-`ctrl+1` / `ctrl+2` / `ctrl+3` 侧栏三个页签；`ctrl+v` 读剪贴板（图片成为草稿附件，文字粘进草稿）；
-`alt+v` 预览草稿里最新那张图片；
-`ctrl+b` 侧栏开/聚焦/关（侧栏外沿的 `›` 按钮一键等效，收起后在**同一列**留一个 `‹` 把它叫回）；
-`tab` 面板内焦点；`shift+tab` 反向；
-`ctrl+q` 折叠待办；`alt+z` 放大侧栏；`/` 命令面板；`?` 帮助；`esc` 逐层关闭。
+**只有一个前缀：`ctrl`。** 全局默认键要么是 `ctrl` 组合，要么是带 `shift` 的方向键：
+`ctrl+o` 模型选择器；`ctrl+t` 思考强度选择器；`ctrl+l` 界面语言；`ctrl+g` git 浏览；
+`ctrl+s` 侧栏开/聚焦/关（侧栏外沿的 `›` 按钮一键等效，收起后在**同一列**留一个 `‹` 把它叫回）；
+`ctrl+f` 刷新；`ctrl+q` 队列；`ctrl+v` 读剪贴板（图片成为草稿附件，文字粘进草稿）；
+`tab` 面板内焦点；`shift+tab` 反向；`/` 命令面板；`?` 帮助；`esc` 逐层关闭。
 
-默认键位里没有功能键：`F1`–`F12` 在笔记本上要按 `Fn`，紧凑键盘上干脆没有，所以这些动作默认
-用 `alt` + 字母（`alt+h` 帮助、`alt+r` 刷新、`alt+c` 复制、`alt+m` 鼠标、`alt+l` 线性阅读、
-`alt+a` 减少动态）。改成功能键依然支持。帮助浮层按 `ACTIONS` **分组**列出（会话 / 选择 / 面板 /
+默认键里没有 `alt`——macOS 上 Option 默认是组字而不是 `ESC` + 字母——字母在冲突之后也不够用，
+所以剩下的动作**没有键**：审批模式（`/mode`）、工作区（`/workspace`）、复制（`/copy`）、
+鼠标捕获（`/mouse`）、偏好（`/preferences`）、草稿里最新的附件（`/preview`）、文件面板（`/files`）、
+侧栏两个页签（点页签，或 `shift+←` / `shift+→`），以及减少动态（偏好面板）。帮助浮层在这些行
+的键列印 `—`。不够用的原因就是这些冲突：`ctrl+h`/`i`/`j`/`m` 会被终端发成退格、Tab、`\n` 和回车；
+`ctrl+a`/`ctrl+b` 是 `screen` 和 `tmux` 的前缀；`ctrl+z` 是挂起；
+`ctrl+u`/`k`/`w`/`y` 是输入框自己的编辑键。
+`shift+←` / `shift+→` 在任何地方走侧栏两个页签（侧栏显示并拿到按键），`shift+↑` / `shift+↓` 切上一条 /
+下一条会话。聚焦的侧栏最后一行只写这两个组合（`shift+←→ 页签 · shift+↑↓ 切换会话`）：`↑↓` 只是移列表
+光标、`⏎` 只是打开光标所在行，“怎么换会话”这件事不能留给猜。文件面板是单独的浮层，它自己
+在框里写明那一组键（`↑↓ 选择 · ⏎ 打开 · ⌫ 上一层 · r 刷新 · esc 关闭`）。
+
+默认键位里没有功能键：`F1`–`F12` 在笔记本上要按 `Fn`，紧凑键盘上干脆没有。改成功能键或 `alt`
+依然支持——只是**出厂默认**一律是 `ctrl`。帮助浮层按 `ACTIONS` **分组**列出（会话 / 选择 / 面板 /
 界面），然后是不可改键的行内键，最后是命令。
 
-按住 `shift+←` / `shift+→` 只换一次：按键返回 `WbAction::SessionStep(delta)`，驱动先读完整个输入
+按住 `shift+↑` / `shift+↓` 只换一次：按键返回 `WbAction::SessionStep(delta)`，驱动先读完整个输入
 突发，再用 `Workbench::step_session` 应用净步数。
 
 ### 选择器（`/model`、`/thinking`、`/mode`、`/workspace`、`/theme`、`/sessions`、`/lang`）
@@ -233,6 +250,16 @@ TUI 不使用 logo 或图标。聊天页眉的字标 `FUTURE OS` 用 block 字�
 解码在适配层（`image`，与 agent、host、桌面端同一个 crate），每个文件只做一次，长边缩到 1024 像素：
 缩放重画的是手上已有的像素。文本预览按 `MAX_TEXT_PREVIEW_BYTES` 有界读取，并在字符边界上切。
 读不了的文件会在框里说明原因，而不是开一个空框。
+
+文本预览**按语言着色**。`syntax.rs` 把每一行分成关键字、类型、被调用的名字、字符串、数字、注释、
+属性与键；它只回答 token 是什么，从不说颜色，颜色由 `theme::Palette::token` 决定——于是高亮的代码
+跟随当前主题，而不是把深色高亮器的配色搬到浅色画布上。分词在文件打开时做一次，每一行带着自己的
+着色区间走。
+
+它刻意不是解析器。读者要的是**一行的可见形状**：注释、字面量（包括跨行的 Rust raw 字符串、Python
+docstring 与 JavaScript 模板字符串）与声明；代价是每行一次向前扫描，行间只带一点状态。不认识的扩展名
+原样绘制，不去猜。制表符展开成四个空格：绘制行里若留着真正的 `\t`，光标会跳到终端自己的 tab 位，
+整帧的列就散了。
 
 ---
 

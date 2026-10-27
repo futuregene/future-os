@@ -111,7 +111,7 @@ impl RunApprovalReviewer {
         execution_arguments: &Value,
     ) -> ReviewOutcome {
         let started = action.started;
-        let request_id = format!("review_{}", crate::utils::generate_entry_id());
+        let request_id = crate::utils::generate_entry_id();
         let mut input_audit = Value::Null;
         let mut verdict = if let Some(verdict) = self.invalidated() {
             verdict

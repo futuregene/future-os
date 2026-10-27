@@ -16,6 +16,7 @@ use crate::workbench::layout::{self, Layout, Rect};
 use crate::workbench::picker::{self, PickerKind};
 use crate::workbench::preferences;
 use crate::workbench::state::{self, ActivityKind, PanelId, WorkbenchData};
+use crate::workbench::syntax;
 use crate::workbench::theme::Palette;
 use crate::workbench::widgets;
 use crate::workbench::{launchpad, panels, Overlay, Workbench, COMMANDS, HELP_KEYS};
@@ -36,53 +37,39 @@ pub(crate) fn compose(
     if w == 0 || h == 0 {
         return rows;
     }
-    let sidebar_w = if workbench.sidebar_visible && !workbench.linear_reading {
+    let sidebar_w = if workbench.sidebar_visible {
         workbench.sidebar_w
     } else {
         0
     };
-    let frame: Layout = layout::layout_with_preferences(
-        w,
-        h,
-        sidebar_w,
-        workbench.effective_density(),
-        workbench.sidebar_position,
-    );
+    let frame: Layout = layout::layout_with_position(w, h, sidebar_w, workbench.sidebar_position);
 
-    paint(
-        &mut rows,
-        frame.header,
-        header(
-            &palette,
-            data,
-            &frame,
-            columns,
-            workbench.effective_density(),
-        ),
-    );
+    let lang = workbench.lang;
+    let (header_lines, doors) = header(&palette, data, &frame, columns, &workbench.keys, lang);
+    paint(&mut rows, frame.header, header_lines);
+    for (id, (x, w)) in doors {
+        workbench
+            .hit_map()
+            .push(Rect::new(x, frame.header.y, w, 1), id);
+    }
 
-    workbench.composer_width = frame.input.w.saturating_sub(6).max(1) as usize;
+    workbench.composer_width = widgets::input_content_width(frame.input.w as usize).max(1);
     let composer_extra = if data.on_launchpad() || frame.compact {
         0
     } else {
-        let (_, cursor_row, _) = data
-            .input
-            .editor
-            .clone()
-            .rows(frame.input.w.saturating_sub(6) as usize);
-        // A draft that grew past the box takes rows from the conversation — but
-        // never so many that the chat has nothing left.
-        cursor_row
-            .min(7)
+        // The draft's own rows decide how far the box grows above its band —
+        // the rows it will *paint*, not the cursor's row: a draft whose cursor
+        // sits above its last line still needs the rows below the cursor, and
+        // measuring by the cursor made the band short so the box's closing rule
+        // was what got cut. A draft that grew past the box takes rows from the
+        // conversation — but never so many that the chat has nothing left.
+        let rows = widgets::input_content_rows(frame.input.w as usize, &data.input, false);
+        rows.saturating_sub(1)
             .min(frame.body.h.saturating_sub(3) as usize) as u16
     };
     if data.on_launchpad() {
         let lang = workbench.lang;
         let focused = workbench.launch_field.chip_id();
-        // The launchpad teaches the *bound* keys, and the hit map is a `&mut`
-        // borrow of the same struct that owns them: one clone of the (tiny)
-        // binding map buys both.
-        let keys = workbench.keys.clone();
         let (lines, cursor) = launchpad::render(
             data,
             &palette,
@@ -90,7 +77,6 @@ pub(crate) fn compose(
             workbench.hit_map(),
             lang,
             focused,
-            &keys,
         );
         paint(&mut rows, frame.body, lines);
         workbench.set_cursor(cursor);
@@ -127,7 +113,7 @@ pub(crate) fn compose(
             sidebar,
             sidebar_rows(workbench, data, &palette, sidebar),
         );
-    } else if !workbench.linear_reading && layout::sidebar_fits(w) {
+    } else if layout::sidebar_fits(w) {
         // The reader closed the rail: leave its edge behind as a one-column
         // button that brings it back. A screen with no trace of the rail at all
         // makes `ctrl+b` the only way to find it, and a key nobody knows is the
@@ -164,13 +150,13 @@ pub(crate) fn compose(
                 i18n::render(workbench.lang, Key::AttachmentsInDraft, &[&images])
             )
         };
-        let (input_lines, cursor_column, _) = widgets::input_box(
+        let (input_lines, cursor_column, cursor_row) = widgets::input_box(
             &palette,
             frame.input.w as usize,
             &data.input,
             &title,
-            true,
             frame.compact,
+            composer_extra as usize + 1,
         );
         let input_lines = input_lines
             .into_iter()
@@ -192,9 +178,13 @@ pub(crate) fn compose(
             // only showed once the rail was on the left, where `x` is not 0).
             let column =
                 (cursor_column as usize).min(frame.input.w.saturating_sub(1) as usize) as u16;
+            // The cursor's row is the box's own (it counts the title rule), not
+            // "the last row the box grew to": a cursor above the draft's last
+            // line sits above the box's bottom, and the two only coincide when
+            // the cursor is at the end.
             workbench.set_cursor(Some((
                 frame.input.x.saturating_add(column),
-                frame.prompt_row.saturating_sub(composer_extra),
+                input_rect.y.saturating_add(cursor_row as u16),
             )));
         }
     }
@@ -256,6 +246,11 @@ pub(crate) fn compose(
             paint_overlay(&mut rows, &palette, lines, columns);
             workbench.set_cursor(None);
         }
+        Some(Overlay::DeleteSession) => {
+            let lines = delete_box(workbench, &palette, w, h);
+            paint_overlay(&mut rows, &palette, lines, columns);
+            workbench.set_cursor(None);
+        }
         Some(
             overlay @ (Overlay::Approval
             | Overlay::Diff
@@ -265,6 +260,16 @@ pub(crate) fn compose(
             | Overlay::Worktree),
         ) => {
             let lines = workflow_box(workbench, data, &palette, w, h, overlay);
+            paint_overlay(&mut rows, &palette, lines, columns);
+            workbench.set_cursor(None);
+        }
+        Some(Overlay::Git) => {
+            let lines = git_box(workbench, data, &palette, w, h);
+            paint_overlay(&mut rows, &palette, lines, columns);
+            workbench.set_cursor(None);
+        }
+        Some(Overlay::Files) => {
+            let lines = files_box(workbench, data, &palette, w, h);
             paint_overlay(&mut rows, &palette, lines, columns);
             workbench.set_cursor(None);
         }
@@ -300,7 +305,8 @@ pub(crate) fn compose(
                 } else {
                     frame.input.y.saturating_sub(composer_extra)
                 };
-                let (lines, geometry) = mention_box(workbench, data, &palette, w, h, input_top);
+                let (lines, geometry) =
+                    mention_box(workbench, data, &palette, w, h, frame.input, input_top);
                 paint_mention(&mut rows, &palette, lines, geometry, columns);
             }
         }
@@ -370,8 +376,9 @@ fn header(
     data: &WorkbenchData,
     frame: &Layout,
     columns: usize,
-    density: super::preferences::Density,
-) -> Vec<String> {
+    keys: &preferences::Keybindings,
+    lang: Language,
+) -> (Vec<String>, Vec<DoorSpan>) {
     let compact = frame.compact;
     // The right corner is a *composition*, never a cut string: each candidate is
     // whole (dot, app, version), and the widest one that fits is drawn. Cutting
@@ -382,6 +389,63 @@ fn header(
     let right_avail = (columns / 2).min((columns.saturating_sub(40)).max(columns / 3));
     let right = header_right(palette, data, right_avail);
     let right_width = width(&right);
+    // The surface's two doors, beside the title: the files panel and the
+    // repository browser. They are drawn only when a title still fits next to
+    // them — the header's job is naming the conversation, and a strip of
+    // controls that pushed the name off the edge would trade the point of the
+    // row for its tools.
+    let doors: Vec<Door> = vec![
+        Door {
+            id: "header.files",
+            text: header_button(
+                palette,
+                keys,
+                preferences::Action::Files,
+                t(lang, Key::FilesTitle),
+            ),
+        },
+        Door {
+            id: "header.git",
+            // `git` is a proper noun: it reads the same in both languages, and
+            // the panel's own title says `git · <repo>`.
+            text: header_button(palette, keys, preferences::Action::Git, "git"),
+        },
+    ];
+    let doors: Vec<Door> = doors
+        .into_iter()
+        .filter(|door| !door.text.is_empty())
+        .collect();
+    let group = doors
+        .iter()
+        .map(|door| door.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let room_for_left = if compact { 12 } else { 24 };
+    // Two cells either side of the group: one gap is what keeps it from reading
+    // as the tail of a truncated title, the other from reading as the corner's.
+    let reserve = right_width
+        + usize::from(right_width > 0)
+        + width(&group)
+        + usize::from(!group.is_empty()) * 4;
+    let doors: Vec<Door> = if columns >= reserve + room_for_left {
+        doors
+    } else {
+        Vec::new()
+    };
+    let button = doors
+        .iter()
+        .map(|door| door.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let button_width = width(&button);
+    // Spacing: the door is a control of its own, not the last word of the
+    // title. With no door, the title still needs its cell before the corner.
+    let (before, after) = if button_width > 0 {
+        (2, 2)
+    } else {
+        (0, usize::from(right_width > 0))
+    };
+    let left_width = columns.saturating_sub(right_width + before + button_width + after);
 
     let mut lines: Vec<String> = Vec::new();
     if compact {
@@ -395,111 +459,109 @@ fn header(
             palette.strong(palette.accent, "FUTURE OS"),
             palette.dim(&format!("· {title}"))
         );
-        let left = fit(
-            &left,
-            columns.saturating_sub(right_width + usize::from(right_width > 0)),
-        );
-        let pad = columns.saturating_sub(width(&left) + right_width);
-        lines.push(fit(&format!("{left}{}{right}", " ".repeat(pad)), columns));
-        return lines;
+        let left = fit(&left, left_width);
+        let left_width = width(&left);
+        let pad = columns.saturating_sub(left_width + before + button_width + after + right_width);
+        lines.push(fit(
+            &format!(
+                "{left}{}{}{button}{}{right}",
+                " ".repeat(pad),
+                " ".repeat(before),
+                " ".repeat(after)
+            ),
+            columns,
+        ));
+        return (lines, door_spans(&doors, left_width, pad + before));
     }
 
-    if density == super::preferences::Density::Focused {
-        let title = if data.session.title.is_empty() {
-            "workbench"
-        } else {
-            &data.session.title
-        };
-        let workspace = if data.session.branch.is_empty() {
-            data.session.cwd.clone()
-        } else {
-            format!("{} · @{}", data.session.cwd, data.session.branch)
-        };
-        let left = format!(
-            " {} {}",
-            palette.strong(palette.accent, "FUTURE OS"),
-            palette.dim(&format!("· {title} · {workspace}"))
-        );
-        let left = fit(
-            &left,
-            columns.saturating_sub(right_width + usize::from(right_width > 0)),
-        );
-        let pad = columns.saturating_sub(width(&left) + right_width);
-        return vec![
-            fit(&format!("{left}{}{right}", " ".repeat(pad)), columns),
-            widgets::rule(palette, columns),
-        ];
-    }
-    let wordmark = widgets::wordmark_rows(palette);
     let title = if data.session.title.is_empty() {
-        "workbench".to_string()
+        "workbench"
     } else {
-        data.session.title.clone()
+        &data.session.title
     };
-    // The launchpad has its own quieter hero, so the header falls back to its
-    // text brand there. One screen, one name treatment.
-    let show_wordmark = columns >= 96 && !data.on_launchpad();
-    let mut identity: Vec<String> = Vec::new();
-    if show_wordmark {
-        identity.extend(wordmark);
+    let workspace = if data.session.branch.is_empty() {
+        data.session.cwd.clone()
     } else {
-        identity.push(palette.strong(palette.accent, "FUTURE OS"));
-        identity.push(String::new());
-        identity.push(String::new());
-        identity.push(String::new());
-        identity.push(String::new());
-    }
-    // Five identity rows, then the hairline. Five is
-    // `wordmark_rows`' height: drawing four dropped the bottom stroke of every
-    // letter in `FUTURE OS`. The launchpad's separate four-row hero does not
-    // change the chat header's five-row identity block.
-    let detail = [
-        format!(" · {title}"),
-        // The workspace, then the branch it is on. `@` names *what* the second
-        // word is: `dev-x` alone beside a path reads as one more path segment,
-        // and a detached HEAD named `@sha` needs it even more.
-        if data.session.cwd.is_empty() {
-            "no workspace yet".to_string()
-        } else if data.session.branch.is_empty() {
-            data.session.cwd.clone()
-        } else {
-            format!("{} · @{}", data.session.cwd, data.session.branch)
-        },
-        format!("{} · {} · {}", data.model, data.effort, data.mode),
-        String::new(),
-        String::new(),
-    ];
-    for index in 0..5 {
-        let mut row = String::new();
-        if show_wordmark {
-            row.push_str(&identity.get(index).cloned().unwrap_or_default());
-            // The wordmark is the block; the session detail goes beside it so
-            // the header carries identity *and* context on the same five rows.
-            row.push_str("   ");
-            row.push_str(&palette.dim(&detail[index]));
-        } else {
-            row.push_str(&identity.get(index).cloned().unwrap_or_default());
-            if index == 0 {
-                row.push_str(&palette.dim(&detail[0]));
-            } else if index < detail.len() {
-                row.push_str(&palette.dim(&format!(" {}", detail[index].trim_start())));
-            }
+        format!("{} · @{}", data.session.cwd, data.session.branch)
+    };
+    let left = format!(
+        " {} {}",
+        palette.strong(palette.accent, "FUTURE OS"),
+        palette.dim(&format!("· {title} · {workspace}"))
+    );
+    let left = fit(&left, left_width);
+    let left_width = width(&left);
+    let pad = columns.saturating_sub(left_width + before + button_width + after + right_width);
+    let spans = door_spans(&doors, left_width, pad + before);
+    (
+        vec![
+            fit(
+                &format!(
+                    "{left}{}{}{button}{}{right}",
+                    " ".repeat(pad),
+                    " ".repeat(before),
+                    " ".repeat(after)
+                ),
+                columns,
+            ),
+            widgets::rule(palette, columns),
+        ],
+        spans,
+    )
+}
+
+/// One door in the header: the chord and label it paints, and the hit region it
+/// claims (`id`, the name the pointer is resolved against).
+struct Door {
+    id: &'static str,
+    text: String,
+}
+
+/// A painted region: the door's id and the cells it covers.
+type DoorSpan = (&'static str, (u16, u16));
+
+/// Where each header door landed, for the hit map — one region per button, each
+/// on exactly the cells it is painted on.
+///
+/// `left` is where the title ended and `pad` how much slack sits between it and
+/// the group, so a region never covers the gap in front of a button (a click in
+/// the gap would otherwise open the panel next to the one aimed at).
+fn door_spans(doors: &[Door], left: usize, pad: usize) -> Vec<DoorSpan> {
+    let mut x = left + pad;
+    let mut spans = Vec::new();
+    for door in doors {
+        let w = width(&door.text);
+        if w == 0 {
+            continue;
         }
-        if index == 0 {
-            // The corner is reserved first, then the rest of the row is clipped
-            // to what is left: a long title loses its tail, the corner never
-            // loses half a word.
-            let left = fit(
-                &row,
-                columns.saturating_sub(right_width + usize::from(right_width > 0)),
-            );
-            let pad = columns.saturating_sub(width(&left) + right_width);
-            row = format!("{left}{}{right}", " ".repeat(pad));
-        }
-        lines.push(fit(&row, columns));
+        spans.push((door.id, (x as u16, w as u16)));
+        // The single space that joins two doors.
+        x += w + 1;
     }
-    lines.push(widgets::rule(palette, columns));
-    lines
+    spans
+}
+
+/// The header's button: `[ctrl+f] 文件`, the same `[key] label` shape the
+/// approval box uses for its answers — or the bare name when the action has no
+/// chord, because `[] 文件` reads as a broken label.
+///
+/// A pointer target on a header row has to look like one, and the chord beside
+/// the name is how a reader who never opened the help discovers the key.
+fn header_button(
+    palette: &Palette,
+    keys: &preferences::Keybindings,
+    action: preferences::Action,
+    label: &str,
+) -> String {
+    let key = keys.key(action);
+    let label = palette.strong(palette.iris, label);
+    if key.is_empty() {
+        return label;
+    }
+    format!(
+        "{} {label}",
+        palette.text(palette.iris, &format!("[{key}]"))
+    )
 }
 
 /// The header's right corner: the widest whole composition that fits `avail`.
@@ -533,6 +595,118 @@ fn header_right(palette: &Palette, data: &WorkbenchData, avail: usize) -> String
 
 // ─── conversation ──────────────────────────────────────────────────────────
 
+/// A picture the preview box wants on screen, in frame cells.
+///
+/// The frame is text and a bitmap is not: the terminal places it at a cell, out
+/// of band. So the box asks for one here and the driver writes it after the
+/// frame (`run::paint_image`), which is the only place that owns the terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageRequest {
+    /// A hash of the bytes that will be transmitted (the file, and the crop of
+    /// it): unchanged means the picture is already on screen and only its
+    /// placement has to be repeated.
+    pub source: u64,
+    /// Top-left cell of the picture, in frame coordinates.
+    pub x: u16,
+    pub y: u16,
+    /// How much room the picture takes, in cells.
+    pub columns: u16,
+    pub rows: u16,
+    /// The part of the image being shown, in pixels: the whole picture at 1x,
+    /// the window a zoomed picture has been panned to otherwise.
+    pub crop: (usize, usize, usize, usize),
+}
+
+/// The window of a picture that a zoomed, panned box shows, in pixels.
+fn crop_of(
+    pixels: &image_view::ImagePixels,
+    cells_w: usize,
+    cells_h: usize,
+    pan: (usize, usize),
+    shown_w: usize,
+    shown_h: usize,
+) -> (usize, usize, usize, usize) {
+    let whole = (0, 0, pixels.width, pixels.height);
+    if pixels.is_empty() || cells_w == 0 || cells_h == 0 {
+        return whole;
+    }
+    let scale_x = pixels.width as f64 / cells_w as f64;
+    let scale_y = pixels.height as f64 / cells_h as f64;
+    let x0 = ((pan.0 as f64) * scale_x).floor().max(0.0) as usize;
+    let y0 = ((pan.1 as f64) * scale_y).floor().max(0.0) as usize;
+    let x1 = (((pan.0 + shown_w) as f64) * scale_x).ceil() as usize;
+    let y1 = (((pan.1 + shown_h) as f64) * scale_y).ceil() as usize;
+    let x0 = x0.min(pixels.width.saturating_sub(1));
+    let y0 = y0.min(pixels.height.saturating_sub(1));
+    let x1 = x1.clamp(x0 + 1, pixels.width).max(x0 + 1);
+    let y1 = y1.clamp(y0 + 1, pixels.height).max(y0 + 1);
+    (x0, y0, x1, y1)
+}
+
+/// A hash of what will be transmitted: the file and the crop of it.
+fn image_source_key(
+    path: &str,
+    pixels: &image_view::ImagePixels,
+    crop: (usize, usize, usize, usize),
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    pixels.width.hash(&mut hasher);
+    pixels.height.hash(&mut hasher);
+    crop.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// What a terminal without an image protocol shows in place of a picture: the
+/// facts a reader can act on, on one screen, instead of a half-block mosaic.
+fn unsupported_picture(
+    palette: &Palette,
+    lang: Language,
+    name: &str,
+    pixels: &image_view::ImagePixels,
+    inner: usize,
+) -> Vec<String> {
+    let mut lines = vec![
+        String::new(),
+        palette.strong(palette.fg, &format!(" {name}")),
+        palette.dim(&format!(" {}", image_view::describe(pixels))),
+        String::new(),
+    ];
+    for line in wrap_words(
+        t(lang, Key::PreviewImageUnsupported),
+        inner.saturating_sub(2),
+    ) {
+        lines.push(palette.dim(&format!(" {line}")));
+    }
+    lines
+}
+
+/// Greedy word wrap by display cells (the picture's own sentence, which is a
+/// sentence and not a row of a table).
+fn wrap_words(text: &str, line_width: usize) -> Vec<String> {
+    let line_width = line_width.max(1);
+    let mut out: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let candidate = if line.is_empty() {
+            word.to_string()
+        } else {
+            format!("{line} {word}")
+        };
+        if width(&candidate) > line_width && !line.is_empty() {
+            out.push(std::mem::take(&mut line));
+            line = word.to_string();
+        } else {
+            line = candidate;
+        }
+    }
+    if !line.is_empty() {
+        out.push(line);
+    }
+    out
+}
+
 fn conversation(
     workbench: &mut Workbench,
     data: &WorkbenchData,
@@ -544,6 +718,11 @@ fn conversation(
     if rows == 0 || columns == 0 {
         return Vec::new();
     }
+    // One row of air between the last line and the composer's top rule: with
+    // the transcript filling its band, the newest line sat *on* the box, which
+    // reads as a clipped message rather than as a prompt waiting below it.
+    let gap = usize::from(rows > 1);
+    let visible = rows.saturating_sub(gap);
     // One definition of the conversation's text width, shared with the driver
     // that wraps the transcript — see `layout::chat_inner`.
     let padding = layout::chat_padding(area.w);
@@ -555,12 +734,12 @@ fn conversation(
     let mut offset = workbench.chat_scroll_offset().min(total);
     // Scrolling up costs one row to the "↑ 更早" badge, so the last reachable
     // offset is one short of the first message.
-    if total > rows && offset + rows >= total {
-        offset = total - rows + 1;
+    if total > visible && offset + visible >= total {
+        offset = total - visible + 1;
     }
     workbench.set_chat_scroll(offset);
     let end = total.saturating_sub(offset);
-    let start = end.saturating_sub(rows);
+    let start = end.saturating_sub(visible);
     let mut lines: Vec<String> = Vec::new();
     if start > 0 {
         lines.push(fit(
@@ -574,19 +753,28 @@ fn conversation(
     }
     // Bottom-anchored like a chat view: a short conversation sits on the input
     // box, not against the header.
-    let mut out = vec![fit("", columns); rows.saturating_sub(lines.len())];
+    let mut out = vec![fit("", columns); visible.saturating_sub(lines.len())];
     out.extend(lines);
-    out.truncate(rows);
+    out.truncate(visible);
     if workbench.has_new_output() && !out.is_empty() {
         let badge = palette.strong(palette.accent, t(workbench.lang, Key::ChatNewOutput));
         let pad = columns.saturating_sub(width(&badge) + 1);
         let last = out.len() - 1;
         out[last] = fit(&format!("{}{}{}", " ".repeat(pad), badge, " "), columns);
         workbench.hit_map().push(
-            Rect::new(area.x, area.bottom().saturating_sub(1), area.w, 1),
+            Rect::new(
+                area.x,
+                area.bottom().saturating_sub(1 + gap as u16),
+                area.w,
+                1,
+            ),
             "chat.latest",
         );
     }
+    // The air itself: blank rows in the conversation's own width, so the band
+    // is still filled exactly as tall as the layout says it is.
+    out.extend(vec![fit("", columns); gap]);
+    out.truncate(rows);
     out
 }
 
@@ -649,6 +837,35 @@ fn queue_box(
         rows.push(fit("", columns));
     }
     rows
+}
+
+/// The confirm box in front of a delete: which conversation would go, where it
+/// lives, and the two answers.
+///
+/// Small on purpose — it names one conversation and asks one question. The
+/// surface owns the question; the deletion itself is the app's (`live`), which
+/// is what lets the transcript and the rail move together afterwards.
+fn delete_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec<String> {
+    use super::i18n;
+    let lang = workbench.lang;
+    let Some(target) = workbench.delete_target.clone() else {
+        return Vec::new();
+    };
+    let content = vec![
+        String::new(),
+        format!(" {}", palette.strong(palette.fg, &target.title)),
+        format!(
+            " {}",
+            palette.dim(&i18n::render(lang, Key::DeleteWhere, &[&target.workspace]))
+        ),
+        String::new(),
+        format!(" {}", palette.body(t(lang, Key::DeleteBody))),
+        String::new(),
+        format!(" {}", palette.dim(t(lang, Key::DeleteHint))),
+    ];
+    let geometry = box_geometry(w, h, 60, content.len());
+    claim_box(workbench, &geometry);
+    framed(palette, t(lang, Key::DeleteTitle), content, w, h, &geometry)
 }
 
 fn workflow_box(
@@ -719,18 +936,14 @@ fn workflow_box(
             if sessions.is_empty() {
                 vec![t(workbench.lang, Key::HistoryEmpty).into()]
             } else {
-                sessions
-                    .iter()
-                    .enumerate()
-                    .map(|(index, row)| {
-                        workflows::record_line(
-                            index == workbench.workflow_index,
-                            "",
-                            &[&row.title, &row.workspace, &row.id],
-                            columns.saturating_sub(4),
-                        )
-                    })
-                    .collect()
+                // One table for the whole list, so the workspace and age
+                // columns line up down the rows instead of starting wherever
+                // each title ended (`#` read as ragged text before this).
+                workflows::session_table(
+                    &sessions,
+                    workbench.workflow_index,
+                    columns.saturating_sub(4),
+                )
             }
         }
         Overlay::Tree => workflows::tree_sessions(&data.sessions)
@@ -915,7 +1128,7 @@ fn sidebar_rows(
     if area.h == 0 {
         return lines;
     }
-    let tabs: Vec<(String, bool)> = PanelId::ALL
+    let tabs: Vec<(String, bool)> = PanelId::TABS
         .iter()
         .map(|panel| {
             (
@@ -954,7 +1167,7 @@ fn sidebar_rows(
     }
     // Each tab registers its own click region; tab labels are ` label ` wide.
     let mut x: u16 = if workbench.sidebar_focus { 1 } else { 0 };
-    for panel in PanelId::ALL {
+    for panel in PanelId::TABS {
         let tab_width = width(panel.label(workbench.lang)) as u16 + 2;
         workbench.hit_map().push(
             Rect::new(area.x + x, area.y, tab_width.min(area.w), 1),
@@ -962,10 +1175,12 @@ fn sidebar_rows(
         );
         x = x.saturating_add(tab_width + 1);
     }
-    // A focused rail says which keys it answers — the one place a reader who
-    // clicked a row (or pressed `tab`) finds out that `↑↓` walks the list and
-    // `⏎` opens the row. It costs one row of the list and saves the guesswork,
-    // so it is only shown while the rail actually owns the keys.
+    // A focused rail says which two keys walk it from here: `shift+←→` the
+    // tabs, `shift+↑↓` the conversations, with the chat following the cursor.
+    // `↑↓` alone only moves the list cursor and `⏎` only opens what it stands
+    // on, so a reader who guessed wrong learns the chords here. It costs the
+    // list one row and saves the guesswork, so it is only shown while the rail
+    // actually owns the keys.
     let footer = usize::from(workbench.sidebar_focus && area.h >= 4);
     let content = Rect::new(area.x, area.y + 1, area.w, area.h - 1 - footer as u16);
     let index = workbench.panel.index();
@@ -975,7 +1190,9 @@ fn sidebar_rows(
     };
     let lang = workbench.lang;
     let panel = workbench.panel;
-    let body = panels::render(
+    let folded = workbench.folded_workspaces.clone();
+    let frame = workbench.spinner_frame();
+    let body = panels::render_with(
         panel,
         data,
         palette,
@@ -983,17 +1200,21 @@ fn sidebar_rows(
         view,
         workbench.hit_map(),
         lang,
+        frame,
+        &folded,
+        "sidebar.row.",
     );
     lines.extend(body);
     if footer == 1 {
         let hint = fit(t(lang, Key::RailHint), columns);
-        lines.push(palette.panel_row(&palette.dim(&hint), columns));
+        lines.push(fit(&palette.dim(&hint), columns));
     }
     lines.truncate(area.h as usize);
-    // The panel background runs to the bottom of the band even when the panel's
-    // own rows stopped early.
+    // A rail row carries no background of its own, the same as the chat beside
+    // it: painting one here is what made the rail a black rectangle on any
+    // terminal whose palette is not ours.
     while lines.len() < area.h as usize {
-        lines.push(palette.panel_row("", columns));
+        lines.push(fit("", columns));
     }
     lines
 }
@@ -1112,17 +1333,32 @@ fn hint_row(
     compact: bool,
 ) -> Vec<String> {
     use super::preferences::Action;
+    // The order is the order a narrow row loses them: the tail goes first, so
+    // the settings door sits ahead of the new-chat one — a reader hunting for it
+    // is the one who cannot remember the key. `tab` is not listed any more: it
+    // is the one key every terminal reader tries first, and the focus caret says
+    // where it went; the cells it frees are what keep both `ctrl+q` and
+    // `ctrl+n` on the row in English at 120 columns.
     let wide = [
         ("Esc", Key::HintBackToChat),
         (workbench.keys.key(Action::Sidebar), Key::HintSidebar),
-        ("tab", Key::HintFocus),
         (workbench.keys.key(Action::Sessions), Key::HintSessions),
         (workbench.keys.key(Action::Palette), Key::HintCommands),
-        (workbench.keys.key(Action::Help), Key::HintHelp),
-        (workbench.keys.key(Action::NewSession), Key::HintNewChat),
         (workbench.keys.key(Action::Preferences), Key::HintSettings),
+        (workbench.keys.key(Action::NewSession), Key::HintNewChat),
+        (workbench.keys.key(Action::Help), Key::HintHelp),
     ];
-    let parts: &[(&str, Key)] = if compact { &wide[1..5] } else { &wide };
+    // An action with no chord (`help`, `preferences`: see `default_key`) would
+    // otherwise be hinted as " 帮助" — a hint with no key is not a hint.
+    let wide: Vec<(&str, Key)> = wide
+        .into_iter()
+        .filter(|(key, _)| !key.is_empty())
+        .collect();
+    let parts: &[(&str, Key)] = if compact {
+        &wide[1..5.min(wide.len())]
+    } else {
+        &wide
+    };
     let items: Vec<String> = parts
         .iter()
         .map(|(key, action)| {
@@ -1214,6 +1450,173 @@ fn indent(rows: Vec<String>, left: usize, w: usize) -> Vec<String> {
     rows.into_iter()
         .map(|row| fit(&format!("{}{row}", " ".repeat(left)), w))
         .collect()
+}
+
+/// The preview box's control row: the picture's zoom, and the folder's
+/// previous/next picture.
+///
+/// Every control here is also a key (`+`, `-`, `0`, `[`, `]`) and runs the same
+/// handler — the row exists so a reader with a mouse does not have to learn the
+/// chords, not as a second way to do things. A segment that would do nothing
+/// (the ends of the folder, a terminal that cannot place a bitmap) is drawn dim
+/// so the box never offers a live-looking target that is dead.
+///
+/// Returns the painted row and the segments it claims, left to right, as
+/// `(hit id, width in cells)`. The caller turns the widths into coordinates
+/// because only it knows where the box's left edge is; a segment carrying no
+/// action still gets a `"overlay.surface"` entry, so the widths keep adding up
+/// to what is on screen.
+fn controls_row(
+    workbench: &Workbench,
+    palette: &Palette,
+    inner: usize,
+    images: bool,
+) -> (String, Vec<(&'static str, u16)>) {
+    fn segment(
+        row: &mut String,
+        regions: &mut Vec<(&'static str, u16)>,
+        id: &'static str,
+        plain: &str,
+        painted: String,
+    ) {
+        row.push_str(&painted);
+        regions.push((id, plain.chars().count().max(1) as u16));
+    }
+
+    let lang = workbench.lang;
+    let zoom = workbench.preview_zoom;
+    let count = workbench.preview_siblings.len();
+    let index = workbench.preview_index;
+    let mut row = String::new();
+    let mut regions: Vec<(&'static str, u16)> = Vec::new();
+
+    segment(
+        &mut row,
+        &mut regions,
+        "overlay.surface",
+        " ",
+        " ".to_string(),
+    );
+    if images {
+        let out_label = format!("[{}]", t(lang, Key::PreviewZoomOut));
+        let out_live = zoom > 1;
+        segment(
+            &mut row,
+            &mut regions,
+            super::ZOOM_OUT,
+            &out_label,
+            if out_live {
+                palette.strong(palette.accent, &out_label)
+            } else {
+                palette.dim(&out_label)
+            },
+        );
+        let zoom_label = format!(" {zoom}x ");
+        segment(
+            &mut row,
+            &mut regions,
+            "overlay.surface",
+            &zoom_label,
+            palette.dim(&zoom_label),
+        );
+        let in_label = format!("[{}]", t(lang, Key::PreviewZoomIn));
+        let in_live = zoom < super::MAX_PREVIEW_ZOOM;
+        segment(
+            &mut row,
+            &mut regions,
+            super::ZOOM_IN,
+            &in_label,
+            if in_live {
+                palette.strong(palette.accent, &in_label)
+            } else {
+                palette.dim(&in_label)
+            },
+        );
+        let fit_label = format!("[{}]", t(lang, Key::PreviewFit));
+        let fit_live = zoom > 1 || workbench.preview_pan != (0, 0);
+        segment(
+            &mut row,
+            &mut regions,
+            super::ZOOM_FIT,
+            &fit_label,
+            if fit_live {
+                palette.strong(palette.accent, &fit_label)
+            } else {
+                palette.dim(&fit_label)
+            },
+        );
+        segment(
+            &mut row,
+            &mut regions,
+            "overlay.surface",
+            "   ",
+            "   ".to_string(),
+        );
+    }
+    if count > 1 {
+        let prev_label = format!("[{}]", t(lang, Key::PreviewPrev));
+        let prev_live = index > 0;
+        segment(
+            &mut row,
+            &mut regions,
+            super::PREV_IMAGE,
+            &prev_label,
+            if prev_live {
+                palette.strong(palette.accent, &prev_label)
+            } else {
+                palette.dim(&prev_label)
+            },
+        );
+        let counter = format!(" {}/{} ", index + 1, count);
+        segment(
+            &mut row,
+            &mut regions,
+            "overlay.surface",
+            &counter,
+            palette.dim(&counter),
+        );
+        let next_label = format!("[{}]", t(lang, Key::PreviewNext));
+        let next_live = index + 1 < count;
+        segment(
+            &mut row,
+            &mut regions,
+            super::NEXT_IMAGE,
+            &next_label,
+            if next_live {
+                palette.strong(palette.accent, &next_label)
+            } else {
+                palette.dim(&next_label)
+            },
+        );
+    }
+    let visible: String = {
+        // Clip to the box: the frame is text, and a row longer than the box
+        // would push its own border off the edge.
+        let mut width = 0usize;
+        let mut out = String::new();
+        let mut escape = false;
+        for ch in row.chars() {
+            if escape {
+                out.push(ch);
+                if ch == 'm' {
+                    escape = false;
+                }
+                continue;
+            }
+            if ch == '\x1b' {
+                escape = true;
+                out.push(ch);
+                continue;
+            }
+            if width >= inner {
+                break;
+            }
+            width += 1;
+            out.push(ch);
+        }
+        out
+    };
+    (visible, regions)
 }
 
 fn paint_box(
@@ -1404,6 +1807,357 @@ fn diff_review_box(
     indent(rows, left, w as usize)
 }
 
+fn git_box(
+    workbench: &mut Workbench,
+    data: &WorkbenchData,
+    palette: &Palette,
+    w: u16,
+    h: u16,
+) -> Vec<String> {
+    use crate::workbench::workflows;
+    let columns = (w as usize).clamp(1, 132);
+    let left = (w as usize).saturating_sub(columns) / 2;
+    // Claim the box before anything inside it, so a click on the title rule or
+    // a blank row belongs to the panel and not to the page behind it.
+    workbench.hit_map().push(
+        Rect::new(left as u16, 0, columns as u16, h),
+        "overlay.surface",
+    );
+    let lang = workbench.lang;
+    let title = match data.git.as_ref().map(|git| git.repo.as_str()) {
+        Some(repo) if !repo.is_empty() => format!(" git · {repo} "),
+        _ => " git ".to_string(),
+    };
+    let mut rows = vec![widgets::box_top(palette, columns, &title)];
+
+    // The tab strip. Its four labels are the four number keys, painted in the
+    // order `GitSection::ALL` lists them, so what a reader sees and what `3`
+    // selects are the same list.
+    let section = data.git.as_ref().map(|git| git.section);
+    let mut strip = String::new();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    for (index, candidate) in state::GitSection::ALL.iter().enumerate() {
+        if index > 0 {
+            strip.push_str("  ");
+        }
+        let label = format!("{}. {}", index + 1, t(lang, git_tab_key(*candidate)));
+        let start = width(&strip);
+        let painted = if section == Some(*candidate) {
+            palette.strong(palette.iris, &format!(" {label} "))
+        } else {
+            palette.dim(&format!(" {label} "))
+        };
+        strip.push_str(&painted);
+        spans.push((start, width(&label) + 2));
+    }
+    let y = rows.len() as u16;
+    rows.push(widgets::box_row(palette, &strip, columns));
+    for (index, (start, span)) in spans.iter().enumerate() {
+        workbench.hit_map().push(
+            Rect::new((left + 1 + start) as u16, y, *span as u16, 1),
+            format!("git.tab.{index}"),
+        );
+    }
+    rows.push(widgets::box_row(palette, t(lang, Key::GitHint), columns));
+    let available = (h as usize).saturating_sub(4);
+    if available == 0 {
+        rows.push(widgets::box_bottom(palette, columns));
+        return indent(rows, left, w as usize);
+    }
+    let Some(git) = &data.git else {
+        rows.push(widgets::box_row(palette, t(lang, Key::GitNoRepo), columns));
+        rows.push(widgets::box_bottom(palette, columns));
+        return indent(rows, left, w as usize);
+    };
+    if let Some(error) = &git.error {
+        for line in workflows::wrapped(
+            std::slice::from_ref(error),
+            columns.saturating_sub(4),
+            0,
+            available,
+        ) {
+            rows.push(widgets::box_row(palette, &line, columns));
+        }
+        rows.push(widgets::box_bottom(palette, columns));
+        return indent(rows, left, w as usize);
+    }
+
+    // The cursor is the reader's position and moves with the key; the detail
+    // catches up only once the driver has loaded it, so the arrow follows the
+    // cursor rather than the loaded row or `down` looks dead for a round trip.
+    let cursor = workbench
+        .workflow_index
+        .min(git.rows.len().saturating_sub(1));
+    // One painted row of the list at a given width. The width is the pane's, so
+    // a narrow box drops the tail of a field instead of letting `fit` cut a
+    // field in the middle (which reads as a different value).
+    let row_text = |index: usize, width: usize| -> String {
+        let Some(row) = git.rows.get(index) else {
+            return String::new();
+        };
+        if row.key.is_none() {
+            // The graph continuing through a column: painted in the gutter,
+            // never selectable, so it gets no arrow.
+            return fit(&format!("  {}", row.prefix), width);
+        }
+        let pieces: Vec<&str> = row.pieces.iter().map(String::as_str).collect();
+        workflows::record_line(index == cursor, &row.prefix, &pieces, width)
+    };
+    if git.rows.is_empty() {
+        rows.push(widgets::box_row(
+            palette,
+            t(lang, git_empty_key(git.section)),
+            columns,
+        ));
+        rows.push(widgets::box_bottom(palette, columns));
+        return indent(rows, left, w as usize);
+    }
+
+    let section_name = t(lang, git_tab_key(git.section)).to_string();
+    let mut list_title = if workbench.git_detail_focus {
+        format!("  {section_name}")
+    } else {
+        format!("› {section_name}")
+    };
+    if let Some(filter) = &git.filter {
+        list_title.push_str(&format!(" · {filter}"));
+    }
+    let detail_title = if workbench.git_detail_focus {
+        format!("› {}", t(lang, Key::GitDetail))
+    } else {
+        format!("  {}", t(lang, Key::GitDetail))
+    };
+    let split = columns >= 92;
+    let scroll = if workbench.git_detail_focus {
+        workbench.overlay_scroll_offset()
+    } else {
+        0
+    };
+    let detail_lines = if git.detail.is_empty() {
+        vec![t(lang, Key::GitNoSelection).to_string()]
+    } else {
+        git.detail.clone()
+    };
+
+    if split {
+        // The list is a third of the box (bounded): a ref name or a nested path
+        // needs room, and the patch is the part that wants the rest.
+        let inner = columns.saturating_sub(2);
+        let left_w = ((inner.saturating_sub(3)) / 3)
+            .clamp(24, 52)
+            .min(inner.saturating_sub(5));
+        // `│` plus one cell of air on either side, inside the border: the row's
+        // content must be exactly `inner` cells or `box_row` clips its tail.
+        let right_w = inner.saturating_sub(left_w + 4);
+        let body_rows = available.max(1);
+        workbench.set_list_page(body_rows.saturating_sub(1));
+        let first = cursor
+            .saturating_add(1)
+            .saturating_sub(body_rows.saturating_sub(1));
+        let detail = workflows::wrapped(
+            &detail_lines,
+            right_w.saturating_sub(2),
+            scroll,
+            body_rows.saturating_sub(1),
+        );
+        let detail_x = (left + 1 + left_w + 4) as u16;
+        for index in 0..body_rows {
+            let left_text = if index == 0 {
+                list_title.clone()
+            } else {
+                fit(&row_text(first + index - 1, left_w), left_w)
+            };
+            let right_text = if index == 0 {
+                detail_title.clone()
+            } else {
+                detail
+                    .get(index - 1)
+                    .map(|line| fit(line, right_w))
+                    .unwrap_or_default()
+            };
+            let y = rows.len() as u16;
+            rows.push(widgets::box_row(
+                palette,
+                &format!(
+                    " {} {} {}",
+                    fit(&left_text, left_w),
+                    palette.text(palette.border, "│"),
+                    fit(&right_text, right_w),
+                ),
+                columns,
+            ));
+            if index > 0 && first + index - 1 < git.rows.len() {
+                workbench.hit_map().push(
+                    Rect::new((left + 1) as u16, y, left_w as u16, 1),
+                    format!("git.row.{}", first + index - 1),
+                );
+            }
+            if index > 0 {
+                workbench
+                    .hit_map()
+                    .push(Rect::new(detail_x, y, right_w as u16, 1), "git.detail");
+            }
+        }
+    } else if workbench.git_detail_focus {
+        let body_rows = available.max(1);
+        workbench.set_list_page(body_rows);
+        let detail =
+            workflows::wrapped(&detail_lines, columns.saturating_sub(4), scroll, body_rows);
+        for (index, line) in detail.iter().enumerate() {
+            let y = rows.len() as u16;
+            rows.push(widgets::box_row(palette, line, columns));
+            if index == 0 {
+                workbench.hit_map().push(
+                    Rect::new((left + 1) as u16, y, columns.saturating_sub(2) as u16, 1),
+                    "git.detail",
+                );
+            }
+        }
+    } else {
+        let body_rows = available.saturating_sub(1).max(1);
+        workbench.set_list_page(body_rows);
+        let first = cursor.saturating_add(1).saturating_sub(body_rows);
+        let mut y = rows.len() as u16;
+        rows.push(widgets::box_row(palette, &list_title, columns));
+        y += 1;
+        for index in 0..body_rows {
+            if first + index >= git.rows.len() {
+                break;
+            }
+            let line = row_text(first + index, columns.saturating_sub(4));
+            rows.push(widgets::box_row(
+                palette,
+                &fit(&line, columns.saturating_sub(4)),
+                columns,
+            ));
+            workbench.hit_map().push(
+                Rect::new((left + 1) as u16, y, columns.saturating_sub(2) as u16, 1),
+                format!("git.row.{}", first + index),
+            );
+            y += 1;
+        }
+    }
+    // The box is the screen, not a window onto the rows: a list shorter than the
+    // box is padded inside it, so the bottom border stays on the last row and a
+    // short repository does not paint a half-height panel.
+    while rows.len() + 1 < h as usize {
+        rows.push(widgets::box_row(palette, "", columns));
+    }
+    rows.push(widgets::box_bottom(palette, columns));
+    indent(rows, left, w as usize)
+}
+
+/// The tab label of one section — the same string the tab strip, the pane title
+/// and the empty state print.
+fn git_tab_key(section: state::GitSection) -> Key {
+    match section {
+        state::GitSection::Commits => Key::GitTabCommits,
+        state::GitSection::Refs => Key::GitTabRefs,
+        state::GitSection::Status => Key::GitTabStatus,
+        state::GitSection::Stash => Key::GitTabStash,
+    }
+}
+
+/// What an empty section says: "nothing here" differs from "the tree is clean",
+/// and a reader who just staged everything must not read a clean tree as a
+/// failed read.
+fn git_empty_key(section: state::GitSection) -> Key {
+    match section {
+        state::GitSection::Commits => Key::GitEmptyCommits,
+        state::GitSection::Refs => Key::GitEmptyRefs,
+        state::GitSection::Status => Key::GitCleanStatus,
+        state::GitSection::Stash => Key::GitEmptyStash,
+    }
+}
+
+/// Width the files panel asks for: a column of paths and their sizes needs
+/// more than the rail's 36 cells and less than a 132-column diff.
+const FILES_WIDTH: u16 = 100;
+
+/// The files panel: this conversation's workspace as a tree.
+///
+/// The box's frame is painted here and its rows by the same renderer the rail
+/// used to paint them (`panels::render_with`), at the box's *inner* width — so
+/// a row is the row the panel's own model says it is, and the hit regions land
+/// on exactly the cells they were drawn at.
+fn files_box(
+    workbench: &mut Workbench,
+    data: &WorkbenchData,
+    palette: &Palette,
+    w: u16,
+    h: u16,
+) -> Vec<String> {
+    let lang = workbench.lang;
+    let columns = box_width(w, FILES_WIDTH) as usize;
+    let inner = columns.saturating_sub(2);
+    let left = (w as usize).saturating_sub(columns) / 2;
+    // Claim the box before its rows, so a click on the title rule or a blank row
+    // belongs to the panel and not to the page behind it.
+    workbench.hit_map().push(
+        Rect::new(left as u16, 0, columns as u16, h),
+        "overlay.surface",
+    );
+    let title = match data.tree.root.trim() {
+        "" => t(lang, Key::FilesTitle).to_string(),
+        root => format!("{} · {root}", t(lang, Key::FilesTitle)),
+    };
+    let mut rows = vec![widgets::box_top(palette, columns, &title)];
+    // The box is the frame's full height: a tree is read by scrolling it.
+    let available = (h as usize).saturating_sub(3);
+    if available == 0 {
+        rows.push(widgets::box_bottom(palette, columns));
+        return indent(rows, left, w as usize);
+    }
+    rows.push(widgets::box_row(palette, t(lang, Key::FilesHint), columns));
+    let list = Rect::new(
+        (left + 1) as u16,
+        rows.len() as u16,
+        inner as u16,
+        available as u16,
+    );
+    workbench.set_list_page(available);
+    let painted: Vec<String> = if data.tree.root.trim().is_empty() {
+        // No workspace at all (the launchpad) is not an empty directory: the
+        // tree has nothing to describe, so the panel says which of the two it is.
+        let mut lines = vec![palette.dim(&fit(
+            &format!("  {}", t(lang, Key::FilesNoWorkspace)),
+            inner,
+        ))];
+        while lines.len() < available {
+            lines.push(fit("", inner));
+        }
+        lines
+    } else {
+        let view = panels::PanelView {
+            scroll: workbench.panel_scroll[PanelId::Files.index()],
+            // The cursor is clamped to the tree on screen: switching
+            // conversations can hand the panel a shorter tree, and a stale index
+            // would be a window computed for a row that no longer exists.
+            selected: workbench
+                .files_index
+                .min(data.tree.rows().len().saturating_sub(1)),
+        };
+        let frame = workbench.spinner_frame();
+        panels::render_with(
+            PanelId::Files,
+            data,
+            palette,
+            list,
+            view,
+            workbench.hit_map(),
+            lang,
+            frame,
+            &panels::Folded::new(),
+            "files.row.",
+        )
+    };
+    for line in painted {
+        rows.push(widgets::box_row(palette, &line, columns));
+    }
+    rows.push(widgets::box_bottom(palette, columns));
+    indent(rows, left, w as usize)
+}
+
 fn help_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec<String> {
     use super::preferences::ACTIONS;
     let lang = workbench.lang;
@@ -1415,6 +2169,10 @@ fn help_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec
     // looking for "how do I change the model" should not have to read the
     // theme, copy and quit rows to find it.
     let row = |key: &str, description: &str, palette: &Palette| {
+        // A chordless action prints `—`: the column stays, so every key sits in
+        // the same cell, and the reader can tell "no shortcut" from "a shortcut
+        // this box forgot".
+        let key = if key.is_empty() { "\u{2014}" } else { key };
         format!(
             "   {}  {}",
             palette.text(palette.accent, &fit(key, 18)),
@@ -1477,14 +2235,6 @@ fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
         let selected = index == workbench.preferences_index;
         let label = preferences::preference_label(*row, lang);
         let value = match row {
-            PreferenceRow::Density => t(
-                lang,
-                if workbench.density == preferences::Density::Focused {
-                    Key::PrefFocused
-                } else {
-                    Key::PrefComfortable
-                },
-            ),
             PreferenceRow::Position => t(
                 lang,
                 if workbench.sidebar_position == preferences::SidebarPosition::Left {
@@ -1498,7 +2248,6 @@ fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
             PreferenceRow::Notifications => enabled(workbench.notify.enabled, lang),
             PreferenceRow::NotificationBell => enabled(workbench.notify.bell, lang),
             PreferenceRow::Motion => enabled(workbench.reduced_motion, lang),
-            PreferenceRow::Linear => enabled(workbench.linear_reading, lang),
             PreferenceRow::Shortcuts => "›",
             PreferenceRow::Reset => "↺",
         };
@@ -1506,13 +2255,11 @@ fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
             format!("‹ {:>2} ›", workbench.sidebar_w)
         } else if matches!(
             row,
-            PreferenceRow::Density
-                | PreferenceRow::Position
+            PreferenceRow::Position
                 | PreferenceRow::Mouse
                 | PreferenceRow::Notifications
                 | PreferenceRow::NotificationBell
                 | PreferenceRow::Motion
-                | PreferenceRow::Linear
         ) {
             format!("‹ {value} ›")
         } else {
@@ -1600,7 +2347,12 @@ fn keybindings_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
         let key = if waiting {
             "…"
         } else {
-            workbench.keys.key(*action)
+            // `—` for an action with no default chord, in the padding helper's
+            // terms: the column exists, the chord does not.
+            match workbench.keys.key(*action) {
+                "" => "\u{2014}",
+                key => key,
+            }
         };
         let customized = if workbench.keys.is_default(*action) {
             ""
@@ -1708,20 +2460,80 @@ fn preview_box(
     let scroll = workbench.preview_scroll;
     let mut content: Vec<String> = Vec::new();
     let hint = match preview {
-        state::PreviewView::Image { pixels, .. } => {
-            // The box's own colour depth decides the renderer: a 256-colour
-            // terminal gets the cube, a truecolor one gets the pixels.
-            let true_color = crate::terminal_image::get_capabilities().true_color;
-            content = image_view::render(
-                pixels,
-                palette,
-                inner,
-                content_h,
-                zoom,
-                workbench.preview_pan,
-                true_color,
-            );
-            let _ = pixels;
+        state::PreviewView::Image { path, pixels } => {
+            // A picture is shown either at its own resolution, by the terminal's
+            // image protocol, or not at all.
+            //
+            // The half-block renderer this replaces drew a ▀ per cell pair: at a
+            // hundred columns that is a 200-pixel-wide thumbnail of a 2000-pixel
+            // photograph, which the reader opened the box to *see*, not to
+            // squint at. So a terminal that can place a bitmap gets the pixels
+            // (`ImageRequest`, painted by the driver after this frame), and a
+            // terminal that cannot gets the picture's facts and an honest
+            // sentence instead of a mosaic.
+            let images = crate::terminal_image::get_capabilities().images
+                == crate::terminal_image::ImageProtocol::Kitty;
+            // One row of the box is its controls: zoom, fit, and the folder's
+            // previous/next picture. They are text, so the picture starts below
+            // them — a bitmap cannot share a cell with a glyph.
+            let picture_h = content_h.saturating_sub(1).max(1);
+            if images {
+                let (cells_w, cells_h) =
+                    image_view::fitted_cells(pixels.width, pixels.height, inner, picture_h, zoom);
+                // Zoomed past the box, the window is what is on screen; it may
+                // not be panned beyond the picture's own edge.
+                let pan = image_view::clamp_pan(
+                    workbench.preview_pan,
+                    cells_w,
+                    cells_h,
+                    inner,
+                    picture_h,
+                );
+                workbench.preview_pan = (pan.0 as i32, pan.1 as i32);
+                let shown_w = cells_w.min(inner).max(1);
+                let shown_h = cells_h.min(picture_h).max(1);
+                let crop = crop_of(pixels, cells_w, cells_h, pan, shown_w, shown_h);
+                let left = (inner.saturating_sub(shown_w) / 2) as u16;
+                let top = (picture_h.saturating_sub(shown_h) / 2) as u16;
+                workbench.image_request = Some(ImageRequest {
+                    // The *source* is what a repaint must not retransmit; the
+                    // placement is the part that is cheap to repeat.
+                    source: image_source_key(path, pixels, crop),
+                    x: geometry.left + 1 + left,
+                    y: geometry.top + 2 + top,
+                    columns: shown_w as u16,
+                    rows: shown_h as u16,
+                    crop,
+                });
+                // The box keeps its own background under the bitmap: the frame
+                // is text, and the picture is a layer above it.
+                content = vec![palette.panel_row("", inner); content_h];
+                // The picture is also the drag surface: a press on it starts a
+                // pan, which is the pointer's way of moving a zoomed picture.
+                workbench.hit_map().push(
+                    Rect::new(
+                        geometry.left + 1 + left,
+                        geometry.top + 2 + top,
+                        shown_w as u16,
+                        shown_h as u16,
+                    ),
+                    "preview.picture",
+                );
+            } else {
+                content = unsupported_picture(palette, lang, preview.name(), pixels, inner);
+                while content.len() < content_h {
+                    content.push(String::new());
+                }
+            }
+            let (row, controls) = controls_row(workbench, palette, inner, images);
+            let mut x = geometry.left + 1;
+            for (id, width) in controls {
+                workbench
+                    .hit_map()
+                    .push(Rect::new(x, geometry.top + 1, width, 1), id.to_string());
+                x += width;
+            }
+            content[0] = row;
             t(lang, Key::PreviewHintImage)
         }
         state::PreviewView::Markdown { text, .. } => {
@@ -1742,7 +2554,11 @@ fn preview_box(
                 scroll,
                 content_h.saturating_sub(usize::from(*truncated)),
             );
-            content.extend(window.into_iter().map(|line| format!(" {line}")));
+            content.extend(
+                window
+                    .into_iter()
+                    .map(|line| format!(" {}", painted(palette, &line))),
+            );
             if *truncated {
                 content.push(palette.dim(&format!(" {}", t(lang, Key::PreviewTruncated))));
             }
@@ -1781,8 +2597,26 @@ fn preview_box(
     paint_box(palette, &title, content, w, h, &geometry)
 }
 
+/// A previewed line with its syntax runs in the palette's token colours.
+///
+/// The classification happened when the file was read (`syntax::highlight`),
+/// so this is a walk over spans — no scanning, no allocation beyond the row.
+fn painted(palette: &Palette, line: &syntax::Line) -> String {
+    if line.spans().is_empty() {
+        return palette.body(line.text());
+    }
+    let mut out = String::with_capacity(line.text().len() * 2);
+    for (run, token) in line.runs() {
+        match token {
+            Some(token) => out.push_str(&palette.token(token, run)),
+            None => out.push_str(&palette.body(run)),
+        }
+    }
+    out
+}
+
 /// `height` lines starting at `scroll`, clamped to the end of the text.
-fn window(lines: &[String], scroll: usize, height: usize) -> Vec<String> {
+fn window<T: Clone>(lines: &[T], scroll: usize, height: usize) -> Vec<T> {
     if lines.is_empty() || height == 0 {
         return Vec::new();
     }
@@ -1900,11 +2734,17 @@ fn mention_box(
     palette: &Palette,
     w: u16,
     h: u16,
+    column: Rect,
     input_top: u16,
 ) -> (Vec<String>, BoxGeometry) {
     let lang = workbench.lang;
+    // The menu completes the line the reader is typing, so it is as wide as that
+    // line's column and centred over it — never 64 columns of the whole
+    // terminal, which at 120 columns runs over the rail (its right border then
+    // sits inside the rail, a second vertical line beside the rail's own).
+    let box_w = box_width(column.w, 64);
     let Some(kind) = workbench.mention.as_ref().map(|m| m.kind) else {
-        return (Vec::new(), box_geometry(w, h, 64, 0));
+        return (Vec::new(), box_geometry(column.w, h, box_w, 0));
     };
     let rows = workbench.mention_rows(data);
     let query = workbench
@@ -1934,22 +2774,34 @@ fn mention_box(
         })
     ));
     content.push(String::new());
+    // The label column is as wide as the widest candidate on screen, so the
+    // detail — for a session, the workspace it belongs to — starts in the same
+    // cell on every row. It used to start right after each label, which made a
+    // list of conversations read as ragged text: `future-os` sat somewhere
+    // different on every line.
+    let inner = box_w.saturating_sub(2) as usize;
+    let detail_width = rows
+        .iter()
+        .map(|row| width(&row.detail))
+        .max()
+        .unwrap_or(0)
+        .min(inner / 3);
+    // ` marker ` is three cells, then the label, a gap, and the detail column.
+    let label_width = rows
+        .iter()
+        .map(|row| width(&row.label))
+        .max()
+        .unwrap_or(0)
+        .min(inner.saturating_sub(3 + detail_width + 1).max(4));
     for (index, row) in rows.iter().enumerate().skip(start).take(shown) {
-        let marker = if index == selection { "›" } else { " " };
-        let detail = if row.detail.is_empty() {
-            String::new()
-        } else {
-            palette.dim(&format!("  {}", row.detail))
-        };
-        let line = format!(
-            " {marker} {}{detail}",
-            palette.text(palette.iris, &row.label)
-        );
-        content.push(if index == selection {
-            palette.strong(palette.fg, &line)
-        } else {
-            line
-        });
+        content.push(mention_line(
+            palette,
+            index == selection,
+            &row.label,
+            label_width,
+            &row.detail,
+            detail_width,
+        ));
     }
     content.push(String::new());
     content.push(palette.dim(&format!(" {}", kind.hint(lang))));
@@ -1958,7 +2810,9 @@ fn mention_box(
     // reader is still typing, so it must not cover the draft, the composer's own
     // frame, the status bar or the hints. Its height is bounded (a long candidate
     // list scrolls inside the window) so it cannot reach the header either.
-    let mut geometry = box_geometry(w, h, 64, content.len());
+    let mut geometry = box_geometry(column.w, h, box_w, content.len());
+    geometry.left = column.x + (column.w.saturating_sub(box_w)) / 2;
+    geometry.w = box_w;
     geometry.h = geometry.h.min(12);
     geometry.top = input_top.saturating_sub(geometry.h).max(1);
 
@@ -1991,8 +2845,40 @@ fn mention_box(
     )
 }
 
-/// Paint the mention menu over the box's own rectangle only.
+/// One candidate row of the mention menu: the marker, the label in its column,
+/// and the detail in its column.
 ///
+/// The label is padded to the list's own label width, so the detail starts in
+/// the same cell on every row. Before this, the detail followed each label
+/// after two spaces, so a list of conversations read as ragged text: the
+/// workspace name (`future-os`, `mobile`, …) sat somewhere different on every
+/// line, which is exactly what the `#` menu was reported for.
+pub(crate) fn mention_line(
+    palette: &Palette,
+    selected: bool,
+    label: &str,
+    label_width: usize,
+    detail: &str,
+    detail_width: usize,
+) -> String {
+    let marker = if selected { "›" } else { " " };
+    let label = palette.text(palette.iris, &fit(label, label_width));
+    let line = if detail.is_empty() {
+        format!(" {marker} {label}")
+    } else {
+        format!(
+            " {marker} {label} {}",
+            palette.dim(&fit(detail, detail_width))
+        )
+    };
+    if selected {
+        palette.strong(palette.fg, &line)
+    } else {
+        line
+    }
+}
+
+/// Paint the mention menu over the box's own rectangle only.
 /// Unlike the full-screen overlays this one does **not** sheet the whole frame:
 /// the menu sits above the composer, and the draft it is completing has to stay
 /// readable underneath and beside it.
@@ -2133,7 +3019,20 @@ fn panel_box(
         scroll: workbench.panel_scroll[index],
         selected: workbench.sidebar_index,
     };
-    let body = panels::render(panel, data, palette, area, view, workbench.hit_map(), lang);
+    let folded = workbench.folded_workspaces.clone();
+    let frame = workbench.spinner_frame();
+    let body = panels::render_with(
+        panel,
+        data,
+        palette,
+        area,
+        view,
+        workbench.hit_map(),
+        lang,
+        frame,
+        &folded,
+        "sidebar.row.",
+    );
     let geometry = box_geometry(w, h, PANEL_WIDTH, body.len());
     claim_box(workbench, &geometry);
     framed(palette, title, body, w, h, &geometry)
@@ -2187,6 +3086,271 @@ mod tests {
         }
     }
 
+    /// The mention menu's own frame is one rectangle: the left border is in one
+    /// cell on every row, the right border in another. A wide glyph *behind* the
+    /// box used to shift a row's border one cell (the `splice` cut through the
+    /// pair), which read as a broken frame rather than as a text problem.
+    #[test]
+    fn every_row_of_the_mention_box_has_its_borders_in_the_same_cells() {
+        let mut data = crate::workbench::demo::chat();
+        // Wide glyphs on the rows the box lands on.
+        data.messages = vec![
+            "parser 里有个 off-by-one".into(),
+            "把 <= 改成 < 之后".into(),
+            "四十一 个用例全过".into(),
+        ];
+        let mut workbench = Workbench::new();
+        let mut editor = data.input.editor.clone();
+        editor.set("#", 1);
+        data.input = crate::workbench::state::InputView::from_editor(editor, String::new());
+        let rows = workbench.render(&data, 120, 34);
+        // Cells, not character offsets: a wide glyph before the box would
+        // otherwise make the expected column wrong.
+        fn cells_of(text: &str) -> Vec<(usize, char)> {
+            let mut out = Vec::new();
+            let mut column = 0usize;
+            for ch in text.chars() {
+                out.push((column, ch));
+                column += crate::utils::grapheme_width(&ch.to_string());
+            }
+            out
+        }
+        let top = rows
+            .iter()
+            .position(|row| plain(row).contains('╭'))
+            .expect("the menu is painted");
+        let top_cells = cells_of(&plain(&rows[top]));
+        let left_col = top_cells
+            .iter()
+            .find(|(_, ch)| *ch == '╭')
+            .map(|(c, _)| *c)
+            .expect("the corner");
+        let right_col = top_cells
+            .iter()
+            .rev()
+            .find(|(_, ch)| *ch == '╮')
+            .map(|(c, _)| *c)
+            .expect("the top border closes");
+        assert!(right_col > left_col);
+        // The menu is inside the composer's column: the rail keeps its own right
+        // of the frame. A box centred on the whole terminal reaches into the
+        // rail and puts its right border beside the rail's own vertical.
+        let chat_columns = 120 - (workbench.sidebar_w as usize + 1);
+        assert!(
+            right_col < chat_columns,
+            "the menu reaches past the composer's column: {right_col} >= {chat_columns}"
+        );
+        let rail_cols: Vec<usize> = Vec::new();
+        // Rows between the top border and the closing rule carry both borders
+        // in the same two cells.
+        let bottom = rows
+            .iter()
+            .enumerate()
+            .skip(top + 1)
+            .find(|(_, row)| {
+                cells_of(&plain(row))
+                    .iter()
+                    .any(|(c, ch)| *ch == '╰' && *c == left_col)
+            })
+            .map(|(y, _)| y)
+            .expect("the box closes");
+        let mut seen = 0usize;
+        for (y, row) in rows.iter().enumerate().take(bottom).skip(top + 1) {
+            let text = plain(row);
+            let cells = cells_of(&text);
+            assert!(
+                cells.iter().any(|(c, ch)| *c == left_col && *ch == '│'),
+                "row {y} has no left border at {left_col}: {text:?}"
+            );
+            assert!(
+                cells.iter().any(|(c, ch)| *c == right_col && *ch == '│'),
+                "row {y} has no right border at {right_col}: {text:?}"
+            );
+            // The rail's own column is beside the box, never under it: the menu
+            // belongs to the composer's column, and a box that reached the rail
+            // left two verticals one cell apart.
+            for rail_col in &rail_cols {
+                assert!(
+                    cells.iter().any(|(c, ch)| c == rail_col && *ch == '│'),
+                    "row {y} painted over the rail's column {rail_col}: {text:?}"
+                );
+            }
+            seen += 1;
+        }
+        assert!(seen >= 3, "the box has rows to check: {seen}");
+    }
+
+    /// The composer's box is as tall as the draft it draws, never as tall as
+    /// the cursor's line.
+    ///
+    /// The band used to grow by the cursor's row while the box painted every
+    /// row of the draft: a cursor above the draft's last line left the band
+    /// short, and the closing rule — the box's *last* row — was what got cut. So
+    /// a draft typed with `ctrl+j` lost its bottom border as soon as the reader
+    /// went back up a line.
+    #[test]
+    fn the_composer_keeps_its_closing_rule_wherever_the_cursor_sits_in_the_draft() {
+        let (w, h) = (120u16, 34u16);
+        // Byte offsets into `first\nsecond\nthird`: 0..5 line 0, 6..12 line 1,
+        // 13..18 line 2. The last case is one long line that *wraps*: the band
+        // has to be measured at the width the box paints at, or two cells of
+        // wrapping difference float the box off its own bottom.
+        let long = format!("head {}", "z".repeat(200));
+        let cases: Vec<(String, usize, &str)> = vec![
+            ("first\nsecond\nthird".into(), 0, "first"),
+            ("first\nsecond\nthird".into(), 5, "first"),
+            ("first\nsecond\nthird".into(), 6, "second"),
+            ("first\nsecond\nthird".into(), 12, "second"),
+            ("first\nsecond\nthird".into(), 13, "third"),
+            ("first\nsecond\nthird".into(), 18, "third"),
+            (long.clone(), long.len(), "zzzz"),
+        ];
+        for (text, cursor, line) in cases {
+            let mut data = crate::workbench::demo::chat();
+            let mut editor = data.input.editor.clone();
+            editor.set(&text, cursor);
+            data.input = crate::workbench::state::InputView::from_editor(editor, String::new());
+            let mut workbench = Workbench::new();
+            let rows: Vec<String> = workbench
+                .render(&data, w, h)
+                .iter()
+                .map(|row| plain(row))
+                .collect();
+            let top = rows
+                .iter()
+                .position(|row| row.contains('╭'))
+                .unwrap_or_else(|| panic!("cursor {cursor}: no box:\n{}", rows.join("\n")));
+            let bottom = rows
+                .iter()
+                .position(|row| row.contains('╰'))
+                .unwrap_or_else(|| {
+                    panic!("cursor {cursor}: no closing rule:\n{}", rows.join("\n"))
+                });
+            // The box ends where the band does: its closing rule is the band's
+            // last row, with no blank row between it and the activity row.
+            assert_eq!(
+                bottom,
+                (h - 4) as usize,
+                "cursor {cursor}: the closing rule is not on the band's last row:\n{}",
+                rows.join("\n")
+            );
+            let body: Vec<&String> = rows[top + 1..bottom].iter().collect();
+            // The box holds the whole draft, not the rows up to the cursor.
+            // Four cells of each line: the box may *word-wrap* a long line, so
+            // what a row keeps is the line's head, not all of it.
+            for want in text.split('\n') {
+                let head: String = want.chars().take(4).collect();
+                assert!(
+                    body.iter()
+                        .any(|row| row.contains(&head) && row.starts_with('│')),
+                    "cursor {cursor}: `{head}` is not in the box:\n{}",
+                    rows.join("\n")
+                );
+            }
+            // The box closes on the same two columns on every row of it.
+            let right = rows[bottom]
+                .chars()
+                .position(|ch| ch == '╯')
+                .expect("the closing corner");
+            for (offset, row) in body.iter().enumerate() {
+                let cells: Vec<char> = row.chars().collect();
+                assert!(
+                    cells.first() == Some(&'│') && cells.get(right) == Some(&'│'),
+                    "cursor {cursor}: the box's sides are missing on its row {offset}: {row:?}"
+                );
+            }
+            // ... and the hardware cursor is on the row that carries the line
+            // it is in, not on the box's bottom edge.
+            let (_, y) = workbench.cursor().expect("the composer owns the cursor");
+            assert!(
+                (top as u16) < y && y < bottom as u16,
+                "cursor {cursor}: the cursor is outside the box"
+            );
+            assert!(
+                rows[y as usize].contains(line),
+                "cursor {cursor}: the cursor is on {:?}, not on `{line}`:\n{}",
+                rows[y as usize],
+                rows.join("\n")
+            );
+        }
+    }
+
+    /// A draft taller than the box's window keeps its closing rule too: the box
+    /// scrolls inside itself rather than growing without end.
+    #[test]
+    fn a_tall_draft_scrolls_inside_the_composer_instead_of_losing_its_rule() {
+        let text = (1..=12)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for (w, h) in [(120u16, 34u16), (100, 26), (72, 30)] {
+            let mut data = crate::workbench::demo::chat();
+            let mut editor = data.input.editor.clone();
+            editor.set(&text, text.len());
+            data.input = crate::workbench::state::InputView::from_editor(editor, String::new());
+            let mut workbench = Workbench::new();
+            let rows: Vec<String> = workbench
+                .render(&data, w, h)
+                .iter()
+                .map(|row| plain(row))
+                .collect();
+            let top = rows
+                .iter()
+                .position(|row| row.contains('╭'))
+                .unwrap_or_else(|| panic!("{w}x{h}: no box:\n{}", rows.join("\n")));
+            let bottom = rows
+                .iter()
+                .position(|row| row.contains('╰'))
+                .unwrap_or_else(|| panic!("{w}x{h}: no closing rule:\n{}", rows.join("\n")));
+            assert!(
+                bottom - top <= 9,
+                "{w}x{h}: the box is {} rows tall, past its window",
+                bottom - top + 1
+            );
+            // The cursor is at the end of the draft, so the last line is on
+            // screen and it is the row above the closing rule.
+            assert!(
+                rows[bottom - 1].contains("line 12"),
+                "{:?}",
+                rows[bottom - 1]
+            );
+            let (_, y) = workbench.cursor().expect("the composer owns the cursor");
+            assert_eq!(y as usize, bottom - 1, "{w}x{h}: the cursor left its line");
+        }
+    }
+
+    /// Splicing a band at an offset that lands *inside* a wide glyph keeps the
+    /// band where it was put: the half-glyph becomes a space, never nothing.
+    #[test]
+    fn a_band_spliced_into_a_wide_glyph_keeps_its_offset() {
+        let base = format!("{}里{}", "a".repeat(5), "b".repeat(20));
+        let piece = "[BOX]";
+        // `里` owns cells 5..7; splice at 6 is inside it.
+        let out = splice(&base, piece, 6, piece.len());
+        assert_eq!(ansi::width(&out), ansi::width(&base));
+        assert_eq!(ansi::width(&ansi::slice_cols(&out, 0, 6)), 6);
+        assert!(out.contains(piece), "{out:?}");
+    }
+
+    /// The transcript's last row is blank, so the newest line is not painted on
+    /// the composer's top rule.
+    #[test]
+    fn the_transcript_keeps_a_blank_row_above_the_prompt() {
+        let mut workbench = Workbench::new();
+        let mut data = crate::workbench::demo::chat();
+        data.messages = vec!["the only line".into()];
+        let rows = conversation(&mut workbench, &data, &FUTURE_DARK, Rect::new(0, 0, 60, 6));
+        assert_eq!(rows.len(), 6);
+        assert!(
+            plain(&rows[4]).contains("the only line"),
+            "the message sits on the last content row: {rows:?}"
+        );
+        assert!(
+            plain(&rows[5]).trim().is_empty(),
+            "the row under it is the air above the box: {rows:?}"
+        );
+    }
+
     #[test]
     fn a_tall_terminal_does_not_stretch_the_preference_box_to_the_frame() {
         let mut workbench = Workbench::new();
@@ -2225,7 +3389,7 @@ mod tests {
     }
 
     #[test]
-    fn accessibility_preferences_fit_short_frames_and_hide_the_auxiliary_rail() {
+    fn accessibility_preferences_fit_short_frames() {
         let mut workbench = Workbench::new();
         let data = crate::workbench::demo::chat();
         workbench.set_language(crate::workbench::i18n::LanguagePreference::En);
@@ -2239,27 +3403,6 @@ mod tests {
             .join("\n");
         assert!(text.contains("Restore defaults"), "{text}");
         assert!(text.contains("choose"), "{text}");
-
-        workbench.overlay = None;
-        workbench.linear_reading = true;
-        workbench.density = crate::workbench::preferences::Density::Comfortable;
-        let rows = workbench.render(&data, 120, 38);
-        assert!(!workbench
-            .hits()
-            .regions()
-            .iter()
-            .any(|(_, id)| id.starts_with("sidebar.tab.")));
-        assert!(!rows.iter().any(|row| plain(row).contains("To-do")));
-        let busy = WorkbenchData {
-            activity: crate::workbench::state::Activity {
-                kind: ActivityKind::Thinking,
-                ..Default::default()
-            },
-            ..data
-        };
-        workbench.tick = 8;
-        let text = workbench.render(&busy, 120, 38).join("\n");
-        assert!(plain(&text).contains("… Thinking"), "{text}");
     }
 
     #[test]
@@ -2310,64 +3453,38 @@ mod tests {
         // Wide keeps every entry; narrow drops from the right, never from the
         // middle of a key.
         let wide = plain(&hint_row(&Workbench::new(), &FUTURE_DARK, 200, false)[0]);
-        assert!(wide.contains("ctrl+o"));
+        // Both ends of the row: the settings door and the new-chat key. `help`
+        // has no chord, so the row does not name it at all.
+        assert!(wide.contains("ctrl+q"), "{wide:?}");
+        assert!(wide.contains("ctrl+n"), "{wide:?}");
+        assert!(!wide.contains("\u{2014}"), "{wide:?}");
         assert!(wide
             .trim_end()
             .chars()
             .last()
             .is_some_and(|c| c.is_ascii_alphabetic()));
+        // Narrow keeps the head of the row whole and drops the tail: at 40
+        // columns even the palette hint is gone, and nothing is cut mid-key.
         let narrow = plain(&hint_row(&Workbench::new(), &FUTURE_DARK, 40, true)[0]);
-        assert!(narrow.contains("ctrl+b"), "{narrow:?}");
-        assert!(narrow.contains("tab"), "{narrow:?}");
+        assert!(narrow.contains("ctrl+d"), "{narrow:?}");
+        assert!(narrow.contains("ctrl+r"), "{narrow:?}");
         assert!(!narrow.contains("ctrl+p"), "whole hints are dropped");
-    }
-
-    #[test]
-    fn the_header_draws_every_row_of_the_block_wordmark() {
-        // The header's identity block is the 5-row `FUTURE OS` block font, and
-        // the header used to be five rows tall *including* the hairline — so
-        // only four wordmark rows were painted and the bottom stroke of every
-        // letter (F `█  `, U `███`, E `███`, S `███`) was missing. Clipped art
-        // reads as a broken renderer, not as a deliberate crop, and the
-        // launchpad hero drew all five, so the two screens disagreed.
-        let mut workbench = Workbench::new();
-        workbench.density = super::super::preferences::Density::Comfortable;
-        let data = crate::workbench::demo::chat();
-        let rows = workbench.render(&data, 120, 38);
-        let mark = widgets::wordmark_rows(&FUTURE_DARK);
-        assert_eq!(mark.len(), 5, "the block font is five rows");
-        for (index, want) in mark.iter().enumerate() {
-            let got = plain(&rows[index]);
-            let want_plain = plain(want);
-            assert!(
-                got.contains(&want_plain),
-                "header row {index} is missing the wordmark row {want_plain:?}: {got:?}"
-            );
-        }
-        // And the hairline still closes the header, one row below the last one.
-        let hairline = plain(&rows[5]);
-        assert!(
-            hairline.chars().all(|ch| ch == '─'),
-            "row 5 should be the hairline: {hairline:?}"
-        );
     }
 
     #[test]
     fn the_launchpad_header_keeps_the_text_brand_so_the_hero_owns_the_name() {
         let mut workbench = Workbench::new();
-        workbench.density = super::super::preferences::Density::Comfortable;
         let launchpad = crate::workbench::demo::launchpad();
         let rows = workbench.render(&launchpad, 120, 38);
-        let header_rows: Vec<String> = rows[..5].iter().map(|row| plain(row)).collect();
-        for (index, row) in header_rows.iter().enumerate() {
-            // The name is text, not the block wordmark used by the chat header.
-            assert!(
-                !row.contains('█'),
-                "header row {index} still carries the block wordmark: {row:?}"
-            );
-        }
+        // Two header rows: the context line, then the hairline.
+        let header_rows: Vec<String> = rows[..2].iter().map(|row| plain(row)).collect();
         assert!(header_rows[0].contains("FUTURE OS"), "{:?}", header_rows[0]);
-        let body: String = rows[5..]
+        assert!(
+            header_rows[1].chars().all(|ch| ch == '─'),
+            "the hairline closes the header: {:?}",
+            header_rows[1]
+        );
+        let body: String = rows[2..]
             .iter()
             .map(|row| plain(row))
             .collect::<Vec<_>>()

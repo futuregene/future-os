@@ -19,6 +19,32 @@ struct Group {
     stream: StreamIdentity,
     appends: Vec<ContentAppend>,
     change: Change,
+    metadata_bytes: usize,
+}
+
+// Delta clocks denote the last fragment of a coalesced range. All other
+// metadata must match; otherwise collapsing it would discard a semantic fact.
+fn same_delta_metadata(left: &Value, right: &Value) -> bool {
+    fn object_eq(left: &Value, right: &Value, skip: &[&str], data: bool) -> bool {
+        let (Some(left), Some(right)) = (left.as_object(), right.as_object()) else {
+            return left == right;
+        };
+        let keys = left
+            .keys()
+            .chain(right.keys())
+            .filter(|key| !skip.contains(&key.as_str()));
+        keys.into_iter()
+            .all(|key| match (left.get(key), right.get(key)) {
+                (Some(a), Some(b)) if data && key == "data" => object_eq(
+                    a,
+                    b,
+                    &["content_offset", "content_bytes", "content_first_idx"],
+                    false,
+                ),
+                (a, b) => a == b,
+            })
+    }
+    object_eq(left, right, &["timestamp"], true)
 }
 
 impl Writer {
@@ -35,62 +61,20 @@ impl Writer {
             "wrong journal format"
         );
         let mut next = self.clone();
-        let mut group: Option<Group> = None;
+        let mut pending = Pending::default();
         for event in events {
-            if event["event_type"] == "message_end"
-                || event["data"]["content_seal"] == true
-                || event["data"].as_str().is_some_and(|data| {
-                    data.len() > WRITE_BYTES || data.contains("\"content_seal\":true")
-                })
-            {
-                if let Some(prior) = group.take() {
-                    commit(store, prior)?;
-                }
-            }
-            let (stream, mut change, appends) = next.encode(store, session, event)?;
-            let combine = group.as_ref().is_some_and(|g| {
-                g.stream == stream
-                    && g.change.event_type == change.event_type
-                    && g.change.last_cursor + 1 == change.first_cursor
-                    && g.change.bodies.len() == 1
-                    && change.bodies.len() == 1
-                    && g.change.bodies[0].key == change.bodies[0].key
-                    && g.change.bodies[0].field == change.bodies[0].field
-                    && g.change.bodies[0].offset + g.change.bodies[0].length
-                        == change.bodies[0].offset
-                    && g.appends.iter().map(|a| a.text.len()).sum::<usize>()
-                        + appends.iter().map(|a| a.text.len()).sum::<usize>()
-                        <= WRITE_BYTES
-                    && matches!(
-                        change.event_type.as_str(),
-                        "text_chunk" | "thinking_delta" | "tool_delta"
-                    )
-                    && change.metadata["data"]["snapshot"] != true
-            });
-            if combine {
-                let prior = group.as_mut().expect("checked group");
-                let body = &mut prior.change.bodies[0];
-                body.length += change.bodies[0].length;
-                change.metadata["data"]["content_offset"] = json!(body.offset);
-                change.metadata["data"]["content_bytes"] = json!(body.length);
-                change.metadata["data"]["content_first_idx"] = json!(prior.change.first_cursor);
-                prior.change.metadata = change.metadata;
-                prior.change.last_cursor = change.last_cursor;
-                prior.appends.extend(appends);
-            } else {
-                if let Some(prior) = group.take() {
-                    commit(store, prior)?;
-                }
-                group = Some(Group {
+            let (stream, change, appends) = next.encode(store, session, event, &mut pending)?;
+            pending.push(
+                store,
+                Group {
                     stream,
                     appends,
                     change,
-                });
-            }
+                    metadata_bytes: 0,
+                },
+            )?;
         }
-        if let Some(group) = group {
-            commit(store, group)?;
-        }
+        pending.flush(store)?;
         *self = next;
         Ok(())
     }
@@ -100,6 +84,7 @@ impl Writer {
         store: &SqliteStore,
         session: &str,
         event: &Value,
+        pending: &mut Pending,
     ) -> Result<(StreamIdentity, Change, Vec<ContentAppend>)> {
         let run = event["run_id"].as_str().context("missing run identity")?;
         ensure!(
@@ -233,6 +218,7 @@ impl Writer {
                             seal: None,
                         };
                         if text.len() > WRITE_BYTES {
+                            pending.flush(store)?;
                             let scope = stream.clone();
                             store.db.call(move |db| {
                                 commit_batch(db, &scope, vec![piece], Vec::new())
@@ -255,6 +241,7 @@ impl Writer {
             if metadata["data"]["content_seal"] == true {
                 let hash = self.active.remove(&state_key).expect("active block");
                 if event_type == "tool_input_end" && hash.bytes() > 0 {
+                    pending.flush(store)?;
                     let scope = stream.clone();
                     let named = owner(&stream, &key);
                     let range = store
@@ -320,6 +307,7 @@ impl Writer {
             metadata["data"]["shell_result"].clone(),
         ) {
             let key = format!("fact:{cursor}:shell_result");
+            pending.flush(store)?;
             let range = stage_named(
                 store,
                 session,
@@ -383,6 +371,7 @@ impl Writer {
                 .map(str::to_owned)
                 .unwrap_or_else(|| value.to_string());
             let key = format!("fact:{cursor}:{field}");
+            pending.flush(store)?;
             let range = stage_named(
                 store,
                 session,
@@ -415,34 +404,160 @@ impl Writer {
     }
 }
 
-fn commit(store: &SqliteStore, mut group: Group) -> Result<()> {
-    // Segment rows represent bounded text batches, not provider tokens. Merge
-    // adjacent accepted appends before SQLite splits them into 16 KiB pieces.
-    let mut packed: Vec<ContentAppend> = Vec::new();
-    for piece in group.appends {
-        if let Some(last) = packed.last_mut().filter(|last| {
-            last.key == piece.key
-                && last.seal.is_none()
-                && last.offset + last.text.len() as i64 == piece.offset
-                && last.text.len() + piece.text.len() <= WRITE_BYTES
-        }) {
-            last.text.push_str(&piece.text);
-            last.seal = piece.seal;
-        } else {
-            packed.push(piece);
-        }
+/// Exact compact JSON byte length for admission, without serializing token
+/// metadata repeatedly. The actual publication still enforces its byte budget.
+pub(super) fn json_bytes(value: &Value) -> usize {
+    fn string_bytes(value: &str) -> usize {
+        value.bytes().fold(2usize, |n, b| {
+            n.saturating_add(match b {
+                b'"' | b'\\' | 8 | 9 | 10 | 12 | 13 => 2,
+                0..=31 => 6,
+                _ => 1,
+            })
+        })
     }
-    while packed.len() > CHANGES_PER_BATCH {
-        let batch = packed.drain(..CHANGES_PER_BATCH).collect::<Vec<_>>();
-        let stream = group.stream.clone();
+    match value {
+        Value::Null => 4,
+        Value::Bool(value) => {
+            if *value {
+                4
+            } else {
+                5
+            }
+        }
+        Value::Number(value) => {
+            let digits = |n: u64| if n == 0 { 1 } else { n.ilog10() as usize + 1 };
+            if let Some(n) = value.as_u64() {
+                digits(n)
+            } else if let Some(n) = value.as_i64() {
+                digits(n.unsigned_abs()) + usize::from(n < 0)
+            } else {
+                value.to_string().len()
+            }
+        }
+        Value::String(value) => string_bytes(value),
+        Value::Array(values) => values.iter().fold(
+            2usize.saturating_add(values.len().saturating_sub(1)),
+            |n, v| n.saturating_add(json_bytes(v)),
+        ),
+        Value::Object(values) => values.iter().fold(
+            2usize.saturating_add(values.len().saturating_sub(1)),
+            |n, (k, v)| {
+                n.saturating_add(string_bytes(k))
+                    .saturating_add(1)
+                    .saturating_add(json_bytes(v))
+            },
+        ),
+    }
+}
+
+/// The producer already admitted a bounded batch. Semantic grouping controls
+/// replay facts, not transaction boundaries: unrelated facts can share a commit
+/// without merging their metadata. Pending work is flushed before encoder reads
+/// or stages bodies, and never survives persist()'s acknowledgement.
+#[derive(Default)]
+struct Pending {
+    groups: Vec<Group>,
+    bytes: usize,
+    metadata_bytes: usize,
+    appends: usize,
+}
+impl Pending {
+    fn flush(&mut self, store: &SqliteStore) -> Result<()> {
+        if self.groups.is_empty() {
+            return Ok(());
+        }
+        let groups = std::mem::take(&mut self.groups);
+        self.bytes = 0;
+        self.metadata_bytes = 0;
+        self.appends = 0;
+        let stream = groups[0].stream.clone();
+        let mut changes = Vec::with_capacity(groups.len());
+        let mut packed: Vec<ContentAppend> = Vec::new();
+        for group in groups {
+            changes.push(group.change);
+            for piece in group.appends {
+                if let Some(last) = packed.last_mut().filter(|last| {
+                    last.key == piece.key
+                        && last.seal.is_none()
+                        && last.offset + last.text.len() as i64 == piece.offset
+                        && last.text.len() + piece.text.len() <= WRITE_BYTES
+                }) {
+                    last.text.push_str(&piece.text);
+                    last.seal = piece.seal;
+                } else {
+                    packed.push(piece);
+                }
+            }
+        }
+        while packed.len() > CHANGES_PER_BATCH {
+            let batch = packed.drain(..CHANGES_PER_BATCH).collect::<Vec<_>>();
+            let scope = stream.clone();
+            store
+                .db
+                .call(move |db| commit_batch(db, &scope, batch, Vec::new()).map(|_| ()))?;
+        }
         store
             .db
-            .call(move |db| commit_batch(db, &stream, batch, Vec::new()).map(|_| ()))?;
+            .call(move |db| commit_batch(db, &stream, packed, changes).map(|_| ()))
     }
-    group.appends = packed;
-    store.db.call(move |db| {
-        commit_batch(db, &group.stream, group.appends, vec![group.change]).map(|_| ())
-    })
+
+    fn push(&mut self, store: &SqliteStore, mut group: Group) -> Result<()> {
+        let bytes = group.appends.iter().map(|a| a.text.len()).sum::<usize>();
+        let metadata = json_bytes(&group.change.metadata);
+        group.metadata_bytes = metadata;
+        if !self.groups.is_empty()
+            && (self.groups[0].stream != group.stream
+                || self.groups.len() >= CHANGES_PER_BATCH
+                || self.bytes.saturating_add(bytes) > WRITE_BYTES
+                || self.metadata_bytes.saturating_add(metadata) > CHANGE_METADATA_BYTES
+                || self.appends.saturating_add(group.appends.len()) > CHANGES_PER_BATCH)
+        {
+            self.flush(store)?;
+        }
+        let terminal = group.change.event_type == "agent_end";
+        let combine = self.groups.last().is_some_and(|g| {
+            g.stream == group.stream
+                && g.change.event_type == group.change.event_type
+                && same_delta_metadata(&g.change.metadata, &group.change.metadata)
+                && g.change.last_cursor + 1 == group.change.first_cursor
+                && g.change.bodies.len() == 1
+                && group.change.bodies.len() == 1
+                && g.change.bodies[0].key == group.change.bodies[0].key
+                && g.change.bodies[0].field == group.change.bodies[0].field
+                && g.change.bodies[0].offset + g.change.bodies[0].length
+                    == group.change.bodies[0].offset
+                && matches!(
+                    group.change.event_type.as_str(),
+                    "text_chunk" | "thinking_delta" | "tool_delta"
+                )
+                && g.change.metadata["data"]["snapshot"] != true
+                && group.change.metadata["data"]["snapshot"] != true
+        });
+        self.bytes += bytes;
+        self.appends += group.appends.len();
+        if combine {
+            let prior = self.groups.last_mut().expect("checked group");
+            self.metadata_bytes -= prior.metadata_bytes;
+            let body = &mut prior.change.bodies[0];
+            body.length += group.change.bodies[0].length;
+            group.change.metadata["data"]["content_offset"] = json!(body.offset);
+            group.change.metadata["data"]["content_bytes"] = json!(body.length);
+            group.change.metadata["data"]["content_first_idx"] = json!(prior.change.first_cursor);
+            prior.change.metadata = group.change.metadata;
+            prior.change.last_cursor = group.change.last_cursor;
+            prior.appends.extend(group.appends);
+            prior.metadata_bytes = json_bytes(&prior.change.metadata);
+            self.metadata_bytes += prior.metadata_bytes;
+        } else {
+            self.metadata_bytes += metadata;
+            self.groups.push(group);
+        }
+        if terminal {
+            self.flush(store)?;
+        }
+        Ok(())
+    }
 }
 
 /// Range materialization happens off the ordered writer, in bounded read jobs.
@@ -569,13 +684,14 @@ impl SqliteStore {
         limit: usize,
     ) -> Result<Vec<crate::rpc::SseEvent>> {
         let scope = stream.clone();
-        let page = self.db.read(move |db| {
+        let (page, identity) = self.db.read(move |db| {
             let tx = db.transaction()?;
-            let page = read_changes(&tx, &scope, since, limit)?;
+            let identity = super::transport::storage_identity(&tx)?;
+            let page = read_encoded_changes(&tx, &scope, since, limit)?;
             tx.commit()?;
-            Ok(page)
+            Ok((page, identity))
         })?;
-        let identity = self.storage_identity()?;
+        let page = page.decode()?;
         let mut events = Vec::new();
         let mut bytes = 0usize;
         for change in page.changes {
@@ -605,6 +721,8 @@ impl SqliteStore {
     ) -> Result<Vec<crate::rpc::SseEvent>> {
         let (s, r) = (session.to_owned(), run.to_owned());
         let first = self.db.read(move |db| {
+            let r=crate::session::identity::BoundIdentity::run(db,&s,&r)?;
+            let s=crate::session::identity::BoundIdentity::session(db,&s)?;
             let latest: Option<(i64,i64)> = db.query_row("SELECT id,epoch FROM stream_runs WHERE session_id=?1 AND run_id=?2 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=stream_runs.id) ORDER BY epoch DESC LIMIT 1", rusqlite::params![s,r], |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
             let Some((id, stored_epoch)) = latest else { return Ok(None); };
             ensure!(stored_epoch == epoch, "a restarted run requires a new identity; stored run epoch differs");
@@ -635,6 +753,8 @@ impl SqliteStore {
         let (session, run) = (session.to_owned(), run.to_owned());
         let (s, r) = (session.clone(), run.clone());
         let epochs = self.db.read(move |db| {
+            let r=crate::session::identity::BoundIdentity::run(db,&s,&r)?;
+            let s=crate::session::identity::BoundIdentity::session(db,&s)?;
             let mut query = db.prepare("SELECT epoch FROM stream_runs WHERE session_id=?1 AND run_id=?2 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=stream_runs.id) AND (?3=0 OR epoch=-1 OR ?4 < -1) ORDER BY epoch")?;
             let epochs = query.query_map(rusqlite::params![s,r,session_scope,since],|row|row.get::<_,i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(epochs)
@@ -656,12 +776,18 @@ impl SqliteStore {
                     break;
                 }
                 let identity = stream.clone();
+                let expected_storage = storage_identity.clone();
                 let page = self.db.read(move |db| {
                     let tx = db.transaction()?;
-                    let page = read_changes(&tx, &identity, cursor, remaining.min(128))?;
+                    ensure!(
+                        super::transport::storage_identity(&tx)? == expected_storage,
+                        "storage identity changed during replay"
+                    );
+                    let page = read_encoded_changes(&tx, &identity, cursor, remaining.min(128))?;
                     tx.commit()?;
                     Ok(page)
                 })?;
+                let page = page.decode()?;
                 for change in page.changes {
                     ensure!(
                         change.last_cursor <= page.durable_cursor,

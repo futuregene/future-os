@@ -91,7 +91,7 @@ impl SqliteStore {
         loop {
             let runs=self.db.read(|db| {
                 let mut query=db.prepare("SELECT r.session_id,r.run_id,coalesce(r.epoch,0),coalesce(r.run_sequence,-1) FROM runs r JOIN session_formats f ON f.session_id=r.session_id JOIN sessions s ON s.id=r.session_id WHERE f.format=2 AND r.status='running' AND s.revision>=0 ORDER BY r.session_id,r.run_id LIMIT 16")?;
-                let rows=query.query_map([],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)?,row.get::<_,i64>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;Ok(rows)
+                let rows=query.query_map([],|row|Ok((row.get::<_,crate::session::identity::BoundIdentity>(0)?,row.get::<_,crate::session::identity::BoundIdentity>(1)?,row.get::<_,i64>(2)?,row.get::<_,i64>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;Ok(rows)
             })?;
             if runs.is_empty() {
                 return Ok(());
@@ -111,6 +111,8 @@ impl SqliteStore {
     ) -> Result<()> {
         let (s, r) = (session.to_owned(), run.to_owned());
         let epochs = self.db.read(move |db| {
+            let r=crate::session::identity::BoundIdentity::run(db,&s,&r)?;
+            let s=crate::session::identity::BoundIdentity::session(db,&s)?;
             let mut query = db.prepare(
                 "SELECT epoch FROM stream_runs WHERE session_id=?1 AND run_id=?2 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=stream_runs.id) ORDER BY epoch",
             )?;
@@ -132,7 +134,13 @@ impl SqliteStore {
                 let scope = identity.clone();
                 let page = self
                     .db
-                    .read(move |db| read_changes(db, &scope, cursor, 128))?;
+                    .read(move |db| {
+                        let tx = db.transaction()?;
+                        let page = read_encoded_changes(&tx, &scope, cursor, 128)?;
+                        tx.commit()?;
+                        Ok(page)
+                    })?
+                    .decode()?;
                 for change in page.changes {
                     cursor = change.last_cursor;
                     anyhow::ensure!(
@@ -352,9 +360,10 @@ impl SqliteStore {
         let (session, run) = (session.to_owned(), run.to_owned());
         self.db.call(move|db| {
             let tx=crate::session::database::begin_write_transaction(db)?;
-            let running:bool=tx.query_row("SELECT status='running' FROM runs WHERE session_id=?1 AND run_id=?2",params![session,run],|row|row.get(0))?;
+            let bound=StreamIdentity {session_id:session.clone(),run_id:run.clone(),epoch}.bind(&tx)?;
+            let running:bool=tx.query_row("SELECT status='running' FROM runs WHERE session_id=?1 AND run_id=?2",params![bound.session_id,bound.run_id],|row|row.get(0))?;
             if !running {return Ok(());}
-            let stopped: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM entries WHERE session_id=?1 AND run_id=?2 AND entry_type='run_stop_requested')",params![session,run],|row| row.get(0))?;
+            let stopped: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM entries WHERE session_id=?1 AND run_id=?2 AND entry_type='run_stop_requested')",params![bound.session_id,bound.run_id],|row| row.get(0))?;
             let (state,cause,reason,error) = if stopped {
                 (crate::session::RUN_STATE_CANCELLED,"user_stop","cancelled","Stopped by user before recovery. An operation without a committed result has an unknown outcome.")
             } else {
@@ -366,7 +375,7 @@ impl SqliteStore {
             crate::session::sqlite_store::insert_transcript_entries(&tx,&session,vec![serde_json::to_value(terminal)?])?;
             let scope=StreamIdentity {session_id:session.clone(),run_id:run,epoch};
             append_boundary(&tx,&scope,"agent_end",json!({"timestamp":timestamp,"run_sequence":sequence,"data":{"type":"agent_end","state":state,"reason":reason,"interruption_cause":cause}}))?;
-            tx.execute("UPDATE sessions SET revision=revision+1 WHERE id=?1",[session])?;
+            tx.execute("UPDATE sessions SET revision=revision+1 WHERE id=?1",[bound.session_id])?;
             tx.commit()?;Ok(())
         })
     }
@@ -375,27 +384,21 @@ impl SqliteStore {
     /// Each job examines at most 64 metadata rows; published change ranges and
     /// recovered entry references remain authoritative. No historical sweep.
     fn release_unpublished_stream_owners(&self, stream: &StreamIdentity) -> Result<()> {
-        let prefix = format!(
-            "[{},{},",
-            serde_json::to_string(&stream.run_id)?,
-            stream.epoch
-        );
-        let mut after = (String::new(), String::new());
+        let mut after = -1i64;
         loop {
-            let (scope, prefix, cursor) = (stream.clone(), prefix.clone(), after.clone());
-            let page = self.db.call(move |db| {
-                let tx = crate::session::database::begin_write_transaction(db)?;
-                let owners:Vec<(String,String,i64)> = {
-                    let mut query = tx.prepare("SELECT owner_id,field,content_id FROM content_references WHERE session_id=?1 AND owner_kind='stream' AND owner_id>=?2 AND owner_id<?3 AND (owner_id,field)>(?4,?5) ORDER BY owner_id,field LIMIT 64")?;
-                    let rows = query.query_map(params![scope.session_id,prefix,format!("{prefix}\u{10ffff}"),cursor.0,cursor.1],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-                    rows
+            let scope = stream.clone();
+            let page=self.db.call(move|db| {
+                let tx=crate::session::database::begin_write_transaction(db)?;
+                let scope=scope.bind(&tx)?;
+                let owners:Vec<(i64,i64,i64)>={
+                    let mut query=tx.prepare("SELECT r.id,b.key_id,b.content_id FROM stream_runs r JOIN stream_body_owners b ON b.stream_id=r.id WHERE r.session_id=?1 AND r.run_id=?2 AND r.epoch=?3 AND b.key_id>?4 ORDER BY b.key_id LIMIT 64")?;
+                    let rows=query.query_map(params![scope.session_id,scope.run_id,scope.epoch,after],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;rows
                 };
-                for (owner,field,content) in &owners {
-                    let published:bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM stream_change_content b JOIN stream_changes c ON c.id=b.change_id JOIN stream_runs r ON r.id=c.stream_id WHERE b.content_id=?1 AND r.session_id=?2 AND r.run_id=?3 AND r.epoch=?4)",params![content,scope.session_id,scope.run_id,scope.epoch],|row|row.get(0))?;
-                    if !published { tx.execute("DELETE FROM content_references WHERE session_id=?1 AND owner_kind='stream' AND owner_id=?2 AND field=?3",params![scope.session_id,owner,field])?; }
+                for (stream,key,content) in &owners {
+                    let published:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM stream_content_ranges b JOIN stream_changes c ON c.id=b.change_id WHERE b.content_id=?1 AND c.stream_id=?2)",params![content,stream],|r|r.get(0))?;
+                    if !published {tx.execute("DELETE FROM stream_body_owners WHERE stream_id=?1 AND key_id=?2",params![stream,key])?;}
                 }
-                let next = owners.last().map(|(owner,field,_)|(owner.clone(),field.clone()));
-                tx.commit()?; Ok(next)
+                let next=owners.last().map(|(_,key,_)|*key);tx.commit()?;Ok(next)
             })?;
             let Some(next) = page else {
                 break;

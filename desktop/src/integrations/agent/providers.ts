@@ -22,8 +22,20 @@ export interface CustomProviderModel {
   name: string;
   /** Whether the model accepts image input. Text input is always implied. */
   supportsImages: boolean;
-  /** Whether to send thinking controls. Custom models default to true. */
+  /**
+   * Legacy capability flag, round-tripped unchanged. Nothing branches on it:
+   * `thinkingLevels` is what says whether the model has thinking controls.
+   */
   reasoning: boolean;
+  /**
+   * The thinking levels this model accepts, in display order. Each entry is a
+   * wire value sent verbatim (`off` = explicitly disable); the implicit
+   * `default` level is always offered and never listed. Empty means the model
+   * offers only `default`. On the edit path the desktop writes this list; a
+   * client that predates the field leaves it undefined so the host preserves the
+   * stored list (the `replace_thinking_levels` presence bit).
+   */
+  thinkingLevels?: string[] | null;
   /** Maximum total context window, in tokens. */
   contextWindow: number;
   /** Maximum tokens generated in one response. */

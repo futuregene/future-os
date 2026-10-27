@@ -26,6 +26,7 @@ use super::layout::{self, Frame};
 use super::live::{self, Live, Outcome};
 use super::mouse;
 use super::picker::PickerKind;
+use super::state::GitSection;
 use super::{VerbOutcome, WbAction, WbEvent, Workbench};
 
 /// What a run of the workbench needs to know before it starts.
@@ -53,7 +54,6 @@ enum TerminalEvent {
 
 struct InputIo<'a> {
     terminal: &'a mut Terminal,
-    linear: &'a mut super::accessibility::LinearReader,
     settings: &'a mut TuiSettings,
     settings_path: &'a Path,
     theme_explicit: &'a mut bool,
@@ -61,47 +61,34 @@ struct InputIo<'a> {
 
 struct DriverIo<'a> {
     terminal: &'a mut Terminal,
-    linear: &'a mut super::accessibility::LinearReader,
     notifications: &'a mut crate::notifications::NotifyCenter,
-    input_tx: &'a mpsc::UnboundedSender<TerminalEvent>,
     theme_explicit: &'a mut bool,
 }
 
-fn sync_mode(
-    terminal: &mut Terminal,
-    input_tx: &mpsc::UnboundedSender<TerminalEvent>,
-    workbench: &Workbench,
-) -> Result<(), String> {
-    let linear = workbench.linear_reading && workbench.overlay.is_none();
-    if terminal.alternate_screen() == !linear && terminal.started() {
-        return Ok(());
+/// The layout a stored [`TuiSettings`] stands for, before the first frame.
+///
+/// An absent key is the shipped default, not an error: a reader who never
+/// touched a setting (a first start, or a `settings.json` written by an older
+/// build) gets the same layout every time. The rail starts hidden — the body
+/// is the conversation, and the rail is a thing the reader opens on purpose
+/// (`ctrl+s`, or `shift+←`/`shift+→` to step its tabs) rather than
+/// something to close before typing.
+fn layout_preferences(
+    settings: &TuiSettings,
+    mouse_capture: bool,
+) -> super::preferences::LayoutPreferences {
+    super::preferences::LayoutPreferences {
+        sidebar_position: settings
+            .sidebar_position
+            .as_deref()
+            .map(super::preferences::SidebarPosition::from_wire)
+            .unwrap_or_default(),
+        sidebar_width: settings.sidebar_width.unwrap_or(layout::SIDEBAR_DEFAULT),
+        sidebar_visible: settings.sidebar_visible.unwrap_or(false),
+        mouse_capture,
+        notify: settings.notify.unwrap_or_default(),
+        reduced_motion: settings.reduced_motion.unwrap_or(false),
     }
-    if terminal.started() {
-        terminal.stop();
-    }
-    terminal.set_mouse_mode(!linear && workbench.preferences().mouse_capture);
-    let data_tx = input_tx.clone();
-    let resize_tx = input_tx.clone();
-    let start = if linear {
-        Terminal::start_linear
-    } else {
-        Terminal::start
-    };
-    start(
-        terminal,
-        Box::new(move |data| {
-            let _ = data_tx.send(TerminalEvent::Data(data));
-        }),
-        Box::new(move || {
-            let _ = resize_tx.send(TerminalEvent::Resize);
-        }),
-    )
-    .map_err(|error| format!("terminal: {error}"))?;
-    let signal_tx = input_tx.clone();
-    terminal.set_exit_signal_callback(Some(Box::new(move || {
-        let _ = signal_tx.send(TerminalEvent::Data("\u{3}".into()));
-    })));
-    Ok(())
 }
 
 /// Run the workbench until the reader quits. Returns an error only for a
@@ -121,24 +108,7 @@ pub async fn run(options: Options) -> Result<(), String> {
     live.set_mouse_capture(mouse_capture);
     workbench.set_theme(&live.theme_id);
     workbench.set_language(live::persisted_language(&settings));
-    workbench.set_preferences(super::preferences::LayoutPreferences {
-        density: settings
-            .density
-            .as_deref()
-            .map(super::preferences::Density::from_wire)
-            .unwrap_or_default(),
-        sidebar_position: settings
-            .sidebar_position
-            .as_deref()
-            .map(super::preferences::SidebarPosition::from_wire)
-            .unwrap_or_default(),
-        sidebar_width: settings.sidebar_width.unwrap_or(layout::SIDEBAR_DEFAULT),
-        sidebar_visible: settings.sidebar_visible.unwrap_or(true),
-        mouse_capture,
-        notify: settings.notify.unwrap_or_default(),
-        reduced_motion: settings.reduced_motion.unwrap_or(false),
-        linear_reading: settings.linear_reading.unwrap_or(false),
-    });
+    workbench.set_preferences(layout_preferences(&settings, mouse_capture));
     workbench.keys = super::preferences::Keybindings::load(&super::preferences::keybindings_path(
         &options.settings_path,
     ));
@@ -168,17 +138,12 @@ pub async fn run(options: Options) -> Result<(), String> {
     // alternate screen is up: `start` writes the mode in, `stop` takes it out —
     // and both failures' paths (the exit failsafe and the crash hook) reset it
     // too, so the shell never inherits a captured mouse.
-    terminal.set_mouse_mode(mouse_capture && !workbench.linear_reading);
+    terminal.set_mouse_mode(mouse_capture);
 
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<TerminalEvent>();
     let data_tx = input_tx.clone();
     let resize_tx = input_tx.clone();
-    let start = if workbench.linear_reading {
-        Terminal::start_linear
-    } else {
-        Terminal::start
-    };
-    start(
+    Terminal::start(
         &mut terminal,
         Box::new(move |data| {
             let _ = data_tx.send(TerminalEvent::Data(data));
@@ -196,23 +161,11 @@ pub async fn run(options: Options) -> Result<(), String> {
             let _ = signal_tx.send(TerminalEvent::Data("\u{3}".into()));
         })));
     }
-    let mut linear = super::accessibility::LinearReader::default();
     let mut notifications = crate::notifications::NotifyCenter::default();
-    if workbench.linear_reading {
-        let frame = frame_of(&terminal, &workbench);
-        let data = live.data(&frame);
-        let output = linear.sync_session(&data.session.id, &data.messages);
-        terminal.write(&linear.frame(&output, &data.input.text, frame.width));
-    }
-    if workbench.linear_reading {
-        terminal.write("\x1b[?25h");
-    }
     let outcome = event_loop(
         &mut DriverIo {
             terminal: &mut terminal,
-            linear: &mut linear,
             notifications: &mut notifications,
-            input_tx: &input_tx,
             theme_explicit: &mut theme_explicit,
         },
         &mut workbench,
@@ -226,9 +179,6 @@ pub async fn run(options: Options) -> Result<(), String> {
 
     // Leave the terminal exactly as it was found, whatever happened above.
     terminal.stop();
-    if workbench.linear_reading {
-        terminal.write("\r\n");
-    }
 
     // Persist what the reader chose, through the same file the inline TUI uses.
     if theme_explicit && workbench.palette.id != settings.theme_id.as_deref().unwrap_or_default() {
@@ -237,10 +187,8 @@ pub async fn run(options: Options) -> Result<(), String> {
     if settings.language.as_deref() != Some(workbench.language_pref.as_wire()) {
         settings.language = Some(workbench.language_pref.as_wire().to_string());
     }
-    let detail = live.detail().as_wire().to_string();
-    if settings.reply_detail.as_deref() != Some(detail.as_str()) {
-        settings.reply_detail = Some(detail);
-    }
+    // The reading level is deliberately not written: `ctrl+e` expands the
+    // transcript for this run only, so the next terminal opens folded.
     persist_preferences(&workbench, &mut settings, &options.settings_path);
     let _ = workbench.keys.save(&super::preferences::keybindings_path(
         &options.settings_path,
@@ -260,9 +208,7 @@ async fn event_loop(
 ) -> Result<(), String> {
     let DriverIo {
         terminal,
-        linear,
         notifications,
-        input_tx,
         theme_explicit,
     } = io;
     // The first frame is composed for the size the terminal has *now*. The
@@ -282,14 +228,15 @@ async fn event_loop(
     // not followed by a burst.
     ticker.tick().await;
     let mut clock = TickClock::new(workbench.spinner_frame(), Instant::now());
+    // The rail's list is re-read on its own clock (see `SESSIONS_POLL`), starting
+    // now: the first frame paints what the attach already read.
+    let mut sessions_poll = Instant::now();
     // Something is on screen to paint from the first iteration — and after
     // that only when an event or the clock changed what the frame shows. A
     // ticker that repaints an unchanged frame is not free: composing it means
     // rebuilding `WorkbenchData`, which asks the transcript for every row it
     // has rendered (see `Live::data`).
-    let mut paint = !workbench.linear_reading;
-    let mut linear_dirty = workbench.linear_reading;
-    let mut linear_deferred = String::new();
+    let mut paint = true;
 
     loop {
         // The frame's own metrics, computed once: the surface composes for
@@ -298,19 +245,17 @@ async fn event_loop(
         // field) makes `ChatArea` discard its rendered rows and re-wrap the
         // whole transcript on every event.
         let frame = frame_of(terminal, workbench);
-        if workbench.linear_reading && workbench.overlay.is_none() {
-            if linear_dirty {
-                let data = live.data(&frame);
-                terminal.write(&linear.frame("", &data.input.text, frame.width));
-                linear_dirty = false;
-            }
-        } else if paint {
+        if paint {
             draw(terminal, workbench, live, &frame)?;
             clock.painted(workbench.spinner_frame(), Instant::now());
         }
 
         // `paint` belongs to the *next* frame: every arm below assigns it — an
-        // input or agent event paints, and the ticker asks the clock.
+        // input or agent event paints, and the ticker asks the clock. Assign,
+        // never OR into it: the value it holds on entry is the frame that was
+        // just drawn, so `paint |= …` keeps a frame owed forever and repaints
+        // every tick (measured: an animating rail went from two frames a second
+        // to eight before this was an assignment).
         tokio::select! {
             Some(input) = input_rx.recv() => {
                 let mut events = match &input {
@@ -320,7 +265,7 @@ async fn event_loop(
                 // Read the rest of the burst before doing anything with it. A
                 // held key arrives as one terminal event per repeat, and every
                 // repeat used to cost its own round trip, transcript load and
-                // full repaint — which is what made a held `shift+→` look stuck.
+                // full repaint — which is what made a held `shift+↓` look stuck.
                 // A batch is still handled in order; what changes is that the
                 // session steps in it collapse into one switch, and the frame is
                 // painted once at the end instead of once per keystroke.
@@ -336,7 +281,6 @@ async fn event_loop(
                 }
                 let mut session_steps = 0i32;
                 for event in events {
-                    linear_dirty |= workbench.linear_reading;
                     if let WbEvent::Focus(focused) = event {
                         notifications.set_focused(focused);
                         continue;
@@ -347,19 +291,8 @@ async fn event_loop(
                         session_steps += delta;
                         continue;
                     }
-                    let was_linear = workbench.linear_reading && workbench.overlay.is_none();
-                    if quit(workbench, live, event, &frame, &mut InputIo { terminal, linear, settings, settings_path, theme_explicit }).await? {
+                    if quit(workbench, live, event, &frame, &mut InputIo { terminal, settings, settings_path, theme_explicit }).await? {
                         return Ok(());
-                    }
-                    sync_mode(terminal, input_tx, workbench)?;
-                    let linear_now = workbench.linear_reading && workbench.overlay.is_none();
-                    if linear_now && !was_linear {
-                        let data = live.data(&frame);
-                        let mut output = linear.sync_session(&data.session.id, &data.messages);
-                        output.push_str(&std::mem::take(&mut linear_deferred));
-                        terminal.write(&linear.frame(&output, &data.input.text, frame.width));
-                    } else if !linear_now && was_linear {
-                        linear_deferred.push_str(&linear.take_partial());
                     }
                 }
                 if session_steps != 0 {
@@ -373,15 +306,11 @@ async fn event_loop(
                         let data = live.data(&frame);
                         workbench.follow_current(&data);
                     }
-                    sync_mode(terminal, input_tx, workbench)?;
                 }
                 paint = true;
             }
             Some(event) = agent_events.recv() => {
                 let was = live.activity_kind();
-                let mut linear_output = if workbench.linear_reading {
-                    linear.event(&event, live.language())
-                } else { String::new() };
                 // State refresh below re-reads the authoritative queue before
                 // this candidate can emit a notification.
                 let mut completion = if live.take_completion_notification(&event) {
@@ -422,9 +351,6 @@ async fn event_loop(
                             crate::notifications::NotifyEvent::for_kind(
                                 crate::notifications::NotifyKind::Failed));
                     }
-                    if workbench.linear_reading {
-                        linear_output.push_str(&linear.event(&event, live.language()));
-                    }
                     live.handle_event(event);
                 });
                 // A `usage` or `agent_end` event means the agent knows more
@@ -443,67 +369,45 @@ async fn event_loop(
                 if live.activity_kind() != was {
                     live.refresh_sessions().await;
                 }
-                sync_mode(terminal, input_tx, workbench)?;
-                if workbench.linear_reading && workbench.overlay.is_none() {
-                    let data = live.data(&frame);
-                    let replay = linear.sync_session(&data.session.id, &data.messages);
-                    if !replay.is_empty() {
-                        terminal.write(&linear.frame(&replay, &data.input.text, frame.width));
-                    }
-                }
                 if !completion.is_empty() && live.queue_is_empty() {
                     let event = live.completion_notification();
                     notify(terminal, notifications, &workbench.notify,
                         &format!("complete:{completion}"), event);
                 }
-                if workbench.linear_reading {
-                    let data = live.data(&frame);
-                    linear_output.push_str(&linear.sync_session(&data.session.id, &data.messages));
-                }
-                if workbench.linear_reading {
-                    let visible = workbench.overlay.is_none();
-                    let output = emit_linear(linear_output, &mut linear_deferred, visible);
-                    if !output.is_empty() {
-                        let data = live.data(&frame);
-                        terminal.write(&linear.frame(&output, &data.input.text, frame.width));
-                    }
-                }
                 paint = true;
-                linear_dirty = workbench.linear_reading;
             }
             _ = ticker.tick() => {
-                // The spinner is the only animation a tick owns; it advances
-                // with the ticker and owes a frame when its drawn frame
-                // changes. Nothing else in the frame is finer than a minute.
+                // The two spinners are the only animation a tick owns — the
+                // activity row's, and the one a streaming conversation draws in
+                // the rail. They turn on the same frame, so one counter drives
+                // both. Nothing else in the frame is finer than a minute.
                 // A short terminal lays out no activity row at all
-                // (`compact`), so there is nothing on screen to animate.
-                let animating = workbench.motion_enabled()
-                    && live.activity_animating()
-                    && frame.layout.activity.is_some();
+                // (`compact`), and the rail can be closed, so each side only
+                // animates while it is on screen to draw it.
+                let activity_moving =
+                    live.activity_animating() && frame.layout.activity.is_some();
+                let rail_moving = live.sessions_streaming() && frame.layout.sidebar.is_some();
+                let animating = workbench.motion_enabled() && (activity_moving || rail_moving);
                 if animating {
                     workbench.advance_tick();
+                }
+                // A run in another conversation is only visible here through
+                // `list_sessions`, and the agent tells no push channel about
+                // it: the list is re-read on this clock or the row's spinner
+                // would freeze and its 活跃 stretch never empty.
+                let mut changed = false;
+                if frame.layout.sidebar.is_some() && sessions_poll.elapsed() >= SESSIONS_POLL {
+                    sessions_poll = Instant::now();
+                    changed = live.refresh_sessions().await;
                 }
                 paint = clock.tick(
                     animating,
                     workbench.spinner_frame(),
                     ages_on_screen(&frame),
                     Instant::now(),
-                );
+                ) || changed;
             }
         }
-    }
-}
-
-/// Output produced while a full-screen overlay owns the terminal is not
-/// discarded: returning to linear mode flushes it into scrollback exactly once.
-pub(crate) fn emit_linear(output: String, deferred: &mut String, visible: bool) -> String {
-    if visible {
-        let mut combined = std::mem::take(deferred);
-        combined.push_str(&output);
-        combined
-    } else {
-        deferred.push_str(&output);
-        String::new()
     }
 }
 
@@ -517,6 +421,20 @@ const TICK: Duration = Duration::from_millis(120);
 /// tick instead would re-compose a frame eight times a second to draw the same
 /// bytes.
 const IDLE_REFRESH: Duration = Duration::from_secs(60);
+
+/// How often the rail's conversation list is re-read while it is on screen.
+///
+/// The list is the only view of *other* conversations this surface has: the
+/// agent pushes events for the session attached here and nothing about the rest,
+/// so a run another client started, and the moment it ends, reach the rail only
+/// by asking (`list_sessions`). Without this clock a row's spinner would freeze
+/// mid-turn and 最近's 活跃 stretch would never empty.
+///
+/// Five seconds is the trade the two uses agree on: a run that starts elsewhere
+/// shows up in the time it takes to look at the rail, and an idle terminal pays
+/// one cheap local call every five seconds — none of them a repaint (the poll
+/// repaints only when the list it read differs from the one on screen).
+const SESSIONS_POLL: Duration = Duration::from_secs(5);
 
 /// How many already-queued agent events one iteration applies before painting.
 ///
@@ -539,8 +457,8 @@ const INPUT_BURST_LIMIT: usize = 64;
 
 /// The net step a *session* key asks for, if this event is one.
 ///
-/// The driver reads this before the key reaches `quit`, so a held `shift+←` /
-/// `shift+→` becomes one switch instead of one per repeat. The guards are the
+/// The driver reads this before the key reaches `quit`, so a held `shift+↑` /
+/// `shift+↓` becomes one switch instead of one per repeat. The guards are the
 /// same ones that decide whether any global shortcut fires: an overlay owns the
 /// keys it paints.
 fn session_step_of(workbench: &Workbench, event: &WbEvent) -> Option<i32> {
@@ -658,7 +576,6 @@ async fn quit(
 ) -> Result<bool, String> {
     let InputIo {
         terminal,
-        linear,
         settings,
         settings_path,
         theme_explicit,
@@ -704,11 +621,6 @@ async fn quit(
                     let _ = workbench.surface_command("/queue", &live.data(frame));
                     return Ok(false);
                 }
-                Some(super::preferences::Action::LinearReading) => {
-                    let _ = workbench.handle(WbEvent::Key(key.clone()), &live.data(frame));
-                    persist_preferences(workbench, settings, settings_path);
-                    return Ok(false);
-                }
                 Some(super::preferences::Action::ReduceMotion) => {
                     let _ = workbench.handle(WbEvent::Key(key.clone()), &live.data(frame));
                     persist_preferences(workbench, settings, settings_path);
@@ -724,11 +636,9 @@ async fn quit(
                         ReplyDetail::Detailed => ReplyDetail::Default,
                     };
                     live.set_detail(next);
-                    // A key the reader pressed is a choice like any other: it
-                    // goes to `settings.json` now, so the level survives the
-                    // terminal (the `/reply-detail` verb does the same).
-                    settings.reply_detail = Some(next.as_wire().to_string());
-                    save_settings(settings_path, settings);
+                    // A view toggle, not a preference: nothing is written back,
+                    // so the next start opens folded again whatever the reader
+                    // peeked at here (see `ReplyDetail`).
                     return Ok(false);
                 }
                 Some(super::preferences::Action::NewSession) => {
@@ -752,14 +662,6 @@ async fn quit(
     // The frame's own width, not a probe: see `Frame` and `Live::data`.
     let actions = workbench.handle(event, &live.data(frame));
     for action in actions {
-        if let WbAction::Submit(message) = &action {
-            if workbench.linear_reading && workbench.overlay.is_none() {
-                let message =
-                    super::i18n::render(live.language(), super::i18n::Key::LinearYou, &[message]);
-                let output = linear.committed(&message);
-                terminal.write(&linear.frame(&output, "", frame.width));
-            }
-        }
         // The three list menus belong to the surface: the app owns the agent,
         // not the picker. Opening it here (rather than in `live.command`) is
         // what lets the palette and the draft both reach it.
@@ -818,6 +720,27 @@ async fn quit(
                     workbench.workflow_index = 0;
                     continue;
                 }
+                // The repository browser is the surface's own panel, like
+                // `/diff` and `/worktree`: the agent has no such verb, so the
+                // draft's `/git` must not reach it. Reopening resumes the tab
+                // and filter the reader left.
+                "/git" => {
+                    let (section, filter) = live
+                        .git()
+                        .map(|git| (git.section, git.filter.clone()))
+                        .unwrap_or((GitSection::Commits, None));
+                    open_git_panel(live, frame, workbench, section, filter, 0, true).await;
+                    continue;
+                }
+                // The files panel: the conversation's own workspace, read afresh
+                // — a run may have written into it since the tree was last
+                // scanned, and a panel that opened on yesterday's listing would
+                // be the one thing on screen that is not live.
+                "/files" => {
+                    live.refresh_tree();
+                    workbench.overlay = Some(super::Overlay::Files);
+                    continue;
+                }
                 "/worktree" | "/worktree " => {
                     let cwd = live.data(frame).session.cwd;
                     let result = tokio::task::spawn_blocking(move || {
@@ -852,6 +775,25 @@ async fn quit(
                     // `ctrl+v` for themselves (Windows Terminal pastes with it,
                     // so the key never arrives here).
                     live.paste_clipboard().await;
+                    continue;
+                }
+                // Refreshing the view has no chord any more: it is a
+                // once-in-a-while verb, so the palette (and this line) is its
+                // door. Same three reads the action does.
+                "/refresh" => {
+                    live.refresh_sessions().await;
+                    live.refresh_state().await;
+                    live.refresh_tree();
+                    continue;
+                }
+                // Previewing the newest attachment has no chord (the surface's
+                // chords are reserved for the actions pressed while working), so
+                // this verb is its door.
+                "/preview" => {
+                    if live.load_attachment() {
+                        workbench.reset_preview();
+                        workbench.overlay = Some(super::Overlay::FilePreview);
+                    }
                     continue;
                 }
                 "/mouse" => {
@@ -943,6 +885,10 @@ async fn quit(
         if let WbAction::PreviewFile(path) = &action {
             live.load_preview(path).await;
             workbench.reset_preview();
+            // The pictures beside this one, so the box can step through the
+            // folder with its own buttons — the reader opened a row, and the
+            // rows around it are the neighbours they expect.
+            workbench.set_preview_siblings(super::files::image_siblings(path));
             workbench.overlay = Some(super::Overlay::FilePreview);
             continue;
         }
@@ -960,6 +906,11 @@ async fn quit(
             {
                 live.notice = notice;
             }
+            continue;
+        }
+        if matches!(action, WbAction::OpenFiles) {
+            live.refresh_tree();
+            workbench.overlay = Some(super::Overlay::Files);
             continue;
         }
         if matches!(action, WbAction::SelectDiff(_)) {
@@ -997,6 +948,73 @@ async fn quit(
             workbench.overlay = Some(super::Overlay::Approval);
             continue;
         }
+        // `/git`: the panel's data is the driver's to read (the surface owns no
+        // I/O), so every git verb lands here — the key, the palette entry, a tab
+        // switch, a cursor move and `r`.
+        if matches!(
+            action,
+            WbAction::OpenGit
+                | WbAction::GitSection(_)
+                | WbAction::GitFilter(_)
+                | WbAction::GitRefresh
+                | WbAction::SelectGit(_)
+        ) {
+            if let WbAction::SelectGit(index) = action {
+                open_git_detail(live, frame, workbench, index).await;
+                continue;
+            }
+            let current = live.git().cloned();
+            let (section, filter, want, reset_scroll) = match &action {
+                WbAction::OpenGit => (
+                    current
+                        .as_ref()
+                        .map(|git| git.section)
+                        .unwrap_or(GitSection::Commits),
+                    current.as_ref().and_then(|git| git.filter.clone()),
+                    0,
+                    true,
+                ),
+                WbAction::GitSection(section) => (
+                    *section,
+                    current.as_ref().and_then(|git| git.filter.clone()),
+                    0,
+                    true,
+                ),
+                WbAction::GitFilter(filter) => (GitSection::Commits, filter.clone(), 0, true),
+                WbAction::GitRefresh => (
+                    current
+                        .as_ref()
+                        .map(|git| git.section)
+                        .unwrap_or(GitSection::Commits),
+                    current.as_ref().and_then(|git| git.filter.clone()),
+                    workbench.workflow_index,
+                    false,
+                ),
+                _ => (GitSection::Commits, None, 0, true),
+            };
+            open_git_panel(live, frame, workbench, section, filter, want, reset_scroll).await;
+            continue;
+        }
+        if let WbAction::CopyText(text) = &action {
+            let text = text.clone();
+            let show = text.clone();
+            let copied =
+                tokio::task::spawn_blocking(move || crate::clipboard::copy_text(&text)).await;
+            live.notice = Some(match copied {
+                Ok(Ok(())) => {
+                    super::i18n::render(live.language(), super::i18n::Key::GitCopied, &[&show])
+                }
+                Ok(Err(error)) => {
+                    super::i18n::render(live.language(), super::i18n::Key::CopyFailed, &[&error])
+                }
+                Err(error) => super::i18n::render(
+                    live.language(),
+                    super::i18n::Key::CopyFailed,
+                    &[&error.to_string()],
+                ),
+            });
+            continue;
+        }
         if matches!(action, WbAction::CopyLast) {
             copy_last(live).await;
             continue;
@@ -1030,7 +1048,12 @@ async fn quit(
             }
             other => other,
         };
-        let switched = matches!(action, WbAction::SwitchSession(_));
+        // A delete moves the transcript too: the row that took the deleted
+        // conversation's place is what the screen is now showing.
+        let moved = matches!(
+            action,
+            WbAction::SwitchSession(_) | WbAction::DeleteSession(_)
+        );
         match live.apply(action).await {
             Outcome::Quit => return Ok(true),
             Outcome::Continue => {}
@@ -1038,7 +1061,7 @@ async fn quit(
         // A switch the rail did not make itself (a click on the launchpad's
         // recents, a `ctrl+r` pick) still has to move its cursor: the rail would
         // otherwise highlight a conversation the transcript is not showing.
-        if switched {
+        if moved {
             let data = live.data(frame);
             workbench.follow_current(&data);
         }
@@ -1126,6 +1149,16 @@ fn key_events(data: &str) -> Vec<WbEvent> {
         return Vec::new();
     }
     if let Some(key) = crate::keys::parse_key(data) {
+        // A *release* is not a press. The kitty protocol is enabled with the
+        // `report event types` flag (`\x1b[>7u`), so every key this surface is
+        // handed arrives twice — `\x1b[104u` on the way down and `\x1b[104;1:3u`
+        // on the way up — and both parse to the same key id. Handling the
+        // second one typed every character twice (`hi` arrived as `hhii`) and
+        // moved every list two rows per press. The repeat event (`:2`, a held
+        // key) is a press and stays.
+        if crate::keys::is_key_release(data) {
+            return Vec::new();
+        }
         return vec![WbEvent::Key(key)];
     }
     // A chunk the parser does not recognise as one key is one of two things:
@@ -1156,6 +1189,26 @@ fn key_events(data: &str) -> Vec<WbEvent> {
     if let Some(keys) = split_escape_keys(data) {
         return keys;
     }
+    // Printable text that is not a single ASCII character: a CJK character an
+    // IME hands over (`中` is one `str` of three bytes, which `parse_key` only
+    // reads when it is one byte), or several characters arriving in one read.
+    // Each becomes a key of its own, which is exactly what latin typing
+    // produces — so the picker's incremental search can be typed in Chinese and
+    // a filter line sees the same character-by-character input either way.
+    if !data.contains('\x1b') && !data.chars().any(char::is_control) {
+        let keys: Vec<WbEvent> = data
+            .chars()
+            .map(|ch| {
+                // `parse_key` still owns the spelling for the characters it
+                // knows (` ` is `space`, `#` is `#`); the rest is itself.
+                let id = crate::keys::parse_key(&ch.to_string()).unwrap_or_else(|| ch.to_string());
+                WbEvent::Key(id)
+            })
+            .collect();
+        if !keys.is_empty() {
+            return keys;
+        }
+    }
     // Anything else is text, and belongs in the draft as it stands.
     vec![WbEvent::Paste(data.to_string())]
 }
@@ -1172,6 +1225,7 @@ fn split_escape_keys(data: &str) -> Option<Vec<WbEvent>> {
         return None;
     }
     let mut keys = Vec::new();
+    let mut segments = 0usize;
     let mut rest = data;
     while !rest.is_empty() {
         let end = rest[1..]
@@ -1182,10 +1236,18 @@ fn split_escape_keys(data: &str) -> Option<Vec<WbEvent>> {
         if segment == "\x1b" {
             return None;
         }
-        keys.push(WbEvent::Key(crate::keys::parse_key(segment)?));
+        let key = crate::keys::parse_key(segment)?;
+        segments += 1;
+        // One sequence per key, and a release is not a key (see `key_events`).
+        if !crate::keys::is_key_release(segment) {
+            keys.push(WbEvent::Key(key));
+        }
         rest = &rest[end..];
     }
-    (keys.len() > 1).then_some(keys)
+    // Several complete sequences: the chunk is a run of keys, and it is
+    // answered as such even when only a release was in it (which answers
+    // *nothing*, not the raw escape bytes as text).
+    (segments > 1).then_some(keys)
 }
 
 /// The frame the surface is composed for right now, computed once per loop
@@ -1195,14 +1257,87 @@ fn frame_of(terminal: &Terminal, workbench: &Workbench) -> Frame {
     Frame::new(
         terminal.columns(),
         terminal.rows(),
-        if workbench.sidebar_visible && !workbench.linear_reading {
+        if workbench.sidebar_visible {
             workbench.sidebar_w
         } else {
             0
         },
-        workbench.effective_density(),
         workbench.sidebar_position,
     )
+}
+
+/// Read the `/git` panel for the session's workspace and open it.
+///
+/// The surface owns no I/O, so the read happens here — one section plus the
+/// selected row's detail, on the blocking pool because a large repository on a
+/// slow disk must not stall the frame that asked for it.
+async fn open_git_panel(
+    live: &mut Live,
+    frame: &Frame,
+    workbench: &mut Workbench,
+    section: GitSection,
+    filter: Option<String>,
+    want: usize,
+    reset_scroll: bool,
+) {
+    let cwd = live.data(frame).session.cwd;
+    // No workspace (the launchpad) has no repository to read: the panel says so
+    // with its own copy rather than showing git's "cannot change to ''".
+    if cwd.trim().is_empty() {
+        live.set_git(None);
+        if reset_scroll {
+            workbench.overlay_scroll = 0;
+        }
+        workbench.overlay = Some(super::Overlay::Git);
+        return;
+    }
+    let lang = live.language();
+    let loaded = tokio::task::spawn_blocking(move || {
+        super::git_panel::read(std::path::Path::new(&cwd), section, filter, want, lang)
+    })
+    .await;
+    match loaded {
+        Ok(view) => {
+            // The surface's cursor follows the view's selection: a section with
+            // a graph-only first line must not open with the arrow on a row that
+            // cannot be entered.
+            workbench.workflow_index = view.selected;
+            live.set_git(Some(view));
+        }
+        Err(error) => live.notice = Some(error.to_string()),
+    }
+    if reset_scroll {
+        workbench.overlay_scroll = 0;
+    }
+    workbench.overlay = Some(super::Overlay::Git);
+}
+
+/// Load one row's detail for the `/git` panel. Only the detail is re-read: the
+/// rows on screen are already the ones the reader is looking at.
+async fn open_git_detail(live: &mut Live, frame: &Frame, workbench: &mut Workbench, index: usize) {
+    let cwd = live.data(frame).session.cwd;
+    let Some(mut git) = live.git().cloned() else {
+        workbench.overlay = Some(super::Overlay::Git);
+        return;
+    };
+    let Some(key) = git.rows.get(index).and_then(|row| row.key.clone()) else {
+        workbench.overlay = Some(super::Overlay::Git);
+        return;
+    };
+    let section = git.section;
+    let lang = live.language();
+    let loaded = tokio::task::spawn_blocking(move || {
+        super::git_panel::detail(std::path::Path::new(&cwd), section, &key, lang)
+    })
+    .await;
+    git.selected = index;
+    match loaded {
+        Ok(Ok(lines)) => git.detail = lines,
+        Ok(Err(error)) => git.detail = vec![error],
+        Err(error) => git.detail = vec![error.to_string()],
+    }
+    live.set_git(Some(git));
+    workbench.overlay = Some(super::Overlay::Git);
 }
 
 async fn copy_last(live: &mut Live) {
@@ -1283,7 +1418,162 @@ fn draw(
     let data = live.data(frame);
     let rows = workbench.render(&data, frame.width, frame.height);
     terminal.write(&frame_bytes(&rows, workbench.cursor()));
+    paint_image(terminal, workbench, &data);
     Ok(())
+}
+
+/// Paint (or remove) the picture the frame asked for.
+///
+/// A terminal bitmap is not a row of text: it is placed at a cell by the
+/// terminal itself, above whatever the frame wrote there. So the preview box
+/// only *describes* what it wants ([`screen::ImageRequest`]) and this — the one
+/// place holding the terminal — writes it after the frame it belongs to,
+/// leaving the hardware cursor exactly where the frame put it.
+///
+/// The pixels are transmitted once per source (the file, and the crop of it a
+/// zoomed box shows); every later frame only re-places the image, which is a
+/// hundred bytes instead of a megabyte. Re-placing every frame is what keeps a
+/// picture on screen: the frame under it is rewritten each paint, and a placed
+/// image is not part of that text.
+fn paint_image(terminal: &mut Terminal, workbench: &mut Workbench, data: &super::WorkbenchData) {
+    let request = workbench.image_request;
+    let Some(request) = request else {
+        if let Some(painted) = workbench.painted_image.take() {
+            terminal.write(&crate::terminal_image::delete_kitty_image(painted.id));
+        }
+        return;
+    };
+    // The pixels are the box's own preview: the same image the frame drew.
+    let Some(super::state::PreviewView::Image { pixels, .. }) = data.preview.as_ref() else {
+        return;
+    };
+    let mut out = String::new();
+    match workbench.painted_image {
+        Some(painted) if painted.source == request.source => {
+            // Same bytes, new place: `a=p` places an already-transmitted image
+            // by id, and `p=1` keeps the placement one thing (a new `a=p` each
+            // frame would otherwise stack copies).
+            out.push_str(&format!(
+                "\x1b[{};{}H\x1b_Ga=p,i={},p=1,c={},r={},q=2,C=1\x1b\\",
+                request.y + 1,
+                request.x + 1,
+                painted.id,
+                request.columns,
+                request.rows
+            ));
+        }
+        other => {
+            if let Some(painted) = other {
+                out.push_str(&crate::terminal_image::delete_kitty_image(painted.id));
+            }
+            let id = crate::terminal_image::allocate_image_id();
+            // Transmit what the cells can show, not the source: the decoder
+            // keeps enough pixels for a zoomed window to stay sharp, but a
+            // whole 2048px picture across a hundred cells is fifteen megabytes
+            // over the pty that the terminal would immediately throw away.
+            let (rgb, w, h) = transmit_bitmap(
+                pixels,
+                request.crop,
+                request.columns as usize,
+                request.rows as usize,
+            );
+            out.push_str(&format!("\x1b[{};{}H", request.y + 1, request.x + 1));
+            out.push_str(&crate::terminal_image::encode_kitty_rgb(
+                &rgb,
+                w,
+                h,
+                request.columns as usize,
+                request.rows as usize,
+                id,
+            ));
+            workbench.painted_image = Some(super::PaintedImage {
+                source: request.source,
+                id,
+            });
+        }
+    }
+    // Put the cursor back where the frame left it; the image itself does not
+    // move it (`C=1`), but the addressing above did.
+    if let Some((x, y)) = workbench.cursor() {
+        out.push_str(&format!("\x1b[{};{}H", y + 1, x + 1));
+    }
+    terminal.write(&out);
+}
+
+/// How many source pixels per placed cell are worth transmitting.
+///
+/// A terminal cell is roughly 8–10 physical pixels wide on a HiDPI screen, and
+/// the terminal scales whatever it is given down to the cell box. Ten pixels a
+/// cell is therefore "at or above what the display can show" without carrying a
+/// full-resolution photograph across the pty.
+const TRANSMIT_PX_PER_CELL: usize = 10;
+
+/// The bitmap to transmit for `crop`, placed over `columns` × `rows` cells.
+///
+/// Returns RGB bytes and the bitmap's own size. A crop no wider than the cells
+/// can show is transmitted as it is — that is the zoomed case, where the window
+/// is a few hundred pixels and sharpness is the whole point. A larger crop (the
+/// picture fitted into the box) is downsampled first: the bytes cross a pipe and
+/// are then scaled again by the terminal, so sending a 2048px source for a
+/// 100-cell box is latency with nothing to show for it.
+fn transmit_bitmap(
+    pixels: &super::image_view::ImagePixels,
+    crop: (usize, usize, usize, usize),
+    columns: usize,
+    rows: usize,
+) -> (Vec<u8>, usize, usize) {
+    let crop_w = crop.2.saturating_sub(crop.0).max(1);
+    let crop_h = crop.3.saturating_sub(crop.1).max(1);
+    let budget = (columns.max(1) * TRANSMIT_PX_PER_CELL).min(pixels.width.max(1));
+    if crop_w <= budget || rows == 0 || columns == 0 {
+        return (crop_rgb(pixels, crop), crop_w, crop_h);
+    }
+    let target_w = budget.max(1);
+    let target_h = ((crop_h as f64) * (target_w as f64) / (crop_w as f64))
+        .round()
+        .max(1.0) as usize;
+    let mut window = image::RgbaImage::new(crop_w as u32, crop_h as u32);
+    for y in 0..crop_h {
+        for x in 0..crop_w {
+            let offset = ((crop.1 + y) * pixels.width + crop.0 + x) * 4;
+            let pixel = pixels
+                .rgba
+                .get(offset..offset + 4)
+                .map(|rgba| [rgba[0], rgba[1], rgba[2], rgba[3]])
+                .unwrap_or([0, 0, 0, 0]);
+            window.put_pixel(x as u32, y as u32, image::Rgba(pixel));
+        }
+    }
+    let scaled = image::imageops::resize(
+        &window,
+        target_w as u32,
+        target_h as u32,
+        image::imageops::FilterType::Triangle,
+    );
+    let mut rgb = Vec::with_capacity(target_w * target_h * 3);
+    for pixel in scaled.pixels() {
+        rgb.extend_from_slice(&pixel.0[..3]);
+    }
+    (rgb, target_w, target_h)
+}
+
+/// The RGB bytes of a crop of `pixels`, row-major — what kitty's `f=24` wants.
+fn crop_rgb(
+    pixels: &super::image_view::ImagePixels,
+    crop: (usize, usize, usize, usize),
+) -> Vec<u8> {
+    let (x0, y0, x1, y1) = crop;
+    let mut out = Vec::with_capacity((x1 - x0) * (y1 - y0) * 3);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let offset = (y * pixels.width + x) * 4;
+            match pixels.rgba.get(offset..offset + 3) {
+                Some(rgb) => out.extend_from_slice(rgb),
+                None => out.extend_from_slice(&[0, 0, 0]),
+            }
+        }
+    }
+    out
 }
 
 /// The bytes one frame becomes: cursor hidden, each row placed at its own
@@ -1321,14 +1611,12 @@ fn frame_bytes(rows: &[String], cursor: Option<(u16, u16)>) -> String {
 
 fn persist_preferences(workbench: &Workbench, settings: &mut TuiSettings, path: &Path) {
     let preferences = workbench.preferences();
-    settings.density = Some(preferences.density.as_wire().into());
     settings.sidebar_position = Some(preferences.sidebar_position.as_wire().into());
     settings.sidebar_width = Some(preferences.sidebar_width);
     settings.sidebar_visible = Some(preferences.sidebar_visible);
     settings.mouse_capture = Some(preferences.mouse_capture);
     settings.notify = Some(preferences.notify);
     settings.reduced_motion = Some(preferences.reduced_motion);
-    settings.linear_reading = Some(preferences.linear_reading);
     save_settings(path, settings);
 }
 
@@ -1497,19 +1785,6 @@ mod tests {
     }
 
     #[test]
-    fn overlay_linear_output_is_deferred_and_flushed_exactly_once() {
-        let mut deferred = String::new();
-        assert!(emit_linear("approval\n".into(), &mut deferred, false).is_empty());
-        assert_eq!(emit_linear("answer\n".into(), &mut deferred, false), "");
-        assert_eq!(
-            emit_linear("later\n".into(), &mut deferred, true),
-            "approval\nanswer\nlater\n"
-        );
-        assert!(deferred.is_empty());
-        assert!(emit_linear(String::new(), &mut deferred, true).is_empty());
-    }
-
-    #[test]
     fn focus_reports_are_not_inserted_into_the_draft() {
         assert_eq!(key_events("\x1b[I"), vec![WbEvent::Focus(true)]);
         assert_eq!(key_events("\x1b[O"), vec![WbEvent::Focus(false)]);
@@ -1519,6 +1794,56 @@ mod tests {
     fn a_plain_key_becomes_one_key_event() {
         assert_eq!(events_of("a"), vec![WbEvent::Key("a".into())]);
         assert_eq!(events_of("\u{3}"), vec![WbEvent::Key("ctrl+c".into())]);
+    }
+    /// The RGB bytes of a crop, row-major: what `f=24` transmits, and what a
+    /// zoomed, panned picture shows.
+    #[test]
+    fn a_crop_is_transmitted_row_major_and_inside_the_picture() {
+        use super::super::image_view::ImagePixels;
+        // 3x2: each pixel's red channel is its index.
+        let mut rgba = Vec::new();
+        for index in 0..6u8 {
+            rgba.extend_from_slice(&[index, 0, 0, 255]);
+        }
+        let pixels = ImagePixels {
+            width: 3,
+            height: 2,
+            rgba,
+        };
+        // The middle column only.
+        let rgb = crop_rgb(&pixels, (1, 0, 2, 2));
+        assert_eq!(rgb, vec![1, 0, 0, 4, 0, 0]);
+        // A crop that asks past the edge is clamped by the caller's own maths;
+        // a missing pixel is black rather than a panic.
+        let rgb = crop_rgb(&pixels, (2, 1, 4, 3));
+        assert_eq!(rgb, vec![5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    }
+
+    /// A picture fitted into the box is transmitted at the cells' resolution,
+    /// not the source's; a zoomed window, which is already small, is not
+    /// resampled at all.
+    #[test]
+    fn the_transmitted_bitmap_is_sized_to_the_cells() {
+        let mut rgba = Vec::new();
+        for y in 0..400 {
+            for x in 0..400 {
+                rgba.extend_from_slice(&[(x % 256) as u8, (y % 256) as u8, 0, 255]);
+            }
+        }
+        let pixels = super::super::image_view::ImagePixels {
+            width: 400,
+            height: 400,
+            rgba,
+        };
+        // Fitted into 20 cells at ten pixels a cell: 200 px, half the source.
+        let (rgb, w, h) = transmit_bitmap(&pixels, (0, 0, 400, 400), 20, 20);
+        assert_eq!((w, h), (200, 200));
+        assert_eq!(rgb.len(), w * h * 3);
+        // A zoomed window already fits the budget: no resample, the bytes are
+        // the crop itself.
+        let (rgb, w, h) = transmit_bitmap(&pixels, (10, 10, 210, 210), 40, 40);
+        assert_eq!((w, h), (200, 200));
+        assert_eq!(rgb.len(), 200 * 200 * 3);
     }
 
     #[test]
@@ -1555,9 +1880,41 @@ mod tests {
         );
     }
 
+    /// A CJK character is *typed*, not pasted: one key event, exactly like
+    /// `a`, so the pickers' incremental search can be given Chinese and the
+    /// draft does not treat an IME's character as an attachment-sized paste.
     #[test]
-    fn a_multibyte_character_is_text() {
-        assert_eq!(events_of("中"), vec![WbEvent::Paste("中".into())]);
+    fn a_multibyte_character_is_one_typed_key() {
+        assert_eq!(events_of("中"), vec![WbEvent::Key("中".into())]);
+        assert_eq!(
+            events_of("你好"),
+            vec![WbEvent::Key("你".into()), WbEvent::Key("好".into())]
+        );
+    }
+
+    /// The kitty protocol is enabled with `report event types`, so each key
+    /// arrives twice: once as a press and once as a release carrying `:3`. The
+    /// release must not be handled — it used to type every character twice and
+    /// move every list two rows per press. A repeat (`:2`, a held key) is a
+    /// press and still arrives.
+    #[test]
+    fn a_key_release_is_never_handled_as_a_press() {
+        // Press then release of `h`, in the order the terminal sends them.
+        assert_eq!(events_of("\x1b[104u"), vec![WbEvent::Key("h".into())]);
+        assert_eq!(events_of("\x1b[104;1:3u"), Vec::new());
+        // shift+up: `\x1b[1;2A` down, `\x1b[1;2:3A` up.
+        assert_eq!(
+            events_of("\x1b[1;2A"),
+            vec![WbEvent::Key("shift+up".into())]
+        );
+        assert_eq!(events_of("\x1b[1;2:3A"), Vec::new());
+        // A held key repeats (`:2`) — that is still a press.
+        assert_eq!(events_of("\x1b[104;1:2u"), vec![WbEvent::Key("h".into())]);
+        // Two events in one read: the press survives, the release does not.
+        assert_eq!(
+            events_of("\x1b[104u\x1b[104;1:3u"),
+            vec![WbEvent::Key("h".into())]
+        );
     }
 
     /// Two control chords in one read are two events, not one paste: the raw
@@ -1628,5 +1985,23 @@ mod tests {
             frame_bytes(&rows, None),
             "\x1b[?25l\x1b[0m\x1b[1;1Ha\x1b[0m\x1b[2;1Hb\x1b[0m"
         );
+    }
+
+    /// A first start — no `settings.json`, or one whose `sidebarVisible` an
+    /// older build never wrote — opens on the conversation, not on the rail.
+    /// The choice is a preference once it is made: whoever hid or showed the
+    /// rail keeps exactly that on the next start.
+    #[test]
+    fn a_first_start_hides_the_rail_and_a_choice_survives() {
+        let fresh = layout_preferences(&TuiSettings::default(), true);
+        assert!(!fresh.sidebar_visible, "a fresh start hides the rail");
+        // A file with other keys but no `sidebarVisible` is the same start.
+        let older = TuiSettings::from_json(&serde_json::json!({"mouseCapture": false}));
+        assert!(!layout_preferences(&older, true).sidebar_visible);
+
+        let shown = TuiSettings::from_json(&serde_json::json!({"sidebarVisible": true}));
+        assert!(layout_preferences(&shown, true).sidebar_visible);
+        let hidden = TuiSettings::from_json(&serde_json::json!({"sidebarVisible": false}));
+        assert!(!layout_preferences(&hidden, true).sidebar_visible);
     }
 }

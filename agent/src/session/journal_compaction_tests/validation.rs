@@ -10,6 +10,14 @@ fn active_incomplete_and_gapped_journals_are_kept() {
                 .db
                 .call(|db| {
                     db.execute("DELETE FROM run_events WHERE idx=11", [])?;
+                    // Settled a moment ago: the transcript terminal precedes the
+                    // final event broadcast, so the missing tail may still be on
+                    // its way. Age is what turns a truncated stream into a
+                    // foldable one, so this one has none yet.
+                    db.execute(
+                        "UPDATE runs SET completed_at_ms=?1 WHERE run_id='run'",
+                        [crate::session::journal_compaction::now_ms()],
+                    )?;
                     Ok(())
                 })
                 .unwrap();
@@ -31,6 +39,95 @@ fn active_incomplete_and_gapped_journals_are_kept() {
         })
         .unwrap();
     assert!(store.compact_run("s", "run").is_err());
+    assert_eq!(store.events("s", "run").unwrap().len(), 11);
+}
+
+/// Rows still in the raw journal — deliberately read from the table rather than
+/// through `events()`, which answers from a published snapshot.
+fn raw_row_count(store: &SqliteStore) -> i64 {
+    store
+        .db
+        .call(|db| {
+            Ok(db.query_row(
+                "SELECT count(*) FROM run_events WHERE session_id='s' AND run_id='run'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap()
+}
+
+/// The case the grace window exists for: a run a crash cut off mid-stream. Its
+/// stream never gets an `agent_end`, so nothing will ever complete it — the
+/// journal is final and, on a real store, 50 of these held 762k events (179 MiB)
+/// forever. `runs` settles that the run is over; age proves no producer is left.
+#[test]
+fn an_aged_incomplete_stream_is_folded_from_the_settled_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = fixture(&dir.path().join("agent.db"), "interrupted", 10);
+    store
+        .db
+        .call(|db| {
+            // What the crash left: no terminal event.
+            db.execute("DELETE FROM run_events WHERE idx=11", [])?;
+            Ok(())
+        })
+        .unwrap();
+    let outcome = store
+        .compact_run_cancellable("s", "run", &std::sync::atomic::AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(outcome.skip, None, "settled and quiescent: foldable");
+    assert!(
+        outcome.truncated,
+        "published from a stream without agent_end"
+    );
+    assert_eq!(
+        raw_row_count(&store),
+        0,
+        "the raw journal is retired, which is the whole point"
+    );
+    // `events()` reads the published snapshot: the same stream, folded —
+    // `agent_start` plus one coalesced text segment, with the truncated tail
+    // kept as it was.
+    assert_eq!(store.events("s", "run").unwrap().len(), 2);
+    // The replay a late client attaches to is the same stream, folded.
+    let page = store.replay_page("s", "run", -1, false, None).unwrap();
+    let snapshot = page.snapshot.expect("published snapshot");
+    assert_eq!(snapshot.cursor, 10);
+    assert_eq!(
+        snapshot
+            .events
+            .last()
+            .map(|event| event.event_type.as_str()),
+        Some("text_chunk"),
+        "the truncated tail is preserved as-is, not invented"
+    );
+    let stats = store.journal_stats().unwrap();
+    assert_eq!(stats["truncatedPublishes"], 1);
+}
+
+/// Age alone is not enough when there is no settle time to age: a legacy-imported
+/// run whose `completed_at_ms` is unknown cannot prove its producer is gone, so it
+/// keeps its journal until someone can.
+#[test]
+fn an_incomplete_stream_without_a_settle_time_is_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = fixture(&dir.path().join("agent.db"), "interrupted", 10);
+    store
+        .db
+        .call(|db| {
+            db.execute("DELETE FROM run_events WHERE idx=11", [])?;
+            db.execute(
+                "UPDATE runs SET completed_at_ms=NULL WHERE run_id='run'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let outcome = store
+        .compact_run_cancellable("s", "run", &std::sync::atomic::AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(outcome.skip, Some(SkipReason::NotTerminal));
     assert_eq!(store.events("s", "run").unwrap().len(), 11);
 }
 

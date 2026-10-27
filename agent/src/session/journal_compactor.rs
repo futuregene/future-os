@@ -1,15 +1,17 @@
-//! Bounded completion notifications for optional run-journal compaction.
-//! No startup sweep and no retries after a failed snapshot publication.
+//! Test-only legacy compactor compatibility. Production never constructs this
+//! worker or schedules startup/completion compression.
 use super::sqlite_store::SqliteStore;
 use anyhow::Result;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
 
-// Completion notifications are the only trigger. No startup/history sweep and
-// no automatic retries: failures keep raw replay available. Drop cancels an
+// Test helpers exercise the former startup/completion behavior without enabling
+// it in production. Failures keep raw replay available. Drop cancels an
 // uncommitted build between pages and joins before releasing the store.
 enum CompactionRequest {
     Compact(String, String, PendingCompaction),
+    /// The one bounded startup pass: the runs no completion notification covered.
+    CatchUp,
     Stop,
     #[cfg(test)]
     Barrier(mpsc::SyncSender<()>),
@@ -45,12 +47,29 @@ impl CompletedRunCompactor {
                                 tracing::warn!(%error, %session, %run, "could not compact completed journal; raw rows retained without retry");
                             }
                         }
+                        Ok(CompactionRequest::CatchUp) => {
+                            if stopping.load(Ordering::Acquire) { break; }
+                            // Bounded on both axes and logged either way: a
+                            // catch-up that finds nothing and one that never ran
+                            // must not look the same in a store that stops
+                            // shrinking.
+                            if let Err(error) = store.catch_up_settled_journals(
+                                super::journal_reclaim::CATCH_UP_MAX_RUNS,
+                                super::journal_reclaim::CATCH_UP_BUDGET,
+                            ) {
+                                tracing::warn!(%error, "run-journal catch-up could not run; the next start retries it");
+                            }
+                        }
                         #[cfg(test)]
                         Ok(CompactionRequest::Barrier(sender)) => { let _ = sender.send(()); }
                         Ok(CompactionRequest::Stop) | Err(_) => break,
                     }
                 }
             })?;
+        // First request on the queue, so a start folds what the last stop left
+        // behind before it handles new completions. Queued rather than run here:
+        // starting the Agent must not wait for maintenance.
+        let _ = sender.try_send(CompactionRequest::CatchUp);
         Ok(Self {
             sender,
             thread: Some(thread),

@@ -95,9 +95,18 @@ pub struct CustomProviderModel {
     /// `modalities` array (`["text"]` or `["text","image"]`) that the agent reads.
     #[serde(default)]
     pub supports_images: bool,
-    /// Custom models enable thinking controls unless explicitly disabled.
+    /// Legacy capability flag: kept so an older desktop's "supports thinking"
+    /// checkbox round-trips unchanged. Nothing branches on it anymore — the
+    /// list below is what says whether the model has thinking controls.
     #[serde(default = "default_reasoning")]
     pub reasoning: bool,
+    /// The thinking levels this model accepts, in display order. Entries are
+    /// wire values sent verbatim (`off` = explicitly disable); the implicit
+    /// `default` level is never listed or stored. `None` means "the client did
+    /// not send one" — on an edit that preserves the stored list; `Some([])`
+    /// clears it. The view always fills this in (possibly with an empty list).
+    #[serde(default)]
+    pub thinking_levels: Option<Vec<String>>,
     /// Maximum total context window, in tokens.
     #[serde(default = "default_context_window")]
     pub context_window: i32,
@@ -310,6 +319,20 @@ fn build_providers_view(
                                     .and_then(Value::as_f64)
                                     .unwrap_or(0.0)
                             };
+                            // The stored wire values, in declaration order. The
+                            // implicit `default` level is never stored, so an
+                            // empty list means "this model offers only `default`".
+                            let thinking_levels = model
+                                .get("thinkingLevels")
+                                .and_then(Value::as_array)
+                                .map(|items| {
+                                    items
+                                        .iter()
+                                        .filter_map(Value::as_str)
+                                        .map(str::to_string)
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default();
                             Some(CustomProviderModel {
                                 reasoning: model
                                     .get("reasoning")
@@ -318,6 +341,7 @@ fn build_providers_view(
                                 id,
                                 name,
                                 supports_images,
+                                thinking_levels: Some(thinking_levels),
                                 context_window: model
                                     .get("contextWindow")
                                     .and_then(Value::as_i64)

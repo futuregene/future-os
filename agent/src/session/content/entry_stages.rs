@@ -51,11 +51,14 @@ impl PreparedEntries {
             let (s, e, op) = (session.to_owned(), id.to_owned(), operation);
             store.db.call(move |db| {
                 let tx=database::begin_write_transaction(db)?;
+                let entry=crate::session::identity::BoundIdentity::entry(&tx,&s,&e)?;
+                let run=run.as_deref().map(|id|crate::session::identity::BoundIdentity::run(&tx,&s,id)).transpose()?;
+                let s=crate::session::identity::BoundIdentity::session(&tx,&s)?;
                 let revision:i64=tx.query_row("SELECT max(revision,0) FROM sessions WHERE id=?1",[&s],|row|row.get(0))?;
                 let reset:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM content_operations WHERE session_id=?1 AND kind='reset')",[&s],|row|row.get(0))?;
                 ensure!(!reset,"session history reset is in progress");
                 tx.execute("INSERT INTO content_operations(operation_id,session_id,owner_prefix,expected_revision,kind) VALUES (?1,?2,?3,?4,'entry')",params![op,s,format!("entry:{op}:"),revision])?;
-                tx.execute("INSERT INTO content_entry_stages(operation_id,session_id,entry_id,run_id) VALUES (?1,?2,?3,?4)",params![op,s,e,run])?;
+                tx.execute("INSERT INTO content_entry_stages(operation_id,session_id,entry_id,run_id) VALUES (?1,?2,?3,?4)",params![op,s,entry,run])?;
                 tx.commit()?;Ok(())
             })?;
             prepared.leases.push(lease);
@@ -83,14 +86,18 @@ impl Drop for Lease {
 /// Called inside the cleanup transaction. A published header, a durable queued
 /// input, or another preparation lease protects the owner. No body is read.
 pub(super) fn cleanup(db: &Connection, operation: &str, session: &str) -> Result<bool> {
-    let (entry, run): (String, Option<String>) = db.query_row(
+    let session = crate::session::identity::BoundIdentity::session(db, session)?;
+    let (entry, run): (
+        crate::session::identity::BoundIdentity,
+        Option<crate::session::identity::BoundIdentity>,
+    ) = db.query_row(
         "SELECT entry_id,run_id FROM content_entry_stages WHERE operation_id=?1 AND session_id=?2",
         params![operation, session],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     let protected:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM entries WHERE session_id=?1 AND entry_id=?2)
         OR EXISTS(SELECT 1 FROM content_entry_stages WHERE session_id=?1 AND entry_id=?2 AND operation_id<>?3)
-        OR EXISTS(SELECT 1 FROM queued_run_receipts WHERE session_id=?1 AND run_id=?4 AND json_extract(user_entry_json,'$.id')=?2)",params![session,entry,operation,run],|row|row.get(0))?;
+        OR EXISTS(SELECT 1 FROM queued_run_receipts WHERE session_id=?1 AND run_id=?4 AND json_extract(user_entry_json,'$.id')=?5)",params![session,entry,operation,run,entry.as_str()],|row|row.get(0))?;
     if protected {
         return Ok(true);
     }

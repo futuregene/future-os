@@ -51,14 +51,45 @@ impl SqliteStore {
     pub(crate) fn pricing_event_payloads(&self, session: &str) -> Result<Vec<String>> {
         let canonical = self.storage_format(session)? == crate::session::content::FORMAT_VERSION;
         let session = session.to_owned();
+        if canonical {
+            let mut after = 0i64;
+            let mut result = Vec::new();
+            let expected_identity = self.storage_identity()?;
+            loop {
+                let (scope, expected) = (session.clone(), expected_identity.clone());
+                let (last,page)=self.db.read(move |db| {
+                    let tx=db.transaction()?;
+                    let scope=crate::session::identity::BoundIdentity::session(&tx,&scope)?;
+                    anyhow::ensure!(crate::session::content::transport::storage_identity(&tx)?==expected,"storage identity changed during pricing replay");
+                    let ids={
+                        let mut query=tx.prepare_cached("SELECT c.id,length(CAST(c.metadata_json AS BLOB))+length(CAST(x.descriptor_json AS BLOB))+x.symbol_bytes FROM stream_runs r JOIN stream_changes c ON c.stream_id=r.id LEFT JOIN stream_contexts x ON x.id=c.context_id AND x.stream_id=r.id AND x.event_kind=c.event_kind WHERE r.session_id=?1 AND c.event_type IN ('usage','model_changed') AND c.id>?2 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=r.id) ORDER BY c.id LIMIT 128")?;
+                        let mut rows=query.query(params![scope,after])?;
+                        let mut ids=Vec::new();let mut bytes=0usize;
+                        while let Some(row)=rows.next()? {
+                            let size=usize::try_from(row.get::<_,i64>(1)?)?;
+                            if !ids.is_empty() && bytes.saturating_add(size)>crate::session::content::stream::CHANGE_METADATA_BYTES {break;}
+                            bytes=bytes.saturating_add(size);ids.push(row.get::<_,i64>(0)?);
+                        }
+                        ids
+                    };
+                    let page=crate::session::content::compact::read_encoded(&tx,&ids)?;
+                    let last=ids.last().copied();tx.commit()?;Ok((last,page))
+                })?;
+                let Some(last) = last else {
+                    break;
+                };
+                after = last;
+                for change in page.decode()? {
+                    let mut metadata = change.metadata;
+                    metadata["event_type"] = serde_json::json!(change.event_type);
+                    result.push(metadata.to_string());
+                }
+            }
+            return Ok(result);
+        }
         self.db.read(move |db| {
-            let mut stmt = db.prepare(if canonical {
-                "SELECT json_set(c.metadata_json,'$.event_type',c.event_type) FROM stream_runs r
-                 JOIN stream_changes c ON c.stream_id=r.id
-                 WHERE r.session_id=?1 AND c.event_type IN ('usage','model_changed')
-                   AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=r.id)
-                 ORDER BY c.id"
-            } else {
+            let mut stmt = db.prepare(
+
                 "SELECT payload FROM (
                     SELECT sequence,payload FROM run_events WHERE session_id=?1
                       AND json_extract(payload,'$.event_type') IN ('usage','model_changed')
@@ -68,7 +99,7 @@ impl SqliteStore {
                            json_extract(j.value,'$.payload') AS payload
                       FROM run_snapshots s,json_each(s.pricing_payloads) j WHERE s.session_id=?1
                  ) ORDER BY sequence"
-            })?;
+            )?;
             let rows = stmt
                 .query_map([&session], |row| row.get(0))?
                 .collect::<rusqlite::Result<Vec<String>>>()?;
@@ -187,6 +218,7 @@ impl SqliteStore {
             } else {
                 "SELECT COALESCE(MAX(CASE WHEN epoch=-1 THEN idx END),-1), COALESCE(MAX(CASE WHEN epoch>=0 THEN idx END),-1) FROM run_events WHERE session_id=?1 AND run_id=''"
             };
+            let session=crate::session::identity::BoundIdentity::session(db,&session)?;
             let (session_idx, loose_idx): (i64, i64) = db.query_row(
                 sql,
                 [session], |row| Ok((row.get(0)?, row.get(1)?)),
@@ -199,6 +231,8 @@ impl SqliteStore {
         let (session, run) = (session.to_owned(), run.to_owned());
         self.db.read(move |db| {
             if crate::session::content::format(db, &session)? == crate::session::content::FORMAT_VERSION {
+                let run=crate::session::identity::BoundIdentity::run(db,&session,&run)?;
+                let session=crate::session::identity::BoundIdentity::session(db,&session)?;
                 Ok(db.query_row("SELECT durable_cursor FROM stream_runs WHERE session_id=?1 AND run_id=?2 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=stream_runs.id) ORDER BY epoch DESC LIMIT 1", params![session,run], |row| row.get(0)).optional()?)
             } else {
                 Ok(db.query_row("SELECT max(cursor) FROM (SELECT max(idx) AS cursor FROM run_events WHERE session_id=?1 AND run_id=?2 UNION ALL SELECT cursor FROM run_snapshots WHERE session_id=?1 AND run_id=?2)", params![session,run], |row| row.get(0))?)
@@ -240,6 +274,7 @@ impl SqliteStore {
         let session = session.to_owned();
         self.db.call(move |db| {
             let tx = crate::session::database::begin_write_transaction(db)?;
+            let mut session=crate::session::identity::BoundIdentity::session(&tx,&session)?;
             let (deleted, imported, skipped): (bool, bool, bool) = tx.query_row(
                 "SELECT (EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1)
                          OR EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='deleted')),
@@ -248,6 +283,10 @@ impl SqliteStore {
                 [&session], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
             if deleted { bail!("session identity was deleted"); }
             if skipped { bail!("session migration was skipped"); }
+            let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)",[&session],|row|row.get(0))?;
+            if !exists && !imported && new_format==crate::session::content::FORMAT_VERSION {
+                session=crate::session::identity::BoundIdentity::fresh_session(&tx,&session)?;
+            }
             let created = tx.execute("INSERT OR IGNORE INTO sessions(id,revision) VALUES (?1,-1)", [&session])? != 0;
             if created && !imported && new_format == crate::session::content::FORMAT_VERSION {
                 crate::session::content::enable(&tx, &session)?;

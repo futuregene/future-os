@@ -6,8 +6,8 @@ import {
   loadAgentModelOptions,
   modelLabel,
   modelOption,
-  modelSupportsThinking,
   modelThinkingLevel,
+  modelThinkingLevels,
   normalizeThinkingLevel,
   readLastUsedModel,
   readLastUsedThinkingLevel,
@@ -15,6 +15,7 @@ import {
   rememberLastUsedThinkingLevel,
   resolveInitialModelId,
   resolveInitialThinkingLevel,
+  resolveThinkingLevel,
   sendPromptToFutureAgent,
   syncFutureModels,
 } from "./agentClient";
@@ -293,40 +294,83 @@ describe("resolveInitialModelId", () => {
 });
 
 describe("thinking-level helpers", () => {
-  const models = [
+  // An older agent's catalogue: no `thinkingLevels` list, just the legacy
+  // `reasoning` flag and a `defaultThinkingLevel` it clamped from "medium".
+  const legacyModels = [
     model({ id: "m", provider: "p", reasoning: true }),
-    model({ id: "plain", provider: "p", reasoning: false }),
+    model({ id: "plain", provider: "p", reasoning: false, thinkingLevels: ["off"], defaultThinkingLevel: "off" }),
   ];
 
-  it("resolves the level per model support", () => {
-    expect(resolveInitialThinkingLevel("p/m", models)).toBe("medium");
-    // A model that cannot think is pinned off, whatever the user last picked.
+  it("falls back to the legacy six and medium when the catalogue has no list", () => {
+    expect(modelThinkingLevels("p/m", legacyModels)).toEqual([
+      "off",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+    ]);
+    expect(modelThinkingLevel("p/m", legacyModels)).toBe("medium");
     rememberLastUsedThinkingLevel("xhigh");
-    expect(resolveInitialThinkingLevel("p/plain", models)).toBe("off");
+    expect(resolveInitialThinkingLevel("p/m", legacyModels)).toBe("xhigh");
   });
 
-  it("honours a remembered level that is still valid", () => {
-    rememberLastUsedThinkingLevel("xhigh");
-    expect(resolveInitialThinkingLevel("p/m", models)).toBe("xhigh");
-
-    rememberLastUsedThinkingLevel("turbo");
-    expect(resolveInitialThinkingLevel("p/m", models)).toBe("medium");
+  it("never sends the literal default to an older agent", () => {
+    rememberLastUsedThinkingLevel("default");
+    expect(resolveInitialThinkingLevel("p/m", legacyModels)).toBe("medium");
+    // Its own list can still narrow the choice in an old-agent shape.
+    expect(modelThinkingLevels("p/plain", legacyModels)).toEqual(["off"]);
+    expect(modelThinkingLevel("p/plain", legacyModels)).toBe("off");
   });
 
-  it("normalises an unknown level to the desktop default and keeps a known one", () => {
-    expect(normalizeThinkingLevel("xhigh")).toBe("xhigh");
-    expect(normalizeThinkingLevel("nonsense")).toBe("medium");
-    expect(normalizeThinkingLevel(null)).toBe("medium");
-    expect(normalizeThinkingLevel(undefined)).toBe("medium");
+  it("uses the agent-published list as-is, arbitrary values included", () => {
+    const models = [model({
+      id: "m",
+      provider: "p",
+      thinkingLevels: ["default", "off", "max"],
+      defaultThinkingLevel: "default",
+    })];
+    expect(modelThinkingLevels("p/m", models)).toEqual(["default", "off", "max"]);
+    expect(modelThinkingLevel("p/m", models)).toBe("default");
+
+    rememberLastUsedThinkingLevel("max");
+    expect(resolveInitialThinkingLevel("p/m", models)).toBe("max");
+    // A remembered level the model does not offer falls back to its own start.
+    rememberLastUsedThinkingLevel("high");
+    expect(resolveInitialThinkingLevel("p/m", models)).toBe("default");
   });
 
-  it("classifies support and the default level", () => {
-    expect(modelSupportsThinking("p/m", models)).toBe(true);
-    expect(modelSupportsThinking("p/plain", models)).toBe(false);
-    // An unknown model is assumed able to think (the agent decides).
-    expect(modelSupportsThinking("p/unknown", models)).toBe(true);
-    expect(modelThinkingLevel("p/m", models)).toBe("medium");
-    expect(modelThinkingLevel("p/plain", models)).toBe("off");
+  it("starts a narrowed model on the level its agent computed", () => {
+    const models = [model({
+      id: "narrow",
+      provider: "p",
+      thinkingLevels: ["default", "low", "high"],
+      defaultThinkingLevel: "low",
+    })];
+    expect(modelThinkingLevel("p/narrow", models)).toBe("low");
+    expect(resolveInitialThinkingLevel("p/narrow", models)).toBe("low");
+    expect(resolveThinkingLevel("xhigh", "p/narrow", models)).toBe("low");
+    expect(resolveThinkingLevel("high", "p/narrow", models)).toBe("high");
+  });
+
+  it("keeps a single-level model on its only level", () => {
+    const models = [model({
+      id: "plain",
+      provider: "p",
+      thinkingLevels: ["default"],
+      defaultThinkingLevel: "default",
+    })];
+    expect(modelThinkingLevels("p/plain", models)).toEqual(["default"]);
+    expect(modelThinkingLevel("p/plain", models)).toBe("default");
+    expect(resolveThinkingLevel("off", "p/plain", models)).toBe("default");
+  });
+
+  it("normalises outside values by emptiness alone; any token is a level", () => {
+    expect(normalizeThinkingLevel("max")).toBe("max");
+    expect(normalizeThinkingLevel("nonsense")).toBe("nonsense");
+    expect(normalizeThinkingLevel("  ")).toBe("default");
+    expect(normalizeThinkingLevel(null)).toBe("default");
+    expect(normalizeThinkingLevel(undefined)).toBe("default");
   });
 });
 

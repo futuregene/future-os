@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ImagePreview } from "./ImagePreview";
@@ -122,7 +122,12 @@ function overlay(container: HTMLElement): HTMLElement {
   return container.querySelector<HTMLElement>("div[role='presentation']")!;
 }
 
-/** The zoom percentage the controls display. */
+/**
+ * The zoom percentage the controls display. It is the picture's real scale
+ * against its own pixels, so a 800x600 image fitted into the 400x300 container
+ * below reads 50%. `fit = 0.5` throughout this file unless a test resizes the
+ * box.
+ */
 function shownScale(container: HTMLElement): number {
   const text = [...container.querySelectorAll("span")].map(node => node.textContent ?? "").find(value => value.endsWith("%"));
   return Number.parseInt(text ?? "", 10);
@@ -151,8 +156,9 @@ describe("imagePreview zoom and pan", () => {
     await loadImage(view.container);
     expect(image.className).toContain("visible");
     expect(image.className).not.toContain("invisible");
-    // Fit, because the 800x600 image is larger than the 400x300 container.
-    expect(shownScale(view.container)).toBe(100);
+    // Fit — 50%, because the 800x600 image is drawn at half its own pixels to
+    // fit inside the 400x300 container.
+    expect(shownScale(view.container)).toBe(50);
     expect(translation(image)).toEqual({ x: 0, y: 0 });
   });
 
@@ -181,7 +187,7 @@ describe("imagePreview zoom and pan", () => {
     await act(async () => {
       surface.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX: 400, clientY: 0, deltaY: -200 }));
     });
-    expect(shownScale(view.container)).toBeGreaterThan(100);
+    expect(shownScale(view.container)).toBeGreaterThan(50);
     const zoomed = translation(view.image);
     expect(zoomed.x).not.toBe(0);
 
@@ -200,7 +206,7 @@ describe("imagePreview zoom and pan", () => {
         surface.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX: 200, clientY: 150, deltaY: 200 }));
       });
     }
-    expect(shownScale(view.container)).toBe(100);
+    expect(shownScale(view.container)).toBe(50);
     expect(translation(view.image)).toEqual({ x: 0, y: 0 });
   });
 
@@ -211,13 +217,14 @@ describe("imagePreview zoom and pan", () => {
     await act(async () => {
       surface.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: 200, clientY: 150 }));
     });
-    // "Actual size": the 800px-wide image is drawn at 2x the 400px container.
-    expect(shownScale(view.container)).toBe(200);
+    // "Actual size": the 800px-wide image is drawn at one screen pixel per
+    // image pixel, which is 2x the 0.5 fit.
+    expect(shownScale(view.container)).toBe(100);
 
     await act(async () => {
       surface.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: 200, clientY: 150 }));
     });
-    expect(shownScale(view.container)).toBe(100);
+    expect(shownScale(view.container)).toBe(50);
   });
 
   it("pans on a left drag, clamped to the overhang", async () => {
@@ -226,7 +233,7 @@ describe("imagePreview zoom and pan", () => {
     await act(async () => {
       button(view.container, "Zoom in").click();
     });
-    expect(shownScale(view.container)).toBe(125);
+    expect(shownScale(view.container)).toBe(63);
 
     await act(async () => {
       surface.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 200, clientY: 150 }));
@@ -336,7 +343,7 @@ describe("imagePreview zoom and pan", () => {
       surface.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: 10, clientY: 10 }));
     });
 
-    expect(shownScale(view.container)).toBe(100);
+    expect(shownScale(view.container)).toBe(50);
   });
 
   it("hands an unreadable image back to the caller's fallback", async () => {
@@ -370,17 +377,117 @@ describe("imagePreview zoom and pan", () => {
       button(view.container, "Zoom in").click();
       button(view.container, "Zoom in").click();
     });
-    expect(shownScale(view.container)).toBe(156);
+    expect(shownScale(view.container)).toBe(78);
 
     await act(async () => {
       button(view.container, "Zoom out").click();
     });
-    expect(shownScale(view.container)).toBe(125);
+    expect(shownScale(view.container)).toBe(63);
 
     await act(async () => {
-      button(view.container, "Reset zoom").click();
+      button(view.container, "Fit to window").click();
     });
-    expect(shownScale(view.container)).toBe(100);
+    expect(shownScale(view.container)).toBe(50);
     expect(translation(view.image)).toEqual({ x: 0, y: 0 });
+  });
+
+  it("jumps to actual size from the controls", async () => {
+    const view = await mountReady();
+
+    await act(async () => {
+      button(view.container, "Actual size 1:1").click();
+    });
+    // 1:1 — the 800px-wide image drawn at its own pixels, twice the fitted box.
+    expect(shownScale(view.container)).toBe(100);
+
+    await act(async () => {
+      button(view.container, "Fit to window").click();
+    });
+    expect(shownScale(view.container)).toBe(50);
+  });
+});
+
+describe("imagePreview folder navigation", () => {
+  const neighbours = (overrides: { index: number; count: number }) => ({
+    ...overrides,
+    onNext: vi.fn(),
+    onPrev: vi.fn(),
+  });
+
+  it("offers no stepping controls without a neighbour list", async () => {
+    const view = await mountReady();
+    expect(view.container.querySelector("[aria-label='Previous image']")).toBeNull();
+    expect(view.container.querySelector("[aria-label='Next image']")).toBeNull();
+  });
+
+  it("steps through the folder and reports the position", async () => {
+    const nav = neighbours({ count: 4, index: 1 });
+    const view = await mountReady();
+    act(() => {
+      view.root.render(createElement(ImagePreview, { name: "pic.png", navigation: nav, onError: vi.fn(), path: "/w/pic.png" }));
+    });
+    await flush();
+
+    expect(view.container.textContent).toContain("2 / 4");
+    await act(async () => {
+      button(view.container, "Previous image").click();
+      button(view.container, "Next image").click();
+    });
+    expect(nav.onPrev).toHaveBeenCalledTimes(1);
+    expect(nav.onNext).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables the step that would leave the folder", async () => {
+    const first = neighbours({ count: 3, index: 0 });
+    const view = await mountReady();
+    act(() => {
+      view.root.render(createElement(ImagePreview, { name: "pic.png", navigation: first, onError: vi.fn(), path: "/w/pic.png" }));
+    });
+    await flush();
+    expect(button(view.container, "Previous image").disabled).toBe(true);
+    expect(button(view.container, "Next image").disabled).toBe(false);
+
+    const last = neighbours({ count: 3, index: 2 });
+    act(() => {
+      view.root.render(createElement(ImagePreview, { name: "pic.png", navigation: last, onError: vi.fn(), path: "/w/pic.png" }));
+    });
+    await flush();
+    expect(button(view.container, "Previous image").disabled).toBe(false);
+    expect(button(view.container, "Next image").disabled).toBe(true);
+  });
+
+  it("walks the folder with the arrow keys, stopping at the ends", async () => {
+    const nav = neighbours({ count: 3, index: 1 });
+    const view = await mountReady();
+    act(() => {
+      view.root.render(createElement(ImagePreview, { name: "pic.png", navigation: nav, onError: vi.fn(), path: "/w/pic.png" }));
+    });
+    await flush();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowLeft" }));
+    });
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowRight" }));
+    });
+    expect(nav.onPrev).toHaveBeenCalledTimes(1);
+    expect(nav.onNext).toHaveBeenCalledTimes(1);
+
+    // A modified arrow belongs to the app's shortcut layer, not to browsing.
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowRight", metaKey: true }));
+    });
+    expect(nav.onNext).toHaveBeenCalledTimes(1);
+
+    // At the first image there is nothing to the left to step to.
+    const atStart = neighbours({ count: 3, index: 0 });
+    act(() => {
+      view.root.render(createElement(ImagePreview, { name: "pic.png", navigation: atStart, onError: vi.fn(), path: "/w/pic.png" }));
+    });
+    await flush();
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowLeft" }));
+    });
+    expect(atStart.onPrev).not.toHaveBeenCalled();
   });
 });

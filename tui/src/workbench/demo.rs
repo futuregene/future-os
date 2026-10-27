@@ -12,8 +12,8 @@
 use crate::workbench::ansi::style;
 use crate::workbench::i18n::{t, Key};
 use crate::workbench::state::{
-    Activity, ActivityKind, InputView, ModelChoice, SessionMeta, SessionRow, SkillRow, UsageData,
-    WorkbenchData, WorkspaceGroup,
+    Activity, ActivityKind, GitRow, GitSection, GitView, InputView, ModelChoice, SessionMeta,
+    SessionRow, SkillRow, UsageData, WorkbenchData, WorkspaceGroup,
 };
 use crate::workbench::theme::FUTURE_DARK;
 
@@ -80,6 +80,7 @@ fn base() -> WorkbenchData {
                 age: "2m".into(),
                 current: true,
                 parent_id: None,
+                streaming: false,
             },
             SessionRow {
                 id: "s2".into(),
@@ -88,6 +89,7 @@ fn base() -> WorkbenchData {
                 age: "1h".into(),
                 current: false,
                 parent_id: None,
+                streaming: false,
             },
             SessionRow {
                 id: "s3".into(),
@@ -96,6 +98,7 @@ fn base() -> WorkbenchData {
                 age: "3h".into(),
                 current: false,
                 parent_id: None,
+                streaming: false,
             },
             SessionRow {
                 id: "s4".into(),
@@ -104,6 +107,7 @@ fn base() -> WorkbenchData {
                 age: "2d".into(),
                 current: false,
                 parent_id: None,
+                streaming: false,
             },
             SessionRow {
                 id: "s5".into(),
@@ -112,6 +116,7 @@ fn base() -> WorkbenchData {
                 age: "4d".into(),
                 current: false,
                 parent_id: None,
+                streaming: false,
             },
         ],
         workspaces: vec![
@@ -180,6 +185,7 @@ fn base() -> WorkbenchData {
         diff: None,
         fork_points: Vec::new(),
         worktrees: Vec::new(),
+        git: None,
         tree: demo_tree(),
         preview: None,
     }
@@ -191,6 +197,88 @@ fn base() -> WorkbenchData {
 /// It is a smooth two-axis gradient with a diagonal band, which is enough to
 /// show that the half-block renderer keeps its aspect ratio, that the 6×6×6
 /// fallback still reads as a picture, and that a zoom actually enlarges it.
+/// The `/git` panel's content for a frame: a small log with a merge in it, the
+/// refs that log sits on, one edited file and one stash, with the first merge
+/// commit selected. Deterministic like every other demo value — a screenshot of
+/// this panel must not depend on whose checkout is rendered.
+pub fn git() -> GitView {
+    let commits = vec![
+        row(
+            Some("9e4a47d2a"),
+            "* ",
+            &[
+                "fix(mobile): stop folding code blocks",
+                "HEAD -> dev-huichen, origin/dev-huichen",
+                "2026-10-27",
+                "huichen",
+            ],
+        ),
+        row(None, "|\\", &[]),
+        row(
+            Some("4c1b8f0e3"),
+            "| * ",
+            &[
+                "feat(tui): a git panel for the workbench",
+                "feat/tui-git-panel",
+                "2026-10-27",
+                "huichen",
+            ],
+        ),
+        row(None, "|/", &[]),
+        row(
+            Some("ae142f75a"),
+            "* ",
+            &["fix(tui): one row per record", "", "2026-10-26", "huichen"],
+        ),
+        row(
+            Some("7cefc9cea"),
+            "* ",
+            &[
+                "docs: goal control plane notes",
+                "tag: v0.11.0",
+                "2026-10-25",
+                "huichen",
+            ],
+        ),
+        row(
+            Some("56ec934f6"),
+            "* ",
+            &[
+                "chore(deps): bump the rust toolchain",
+                "",
+                "2026-10-24",
+                "huichen",
+            ],
+        ),
+    ];
+    let detail = "commit 9e4a47d2a\nAuthor: huichen <huichen@example.invalid>\nDate:   2026-10-27\n\n    fix(mobile): stop folding code blocks — a long line pans instead\n\n mobile/src/components/markdown.tsx | 24 ++++++++++++++----------\n 1 file changed, 14 insertions(+), 10 deletions(-)\n\ndiff --git a/mobile/src/components/markdown.tsx b/mobile/src/components/markdown.tsx\n@@ -118,9 +118,13 @@ export function CodeBlock({ text }: Props) {\n-  return <Text numberOfLines={0}>{text}</Text>;\n+  // A code block pans; it never folds.\n+  return (\n+    <ScrollView horizontal>\n+      <Text>{text}</Text>\n+    </ScrollView>\n+  );"
+        .lines()
+        .map(str::to_string)
+        .collect();
+    GitView {
+        repo: "future-os".into(),
+        section: GitSection::Commits,
+        rows: commits,
+        selected: 0,
+        detail,
+        filter: None,
+        error: None,
+    }
+}
+
+/// One painted `/git` row: the gutter, then the fields that fit.
+fn row(key: Option<&str>, prefix: &str, pieces: &[&str]) -> GitRow {
+    GitRow {
+        key: key.map(str::to_string),
+        prefix: prefix.to_string(),
+        pieces: pieces
+            .iter()
+            .filter(|piece| !piece.is_empty())
+            .map(|piece| (*piece).to_string())
+            .collect(),
+    }
+}
+
 pub fn preview_image() -> crate::workbench::state::PreviewView {
     use crate::workbench::state::PreviewView;
     let (width, height) = (96usize, 64usize);
@@ -289,41 +377,59 @@ fn demo_tree() -> crate::workbench::files::FileTree {
 /// with two models, a context window of 1M and a small one — enough shapes for
 /// the grouping, the capability column and the `✓` to be reviewed on screen.
 fn demo_models() -> Vec<ModelChoice> {
+    fn declared(levels: &[&str]) -> Option<Vec<String>> {
+        Some(levels.iter().map(|level| level.to_string()).collect())
+    }
     vec![
         ModelChoice {
             id: "deepseek-flash".into(),
             label: "deepseek-flash".into(),
             provider: "westlakehpc".into(),
             context_window: 1_000_000,
-            thinking_level: "medium".into(),
+            thinking_level: "default".into(),
+            thinking_levels: declared(&["default", "off", "low", "medium", "high", "xhigh"]),
+            default_thinking_level: Some("default".into()),
         },
         ModelChoice {
             id: "Qwen".into(),
             label: "Qwen 3.8 27B".into(),
             provider: "westlakehpc".into(),
             context_window: 262_144,
-            thinking_level: "low".into(),
+            thinking_level: "default".into(),
+            thinking_levels: declared(&["default", "off", "low", "medium", "high"]),
+            default_thinking_level: Some("default".into()),
         },
         ModelChoice {
             id: "gpt-6-astra".into(),
             label: "gpt-6-astra".into(),
             provider: "azure".into(),
             context_window: 1_000_000,
-            thinking_level: "high".into(),
+            thinking_level: "default".into(),
+            thinking_levels: declared(&["default", "medium", "high", "max"]),
+            default_thinking_level: Some("default".into()),
         },
+        // Declares only the implicit default: the picker's slider has one stop.
         ModelChoice {
             id: "glm-flash".into(),
             label: "glm-flash".into(),
             provider: "westlakehpc".into(),
             context_window: 200_000,
-            thinking_level: "off".into(),
+            thinking_level: "default".into(),
+            thinking_levels: declared(&["default"]),
+            default_thinking_level: Some("default".into()),
         },
+        // Same shapes as the real `/models` list, including a level the product
+        // has no translation for (`max` is known, but it is still a wire value).
         ModelChoice {
             id: "omlx-local".into(),
             label: "omlx (local)".into(),
             provider: "omlx".into(),
             context_window: 131_072,
-            thinking_level: "xhigh".into(),
+            thinking_level: "default".into(),
+            thinking_levels: declared(&[
+                "default", "off", "minimal", "low", "medium", "high", "xhigh", "max",
+            ]),
+            default_thinking_level: Some("default".into()),
         },
     ]
 }
@@ -403,6 +509,7 @@ pub fn workspaces() -> WorkbenchData {
             age: format!("{}h", index + 1),
             current: index == 0,
             parent_id: None,
+            streaming: false,
         });
         data.workspaces.push(WorkspaceGroup {
             name: (*name).to_string(),

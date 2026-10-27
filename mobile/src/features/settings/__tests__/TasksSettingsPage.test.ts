@@ -13,7 +13,7 @@ import type { RemoteTaskDetail, RemoteTaskRow, RemoteTaskRun } from "../../../re
 let rows: RemoteTaskRow[];
 let detail: RemoteTaskDetail;
 let runs: RemoteTaskRun[];
-let models: { id: string; label?: string; provider?: string }[];
+let models: { id: string; label?: string; provider?: string; thinkingLevels?: string[]; defaultThinkingLevel?: string }[];
 /** The desktop's own settings: the enabled-model list comes from them. */
 let settings: DesktopSettings;
 let mockLanguage = "en";
@@ -76,8 +76,7 @@ function taskDetail(overrides: Partial<RemoteTaskDetail> = {}): RemoteTaskDetail
     promptVersion: 3,
     cwd: "/tmp/repo",
     conversationMode: "workspace",
-    // A task the editor can save unchanged: the model and the thinking level
-    // are the user's explicit choice, so a draft without them cannot be saved.
+    // A task the editor can save unchanged.
     modelId: "future/deepseek-v4-pro",
     thinkingLevel: "high",
     sessionPolicy: "new",
@@ -219,9 +218,22 @@ beforeEach(async () => {
   rows = [taskRow()];
   detail = taskDetail();
   runs = [{ id: "trn_1", kind: "main", origin: "schedule", status: "completed", threadId: "thr_1", startedAt: 1, finishedAt: 2, resultSummary: "all good", errorMessage: null }];
+  // A current host declares each model's levels: always starting with the
+  // implicit "default", possibly carrying a value this build has no label for.
   models = [
-    { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", provider: "future" },
-    { id: "gpt-5", provider: "openai" },
+    {
+      id: "deepseek-v4-pro",
+      label: "DeepSeek V4 Pro",
+      provider: "future",
+      thinkingLevels: ["default", "off", "minimal", "low", "medium", "high", "xhigh"],
+      defaultThinkingLevel: "default",
+    },
+    {
+      id: "gpt-5",
+      provider: "openai",
+      thinkingLevels: ["default", "low", "high", "max"],
+      defaultThinkingLevel: "default",
+    },
   ];
   settings = { autoUpgradeSkills: false, autoTitleFirstTurn: false, autoConnectRemote: false, hiddenModels: [] };
   await act(async () => { tree = create(createElement(TasksSettingsPage, { desktopOnline: true, settings })); });
@@ -635,7 +647,7 @@ test("a new task sends the desktop's zone as an empty value", async () => {
   await act(async () => input("tasks.form.name").props.onChangeText("zoned"));
   await act(async () => input("tasks.form.prompt").props.onChangeText("p"));
   await act(async () => chip("DeepSeek V4 Pro · Future 平台").props.onPress());
-  await act(async () => chip("tasks.thinkingLabels.high").props.onPress());
+  await act(async () => chip("high").props.onPress());
   await act(async () => chip("tasks.triggerMode.daily").props.onPress());
   expect(zoneValue()).toBe("tasks.form.timezoneDesktop");
 
@@ -661,7 +673,7 @@ test("creates a chat task that needs no directory and returns to the list", asyn
   await act(async () => input("tasks.form.name").props.onChangeText("weekly digest"));
   await act(async () => input("tasks.form.prompt").props.onChangeText("summarise the week"));
   await act(async () => chip("DeepSeek V4 Pro · Future 平台").props.onPress());
-  await act(async () => chip("tasks.thinkingLabels.high").props.onPress());
+  await act(async () => chip("high").props.onPress());
   await act(async () => chip("tasks.triggerMode.daily").props.onPress());
   await act(async () => button("tasks.form.save").props.onPress());
 
@@ -701,12 +713,13 @@ test("refuses to save a task that cannot run, and says which field is missing", 
   expect(texts()).toContain("tasks.form.problem.prompt");
 
   await act(async () => input("tasks.form.prompt").props.onChangeText("do the thing"));
-  // The model and the thinking level are the user's explicit decisions: the
-  // form asks for both rather than inheriting an app default.
+  // The model is a spending decision the form asks for. The thinking level is
+  // not: a task with none runs at the model's declared starting level, which
+  // the form shows selected.
   expect(texts()).toContain("tasks.form.problem.model");
+  expect(texts()).not.toContain("tasks.form.problem.thinking");
   await act(async () => chip("gpt-5 · openai").props.onPress());
-  expect(texts()).toContain("tasks.form.problem.thinking");
-  await act(async () => chip("tasks.thinkingLabels.medium").props.onPress());
+  expect(button("tasks.form.save").props.disabled).toBe(true);
 
   // Nothing starts a scheduled task but its trigger, so the form asks for one
   // the way it asks for a model — and says so before naming the date.
@@ -729,7 +742,7 @@ test("asks for a directory only for a workspace conversation, and is refused wit
   await act(async () => input("tasks.form.name").props.onChangeText("named"));
   await act(async () => input("tasks.form.prompt").props.onChangeText("work"));
   await act(async () => chip("DeepSeek V4 Pro · Future 平台").props.onPress());
-  await act(async () => chip("tasks.thinkingLabels.high").props.onPress());
+  await act(async () => chip("high").props.onPress());
   await act(async () => chip("tasks.triggerMode.daily").props.onPress());
   expect(button("tasks.form.save").props.disabled).toBe(false);
 
@@ -767,7 +780,7 @@ test("reports a create that the desktop refused, and keeps the draft", async () 
   await act(async () => input("tasks.form.name").props.onChangeText("doomed"));
   await act(async () => input("tasks.form.prompt").props.onChangeText("work"));
   await act(async () => chip("DeepSeek V4 Pro · Future 平台").props.onPress());
-  await act(async () => chip("tasks.thinkingLabels.high").props.onPress());
+  await act(async () => chip("high").props.onPress());
   await act(async () => chip("tasks.triggerMode.daily").props.onPress());
   mockRemote.createTask.mockRejectedValueOnce(new Error("desktop refused"));
   await act(async () => button("tasks.form.save").props.onPress());
@@ -791,7 +804,7 @@ test("edits the name, the model and the thinking level", async () => {
   expect(chip("DeepSeek V4 Pro · Future 平台")).toBeTruthy();
   expect(chip("gpt-5 · openai")).toBeTruthy();
   await act(async () => chip("gpt-5 · openai").props.onPress());
-  await act(async () => chip("tasks.thinkingLabels.low").props.onPress());
+  await act(async () => chip("low").props.onPress());
   await act(async () => button("tasks.form.save").props.onPress());
 
   expect(mockRemote.updateTask).toHaveBeenCalledWith("tsk_1", expect.objectContaining({
@@ -836,9 +849,39 @@ test("a task without a model cannot be saved until one is chosen", async () => {
   expect(button("tasks.form.save").props.disabled).toBe(true);
 
   await act(async () => chip("DeepSeek V4 Pro · Future 平台").props.onPress());
-  expect(texts()).toContain("tasks.form.problem.thinking");
-  await act(async () => chip("tasks.thinkingLabels.high").props.onPress());
+  // No thinking choice is forced: the model's declared starting level answers
+  // for an unchosen one.
+  expect(texts()).not.toContain("tasks.form.problem.thinking");
   expect(button("tasks.form.save").props.disabled).toBe(false);
+});
+
+test("saves an unchosen level as the model's declared default", async () => {
+  // The task stores no level; the form shows the model's starting level and
+  // saves it explicitly rather than leaving the run to guess.
+  detail = taskDetail({ thinkingLevel: null });
+  await remount();
+  await openTask();
+  expect(chip("default").props.accessibilityState.selected).toBe(true);
+  await act(async () => button("tasks.form.save").props.onPress());
+  expect(mockRemote.updateTask).toHaveBeenCalledWith("tsk_1", expect.objectContaining({
+    thinkingLevel: "default",
+  }));
+});
+
+test("an older host's task keeps the legacy vocabulary and medium default", async () => {
+  // No `thinkingLevels` on the catalogue row = a host that predates the field.
+  models = [{ id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", provider: "future" }];
+  detail = taskDetail({ thinkingLevel: null });
+  await remount();
+  await openTask();
+  // The legacy six are offered, and the form saves the legacy starting level —
+  // never the literal "default" a host that old does not understand.
+  expect(chip("medium").props.accessibilityState.selected).toBe(true);
+  expect(chip("default")).toBeUndefined();
+  await act(async () => button("tasks.form.save").props.onPress());
+  expect(mockRemote.updateTask).toHaveBeenCalledWith("tsk_1", expect.objectContaining({
+    thinkingLevel: "medium",
+  }));
 });
 
 test("switches the conversation policy and the conversation type", async () => {
@@ -863,7 +906,7 @@ test("creates a task that starts disabled", async () => {
   await act(async () => input("tasks.form.name").props.onChangeText("later"));
   await act(async () => input("tasks.form.prompt").props.onChangeText("work"));
   await act(async () => chip("DeepSeek V4 Pro · Future 平台").props.onPress());
-  await act(async () => chip("tasks.thinkingLabels.high").props.onPress());
+  await act(async () => chip("high").props.onPress());
   await act(async () => chip("tasks.triggerMode.daily").props.onPress());
   await act(async () => chip("tasks.form.disabled").props.onPress());
   await act(async () => button("tasks.form.save").props.onPress());
@@ -1106,7 +1149,7 @@ test("writes what is typed and forgets it once the task is saved", async () => {
   });
 
   await act(async () => chip("DeepSeek V4 Pro · Future 平台").props.onPress());
-  await act(async () => chip("tasks.thinkingLabels.high").props.onPress());
+  await act(async () => chip("high").props.onPress());
   await act(async () => chip("tasks.triggerMode.daily").props.onPress());
   await act(async () => button("tasks.form.save").props.onPress());
   expect(await loadTaskDraft(createDraftKey())).toBeNull();

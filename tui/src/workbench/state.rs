@@ -10,6 +10,7 @@
 use crate::workbench::files::FileTree;
 use crate::workbench::i18n::{t, Key, Language};
 use crate::workbench::image_view::ImagePixels;
+use crate::workbench::syntax;
 
 /// Who the session is: the four facts the header and the launchpad print.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -60,6 +61,15 @@ pub struct SessionRow {
     pub age: String,
     /// The session the workbench is attached to.
     pub current: bool,
+    /// The agent reports a run in flight in this conversation — the row draws
+    /// the spinner, and `最近` files it under 活跃.
+    ///
+    /// The desktop's rail shows the same fact from its own run ledger; the TUI
+    /// has only what `list_sessions` reports, which is a live per-session flag
+    /// on the agent (`is_streaming`), so a run another client started shows up
+    /// here too — as long as the list is re-read while it runs (see
+    /// `run::SESSIONS_POLL`).
+    pub streaming: bool,
 }
 
 /// One workspace in the 工作区 tab: a directory several conversations are filed
@@ -93,23 +103,159 @@ pub struct ModelChoice {
     pub provider: String,
     /// Context window in tokens (0 when the agent reported none).
     pub context_window: u64,
-    /// The level the agent would run this model at by default.
+    /// The level the agent starts a conversation with on this model
+    /// (`thinkingLevel`; `"default"` on a current agent, the legacy
+    /// `"high"`/`"off"` on an older one).
     pub thinking_level: String,
+    /// The levels this model accepts, exactly as the agent declared them: the
+    /// implicit [`DEFAULT_THINKING_LEVEL_NAME`] first, then wire values sent
+    /// verbatim. `None` is an agent that predates the field entirely (an older
+    /// agent, whose models fall back to the legacy six levels); `Some([])` never
+    /// happens on a current agent, which always sends at least `["default"]`.
+    pub thinking_levels: Option<Vec<String>>,
+    /// The level the agent starts a conversation at on this model, already
+    /// clamped to [`Self::thinking_levels`]. `None` on an older agent.
+    pub default_thinking_level: Option<String>,
 }
 
-/// The reasoning levels a model can run at, weakest first.
-///
-/// One list for the whole crate: `index.rs` parses `--model sonnet:high`
-/// against the same six names, and the `/model` picker's slider walks them.
-pub const THINKING_LEVELS: [&str; 6] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+impl ModelChoice {
+    /// The levels the picker offers for this model, in display order.
+    ///
+    /// A current agent's declaration is taken as-is (it is already
+    /// default-first). An older agent never sent one, so the legacy six levels
+    /// are offered with the implicit `default` in front — the shape every
+    /// current model has. The empty list a current agent cannot send is
+    /// normalized to the implicit `default` alone.
+    pub fn effective_thinking_levels(&self) -> Vec<String> {
+        effective_thinking_levels(self.thinking_levels.as_deref())
+    }
 
-/// The position of `level` in [`THINKING_LEVELS`]; an unknown level is `off`, so
-/// a slider always has a defined place to stand.
-pub fn thinking_index(level: &str) -> usize {
-    THINKING_LEVELS
+    /// True for a model listed by an agent that predates `thinkingLevels`: the
+    /// level vocabulary is the legacy six, and `default` must not travel on the
+    /// wire (see [`legacy_wire_thinking_level`]).
+    pub fn is_legacy_thinking(&self) -> bool {
+        self.thinking_levels.is_none()
+    }
+
+    /// The level to actually send for this model. An older agent does not know
+    /// the reserved `default`, so it is mapped to the legacy fallback
+    /// (`medium`); a current agent receives the level verbatim.
+    pub fn wire_thinking_level(&self, level: &str) -> String {
+        if self.is_legacy_thinking() {
+            legacy_wire_thinking_level(level).to_string()
+        } else {
+            level.to_string()
+        }
+    }
+}
+
+/// The stable reference for a model: `provider/id` where there is a provider.
+///
+/// A catalog id is provider-local even when it happens to contain a slash, so
+/// the provider is prefixed rather than inferred from the id. This is the
+/// spelling the desktop and phone clients send, and the one the picker applies:
+/// a bare id is ambiguous the moment two providers offer it — the agent
+/// resolves it against its own order (user-defined `models.json` entries before
+/// the built-in catalogue), so `deepseek-flash` picked from `future` silently
+/// became `westlakehpc/deepseek-flash`.
+pub fn model_reference(provider: &str, id: &str) -> String {
+    if provider.is_empty() {
+        id.to_string()
+    } else {
+        format!("{provider}/{id}")
+    }
+}
+
+/// The reserved level meaning "send no thinking/effort parameter at all".
+///
+/// It is implicit on a current agent: every model's declared list starts with
+/// it, it is never stored in `models.json`, and it is the fallback for a level
+/// the model does not offer.
+pub const DEFAULT_THINKING_LEVEL_NAME: &str = "default";
+
+/// Level names the product has translations for. Not a wire vocabulary: a model
+/// may declare any other string (`max` included) and it is sent verbatim. These
+/// six are the legacy fallback an older agent's models run on.
+pub const KNOWN_THINKING_LEVELS: [&str; 6] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+
+/// Level names the CLI accepts besides the legacy six: the reserved `default`
+/// (`--thinking default` asks for the provider default) and the wire value
+/// `max` (a model may declare it; the agent clamps anything it does not offer).
+pub const EXTRA_THINKING_LEVELS: [&str; 2] = [DEFAULT_THINKING_LEVEL_NAME, "max"];
+
+/// Whether `level` is a spelling `--thinking` / `--model id:level` accepts: the
+/// legacy six, the reserved `default`, or `max`. A model may declare any other
+/// string and the TUI sends it verbatim from a picker — this only governs what
+/// a user can type on the command line.
+pub fn is_valid_thinking_level(level: &str) -> bool {
+    EXTRA_THINKING_LEVELS.contains(&level) || KNOWN_THINKING_LEVELS.contains(&level)
+}
+
+/// The level vocabulary for a model that declared none (an agent that predates
+/// `thinkingLevels`): the implicit `default` followed by the legacy six.
+pub fn fallback_thinking_levels() -> Vec<String> {
+    std::iter::once(DEFAULT_THINKING_LEVEL_NAME.to_string())
+        .chain(KNOWN_THINKING_LEVELS.iter().map(|level| level.to_string()))
+        .collect()
+}
+
+/// The levels a model offers, from what the agent declared.
+///
+/// `None` — the field is absent, i.e. an older agent — falls back to
+/// [`fallback_thinking_levels`]. `Some([])` is normalized to the implicit
+/// `default` alone: a current agent always declares at least that, and a
+/// picker with an empty ring would have nowhere to stand.
+pub fn effective_thinking_levels(declared: Option<&[String]>) -> Vec<String> {
+    match declared {
+        None => fallback_thinking_levels(),
+        Some([]) => vec![DEFAULT_THINKING_LEVEL_NAME.to_string()],
+        Some(levels) => levels.to_vec(),
+    }
+}
+
+/// The position of `level` in `levels`, matched case-insensitively; an unknown
+/// level starts at the top of the ring (`default`), so a slider always has a
+/// defined place to stand.
+pub fn thinking_index_in(levels: &[String], level: &str) -> usize {
+    levels
         .iter()
-        .position(|known| known.eq_ignore_ascii_case(level))
+        .position(|known| known.eq_ignore_ascii_case(level.trim()))
         .unwrap_or(0)
+}
+
+/// The next level in a model's ring.
+///
+/// A level inside the ring advances to the one after it, wrapping; an unknown
+/// current level (nothing staged yet) starts the ring at its first entry, which
+/// is always `default`. `None` when the ring has no entries.
+pub fn next_thinking_level(levels: &[String], current: &str) -> Option<String> {
+    let current = current.trim();
+    if current.is_empty() {
+        return levels.first().cloned();
+    }
+    match levels
+        .iter()
+        .position(|level| level.eq_ignore_ascii_case(current))
+    {
+        Some(index) => Some(levels[(index + 1) % levels.len()].clone()),
+        None => levels.first().cloned(),
+    }
+}
+
+/// The wire value for `level` on a model from an older agent.
+///
+/// An older agent does not offer the reserved `default` and rejects (or
+/// misreads) it, so the contract's legacy fallback is sent instead: `medium`.
+pub fn legacy_wire_thinking_level(level: &str) -> &str {
+    if level
+        .trim()
+        .eq_ignore_ascii_case(DEFAULT_THINKING_LEVEL_NAME)
+    {
+        // `medium` is the legacy six's fallback (the contract's "default medium").
+        "medium"
+    } else {
+        level
+    }
 }
 
 /// One skill the `/` palette offers.
@@ -237,7 +383,14 @@ impl Activity {
     }
 }
 
-/// The sidebar's three panels, in tab order.
+/// The panels a surface can paint.
+///
+/// Two of them are the rail's tabs ([`Self::TABS`]), and both list
+/// *conversations*: everything the rail shows is true for the whole agent.
+/// [`Self::Files`] is not a tab any more — a workspace tree belongs to the
+/// conversation on screen, so it is its own session-scoped overlay
+/// (`Overlay::Files`). It keeps a `PanelId` because the tree's painter is keyed
+/// by one and the overlay paints the same rows at another area.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PanelId {
     /// Every conversation by when it was refreshed — the default landing panel.
@@ -250,6 +403,16 @@ pub enum PanelId {
 }
 
 impl PanelId {
+    /// The panels the rail's tab strip offers, in tab order.
+    ///
+    /// Every key that walks tabs (`←`/`→` on the rail, `shift+←/→` anywhere,
+    /// [`Action::PanelPrev`](super::preferences::Action::PanelPrev)) walks this
+    /// list, so 文件 cannot be reached by stepping past 工作区 — the panel has its
+    /// own door (`/files`, its own shortcut, the header's button).
+    pub const TABS: [PanelId; 2] = [PanelId::Recent, PanelId::Workspaces];
+
+    /// Every panel id, tabs first. The scroll slots are indexed by this, so the
+    /// file tree's offset has a home even though no tab shows it.
     pub const ALL: [PanelId; 3] = [PanelId::Recent, PanelId::Workspaces, PanelId::Files];
 
     /// The tab label.
@@ -259,7 +422,7 @@ impl PanelId {
             match self {
                 Self::Recent => Key::TabRecent,
                 Self::Workspaces => Key::TabWorkspaces,
-                Self::Files => Key::TabFiles,
+                Self::Files => Key::FilesTitle,
             },
         )
     }
@@ -295,13 +458,23 @@ impl PanelId {
             .unwrap_or(0)
     }
 
+    /// The neighbouring tab, wrapping. Stepping from [`Self::Files`] (which no
+    /// tab strip holds) lands on the first tab rather than nowhere.
     pub fn next(self) -> Self {
-        Self::ALL[(self.index() + 1) % Self::ALL.len()]
+        Self::TABS[(self.tab_index() + 1) % Self::TABS.len()]
     }
 
     pub fn previous(self) -> Self {
-        let count = Self::ALL.len();
-        Self::ALL[(self.index() + count - 1) % count]
+        let count = Self::TABS.len();
+        Self::TABS[(self.tab_index() + count - 1) % count]
+    }
+
+    /// This panel's place in [`Self::TABS`]; `0` for a panel that is not one.
+    fn tab_index(self) -> usize {
+        Self::TABS
+            .iter()
+            .position(|panel| *panel == self)
+            .unwrap_or(0)
     }
 }
 
@@ -359,6 +532,8 @@ pub struct WorkbenchData {
     pub fork_points: Vec<ForkPoint>,
     /// Read-only git worktree list.
     pub worktrees: Vec<WorktreeView>,
+    /// The `/git` panel: log, refs, working tree and stashes.
+    pub git: Option<GitView>,
     /// Files a `@` mention can name, relative to the session's working
     /// directory. Filled by the adapter once per directory; empty disables the
     /// menu's file half rather than suggesting nothing.
@@ -390,7 +565,14 @@ pub enum PreviewView {
     },
     Text {
         path: String,
-        lines: Vec<String>,
+        /// The file's lines, already split and — for a language this build
+        /// knows — classified into coloured runs (`syntax::highlight`), so the
+        /// box paints a line without scanning it again on every frame.
+        ///
+        /// Shared rather than owned: the adapter rebuilds this data once per
+        /// event and once per frame, and a 500 KB preview is not something to
+        /// copy that often.
+        lines: std::sync::Arc<[syntax::Line]>,
         /// The file was longer than the preview cap.
         truncated: bool,
     },
@@ -462,6 +644,142 @@ pub struct WorktreeView {
     pub current: bool,
 }
 
+/// Which tab of the `/git` panel is showing.
+///
+/// The order is the order the tabs are painted in and the order the number keys
+/// select, so the two cannot drift apart.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum GitSection {
+    /// `git log --graph`: commits, newest first.
+    #[default]
+    Commits,
+    /// Branches, remote-tracking branches and tags.
+    Refs,
+    /// The working tree: tracked edits and untracked files.
+    Status,
+    /// `git stash list`.
+    Stash,
+}
+
+impl GitSection {
+    /// Every section, in tab order.
+    pub const ALL: [GitSection; 4] = [Self::Commits, Self::Refs, Self::Status, Self::Stash];
+}
+
+/// One painted line of the `/git` list.
+///
+/// `key` is what the row *is* (`abc1234`, `refs/heads/main`, `src/a.rs`,
+/// `stash@{0}`) and what the detail pane loads; a row without one is the log's
+/// graph continuing through a column that has no commit on it — painted, but
+/// never selected, the same way the graph is drawn in a terminal git client.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GitRow {
+    pub key: Option<String>,
+    /// The gutter before the fields: the graph (`* `, `| * `), a badge (`● `),
+    /// a porcelain status (`M `), a stash number (`#0 `).
+    pub prefix: String,
+    /// The row's fields, most important first — a narrow box drops the tail
+    /// whole rather than cutting a field in half.
+    pub pieces: Vec<String>,
+}
+
+/// The `/git` panel's content: one section's rows plus the selected row's
+/// detail.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GitView {
+    /// The repository's name, for the box title.
+    pub repo: String,
+    pub section: GitSection,
+    pub rows: Vec<GitRow>,
+    /// Which row's detail is loaded. A beat behind the cursor while a reload is
+    /// in flight, which is why the surface keeps its own cursor.
+    pub selected: usize,
+    pub detail: Vec<String>,
+    /// The revision the log is filtered to (`feature`, a tag, a sha).
+    pub filter: Option<String>,
+    /// The read failed; painted in place of the list.
+    pub error: Option<String>,
+}
+
+impl GitView {
+    /// Can the row at `index` be selected?
+    pub fn selectable(&self, index: usize) -> bool {
+        self.rows.get(index).is_some_and(|row| row.key.is_some())
+    }
+
+    /// The first selectable row at or after `from`, or the last one before it
+    /// when stepping backwards. `0` when there is nothing selectable.
+    pub fn nearest(&self, from: usize, forward: bool) -> usize {
+        if self.rows.is_empty() {
+            return 0;
+        }
+        let from = from.min(self.rows.len() - 1);
+        if forward {
+            (from..self.rows.len())
+                .find(|index| self.selectable(*index))
+                .or_else(|| self.last())
+                .unwrap_or(0)
+        } else {
+            (0..=from)
+                .rev()
+                .find(|index| self.selectable(*index))
+                .or_else(|| self.first())
+                .unwrap_or(0)
+        }
+    }
+
+    /// One selectable row past `from` in `direction` (+1 / -1), stopping at the
+    /// last selectable row: a row that is only a drawing is stepped over, and
+    /// running off the end leaves the cursor where it was.
+    pub fn step(&self, from: usize, direction: isize) -> usize {
+        if self.rows.is_empty() {
+            return 0;
+        }
+        let from = from.min(self.rows.len() - 1);
+        // Starting on a drawing (a section switch can land there): find the
+        // nearest real row first, or the walk below would report it back.
+        let index = if self.selectable(from) {
+            from
+        } else {
+            self.nearest(from, direction > 0)
+        };
+        let mut probe = index;
+        loop {
+            let next = probe as isize + direction;
+            if next < 0 || next as usize >= self.rows.len() {
+                return index;
+            }
+            probe = next as usize;
+            if self.selectable(probe) {
+                return probe;
+            }
+        }
+    }
+
+    pub fn first(&self) -> Option<usize> {
+        (0..self.rows.len()).find(|index| self.selectable(*index))
+    }
+
+    pub fn last(&self) -> Option<usize> {
+        (0..self.rows.len())
+            .rev()
+            .find(|index| self.selectable(*index))
+    }
+
+    /// The row a page key lands on: `page` selectable rows past `from`.
+    pub fn page(&self, from: usize, page: usize, forward: bool) -> usize {
+        let mut index = from;
+        for _ in 0..page.max(1) {
+            let next = self.step(index, if forward { 1 } else { -1 });
+            if next == index {
+                break;
+            }
+            index = next;
+        }
+        index
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QueuedPrompt {
     pub run_id: String,
@@ -478,6 +796,46 @@ impl WorkbenchData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `/git` cursor only ever lands on rows that name something: the log's
+    /// graph continuations are painted, never selected, and the ends clamp.
+    #[test]
+    fn the_git_cursor_skips_rows_that_are_only_drawing() {
+        let row = |key: Option<&str>| GitRow {
+            key: key.map(str::to_string),
+            prefix: String::new(),
+            pieces: Vec::new(),
+        };
+        let view = GitView {
+            rows: vec![
+                row(Some("a")),
+                row(None),
+                row(None),
+                row(Some("b")),
+                row(Some("c")),
+                row(None),
+            ],
+            ..GitView::default()
+        };
+        assert_eq!(view.step(0, 1), 3, "two graph rows in a row are skipped");
+        assert_eq!(view.step(3, -1), 0);
+        assert_eq!(view.step(4, 1), 4, "the last selectable row clamps");
+        assert_eq!(view.step(0, -1), 0);
+        assert_eq!(view.first(), Some(0));
+        assert_eq!(view.last(), Some(4));
+        assert_eq!(view.page(0, 2, true), 4);
+        assert_eq!(view.page(4, 2, false), 0, "two selectable rows back");
+        // A row asked for by index lands on the next thing that can be
+        // entered, whichever side it is on.
+        assert_eq!(view.nearest(1, true), 3);
+        assert_eq!(view.nearest(5, true), 4);
+
+        // An empty section has no cursor to place.
+        let empty = GitView::default();
+        assert_eq!(empty.step(0, 1), 0);
+        assert_eq!(empty.first(), None);
+        assert!(!empty.selectable(0));
+    }
 
     fn input(text: &str, cursor: usize) -> InputView {
         InputView {
@@ -535,10 +893,13 @@ mod tests {
     #[test]
     fn panels_cycle_in_the_contracts_order() {
         assert_eq!(PanelId::ALL.len(), 3);
+        // Only the two conversation lists are tabs: 文件 is its own overlay, so
+        // no tab key steps onto it.
+        assert_eq!(PanelId::TABS, [PanelId::Recent, PanelId::Workspaces]);
         assert_eq!(PanelId::Recent.next(), PanelId::Workspaces);
-        assert_eq!(PanelId::Workspaces.next(), PanelId::Files);
-        assert_eq!(PanelId::Files.next(), PanelId::Recent);
-        assert_eq!(PanelId::Recent.previous(), PanelId::Files);
+        assert_eq!(PanelId::Workspaces.next(), PanelId::Recent);
+        assert_eq!(PanelId::Recent.previous(), PanelId::Workspaces);
+        assert_eq!(PanelId::Files.next(), PanelId::Workspaces);
         for panel in PanelId::ALL {
             assert_eq!(PanelId::parse(panel.id()), Some(panel));
             assert_eq!(PanelId::parse(&panel.id().to_uppercase()), Some(panel));
@@ -560,17 +921,103 @@ mod tests {
     }
 
     #[test]
-    fn the_reasoning_slider_walks_the_crates_own_levels() {
-        assert_eq!(THINKING_LEVELS.len(), 6);
-        assert_eq!(THINKING_LEVELS[0], "off");
-        assert_eq!(THINKING_LEVELS[5], "xhigh");
-        for (index, level) in THINKING_LEVELS.iter().enumerate() {
-            assert_eq!(thinking_index(level), index);
-            assert_eq!(thinking_index(&level.to_uppercase()), index);
+    fn the_thinking_levels_fallback_is_default_plus_the_legacy_six() {
+        assert_eq!(KNOWN_THINKING_LEVELS.len(), 6);
+        assert_eq!(KNOWN_THINKING_LEVELS[0], "off");
+        assert_eq!(KNOWN_THINKING_LEVELS[5], "xhigh");
+        let fallback = fallback_thinking_levels();
+        assert_eq!(fallback.len(), 7);
+        assert_eq!(fallback[0], DEFAULT_THINKING_LEVEL_NAME);
+        assert_eq!(
+            fallback[1..].iter().map(String::as_str).collect::<Vec<_>>(),
+            KNOWN_THINKING_LEVELS.to_vec()
+        );
+        // An absent declaration (an older agent) is the fallback…
+        assert_eq!(effective_thinking_levels(None), fallback);
+        // …a declared list is taken as-is…
+        let declared = vec![
+            DEFAULT_THINKING_LEVEL_NAME.to_string(),
+            "off".to_string(),
+            "max".to_string(),
+        ];
+        assert_eq!(effective_thinking_levels(Some(&declared)), declared);
+        // …and the empty list only a buggy agent could send becomes the
+        // implicit default alone, never an empty ring.
+        assert_eq!(
+            effective_thinking_levels(Some(&[])),
+            vec![DEFAULT_THINKING_LEVEL_NAME.to_string()]
+        );
+        for (index, level) in fallback.iter().enumerate() {
+            assert_eq!(thinking_index_in(&fallback, level), index);
+            assert_eq!(thinking_index_in(&fallback, &level.to_uppercase()), index);
         }
-        // A level an older agent invented has a defined place to stand.
-        assert_eq!(thinking_index(""), 0);
-        assert_eq!(thinking_index("galaxy-brain"), 0);
+        // A level an older agent invented starts at the top of the ring.
+        assert_eq!(thinking_index_in(&fallback, ""), 0);
+        assert_eq!(thinking_index_in(&fallback, "galaxy-brain"), 0);
+    }
+
+    #[test]
+    fn the_cli_accepts_default_and_max_on_top_of_the_legacy_six() {
+        for level in KNOWN_THINKING_LEVELS
+            .iter()
+            .copied()
+            .chain(["default", "max"])
+        {
+            assert!(is_valid_thinking_level(level), "{level}");
+        }
+        // Not a level name, so a model id containing a colon stays whole.
+        assert!(!is_valid_thinking_level("beta"));
+        assert!(!is_valid_thinking_level(""));
+        assert!(!is_valid_thinking_level("Default"), "the wire is lowercase");
+    }
+
+    #[test]
+    fn the_ring_walks_forward_and_wraps() {
+        let levels = fallback_thinking_levels();
+        assert_eq!(
+            next_thinking_level(&levels, DEFAULT_THINKING_LEVEL_NAME).as_deref(),
+            Some("off")
+        );
+        assert_eq!(
+            next_thinking_level(&levels, "medium").as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            next_thinking_level(&levels, "xhigh").as_deref(),
+            Some(DEFAULT_THINKING_LEVEL_NAME),
+            "the ring wraps"
+        );
+        // An unset or unknown level starts the ring at its first entry, which is
+        // `default`: that is the level a launchpad begins at.
+        assert_eq!(
+            next_thinking_level(&levels, "").as_deref(),
+            Some(DEFAULT_THINKING_LEVEL_NAME)
+        );
+        assert_eq!(
+            next_thinking_level(&levels, "galaxy-brain").as_deref(),
+            Some(DEFAULT_THINKING_LEVEL_NAME)
+        );
+        assert_eq!(next_thinking_level(&[], "medium"), None);
+    }
+
+    #[test]
+    fn the_reserved_default_never_travels_to_an_older_agent() {
+        let current = ModelChoice {
+            thinking_levels: Some(vec![
+                DEFAULT_THINKING_LEVEL_NAME.to_string(),
+                "high".to_string(),
+            ]),
+            ..ModelChoice::default()
+        };
+        assert_eq!(current.wire_thinking_level("default"), "default");
+        assert_eq!(current.wire_thinking_level("high"), "high");
+        assert!(!current.is_legacy_thinking());
+
+        let legacy = ModelChoice::default();
+        assert!(legacy.is_legacy_thinking());
+        assert_eq!(legacy.wire_thinking_level("default"), "medium");
+        assert_eq!(legacy.wire_thinking_level("high"), "high");
+        assert_eq!(legacy.wire_thinking_level("max"), "max");
     }
 
     #[test]

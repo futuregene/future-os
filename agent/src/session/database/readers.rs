@@ -41,6 +41,10 @@ impl Readers {
                         db.busy_timeout(Duration::from_millis(250))?;
                         db.pragma_update(None, "query_only", true)?;
                         db.pragma_update(None, "foreign_keys", true)?;
+                        // Prepare the schema before advertising readiness. The
+                        // first visible read must not pay lazy schema parsing
+                        // separately on each worker. LIMIT 0 reads no history.
+                        drop(db.prepare("SELECT id FROM sessions LIMIT 0")?);
                         Ok(db)
                     })();
                     let mut db = match connection {

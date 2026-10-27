@@ -623,7 +623,7 @@ impl ApprovalGate {
                 ))
             };
         }
-        let request_id = format!("approval_{}", crate::utils::generate_entry_id());
+        let request_id = crate::utils::generate_entry_id();
         let (tx, rx) = mpsc::channel::<ApprovalDecision>();
         let payload = serde_json::json!({
             "type": "approval_request",

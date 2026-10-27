@@ -42,6 +42,8 @@ fn locate(
     store.db.read(move |db| {
         let tx=db.transaction()?;
         let scope=Snapshot::capture_from(&tx,&session)?;
+        let run=crate::session::identity::BoundIdentity::run(&tx,&session,&run)?;
+        let session=crate::session::identity::BoundIdentity::session(&tx,&session)?;
         let entry=tx.query_row("SELECT e.position,e.entry_id,b.ordinal,b.tool_name,b.is_error,e.timestamp_ms FROM entries e JOIN message_blocks b ON b.session_id=e.session_id AND b.entry_position=e.position WHERE e.session_id=?1 AND e.run_id=?2 AND b.tool_call_id=?3 AND b.kind=?4 ORDER BY e.position DESC,b.ordinal DESC LIMIT 1",
             params![session,run,call,kind],|row|Ok(Located {entry:Entry {position:row.get(0)?,id:row.get(1)?},ordinal:row.get(2)?,name:row.get(3)?,error:row.get(4)?,time:row.get(5)?})).optional()?;
         tx.commit()?;Ok((scope,entry))
@@ -113,6 +115,8 @@ pub(super) fn page(
     let (scope,mut rows)=store.db.read(move |db| {
         let tx=db.transaction()?;
         let scope=Snapshot::capture_from(&tx,&session)?;
+        let run=crate::session::identity::BoundIdentity::run(&tx,&session,&run)?;
+        let session=crate::session::identity::BoundIdentity::session(&tx,&session)?;
         let state:Option<String>=tx.query_row("SELECT status FROM runs WHERE session_id=?1 AND run_id=?2",params![session,run],|row|row.get(0)).optional()?;
         let unsettled=match state.as_deref() {Some("running")=>"running",Some("cancelled")=>"cancelled",Some("error"|"failed")=>"failed",Some("completed"|"interrupted_by_restart"|"incomplete"|"interrupted")=>"interrupted",_=>"unknown"};
         let mut query=tx.prepare("SELECT e.position,e.entry_id,b.ordinal,b.tool_call_id,b.tool_name,e.timestamp_ms,

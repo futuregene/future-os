@@ -2749,6 +2749,19 @@ pub(crate) mod tests {
         (mock, seen)
     }
 
+    /// A mock whose answer table the caller keeps, so one command can answer
+    /// differently later in the same test — `get_state` before and after a
+    /// session switch, say. The table starts empty (`api_mock_answering` fills
+    /// one it keeps to itself).
+    pub(crate) fn api_mock_with_table(
+        table: Arc<std::sync::Mutex<StdHashMap<String, String>>>,
+    ) -> ApiMock {
+        ApiMock {
+            data_by_type: table,
+            ..Default::default()
+        }
+    }
+
     pub(crate) async fn spawn_api_mock(mock: ApiMock) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

@@ -491,23 +491,57 @@ fn fold_response_event(
 /// Returns true when an `agent_end` event's data marks the reply as incomplete —
 /// i.e. the LLM stream was truncated before a genuine finish. Such a reply is a
 /// prefix and must not be persisted as a clean completion.
+///
+/// `cancelled` and `interrupted_by_restart` belong here, and used to be missing:
+/// the Agent labels a run it had cut off exactly that way, and the two states
+/// fell through to "clean", so a run a restarted Agent had killed was recorded
+/// as `completed` with an empty answer and no trace of why (2026-10-27: an
+/// hourly sweep lost its whole turn to an Agent restart and the ledger said
+/// `completed`). A terminal that carries an `error` is not a success either,
+/// whatever `state` it names.
 pub(super) fn agent_end_incomplete(data: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(data)
-        .ok()
-        .map(|value| {
-            value.get("reason").and_then(|reason| reason.as_str()) == Some("incomplete")
-                || matches!(
-                    value.get("state").and_then(|state| state.as_str()),
-                    Some("incomplete" | "interrupted" | "error" | "failed")
-                )
-        })
-        .unwrap_or(true)
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else {
+        // Unparseable terminal data cannot vouch for a finished answer.
+        return true;
+    };
+    if value
+        .get("error")
+        .and_then(|error| error.as_str())
+        .is_some_and(|error| !error.trim().is_empty())
+    {
+        return true;
+    }
+    if value.get("reason").and_then(|reason| reason.as_str()) == Some("incomplete") {
+        return true;
+    }
+    match value.get("state").and_then(|state| state.as_str()) {
+        // The states that mean the Agent finished on its own. `complete` is the
+        // same answer under the spelling older producers used. An `agent_end`
+        // with no `state` at all is the older shape every other client still
+        // produces, and is read as a clean end: absence is not evidence of a
+        // cut-off run, only a named non-finish state is.
+        Some("completed" | "complete") | None => false,
+        // `incomplete` | `interrupted` | `interrupted_by_restart` | `cancelled`
+        // | `error` | `failed`, and any state a later Agent adds. An unknown
+        // state is read as *not* finished on purpose: a new non-finish state
+        // then fails loudly (one word to add here) instead of quietly passing
+        // as a completed run, which is the bug this list exists to prevent.
+        Some(_) => true,
+    }
 }
 
 fn agent_end_termination_kind(data: &str) -> Option<String> {
     let value = serde_json::from_str::<serde_json::Value>(data).ok()?;
     if !agent_end_incomplete(data) {
         return None;
+    }
+    let state = value.get("state").and_then(|state| state.as_str());
+    // The run's own ending outranks how the model stream was cut: a cancelled
+    // or restarted run must not be reported as a provider problem.
+    match state {
+        Some("cancelled") => return Some("run_cancelled".to_string()),
+        Some("interrupted_by_restart") => return Some("interrupted_by_restart".to_string()),
+        _ => {}
     }
     let detected_by = value
         .get("truncation")
@@ -522,13 +556,21 @@ fn agent_end_termination_kind(data: &str) -> Option<String> {
         "finish_error" | "model_response_error" => "model_response_error",
         "model_paused" => "model_paused",
         "provider_cancelled" => "provider_cancelled",
-        _ => "response_unconfirmed",
+        _ => match state {
+            Some("error" | "failed") => "agent_failed",
+            _ => "response_unconfirmed",
+        },
     };
     Some(kind.to_string())
 }
 
 pub(super) fn termination_error(kind: Option<&str>) -> &'static str {
     match kind {
+        Some("run_cancelled") => "[RUN_CANCELLED] run was cancelled before it answered",
+        Some("interrupted_by_restart") => {
+            "[INTERRUPTED_BY_RESTART] the Agent restarted before this run answered"
+        }
+        Some("agent_failed") => "[AGENT_FAILED] the Agent failed to finish the response",
         Some("upstream_disconnected") => "[UPSTREAM_DISCONNECTED] response interrupted",
         Some("response_timeout") => "[RESPONSE_TIMEOUT] response timed out",
         Some("output_limit") => "[OUTPUT_LIMIT] model output limit reached",
@@ -1347,5 +1389,92 @@ mod tests {
                 "{fallback:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod terminal_state_tests {
+    use super::{
+        agent_end_incomplete, agent_end_termination_kind, fold_response_event, FoldOutcome,
+    };
+
+    /// The Agent names a run it cut off on the terminal event. Those states used
+    /// to fall through to "clean", so a run killed by an Agent restart was
+    /// recorded as `completed` with an empty answer — the whole of 2026-10-27's
+    /// investigation. Falsify this test by deleting `cancelled` /
+    /// `interrupted_by_restart` from the non-clean states and it goes red.
+    #[test]
+    fn a_run_the_agent_cut_off_is_not_a_clean_completion() {
+        for (state, kind, code) in [
+            ("cancelled", "run_cancelled", "[RUN_CANCELLED]"),
+            (
+                "interrupted_by_restart",
+                "interrupted_by_restart",
+                "[INTERRUPTED_BY_RESTART]",
+            ),
+            (
+                "incomplete",
+                "response_unconfirmed",
+                "[RESPONSE_UNCONFIRMED]",
+            ),
+        ] {
+            let data = serde_json::json!({"type":"agent_end","state":state}).to_string();
+            assert!(
+                agent_end_incomplete(&data),
+                "state {state} must not read as a clean end"
+            );
+            assert_eq!(
+                agent_end_termination_kind(&data).as_deref(),
+                Some(kind),
+                "state {state} must keep its own reason"
+            );
+            assert!(super::termination_error(Some(kind)).starts_with(code));
+        }
+    }
+
+    /// A terminal carrying an `error` is a failure whatever `state` says: the
+    /// Agent's shutdown path writes `state` and `error` on the same event.
+    #[test]
+    fn a_terminal_with_an_error_is_never_clean() {
+        assert!(agent_end_incomplete(
+            r#"{"state":"completed","error":"Session persistence failed"}"#
+        ));
+        assert!(agent_end_incomplete(
+            r#"{"error":"Agent shut down before the run's terminal record was written"}"#
+        ));
+    }
+
+    /// The older shapes keep meaning what they meant: a clean terminal, and a
+    /// clean terminal that simply had nothing in it, are both clean *ends* —
+    /// whether the emptiness is a problem is the ledger's call, not this fold's.
+    #[test]
+    fn the_existing_clean_shapes_stay_clean() {
+        assert!(!agent_end_incomplete(r#"{"reason":"complete"}"#));
+        assert!(!agent_end_incomplete(r#"{"state":"completed"}"#));
+        assert!(!agent_end_incomplete(r#"{"usage":{}}"#));
+    }
+
+    #[test]
+    fn a_cancelled_terminal_folds_to_a_non_clean_terminal() {
+        let mut content = String::new();
+        let mut waiting = false;
+        let outcome = fold_response_event(
+            "agent_end",
+            r#"{"state":"cancelled","duration_ms":71000}"#,
+            &mut content,
+            &mut waiting,
+        )
+        .expect("a cancelled terminal is an outcome, not a transport error");
+        match outcome {
+            FoldOutcome::Terminal {
+                clean,
+                termination_kind,
+            } => {
+                assert!(!clean, "a cancelled run did not finish its answer");
+                assert_eq!(termination_kind.as_deref(), Some("run_cancelled"));
+            }
+            FoldOutcome::Continue => panic!("agent_end must end the fold"),
+        }
+        assert!(content.is_empty(), "nothing was answered");
     }
 }

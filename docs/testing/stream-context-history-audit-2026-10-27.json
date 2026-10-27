@@ -1,0 +1,253 @@
+{
+  "scope": {
+    "sourceDatabaseBytes": 102830080,
+    "sessions": 27,
+    "userEntries": 59,
+    "assistantEntries": 439,
+    "toolEntries": 491,
+    "oldRawRuns": 2,
+    "snapshotRuns": 52,
+    "segmentedRuns": 4,
+    "storedRunCount": 59,
+    "runSourcesUnion": 58,
+    "oldRawEvents": 199090,
+    "newStoredChanges": 1730,
+    "snapshotNote": "Snapshots have aggregated deltas; provider fragment counts unavailable for those runs. One run has no event source in these three tables."
+  },
+  "oldRawThinking": {
+    "starts": 178,
+    "blocks": 178,
+    "deltaEvents": 181480,
+    "fragmentsPerBlock": {
+      "n": 178,
+      "min": 5,
+      "p50": 377.5,
+      "p90": 2984,
+      "p95": 4108,
+      "max": 4977,
+      "sum": 181480,
+      "mean": 1019.5505617977528
+    },
+    "bodyBytesPerBlock": {
+      "n": 178,
+      "min": 47,
+      "p50": 1789.0,
+      "p90": 34905,
+      "p95": 54804,
+      "max": 74194,
+      "sum": 1758814,
+      "mean": 9880.977528089888
+    },
+    "tinyBlocksLE220": 19,
+    "keysPerMiB": 106.12067449997555,
+    "adjacentDeltaKeySwitches": 176,
+    "adjacentDeltas": 181478,
+    "adjacentSwitchNote": "Across successive thinking deltas per run, including intervening non-thinking events; not provider token adjacency."
+  },
+  "snapshotThinking": {
+    "blocks": 108,
+    "bodyBytesPerBlock": {
+      "n": 108,
+      "min": 7,
+      "p50": 276.5,
+      "p90": 2267,
+      "p95": 3857,
+      "max": 17751,
+      "sum": 100052,
+      "mean": 926.4074074074074
+    },
+    "blocksPerRun": {
+      "n": 52,
+      "min": 0,
+      "p50": 1.0,
+      "p90": 6,
+      "p95": 8,
+      "max": 12,
+      "sum": 108,
+      "mean": 2.076923076923077
+    },
+    "tinyBlocksLE220": 41,
+    "keysPerMiB": 1131.873505776996
+  },
+  "newSegmented": {
+    "thinking_delta": {
+      "blocks": 12,
+      "storedRowsPerBlock": {
+        "n": 12,
+        "min": 1,
+        "p50": 12.5,
+        "p90": 159,
+        "p95": 204,
+        "max": 204,
+        "sum": 543,
+        "mean": 45.25
+      },
+      "representedFragmentsPerBlock": {
+        "n": 12,
+        "min": 5,
+        "p50": 91.0,
+        "p90": 1030,
+        "p95": 1471,
+        "max": 1471,
+        "sum": 3937,
+        "mean": 328.0833333333333
+      },
+      "bodyBytesPerBlock": {
+        "n": 12,
+        "min": 19,
+        "p50": 371.5,
+        "p90": 4350,
+        "p95": 5454,
+        "max": 5454,
+        "sum": 15274,
+        "mean": 1272.8333333333333
+      },
+      "tinyBlocksLE220": 5
+    },
+    "text_chunk": {
+      "blocks": 5,
+      "storedRowsPerBlock": {
+        "n": 5,
+        "min": 3,
+        "p50": 59,
+        "p90": 72,
+        "p95": 72,
+        "max": 72,
+        "sum": 215,
+        "mean": 43.0
+      },
+      "representedFragmentsPerBlock": {
+        "n": 5,
+        "min": 10,
+        "p50": 597,
+        "p90": 744,
+        "p95": 744,
+        "max": 744,
+        "sum": 2139,
+        "mean": 427.8
+      },
+      "bodyBytesPerBlock": {
+        "n": 5,
+        "min": 36,
+        "p50": 1823,
+        "p90": 3155,
+        "p95": 3155,
+        "max": 3155,
+        "sum": 7424,
+        "mean": 1484.8
+      },
+      "tinyBlocksLE220": 1
+    },
+    "tool_delta": {
+      "blocks": 19,
+      "storedRowsPerBlock": {
+        "n": 19,
+        "min": 1,
+        "p50": 11,
+        "p90": 136,
+        "p95": 147,
+        "max": 147,
+        "sum": 764,
+        "mean": 40.21052631578947
+      },
+      "representedFragmentsPerBlock": {
+        "n": 19,
+        "min": 14,
+        "p50": 110,
+        "p90": 1589,
+        "p95": 1989,
+        "max": 1989,
+        "sum": 8984,
+        "mean": 472.8421052631579
+      },
+      "bodyBytesPerBlock": {
+        "n": 19,
+        "min": 31,
+        "p50": 374,
+        "p90": 4652,
+        "p95": 7645,
+        "max": 7645,
+        "sum": 30609,
+        "mean": 1611.0
+      },
+      "tinyBlocksLE220": 9
+    }
+  },
+  "finalAssistants": {
+    "blockTypes": {
+      "reasoning": 299,
+      "tool_call": 491,
+      "text": 115
+    },
+    "blocksPerAssistant": {
+      "n": 439,
+      "min": 1,
+      "p50": 2,
+      "p90": 3,
+      "p95": 3,
+      "max": 6,
+      "sum": 905,
+      "mean": 2.061503416856492
+    },
+    "toolCallsPerAssistant": {
+      "n": 439,
+      "min": 0,
+      "p50": 1,
+      "p90": 2,
+      "p95": 2,
+      "max": 4,
+      "sum": 491,
+      "mean": 1.1184510250569477
+    },
+    "thinkingBlocksPerAssistant": {
+      "n": 439,
+      "min": 0,
+      "p50": 1,
+      "p90": 1,
+      "p95": 1,
+      "max": 1,
+      "sum": 299,
+      "mean": 0.6810933940774487
+    },
+    "assistantsWithToolCalls": 380,
+    "assistantsWithAtLeast10Blocks": 0,
+    "toolCallsPerRepresentedRun": {
+      "n": 59,
+      "min": 0,
+      "p50": 2,
+      "p90": 10,
+      "p95": 103,
+      "max": 150,
+      "sum": 491,
+      "mean": 8.322033898305085
+    },
+    "runsWithAtLeast50ToolCalls": 3,
+    "runsWithAtLeast100ToolCalls": 3
+  },
+  "syntheticHighChurn": {
+    "bodyBytesPerKey": 220,
+    "providerFragmentsPerKey": 4,
+    "fragmentBytes": 55,
+    "keysPerMiBApprox": 4766.25,
+    "totalBodyKeys": 4767,
+    "singleAssistantHeaderNotPublished": true,
+    "note": "Includes synthetic tool_id on thinking deltas, unlike observed real thinking data; long IDs and deliberately tiny, rapidly changing keys."
+  },
+  "provenance": {
+    "source": "local user Agent database, read-only audit",
+    "sourceSha256": "0799ddba60e5ab31378524c4c73aae8b8c4063529b8414e9471883f0cda0cae9",
+    "sourceBytes": 102830080,
+    "sourceModifiedUtc": "2026-10-27T02:20:38.944960+00:00",
+    "capturedUtc": "2026-10-27T06:13:08.428855+00:00",
+    "snapshotMethod": "Copied only while WAL absent; source size/mtime unchanged and source/copy SHA-256 equal. Queries use immutable read-only copy. Original database not modified.",
+    "privacy": "Aggregates only; no prompts, tool arguments, generated content or business IDs retained in this artifact."
+  },
+  "methodology": [
+    "Legacy thinking block_id is reused across iterations. Count blocks by thinking_start lifecycle within session/run/epoch, not distinct block_id strings.",
+    "New segmented fragment counts sum last_cursor-first_cursor+1 for delta rows. They are represented event cursors, not network packets or model tokens.",
+    "Final assistant content blocks are read from normalized message_blocks, not entries.content_json (empty normalized arrays).",
+    "Snapshot deltas are already aggregated; their original fragment counts cannot be recovered.",
+    "Per-message block count is distinct from per-turn tool-call count. One user turn may contain many assistant messages.",
+    "Synthetic high-churn stress is not a published valid assistant transcript; it should not be treated as the typical workload."
+  ]
+}

@@ -35,15 +35,9 @@ pub struct TuiSettings {
     pub enabled_model_ids: Option<Vec<String>>,
     /// Palette id (`themeId`).
     pub theme_id: Option<String>,
-    /// Reading level of a settled reply (`replyDetail`: `default` | `detailed`).
-    /// Absent ⇒ `default`, which keeps a finished reply to its final answer plus
-    /// a count of the work above it.
-    pub reply_detail: Option<String>,
     /// Interface language (`language`: `system` | `zh` | `en`). Absent ⇒
     /// `system`, the same default the desktop and the phone use.
     pub language: Option<String>,
-    /// Conversation density (`focused` | `comfortable`).
-    pub density: Option<String>,
     /// Sidebar position (`left` | `right`) and width in terminal columns.
     pub sidebar_position: Option<String>,
     pub sidebar_width: Option<u16>,
@@ -54,8 +48,6 @@ pub struct TuiSettings {
     pub notify: Option<crate::notifications::NotifyConfig>,
     /// Keep the activity indicator still; streaming itself is never delayed.
     pub reduced_motion: Option<bool>,
-    /// Single-column, focused, static reading without the auxiliary sidebar.
-    pub linear_reading: Option<bool>,
     /// Workspace paths pinned in the rail's 置顶 section (`pinnedWorkspaces`),
     /// in the order they were pinned.
     pub pinned_workspaces: Option<Vec<String>>,
@@ -90,14 +82,8 @@ impl TuiSettings {
         if let Some(theme) = &self.theme_id {
             obj.insert("themeId".into(), Value::String(theme.clone()));
         }
-        if let Some(detail) = &self.reply_detail {
-            obj.insert("replyDetail".into(), Value::String(detail.clone()));
-        }
         if let Some(language) = &self.language {
             obj.insert("language".into(), Value::String(language.clone()));
-        }
-        if let Some(density) = &self.density {
-            obj.insert("density".into(), Value::String(density.clone()));
         }
         if let Some(position) = &self.sidebar_position {
             obj.insert("sidebarPosition".into(), Value::String(position.clone()));
@@ -118,9 +104,6 @@ impl TuiSettings {
         }
         if let Some(reduced) = self.reduced_motion {
             obj.insert("reducedMotion".into(), Value::Bool(reduced));
-        }
-        if let Some(linear) = self.linear_reading {
-            obj.insert("linearReading".into(), Value::Bool(linear));
         }
         if let Some(pinned) = &self.pinned_workspaces {
             obj.insert(
@@ -153,9 +136,7 @@ impl TuiSettings {
                         .collect()
                 }),
             theme_id: string("themeId"),
-            reply_detail: string("replyDetail"),
             language: string("language"),
-            density: string("density"),
             sidebar_position: string("sidebarPosition"),
             sidebar_width: value
                 .get("sidebarWidth")
@@ -168,7 +149,6 @@ impl TuiSettings {
                 .get("notify")
                 .and_then(|value| serde_json::from_value(value.clone()).ok()),
             reduced_motion: value.get("reducedMotion").and_then(Value::as_bool),
-            linear_reading: value.get("linearReading").and_then(Value::as_bool),
             pinned_workspaces: value.get("pinnedWorkspaces").and_then(Value::as_array).map(
                 |paths| {
                     paths
@@ -196,9 +176,7 @@ mod tests {
             default_approval_mode: Some("auto".into()),
             enabled_model_ids: Some(vec!["a".into(), "b".into()]),
             theme_id: Some("future-light".into()),
-            reply_detail: Some("detailed".into()),
             language: Some("system".into()),
-            density: Some("focused".into()),
             sidebar_position: Some("left".into()),
             sidebar_width: Some(42),
             sidebar_visible: Some(false),
@@ -210,7 +188,6 @@ mod tests {
                 title: false,
             }),
             reduced_motion: Some(true),
-            linear_reading: Some(true),
             pinned_workspaces: Some(vec!["/src/future-os".into()]),
         };
         let back = TuiSettings::from_json(&settings.to_json());
@@ -220,16 +197,13 @@ mod tests {
         assert_eq!(back.default_approval_mode.as_deref(), Some("auto"));
         assert_eq!(back.enabled_model_ids, Some(vec!["a".into(), "b".into()]));
         assert_eq!(back.theme_id.as_deref(), Some("future-light"));
-        assert_eq!(back.reply_detail.as_deref(), Some("detailed"));
         assert_eq!(back.language.as_deref(), Some("system"));
-        assert_eq!(back.density.as_deref(), Some("focused"));
         assert_eq!(back.sidebar_position.as_deref(), Some("left"));
         assert_eq!(back.sidebar_width, Some(42));
         assert_eq!(back.sidebar_visible, Some(false));
         assert_eq!(back.mouse_capture, Some(false));
         assert!(!back.notify.unwrap().bell);
         assert_eq!(back.reduced_motion, Some(true));
-        assert_eq!(back.linear_reading, Some(true));
         assert_eq!(back.pinned_workspaces, Some(vec!["/src/future-os".into()]));
     }
 
@@ -260,12 +234,17 @@ mod tests {
         let settings = TuiSettings::from_json(&old);
         assert_eq!(settings.default_model.as_deref(), Some("m"));
         assert_eq!(settings.theme_id.as_deref(), Some("future-dark"));
-        assert_eq!(settings.reply_detail.as_deref(), Some("detailed"));
         // The notification object is honoured again; the retired independent
         // bell key remains ignored rather than overriding its channel choice.
         let written = settings.to_json();
         assert_eq!(written["notify"]["bell"], false);
         assert!(written.get("bellOnComplete").is_none());
+        // `replyDetail` is retired with the reading level itself: the TUI stops
+        // at the folded level every time now (see `ReplyDetail`), so a file
+        // that still asks for `detailed` loads fine and the key is dropped the
+        // next time the file is written — the toggle that used to store it must
+        // not keep a reader's transcript expanded on every start.
+        assert!(written.get("replyDetail").is_none());
     }
 
     #[test]

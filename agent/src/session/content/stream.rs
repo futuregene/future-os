@@ -1,7 +1,9 @@
 //! Transactional semantic changes over canonical content, without token journals.
 //! A producer may stage a large body's segments in several bounded commits;
 //! only the commit publishing its change advances the durable stream cursor.
-use super::{append, bind, create, resolve, seal, ContentDigest, ContentRange, WRITE_BYTES};
+#[cfg(test)]
+use super::resolve;
+use super::{append, create, seal, ContentDigest, ContentRange, WRITE_BYTES};
 use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde_json::Value;
@@ -14,6 +16,28 @@ pub(crate) struct StreamIdentity {
     pub session_id: String,
     pub run_id: String,
     pub epoch: i64,
+}
+
+pub(crate) struct BoundStreamIdentity {
+    pub session_id: crate::session::identity::BoundIdentity,
+    pub run_id: crate::session::identity::BoundIdentity,
+    pub epoch: i64,
+}
+
+impl StreamIdentity {
+    /// Resolve keys within the caller's transaction, never cache an allocation
+    /// across commit/rollback. The producer's wire identity stays unchanged.
+    pub(crate) fn bind(&self, db: &Connection) -> Result<BoundStreamIdentity> {
+        Ok(BoundStreamIdentity {
+            session_id: crate::session::identity::BoundIdentity::session(db, &self.session_id)?,
+            run_id: crate::session::identity::BoundIdentity::run(
+                db,
+                &self.session_id,
+                &self.run_id,
+            )?,
+            epoch: self.epoch,
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -89,9 +113,10 @@ pub(crate) fn owner(stream: &StreamIdentity, key: &str) -> String {
     serde_json::json!([stream.run_id, stream.epoch, key]).to_string()
 }
 
-fn stream_id(tx: &Transaction<'_>, stream: &StreamIdentity) -> Result<i64> {
+pub(super) fn stream_id(tx: &Transaction<'_>, stream: &StreamIdentity) -> Result<i64> {
+    let stream = stream.bind(tx)?;
     ensure!(
-        super::format(tx, &stream.session_id)? == super::FORMAT_VERSION,
+        super::format_bound(tx, &stream.session_id)? == super::FORMAT_VERSION,
         "conversation does not use segmented storage"
     );
     tx.execute(
@@ -131,6 +156,7 @@ pub(crate) fn commit_batch(
     );
     let tx = crate::session::database::begin_write_transaction(db)?;
     let id = stream_id(&tx, stream)?;
+    let owners = super::stream_body::TransactionOwners::new(&tx, id);
     let last: Option<(i64,String)> = tx.query_row(
         "SELECT last_cursor,event_type FROM stream_changes WHERE stream_id=?1 ORDER BY last_cursor DESC LIMIT 1",
         [id], |row| Ok((row.get(0)?,row.get(1)?)),
@@ -149,8 +175,13 @@ pub(crate) fn commit_batch(
         );
     }
     for piece in appends {
-        let key = owner(stream, &piece.key);
-        let prior = resolve(&tx, &stream.session_id, "stream", &key, "")?;
+        let prior = owners
+            .get(&piece.key)?
+            .map(|(range, encoding)| {
+                ensure!(encoding == Encoding::Text, "stream append encoding changed");
+                Ok(range)
+            })
+            .transpose()?;
         if closed.is_some() {
             let end = piece
                 .offset
@@ -174,19 +205,16 @@ pub(crate) fn commit_batch(
             // The stream owner grows with its durable body. Published change
             // and transcript references remain immutable independent ranges.
             let length = prior.length.max(end);
-            tx.execute("UPDATE content_references SET byte_length=?5 WHERE session_id=?1 AND owner_kind='stream' AND owner_id=?2 AND field='' AND content_id=?3 AND byte_length=?4",params![stream.session_id,key,body,prior.length,length])?;
+            owners.extend(&piece.key, body, length)?;
         } else {
-            bind(
-                &tx,
-                &stream.session_id,
-                "stream",
-                &key,
-                "",
+            owners.bind(
+                &piece.key,
                 ContentRange {
                     id: body,
                     offset: 0,
                     length: end,
                 },
+                Encoding::Text,
             )?;
         }
         if let Some(digest) = piece.seal {
@@ -203,48 +231,25 @@ pub(crate) fn commit_batch(
             change.first_cursor >= 0 && change.last_cursor >= change.first_cursor,
             "invalid change cursor range"
         );
-        let metadata = change.metadata.to_string();
-        let existing: Option<(i64,i64,String,String)>=tx.query_row("SELECT id,first_cursor,event_type,metadata_json FROM stream_changes WHERE stream_id=?1 AND last_cursor=?2",params![id,change.last_cursor],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
-        let (change_id, retry) = if let Some((change_id, first, kind, stored)) = existing {
-            ensure!(
-                first == change.first_cursor
-                    && kind == change.event_type
-                    && serde_json::from_str::<Value>(&stored)? == change.metadata,
-                "conflicting semantic change retry"
-            );
-            (change_id, true)
-        } else {
-            ensure!(
-                change.first_cursor == cursor + 1,
-                "semantic change has a gap or conflicting overlap"
-            );
-            tx.execute("INSERT INTO stream_changes(stream_id,first_cursor,last_cursor,event_type,metadata_json) VALUES (?1,?2,?3,?4,?5)",params![id,change.first_cursor,change.last_cursor,change.event_type,metadata])?;
-            (tx.last_insert_rowid(), false)
-        };
-        let previous_links: i64 = tx.query_row(
-            "SELECT count(*) FROM stream_change_content WHERE change_id=?1",
-            [change_id],
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM stream_changes WHERE stream_id=?1 AND last_cursor=?2)",
+            params![id, change.last_cursor],
             |r| r.get(0),
         )?;
-        if retry {
-            ensure!(
-                previous_links == i64::try_from(change.bodies.len())?,
-                "conflicting semantic content link count"
-            );
-        }
-        for body in change.bodies {
+        ensure!(
+            exists || change.first_cursor == cursor + 1,
+            "semantic change has a gap or conflicting overlap"
+        );
+        let mut bodies = Vec::new();
+        for body in &change.bodies {
             ensure!(
                 change.metadata.pointer(&body.field).is_some(),
                 "content link does not name a metadata field"
             );
-            let range = resolve(
-                &tx,
-                &stream.session_id,
-                "stream",
-                &owner(stream, &body.key),
-                "",
-            )?
-            .context("semantic change references missing content")?;
+            let range = owners
+                .get(&body.key)?
+                .context("semantic change references missing content")?
+                .0;
             let end = body
                 .offset
                 .checked_add(body.length)
@@ -253,21 +258,17 @@ pub(crate) fn commit_batch(
                 body.offset >= 0 && body.length >= 0 && end <= range.length,
                 "semantic content link exceeds committed body"
             );
-            if retry {
-                let old: (i64,i64,i64,String)=tx.query_row("SELECT content_id,byte_offset,byte_length,encoding FROM stream_change_content WHERE change_id=?1 AND field=?2",params![change_id,body.field],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
-                ensure!(
-                    old == (
-                        range.id,
-                        body.offset,
-                        body.length,
-                        body.encoding.name().to_owned()
-                    ),
-                    "conflicting semantic content link"
-                );
-            } else {
-                tx.execute("INSERT INTO stream_change_content(change_id,field,content_id,byte_offset,byte_length,encoding) VALUES (?1,?2,?3,?4,?5,?6)",params![change_id,body.field,range.id,body.offset,body.length,body.encoding.name()])?;
-            }
+            bodies.push((
+                body.field.clone(),
+                ContentRange {
+                    id: range.id,
+                    offset: body.offset,
+                    length: body.length,
+                },
+                body.encoding,
+            ));
         }
+        super::compact::publish(&tx, id, &change, bodies)?;
         cursor = cursor.max(change.last_cursor);
     }
     tx.execute(
@@ -278,64 +279,68 @@ pub(crate) fn commit_batch(
     Ok(cursor)
 }
 
-/// Metadata-only page, inside the caller's read transaction. Body transport
-/// uses explicit bounded reads rather than hydrating a whole tool result here.
+#[derive(Debug)]
+pub(crate) struct EncodedChangePage {
+    changes: super::compact::EncodedPage,
+    durable_cursor: i64,
+    has_more: bool,
+}
+impl EncodedChangePage {
+    pub(crate) fn decode(self) -> Result<ChangePage> {
+        Ok(ChangePage {
+            changes: self.changes.decode()?,
+            durable_cursor: self.durable_cursor,
+            has_more: self.has_more,
+        })
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn read_changes(
     db: &Connection,
     stream: &StreamIdentity,
     since: i64,
     limit: usize,
 ) -> Result<ChangePage> {
+    read_encoded_changes(db, stream, since, limit)?.decode()
+}
+
+/// Metadata-only page, inside the caller's read transaction. Body transport
+/// uses explicit bounded reads rather than hydrating a whole tool result here.
+pub(crate) fn read_encoded_changes(
+    db: &Connection,
+    stream: &StreamIdentity,
+    since: i64,
+    limit: usize,
+) -> Result<EncodedChangePage> {
     ensure!((1..=256).contains(&limit), "invalid change page limit");
+    let stream = stream.bind(db)?;
     let row: Option<(i64,i64)>=db.query_row("SELECT id,durable_cursor FROM stream_runs WHERE session_id=?1 AND run_id=?2 AND epoch=?3 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=stream_runs.id)",params![stream.session_id,stream.run_id,stream.epoch],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
     let Some((id, cursor)) = row else {
-        return Ok(ChangePage {
-            changes: Vec::new(),
+        return Ok(EncodedChangePage {
+            changes: super::compact::EncodedPage::default(),
             durable_cursor: -1,
             has_more: false,
         });
     };
-    let mut stmt=db.prepare("SELECT id,first_cursor,last_cursor,event_type,metadata_json FROM stream_changes WHERE stream_id=?1 AND last_cursor>?2 ORDER BY last_cursor LIMIT ?3")?;
+    let mut stmt=db.prepare("SELECT c.id,length(CAST(c.metadata_json AS BLOB))+length(CAST(x.descriptor_json AS BLOB))+x.symbol_bytes FROM stream_changes c LEFT JOIN stream_contexts x ON x.id=c.context_id AND x.stream_id=c.stream_id AND x.event_kind=c.event_kind WHERE c.stream_id=?1 AND c.last_cursor>?2 ORDER BY c.last_cursor LIMIT ?3")?;
     let mut rows = stmt.query(params![id, since, i64::try_from(limit + 1)?])?;
-    let mut changes = Vec::new();
-    let mut bytes = 0;
+    let mut ids = Vec::new();
+    let mut bytes = 0usize;
     let mut more = false;
     while let Some(row) = rows.next()? {
-        let metadata: String = row.get(4)?;
-        if changes.len() == limit
-            || (!changes.is_empty() && bytes + metadata.len() > CHANGE_METADATA_BYTES)
+        let size = usize::try_from(row.get::<_, i64>(1)?)?;
+        if ids.len() == limit
+            || (!ids.is_empty() && bytes.saturating_add(size) > CHANGE_METADATA_BYTES)
         {
             more = true;
             break;
         }
-        let change_id: i64 = row.get(0)?;
-        let mut links=db.prepare("SELECT field,content_id,byte_offset,byte_length,encoding FROM stream_change_content WHERE change_id=?1 ORDER BY field")?;
-        let bodies = links
-            .query_map([change_id], |r| {
-                Ok((
-                    r.get(0)?,
-                    ContentRange {
-                        id: r.get(1)?,
-                        offset: r.get(2)?,
-                        length: r.get(3)?,
-                    },
-                    r.get::<_, String>(4)?,
-                ))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        bytes += metadata.len();
-        changes.push(StoredChange {
-            first_cursor: row.get(1)?,
-            last_cursor: row.get(2)?,
-            event_type: row.get(3)?,
-            metadata: serde_json::from_str(&metadata)?,
-            bodies: bodies
-                .into_iter()
-                .map(|(field, range, encoding)| Ok((field, range, Encoding::parse(&encoding)?)))
-                .collect::<Result<_>>()?,
-        });
+        bytes = bytes.saturating_add(size);
+        ids.push(row.get::<_, i64>(0)?);
     }
-    Ok(ChangePage {
+    let changes = super::compact::read_encoded(db, &ids)?;
+    Ok(EncodedChangePage {
         changes,
         durable_cursor: cursor,
         has_more: more,
@@ -360,7 +365,18 @@ pub(crate) fn append_boundary(
         [id],
         |row| row.get(0),
     )?;
-    tx.execute("INSERT INTO stream_changes(stream_id,first_cursor,last_cursor,event_type,metadata_json) VALUES (?1,?2,?2,?3,?4)",params![id,cursor,event_type,metadata.to_string()])?;
+    super::compact::publish(
+        tx,
+        id,
+        &Change {
+            first_cursor: cursor,
+            last_cursor: cursor,
+            event_type: event_type.into(),
+            metadata,
+            bodies: Vec::new(),
+        },
+        Vec::new(),
+    )?;
     tx.execute(
         "UPDATE stream_runs SET durable_cursor=?2 WHERE id=?1",
         params![id, cursor],
@@ -375,7 +391,7 @@ mod tests {
 
     fn db() -> Connection {
         let mut db = Connection::open_in_memory().unwrap();
-        db.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE sessions(id TEXT PRIMARY KEY,revision INTEGER NOT NULL DEFAULT 0); CREATE TABLE entries(session_id TEXT,entry_id TEXT,UNIQUE(session_id,entry_id)); CREATE TABLE compaction_operations(session_id TEXT,input_key TEXT,PRIMARY KEY(session_id,input_key)); INSERT INTO sessions(id) VALUES('s');").unwrap();
+        db.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE sessions(id TEXT PRIMARY KEY,revision INTEGER NOT NULL DEFAULT 0); CREATE TABLE entries(session_id TEXT,entry_id TEXT,UNIQUE(session_id,entry_id)); CREATE TABLE compaction_operations(session_id TEXT,input_key TEXT,PRIMARY KEY(session_id,input_key)); CREATE TABLE runs(session_id TEXT,run_id TEXT,PRIMARY KEY(session_id,run_id)); CREATE TABLE queued_run_receipts(session_id TEXT,run_id TEXT,PRIMARY KEY(session_id,run_id)); INSERT INTO sessions(id) VALUES('s');").unwrap();
         db.execute_batch(include_str!("schema.sql")).unwrap();
         let tx = db.transaction().unwrap();
         enable(&tx, "s").unwrap();

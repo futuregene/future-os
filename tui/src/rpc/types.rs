@@ -291,7 +291,10 @@ pub struct RunTerminalState {
 // ============================================================================
 
 /// `SessionSummary` from `rpc/types.ts`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Comparable, so the rail can tell a poll that changed nothing (no repaint)
+/// from one that moved a row, an age or a run's state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSummary {
     pub id: String,
@@ -330,6 +333,22 @@ pub struct ModelInfo {
     /// Default thinking level for this model.
     #[serde(default)]
     pub thinking_level: String,
+    /// The levels this model offers, in display order, starting with
+    /// `"default"` (which means "send no thinking/effort parameter"). Every
+    /// other entry is a wire value sent verbatim (`"off"` = explicit disable,
+    /// arbitrary strings allowed).
+    ///
+    /// `None` when the payload omits the field entirely: an agent that predates
+    /// `thinkingLevels`, whose models fall back to the legacy six levels. A
+    /// current agent always sends a non-empty list, so `Some([])` never occurs
+    /// and is treated as the implicit `default` alone.
+    #[serde(default)]
+    pub thinking_levels: Option<Vec<String>>,
+    /// The level a conversation starts at on this model, already clamped to
+    /// [`Self::thinking_levels`] by the agent. `"default"` on a current agent;
+    /// absent on an older one.
+    #[serde(default)]
+    pub default_thinking_level: Option<String>,
     #[serde(default)]
     pub context_window: u64,
     #[serde(default)]
@@ -403,9 +422,53 @@ mod tests {
             provider: provider.into(),
             supports_images: false,
             thinking_level: "off".into(),
+            thinking_levels: None,
+            default_thinking_level: None,
             context_window: 128_000,
             is_default: false,
         }
+    }
+
+    /// `list_models` on a current agent: the declared list is default-first,
+    /// with the effective default alongside it.
+    #[test]
+    fn model_info_parses_the_declared_thinking_levels() {
+        let info: ModelInfo = serde_json::from_str(
+            r#"{"id":"k3","label":"K3","provider":"future","thinkingLevel":"default",
+                "thinkingLevels":["default","off","minimal","low","medium","high","xhigh","max"],
+                "defaultThinkingLevel":"default","contextWindow":262144}"#,
+        )
+        .expect("parse");
+        assert_eq!(info.thinking_level, "default");
+        assert_eq!(
+            info.thinking_levels,
+            Some(
+                ["default", "off", "minimal", "low", "medium", "high", "xhigh", "max"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect()
+            )
+        );
+        assert_eq!(info.default_thinking_level.as_deref(), Some("default"));
+    }
+
+    /// An older agent omits both fields: the TUI must be able to tell that
+    /// apart from a current agent that legitimately declares only `default`.
+    #[test]
+    fn model_info_tells_a_missing_level_list_apart_from_an_empty_one() {
+        let legacy: ModelInfo = serde_json::from_str(
+            r#"{"id":"k3","label":"K3","provider":"future","thinkingLevel":"high"}"#,
+        )
+        .expect("parse");
+        assert_eq!(legacy.thinking_levels, None);
+        assert_eq!(legacy.default_thinking_level, None);
+
+        let declared: ModelInfo = serde_json::from_str(
+            r#"{"id":"plain","label":"Plain","provider":"future","thinkingLevel":"default",
+                "thinkingLevels":["default"],"defaultThinkingLevel":"default"}"#,
+        )
+        .expect("parse");
+        assert_eq!(declared.thinking_levels, Some(vec!["default".to_string()]));
     }
 
     #[test]

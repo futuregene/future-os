@@ -4,6 +4,7 @@ import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from "rea
 import { basename, classifyMarkdownTarget, localFilePath, remoteMarkdownImageUrl } from "@future-os/markdown";
 import { radius, spacing } from "../theme/tokens";
 import { createThemedStyles, useTheme } from "../theme/ThemeContext";
+import { useImageViewer } from "./imageViewer";
 
 export interface MarkdownImageLoader {
   /** Includes desktop/pair/session identity; paths alone are not cache keys. */
@@ -39,6 +40,7 @@ export function MarkdownImage({ src, alt, width, href, openTarget }: {
 }) {
   const styles = useStyles();
   const loader = useContext(MarkdownImageLoaderContext);
+  const openImageViewer = useImageViewer();
   const basePath = useContext(MarkdownImageBasePathContext);
   const url = remoteMarkdownImageUrl(src);
   const path = resolveMarkdownPath(src, basePath);
@@ -46,7 +48,18 @@ export function MarkdownImage({ src, alt, width, href, openTarget }: {
   const linked = target.kind === "local-file" || target.kind === "external-url";
   if (url) {
     const image = <LoadedImage key={url} alt={alt} uri={url} width={width} />;
-    return linked ? <Pressable accessibilityRole="link" accessibilityLabel={alt || href} onPress={() => openTarget(href!)}>{image}</Pressable> : image;
+    if (linked)
+      return <Pressable accessibilityRole="link" accessibilityLabel={alt || href} onPress={() => openTarget(href!)}>{image}</Pressable>;
+    // A picture the agent linked from elsewhere (a chart host, a gist, a
+    // published figure) is still a picture in the reply: tap it to see it full
+    // screen rather than having to open the link and come back.
+    if (!openImageViewer)
+      return image;
+    return (
+      <Pressable accessibilityLabel={alt} accessibilityRole="button" onPress={() => openImageViewer({ name: alt, uri: url })}>
+        {image}
+      </Pressable>
+    );
   }
   if (!path || !loader) return (
     <Text onPress={localFilePath(src) ? () => openTarget(href ?? src) : undefined} style={styles.link}>
@@ -67,6 +80,7 @@ function LocalImage({ alt, loader, path, width, onOpen, linked }: {
   const styles = useStyles();
   const { colors } = useTheme();
   const { t } = useTranslation();
+  const openImageViewer = useImageViewer();
   const [uri, setUri] = useState(() => loader.cached(path));
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -100,9 +114,14 @@ function LocalImage({ alt, loader, path, width, onOpen, linked }: {
     autoStarted.current = true;
     void load();
   }, [load, uri]);
-  if (uri) return <Pressable accessibilityRole={linked ? "link" : "button"} accessibilityLabel={alt} onPress={onOpen}>
-    <LoadedImage key={uri} alt={alt} uri={uri} width={width} onFailure={() => { setUri(null); setFailed(true); }} />
-  </Pressable>;
+  if (uri) {
+    // Zoomed-in viewing is local: the bytes are already here, so the viewer opens
+    // without a transfer. A linked picture keeps opening its link.
+    const picture = <LoadedImage key={uri} alt={alt} uri={uri} width={width} onFailure={() => { setUri(null); setFailed(true); }} />;
+    if (linked || !openImageViewer)
+      return <Pressable accessibilityLabel={alt} accessibilityRole={linked ? "link" : "button"} onPress={onOpen}>{picture}</Pressable>;
+    return <Pressable accessibilityLabel={alt} accessibilityRole="button" onPress={() => openImageViewer({ name: alt, uri })}>{picture}</Pressable>;
+  }
   return (
     <View style={styles.placeholder}>
       <Text selectable style={styles.caption}>{alt}</Text>

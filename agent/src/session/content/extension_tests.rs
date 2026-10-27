@@ -73,7 +73,7 @@ fn a_large_terminal_error_has_one_body_shared_by_history_and_replay() {
     }
     assert_eq!(body, error);
     store.db.read(|db| {
-        let owners:(i64,i64) = db.query_row("SELECT r.content_id,b.content_id FROM content_references r JOIN stream_change_content b ON b.field='/data/error' WHERE r.session_id='s' AND r.owner_id='end' AND r.field='/content/error'",[],|row|Ok((row.get(0)?,row.get(1)?)))?;
+        let owners:(i64,i64) = db.query_row("SELECT r.content_id,b.content_id FROM content_references r JOIN stream_content_ranges b ON b.field='/data/error' WHERE r.session_id='s' AND r.owner_id='end' AND r.field='/content/error'",[],|row|Ok((row.get(0)?,row.get(1)?)))?;
         assert_eq!(owners.0,owners.1);
         let count:i64 = db.query_row("SELECT count(*) FROM content_objects",[],|row|row.get(0))?;
         assert_eq!(count,1);

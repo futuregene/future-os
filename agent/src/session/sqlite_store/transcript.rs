@@ -10,6 +10,8 @@ impl SqliteStore {
     pub(crate) fn has_transcript_run(&self, session: &str, run: &str) -> Result<bool> {
         let (session, run) = (session.to_owned(), run.to_owned());
         self.db.read(move |db| {
+            let run = crate::session::identity::BoundIdentity::run(db, &session, &run)?;
+            let session = crate::session::identity::BoundIdentity::session(db, &session)?;
             Ok(db.query_row(
                 "SELECT EXISTS(SELECT 1 FROM entries WHERE session_id=?1 AND run_id=?2)",
                 params![session, run],
@@ -60,6 +62,7 @@ impl SqliteStore {
         let session = session.to_owned();
         self.db.read(move |db| {
             let tx = db.transaction()?;
+            let session=crate::session::identity::BoundIdentity::session(&tx,&session)?;
             let rows = {
                 let mut stmt = tx.prepare("SELECT payload FROM entry_records WHERE session_id=?1 AND position IN (
                     SELECT min(position) FROM entries WHERE session_id=?1 AND entry_type='user'
@@ -158,8 +161,10 @@ impl SqliteStore {
                     "DELETE FROM run_snapshots WHERE session_id=?1 AND run_id=?2",
                     params![session, run],
                 )?;
-                tx.execute("DELETE FROM stream_runs WHERE session_id=?1 AND run_id=?2",params![session,run])?;
-                tx.execute("DELETE FROM content_references WHERE session_id=?1 AND owner_kind='stream' AND json_valid(owner_id) AND json_extract(owner_id,'$[0]')=?2",params![session,run])?;
+                tx.execute(
+                    "DELETE FROM stream_runs WHERE session_id=?1 AND run_id=?2",
+                    params![session, run],
+                )?;
             }
             tx.commit()?;
             Ok(planned.plan)
@@ -174,10 +179,11 @@ impl SqliteStore {
 }
 
 fn read_entry_rows(db: &Connection, session: &str) -> Result<Vec<String>> {
+    let stored_session = crate::session::identity::session_key(db, session)?;
     let mut statement =
         db.prepare("SELECT payload FROM entry_records WHERE session_id=?1 ORDER BY position")?;
     let values = statement
-        .query_map([session], |r| r.get::<_, String>(0))?
+        .query_map([&stored_session], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     if values.is_empty() {
         bail!("session has no entries or was not imported");
@@ -186,6 +192,7 @@ fn read_entry_rows(db: &Connection, session: &str) -> Result<Vec<String>> {
 }
 
 pub(crate) fn read_run_marker_headers(db: &Connection, session: &str) -> Result<Vec<Value>> {
+    let stored_session = crate::session::identity::session_key(db, session)?;
     if crate::session::content::format(db, session)? != crate::session::content::FORMAT_VERSION {
         return run_marker_rows(db, session, "entry_records");
     }
@@ -196,7 +203,7 @@ pub(crate) fn read_run_marker_headers(db: &Connection, session: &str) -> Result<
             SELECT run_id FROM entries WHERE session_id=?1 AND entry_type='run_started' ORDER BY position DESC LIMIT 1)
         AND entry_type IN ('run_started','run_terminal','run_stop_requested') GROUP BY entry_type) ORDER BY position")?;
     let rows = query
-        .query_map([session], |row| row.get::<_, String>(0))?
+        .query_map([&stored_session], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     rows.into_iter()
         .map(|raw| Ok(serde_json::from_str(&raw)?))
@@ -204,9 +211,10 @@ pub(crate) fn read_run_marker_headers(db: &Connection, session: &str) -> Result<
 }
 
 fn run_marker_rows(db: &Connection, session: &str, source: &str) -> Result<Vec<Value>> {
+    let stored_session = crate::session::identity::session_key(db, session)?;
     let mut statement=db.prepare(&format!("SELECT payload FROM {source} WHERE session_id=?1 AND entry_type IN ('run_started','run_terminal','run_stop_requested') ORDER BY position"))?;
     let rows = statement
-        .query_map([session], |row| row.get::<_, String>(0))?
+        .query_map([&stored_session], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     rows.into_iter()
         .map(|row| Ok(serde_json::from_str(&row)?))
@@ -223,9 +231,10 @@ pub(crate) fn rewrite_transcript_rows(
     session: &str,
     entries: Vec<Value>,
 ) -> Result<()> {
+    let stored_session = crate::session::identity::session_key(db, session)?;
     let deleted: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1)",
-        [session],
+        [&stored_session],
         |row| row.get(0),
     )?;
     if deleted {
@@ -233,27 +242,30 @@ pub(crate) fn rewrite_transcript_rows(
     }
     let skipped: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='skipped')",
-        [session],
+        [&stored_session],
         |r| r.get(0),
     )?;
     if skipped {
         bail!("session migration was skipped; retry import before modifying it");
     }
-    db.execute("INSERT INTO sessions(id) VALUES (?1) ON CONFLICT(id) DO UPDATE SET revision=MAX(revision+1,0)", [session])?;
+    db.execute("INSERT INTO sessions(id) VALUES (?1) ON CONFLICT(id) DO UPDATE SET revision=MAX(revision+1,0)", [&stored_session])?;
     if crate::session::content::format(db, session)? == crate::session::content::FORMAT_VERSION {
         crate::session::content::advance_history(db, session)?;
     }
-    db.execute("DELETE FROM entries WHERE session_id=?1", [session])?;
-    db.execute("DELETE FROM history_display WHERE session_id=?1", [session])?;
-    db.execute("DELETE FROM runs WHERE session_id=?1", [session])?;
+    db.execute("DELETE FROM entries WHERE session_id=?1", [&stored_session])?;
+    db.execute(
+        "DELETE FROM history_display WHERE session_id=?1",
+        [&stored_session],
+    )?;
+    db.execute("DELETE FROM runs WHERE session_id=?1", [&stored_session])?;
     db.execute(
         "UPDATE sessions SET current_metadata_json=NULL WHERE id=?1",
-        [session],
+        [&stored_session],
     )?;
     insert_transcript_entries(db, session, entries)?;
-    db.execute("DELETE FROM content_references WHERE session_id=?1 AND owner_kind='entry' AND NOT EXISTS(SELECT 1 FROM entries e WHERE e.session_id=content_references.session_id AND e.entry_id=content_references.owner_id)",[session])?;
-    db.execute("DELETE FROM run_events WHERE session_id=?1 AND run_id IN (SELECT run_id FROM run_snapshots WHERE session_id=?1 AND NOT EXISTS(SELECT 1 FROM runs r WHERE r.session_id=run_snapshots.session_id AND r.run_id=run_snapshots.run_id))", [session])?;
-    db.execute("DELETE FROM run_snapshots WHERE session_id=?1 AND NOT EXISTS(SELECT 1 FROM runs r WHERE r.session_id=run_snapshots.session_id AND r.run_id=run_snapshots.run_id)", [session])?;
+    db.execute("DELETE FROM content_references WHERE session_id=?1 AND owner_kind='entry' AND NOT EXISTS(SELECT 1 FROM entries e WHERE e.session_id=content_references.session_id AND e.entry_id=content_references.owner_id)",[&stored_session])?;
+    db.execute("DELETE FROM run_events WHERE session_id=?1 AND run_id IN (SELECT run_id FROM run_snapshots WHERE session_id=?1 AND NOT EXISTS(SELECT 1 FROM runs r WHERE r.session_id=run_snapshots.session_id AND r.run_id=run_snapshots.run_id))", [&stored_session])?;
+    db.execute("DELETE FROM run_snapshots WHERE session_id=?1 AND NOT EXISTS(SELECT 1 FROM runs r WHERE r.session_id=run_snapshots.session_id AND r.run_id=run_snapshots.run_id)", [&stored_session])?;
     Ok(())
 }
 
@@ -262,6 +274,7 @@ pub(crate) fn insert_transcript_entries(
     session: &str,
     mut entries: Vec<Value>,
 ) -> Result<()> {
+    let stored_session = crate::session::identity::session_key(db, session)?;
     crate::session::history::ensure_history_index(db, session)?;
     // Resolve legacy message ownership once, before discarding repeated
     // snapshots. A terminal/start marker supplies identity, not a display-time
@@ -293,7 +306,7 @@ pub(crate) fn insert_transcript_entries(
     }
     let mut position: i64 = db.query_row(
         "SELECT COALESCE(MAX(position)+1,0) FROM entries WHERE session_id=?1",
-        [session],
+        [&stored_session],
         |r| r.get(0),
     )?;
     let segmented =
@@ -313,7 +326,7 @@ pub(crate) fn insert_transcript_entries(
             let id = value["id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing entry identity"))?;
-            let run_id = format!("history:{session}:{id}");
+            let run_id = implicit_run_id(db, session, id, segmented, false)?;
             if !value["meta"].is_object() {
                 value["meta"] = serde_json::json!({});
             }
@@ -327,9 +340,10 @@ pub(crate) fn insert_transcript_entries(
                 .filter(|id| !id.is_empty())
                 .is_none()
         {
-            let active:Option<String> = db.query_row("SELECT coalesce((SELECT run_id FROM entries WHERE session_id=?1 AND entry_id=?2),
-                 (SELECT run_id FROM entries WHERE session_id=?1 AND run_id IS NOT NULL ORDER BY position DESC LIMIT 1))",params![session,value["id"].as_str()],|r|r.get::<_,Option<String>>(0))?
-                .or_else(||value["id"].as_str().map(|id|format!("history:{session}:{id}")));
+            let active = value["id"]
+                .as_str()
+                .map(|id| implicit_run_id(db, session, id, segmented, true))
+                .transpose()?;
             if let Some(run_id) = active {
                 if !value["meta"].is_object() {
                     value["meta"] = serde_json::json!({});
@@ -338,17 +352,25 @@ pub(crate) fn insert_transcript_entries(
             }
         }
         if matches!(value["type"].as_str(), Some("user" | "assistant" | "tool")) {
-            db.execute("INSERT INTO runs(session_id,run_id,status) VALUES (?1,?2,'unknown') ON CONFLICT(session_id,run_id) DO NOTHING",params![session,value["meta"]["run_id"].as_str()])?;
+            let run = value["meta"]["run_id"]
+                .as_str()
+                .map(|id| crate::session::identity::BoundIdentity::run(db, session, id))
+                .transpose()?;
+            db.execute("INSERT INTO runs(session_id,run_id,status) VALUES (?1,?2,'unknown') ON CONFLICT(session_id,run_id) DO NOTHING",params![&stored_session,run])?;
         }
         if value["type"] == "run_terminal" {
+            let run = value["content"]["run_id"]
+                .as_str()
+                .map(|id| crate::session::identity::BoundIdentity::run(db, session, id))
+                .transpose()?;
             let baseline: Option<(i64,i64)> = db.query_row(
                 "SELECT input_baseline,cache_read_baseline FROM runs WHERE session_id=?1 AND run_id=?2 AND input_baseline IS NOT NULL",
-                params![session,value["content"]["run_id"].as_str()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
-            let (input,cache)=match baseline {Some(value)=>value,None=>db.query_row("SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(cache_read_tokens),0) FROM runs WHERE session_id=?1 AND run_id<>?2",params![session,value["content"]["run_id"].as_str()],|r|Ok((r.get(0)?,r.get(1)?)))?};
+                params![&stored_session,run],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+            let (input,cache)=match baseline {Some(value)=>value,None=>db.query_row("SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(cache_read_tokens),0) FROM runs WHERE session_id=?1 AND run_id<>?2",params![&stored_session,run],|r|Ok((r.get(0)?,r.get(1)?)))?};
             {
                 let (total_input,total_cache):(Option<i64>,Option<i64>)=db.query_row(
                     "SELECT json_extract(current_metadata_json,'$.tokens_in'),json_extract(current_metadata_json,'$.tokens_cache_r') FROM sessions WHERE id=?1",
-                    [session],|r|Ok((r.get(0)?,r.get(1)?)))?;
+                    [&stored_session],|r|Ok((r.get(0)?,r.get(1)?)))?;
                 let content = value["content"]
                     .as_object_mut()
                     .ok_or_else(|| anyhow::anyhow!("invalid run terminal"))?;
@@ -369,6 +391,7 @@ pub(crate) fn insert_transcript_entries(
             .and_then(Value::as_str)
             .filter(|id| !id.is_empty())
             .ok_or_else(|| anyhow::anyhow!("missing entry identity"))?;
+        let stored_id = crate::session::identity::BoundIdentity::entry(db, session, id)?;
         let kind = value
             .get("type")
             .and_then(Value::as_str)
@@ -386,7 +409,7 @@ pub(crate) fn insert_transcript_entries(
             let previous: Option<String> = db
                 .query_row(
                     "SELECT digest FROM entry_fingerprints WHERE session_id=?1 AND entry_id=?2",
-                    params![session, id],
+                    params![&stored_session, &stored_id],
                     |row| row.get(0),
                 )
                 .optional()?;
@@ -400,7 +423,7 @@ pub(crate) fn insert_transcript_entries(
             let previous: Option<String> = db
                 .query_row(
                     "SELECT payload FROM entry_records WHERE session_id=?1 AND entry_id=?2 LIMIT 1",
-                    params![session, id],
+                    params![&stored_session, &stored_id],
                     |row| row.get(0),
                 )
                 .optional()?;
@@ -415,7 +438,7 @@ pub(crate) fn insert_transcript_entries(
         // settings change. Keep its original position so history cursors do not
         // move when metadata is refreshed.
         let metadata_position: Option<i64> = if kind == "session_info" {
-            db.query_row("SELECT position FROM entries WHERE session_id=?1 AND entry_type='session_info' LIMIT 1",[session],|r|r.get(0)).optional()?
+            db.query_row("SELECT position FROM entries WHERE session_id=?1 AND entry_type='session_info' LIMIT 1",[&stored_session],|r|r.get(0)).optional()?
         } else {
             None
         };
@@ -425,18 +448,18 @@ pub(crate) fn insert_transcript_entries(
                 // The new metadata header already owns staged/copied ranges.
                 // Retire the previous owner atomically rather than leaking all
                 // of its externalized fields after every rename/usage update.
-                db.execute("DELETE FROM content_references WHERE session_id=?1 AND owner_kind='entry' AND owner_id=(SELECT entry_id FROM entries WHERE session_id=?1 AND position=?2)",params![session,write_position])?;
+                db.execute("DELETE FROM content_references WHERE session_id=?1 AND owner_kind='entry' AND owner_id=(SELECT entry_id FROM entries WHERE session_id=?1 AND position=?2)",params![&stored_session,write_position])?;
             }
             db.execute(
                 "DELETE FROM entries WHERE session_id=?1 AND position=?2",
-                params![session, write_position],
+                params![&stored_session, write_position],
             )?;
         }
         crate::session::entry_records::insert_entry_record(db, session, write_position, &value)?;
         if let Some(fingerprint) = fingerprint {
             db.execute(
                 "INSERT INTO entry_fingerprints(session_id,entry_id,digest) VALUES (?1,?2,?3)",
-                params![session, id, fingerprint],
+                params![&stored_session, &stored_id, fingerprint],
             )?;
         }
         crate::session::history::insert_entry_shape(db, session, write_position, &value)?;
@@ -469,10 +492,11 @@ pub(crate) fn insert_transcript_entries(
                 "incomplete" | "interrupted_by_restart" => "interrupted",
                 state => state,
             };
+            let run = crate::session::identity::BoundIdentity::run(db, session, run)?;
             db.execute("INSERT INTO runs(session_id,run_id,status,run_sequence,epoch,started_at_ms,completed_at_ms,error,cache_write_tokens,input_baseline,cache_read_baseline,input_tokens,cache_read_tokens,output_tokens,duration_ms)
                 SELECT ?1,?2,?3,?8,?9,?10,?11,?12,?13,COALESCE(json_extract(current_metadata_json,'$.tokens_in'),0),COALESCE(json_extract(current_metadata_json,'$.tokens_cache_r'),0),?4,?5,?6,?7 FROM sessions WHERE id=?1
                 ON CONFLICT(session_id,run_id) DO UPDATE SET status=excluded.status,run_sequence=COALESCE(excluded.run_sequence,runs.run_sequence),epoch=COALESCE(excluded.epoch,runs.epoch),started_at_ms=COALESCE(runs.started_at_ms,excluded.started_at_ms),completed_at_ms=excluded.completed_at_ms,error=excluded.error,cache_write_tokens=excluded.cache_write_tokens,input_baseline=COALESCE(runs.input_baseline,excluded.input_baseline),cache_read_baseline=COALESCE(runs.cache_read_baseline,excluded.cache_read_baseline),input_tokens=excluded.input_tokens,cache_read_tokens=excluded.cache_read_tokens,output_tokens=excluded.output_tokens,duration_ms=excluded.duration_ms",
-                params![session,run,state,content["input_tokens"].as_i64(),content["cache_read_tokens"].as_i64(),content["run_tokens"].as_i64(),content["run_duration_ms"].as_i64(),content["run_sequence"].as_i64(),content["epoch"].as_i64(),if kind=="run_started" {timestamp} else {None},if kind=="run_terminal" {timestamp} else {None},content["error"].as_str().filter(|s|!s.is_empty()),content["cache_write_tokens"].as_i64()])?;
+                params![&stored_session,run,state,content["input_tokens"].as_i64(),content["cache_read_tokens"].as_i64(),content["run_tokens"].as_i64(),content["run_duration_ms"].as_i64(),content["run_sequence"].as_i64(),content["epoch"].as_i64(),if kind=="run_started" {timestamp} else {None},if kind=="run_terminal" {timestamp} else {None},content["error"].as_str().filter(|s|!s.is_empty()),content["cache_write_tokens"].as_i64()])?;
         }
         if metadata_position.is_none() {
             position += 1;
@@ -486,4 +510,34 @@ pub(crate) fn insert_transcript_entries(
     }
     crate::session::history::mark_history_index_ready(db, session)?;
     Ok(())
+}
+
+/// Allocate only when an ordinary entry has no producer-owned run. Retries
+/// reuse its committed owner; assistant/tool entries inherit the latest owner.
+/// New-format IDs never repeat session/message identity in a synthetic string.
+fn implicit_run_id(
+    db: &Connection,
+    session: &str,
+    entry: &str,
+    segmented: bool,
+    inherit: bool,
+) -> Result<String> {
+    if !segmented && !inherit {
+        // Keep the released user's derived-identity rule byte-for-byte. Only
+        // the new format allocates/reuses UUID ownership for an unscoped user.
+        return Ok(format!("history:{session}:{entry}"));
+    }
+    let stored_entry = crate::session::identity::BoundIdentity::entry(db, session, entry)?;
+    let stored_session = crate::session::identity::session_key(db, session)?;
+    let existing:Option<crate::session::identity::BoundIdentity>=db.query_row(
+        "SELECT coalesce((SELECT run_id FROM entries WHERE session_id=?1 AND entry_id=?2),
+        (SELECT run_id FROM entries WHERE ?3 AND session_id=?1 AND run_id IS NOT NULL ORDER BY position DESC LIMIT 1))",
+        params![stored_session,stored_entry,inherit],|row|row.get(0))?;
+    Ok(existing.map(|id| id.to_string()).unwrap_or_else(|| {
+        if segmented {
+            crate::utils::generate_entry_id()
+        } else {
+            format!("history:{session}:{entry}")
+        }
+    }))
 }

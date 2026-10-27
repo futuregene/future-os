@@ -166,8 +166,8 @@ impl Snapshot {
             let rows=store.db.read(move |db| {
                 let tx=db.transaction()?;check.check(&tx)?;
                 let mut statement=tx.prepare("SELECT position,entry_id,role,run_id,timestamp_ms FROM entries WHERE session_id=?1 AND position<?2 AND entry_type IN ('user','assistant','tool') ORDER BY position DESC LIMIT 64")?;
-                let rows=statement.query_map(params![check.session,before],|row|Ok((Entry {position:row.get(0)?,id:row.get(1)?},row.get::<_,Option<String>>(2)?,row.get::<_,Option<String>>(3)?,row.get::<_,Option<i64>>(4)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-                ensure!(rows.iter().map(|(entry,role,run,_)|entry.id.len()+role.as_ref().map_or(0,String::len)+run.as_ref().map_or(0,String::len)+32).sum::<usize>()<=READ_BYTES,"history search identity page exceeds budget");
+                let rows=statement.query_map(params![check.session,before],|row|Ok((Entry {position:row.get(0)?,id:row.get(1)?},row.get::<_,Option<String>>(2)?,row.get::<_,Option<BoundIdentity>>(3)?,row.get::<_,Option<i64>>(4)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                ensure!(rows.iter().map(|(entry,role,run,_)|entry.id.len()+role.as_ref().map_or(0,String::len)+run.as_ref().map_or(0,|id|id.len())+32).sum::<usize>()<=READ_BYTES,"history search identity page exceeds budget");
                 drop(statement);tx.commit()?;Ok(rows)
             })?;
             if rows.is_empty() {
@@ -208,8 +208,10 @@ impl Snapshot {
         let (scope,entry,kind,role,run,time)=store.db.read(move |db| {
             let tx=db.transaction()?;
             let scope=Self::capture_from(&tx,&session)?;
+            let id=BoundIdentity::entry(&tx,&session,&id)?;
+            let session=BoundIdentity::session(&tx,&session)?;
             let row=tx.query_row("SELECT position,entry_id,entry_type,role,run_id,timestamp_ms FROM entries WHERE session_id=?1 AND entry_id=?2 AND entry_type IN ('user','assistant','tool')",
-                params![session,id],|row|Ok((Entry {position:row.get(0)?,id:row.get(1)?},row.get::<_,String>(2)?,row.get::<_,Option<String>>(3)?,row.get::<_,Option<String>>(4)?,row.get::<_,Option<i64>>(5)?))).optional()?.context("entry not found in this session's conversation history")?;
+                params![session,id],|row|Ok((Entry {position:row.get(0)?,id:row.get(1)?},row.get::<_,String>(2)?,row.get::<_,Option<String>>(3)?,row.get::<_,Option<BoundIdentity>>(4)?,row.get::<_,Option<i64>>(5)?))).optional()?.context("entry not found in this session's conversation history")?;
             tx.commit()?;Ok((scope,row.0,row.1,row.2,row.3,row.4))
         })?;
         let (fields, omitted, total) = scope.readable_fields(store, &entry)?;

@@ -45,6 +45,11 @@ fn run_summary_view(run: future_tasks::TaskRun) -> Value {
         "promptVersion": run.prompt_version,
         "resultSummary": run.result_summary.as_deref().map(|s| truncate(s, RUN_SUMMARY_CHARS)),
         "errorMessage": run.error_message,
+        // Why the run ended and the one-line trace kept when it produced
+        // nothing, so a phone row does not show `completed` over an empty
+        // answer without saying what happened.
+        "finishReason": run.finish_reason,
+        "finishNote": run.finish_note,
         // The conversation was deleted after the run settled: the ids are gone
         // with it, so the phone hides its "open" link and says why.
         "sessionDeleted": run.session_deleted,
@@ -647,6 +652,8 @@ mod tests {
             finished_at: Some(2),
             error_message: None,
             session_deleted: false,
+            finish_reason: None,
+            finish_note: None,
         }
     }
 

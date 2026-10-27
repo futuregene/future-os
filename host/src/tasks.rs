@@ -10,9 +10,26 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use future_tasks::{
-    compose_run_prompt, kernel, new_run_id, ConversationMode, RunKind, RunOrigin, RunStatus,
-    SessionPolicy, Store, Task, TaskRun,
+    compose_run_prompt, finish_reason, kernel, new_run_id, ConversationMode, RunKind, RunOrigin,
+    RunStatus, SessionPolicy, Store, Task, TaskRun,
 };
+
+/// The failure a run with no answer is recorded with. A stable `[CODE]` prefix,
+/// like every other failure this executor writes, so the reason is machine
+/// readable as well as legible.
+const EMPTY_ANSWER_ERROR: &str =
+    "[EMPTY_ANSWER] the run finished without any answer; its turn produced no text";
+
+/// What a run's conversation produced, as far as the ledger needs it.
+#[derive(Debug, Default)]
+struct RunAnswer {
+    /// The final assistant text — possibly empty, which is a result the ledger
+    /// must name rather than a success it can assume.
+    text: String,
+    /// The last tool the run called: the only clue left once a task with
+    /// `session_retention = delete` has deleted the conversation.
+    last_tool: Option<String>,
+}
 
 /// Tick cadence. The store is re-read every tick, so CLI/remote edits land
 /// without any cache invalidation.
@@ -255,6 +272,8 @@ fn claim(store: &Store, task: &Task, reason: ClaimReason) -> Result<TaskRun, Str
         finished_at: None,
         error_message: None,
         session_deleted: false,
+        finish_reason: None,
+        finish_note: None,
     };
     store.insert_run(&run).map_err(|e| e.to_string())?;
 
@@ -288,6 +307,15 @@ impl Drop for InterruptedTask {
                     run.status = RunStatus::Failed;
                     run.finished_at = Some(now_ms());
                     run.error_message = Some("Desktop stopped before task completion".into());
+                    // The run was still `running` when this process went away:
+                    // say that, rather than leaving a settled-looking row with
+                    // no reason on it (and no trace of what it had done).
+                    run.finish_reason = Some(finish_reason::INTERRUPTED.to_string());
+                    run.finish_note = Some(
+                        "the host stopped while this run was in flight; its conversation is the \
+                         only record left"
+                            .to_string(),
+                    );
                     store.update_run(&run).map_err(|e| e.to_string())?;
                 }
             }
@@ -321,16 +349,62 @@ async fn execute(
     // `Store` owns a `rusqlite::Connection` (Send but not Sync), so it is
     // moved through the async call and handed back rather than borrowed.
     let (store, outcome) = run_inner(store, &task, &mut run, notify).await;
-    let (status, error, output) = match outcome {
-        Ok(summary) => {
-            run.result_summary = Some(kernel::truncate(&summary, kernel::RESULT_SUMMARY_CHARS));
-            (RunStatus::Completed, None, Some(summary))
+    // Settling is the one place that knows both how the run ended and whether
+    // anything came of it, so it is also the place that must say so: an empty
+    // answer and a cancelled run are not `completed`, and the reason is written
+    // onto the row where the next reader (and `future task runs`) can see it.
+    let (status, error, finish_reason, finish_note, output) = match outcome {
+        Ok(answer) => {
+            let finish = kernel::finish_reason_for_answer(&answer.text);
+            if finish == finish_reason::EMPTY_ANSWER {
+                (
+                    RunStatus::Failed,
+                    Some(EMPTY_ANSWER_ERROR.to_string()),
+                    finish,
+                    Some(kernel::finish_note(0, answer.last_tool.as_deref())),
+                    None,
+                )
+            } else {
+                run.result_summary =
+                    Some(kernel::truncate(&answer.text, kernel::RESULT_SUMMARY_CHARS));
+                (RunStatus::Completed, None, finish, None, Some(answer.text))
+            }
         }
-        Err(error) => (RunStatus::Failed, Some(error), None),
+        Err(error) => {
+            // A run that produced nothing usable still has to leave a trace: a
+            // task that deletes its conversations takes the evidence with it,
+            // and "failed, no output" alone cannot say whether the turn had
+            // begun working. One best-effort read of the session is the cheapest
+            // source for that — and when even that fails (the agent is gone),
+            // the note says so rather than inventing "0 chars".
+            let digest = match run.session_id.as_deref() {
+                Some(session_id) => read_answer(session_id).await.ok(),
+                None => None,
+            };
+            let note = match digest {
+                Some(answer) => {
+                    kernel::finish_note(answer.text.chars().count(), answer.last_tool.as_deref())
+                }
+                None => kernel::truncate(
+                    "the run's session could not be read back (the Agent may have been gone); \
+                     its terminal state is in the error above",
+                    future_tasks::kernel::FINISH_NOTE_CHARS,
+                ),
+            };
+            (
+                RunStatus::Failed,
+                Some(error.clone()),
+                kernel::finish_reason_for_error(&error),
+                Some(note),
+                None,
+            )
+        }
     };
     run.status = status;
     run.finished_at = Some(now_ms());
     run.error_message = error;
+    run.finish_reason = Some(finish_reason.to_string());
+    run.finish_note = finish_note;
     store.update_run(&run).map_err(|e| e.to_string())?;
     // Save the answer before anything can take it away: a task configured to
     // delete its conversations keeps its *results*, only the conversation goes.
@@ -395,7 +469,7 @@ async fn run_inner(
     task: &Task,
     run: &mut TaskRun,
     notify: &Notifier,
-) -> (Store, Result<String, String>) {
+) -> (Store, Result<RunAnswer, String>) {
     // 1. Session: new conversation, or the task's bound one (lazy create).
     //    Every store access below happens between awaits, never across one:
     //    the store owns a `rusqlite::Connection`, which is `Send` but not
@@ -484,11 +558,7 @@ async fn run_inner(
 
     // The final assistant text is the run's result summary. Read it back from
     // the agent session (the durable source of truth).
-    let text = match read_final_assistant_text(&session_id).await {
-        Ok(text) => text,
-        Err(error) => return (store, Err(error)),
-    };
-    (store, Ok(text))
+    (store, read_answer(&session_id).await)
 }
 
 async fn create_new_session(task: &Task) -> Result<(String, String), String> {
@@ -594,8 +664,10 @@ fn bind_task_thread(store: &Store, task: &Task, thread_id: &str) -> Result<(), S
 }
 
 /// Read the final assistant text of the last run in a session (the durable
-/// journal is the source of truth).
-async fn read_final_assistant_text(session_id: &str) -> Result<String, String> {
+/// journal is the source of truth), plus the last tool it called — the one clue
+/// that survives a `session_retention = delete` task throwing the conversation
+/// away.
+async fn read_answer(session_id: &str) -> Result<RunAnswer, String> {
     let mut client = crate::agent_bridge::connect_agent()
         .await
         .map_err(|e| e.to_string())?;
@@ -616,11 +688,18 @@ async fn read_final_assistant_text(session_id: &str) -> Result<String, String> {
         ));
     }
     let value = future_rpc::decode::response_data(&response);
-    Ok(value
-        .get("text")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string())
+    Ok(RunAnswer {
+        text: value
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        last_tool: value
+            .get("lastTool")
+            .and_then(|v| v.as_str())
+            .filter(|name| !name.trim().is_empty())
+            .map(str::to_string),
+    })
 }
 
 #[cfg(test)]
@@ -756,6 +835,13 @@ mod tests {
         );
         assert!(!finished.session_deleted);
         assert!(finished.error_message.is_none());
+        // The ledger says the run answered — the token that used to be missing
+        // when a run finished with nothing in it.
+        assert_eq!(
+            finished.finish_reason.as_deref(),
+            Some(future_tasks::finish_reason::ANSWER)
+        );
+        assert!(finished.finish_note.is_none());
 
         // The prompt carried the envelope, and the task's own text follows it.
         let prompts = mock.requests_of("prompt");
@@ -1575,6 +1661,8 @@ mod tests {
                 finished_at: None,
                 error_message: None,
                 session_deleted: false,
+                finish_reason: None,
+                finish_note: None,
             })
             .unwrap();
         assert!(store.has_running_run(&t.id).unwrap());
@@ -1785,6 +1873,8 @@ mod tests {
                 finished_at: None,
                 error_message: None,
                 session_deleted: false,
+                finish_reason: None,
+                finish_note: None,
             })
             .unwrap();
 
@@ -1978,6 +2068,8 @@ mod tests {
                 finished_at: None,
                 error_message: None,
                 session_deleted: false,
+                finish_reason: None,
+                finish_note: None,
             })
             .unwrap();
         drop(store);
@@ -2154,6 +2246,169 @@ mod tests {
         assert!(
             mock.requests_of("prompt").is_empty(),
             "nothing is sent to the Agent for an unrecordable prompt"
+        );
+    }
+    // ─── settling an empty or cut-off run ────────────────────────────────
+
+    /// Drive one run against the mock and return the settled ledger row.
+    ///
+    /// `terminal` is the `agent_end` payload: the run's own ending, which the
+    /// executor must reflect rather than flatten to `completed`.
+    async fn settle_one_run(
+        home_tag: &str,
+        answer: serde_json::Value,
+        terminal: &str,
+        retention: future_tasks::SessionRetention,
+    ) -> (TempDir, future_tasks::TaskRun, Store) {
+        let _home = crate::agent_bridge::test_support::TestHome::new(home_tag);
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+
+        let mut t = task("settles");
+        t.session_retention = retention;
+        store.insert_task(&t).unwrap();
+        let run = claim(&store, &t, ClaimReason::Explicit).unwrap();
+        crate::test_support::tasks::script_agent_setup_with_answer(&mock, "sess_settle", answer);
+        mock.push_stream(crate::agent_bridge::test_support::StreamScript::Events(
+            vec![crate::agent_bridge::test_support::stream_event(
+                "@attach",
+                0,
+                "agent_end",
+                terminal,
+            )],
+            None,
+        ));
+
+        execute(&notifier(), store, t, run.clone())
+            .await
+            .expect("execute");
+        let store = Store::open(dir.path()).unwrap();
+        let finished = store.get_run(&run.id).unwrap().expect("the run row");
+        (dir, finished, store)
+    }
+
+    /// The provider answered 200 and the model produced nothing: the run ends
+    /// cleanly with no text. That used to be `completed` with an empty summary —
+    /// an idle-looking success. It is now a failure with a reason, and the one
+    /// clue that survives the (deleted) conversation is on the row.
+    ///
+    /// Falsify: treat a blank answer as `Completed` again and this goes red on
+    /// the first assertion.
+    #[tokio::test]
+    async fn an_empty_answer_is_failed_with_a_reason_not_completed() {
+        let (_dir, finished, store) = settle_one_run(
+            "tasks-empty-answer",
+            serde_json::json!({ "text": null, "lastTool": "shell" }),
+            r#"{"type":"agent_end","state":"completed","reason":"complete"}"#,
+            future_tasks::SessionRetention::Delete,
+        )
+        .await;
+
+        assert_eq!(finished.status, RunStatus::Failed, "{finished:?}");
+        assert_eq!(
+            finished.finish_reason.as_deref(),
+            Some(future_tasks::finish_reason::EMPTY_ANSWER)
+        );
+        assert!(
+            finished
+                .error_message
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("[EMPTY_ANSWER]"),
+            "{finished:?}"
+        );
+        assert!(
+            finished.result_summary.is_none(),
+            "an empty answer is not a summary: {finished:?}"
+        );
+        // The conversation is gone; the note is what is left of it.
+        assert!(finished.session_deleted);
+        let note = finished.finish_note.as_deref().unwrap_or_default();
+        assert!(note.contains("answer: 0 chars"), "{note}");
+        assert!(note.contains("last tool call: shell"), "{note}");
+        assert_eq!(
+            store.run_output(&finished.id).unwrap(),
+            None,
+            "nothing to save when nothing was said"
+        );
+    }
+
+    /// A cancelled run is not a finished one. Its terminal names `cancelled`
+    /// and the ledger must say so, not `completed`.
+    #[tokio::test]
+    async fn a_cancelled_run_is_failed_and_named_cancelled() {
+        let (_dir, finished, _store) = settle_one_run(
+            "tasks-cancelled",
+            serde_json::json!({ "text": null }),
+            r#"{"type":"agent_end","state":"cancelled","duration_ms":71000}"#,
+            future_tasks::SessionRetention::Keep,
+        )
+        .await;
+
+        assert_eq!(finished.status, RunStatus::Failed, "{finished:?}");
+        assert_eq!(
+            finished.finish_reason.as_deref(),
+            Some(future_tasks::finish_reason::CANCELLED)
+        );
+        assert!(
+            finished
+                .error_message
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("[RUN_CANCELLED]"),
+            "{finished:?}"
+        );
+        assert!(finished.finish_note.is_some(), "{finished:?}");
+    }
+
+    /// The Agent host restarting under a run (the 2026-10-27 sweep) is its own
+    /// case: the run was neither answered, nor cancelled by anyone, nor refused
+    /// by the provider — the process carrying it went away. The Agent records
+    /// that as the terminal *state*, so the state alone has to be enough; the
+    /// shutdown shape that also carries an `error` (`{state, error}`) is covered
+    /// by the fold's `a_terminal_with_an_error_is_never_clean`.
+    #[tokio::test]
+    async fn a_run_the_agent_restarted_under_is_failed_and_named_interrupted() {
+        let (_dir, finished, _store) = settle_one_run(
+            "tasks-restarted",
+            serde_json::json!({ "text": null }),
+            r#"{"type":"agent_end","state":"interrupted_by_restart"}"#,
+            future_tasks::SessionRetention::Keep,
+        )
+        .await;
+
+        assert_eq!(finished.status, RunStatus::Failed, "{finished:?}");
+        assert_eq!(
+            finished.finish_reason.as_deref(),
+            Some(future_tasks::finish_reason::INTERRUPTED)
+        );
+        assert!(
+            finished
+                .error_message
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("[INTERRUPTED_BY_RESTART]"),
+            "{finished:?}"
+        );
+    }
+
+    /// A provider failure (4xx/5xx reaching the fold as a truncated stream) is
+    /// a provider error, never a completion.
+    #[tokio::test]
+    async fn a_provider_failure_is_not_a_completion() {
+        let (_dir, finished, _store) = settle_one_run(
+            "tasks-provider-error",
+            serde_json::json!({ "text": null }),
+            r#"{"type":"agent_end","state":"incomplete","truncation":{"detected_by":"model_response_error"}}"#,
+            future_tasks::SessionRetention::Keep,
+        )
+        .await;
+
+        assert_eq!(finished.status, RunStatus::Failed, "{finished:?}");
+        assert_eq!(
+            finished.finish_reason.as_deref(),
+            Some(future_tasks::finish_reason::PROVIDER_ERROR)
         );
     }
 }

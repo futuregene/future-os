@@ -5,18 +5,21 @@ use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
 pub(super) fn generation(db: &Connection, session: &str) -> Result<i64> {
+    let stored_session = crate::session::identity::session_key(db, session)?;
     Ok(db.query_row(
         "SELECT coalesce((SELECT generation FROM content_history_versions WHERE session_id=?1),0)",
-        [session],
+        [&stored_session],
         |row| row.get(0),
     )?)
 }
 pub(super) fn record(db: &Connection, session: &str, key: &str) -> Result<()> {
-    db.execute("INSERT INTO checkpoint_generations(session_id,input_key,history_generation) VALUES (?1,?2,?3)",params![session,key,generation(db,session)?])?;
+    let stored_session = crate::session::identity::session_key(db, session)?;
+    db.execute("INSERT INTO checkpoint_generations(session_id,input_key,history_generation) VALUES (?1,?2,?3)",params![&stored_session,key,generation(db,session)?])?;
     Ok(())
 }
 pub(super) fn is_current(db: &Connection, session: &str, key: &str) -> Result<bool> {
-    let stored:Option<i64>=db.query_row("SELECT history_generation FROM checkpoint_generations WHERE session_id=?1 AND input_key=?2",params![session,key],|row|row.get(0)).optional()?;
+    let stored_session = crate::session::identity::session_key(db, session)?;
+    let stored:Option<i64>=db.query_row("SELECT history_generation FROM checkpoint_generations WHERE session_id=?1 AND input_key=?2",params![&stored_session,key],|row|row.get(0)).optional()?;
     Ok(
         stored.context("canonical checkpoint generation is missing; preserve its receipt")?
             == generation(db, session)?,
@@ -24,19 +27,20 @@ pub(super) fn is_current(db: &Connection, session: &str, key: &str) -> Result<bo
 }
 
 pub(crate) fn advance(db: &Connection, session: &str) -> Result<()> {
+    let stored_session = crate::session::identity::session_key(db, session)?;
     let previous = generation(db, session)?;
     let next = previous
         .checked_add(1)
         .context("history rewrite generation overflow")?;
-    db.execute("INSERT INTO content_history_versions(session_id,generation) VALUES (?1,?2) ON CONFLICT(session_id) DO UPDATE SET generation=excluded.generation",params![session,next])?;
+    db.execute("INSERT INTO content_history_versions(session_id,generation) VALUES (?1,?2) ON CONFLICT(session_id) DO UPDATE SET generation=excluded.generation",params![&stored_session,next])?;
     db.execute("INSERT INTO retired_checkpoint_generations(session_id,through_generation)
         SELECT ?1,?2 WHERE EXISTS(SELECT 1 FROM checkpoint_generations WHERE session_id=?1 AND history_generation<=?2)
-        ON CONFLICT(session_id) DO UPDATE SET through_generation=max(through_generation,excluded.through_generation)",params![session,previous])?;
+        ON CONFLICT(session_id) DO UPDATE SET through_generation=max(through_generation,excluded.through_generation)",params![&stored_session,previous])?;
     Ok(())
 }
 
 pub(super) fn reclaim(db: &mut Connection) -> Result<bool> {
-    let scope:Option<(String,i64)>=db.query_row("SELECT session_id,through_generation FROM retired_checkpoint_generations ORDER BY session_id LIMIT 1",[],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+    let scope:Option<(crate::session::identity::BoundIdentity,i64)>=db.query_row("SELECT session_id,through_generation FROM retired_checkpoint_generations ORDER BY session_id LIMIT 1",[],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
     let Some((session, through)) = scope else {
         return Ok(true);
     };

@@ -998,12 +998,6 @@ pub struct Model {
     pub input_types: Vec<String>,
     #[serde(default)]
     pub cost: ModelCost,
-    #[serde(
-        rename = "thinkingLevelMap",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub thinking_level_map: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub headers: Option<serde_json::Map<String, serde_json::Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

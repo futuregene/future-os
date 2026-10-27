@@ -353,6 +353,52 @@
         "The prototype verifies semantic JSON round-trip on the observed records, not full RPC/recovery/GC behavior.",
         "The same sample must be regenerated synthetically for final automated acceptance; personal records are not CI fixtures."
       ]
+    },
+    {
+      "id": "B3.1-first-compact-candidate",
+      "status": "withheld: high-context-churn allocation regression",
+      "artifact": "docs/testing/compact-storage-candidate-1-2026-10-27.json",
+      "artifactSha256": "cd0d91234fca8724fbc48bc222dc47a4f8f8534f6644ef4bca117a8da3e59766",
+      "scope": "same-machine synthetic metadata stress; see raw artifact for measurements and limitations"
+    },
+    {
+      "id": "B3.2-native-uuid-dictionary-candidate",
+      "status": "withheld: high-context-churn logical WAL page-write regression",
+      "artifact": "docs/testing/compact-storage-candidate-2-2026-10-27.json",
+      "artifactSha256": "11521cdd5ee751c3454d9e512b742dae36c987c9be437878e331336eda7d3094",
+      "scope": "same-machine synthetic metadata stress; see raw artifact for measurements and limitations",
+      "implementationCheckpoint": "96bcfb69",
+      "provenanceValidation": "All recorded source hashes match this checkpoint; newer main merges and later candidates do not replace these measurements."
+    },
+    {
+      "id": "B3.3-structured-stream-body-owners",
+      "status": "withheld: remaining high-context-churn logical WAL page-write regression",
+      "artifact": "docs/testing/compact-storage-candidate-3-2026-10-27.json",
+      "artifactSha256": "7fd4bf6737dcb4e7923bed2d5e642043b5840d841c0338d2ec59d03780b0c767",
+      "scope": "single intermediate stress sample; ownership category changed; see artifact and bilingual baselines for limitations"
+    },
+    {
+      "id": "B3.4-bounded-facts-scoped-identities",
+      "status": "intermediate: reduced allocations and WAL; first-read regression under investigation",
+      "artifact": "docs/testing/compact-storage-candidate-4-2026-10-27.json",
+      "artifactSha256": "7c5ec5ce97da9a1d46b729fb6a67f6b92226bb4d48aa1cc709d738a5b01d3e22",
+      "scope": "three paired valid UUID transcript repetitions, identical logical content digests; intermediate stress and diagnostic results retained"
+    },
+    {
+      "id": "B3.5-reader-readiness",
+      "status": "performance candidate; final full regression, faults, concurrency, published migration matrix and UI acceptance pending",
+      "artifact": "docs/testing/compact-storage-candidate-5-2026-10-27.json",
+      "artifactSha256": "982b798310fccbe2a094f6551c150efe7bc14d9ae22b30a8506ecefa9737c1c2",
+      "implementationCheckpoint": "cc0ae84b9a11d12294cd6f47a2a8e47ed7f1c9ef",
+      "scope": "three paired valid UUID transcript measurements with verified equal logical content; full acceptance pending"
+    },
+    {
+      "id": "B3.6-final-automated-acceptance",
+      "status": "automated acceptance complete; native user testing handoff",
+      "artifact": "docs/testing/compact-storage-acceptance-2026-10-27.json",
+      "artifactSha256": "0c0f91363074a1636341f7d6b56e66de3a4440de8907379361544a5e6c34da33",
+      "implementationCheckpoint": "52b6b3f8b13e5a4db45e06f21721830e92a6a51d",
+      "scope": "Final migration/fault/static/full regression plus fresh paired 1/10 MiB, large tools, native concurrency, production admission and headless browser results; C5 repeated realistic comparisons retained."
     }
   ]
 }

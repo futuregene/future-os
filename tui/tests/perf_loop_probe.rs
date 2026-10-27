@@ -19,7 +19,7 @@ use std::time::Instant;
 
 use future_tui::components::chat_area::{ChatArea, ChatMessage, ChatRole};
 use future_tui::workbench::layout::{self, Frame};
-use future_tui::workbench::preferences::{Density, SidebarPosition};
+use future_tui::workbench::preferences::SidebarPosition;
 use future_tui::workbench::{demo, Workbench};
 
 const W: u16 = 120;
@@ -32,13 +32,7 @@ const QUESTION: &str = "看一下这个渲染路径为什么会慢，顺便解�
 const DELTA: &str = "一些流式文本。";
 
 fn frame_of() -> Frame {
-    Frame::new(
-        W,
-        H,
-        layout::SIDEBAR_DEFAULT,
-        Density::Focused,
-        SidebarPosition::Right,
-    )
+    Frame::new(W, H, layout::SIDEBAR_DEFAULT, SidebarPosition::Right)
 }
 
 /// A conversation of `turns` question/answer pairs — markdown, code fences and

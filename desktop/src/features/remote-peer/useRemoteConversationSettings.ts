@@ -1,9 +1,8 @@
-import type { ThinkingLevel } from "../../integrations/agent/agentClient";
 import type { RemoteModelInfo, RemotePeerEvent } from "./remotePeerClient";
 import type { RemoteSessionStateReading } from "./useRemoteTimeline";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { defaultThinkingLevel, readLastUsedModel, readLastUsedThinkingLevel, rememberLastUsedModel, rememberLastUsedThinkingLevel, thinkingLevels } from "../../integrations/agent/agentClient";
+import { legacyThinkingLevels, readLastUsedModel, readLastUsedThinkingLevel, rememberLastUsedModel, rememberLastUsedThinkingLevel } from "../../integrations/agent/agentClient";
 import { hostModels, useHostCatalogueInvalidation } from "./remoteHostCatalog";
 import {
   getRemoteConversationSettings,
@@ -75,19 +74,17 @@ export function defaultRemoteModel(models: RemoteModelInfo[], lastUsed: string |
 }
 
 /**
- * Whether that host's model accepts thinking controls at all.
- *
- * `undefined` is not `false`: a catalogue that does not say is treated as a model
- * that does think, which is what the agent's own list means by omitting nothing
- * (`reasoning` is always sent) and what this app does elsewhere
- * (`modelSupportsThinking` in `integrations/agent/agentClient`).
+ * The thinking levels a host's model offers, in display order — the host's
+ * catalogue list as-is, or the legacy six when it predates the field.
  */
-export function remoteModelSupportsThinking(
+export function remoteModelThinkingLevels(
   models: RemoteModelInfo[],
   reference: string | null,
-): boolean {
-  const chosen = models.find(model => remoteModelReference(model) === reference);
-  return chosen?.reasoning !== false;
+): readonly string[] {
+  const declared = models.find(model => remoteModelReference(model) === reference)?.thinkingLevels;
+  if (declared && declared.length > 0)
+    return declared;
+  return legacyThinkingLevels;
 }
 
 /**
@@ -95,21 +92,14 @@ export function remoteModelSupportsThinking(
  *
  * The phone's rule — start from the level the user last chose — with this app's own
  * floor, which is the rule this app already applies to its new conversations
- * (`resolveInitialThinkingLevel` in `integrations/agent/agentClient`): a level it
- * never sees, or one that is not a level at all, means the app default. The phone's
- * floor is `off`; this one is not, because `off` is what the user is not choosing:
- * thinking off is a choice the picker offers, not the state a conversation should
- * silently start in. A model that takes no thinking controls gets `off` either way,
- * because that is what it will run with.
+ * (`resolveInitialThinkingLevel` in `integrations/agent/agentClient`): a level
+ * this model's list does not offer means that model's own starting level.
  *
- * Deliberately *not* the level the host's catalogue declares for the model. That
- * field is not a default anybody chose: the agent answers `list_models` with `high`
- * for every reasoning model and `off` for the rest
- * (`agent/src/rpc/commands/providers.rs`), so seeding from it ran every new remote
- * conversation on a reasoning model at high effort while the same model started on
- * this machine ran at medium — and the level travels with the first prompt, so the
- * host really did run it at high. This app's own composer ignores the same field
- * for the same reason (`modelThinkingLevel` in `integrations/agent/agentClient`).
+ * A current host sends `defaultThinkingLevel = "default"` and lists `default`
+ * first, so a draft starts there unless the user's remembered choice is on this
+ * model's list. A host that predates `thinkingLevels` keeps the old rule: any of
+ * the legacy six, else the desktop default of `medium` — the literal `default`
+ * is never sent to it.
  *
  * The level is sent explicitly with the first prompt either way: this is not a
  * guess about what the host will *choose*, it is the value the host is asked for.
@@ -119,24 +109,29 @@ export function defaultRemoteThinkingLevel(
   reference: string | null,
   lastUsed: string | null,
 ): string {
-  if (!remoteModelSupportsThinking(models, reference))
-    return "off";
+  const chosen = models.find(model => remoteModelReference(model) === reference);
+  const declared = chosen?.thinkingLevels;
+  const levels = remoteModelThinkingLevels(models, reference);
+  // One level is no choice: use it, whether that is a current host's `default`
+  // or an older host's `off` for a model without thinking controls.
+  if (levels.length === 1)
+    return levels[0]!;
   // The host's own model entry gives us both the usable set and the level it
   // starts at. A remembered value is only a level if this model still offers it —
   // the host's agent clamps anything else anyway, and repeating a value that will
   // be snapped away would show one effort while running another. No declaration
   // (an older host) keeps the old rule: any of the six, else the app default.
-  const chosen = models.find(model => remoteModelReference(model) === reference);
-  const declared = chosen?.thinkingLevels;
   if (!declared || declared.length === 0) {
-    return lastUsed && thinkingLevels.includes(lastUsed as ThinkingLevel)
+    return lastUsed && legacyThinkingLevels.includes(lastUsed as typeof legacyThinkingLevels[number])
       ? lastUsed
-      : defaultThinkingLevel;
+      : "medium";
   }
-  if (lastUsed && declared.includes(lastUsed))
+  if (lastUsed && levels.includes(lastUsed))
     return lastUsed;
   const starting = chosen?.defaultThinkingLevel;
-  return starting && declared.includes(starting) ? starting : declared[0]!;
+  if (starting && levels.includes(starting))
+    return starting;
+  return levels[0]!;
 }
 
 /**
@@ -408,10 +403,12 @@ export function useRemoteConversationSettings(
       // conversation, which is the state this whole path exists to fix.
       setModel(reference);
       // Switching model keeps the level the user is on (the phone's rule) — but a
-      // model that takes no thinking controls runs at `off`, so the draft must not
-      // go on offering it one.
-      if (!remoteModelSupportsThinking(models, reference))
-        setThinkingLevel("off");
+      // model with a single level (a current host's `default`, an older host's
+      // `off` for a model without thinking controls) runs only at that value, so
+      // the draft must not go on offering it a different one.
+      const levels = remoteModelThinkingLevels(models, reference);
+      if (levels.length === 1)
+        setThinkingLevel(levels[0]!);
       return;
     }
     const previous = model;

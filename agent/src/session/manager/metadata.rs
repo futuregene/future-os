@@ -19,6 +19,7 @@ impl Manager {
     pub fn parent_session_id(&self, id: &str) -> Result<Option<String>> {
         let id = id.to_owned();
         self.storage()?.db.read(move |db| {
+            let id=crate::session::identity::BoundIdentity::session(db,&id)?;
             let parent:Option<Option<String>>=db.query_row(
                 "SELECT CASE WHEN json_valid(current_metadata_json) THEN CASE WHEN json_type(current_metadata_json,'$.parent_session_id')='text' THEN json_extract(current_metadata_json,'$.parent_session_id') END END FROM sessions WHERE id=?1",
                 [&id],|row|row.get(0)).optional().context("session metadata could not be read")?;

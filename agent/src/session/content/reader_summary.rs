@@ -9,6 +9,7 @@ impl Snapshot {
         let (scope,raw,model,time,count,first)=store.db.read(move |db| {
             let tx=db.transaction()?;
             let scope=Self::capture_from(&tx,&session)?;
+            let session=BoundIdentity::session(&tx,&session)?;
             let (raw,time):(Option<String>,Option<i64>)=tx.query_row("SELECT current_metadata_json,updated_at_ms FROM sessions WHERE id=?1",[&session],|row|Ok((row.get(0)?,row.get(1)?)))?;
             ensure!(raw.as_ref().is_none_or(|raw|raw.len()<=super::super::WRITE_BYTES),"session summary metadata exceeds its thin budget");
             let model:Option<String>=tx.query_row("SELECT json_extract(content_json,'$.model') FROM entries WHERE session_id=?1 AND entry_type='model_change' AND json_type(content_json,'$.model')='text' AND json_extract(content_json,'$.model')<>'' ORDER BY position DESC LIMIT 1",[&session],|row|row.get(0)).optional()?;
@@ -64,7 +65,7 @@ impl Snapshot {
             Ok(())
         })?;
         Ok(SessionSummary {
-            id: scope.session,
+            id: scope.session.to_string(),
             cwd: info["cwd"].as_str().unwrap_or_default().to_owned(),
             updated_at: chrono::DateTime::from_timestamp_millis(
                 time.context("published session has no update timestamp")?,

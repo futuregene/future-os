@@ -46,6 +46,8 @@ fn counts(store: &SqliteStore) -> Value {
                 "run_events",
                 "run_snapshots",
                 "stream_changes",
+                "stream_contexts",
+                "stream_change_content",
                 "content_segments",
                 "content_objects",
             ] {
@@ -60,16 +62,140 @@ fn counts(store: &SqliteStore) -> Value {
                 [],
                 |row| row.get(0),
             )?;
+            let mut query=db.prepare("SELECT name,sum(pgsize),sum(payload),sum(unused) FROM dbstat GROUP BY name ORDER BY name")?;
+            let allocations=query.query_map([],|row|Ok((row.get::<_,String>(0)?,json!({"allocatedBytes":row.get::<_,i64>(1)?,"payloadBytes":row.get::<_,i64>(2)?,"unusedBytes":row.get::<_,i64>(3)?}))))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            result.insert("structures".into(),Value::Object(allocations.into_iter().collect()));
+            result.insert("pragmas".into(),json!({"pageSize":db.pragma_query_value(None,"page_size",|r|r.get::<_,i64>(0))?,"journalMode":db.pragma_query_value(None,"journal_mode",|r|r.get::<_,String>(0))?,"synchronous":db.pragma_query_value(None,"synchronous",|r|r.get::<_,i64>(0))?}));
             result.insert("contentBytes".into(), json!(bytes));
             Ok(Value::Object(result))
         })
         .unwrap()
 }
 
+/// Writer-connection page writes in WAL mode, independent of file reuse and
+/// checkpoint high-water length. Count only successful performance workloads.
+#[derive(Clone, Copy)]
+struct WalWrites {
+    pages: u64,
+    page_size: u64,
+}
+
+/// Optional diagnostic: retain WAL frames behind a read snapshot, then attribute
+/// frame page numbers to the final dbstat page owners. This changes checkpoint
+/// behavior and is deliberately separate from acceptance latency measurements.
+struct WalPageProfile {
+    snapshot: rusqlite::Connection,
+    path: std::path::PathBuf,
+    first_frame: u64,
+}
+impl WalPageProfile {
+    fn begin(path: &Path) -> Option<Self> {
+        std::env::var_os("FUTURE_COMPACT_WAL_PROFILE")?;
+        let snapshot =
+            rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+        snapshot.execute_batch("BEGIN").unwrap();
+        snapshot
+            .query_row("SELECT count(*) FROM sqlite_schema", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap();
+        let path = std::path::PathBuf::from(format!("{}-wal", path.display()));
+        let bytes = std::fs::metadata(&path).unwrap().len();
+        let first_frame = bytes.saturating_sub(32) / (4096 + 24);
+        Some(Self {
+            snapshot,
+            path,
+            first_frame,
+        })
+    }
+
+    fn finish(self, store: &SqliteStore) -> Value {
+        use std::io::{Read, Seek, SeekFrom};
+        let pages = store
+            .db
+            .read(|db| {
+                let mut query = db.prepare("SELECT pageno,name FROM dbstat")?;
+                let rows =
+                    query.query_map([], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, String>(1)?)))?;
+                Ok(rows.collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()?)
+            })
+            .unwrap();
+        let mut wal = std::fs::File::open(&self.path).unwrap();
+        let mut header = [0u8; 32];
+        wal.read_exact(&mut header).unwrap();
+        let page_size = u32::from_be_bytes(header[8..12].try_into().unwrap());
+        assert_eq!(page_size, 4096);
+        let frame_bytes = u64::from(page_size) + 24;
+        wal.seek(SeekFrom::Start(32 + self.first_frame * frame_bytes))
+            .unwrap();
+        let mut counts = std::collections::BTreeMap::<String, u64>::new();
+        let mut frame = [0u8; 24];
+        while wal.read_exact(&mut frame).is_ok() {
+            assert_eq!(
+                &frame[8..16],
+                &header[16..24],
+                "WAL was reset during profile"
+            );
+            let page = u32::from_be_bytes(frame[..4].try_into().unwrap());
+            let name = pages
+                .get(&page)
+                .map_or("unmapped-final-page", String::as_str);
+            *counts.entry(name.into()).or_default() += 1;
+            wal.seek(SeekFrom::Current(i64::from(page_size))).unwrap();
+        }
+        self.snapshot.execute_batch("ROLLBACK").unwrap();
+        json!({"scope":"diagnostic only: WAL frames retained by a read snapshot, attributed using final dbstat page owners; not acceptance latency", "framesByFinalOwner":counts})
+    }
+}
+impl WalWrites {
+    fn capture(store: &SqliteStore) -> Self {
+        store
+            .db
+            .call(|db| {
+                let mode: String = db.pragma_query_value(None, "journal_mode", |r| r.get(0))?;
+                anyhow::ensure!(mode == "wal", "write meter requires WAL mode");
+                let (mut current, mut high_water) = (0, 0);
+                // SAFETY: this job exclusively owns the live writer connection;
+                // both output pointers are valid, and no pointer escapes the call.
+                let status = unsafe {
+                    rusqlite::ffi::sqlite3_db_status(
+                        db.handle(),
+                        rusqlite::ffi::SQLITE_DBSTATUS_CACHE_WRITE,
+                        &mut current,
+                        &mut high_water,
+                        0,
+                    )
+                };
+                anyhow::ensure!(
+                    status == rusqlite::ffi::SQLITE_OK && current >= 0,
+                    "SQLite cache-write counter unavailable"
+                );
+                Ok(Self {
+                    pages: u64::try_from(current)?,
+                    page_size: u64::try_from(
+                        db.pragma_query_value(None, "page_size", |r| r.get::<_, i64>(0))?,
+                    )?,
+                })
+            })
+            .unwrap()
+    }
+    fn since(self, before: Self) -> Value {
+        assert_eq!(self.page_size, before.page_size);
+        let pages = self
+            .pages
+            .checked_sub(before.pages)
+            .expect("cache-write counter overflow/reset");
+        json!({"cacheWritePages":pages,"logicalPageBytes":pages*self.page_size,"pageSize":self.page_size,
+            "scope":"writer SQLITE_DBSTATUS_CACHE_WRITE in WAL mode; logical page payload only, excludes WAL frame/header bytes, checkpoint copies, fsync counts and physical device IO; not used after IO failures"})
+    }
+}
+
 fn workload(canonical: bool, target_bytes: usize) -> Value {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("agent.db");
     let store = open(&path, canonical);
+    let before_writes = WalWrites::capture(&store);
     let mut writer = Writer::default();
     let fragment = "思考🙂x".repeat(5);
     let fragments = target_bytes.div_ceil(fragment.len());
@@ -148,6 +274,7 @@ fn workload(canonical: bool, target_bytes: usize) -> Value {
     }
     store.commit_terminal_entries("s", vec![json!({"id":"end","type":"run_terminal","timestamp":"2026-10-26T00:00:02Z","content":{"run_id":"r","state":"completed","run_tokens":17}})]).unwrap();
     let finish_micros = finish.elapsed().as_micros();
+    let wal_writes = WalWrites::capture(&store).since(before_writes);
     let after = counts(&store);
     if canonical {
         assert_eq!(after["run_events"], 0);
@@ -173,7 +300,7 @@ fn workload(canonical: bool, target_bytes: usize) -> Value {
         .sum::<u64>();
     json!({"format":if canonical {2}else{1},"bodyBytes":body.len(),"fragments":fragments,"writeMicros":write_micros,
         "foregroundBatchMicros":{"p95":percentile(95),"p99":percentile(99),"max":latencies.last()},
-        "finishMicros":finish_micros,"finalDatabaseAndWalBytes":final_files,"sampledPeakDatabaseAndWalBytes":peak_files.max(final_files),"rows":after,"io":store.db.metrics()})
+        "finishMicros":finish_micros,"walWrites":wal_writes,"finalDatabaseAndWalBytes":final_files,"sampledPeakDatabaseAndWalBytes":peak_files.max(final_files),"rows":after,"io":store.db.metrics()})
 }
 
 #[test]
@@ -200,24 +327,37 @@ fn shared_writer_and_history_reader_concurrency() {
     for sessions in [1, 4, 16] {
         let root = tempfile::tempdir().unwrap();
         let store = SqliteStore::open(&root.path().join("agent.db")).unwrap();
-        for index in 0..sessions {
-            let session = format!("s{index}");
-            store.reserve_segmented(&session).unwrap();
-            store.replace(&session,vec![
-                json!({"id":"info","type":"session_info","timestamp":"2026-10-26T00:00:00Z","content":{"cwd":".","model":"synthetic"}}),
-                json!({"id":"start","type":"run_started","timestamp":"2026-10-26T00:00:00Z","content":{"run_id":"r","epoch":1}}),
+        let identities: Vec<_> = (0..sessions)
+            .map(|_| {
+                (
+                    uuid::Uuid::new_v4().to_string(),
+                    uuid::Uuid::new_v4().to_string(),
+                    uuid::Uuid::new_v4().to_string(),
+                )
+            })
+            .collect();
+        for (session, run, _) in &identities {
+            store.reserve_segmented(session).unwrap();
+            store.replace(session,vec![
+                json!({"id":uuid::Uuid::new_v4().to_string(),"type":"session_info","timestamp":"2026-10-26T00:00:00Z","content":{"cwd":".","model":"synthetic"}}),
+                json!({"id":uuid::Uuid::new_v4().to_string(),"type":"run_started","timestamp":"2026-10-26T00:00:00Z","content":{"run_id":run,"epoch":1}}),
             ]).unwrap();
         }
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(sessions + 1));
         let handles: Vec<_> = (0..sessions).map(|index| {
             let store = store.clone();
             let barrier = barrier.clone();
+            let (session, run, message) = identities[index].clone();
             std::thread::spawn(move || {
-                let session = format!("s{index}");
-                let scope = stream::StreamIdentity {session_id:session.clone(),run_id:"r".into(),epoch:1};
+                let key = format!("{message}:thinking:b");
+                let scope = stream::StreamIdentity {session_id:session.clone(),run_id:run.clone(),epoch:1};
+                let scoped_event = |idx, kind: &str, data: Value| {
+                    let mut value = event(idx,kind,data);
+                    value["session_id"]=json!(session);value["run_id"]=json!(run);
+                    value["event_id"]=json!(format!("{session}:{run}:1:{idx}"));value
+                };
                 let mut writer = Writer::default();
-                let mut initial = vec![event(0,"message_start",json!({"entry_id":"m"})),event(1,"thinking_start",json!({"entry_id":"m","content_key":"m:thinking:b","content_offset":0,"content_bytes":0}))];
-                for event in &mut initial { event["session_id"] = json!(session); }
+                let initial = vec![scoped_event(0,"message_start",json!({"entry_id":message})),scoped_event(1,"thinking_start",json!({"entry_id":message,"content_key":key,"content_offset":0,"content_bytes":0}))];
                 barrier.wait();
                 let start = Instant::now();
                 writer.persist(&store,&session,&initial).unwrap();
@@ -227,9 +367,7 @@ fn shared_writer_and_history_reader_concurrency() {
                 let mut reads = Vec::new();
                 for batch in (0..fragments).step_by(128) {
                     let events: Vec<_> = (batch..(batch+128).min(fragments)).map(|part| {
-                        let mut event = event(part as i64+2,"thinking_delta",json!({"entry_id":"m","content_key":"m:thinking:b","content_offset":part*fragment.len(),"content_bytes":fragment.len(),"text":fragment}));
-                        event["session_id"] = json!(session);
-                        event
+                        scoped_event(part as i64+2,"thinking_delta",json!({"entry_id":message,"content_key":key,"content_offset":part*fragment.len(),"content_bytes":fragment.len(),"text":fragment}))
                     }).collect();
                     let commit = Instant::now();
                     writer.persist(&store,&session,&events).unwrap();
@@ -241,7 +379,7 @@ fn shared_writer_and_history_reader_concurrency() {
                     }
                 }
                 commits.sort_unstable();
-                json!({"session":session,"bodyBytes":fragments*fragment.len(),"elapsedMicros":start.elapsed().as_micros(),
+                json!({"session":session,"message":message,"bodyBytes":fragments*fragment.len(),"elapsedMicros":start.elapsed().as_micros(),
                     "batchP99Micros":commits[(commits.len()*99/100).min(commits.len()-1)],"batchMaxMicros":commits.last(),"readerMaxMicros":reads.iter().max()})
             })
         }).collect();
@@ -253,12 +391,20 @@ fn shared_writer_and_history_reader_concurrency() {
         store.recover_segmented_runs().unwrap();
         for worker in &workers {
             let entries = store.entries(worker["session"].as_str().unwrap()).unwrap();
-            let message = entries.iter().find(|entry| entry["id"] == "m").unwrap();
+            let message = entries
+                .iter()
+                .find(|entry| entry["id"] == worker["message"])
+                .unwrap();
             assert_eq!(
                 message["content"][0]["text"].as_str().unwrap().len() as u64,
                 worker["bodyBytes"].as_u64().unwrap()
             );
         }
+        store.db.read(move |db| {
+            assert_eq!(db.query_row("SELECT count(*) FROM sessions WHERE typeof(id)='blob' AND length(id)=16",[],|r|r.get::<_,i64>(0))?,sessions as i64);
+            assert_eq!(db.query_row("SELECT count(*) FROM stream_runs WHERE typeof(run_id)='blob' AND length(run_id)=16",[],|r|r.get::<_,i64>(0))?,sessions as i64);
+            assert_eq!(db.query_row("SELECT count(*) FROM pragma_foreign_key_check",[],|r|r.get::<_,i64>(0))?,0);Ok(())
+        }).unwrap();
         cases.push(json!({"sessions":sessions,"workers":workers,"io":store.db.metrics()}));
     }
     println!(
@@ -501,3 +647,84 @@ fn killed_process_retains_only_the_confirmed_prefix() {
         );
     }
 }
+
+#[test]
+#[ignore = "final acceptance: timer-sized batches, long source identities and context churn"]
+fn compact_context_metadata_workloads() {
+    let mut cases = Vec::new();
+    for churn in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("agent.db");
+        let store = open(&path, true);
+        let wal_profile = WalPageProfile::begin(&path);
+        let before_writes = WalWrites::capture(&store);
+        let mut writer = Writer::default();
+        let mut cursor = 0i64;
+        let mut offset = 0usize;
+        let mut body_bytes = 0usize;
+        let fragment = "思考🙂x".repeat(5);
+        let fragments = (1024_usize * 1024).div_ceil(fragment.len());
+        let entry = format!("message-{}", "e".repeat(80));
+        let tool = format!("tool-{}", "t".repeat(80));
+        let mut latencies = Vec::new();
+        let mut reads = Vec::new();
+        let mut read_work = Vec::new();
+        let start = Instant::now();
+        for batch in (0..fragments).step_by(4) {
+            let block = if churn { batch } else { 0 };
+            let key = format!("{entry}:thinking:{block}:{}", "k".repeat(80));
+            if churn {
+                offset = 0;
+            }
+            let mut events = Vec::new();
+            for _ in batch..(batch + 4).min(fragments) {
+                events.push(event(cursor,"thinking_delta",json!({"entry_id":entry,"tool_id":tool,"content_key":key,"content_offset":offset,"content_bytes":fragment.len(),"text":fragment,"future":{"opaque":"  exact bytes  ","enabled":false}})));
+                cursor += 1;
+                offset += fragment.len();
+                body_bytes += fragment.len();
+            }
+            if churn || batch + 4 >= fragments {
+                events.push(event(cursor,"thinking_end",json!({"entry_id":entry,"content_key":key,"content_offset":offset,"content_bytes":0,"content_seal":true})));
+                cursor += 1;
+            }
+            let commit = Instant::now();
+            writer.persist(&store, "s", &events).unwrap();
+            latencies.push(commit.elapsed().as_micros() as u64);
+            if batch % (128 * 4) == 0 {
+                let read = Instant::now();
+                let page = store
+                    .segmented_stream_page(
+                        &stream::StreamIdentity {
+                            session_id: "s".into(),
+                            run_id: "r".into(),
+                            epoch: 1,
+                        },
+                        -1,
+                        128,
+                    )
+                    .unwrap();
+                assert!(!page.is_empty());
+                read_work.push(json!({"requestedEvents":128,"returnedEvents":page.len(),"dataBytes":page.iter().map(|event|event.data.len()).sum::<usize>()}));
+                reads.push(read.elapsed().as_micros() as u64);
+            }
+        }
+        let elapsed = start.elapsed().as_micros();
+        let wal_writes = WalWrites::capture(&store).since(before_writes);
+        latencies.sort_unstable();
+        reads.sort_unstable();
+        let structures = counts(&store);
+        let (database, wal) = (
+            std::fs::metadata(&path).unwrap().len(),
+            std::fs::metadata(path.with_extension("db-wal")).map_or(0, |m| m.len()),
+        );
+        cases.push(json!({"walPageProfile":wal_profile.map(|profile| profile.finish(&store)),"contextChurn":churn,"bodyBytes":body_bytes,"fragmentBytes":fragment.len(),"fragmentsPerFlush":4,"elapsedMicros":elapsed,"batchMicros":{"p95":latencies[latencies.len()*95/100],"p99":latencies[latencies.len()*99/100],"max":latencies.last()},"readerMicros":{"p95":reads[reads.len()*95/100],"max":reads.last()},"readerWork":read_work,"walWrites":wal_writes,"databaseBytes":database,"walBytes":wal,"rows":structures,"io":store.db.metrics()}));
+    }
+    let report = json!({"workload":"synthetic-long-identities-1MiB-four-fragment-flushes","cases":cases,"limitations":"Direct writer batches and bounded replay; timer cadence, admission backlog, native UI and physical power loss are not simulated. No VACUUM, historical compression or completion rewrite."});
+    println!("COMPACT_METADATA_ACCEPTANCE={report}");
+    if let Some(path) = std::env::var_os("FUTURE_COMPACT_METADATA_REPORT") {
+        std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+    }
+}
+
+#[path = "acceptance_realistic.rs"]
+mod realistic;

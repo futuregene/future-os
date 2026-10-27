@@ -27,7 +27,11 @@ pub struct Model {
     pub cost_cache_read: f64,
     pub cost_cache_write: f64,
     pub compat_json: String,
-    pub tlm_json: String,
+    /// The wire values this access path accepts, in display order. Empty means
+    /// the model offers only the implicit `default`. Added by the catalog
+    /// generator; older catalogs simply deserialize as empty.
+    #[serde(default)]
+    pub thinking_levels: Vec<String>,
     pub headers_json: String,
     pub hide: bool,
 }

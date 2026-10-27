@@ -122,11 +122,13 @@ fn arm_exit_deadline(
     backend: &Arc<platform::Backend>,
     kitty_active: &Arc<AtomicBool>,
     modify_other_keys_active: &Arc<AtomicBool>,
+    alternate_active: &Arc<AtomicBool>,
     write_lock: &Arc<Mutex<()>>,
 ) {
     let backend = Arc::clone(backend);
     let kitty_active = Arc::clone(kitty_active);
     let modify_other_keys_active = Arc::clone(modify_other_keys_active);
+    let alternate_active = Arc::clone(alternate_active);
     let write_lock = Arc::clone(write_lock);
     let deadline = signal_exit_deadline();
     std::thread::spawn(move || {
@@ -140,6 +142,7 @@ fn arm_exit_deadline(
             &backend,
             &kitty_active,
             &modify_other_keys_active,
+            &alternate_active,
             &write_lock,
         );
         platform::die_with_signal(sig);
@@ -186,6 +189,11 @@ pub struct Terminal {
     size: Arc<Mutex<(u16, u16)>>,
     kitty_active: Arc<AtomicBool>,
     modify_other_keys_active: Arc<AtomicBool>,
+    /// Whether the alternate screen is (still) ours, shared with the reader and
+    /// exit-deadline threads: their restore path has to leave it too, or a
+    /// signal death strands the user in a screen whose scrollback is the TUI's
+    /// last frame.
+    alternate_active: Arc<AtomicBool>,
     draining: Arc<AtomicBool>,
     last_data_time: Arc<Mutex<Instant>>,
     stop_flag: Arc<AtomicBool>,
@@ -278,6 +286,7 @@ impl Terminal {
             size,
             kitty_active: Arc::new(AtomicBool::new(false)),
             modify_other_keys_active: Arc::new(AtomicBool::new(false)),
+            alternate_active: Arc::new(AtomicBool::new(false)),
             draining: Arc::new(AtomicBool::new(false)),
             last_data_time: Arc::new(Mutex::new(Instant::now())),
             stop_flag: Arc::new(AtomicBool::new(false)),
@@ -300,18 +309,6 @@ impl Terminal {
     /// callback must arrange for `stop()` (or the exit path) to do so.
     pub fn set_exit_signal_callback(&mut self, cb: Option<Box<dyn FnMut() + Send + 'static>>) {
         *self.exit_signal_cb.lock() = cb;
-    }
-
-    /// Is the full-screen terminal session active? Linear reading deliberately
-    /// runs without it so output remains in native scrollback.
-    pub fn raw_enabled(&self) -> bool {
-        self.raw_enabled
-    }
-
-    /// Whether the alternate screen is owned. Raw linear input is active too,
-    /// so raw mode alone cannot distinguish the two rendering modes.
-    pub fn alternate_screen(&self) -> bool {
-        self.alternate_screen
     }
 
     pub fn started(&self) -> bool {
@@ -353,7 +350,7 @@ impl Terminal {
     }
 
     /// Whether interactive input is a terminal. Kept separate from output
-    /// mode so notification and native-scrollback decisions share one fact.
+    /// mode so notification decisions can share one fact.
     pub fn is_tty(&self) -> bool {
         self.backend.is_tty()
     }
@@ -364,26 +361,6 @@ impl Terminal {
         &mut self,
         on_input: Box<dyn FnMut(String) + Send + 'static>,
         on_resize: Box<dyn FnMut() + Send + 'static>,
-    ) -> io::Result<()> {
-        self.start_mode(on_input, on_resize, true)
-    }
-
-    /// Raw key input without taking the alternate screen. Output uses CRLF so
-    /// cooked mode is not required for native-scrollback newline semantics. Native-scrollback linear
-    /// reading uses this, and therefore never throws away the shell's history.
-    pub fn start_linear(
-        &mut self,
-        on_input: Box<dyn FnMut(String) + Send + 'static>,
-        on_resize: Box<dyn FnMut() + Send + 'static>,
-    ) -> io::Result<()> {
-        self.start_mode(on_input, on_resize, false)
-    }
-
-    fn start_mode(
-        &mut self,
-        on_input: Box<dyn FnMut(String) + Send + 'static>,
-        on_resize: Box<dyn FnMut() + Send + 'static>,
-        alternate: bool,
     ) -> io::Result<()> {
         if self.reader_thread.is_some() {
             return Err(io::Error::new(
@@ -404,14 +381,12 @@ impl Terminal {
         self.backend.enable_raw()?;
         self.raw_enabled = true;
 
-        // Enable bracketed paste + focus reporting. Only the full-screen mode
-        // takes the alternate buffer; linear output stays in native scrollback.
-        self.alternate_screen = alternate;
-        if alternate {
-            write_str(&self.write_lock, "\x1b[?1049h");
-            // Entering it preserves the cursor row on some terminals.
-            write_str(&self.write_lock, "\x1b[H");
-        }
+        // Enable bracketed paste + focus reporting.
+        self.alternate_screen = true;
+        self.alternate_active.store(true, Ordering::SeqCst);
+        write_str(&self.write_lock, "\x1b[?1049h");
+        // Entering it preserves the cursor row on some terminals.
+        write_str(&self.write_lock, "\x1b[H");
         write_str(&self.write_lock, "\x1b[?2004h");
         write_str(&self.write_lock, "\x1b[?1004h");
         if self.mouse {
@@ -431,6 +406,14 @@ impl Terminal {
         self.draining.store(false, Ordering::SeqCst);
         *self.last_data_time.lock() = Instant::now();
 
+        // Drop any keyboard-protocol level a *previous* process left pushed
+        // before querying. A run that dies without its teardown (SIGKILL, a
+        // closed window, a crash before the hook) leaks one, and from then on
+        // every key the shell reads arrives as a CSI-u release event — the
+        // shell prints `8;1;3u` per keystroke. Popping more levels than exist
+        // is defined as popping all of them, and a terminal without the
+        // protocol ignores the sequence, so this is unconditional.
+        write_str(&self.write_lock, "\x1b[<9u");
         // Query and enable Kitty keyboard protocol.
         write_str(&self.write_lock, "\x1b[?u");
 
@@ -439,6 +422,7 @@ impl Terminal {
         let last_data_time = self.last_data_time.clone();
         let kitty_active = self.kitty_active.clone();
         let modify_other_keys_active = self.modify_other_keys_active.clone();
+        let alternate_active = self.alternate_active.clone();
         let write_lock = self.write_lock.clone();
         let size = self.size.clone();
         let backend = self.backend.clone();
@@ -586,6 +570,7 @@ impl Terminal {
                                 &backend,
                                 &kitty_active,
                                 &modify_other_keys_active,
+                                &alternate_active,
                                 &write_lock,
                             );
                             cb_fn();
@@ -600,6 +585,7 @@ impl Terminal {
                             &backend,
                             &kitty_active,
                             &modify_other_keys_active,
+                            &alternate_active,
                             &write_lock,
                         );
                         platform::die_with_signal(sig);
@@ -697,23 +683,22 @@ impl Terminal {
             self.mouse = false;
         }
 
-        // Disable Kitty keyboard protocol.
-        if self.kitty_active.load(Ordering::SeqCst) {
-            write_str(&self.write_lock, "\x1b[<u");
-            self.kitty_active.store(false, Ordering::SeqCst);
-            keys::set_kitty_protocol_active(false);
-        }
-        if self.modify_other_keys_active.load(Ordering::SeqCst) {
-            write_str(&self.write_lock, "\x1b[>4;0m");
-            self.modify_other_keys_active.store(false, Ordering::SeqCst);
-        }
+        // Disable the keyboard protocols. Unconditional, and popping every
+        // level: see `restore_terminal_for_exit` for why the flags this process
+        // kept are not a good enough record of what the terminal has.
+        write_str(&self.write_lock, "\x1b[<9u");
+        self.kitty_active.store(false, Ordering::SeqCst);
+        keys::set_kitty_protocol_active(false);
+        write_str(&self.write_lock, "\x1b[>4;0m");
+        self.modify_other_keys_active.store(false, Ordering::SeqCst);
 
-        // Linear mode never took the buffer, so stopping it must not restore
-        // an unrelated saved screen or discard native scrollback.
+        // A run that never took the buffer must not restore an unrelated
+        // saved screen.
         if self.alternate_screen {
             write_str(&self.write_lock, "\x1b[?1049l");
             self.alternate_screen = false;
         }
+        self.alternate_active.store(false, Ordering::SeqCst);
         write_str(&self.write_lock, "\x1b[?25h");
 
         // Restore raw mode (termios / console modes) — idempotent.
@@ -1038,34 +1023,52 @@ fn handle_event(
 /// The TS `exitHandler` equivalent: show cursor, disable bracketed paste,
 /// disable the keyboard protocols, clear the progress indicator, restore raw
 /// mode, and leave a newline so the shell prompt starts clean.
+///
+/// Every mode this writes is reset **unconditionally**, not behind the
+/// `kitty_active`/`modify_other_keys_active` flags: the flags describe what this
+/// process believes it wrote, and the state that actually needs undoing can be
+/// one this process inherited from an earlier run that died without a teardown.
+/// Resetting a mode that was never set is a no-op in every terminal that has it.
 fn restore_terminal_for_exit(
     backend: &platform::Backend,
     kitty_active: &AtomicBool,
     modify_other_keys_active: &AtomicBool,
+    alternate_active: &AtomicBool,
     write_lock: &Mutex<()>,
 ) {
-    write_str(write_lock, "\x1b[?25h");
-    write_str(write_lock, "\x1b[?2004l");
-    write_str(write_lock, "\x1b[?1004l");
-    // Mouse reporting, unconditionally: the workbench turns it on and this
-    // failsafe path may be the only teardown a crash ever gets, so it cannot
-    // depend on knowing whether it was enabled.
-    write_str(write_lock, crate::workbench::mouse::MOUSE_OFF);
-    if kitty_active.load(Ordering::SeqCst) {
-        write_str(write_lock, "\x1b[<u");
-        kitty_active.store(false, Ordering::SeqCst);
-        keys::set_kitty_protocol_active(false);
-    }
-    if modify_other_keys_active.load(Ordering::SeqCst) {
-        write_str(write_lock, "\x1b[>4;0m");
-        modify_other_keys_active.store(false, Ordering::SeqCst);
-    }
-    write_str(write_lock, TERMINAL_PROGRESS_CLEAR_SEQUENCE);
+    let alternate_taken = alternate_active.swap(false, Ordering::SeqCst);
+    write_str(write_lock, &teardown_sequences(alternate_taken));
+    // Clear the flags so a caller that hands the terminal back afterwards does
+    // not reset a second time.
+    kitty_active.store(false, Ordering::SeqCst);
+    keys::set_kitty_protocol_active(false);
+    modify_other_keys_active.store(false, Ordering::SeqCst);
     backend.restore_raw();
     write_str(write_lock, "\r\n");
     // The failsafe path never reaches `stop`, so stderr has to be handed back
     // here too before the process dies.
     let _ = crate::stderr_log::restore();
+}
+
+/// The bytes [`restore_terminal_for_exit`] writes, in order. Pure so a test can
+/// pin the whole sequence: every mode this run could have set is reset, and the
+/// screen is only left when this run was the one that took it.
+fn teardown_sequences(alternate_taken: bool) -> String {
+    // Mouse reporting first: a shell that inherits `?1006h` swallows every drag
+    // and prints an escape per click.
+    let mut out = String::from(crate::workbench::mouse::MOUSE_OFF);
+    out.push_str("\x1b[?2004l\x1b[?1004l");
+    // Keyboard protocols, before the screen change: every level popped (a
+    // leftover push from a run that died without a teardown would otherwise
+    // turn the shell's own keystrokes into `CSI-u` release events), and
+    // modifyOtherKeys off.
+    out.push_str("\x1b[<9u\x1b[>4;0m");
+    if alternate_taken {
+        out.push_str("\x1b[?1049l");
+    }
+    out.push_str("\x1b[?25h");
+    out.push_str(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
+    out
 }
 
 // ─── Test-only PTY fixture ────────────────────────────────────────────────
@@ -2051,19 +2054,55 @@ mod tests {
         };
         let kitty = AtomicBool::new(true);
         let mok = AtomicBool::new(true);
+        let alternate = AtomicBool::new(true);
         let lock = Mutex::new(());
         keys::set_kitty_protocol_active(true);
-        restore_terminal_for_exit(&backend, &kitty, &mok, &lock);
+        restore_terminal_for_exit(&backend, &kitty, &mok, &alternate, &lock);
         assert!(!kitty.load(Ordering::SeqCst));
         assert!(!mok.load(Ordering::SeqCst));
+        assert!(!alternate.load(Ordering::SeqCst));
         assert!(!keys::is_kitty_protocol_active());
         // With nothing active it still restores + writes the trailing newline.
         restore_terminal_for_exit(
             &backend,
             &AtomicBool::new(false),
             &AtomicBool::new(false),
+            &AtomicBool::new(false),
             &lock,
         );
+    }
+
+    /// The signal/crash teardown is the only one some exits get, so it has to
+    /// undo every mode *this run or a previous one* could have set, not just the
+    /// ones the flags remember: a keyboard-protocol level left pushed turns the
+    /// shell's own keystrokes into `CSI-u` release events (`8;1;3u` after a
+    /// backspace), and an alternate screen left taken makes the dead TUI frame
+    /// the shell's scrollback.
+    #[test]
+    fn the_exit_teardown_resets_every_mode_and_leaves_the_screen() {
+        let taken = teardown_sequences(true);
+        for sequence in [
+            crate::workbench::mouse::MOUSE_OFF,
+            "\x1b[?2004l",
+            "\x1b[?1004l",
+            "\x1b[<9u",
+            "\x1b[>4;0m",
+            "\x1b[?1049l",
+            "\x1b[?25h",
+        ] {
+            assert!(
+                taken.contains(sequence),
+                "{sequence:?} has to be reset on the way out: {taken:?}"
+            );
+        }
+        // The keyboard reset comes before the screen change: a terminal still
+        // reporting `CSI-u` would keep doing it in the shell's screen too.
+        let keyboard = taken.find("\x1b[<9u").unwrap();
+        let screen = taken.find("\x1b[?1049l").unwrap();
+        assert!(keyboard < screen, "screen change before the keyboard reset");
+        // A run that never took the buffer must not restore an unrelated saved
+        // screen over the shell's scrollback.
+        assert!(!teardown_sequences(false).contains("\x1b[?1049l"));
     }
 
     #[test]

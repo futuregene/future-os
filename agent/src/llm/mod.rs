@@ -13,7 +13,6 @@ use futures::StreamExt;
 use parking_lot::RwLock;
 use reqwest::Client as HttpClient;
 use serde_json::Value;
-use std::collections::HashMap;
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -212,16 +211,6 @@ impl Client {
 
     pub fn with_thinking_budget(self, budget: i32) -> Self {
         self.generation.write().thinking_budget = budget;
-        self
-    }
-
-    pub fn with_thinking_level_map(self, map: HashMap<String, String>) -> Self {
-        if let Some(target) = self.target.write().as_mut() {
-            target.capabilities.reasoning.levels = map
-                .iter()
-                .map(|(key, value)| (key.clone(), serde_json::Value::String(value.clone())))
-                .collect();
-        }
         self
     }
 
@@ -713,12 +702,9 @@ mod tests {
 
     #[test]
     fn builders_update_only_the_resolved_target() {
-        let mut levels = HashMap::new();
-        levels.insert("xhigh".to_string(), "max".to_string());
         let client = Client::from_target(chat_target("https://api.test", "key", None, None))
             .with_thinking_level("medium")
             .with_thinking_budget(8000)
-            .with_thinking_level_map(levels)
             .with_temperature(0.3)
             .with_max_tokens(2048);
         let target = client.target_for_request().unwrap();
@@ -726,10 +712,6 @@ mod tests {
         assert_eq!(target.generation.thinking_budget, 8000);
         assert_eq!(target.generation.temperature, Some(0.3));
         assert_eq!(target.generation.max_output_tokens, Some(2048));
-        assert_eq!(
-            target.capabilities.reasoning.levels["xhigh"],
-            serde_json::json!("max")
-        );
     }
 
     #[tokio::test]

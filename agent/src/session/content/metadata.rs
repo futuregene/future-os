@@ -76,11 +76,13 @@ pub(crate) fn validate_model(model: &str) -> Result<()> {
 }
 
 pub(super) fn generation(db: &Connection, session: &str) -> Result<i64> {
-    Ok(db.query_row("SELECT coalesce((SELECT metadata_generation FROM content_history_versions WHERE session_id=?1),0)",[session],|row|row.get(0))?)
+    let stored_session = crate::session::identity::session_key(db, session)?;
+    Ok(db.query_row("SELECT coalesce((SELECT metadata_generation FROM content_history_versions WHERE session_id=?1),0)",[&stored_session],|row|row.get(0))?)
 }
 
 pub(crate) fn advance_generation(db: &Connection, session: &str) -> Result<()> {
-    db.execute("INSERT INTO content_history_versions(session_id,generation,metadata_generation) VALUES (?1,0,1) ON CONFLICT(session_id) DO UPDATE SET metadata_generation=metadata_generation+1",[session])?;
+    let stored_session = crate::session::identity::session_key(db, session)?;
+    db.execute("INSERT INTO content_history_versions(session_id,generation,metadata_generation) VALUES (?1,0,1) ON CONFLICT(session_id) DO UPDATE SET metadata_generation=metadata_generation+1",[&stored_session])?;
     Ok(())
 }
 
@@ -145,6 +147,7 @@ impl SqliteStore {
         let (s, op, p) = (session.to_owned(), operation.clone(), prefix.clone());
         self.db.call(move |db| {
             let tx=database::begin_write_transaction(db)?;
+            let s=crate::session::identity::BoundIdentity::session(&tx,&s)?;
             let revision:Option<i64>=tx.query_row("SELECT revision FROM sessions WHERE id=?1 AND revision>=0",[&s],|row|row.get(0)).optional()?;
             let revision=revision.context("session not found: metadata update requires a live session")?;
             let resetting:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM content_operations WHERE session_id=?1 AND kind='reset')",[&s],|row|row.get(0))?;
@@ -170,12 +173,15 @@ impl SqliteStore {
             let (s, op, p) = (session.to_owned(), operation.clone(), prefix.clone());
             self.db.call(move |db| {
                 let tx=database::begin_write_transaction(db)?;
+            let s=crate::session::identity::BoundIdentity::session(&tx,&s)?;
                 let receipt:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM content_operations o JOIN sessions s ON s.id=o.session_id WHERE o.operation_id=?1 AND o.session_id=?2 AND o.kind='metadata' AND s.revision>=0)",params![op,s],|row|row.get(0))?;
                 ensure!(receipt,"metadata staging owner is no longer live");
                 if run_boundary && !following.is_empty() && following.iter().all(|entry|entry["type"]=="run_terminal") {
                     let mut complete=true;
                     for terminal in &following {
-                        let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM entries WHERE session_id=?1 AND entry_id=?2 AND entry_type='run_terminal')",params![s,terminal["id"].as_str()],|row|row.get(0))?;
+                        let entry=crate::session::identity::BoundIdentity::entry(&tx,&s,terminal["id"].as_str().context("terminal entry identity missing")?)?;
+                        let session=crate::session::identity::session_key(&tx,&s)?;
+                        let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM entries WHERE session_id=?1 AND entry_id=?2 AND entry_type='run_terminal')",params![session,entry],|row|row.get(0))?;
                         complete &= exists;
                     }
                     if complete {

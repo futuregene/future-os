@@ -6,3 +6,5 @@ mod projection;
 mod writer;
 
 mod canonical_attach;
+
+mod storage_acceptance;

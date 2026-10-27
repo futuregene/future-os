@@ -429,6 +429,14 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                             context_window: model.context_window,
                             max_tokens: model.max_tokens,
                             reasoning: model.reasoning.unwrap_or(true),
+                            // Repeated proto fields cannot express absence; the
+                            // presence bit is what tells "old client" apart from
+                            // an explicit clear.
+                            thinking_levels: if model.replace_thinking_levels == Some(true) {
+                                Some(model.thinking_levels)
+                            } else {
+                                None
+                            },
                             cost: crate::config::providers::ModelCostSpec {
                                 input: model.cost_input,
                                 output: model.cost_output,
@@ -1378,10 +1386,9 @@ mod tests {
                 .find(|model| model["provider"] == "reasoning-test")
                 .unwrap();
             assert_eq!(model["reasoning"], expected);
-            assert_eq!(
-                model["thinkingLevel"],
-                if expected { "high" } else { "off" }
-            );
+            // `reasoning` is legacy metadata now: no declared levels means the
+            // model offers only the implicit `default`, whatever the flag says.
+            assert_eq!(model["thinkingLevel"], "default");
         }
     }
 

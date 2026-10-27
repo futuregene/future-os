@@ -73,14 +73,19 @@ pub const NARROW_WIDTH: u16 = 88;
 pub fn sidebar_fits(w: u16) -> bool {
     w >= NARROW_WIDTH
 }
-/// Below this height the header loses its wordmark block and the input box
-/// loses its bottom rule.
+/// Below this height the frame switches to the one-row compact header and the
+/// input box loses its bottom rule.
 pub const SMALL_HEIGHT: u16 = 24;
 /// Sidebar width when nothing has been dragged.
 pub const SIDEBAR_DEFAULT: u16 = 36;
 /// The divider drag's range.
+///
+/// The ceiling is generous because the rail is where a file or a session row is
+/// read, and 48 columns clipped what the reader dragged open to see. It still
+/// leaves the conversation more than its 20-column floor at the narrowest frame
+/// that shows a rail at all ([`NARROW_WIDTH`]): 88 − 60 − 1 = 27.
 pub const SIDEBAR_MIN: u16 = 30;
-pub const SIDEBAR_MAX: u16 = 48;
+pub const SIDEBAR_MAX: u16 = 60;
 /// Columns of padding inside the chat area, left and right.
 pub const CHAT_PADDING: u16 = 2;
 
@@ -125,20 +130,18 @@ pub struct Frame {
 
 impl Frame {
     /// The frame a `width` × `height` terminal gets with a sidebar of
-    /// `sidebar_w` columns (0 for none), laid out with the reader's density and
-    /// rail position. Both sizes are clamped up to 1, so a report of `0` from a
-    /// terminal that has not answered `TIOCGWINSZ` yet cannot produce a
-    /// zero-width frame.
+    /// `sidebar_w` columns (0 for none) and the reader's rail position. Both
+    /// sizes are clamped up to 1, so a report of `0` from a terminal that has
+    /// not answered `TIOCGWINSZ` yet cannot produce a zero-width frame.
     pub fn new(
         width: u16,
         height: u16,
         sidebar_w: u16,
-        density: super::preferences::Density,
         position: super::preferences::SidebarPosition,
     ) -> Self {
         let width = width.max(1);
         let height = height.max(1);
-        let layout = layout_with_preferences(width, height, sidebar_w, density, position);
+        let layout = layout_with_position(width, height, sidebar_w, position);
         Self {
             width,
             height,
@@ -173,22 +176,15 @@ pub struct Layout {
 /// Lay out a `w` × `h` terminal. Everything is clamped: a 1×1 terminal gets
 /// empty rectangles rather than an underflow.
 pub fn layout(w: u16, h: u16, sidebar_w: u16) -> Layout {
-    layout_with_preferences(
-        w,
-        h,
-        sidebar_w,
-        super::preferences::Density::Focused,
-        super::preferences::SidebarPosition::Right,
-    )
+    layout_with_position(w, h, sidebar_w, super::preferences::SidebarPosition::Right)
 }
 
-/// Lay out with the reader's density and rail position. The conversation always
-/// gets the reclaimed space: density changes the chrome, never the text width.
-pub fn layout_with_preferences(
+/// Lay out with the reader's rail position. The conversation gets every column
+/// the rail leaves it.
+pub fn layout_with_position(
     w: u16,
     h: u16,
     sidebar_w: u16,
-    density: super::preferences::Density,
     position: super::preferences::SidebarPosition,
 ) -> Layout {
     let compact = h < SMALL_HEIGHT;
@@ -257,21 +253,15 @@ pub fn layout_with_preferences(
         };
     }
 
-    // Tall layout: header 6 rows (five identity rows, then the hairline), a blank
-    // row, the body, then the input block, activity, status and hint.
-    //
-    // Six, not five: the header's identity block is the 5-row `FUTURE OS` block
-    // font, so a 5-row header drew only the top four rows
-    // of every letter — the bottom stroke of F, U, E and S was cut off, which
-    // reads as clipped art rather than as a frame. The launchpad's separate
-    // four-row hero does not change the chat header's five-row identity block.
-    let header_h = if density == super::preferences::Density::Comfortable {
-        6
-    } else {
-        2
-    };
+    // Tall layout: header 2 rows (the context line, then the hairline), then the
+    // body, the input block, activity, status and hint.
+    let header_h = 2;
     let header = Rect::new(0, 0, w, header_h);
-    let body_y = header_h + 1;
+    // The body starts on the row after the header's hairline — no gap row. It
+    // used to be `header_h + 1`, one unpainted row of "air" under the rule: it
+    // cost the conversation a row on every frame, and the frame diagram in
+    // `docs/guide/tui.md` draws the transcript directly beneath the hairline.
+    let body_y = header_h;
     // The composer band is exactly the box it draws: a top rule, the prompt
     // row, the closing rule. It used to reserve four rows for three, and the
     // spare one stayed canvas — a blank line between the box and the activity
@@ -373,7 +363,7 @@ impl HitMap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workbench::preferences::{Density, SidebarPosition};
+    use crate::workbench::preferences::SidebarPosition;
 
     #[test]
     fn the_two_breakpoints_move_what_the_contract_says() {
@@ -442,14 +432,11 @@ mod tests {
                 rows.iter().all(|count| *count <= 1),
                 "{w}x{h}: overlapping bands: {rows:?}"
             );
-            // The gap between the header and the body in the tall layout is the
-            // one deliberate blank row; everything else is covered.
-            let expected_blank = if l.compact { 0 } else { 1 };
+            // Every row belongs to a band: the header's hairline is the last
+            // row of the tall layout's header, and the conversation starts on
+            // the row right below it.
             let blank = rows.iter().filter(|count| **count == 0).count();
-            assert!(
-                blank <= expected_blank,
-                "{w}x{h}: {blank} unpainted rows: {rows:?}"
-            );
+            assert_eq!(blank, 0, "{w}x{h}: {blank} unpainted rows: {rows:?}");
         }
     }
 
@@ -469,29 +456,20 @@ mod tests {
         assert_eq!(layout(120, 38, 10).sidebar_w, SIDEBAR_MIN);
         assert_eq!(layout(200, 38, 99).sidebar_w, SIDEBAR_MAX);
         // 88 wide with a 48-column sidebar leaves 39 for the chat: fine.
+        // (The ceiling itself is 60 — see `SIDEBAR_MAX` — and still leaves 27.)
         assert_eq!(layout(88, 38, 48).sidebar_w, 48);
         // A width outside the range is clamped into it, not honoured verbatim.
         assert_eq!(layout(88, 38, 70).sidebar_w, SIDEBAR_MAX);
     }
 
     #[test]
-    fn preferences_reclaim_space_and_move_the_whole_rail() {
-        let focused = layout(120, 38, SIDEBAR_DEFAULT);
-        let comfortable = layout_with_preferences(
+    fn the_rail_position_moves_the_whole_rail() {
+        // The default header is the two-row context line, whatever the rail does.
+        assert_eq!(layout(120, 38, SIDEBAR_DEFAULT).header.h, 2);
+        let left = layout_with_position(
             120,
             38,
             SIDEBAR_DEFAULT,
-            super::super::preferences::Density::Comfortable,
-            super::super::preferences::SidebarPosition::Right,
-        );
-        assert_eq!(focused.header.h, 2);
-        assert_eq!(focused.body.h, comfortable.body.h + 4);
-        assert_eq!(focused.body.w, comfortable.body.w);
-        let left = layout_with_preferences(
-            120,
-            38,
-            SIDEBAR_DEFAULT,
-            super::super::preferences::Density::Focused,
             super::super::preferences::SidebarPosition::Left,
         );
         assert_eq!(left.sidebar.unwrap().x, 0);
@@ -549,7 +527,7 @@ mod tests {
             (1, 1, 0),
             (0, 0, 0),
         ] {
-            let frame = Frame::new(w, h, sidebar, Density::Focused, SidebarPosition::Right);
+            let frame = Frame::new(w, h, sidebar, SidebarPosition::Right);
             assert_eq!(
                 frame.inner,
                 chat_inner(frame.layout.body.w),

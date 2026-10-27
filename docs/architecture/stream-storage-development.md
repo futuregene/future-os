@@ -1,7 +1,10 @@
 # Compact session storage and streaming development plan
 
-Status: reviewed revision, 2026-10-27. The compact-change layout is not implemented; the existing segmented candidate is the previous unpublished implementation.
-This change delivers the plan, review decisions and baseline archive, not acceptance of the new runtime layout.
+Status: implementation and local automated acceptance complete, 2026-10-27; delivered through the main workspace for user native UI testing. Final evidence and limitations are in section 15.
+Exact layout: [implementation contract](compact-stream-layout.md). Implementation status does not establish delivery acceptance.
+[Candidate 1 raw results](../testing/compact-storage-candidate-1-2026-10-27.json) include a fresh previous-layout control.
+[Candidate 2](../testing/compact-storage-candidate-2-2026-10-27.json) records binary/source validation, real UUID migration cases and page-write comparisons without replacing candidate 1.
+Candidate 1 metadata improves 74.1% with high reuse but grows 60.5% under frequent new contexts; that result must not land. Per-stream short-key dictionaries and partial source indices are now implemented, with 16-byte business UUID integration continuing (section 14). Final space, write-volume and responsiveness comparisons must use the same completed version rather than reusing candidate 1's passing acceptance.
 Chinese: [精简会话存储开发计划](stream-storage-development.zh-CN.md).
 
 The complete previous plan remains in the [unpublished-plan archive](stream-storage-development-unreleased-2026-10-26.md).
@@ -155,8 +158,8 @@ Existing explicit legacy-journal maintenance remains unscheduled at startup/comp
 
 ## 10. Historical migration: mandatory rerun matrix
 
-This documentation revision runs no Rust unit/migration tests. The compact layout is not implemented, so current passes cannot validate the future layout.
-After implementation completes, run the whole matrix below. This is the requested migration revalidation; previous green results cannot substitute for it.
+Run the whole matrix after implementation and record fresh source revisions, results and fault evidence.
+This is the requested migration revalidation; previous green results cannot substitute for it.
 
 | Source/fault | Required evidence |
 |---|---|
@@ -196,7 +199,10 @@ This document task runs `make check-docs`, which is not runtime/migration verifi
 - Migration matrix: rerun every row in section 10 and retain results. Validate both old and new conversations after upgrade, not only fresh-database tests.
 - Sharing/collection: context-only/direct-range references, deleting a parent while a child remains, reset retirement and staged recovery cannot collect live bytes or leak another session's content.
 - Performance: same machine/build/workload; 1/10 MiB bodies, small/large tools, 1/4/16 conversations plus history reads. Include high reuse and rapidly changing contexts/unknown-field-heavy worst cases.
+- Real-workload evidence: the [historical context audit](../testing/stream-context-history-audit-2026-10-27.json) covers 27 conversations, 59 prompts and 439 assistant messages. Blocks/message have median 2, p95 3 and maximum 6. Tool calls/turn have median 2 and maximum 150; three turns have at least 100. In the latest four turns, represented fragments per thinking/tool-input/text body have medians 91/110/597. Normal acceptance must cover repeated fragments, a few blocks/message and long tool chains spanning messages. Four fragments/key and thousands of keys in one unpublished message remain boundary stress, not a typical-workload proxy or justification for unnecessary architecture complexity. The 52 aggregated snapshot runs lack fragment counts; do not mix them with the two complete raw runs. Legacy block IDs are reused, so count thinking_start lifecycles.
 - Separately measure B-tree pages/payload for bodies/changes/links/contexts/each index; DB/WAL peaks, write volume, CPU/RSS, queue/transaction/COMMIT p95/p99/max, reads/first-visible latency, frames/input/cancel and finalization. In-memory page counts are not WAL write volume.
+- For successful performance workloads, sample `SQLITE_DBSTATUS_CACHE_WRITE` before/after on the same writer connection. Report page deltas and logical page bytes (delta times page_size) separately from WAL file length; these are not physical device I/O, fsync counts or checkpoint writes. Do not use the undefined post-error counter for fault workloads. See [SQLite status-counter definitions](https://sqlite.org/c3ref/c_dbstatus_options.html).
+- Do not identify a new/old worktree build solely from Cargo's up-to-date result in a shared target directory. Use isolated targets or freeze and verify binary hashes, test inventories and source records. One run that reused the old binary was identified and explicitly invalidated; it is excluded from new-version acceptance.
 - Retain previous targets: normal-disk backlog p99 100 ms; Desktop incremental update p95 16.7 ms/mobile 33 ms; first-visible p95 regression no greater than 10%; approximately constant finalization work at fixed tail load for 1/10 MiB. Confirm on frozen devices/workloads, not from batch period.
 - No space gains from longer commit intervals, weaker FULL, lost fields/recovery, final compaction or VACUUM. Prove latency/WAL do not materially regress alongside space savings. Retain the previous approximately 31 ms 3000-row-table rendering limitation rather than claiming every render meets one frame.
 
@@ -222,3 +228,67 @@ cargo test -p future-agent --lib acceptance_tests -- --ignored --nocapture --tes
 
 Migration evidence identifies each source version, failure point, snapshot validation, reopen and post-upgrade use separately.
 A total test count or correct target version does not replace that evidence.
+
+## 14. Business identities: 16-byte storage, standard UUID output
+
+User decision: new generated identities omit time and use the complete UUID v4. Store 16-byte values and expose canonical lowercase 36-character UUIDs; no Base64URL or packed timestamps. SQLite uses constrained BLOBs; time stays in record fields. A future PostgreSQL adapter can use native uuid; multiple backends are outside this implementation.
+
+- Model generated session/message/run identities separately from opaque provider IDs and local integer keys. Preserve provider values. Generated approval/operation identities also omit classification prefixes; their owning module controls storage adaptation.
+- Preserve and return released historical identities exactly, including time-prefixed IDs and UUID-looking TEXT. Never truncate suffixes, infer type from string length, batch-convert on startup or rewrite historical foreign keys.
+- The typed storage boundary handles UUID BLOBs versus historical TEXT. Decode actual storage classes and preserve legacy writer semantics.
+- Integrate primary/foreign-key bindings, indexed lookups, JSON projections, fork/reset, deletion, queued receipts and reopen together. A single converted column or symbol-table BLOB test is not completion of business identity storage.
+- Store business keys as 16-byte UUIDs, intern stable per-stream values and retain integer references for high-frequency changes. Audit parent duplication in content keys and body owners structurally; removing prefixes cannot break client deduplication or recovery.
+- Supply read-only inspection views using built-in SQLite SQL, rendering the same UUID as the API without another persisted text copy.
+
+Compatibility boundary: the 36-character output guarantee applies to newly generated UUIDs. Historical API IDs and opaque provider IDs keep their original values. A historical non-UUID cannot become a UUID while retaining its original value; this implementation does not add a historical alias catalog. Historical conversations retain their existing write contract; new conversations use the new format from their first write.
+
+In SQLite, equally spelled TEXT and UUID BLOB values are different index keys. Resolve the session's actual storage representation and bind consistent types for child primary/foreign keys. Parsing an API string alone cannot determine the historical key type; casting whole columns must not hide mismatches. If historical UUID-looking TEXT and its corresponding UUID BLOB create an ambiguous public identity, reject that ambiguity explicitly and preserve the database for recovery.
+
+For a future backend change, the new UUID branch can map to PostgreSQL's native uuid type. Historical non-UUID strings still require a separate compatibility field or mapping; the mixed historical column cannot simply be altered to uuid. This implementation does not rewrite history for a future backend.
+
+Capacity estimates concern the identity value alone: changing a UTF-8 36-character UUID to 16 bytes saves 20 bytes per occurrence (about 55.6%); measure total tables, indexes and WAL separately. Encoding is a fixed-size boundary conversion and adds no historical scan, compression job or volatile uncommitted identity mapping. Durable acknowledgment and crash-recovery boundaries remain as specified above.
+
+Progress: session/identity.rs connects session/message/run keys, primary/foreign-key bindings and the main read/write lifecycle. Real UUID tests inspect storage classes/lengths and foreign-key integrity for sessions, entries, runs, stream_runs, body ownership, fingerprints and history projections. Coverage includes replay, range authorization, terminal retries, tools, search, sidebar/pages, fork sharing, reset, coalesced-input cleanup, checkpoint receipts, deletion and reopen. Unscoped new-format entries allocate UUID runs and reuse committed ownership on retry instead of composing history:session:message; historical rules remain.
+
+The added Agent 2–7 matrix retains UUID-looking historical TEXT, raw JSON and pre-upgrade snapshots while new BLOB sessions coexist. Session resolution includes tombstones/import registrations; old JSONL sources cannot overwrite canonical owners or resurrect deleted identities. Recovery of 35 binary hidden-fork identities crosses a page boundary and preserves shared parent bodies.
+
+After forced rebuilding and test-inventory validation, the complete Agent pass has 2686 passing tests, no failures and nine explicit acceptances not run. Fmt, all-target Clippy and documentation checks pass. Candidate 2 reduces high-churn stream metadata 24.9% but increases logical WAL page writes 47.8%, so delivery remains withheld. Normalize body owners, then rerun final migration, fault and performance acceptance against the same completed source.
+Acceptance must create real UUID sessions and inspect actual storage class/length and references before exercising the complete lifecycle. Green fixtures using only s/m do not establish native UUID integration.
+
+Follow-up progress: staged body ownership now uses integer `(stream_id,key_id)` and shares the semantic symbol dictionary; encoded `[run,epoch,key]` owners are not persisted. Retirement and unpublished cleanup use bounded integer queries, and collection protects both staging owners and published ranges. The content module has 96 passing tests; 13 native-identity-related tests pass, including the released historical migration matrix, and all-target Clippy passes. These targeted checks do not replace final acceptance.
+The single intermediate [B3.3 raw measurement](../testing/compact-storage-candidate-3-2026-10-27.json) reduces the high-churn database file to 7,933,952 bytes but logical WAL page writes remain about 38.7% above the old implementation. Continue investigating dictionary/context and index write amplification without widening confirmation windows, weakening durability or adding completion-time compression. Final migration, fault, repeated performance and UI acceptance must precede main-workspace integration.
+
+Current implementation follow-up: redundant composite identity indices are replaced by single-column foreign keys and primary-key ownership/kind guards, with exact trigger admission checks. Semantic facts remain distinct inside bounded atomic batches; encoder body dependencies flush explicitly, and no pending batch survives acknowledgement. Transaction-borrowed owner handles and captured physical snapshot keys avoid repeated UUID resolution without caching aborted allocations. Metadata budget counting avoids temporary JSON strings, while publication still checks actual bytes. Historical-parent forks now stage a native-UUID format-2 child under parent revision/database fences; historical parents are read, never rewritten. Targeted content checks pass 101 tests and the fork checks pass 49; final full-suite/migration/fault/performance validation must still be completed. One earlier parallel full-suite run had an elapsed-time failure in healing_rewrite_preserves_run_markers; its isolated rerun passed, so retain that failed run and rerun the final suite with bounded concurrency.
+
+## 15. Final automated acceptance and manual handoff (2026-10-27)
+
+M0–M5 are implemented and automatically verified. M6 local automated checks are complete; the next step is integration into the main workspace for the user's native UI testing. [C6 final raw acceptance](../testing/compact-storage-acceptance-2026-10-27.json) retains final measurements and logs; [C5 paired realistic runs](../testing/compact-storage-candidate-5-2026-10-27.json) and B0–B3.5 remain unchanged. This final status supersedes earlier pending stage notes without erasing failures or intermediate evidence.
+
+| Scope | Result and evidence |
+|---|---|
+| Full Agent | 2691 passed, zero failed, 10 explicit acceptance tests ignored by default and exercised separately; database regression after migration fault hooks: 32 passed, 2 explicit tests ignored |
+| Agent integration | 64 passed across 10 targets; 9 Linux platform security cases ignored on macOS |
+| Released migrations | Frozen Agent schemas 2–7, exact legacy continuation beside native UUID sessions, snapshots/reopen/damaged-layout rejection; Host migration tests 13 passed; CLI data tests 12 passed |
+| Migration faults | Each schema 2–7 tested before-commit kill, after-commit kill and real SQLITE_FULL: 18 cases, original history/snapshots preserved, retry and idempotent reopen verified |
+| Durability faults | SQLite FULL, external write lock, writer panic, actual child kills after commit and inside an open transaction; confirmed prefix recovered without acknowledging failed content |
+| Static checks | Entire Rust workspace including Desktop fmt and all-target Clippy; Desktop ESLint/TypeScript and mobile TypeScript passed; Agent Clippy rerun for added test hooks |
+| Native UUID concurrency | 1/4/16 sessions, BLOB16/API UUID36, exact recovered bodies and foreign-key integrity |
+| Actual admission path | Natural 25 ms window; maximum worker observed admission-to-durable p99 39.5/36.5/44.2 ms for 1/4/16 sessions; slowest control flush approximately 10.8 ms |
+
+For realistic 20/150-tool workloads, relevant allocated storage fell approximately 39.7%/52.7% versus the previous implementation and logical WAL page writes fell approximately 8.5% each. Three old first reads of 2.21–3.49/3.06–3.26 ms became 1.05–1.21/1.41–1.80 ms. Three first-read samples do not establish a population p95. Unthrottled write/publication median wall time still increased approximately 29%/32%; this CPU/throughput tradeoff is retained rather than hidden. Measured production admission stays below the 100 ms target.
+
+Fresh 1/10 MiB bodies finish in 1.65/1.78 ms without terminal body repacking. Single 1/10 MiB tool publications still verify complete hashes off the ordered writer, taking approximately 26.5/268.8 ms while appending zero duplicate body bytes. This verification remains O(body size). Logical WAL in these single-tool cases increased about 3.4%/0.4%, reported separately from long tool chains.
+
+UI measurements use headless Chrome only: cooperative 10 MiB object JSON reduces timer blocking from approximately 24–32 ms to 3–4 ms while increasing total decode time. The 3000-row markdown worker path remains approximately 31–35 ms. Native Tauri IPC, phone interaction and physical power loss are not claimed as tested; native manual experience is the user handoff.
+
+The personal database currently uses an older unpublished schema8 layout. The new implementation intentionally refuses that layout before modification. Preserve it and test with isolated FUTURE_HOME or a released schema2–7 backup; no personal database rewrite or draft-upgrade codec is added.
+
+Additional explicit acceptance commands:
+
+```sh
+cargo test -p future-agent --lib released_migrations_survive_process_kill_and_sqlite_full -- --ignored --nocapture --test-threads=1
+cargo test -p future-agent --lib paced_native_admission_and_control_latency -- --ignored --nocapture --test-threads=1
+cargo test -p future-agent --lib large_tool_outputs_reuse_durable_bodies -- --ignored --nocapture --test-threads=1
+```
+
+Main-sync addendum: after integrating c02f4ae2, TUI all-target Clippy, 1386 library tests and 8 i18n guards passed. The initial library run inherited NO_COLOR=1 and failed 32 color assertions; all passed with that variable unset, and both raw logs remain. Strict documentation checks passed for 368 documents.

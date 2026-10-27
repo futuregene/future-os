@@ -12,12 +12,19 @@ impl Manager {
         request: &str,
     ) -> Result<Option<(String, i64, String)>> {
         let (session, request) = (session.to_owned(), request.to_owned());
-        self.storage()?.db.call(move |db| Ok(db.query_row("SELECT run_id,run_sequence,fingerprint FROM queued_run_receipts WHERE session_id=?1 AND client_request_id=?2",params![session,request],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?))
+        self.storage()?.db.call(move |db| {
+            let session=super::identity::BoundIdentity::session(db,&session)?;
+            Ok(db.query_row("SELECT run_id,run_sequence,fingerprint FROM queued_run_receipts WHERE session_id=?1 AND client_request_id=?2",params![session,request],|row|Ok((row.get::<_,super::identity::BoundIdentity>(0)?.to_string(),row.get(1)?,row.get(2)?))).optional()?)
+        })
     }
 
     pub(crate) fn has_queued_receipt_run(&self, session: &str, run: &str) -> Result<bool> {
         let (session, run) = (session.to_owned(), run.to_owned());
-        self.storage()?.db.call(move |db|Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM queued_run_receipts WHERE session_id=?1 AND run_id=?2)",params![session,run],|row|row.get(0))?))
+        self.storage()?.db.call(move |db| {
+            let run=super::identity::BoundIdentity::run(db,&session,&run)?;
+            let session=super::identity::BoundIdentity::session(db,&session)?;
+            Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM queued_run_receipts WHERE session_id=?1 AND run_id=?2)",params![session,run],|row|row.get(0))?)
+        })
     }
 
     pub(crate) fn record_queued_receipt(
@@ -65,6 +72,8 @@ impl Manager {
         );
         self.storage()?.db.call(move |db| {
             let tx = super::database::begin_write_transaction(db)?;
+            let run=super::identity::BoundIdentity::run(&tx,&session,&run)?;
+            let session=super::identity::BoundIdentity::session(&tx,&session)?;
             let resetting: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM content_operations WHERE session_id=?1 AND kind='reset')",[&session],|row|row.get(0))?;
             anyhow::ensure!(!resetting,"session history reset is in progress");
             tx.execute("INSERT INTO queued_run_receipts(session_id,run_id,client_request_id,run_sequence,fingerprint,payload_json,user_entry_json,status)
@@ -95,6 +104,8 @@ impl Manager {
         self.storage()?.db.call(move |db| {
             let tx = super::database::begin_write_transaction(db)?;
             for run in runs {
+                let run=super::identity::BoundIdentity::run(&tx,&session,&run)?;
+                let session=super::identity::BoundIdentity::session(&tx,&session)?;
                 tx.execute("UPDATE queued_run_receipts SET status='cancel_requested' WHERE session_id=?1 AND run_id=?2 AND status='queued'",params![session,run])?;
             }
             tx.commit()?;
@@ -125,7 +136,8 @@ impl super::sqlite_store::SqliteStore {
             let session = session.clone();
             let count = self.db.call(move |db| {
                 let tx = super::database::begin_write_transaction(db)?;
-                let rows: Vec<(String,String,i64,String,String)> = {
+                let session=session.as_deref().map(|id|super::identity::BoundIdentity::session(&tx,id)).transpose()?;
+                let rows: Vec<(super::identity::BoundIdentity,super::identity::BoundIdentity,i64,String,String)> = {
                     let mut query = tx.prepare("SELECT session_id,run_id,run_sequence,COALESCE(user_entry_json,'null'),status FROM queued_run_receipts
                         WHERE (status='cancel_requested' OR (?2=0 AND status='queued')) AND (?1 IS NULL OR session_id=?1)
                         ORDER BY session_id,run_sequence LIMIT 32")?;

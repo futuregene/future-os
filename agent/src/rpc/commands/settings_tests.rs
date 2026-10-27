@@ -106,11 +106,11 @@ fn set_thinking_level_snaps_onto_the_models_declared_levels() {
     cmd.level = "medium".to_string();
     let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], true, "{resp}");
-    // One step from both neighbours: the shallower one wins.
-    assert_eq!(resp["data"]["level"], "low");
+    // A level the model does not offer falls back to the provider default.
+    assert_eq!(resp["data"]["level"], "default");
     assert_eq!(
         state.get_session("default").unwrap().read().thinking_level,
-        "low"
+        "default"
     );
 }
 
@@ -138,7 +138,8 @@ fn cycle_thinking_level_walks_only_the_declared_levels() {
             resp["data"]["level"].as_str().unwrap().to_string()
         })
         .collect();
-    assert_eq!(seen, ["high", "low", "high", "low"]);
+    // The ring is the effective list: default -> low -> high -> default.
+    assert_eq!(seen, ["low", "high", "default", "low"]);
 }
 
 /// A model switch can narrow the vocabulary, and the level travels with every
@@ -150,7 +151,7 @@ fn switching_to_a_narrower_model_reclamps_the_running_level() {
             "api": "openai-completions",
             "baseUrl": "https://example.test/v1",
             "apiKey": "k",
-            "models": [{"id": "m"}]
+            "models": [{"id": "m", "thinkingLevels": ["off", "minimal", "low", "medium", "high", "xhigh"]}]
         },
         "narrow": {
             "api": "openai-completions",
@@ -159,7 +160,7 @@ fn switching_to_a_narrower_model_reclamps_the_running_level() {
             "models": [{"id": "m", "thinkingLevels": ["off", "low", "high"]}]
         }
     }));
-    // Declaring nothing keeps the six-level default, so xhigh is accepted here.
+    // The wide model declares every level, so xhigh is accepted here.
     select_model(&state, "wide/m");
     let mut cmd = make_cmd("set_thinking_level");
     cmd.level = "xhigh".to_string();
@@ -171,8 +172,9 @@ fn switching_to_a_narrower_model_reclamps_the_running_level() {
     let session = state.get_session("default").unwrap();
     let mut events = session.read().broadcaster.subscribe();
     let resp = select_model(&state, "narrow/m");
-    assert_eq!(resp["data"]["thinkingLevel"], "high");
-    assert_eq!(session.read().thinking_level, "high");
+    // xhigh is not offered by the narrow model -> provider default.
+    assert_eq!(resp["data"]["thinkingLevel"], "default");
+    assert_eq!(session.read().thinking_level, "default");
 
     let mut announced = Vec::new();
     while let Ok(event) = events.try_recv() {
@@ -181,7 +183,11 @@ fn switching_to_a_narrower_model_reclamps_the_running_level() {
             announced.push(data["level"].as_str().unwrap().to_string());
         }
     }
-    assert_eq!(announced, ["high"], "clients must hear the clamped level");
+    assert_eq!(
+        announced,
+        ["default"],
+        "clients must hear the clamped level"
+    );
 }
 
 /// Switching to a model that offers the running level changes nothing: no
@@ -193,7 +199,7 @@ fn switching_to_a_model_that_allows_the_level_keeps_it_silently() {
             "api": "openai-completions",
             "baseUrl": "https://example.test/v1",
             "apiKey": "k",
-            "models": [{"id": "m"}]
+            "models": [{"id": "m", "thinkingLevels": ["off", "minimal", "low", "medium", "high", "xhigh"]}]
         },
         "also-wide": {
             "api": "openai-completions",

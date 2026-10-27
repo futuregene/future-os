@@ -68,31 +68,39 @@ enum Claim {
 /// prefix; metadata, run markers and checkpoints do not change that identity.
 pub(crate) fn input_identity(db: &Connection, session: &str) -> Result<String> {
     let generation = super::checkpoint_retirement::generation(db, session)?;
+    let stored_session = crate::session::identity::session_key(db, session)?;
     let position: Option<i64> = db.query_row(
         "SELECT max(position) FROM (
         SELECT max(position) AS position FROM entries WHERE session_id=?1 AND entry_type='user'
         UNION ALL SELECT max(position) FROM entries WHERE session_id=?1 AND entry_type='assistant'
         UNION ALL SELECT max(position) FROM entries WHERE session_id=?1 AND entry_type='tool'
         UNION ALL SELECT max(position) FROM entries WHERE session_id=?1 AND entry_type='system')",
-        [session],
+        [&stored_session],
         |row| row.get(0),
     )?;
     let tail=position.map(|position|->Result<_> {
-        let (id,digest):(String,Option<String>)=db.query_row("SELECT e.entry_id,f.digest FROM entries e LEFT JOIN entry_fingerprints f ON f.session_id=e.session_id AND f.entry_id=e.entry_id WHERE e.session_id=?1 AND e.position=?2",params![session,position],|row|Ok((row.get(0)?,row.get(1)?)))?;
+        let (id,digest):(crate::session::identity::BoundIdentity,Option<String>)=db.query_row("SELECT e.entry_id,f.digest FROM entries e LEFT JOIN entry_fingerprints f ON f.session_id=e.session_id AND f.entry_id=e.entry_id WHERE e.session_id=?1 AND e.position=?2",params![stored_session,position],|row|Ok((row.get(0)?,row.get(1)?)))?;
         Ok((position,id,digest.context("canonical input entry has no immutable identity")?))
     }).transpose()?;
     canonical_hash(&json!(["canonical-prefix-v1", session, generation, tail]))
 }
 
 fn receipt_entry(db: &Connection, session: &str, checkpoint: &CheckpointRef) -> Result<Entry> {
-    let position:Option<i64>=db.query_row("SELECT position FROM entries WHERE session_id=?1 AND entry_id=?2 AND entry_type='compaction'",params![session,checkpoint.entry_id],|row|row.get(0)).optional()?;
+    let entry = crate::session::identity::BoundIdentity::entry(db, session, &checkpoint.entry_id)?;
+    let stored_session = crate::session::identity::session_key(db, session)?;
+    let cutoff_key = checkpoint
+        .cutoff_entry_id
+        .as_deref()
+        .map(|id| crate::session::identity::BoundIdentity::entry(db, session, id))
+        .transpose()?;
+    let position:Option<i64>=db.query_row("SELECT position FROM entries WHERE session_id=?1 AND entry_id=?2 AND entry_type='compaction'",params![stored_session,entry],|row|row.get(0)).optional()?;
     let position = position.context(
         "compaction cached result is no longer in the journal; refusing to regenerate it silently",
     )?;
     let cutoff: Option<i64> = db
         .query_row(
             "SELECT position FROM entries WHERE session_id=?1 AND entry_id=?2",
-            params![session, checkpoint.cutoff_entry_id],
+            params![stored_session, cutoff_key],
             |row| row.get(0),
         )
         .optional()?;
@@ -101,10 +109,11 @@ fn receipt_entry(db: &Connection, session: &str, checkpoint: &CheckpointRef) -> 
         "cached compaction checkpoint range is invalid"
     );
     if let Some(from) = &checkpoint.covered_from_entry_id {
+        let from = crate::session::identity::BoundIdentity::entry(db, session, from)?;
         let first: Option<i64> = db
             .query_row(
                 "SELECT position FROM entries WHERE session_id=?1 AND entry_id=?2",
-                params![session, from],
+                params![stored_session, from],
                 |row| row.get(0),
             )
             .optional()?;
@@ -115,7 +124,7 @@ fn receipt_entry(db: &Connection, session: &str, checkpoint: &CheckpointRef) -> 
     }
     Ok(Entry {
         position,
-        id: checkpoint.entry_id.clone(),
+        id: entry,
     })
 }
 
@@ -137,6 +146,7 @@ impl SqliteStore {
         );
         let pending=self.db.call(move |db| {
             let tx=database::begin_write_transaction(db)?;
+            let s=crate::session::identity::BoundIdentity::session(&tx,&s)?;
             let state:Option<String>=tx.query_row("SELECT state FROM compaction_operations WHERE session_id=?1 AND input_key=?2",params![s,k],|row|row.get(0)).optional()?;
             if state.as_deref()!=Some("started") {return Ok(false);}
             if !super::checkpoint_retirement::is_current(&tx,&s,&k)? {return Ok(false);}
@@ -171,6 +181,7 @@ impl SqliteStore {
             let (s, k, op) = (session.to_owned(), key.to_owned(), operation.clone());
             self.db.call(move |db| {
                 let tx=database::begin_write_transaction(db)?;
+            let s=crate::session::identity::BoundIdentity::session(&tx,&s)?;
                 let state:Option<String>=tx.query_row("SELECT state FROM compaction_operations WHERE session_id=?1 AND input_key=?2",params![s,k],|row|row.get(0)).optional()?;
                 if state.as_deref()!=Some("started") {return Ok(());}
                 ensure!(super::checkpoint_retirement::is_current(&tx,&s,&k)?,"checkpoint history changed while recording its failure");
@@ -206,9 +217,9 @@ impl SqliteStore {
             );
             let page=self.db.read(move |db| {
                 let tx=db.transaction()?;check.check(&tx)?;
-                let live:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM compaction_operations WHERE session_id=?1 AND input_key=?2 AND state='failed')",params![check.session_id(),key],|row|row.get(0))?;
+                let live:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM compaction_operations WHERE session_id=?1 AND input_key=?2 AND state='failed')",params![check.session_key(),key],|row|row.get(0))?;
                 ensure!(live,"checkpoint failure receipt changed during read");
-                let range:Option<(i64,i64,i64,String)>=tx.query_row("SELECT content_id,byte_offset,byte_length,encoding FROM content_references WHERE session_id=?1 AND owner_kind='tool' AND owner_id=?2 AND field='/error'",params![check.session_id(),owner],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?;
+                let range:Option<(i64,i64,i64,String)>=tx.query_row("SELECT content_id,byte_offset,byte_length,encoding FROM content_references WHERE session_id=?1 AND owner_kind='tool' AND owner_id=?2 AND field='/error'",params![check.session_key(),owner],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?;
                 let (id,start,length,encoding)=range.context("checkpoint failure body is missing")?;
                 ensure!(start==0 && length==bytes && encoding=="text" && offset<=length,"checkpoint failure range changed");
                 let page=super::read(&tx,id,offset,usize::try_from(length-offset)?.min(READ_BYTES))?;
@@ -251,6 +262,7 @@ impl SqliteStore {
         let (session, operation) = (session.to_owned(), operation.to_owned());
         let claim=self.db.call(move |db| {
             let tx=database::begin_write_transaction(db)?;
+            let session=crate::session::identity::BoundIdentity::session(&tx,&session)?;
             let scope=Snapshot::capture_from(&tx,&session)?;
             let input=input_identity(&tx,&session)?;
             let key=canonical_hash(&json!(["canonical-checkpoint-v1",input,policy]))?;
@@ -384,6 +396,7 @@ impl SqliteStore {
         );
         let pending=self.db.call(move |db| {
             let tx=database::begin_write_transaction(db)?;
+            let s=crate::session::identity::BoundIdentity::session(&tx,&s)?;
             let (state,stored,raw):(String,String,Option<String>)=tx.query_row("SELECT state,input_digest,result_json FROM compaction_operations WHERE session_id=?1 AND input_key=?2",params![s,k],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
             ensure!(stored==i,"checkpoint input identity mismatch");
             if state=="completed" {ensure!(raw.as_deref()==Some(&expected),"conflicting checkpoint completion receipt");return Ok(false);}
@@ -414,6 +427,7 @@ impl SqliteStore {
             );
             self.db.call(move |db| {
                 let tx=database::begin_write_transaction(db)?;
+            let s=crate::session::identity::BoundIdentity::session(&tx,&s)?;
                 let state:String=tx.query_row("SELECT state FROM compaction_operations WHERE session_id=?1 AND input_key=?2 AND input_digest=?3",params![s,k,i],|row|row.get(0))?;
                 if state=="completed" {
                     let raw:Option<String>=tx.query_row("SELECT result_json FROM compaction_operations WHERE session_id=?1 AND input_key=?2",params![s,k],|row|row.get(0))?;

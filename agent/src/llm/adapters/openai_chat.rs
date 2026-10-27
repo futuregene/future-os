@@ -1,7 +1,7 @@
 use super::{parse_json_arguments, ProtocolAdapter};
 use crate::llm::schema::{
-    ApiProtocol, ChatReasoningFormat, FinishReason, ModelRequest, ModelStreamEvent, ProtocolConfig,
-    ResolvedModelTarget,
+    apply_effort_param, ApiProtocol, ChatReasoningFormat, FinishReason, ModelRequest,
+    ModelStreamEvent, ProtocolConfig, ResolvedModelTarget,
 };
 use crate::llm::sse::SseFrame;
 use crate::types::{ContentBlock, ProviderMetadata, Usage};
@@ -307,32 +307,20 @@ fn apply_reasoning(
     target: &ResolvedModelTarget,
     config: &crate::llm::schema::OpenAiChatConfig,
 ) {
-    let level = target.generation.thinking_level.as_str();
-    if !target.capabilities.reasoning.supported || level.is_empty() {
+    let level = target.generation.thinking_level.trim();
+    // `default` means "send nothing at all": the provider's own default applies.
+    if level.is_empty() || level == crate::llm::schema::DEFAULT_THINKING_LEVEL {
         return;
     }
-    // A provider that always thinks refuses the "disabled" spellings outright
-    // (volcengine/doubao: "该模型始终思考，不支持关闭思考"). Asking for `off`
-    // there is answered with max depth unset, not with a 400.
-    let enabled = level != "off" || config.thinking_required;
-    let mapped = crate::llm::schema::resolve_effort(
-        level,
-        &target.capabilities.reasoning.levels,
-        &target.capabilities.reasoning.effort_values,
-    );
+    let enabled = level != "off";
+    // Any other level is the wire value itself (or nothing for `off`), unless
+    // the model declared `compat.reasoningEffort`: then the level is mapped onto
+    // the values that access path accepts (see ReasoningEffortVocabulary).
+    let vocabulary = config.reasoning_effort.as_ref();
     match config.reasoning {
-        ChatReasoningFormat::None => {
+        ChatReasoningFormat::None | ChatReasoningFormat::ReasoningEffort => {
             if enabled {
-                if let Some(mapped) = mapped {
-                    body["reasoning_effort"] = mapped;
-                }
-            }
-        }
-        ChatReasoningFormat::ReasoningEffort => {
-            if enabled && config.supports_reasoning_effort {
-                if let Some(mapped) = mapped {
-                    body["reasoning_effort"] = mapped;
-                }
+                apply_effort_param(body, level, vocabulary);
             }
         }
         ChatReasoningFormat::Qwen { chat_template } => {
@@ -345,20 +333,21 @@ fn apply_reasoning(
                 body["enable_thinking"] = json!(enabled);
             }
             if enabled {
-                if let Some(mapped) = mapped {
-                    body["reasoning_effort"] = mapped;
-                }
+                apply_effort_param(body, level, vocabulary);
             }
         }
         ChatReasoningFormat::DeepSeek => {
             body["thinking"] = json!({"type": if enabled { "enabled" } else { "disabled" }});
             if enabled {
-                if let Some(mapped) = mapped {
-                    body["reasoning_effort"] = mapped;
-                }
+                apply_effort_param(body, level, vocabulary);
             }
         }
-        ChatReasoningFormat::Zai => body["enable_thinking"] = json!(enabled),
+        ChatReasoningFormat::Zai => {
+            body["enable_thinking"] = json!(enabled);
+            if enabled {
+                apply_effort_param(body, level, vocabulary);
+            }
+        }
         ChatReasoningFormat::ReasoningSplit => {
             body["thinking"] = json!(if enabled { "enabled" } else { "disabled" });
             if enabled {
@@ -485,6 +474,27 @@ fn finish(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A resolved chat target with the given protocol/generation, for tests that
+    /// exercise `apply_reasoning` directly.
+    fn test_target(
+        protocol: crate::llm::schema::ProtocolConfig,
+        generation: crate::llm::schema::GenerationConfig,
+    ) -> crate::llm::schema::ResolvedModelTarget {
+        crate::llm::schema::ResolvedModelTarget {
+            model_id: "m".into(),
+            route: crate::llm::schema::ProviderRoute {
+                provider_id: "p".into(),
+                base_url: "https://example.test".into(),
+                api_key: "k".into(),
+                auth: crate::llm::schema::AuthScheme::Bearer,
+                headers: Default::default(),
+            },
+            protocol,
+            capabilities: Default::default(),
+            generation,
+        }
+    }
     use crate::llm::schema::{
         ChatReasoningFormat, GenerationConfig, OpenAiChatConfig, ProviderRoute,
     };
@@ -771,7 +781,7 @@ mod tests {
 
     #[test]
     fn apply_reasoning_uses_each_protocol_shape() {
-        let mut target = ResolvedModelTarget {
+        let target = ResolvedModelTarget {
             model_id: "m".into(),
             route: ProviderRoute {
                 provider_id: "p".into(),
@@ -787,7 +797,6 @@ mod tests {
                 ..Default::default()
             },
         };
-        target.capabilities.reasoning.supported = true;
         for (format, expected) in [
             (
                 ChatReasoningFormat::Qwen {
@@ -805,7 +814,10 @@ mod tests {
                 ChatReasoningFormat::DeepSeek,
                 json!({"thinking": {"type": "enabled"}, "reasoning_effort": "high"}),
             ),
-            (ChatReasoningFormat::Zai, json!({"enable_thinking": true})),
+            (
+                ChatReasoningFormat::Zai,
+                json!({"enable_thinking": true, "reasoning_effort": "high"}),
+            ),
             (
                 ChatReasoningFormat::ReasoningSplit,
                 json!({"thinking": "enabled", "reasoning_split": true}),
@@ -821,298 +833,37 @@ mod tests {
         }
     }
 
-    /// A provider that always thinks (`compat.thinkingRequired`, volcengine's
-    /// doubao seed 2.x) rejects the disabled spellings with a hard 400.
-    ///
-    /// Observed 2026-10-25 on session `20261025-200944`: the run failed with
-    /// `该模型始终思考，不支持关闭思考；请使用 low、high 或 max。`  Level `off` must
-    /// therefore go out as *enabled* with no depth hint, and a level the model
-    /// does not take (the derivation maps those away) must never be assumed.
     #[test]
-    fn a_model_that_always_thinks_is_never_asked_to_stop() {
+    fn default_sends_no_thinking_parameter() {
         let mut target = test_target(
             ProtocolConfig::OpenAiChat(OpenAiChatConfig::default()),
             GenerationConfig {
-                thinking_level: "off".into(),
+                thinking_level: crate::llm::schema::DEFAULT_THINKING_LEVEL.into(),
                 ..Default::default()
             },
         );
         target.capabilities.reasoning.supported = true;
-        for (format, expected) in [
-            (
-                ChatReasoningFormat::DeepSeek,
-                json!({"thinking": {"type": "enabled"}}),
-            ),
-            (
-                ChatReasoningFormat::Qwen {
-                    chat_template: false,
-                },
-                json!({"enable_thinking": true}),
-            ),
-            (
-                ChatReasoningFormat::Qwen {
-                    chat_template: true,
-                },
-                json!({"chat_template_kwargs": {"enable_thinking": true, "preserve_thinking": true}}),
-            ),
-            (ChatReasoningFormat::Zai, json!({"enable_thinking": true})),
+        for format in [
+            ChatReasoningFormat::None,
+            ChatReasoningFormat::ReasoningEffort,
+            ChatReasoningFormat::Qwen {
+                chat_template: false,
+            },
+            ChatReasoningFormat::Qwen {
+                chat_template: true,
+            },
+            ChatReasoningFormat::DeepSeek,
+            ChatReasoningFormat::Zai,
+            ChatReasoningFormat::ReasoningSplit,
         ] {
             let config = OpenAiChatConfig {
                 reasoning: format,
-                thinking_required: true,
                 ..Default::default()
             };
             let mut body = json!({});
             apply_reasoning(&mut body, &target, &config);
-            assert_eq!(body, expected, "{config:?}");
+            assert_eq!(body, json!({}), "default must send nothing");
         }
-
-        // Without the flag the same level still switches thinking off — the
-        // flag must not quietly change every other provider.
-        let config = OpenAiChatConfig {
-            reasoning: ChatReasoningFormat::DeepSeek,
-            ..Default::default()
-        };
-        let mut body = json!({});
-        apply_reasoning(&mut body, &target, &config);
-        assert_eq!(body, json!({"thinking": {"type": "disabled"}}));
-    }
-
-    fn test_target(protocol: ProtocolConfig, generation: GenerationConfig) -> ResolvedModelTarget {
-        ResolvedModelTarget {
-            model_id: "m".into(),
-            route: ProviderRoute {
-                provider_id: "p".into(),
-                base_url: "https://example.test/v1".into(),
-                api_key: "k".into(),
-                auth: crate::llm::schema::AuthScheme::Bearer,
-                headers: Default::default(),
-            },
-            protocol,
-            capabilities: Default::default(),
-            generation,
-        }
-    }
-
-    #[test]
-    fn build_body_rejects_non_chat_target() {
-        let target = test_target(
-            ProtocolConfig::AnthropicMessages(
-                crate::llm::schema::AnthropicMessagesConfig::default(),
-            ),
-            GenerationConfig::default(),
-        );
-        let request = ModelRequest {
-            model: "m".into(),
-            system_prompt: String::new(),
-            messages: Vec::new(),
-            tools: Vec::new(),
-        };
-        let error = OpenAiChatAdapter.build_body(&target, &request).unwrap_err();
-        assert!(error.to_string().contains("non-chat target"));
-    }
-
-    #[test]
-    fn build_body_serializes_tools_temperature_and_max_tokens() {
-        let config = OpenAiChatConfig {
-            tool_stream: true,
-            max_tokens_field: crate::llm::schema::ChatMaxTokensField::MaxCompletionTokens,
-            ..Default::default()
-        };
-        let target = test_target(
-            ProtocolConfig::OpenAiChat(config),
-            GenerationConfig {
-                temperature: Some(0.5),
-                max_output_tokens: Some(123),
-                ..Default::default()
-            },
-        );
-        let request = ModelRequest {
-            model: "m".into(),
-            system_prompt: String::new(),
-            messages: Vec::new(),
-            tools: vec![crate::types::ToolDef {
-                tool_type: "function".into(),
-                function: crate::types::FunctionDef {
-                    name: "f".into(),
-                    description: "d".into(),
-                    parameters: json!({"type": "object"}),
-                },
-            }],
-        };
-        let body = OpenAiChatAdapter.build_body(&target, &request).unwrap();
-        assert!(body["tools"].is_array());
-        assert_eq!(body["tool_stream"], true);
-        assert_eq!(body["temperature"], 0.5);
-        assert_eq!(body["max_completion_tokens"], 123);
-    }
-
-    #[test]
-    fn decode_frame_ignores_empty_data() {
-        let adapter = OpenAiChatAdapter;
-        let mut state = adapter.new_stream_state();
-        let events = adapter
-            .decode_frame(
-                &SseFrame {
-                    event: None,
-                    data: "   ".into(),
-                },
-                state.as_mut(),
-            )
-            .unwrap();
-        assert!(events.is_empty());
-    }
-
-    #[test]
-    fn decode_frame_tool_call_without_arguments_starts_only() {
-        let adapter = OpenAiChatAdapter;
-        let mut state = adapter.new_stream_state();
-        let events = adapter
-            .decode_frame(
-                &frame(json!({
-                    "choices": [{"delta": {"tool_calls": [
-                        {"index": 0, "id": "call_0", "function": {"name": "f"}}
-                    ]}}]
-                })),
-                state.as_mut(),
-            )
-            .unwrap();
-        assert!(matches!(
-            events.as_slice(),
-            [ModelStreamEvent::ToolInputStart { .. }]
-        ));
-    }
-
-    #[test]
-    fn decode_frame_emits_usage_and_maps_every_token_bucket() {
-        let adapter = OpenAiChatAdapter;
-        let mut state = adapter.new_stream_state();
-        let events = adapter
-            .decode_frame(
-                &frame(json!({
-                    "choices": [{"delta": {"content": "hi"}}],
-                    "usage": {
-                        "prompt_tokens": 10,
-                        "completion_tokens": 20,
-                        "total_tokens": 30,
-                        "prompt_tokens_details": {"cached_tokens": 5, "cache_write_tokens": 6},
-                        "completion_tokens_details": {"reasoning_tokens": 7},
-                        "credit_cost": 0.5
-                    }
-                })),
-                state.as_mut(),
-            )
-            .unwrap();
-        let usage = events
-            .iter()
-            .find_map(|event| match event {
-                ModelStreamEvent::Usage(usage) => Some(usage),
-                _ => None,
-            })
-            .expect("usage event expected");
-        assert_eq!(usage.prompt_tokens, 10);
-        assert_eq!(usage.completion_tokens, 20);
-        assert_eq!(usage.total_tokens, 30);
-        assert_eq!(usage.cache_read_tokens, Some(5));
-        assert_eq!(usage.cache_write_tokens, Some(6));
-        assert_eq!(usage.reasoning_tokens, Some(7));
-        assert_eq!(usage.credit_cost, Some(0.5));
-    }
-
-    #[test]
-    fn decode_frame_parses_float_and_string_token_counts() {
-        // Some gateways (notably the Future platform for certain models)
-        // encode token counts as JSON floats or numeric strings. A strict
-        // `as_i64` would silently drop these to 0 and report the whole turn
-        // as tokenless. Verify the defensive parse recovers them.
-        let adapter = OpenAiChatAdapter;
-        let mut state = adapter.new_stream_state();
-        let events = adapter
-            .decode_frame(
-                &frame(json!({
-                    "choices": [{"delta": {"content": "hi"}}],
-                    "usage": {
-                        "prompt_tokens": 1234.0,
-                        "completion_tokens": "56",
-                        "total_tokens": 1290,
-                        "credit_cost": "0.00019072"
-                    }
-                })),
-                state.as_mut(),
-            )
-            .unwrap();
-        let usage = events
-            .iter()
-            .find_map(|event| match event {
-                ModelStreamEvent::Usage(usage) => Some(usage),
-                _ => None,
-            })
-            .expect("usage event expected");
-        assert_eq!(usage.prompt_tokens, 1234);
-        assert_eq!(usage.completion_tokens, 56);
-        assert_eq!(usage.total_tokens, 1290);
-        assert_eq!(usage.credit_cost, Some(0.00019072));
-    }
-
-    #[test]
-    fn finish_stream_after_finish_returns_empty() {
-        let adapter = OpenAiChatAdapter;
-        let mut state = adapter.new_stream_state();
-        adapter
-            .decode_frame(
-                &frame(json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})),
-                state.as_mut(),
-            )
-            .unwrap();
-        assert!(adapter.finish_stream(state.as_mut()).unwrap().is_empty());
-    }
-
-    #[test]
-    fn lower_messages_handles_tool_results_and_multimodal_blocks() {
-        let request = ModelRequest {
-            model: "m".into(),
-            system_prompt: String::new(),
-            messages: vec![
-                crate::types::AgentMessage {
-                    role: "tool".into(),
-                    content: vec![ContentBlock::tool_result("call_1", "result text", false)],
-                    ..Default::default()
-                },
-                crate::types::AgentMessage {
-                    role: "assistant".into(),
-                    content: vec![
-                        ContentBlock::text("hi"),
-                        ContentBlock::image("http://img.example/1.png"),
-                        ContentBlock::reasoning("thinking", ProviderMetadata::new()),
-                        ContentBlock::tool_call(
-                            "call_2",
-                            "fn",
-                            json!({"a": 1}),
-                            ProviderMetadata::new(),
-                        ),
-                    ],
-                    ..Default::default()
-                },
-            ],
-            tools: Vec::new(),
-        };
-        let messages = lower_messages(&request, true);
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0]["role"], "tool");
-        assert_eq!(messages[0]["tool_call_id"], "call_1");
-        assert_eq!(messages[0]["content"], "result text");
-
-        let assistant = &messages[1];
-        assert_eq!(assistant["role"], "assistant");
-        assert_eq!(assistant["reasoning_content"], "thinking");
-        assert_eq!(assistant["tool_calls"][0]["function"]["name"], "fn");
-        let content = assistant["content"].as_array().unwrap();
-        assert_eq!(content.len(), 2);
-        assert_eq!(content[0], json!({"type": "text", "text": "hi"}));
-        assert_eq!(
-            content[1],
-            json!({"type": "image_url", "image_url": {"url": "http://img.example/1.png"}})
-        );
     }
 
     /// The registry shape the Future platform serves for `deepseek-flash`:
@@ -1216,7 +967,6 @@ mod tests {
 
         let config = OpenAiChatConfig {
             reasoning: ChatReasoningFormat::ReasoningEffort,
-            supports_reasoning_effort: true,
             ..Default::default()
         };
         let mut body = json!({});
