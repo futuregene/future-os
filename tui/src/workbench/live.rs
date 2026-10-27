@@ -160,7 +160,15 @@ pub struct Live {
     /// the conversation moved on while the reader was away and the transcript is
     /// rebuilt from the new page.
     shown_page: Option<ShownPage>,
-    sessions: Vec<SessionSummary>,
+    sessions: SessionList,
+    /// Bumped when the pinned workspaces change (a pin reorders and re-files the
+    /// 工作区 tab, so the view it feeds is stale from that moment).
+    pins_rev: u64,
+    /// The rail's rows and filing, built for the key below.
+    session_view: Option<SessionView>,
+    /// How many times [`Self::build_session_view`] has run — the meter its
+    /// contract is measured with (see [`Self::session_view_builds`]).
+    session_view_builds: u64,
     models: Vec<ModelInfo>,
     approval: Option<ApprovalPrompt>,
     diff: Option<super::state::DiffView>,
@@ -296,7 +304,10 @@ impl Live {
             paging: Paging::default(),
             cached: VecDeque::new(),
             shown_page: None,
-            sessions: Vec::new(),
+            sessions: SessionList::default(),
+            pins_rev: 0,
+            session_view: None,
+            session_view_builds: 0,
             models: Vec::new(),
             approval: None,
             diff: None,
@@ -438,11 +449,7 @@ impl Live {
         let Ok(sessions) = self.client.list_sessions().await else {
             return false;
         };
-        if sessions == self.sessions {
-            return false;
-        }
-        self.sessions = sessions;
-        true
+        self.sessions.replace(sessions)
     }
 
     /// Is any listed conversation still writing? The rail's spinner animates on
@@ -459,13 +466,126 @@ impl Live {
         }
     }
 
-    /// The 工作区 tab's filing, for the pins this client holds.
-    fn file_sessions(
-        &self,
-        sessions: &[SessionSummary],
-        rows: &[SessionRow],
-    ) -> (Vec<WorkspaceGroup>, Vec<String>) {
-        file_sessions(sessions, rows, &self.pinned_workspaces)
+    /// The rows and the 工作区 filing a frame paints, cloned out of the cached
+    /// view (see [`SessionView`]).
+    ///
+    /// A frame asks for these on every paint, and rebuilding them is the one
+    /// part of a frame that grows with the reader's history: sorting, naming and
+    /// filing every conversation. It used to be quadratic — 0.5 ms per frame at
+    /// a hundred conversations and 10 ms at five hundred, measured — and the
+    /// driver composes a frame's data several times per keystroke, so the view
+    /// is built when one of its inputs moves and cloned otherwise (see
+    /// `docs/testing/tui-session-rail-frame-cost-2026-10-27.md`).
+    fn session_view_parts(&mut self) -> (Vec<SessionRow>, Vec<WorkspaceGroup>, Vec<String>) {
+        let key = SessionViewKey {
+            sessions: self.sessions.rev(),
+            pins: self.pins_rev,
+            current: self.state.session_id.clone(),
+            launchpad: self.launchpad,
+            lang: self.lang,
+            // `age` reads in minutes: a view built in another minute may print a
+            // different age for the same rows, so the minute is an input.
+            minute: now_ms() / 60_000,
+        };
+        if self.session_view.as_ref().map(|view| &view.key) != Some(&key) {
+            let view = self.build_session_view(key);
+            self.session_view = Some(view);
+        }
+        let view = self.session_view.as_ref();
+        match view {
+            Some(view) => (
+                view.rows.clone(),
+                view.workspaces.clone(),
+                view.chats.clone(),
+            ),
+            // Unreachable: the block above always leaves a view for this key.
+            // A missing one paints an empty rail instead of panicking a
+            // terminal, and the next frame rebuilds it.
+            None => (Vec::new(), Vec::new(), Vec::new()),
+        }
+    }
+
+    /// How many times the rail's view has been rebuilt — the count a frame pays
+    /// only when one of [`SessionViewKey`]'s inputs moves.
+    ///
+    /// Exists for the contract's test: the view is the one part of a frame that
+    /// grows with the reader's history, and a change that makes a frame rebuild
+    /// it every time (a key field, a missing input) costs milliseconds per
+    /// keystroke at a few hundred conversations without failing anything else.
+    pub fn session_view_builds(&self) -> u64 {
+        self.session_view_builds
+    }
+
+    /// Build the rail's view for `key`: the rows most recently spoken first, and
+    /// their 工作区 filing.
+    fn build_session_view(&mut self, key: SessionViewKey) -> SessionView {
+        self.session_view_builds = self.session_view_builds.saturating_add(1);
+        // The rail's list is the desktop's recent view: most recently spoken
+        // first. Only the `活跃` stretch is re-ordered after this, by when each
+        // conversation started (`panels::rows_with`) — an activity stamp moves
+        // every second while a run streams, so ordering *that* stretch by it
+        // would shuffle the rows under the reader, and a run would jump to the
+        // top of a list the reader is walking with the arrow keys.
+        //
+        // `updated_at_ms` is not "when I was last here" — it is the newest
+        // entry's stamp, and a `session_info` snapshot is an entry, so a storage
+        // migration that rewrites every snapshot restamps the whole list at
+        // once. That is why the running stretch, the one a reader watches, does
+        // not depend on it.
+        let mut sessions: Vec<&SessionSummary> = self.sessions.iter().collect();
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at_ms));
+        // One read of the clock and one of the app's own directories: `age` and
+        // `is_chat_directory` used to resolve both per row, which put a
+        // `SystemTime::now` and two `format!`s on every conversation in the list.
+        let now = now_ms();
+        let roots = ChatRoots::detect();
+        let current = &key.current;
+        let rows: Vec<SessionRow> = sessions
+            .into_iter()
+            .map(|session| SessionRow {
+                id: session.id.clone(),
+                title: display_name(session),
+                // The workspace's *name*, not its path: the rail and the
+                // `ctrl+r` list are 30-odd columns wide, and a path spent on
+                // the tail of `D:/work/…/future-os` says less than the word
+                // itself. The path is still the group's identity (see
+                // `WorkspaceGroup`) and the header still names it in full.
+                //
+                // A plain chat has no workspace to name: its directory is the
+                // app's own scratch tree (`…/workspaces/chat/thread-…`), and
+                // printing that directory's name is how `thread-20261026-…`
+                // came to read like a project name. Blank, so the row says only
+                // what a chat has — its title and its age.
+                workspace: roots.workspace_label(&session.cwd),
+                parent_id: session.parent_session_id.clone(),
+                age: age_at(now, session.updated_at_ms),
+                // 0 from an agent that predates the stamp: the activity stamp
+                // stands in, so the 活跃 stretch is ordered rather than tied.
+                created_at_ms: match session.created_at_ms {
+                    0 => session.updated_at_ms,
+                    created => created,
+                },
+                // On the launchpad nothing is attached, so no row claims to be
+                // the current one.
+                current: !key.launchpad && &session.id == current,
+                // The agent's own flag, not a local run row: a conversation
+                // another client started writes here too, which is what makes
+                // 最近's 活跃 stretch a view of the agent and not of this
+                // terminal's own typing.
+                streaming: session.is_streaming.unwrap_or(false),
+            })
+            .collect();
+        // The 工作区 tab: the same rows, filed the way the desktop's rail files
+        // them. A conversation that ran in one of the app's own scratch
+        // directories belongs to no workspace, so it is a plain chat.
+        let (workspaces, chats) =
+            file_sessions(&self.sessions, &rows, &self.pinned_workspaces, &roots);
+        SessionView {
+            key,
+            rows,
+            workspaces,
+            chats,
+        }
     }
 
     /// Pin or unpin one workspace, and answer what belongs on the notice row.
@@ -475,6 +595,7 @@ impl Live {
         if pinned {
             self.pinned_workspaces.push(path.to_string());
         }
+        self.pins_rev = self.pins_rev.wrapping_add(1);
         let name = workspace_name(path);
         if pinned {
             i18n::render(self.lang, Key::NoticePinned, &[&name])
@@ -1060,20 +1181,11 @@ impl Live {
         let messages = self.chat.render_all(frame.inner);
         let activity = self.activity_snapshot();
         let input = self.draft.clone();
-        // The rail's list is the desktop's recent view: most recently spoken
-        // first. Only the `活跃` stretch is re-ordered after this, by when each
-        // conversation started (`panels::rows_with`) — an activity stamp moves
-        // every second while a run streams, so ordering *that* stretch by it
-        // would shuffle the rows under the reader, and a run would jump to the
-        // top of a list the reader is walking with the arrow keys.
-        //
-        // `updated_at_ms` is not "when I was last here" — it is the newest
-        // entry's stamp, and a `session_info` snapshot is an entry, so a storage
-        // migration that rewrites every snapshot restamps the whole list at
-        // once. That is why the running stretch, the one a reader watches, does
-        // not depend on it.
-        let mut sessions = self.sessions.clone();
-        sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at_ms));
+        // The rail's rows and its 工作区 filing, built only when one of their
+        // inputs moved (see [`SessionView`]) — everything outside `messages`
+        // here is per-frame work that this used to repeat for every
+        // conversation the reader had ever had.
+        let (rows, workspaces, chats) = self.session_view_parts();
         // On the launchpad there is no session, so no session's title: the
         // header must not keep naming the conversation `/new` left behind.
         let title = if self.launchpad {
@@ -1082,45 +1194,6 @@ impl Live {
             self.title()
         };
         let current = state.session_id.clone();
-        let rows: Vec<SessionRow> = sessions
-            .iter()
-            .map(|session| SessionRow {
-                id: session.id.clone(),
-                title: display_name(session),
-                // The workspace's *name*, not its path: the rail and the
-                // `ctrl+r` list are 30-odd columns wide, and a path spent on
-                // the tail of `D:/work/…/future-os` says less than the word
-                // itself. The path is still the group's identity (see
-                // `WorkspaceGroup`) and the header still names it in full.
-                //
-                // A plain chat has no workspace to name: its directory is the
-                // app's own scratch tree (`…/workspaces/chat/thread-…`), and
-                // printing that directory's name is how `thread-20261026-…`
-                // came to read like a project name. Blank, so the row says only
-                // what a chat has — its title and its age.
-                workspace: session_workspace_label(&session.cwd),
-                parent_id: session.parent_session_id.clone(),
-                age: age(session.updated_at_ms),
-                // 0 from an agent that predates the stamp: the activity stamp
-                // stands in, so the 活跃 stretch is ordered rather than tied.
-                created_at_ms: match session.created_at_ms {
-                    0 => session.updated_at_ms,
-                    created => created,
-                },
-                // On the launchpad nothing is attached, so no row claims to be
-                // the current one.
-                current: !self.launchpad && session.id == current,
-                // The agent's own flag, not a local run row: a conversation
-                // another client started writes here too, which is what makes
-                // 最近's 活跃 stretch a view of the agent and not of this
-                // terminal's own typing.
-                streaming: session.is_streaming.unwrap_or(false),
-            })
-            .collect();
-        // The 工作区 tab: the same rows, filed the way the desktop's rail files
-        // them. A conversation that ran in one of the app's own scratch
-        // directories belongs to no workspace, so it is a plain chat.
-        let (workspaces, chats) = self.file_sessions(&sessions, &rows);
         let skill_names = state.skills.clone();
         // The agent names the skills it discovered; the sidebar's local read adds
         // the descriptions (and is the fallback when an older agent reports
@@ -2030,7 +2103,7 @@ impl Live {
             choices.push(path.to_string());
         };
         push(&chat_workspace());
-        for session in &self.sessions {
+        for session in self.sessions.iter() {
             push(&session.cwd);
         }
         choices
@@ -2853,6 +2926,78 @@ fn token_field(usage: &Value, key: &str) -> i64 {
         .unwrap_or(0)
 }
 
+/// The conversation list as the client holds it, with the version a cached view
+/// of it is keyed on.
+///
+/// A plain `Vec` would let a caller assign a fresh list and leave the rail
+/// painting the previous one: [`Live::data`] rebuilds its rows only when
+/// [`Self::rev`] moves, so replacing the list *has* to move it, and this type is
+/// what makes forgetting unrepresentable. The `Deref` is read-only for the same
+/// reason — read through it, write through [`Self::replace`].
+#[derive(Default)]
+struct SessionList {
+    rows: Vec<SessionSummary>,
+    rev: u64,
+}
+
+impl SessionList {
+    /// Replace the list, answering whether anything changed — an unchanged list
+    /// keeps its version, so the rail is not re-filed (nor repainted) for a poll
+    /// that read the same rows.
+    fn replace(&mut self, rows: Vec<SessionSummary>) -> bool {
+        if rows == self.rows {
+            return false;
+        }
+        self.rows = rows;
+        self.rev = self.rev.wrapping_add(1);
+        true
+    }
+
+    fn rev(&self) -> u64 {
+        self.rev
+    }
+}
+
+impl std::ops::Deref for SessionList {
+    type Target = [SessionSummary];
+
+    fn deref(&self) -> &Self::Target {
+        &self.rows
+    }
+}
+
+/// The rail's view of the session list: rows in the order the panels want
+/// them, the 工作区 filing, and the plain chats.
+///
+/// A frame asks for these on every paint, and building them is the part of a
+/// frame that grows with the reader's history ([`Live::build_session_view`]).
+/// So they are built when one of the inputs below moves and cloned otherwise.
+/// A field added to [`SessionRow`] that reads anything outside those inputs
+/// belongs in [`SessionViewKey`] too.
+struct SessionView {
+    key: SessionViewKey,
+    rows: Vec<SessionRow>,
+    workspaces: Vec<WorkspaceGroup>,
+    chats: Vec<String>,
+}
+
+/// Everything [`SessionView`] is built from, compared per frame.
+#[derive(PartialEq, Eq)]
+struct SessionViewKey {
+    /// [`SessionList::rev`] — the list itself.
+    sessions: u64,
+    /// [`Live::pins_rev`] — a pin reorders and re-files the 工作区 tab.
+    pins: u64,
+    /// The attached conversation (`current` on its row).
+    current: String,
+    /// The launchpad attaches to nothing, so no row claims to be current.
+    launchpad: bool,
+    lang: Language,
+    /// [`age_at`] reads in minutes, so a view built in an earlier minute may
+    /// print a different age for the same rows.
+    minute: i64,
+}
+
 /// The 工作区 tab's filing: one group per workspace, pinned first, and the
 /// conversations that belong to no workspace at all.
 ///
@@ -2861,43 +3006,72 @@ fn token_field(usage: &Value, key: &str) -> i64 {
 /// directory) or the per-chat scratch tree the desktop hands out. Everything
 /// else is filed under the directory it ran in, named by that directory and
 /// identified by its path: two checkouts can share a name.
+///
+/// Two indexes, not two scans: each row used to look its summary up with a
+/// linear walk of the session list and its group up with a linear walk of the
+/// groups built so far, which made filing O(sessions²) — at five hundred
+/// conversations it was most of a 10 ms frame. The identity of a workspace is
+/// [`path_key`], the same normalisation [`same_path`] compares by, so two
+/// spellings of one directory (`C:\work\x`, `C:/work/x/`) still land in one
+/// group.
 fn file_sessions(
     sessions: &[SessionSummary],
     rows: &[SessionRow],
     pinned: &[String],
+    roots: &ChatRoots,
 ) -> (Vec<WorkspaceGroup>, Vec<String>) {
+    let mut by_id: HashMap<&str, &SessionSummary> = HashMap::with_capacity(sessions.len());
+    for session in sessions {
+        by_id.entry(session.id.as_str()).or_insert(session);
+    }
     let mut groups: Vec<WorkspaceGroup> = Vec::new();
     let mut chats: Vec<String> = Vec::new();
+    let mut group_at: HashMap<String, usize> = HashMap::new();
     // `rows` is most recently spoken first, so a group keeps that order inside
     // itself and the first time a path is seen is that workspace's newest
     // activity.
     for row in rows {
-        let Some(summary) = sessions.iter().find(|session| session.id == row.id) else {
+        let Some(summary) = by_id.get(row.id.as_str()) else {
             continue;
         };
-        let path = summary.cwd.trim_end_matches(['/', '\\']).to_string();
-        if path.is_empty() || is_chat_directory(&summary.cwd) {
+        if roots.is_chat(&summary.cwd) {
             chats.push(row.id.clone());
             continue;
         }
-        match groups
-            .iter_mut()
-            .find(|group| same_path(&group.path, &path))
-        {
-            Some(group) => group.session_ids.push(row.id.clone()),
-            None => groups.push(WorkspaceGroup {
-                name: workspace_name(&path),
-                pinned: pinned.iter().any(|pin| same_path(pin, &path)),
-                path,
-                age: row.age.clone(),
-                session_ids: vec![row.id.clone()],
-            }),
+        let path = path_key(&summary.cwd);
+        if path.is_empty() {
+            chats.push(row.id.clone());
+            continue;
+        }
+        match group_at.get(&path) {
+            Some(&index) => groups[index].session_ids.push(row.id.clone()),
+            None => {
+                group_at.insert(path.clone(), groups.len());
+                groups.push(WorkspaceGroup {
+                    name: workspace_name(&path),
+                    pinned: pinned.iter().any(|pin| same_path(pin, &path)),
+                    path,
+                    age: row.age.clone(),
+                    session_ids: vec![row.id.clone()],
+                });
+            }
         }
     }
     // Pinned workspaces lead (the desktop's rail does the same); the rest keep
     // the newest-activity order the rows already carry.
     groups.sort_by_key(|group| !group.pinned);
     (groups, chats)
+}
+
+/// A workspace's identity for filing: `same_path`'s normalisation, computed
+/// once per path instead of twice per comparison.
+fn path_key(path: &str) -> String {
+    let trimmed = path.trim_end_matches(['/', '\\']);
+    if trimmed.contains('\\') {
+        trimmed.replace('\\', "/")
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// Start the reader's handler for `target`: `open` on macOS, the shell's `start`
@@ -3073,21 +3247,6 @@ fn shorten(cwd: &str) -> String {
 
 /// A workspace's heading name: the directory's own name, or the whole path
 /// when there is no last segment to take (`/`).
-/// The workspace label a conversation row prints: its directory's name, or
-/// nothing at all for a plain chat.
-///
-/// A plain chat runs in the app's own scratch tree (`…/workspaces/chat/
-/// thread-…`), so printing that directory's name is how `thread-20261026-…`
-/// came to read like a project name in the rail. A chat has no workspace to
-/// name; the row says only what it has — its title and its age.
-fn session_workspace_label(cwd: &str) -> String {
-    if is_chat_directory(cwd) {
-        String::new()
-    } else {
-        workspace_name(cwd)
-    }
-}
-
 fn workspace_name(path: &str) -> String {
     let trimmed = path.trim_end_matches(['/', '\\']);
     let name = trimmed
@@ -3110,26 +3269,74 @@ fn same_path(left: &str, right: &str) -> bool {
     normalise(left) == normalise(right)
 }
 
-/// Is `cwd` one of the app's own scratch directories — a conversation with no
-/// workspace of its own?
+/// Where this installation keeps the conversations that belong to no
+/// workspace, resolved once and then asked about every row.
 ///
-/// Two of them exist: the agent's default workspace (a session started without
-/// a directory lands there) and the per-chat scratch tree the desktop creates.
-/// A directory the reader chose is never one of these, so a project's
-/// conversation is always filed.
-fn is_chat_directory(cwd: &str) -> bool {
-    let cwd = cwd.trim_end_matches(['/', '\\']);
-    if cwd.is_empty() {
-        return true;
+/// [`is_chat_directory`] answers the same question, but it reads the
+/// installation's directory and builds two `format!`s on *every* call — and a
+/// frame asks it once per conversation in the rail (twice, before
+/// [`Live::build_session_view`] hoisted the clock and this). One read per
+/// rebuild, one comparison per row.
+struct ChatRoots {
+    /// `{state}/agent/workspace` — where a session started without a directory
+    /// lands.
+    workspace: String,
+    /// `{state}/workspaces/chat/` — the per-chat scratch tree the desktop makes.
+    chat_prefix: String,
+}
+
+impl ChatRoots {
+    fn detect() -> Self {
+        let root = crate::home::future_state_dir()
+            .display()
+            .to_string()
+            .replace('\\', "/");
+        let root = root.trim_end_matches('/').to_string();
+        Self {
+            workspace: format!("{root}/agent/workspace"),
+            chat_prefix: format!("{root}/workspaces/chat/"),
+        }
     }
-    let normalized = cwd.replace('\\', "/");
-    let root = crate::home::future_state_dir()
-        .display()
-        .to_string()
-        .replace('\\', "/");
-    let root = root.trim_end_matches('/');
-    normalized == format!("{root}/agent/workspace")
-        || normalized.starts_with(&format!("{root}/workspaces/chat/"))
+
+    /// Is `cwd` one of the app's own scratch directories — a conversation with
+    /// no workspace of its own?
+    ///
+    /// Two of them exist: the agent's default workspace and the per-chat
+    /// scratch tree. A directory the reader chose is never one of these, so a
+    /// project's conversation is always filed.
+    fn is_chat(&self, cwd: &str) -> bool {
+        let cwd = cwd.trim_end_matches(['/', '\\']);
+        if cwd.is_empty() {
+            return true;
+        }
+        // Only a Windows spelling needs the `\\` → `/` rewrite, and that
+        // rewrite allocates: the common path compares in place.
+        if cwd.contains('\\') {
+            let normalized = cwd.replace('\\', "/");
+            return self.matches(&normalized);
+        }
+        self.matches(cwd)
+    }
+
+    fn matches(&self, normalized: &str) -> bool {
+        normalized == self.workspace || normalized.starts_with(&self.chat_prefix)
+    }
+
+    /// The workspace label a conversation row prints: its directory's name, or
+    /// nothing at all for a plain chat.
+    fn workspace_label(&self, cwd: &str) -> String {
+        if self.is_chat(cwd) {
+            String::new()
+        } else {
+            workspace_name(cwd)
+        }
+    }
+}
+
+/// Is `cwd` one of the app's own scratch directories — a conversation with no
+/// workspace of its own? See [`ChatRoots`], which is what a loop should hold.
+fn is_chat_directory(cwd: &str) -> bool {
+    ChatRoots::detect().is_chat(cwd)
 }
 
 /// The directory a conversation with no workspace runs in: the same
@@ -3147,11 +3354,17 @@ fn chat_workspace() -> String {
         .to_string()
 }
 
-fn age(updated_at_ms: i64) -> String {
-    let now = std::time::SystemTime::now()
+/// Milliseconds since the epoch, read once per frame rather than once per row.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as i64)
-        .unwrap_or(0);
+        .unwrap_or(0)
+}
+
+/// `age`, against a clock the caller already read — a list of conversations
+/// asks this once per row, and a `SystemTime::now` per row is a syscall per row.
+fn age_at(now: i64, updated_at_ms: i64) -> String {
     let delta = now.saturating_sub(updated_at_ms);
     if delta < 60_000 {
         return "now".to_string();
@@ -3799,11 +4012,11 @@ mod tests {
             .expect("attach to the test agent");
         // Two workspaces, one of them named twice (a checkout and its trailing
         // slash), which is one choice and two rows.
-        live.sessions = vec![
+        live.sessions.replace(vec![
             row("s-1", Some("first"), "/work/alpha"),
             row("s-2", Some("second"), "/work/alpha/"),
             row("s-3", Some("third"), "/other/beta"),
-        ];
+        ]);
         live.state.cwd = Some("/work/alpha".into());
         live.to_launchpad();
 
@@ -3868,7 +4081,7 @@ mod tests {
             .expect("attach to the test agent");
         // No conversation anywhere: the launchpad's own chat is the only choice
         // left, and cycling it would be a chip that does nothing.
-        live.sessions = Vec::new();
+        live.sessions.replace(Vec::new());
         live.to_launchpad();
         live.cycle_pending_workspace();
         assert_eq!(live.pending_cwd, None);
@@ -3893,7 +4106,11 @@ mod tests {
         busy.is_streaming = Some(true);
         let mut quiet = row("s-2", Some("quiet"), "/work/alpha");
         quiet.is_streaming = Some(false);
-        live.sessions = vec![busy, quiet, row("s-3", Some("older agent"), "/work/alpha")];
+        live.sessions.replace(vec![
+            busy,
+            quiet,
+            row("s-3", Some("older agent"), "/work/alpha"),
+        ]);
         assert!(live.sessions_streaming(), "one conversation is writing");
 
         let frame = crate::workbench::layout::Frame::new(
@@ -3913,7 +4130,8 @@ mod tests {
         );
 
         // An agent that sends no flag at all is idle, not streaming.
-        live.sessions = vec![row("s-4", Some("legacy"), "/work/alpha")];
+        live.sessions
+            .replace(vec![row("s-4", Some("legacy"), "/work/alpha")]);
         assert!(!live.sessions_streaming(), "no flag is not a run");
         let data = live.data(&frame);
         assert!(!data.sessions[0].streaming);
@@ -3956,7 +4174,7 @@ mod tests {
         older.created_at_ms = now - 10 * minute;
         older.updated_at_ms = now - 24 * 60 * minute;
         // The list arrives in neither order: the panel does the sorting.
-        live.sessions = vec![older, speaking, newer, started];
+        live.sessions.replace(vec![older, speaking, newer, started]);
 
         let frame = crate::workbench::layout::Frame::new(
             120,
@@ -3986,7 +4204,7 @@ mod tests {
         let mut old_b = row("s-old-b", Some("old agent"), "/work/alpha");
         old_b.is_streaming = Some(true);
         old_b.updated_at_ms = now - minute;
-        live.sessions = vec![old_a, old_b];
+        live.sessions.replace(vec![old_a, old_b]);
         let data = live.data(&frame);
         let painted: Vec<&str> =
             crate::workbench::panels::rows(crate::workbench::state::PanelId::Recent, &data)
@@ -4035,14 +4253,14 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as i64;
-        assert_eq!(age(now), "now");
-        assert_eq!(age(now - 5 * 60_000), "5m");
-        assert_eq!(age(now - 3 * 3_600_000), "3h");
-        assert_eq!(age(now - 2 * 86_400_000), "2d");
-        assert_eq!(age(now - 10 * 86_400_000), "1w");
+        assert_eq!(age_at(now, now), "now");
+        assert_eq!(age_at(now, now - 5 * 60_000), "5m");
+        assert_eq!(age_at(now, now - 3 * 3_600_000), "3h");
+        assert_eq!(age_at(now, now - 2 * 86_400_000), "2d");
+        assert_eq!(age_at(now, now - 10 * 86_400_000), "1w");
         // A clock that disagrees with a stored timestamp reads as "now" rather
         // than a negative age.
-        assert_eq!(age(now + 60_000), "now");
+        assert_eq!(age_at(now, now + 60_000), "now");
     }
 
     #[test]
@@ -4081,13 +4299,13 @@ mod tests {
             .map(|(index, session)| SessionRow {
                 id: session.id.clone(),
                 title: display_name(session),
-                workspace: session_workspace_label(&session.cwd),
+                workspace: ChatRoots::detect().workspace_label(&session.cwd),
                 age: format!("{index}h"),
                 ..SessionRow::default()
             })
             .collect();
         let pinned = vec!["/other/future-os/".to_string()];
-        let (groups, chats) = file_sessions(&sessions, &rows, &pinned);
+        let (groups, chats) = file_sessions(&sessions, &rows, &pinned, &ChatRoots::detect());
 
         // The pinned checkout leads although it is not the freshest.
         assert_eq!(groups[0].path, "/other/future-os");
@@ -4126,6 +4344,140 @@ mod tests {
             .any(|group| group.session_ids.contains(&"e".into())));
     }
 
+    /// Two spellings of one directory are one workspace. `path_key` is what
+    /// decides that now (the group lookup is a hash, not a `same_path` scan per
+    /// row), so the normalisation it applies has to match the comparison it
+    /// replaced.
+    #[test]
+    fn two_spellings_of_one_directory_are_one_workspace() {
+        let sessions = vec![
+            row("a", Some("newest"), "C:\\work\\os"),
+            row("b", Some("older"), "C:/work/os/"),
+        ];
+        let rows: Vec<SessionRow> = sessions
+            .iter()
+            .map(|session| SessionRow {
+                id: session.id.clone(),
+                title: display_name(session),
+                workspace: ChatRoots::detect().workspace_label(&session.cwd),
+                age: "1h".to_string(),
+                ..SessionRow::default()
+            })
+            .collect();
+        let (groups, chats) = file_sessions(&sessions, &rows, &[], &ChatRoots::detect());
+        assert!(chats.is_empty(), "neither is a scratch directory");
+        assert_eq!(groups.len(), 1, "one directory, one group: {groups:?}");
+        assert_eq!(
+            groups[0].session_ids,
+            vec!["a".to_string(), "b".to_string()]
+        );
+        assert_eq!(groups[0].path, "C:/work/os", "one spelling for the group");
+        assert_eq!(groups[0].name, "os");
+    }
+
+    /// The hoisted roots answer what the per-row reader used to: the app's own
+    /// two scratch directories are chats, a directory the reader chose is not.
+    #[test]
+    fn the_hoisted_roots_answer_which_directories_are_chats() {
+        let roots = ChatRoots::detect();
+        let state = crate::home::future_state_dir();
+        let default_workspace = state.join("agent").join("workspace").display().to_string();
+        let scratch = state
+            .join("workspaces")
+            .join("chat")
+            .join("thread-1")
+            .display()
+            .to_string();
+        assert!(roots.is_chat(""), "no directory yet is no workspace");
+        assert!(roots.is_chat(&default_workspace));
+        assert!(
+            roots.is_chat(&format!("{default_workspace}/")),
+            "a trailing separator is the same directory"
+        );
+        assert!(roots.is_chat(&scratch));
+        assert!(!roots.is_chat("/work/future-os"));
+        assert!(
+            !roots.is_chat(&state.display().to_string()),
+            "the state directory itself is not a chat"
+        );
+        // The row's label is blank exactly for those.
+        assert_eq!(roots.workspace_label(&scratch), "");
+        assert_eq!(roots.workspace_label("/work/future-os"), "future-os");
+        // And the free reader, which other callers still use, agrees.
+        assert!(is_chat_directory(&scratch));
+        assert!(!is_chat_directory("/work/future-os"));
+    }
+
+    /// A frame asks for the rail's rows and filing every time it is composed,
+    /// and building them is the one part of a frame that grows with history. The
+    /// view is therefore rebuilt only when one of its inputs moves — a change
+    /// that made it rebuild per frame would cost milliseconds per keystroke at a
+    /// few hundred conversations without failing anything else.
+    #[tokio::test]
+    async fn the_rail_view_is_rebuilt_only_when_one_of_its_inputs_moves() {
+        let body = format!(
+            "{{\"sessions\":[{}]}}",
+            (0..8)
+                .map(|i| format!(
+                    "{{\"id\":\"s{i}\",\"cwd\":\"/work/p{i}\",\"updatedAtMs\":{},\"model\":\"m\",\"sessionName\":\"c{i}\"}}",
+                    1_700_000_000_000i64 + i as i64
+                ))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("get_state", r#"{"sessionId":"s0"}"#),
+            ("list_sessions", &body),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        assert_eq!(
+            live.sessions.len(),
+            8,
+            "the fixture's list arrives at attach"
+        );
+        let frame = frame();
+        live.data(&frame);
+
+        // Steady state: composing a frame at the same inputs is a clone. At most
+        // one rebuild is allowed, because the key carries the minute and a run
+        // that crosses one legitimately re-reads its ages.
+        let before = live.session_view_builds();
+        for _ in 0..20 {
+            live.data(&frame);
+        }
+        let rebuilt = live.session_view_builds() - before;
+        assert!(
+            rebuilt <= 1,
+            "twenty frames that moved nothing rebuilt the rail's view {rebuilt} times"
+        );
+
+        // A pin re-files the 工作区 tab.
+        let before = live.session_view_builds();
+        live.set_workspace_pinned("/work/p3", true);
+        live.data(&frame);
+        assert!(
+            live.session_view_builds() > before,
+            "a pinned workspace must re-file the tab"
+        );
+
+        // Leaving for the launchpad moves `current` off every row.
+        let before = live.session_view_builds();
+        live.to_launchpad();
+        live.data(&frame);
+        assert!(
+            live.session_view_builds() > before,
+            "the launchpad claims no current conversation"
+        );
+        let data = live.data(&frame);
+        assert!(
+            data.sessions.iter().all(|row| !row.current),
+            "no row is current on the launchpad"
+        );
+    }
+
     /// A plain chat has no workspace to name. Its directory is the app's own
     /// scratch tree, and printing that directory's name is how
     /// `thread-20261026-121352-6627dd` came to read like a project in the rail.
@@ -4137,10 +4489,16 @@ mod tests {
             .join("thread-20261026-121352-6627dd")
             .display()
             .to_string();
-        assert_eq!(session_workspace_label(&scratch), "");
+        assert_eq!(ChatRoots::detect().workspace_label(&scratch), "");
         // Every other directory is named by its own last segment.
-        assert_eq!(session_workspace_label("/work/future-os"), "future-os");
-        assert_eq!(session_workspace_label("/work/future-os/"), "future-os");
+        assert_eq!(
+            ChatRoots::detect().workspace_label("/work/future-os"),
+            "future-os"
+        );
+        assert_eq!(
+            ChatRoots::detect().workspace_label("/work/future-os/"),
+            "future-os"
+        );
     }
 
     /// The preview loader: pictures become pixels, documents become lines, and
@@ -4777,6 +5135,139 @@ mod tests {
         );
         assert!(live.is_cached("s-a"), "but its rows are kept");
         assert!(live.begin_switch("s-a"), "and the way back is a repaint");
+    }
+
+    /// Meter, not a check: what a frame's `WorkbenchData` costs as the reader's
+    /// conversation history grows.
+    ///
+    /// `Live::data` composes a frame's data, and the driver composes it once per
+    /// agent-event batch and several times per keystroke — so whatever it costs
+    /// is paid on the input path, not in the background. It used to be
+    /// **quadratic**: `file_sessions` looked each row's summary up with a linear
+    /// scan of the session list and each row's workspace up with a linear scan
+    /// of the groups built so far, so 393 conversations cost 6.4 ms per call and
+    /// 2000 cost 154 ms. Those scans are hashes now and the derived rows are
+    /// cached against [`SessionViewKey`], which is what
+    /// [`Self::session_view_builds`] measures.
+    ///
+    /// `cargo test -p future-tui --release --lib -- --ignored --nocapture session_rail_cost_meter`
+    #[ignore = "meter, not a check"]
+    #[tokio::test]
+    async fn session_rail_cost_meter() {
+        for n in [0usize, 20, 100, 393, 500, 2000] {
+            let rows: Vec<String> = (0..n)
+                .map(|i| {
+                    format!(
+                        r#"{{"id":"s{i}","cwd":"/Users/x/projects/project-{}","updatedAtMs":{},"createdAtMs":{},"model":"m","sessionName":"a conversation with a fairly long title {i}"}}"#,
+                        i % 40,
+                        1_700_000_000_000i64 + i as i64 * 1000,
+                        1_700_000_000_000i64 + i as i64 * 1000
+                    )
+                })
+                .collect();
+            let body = format!(r#"{{"sessions":[{}]}}"#, rows.join(","));
+            let (mock, _seen) =
+                crate::rpc::grpc_client::tests::api_mock_answering(&[("list_sessions", &body)]);
+            let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+            let (mut live, _events) = Live::attach(&addr, None, false, None).await.unwrap();
+            live.refresh_sessions().await;
+            let frame = frame();
+
+            // The frame every event pays: unchanged state, one call.
+            live.data(&frame);
+            let start = std::time::Instant::now();
+            for _ in 0..50 {
+                live.data(&frame);
+            }
+            let steady = start.elapsed().as_secs_f64() * 1000.0 / 50.0;
+
+            // The frame after a poll that moved the list: the view is rebuilt.
+            let rebuild = live.session_view_builds();
+            let start = std::time::Instant::now();
+            live.sessions
+                .replace(vec![crate::rpc::types::SessionSummary {
+                    id: "s-moved".into(),
+                    cwd: "/work/moved".into(),
+                    updated_at_ms: 1_700_000_000_000,
+                    created_at_ms: 0,
+                    model: "m".into(),
+                    session_name: None,
+                    parent_session_id: None,
+                    is_streaming: None,
+                    first_message: None,
+                }]);
+            live.data(&frame);
+            let cold = start.elapsed().as_secs_f64() * 1000.0;
+            assert!(live.session_view_builds() > rebuild, "the list moved");
+
+            // The rail's 5 s poll, which the driver awaits in the loop.
+            let start = std::time::Instant::now();
+            for _ in 0..20 {
+                live.refresh_sessions().await;
+            }
+            let poll = start.elapsed().as_secs_f64() * 1000.0 / 20.0;
+
+            println!(
+                "sessions={n:>5}  data() = {steady:>7.3} ms  rebuild = {cold:>7.3} ms  poll = {poll:>6.3} ms"
+            );
+            live.client.disconnect();
+        }
+    }
+
+    /// Meter, not a check: the first frame after a conversation the reader has
+    /// not opened yet (a switch cache miss) has to build and wrap the page it
+    /// arrives with.
+    ///
+    /// `cargo test -p future-tui --release --lib -- --ignored --nocapture a_switched_conversations_first_frame_cost_meter`
+    #[ignore = "meter, not a check"]
+    #[tokio::test]
+    async fn a_switched_conversations_first_frame_cost_meter() {
+        let body: String = format!(
+            r#"{{"sessions":[{}]}}"#,
+            (0..393)
+                .map(|i| format!(
+                    r#"{{"id":"s{i}","cwd":"/work/p{}","updatedAtMs":{},"createdAtMs":{},"model":"m"}}"#,
+                    i % 40,
+                    1_700_000_000_000i64 + i as i64 * 1000,
+                    1_700_000_000_000i64 + i as i64 * 1000
+                ))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let (mock, _seen) =
+            crate::rpc::grpc_client::tests::api_mock_answering(&[("list_sessions", &body)]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None).await.unwrap();
+        live.refresh_sessions().await;
+        let frame = frame();
+
+        // A tail page is ten exchanges, so this is a whole page of history.
+        for exchanges in [10usize, 50, 200] {
+            let mut chat = crate::components::chat_area::ChatArea::new(frame.inner, None);
+            for i in 0..exchanges {
+                chat.add_message(crate::components::chat_area::ChatMessage::new(
+                    format!("u{i}"),
+                    crate::components::chat_area::ChatRole::User,
+                    "看一下这个渲染路径为什么会慢，顺便解释一下 markdown 每帧重新解析的代价。",
+                ));
+                chat.add_message(crate::components::chat_area::ChatMessage::new(
+                    format!("a{i}"),
+                    crate::components::chat_area::ChatRole::Assistant,
+                    "## 结论\n\n这一段讨论 **渲染** 的开销，含 `行内代码`。\n\n- 第一点\n- 第二点\n\n```rust\nfn main() {}\n```\n\n",
+                ));
+            }
+            live.chat = chat;
+            let start = std::time::Instant::now();
+            let _ = live.data(&frame);
+            let first = start.elapsed().as_secs_f64() * 1000.0;
+            let start = std::time::Instant::now();
+            for _ in 0..20 {
+                let _ = live.data(&frame);
+            }
+            let next = start.elapsed().as_secs_f64() * 1000.0 / 20.0;
+            println!("switch(miss, {exchanges:>3} exchanges): first frame = {first:>6.2} ms, then {next:>5.3} ms");
+        }
+        live.client.disconnect();
     }
 
     /// The two events that mean the agent knows more about the turn's spend than
