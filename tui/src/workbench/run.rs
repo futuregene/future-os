@@ -866,6 +866,10 @@ async fn quit(
         if let WbAction::PreviewFile(path) = &action {
             live.load_preview(path).await;
             workbench.reset_preview();
+            // The pictures beside this one, so the box can step through the
+            // folder with its own buttons — the reader opened a row, and the
+            // rows around it are the neighbours they expect.
+            workbench.set_preview_siblings(super::files::image_siblings(path));
             workbench.overlay = Some(super::Overlay::FilePreview);
             continue;
         }
@@ -1442,10 +1446,15 @@ fn paint_image(terminal: &mut Terminal, workbench: &mut Workbench, data: &super:
                 out.push_str(&crate::terminal_image::delete_kitty_image(painted.id));
             }
             let id = crate::terminal_image::allocate_image_id();
-            let rgb = crop_rgb(pixels, request.crop);
-            let (w, h) = (
-                request.crop.2 - request.crop.0,
-                request.crop.3 - request.crop.1,
+            // Transmit what the cells can show, not the source: the decoder
+            // keeps enough pixels for a zoomed window to stay sharp, but a
+            // whole 2048px picture across a hundred cells is fifteen megabytes
+            // over the pty that the terminal would immediately throw away.
+            let (rgb, w, h) = transmit_bitmap(
+                pixels,
+                request.crop,
+                request.columns as usize,
+                request.rows as usize,
             );
             out.push_str(&format!("\x1b[{};{}H", request.y + 1, request.x + 1));
             out.push_str(&crate::terminal_image::encode_kitty_rgb(
@@ -1468,6 +1477,63 @@ fn paint_image(terminal: &mut Terminal, workbench: &mut Workbench, data: &super:
         out.push_str(&format!("\x1b[{};{}H", y + 1, x + 1));
     }
     terminal.write(&out);
+}
+
+/// How many source pixels per placed cell are worth transmitting.
+///
+/// A terminal cell is roughly 8–10 physical pixels wide on a HiDPI screen, and
+/// the terminal scales whatever it is given down to the cell box. Ten pixels a
+/// cell is therefore "at or above what the display can show" without carrying a
+/// full-resolution photograph across the pty.
+const TRANSMIT_PX_PER_CELL: usize = 10;
+
+/// The bitmap to transmit for `crop`, placed over `columns` × `rows` cells.
+///
+/// Returns RGB bytes and the bitmap's own size. A crop no wider than the cells
+/// can show is transmitted as it is — that is the zoomed case, where the window
+/// is a few hundred pixels and sharpness is the whole point. A larger crop (the
+/// picture fitted into the box) is downsampled first: the bytes cross a pipe and
+/// are then scaled again by the terminal, so sending a 2048px source for a
+/// 100-cell box is latency with nothing to show for it.
+fn transmit_bitmap(
+    pixels: &super::image_view::ImagePixels,
+    crop: (usize, usize, usize, usize),
+    columns: usize,
+    rows: usize,
+) -> (Vec<u8>, usize, usize) {
+    let crop_w = crop.2.saturating_sub(crop.0).max(1);
+    let crop_h = crop.3.saturating_sub(crop.1).max(1);
+    let budget = (columns.max(1) * TRANSMIT_PX_PER_CELL).min(pixels.width.max(1));
+    if crop_w <= budget || rows == 0 || columns == 0 {
+        return (crop_rgb(pixels, crop), crop_w, crop_h);
+    }
+    let target_w = budget.max(1);
+    let target_h = ((crop_h as f64) * (target_w as f64) / (crop_w as f64))
+        .round()
+        .max(1.0) as usize;
+    let mut window = image::RgbaImage::new(crop_w as u32, crop_h as u32);
+    for y in 0..crop_h {
+        for x in 0..crop_w {
+            let offset = ((crop.1 + y) * pixels.width + crop.0 + x) * 4;
+            let pixel = pixels
+                .rgba
+                .get(offset..offset + 4)
+                .map(|rgba| [rgba[0], rgba[1], rgba[2], rgba[3]])
+                .unwrap_or([0, 0, 0, 0]);
+            window.put_pixel(x as u32, y as u32, image::Rgba(pixel));
+        }
+    }
+    let scaled = image::imageops::resize(
+        &window,
+        target_w as u32,
+        target_h as u32,
+        image::imageops::FilterType::Triangle,
+    );
+    let mut rgb = Vec::with_capacity(target_w * target_h * 3);
+    for pixel in scaled.pixels() {
+        rgb.extend_from_slice(&pixel.0[..3]);
+    }
+    (rgb, target_w, target_h)
 }
 
 /// The RGB bytes of a crop of `pixels`, row-major — what kitty's `f=24` wants.
@@ -1730,6 +1796,33 @@ mod tests {
         // a missing pixel is black rather than a panic.
         let rgb = crop_rgb(&pixels, (2, 1, 4, 3));
         assert_eq!(rgb, vec![5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    }
+
+    /// A picture fitted into the box is transmitted at the cells' resolution,
+    /// not the source's; a zoomed window, which is already small, is not
+    /// resampled at all.
+    #[test]
+    fn the_transmitted_bitmap_is_sized_to_the_cells() {
+        let mut rgba = Vec::new();
+        for y in 0..400 {
+            for x in 0..400 {
+                rgba.extend_from_slice(&[(x % 256) as u8, (y % 256) as u8, 0, 255]);
+            }
+        }
+        let pixels = super::super::image_view::ImagePixels {
+            width: 400,
+            height: 400,
+            rgba,
+        };
+        // Fitted into 20 cells at ten pixels a cell: 200 px, half the source.
+        let (rgb, w, h) = transmit_bitmap(&pixels, (0, 0, 400, 400), 20, 20);
+        assert_eq!((w, h), (200, 200));
+        assert_eq!(rgb.len(), w * h * 3);
+        // A zoomed window already fits the budget: no resample, the bytes are
+        // the crop itself.
+        let (rgb, w, h) = transmit_bitmap(&pixels, (10, 10, 210, 210), 40, 40);
+        assert_eq!((w, h), (200, 200));
+        assert_eq!(rgb.len(), 200 * 200 * 3);
     }
 
     #[test]

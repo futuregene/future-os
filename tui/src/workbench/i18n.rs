@@ -523,6 +523,11 @@ pub enum Key {
     HelpKeyPrevPanel,
     HelpKeyNextPanel,
     // ── the preview box and clipboard paste ──────────────────────────
+    PreviewZoomIn,
+    PreviewZoomOut,
+    PreviewFit,
+    PreviewPrev,
+    PreviewNext,
     PreviewHintImage,
     PreviewHintText,
     PreviewNothing,
@@ -947,9 +952,14 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "查看草稿里最新那张图片",
             "View the newest image attached to the draft",
         ),
+        PreviewZoomIn => ("放大", "Zoom in"),
+        PreviewZoomOut => ("缩小", "Zoom out"),
+        PreviewFit => ("适应", "Fit"),
+        PreviewPrev => ("上一张", "Previous"),
+        PreviewNext => ("下一张", "Next"),
         PreviewHintImage => (
-            "＋ / － 缩放 · 方向键平移 · 0 复位 · esc 关闭",
-            "+ / - zoom · arrows pan · 0 resets · esc closes",
+            "＋ / － 缩放 · 拖动或方向键平移 · [ ] 上一张/下一张 · 0 复位 · esc 关闭",
+            "+ / - zoom · drag or arrows to pan · [ ] previous/next · 0 resets · esc closes",
         ),
         PreviewHintText => (
             "↑↓ 滚动 · pageUp/pageDown 翻页 · esc 关闭",
@@ -1226,7 +1236,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 289] = {
+    const ALL_KEYS: [Key; 294] = {
         use Key::*;
         [
             TabTodo,
@@ -1480,6 +1490,11 @@ mod tests {
             HelpKeyNextPanel,
             HelpKeyPasteImage,
             HelpKeyPreviewAttachment,
+            PreviewZoomIn,
+            PreviewZoomOut,
+            PreviewFit,
+            PreviewPrev,
+            PreviewNext,
             PreviewHintImage,
             PreviewHintText,
             PreviewNothing,

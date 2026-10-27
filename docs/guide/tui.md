@@ -93,16 +93,19 @@ newest attached image. `/paste` is the same verb from the palette — it is ther
 because Windows Terminal binds `ctrl+v` to its own paste (which cannot carry an
 image), so on that terminal the key never arrives.
 
-An image is *drawn in the terminal* as half blocks — one `▀` per cell, its
-foreground the top pixel of the pair and its background the bottom one — so it
-works in any 256-colour terminal with no graphics protocol: no kitty, no iTerm2,
-no sixel. Two pixels per cell is the most a text surface can show, and 24-bit
-colour is used when the terminal reports it. The preview box (`enter` on an image
-in 文件, or `alt+v` for an attachment) shows the picture with its dimensions in
-the title, zooms with `+`/`-` (or the wheel) up to 6×, pans with the arrows and
-returns with `0`. Documents — Markdown rendered, anything else as lines — scroll
-with `↑`/`↓` and `pageUp`/`pageDown` instead. A file it cannot show says why
-rather than opening an empty box.
+An image is placed by the terminal's *graphics protocol*: a real bitmap at a cell
+(kitty's `a=T` placement, transmitted once per source and only re-placed on later
+frames), not a character mosaic. The preview box (`enter` on an image in 文件, or
+`alt+v` for an attachment) puts its controls in the frame's first row —
+`[zoom out] [2x] [zoom in] [fit]` and `[previous] 2/5 [next]`, every one of them
+clickable — and answers `+`/`-` (or the wheel) up to 6×, `[`/`]` for the
+previous/next picture in the same folder, and `0` to fit. A zoomed picture pans
+with the arrow keys or by **dragging it with the mouse**. A terminal with no
+graphics protocol gets the dimensions and a sentence saying so instead of an
+approximation, and a folder holding one picture shows no step buttons at all.
+Documents — Markdown rendered, anything else as lines — scroll with `↑`/`↓` and
+`pageUp`/`pageDown` instead. A file it cannot show says why rather than opening
+an empty box.
 
 The rail is a *task* panel, in two tabs. **最近** (the default) lists every
 conversation — its name, then the workspace it is filed under and when it was
@@ -257,7 +260,8 @@ click on the rail's tab strip are the doors to the same places.
 | `ctrl+3` or `/files` | The **files panel**: this conversation's workspace as a tree, in a box over the frame — the same session scope as `/git`. `↑`/`↓` walk it, `⏎`/`→` open, `⌫`/`←` go up a level, `r` re-reads the directory, `esc` closes. The header's `[ctrl+3] 文件` button is the pointer's door to it |
 | `ctrl+v` | Read the clipboard: an image becomes a draft attachment, text is pasted. `/paste` does the same for terminals that bind the key themselves |
 | `alt+v` | Preview the newest image attached to the draft |
-| `+` / `-` / `0`, arrows, wheel | In the preview box: zoom a picture (up to 6×), pan it, reset; scroll a document |
+| `+` / `-` / `0`, arrows, drag, wheel | In the preview box: zoom a picture (up to 6×), pan it, reset; scroll a document |
+| `[` / `]` | In the preview box: previous/next picture in the same folder (the same action as its step buttons) |
 | `alt+c` or `/copy` | Copy the last assistant answer as clean content, without terminal chrome |
 | `alt+m` or `/mouse` | Toggle and persist mouse capture off/on for native terminal selection |
 | `alt+a` | Toggle reduced motion |
@@ -311,7 +315,7 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | Prompting and streaming | `prompt` with the coalescing policy; `text_chunk`, `thinking_*`, `tool_*` and `agent_end` drive the transcript |
 | Queue management | `/queue` reads `get_state.queuedRuns`; cancel and recall use the existing `cancel_queued_run`, with no second client-side queue |
 | Draft attachments | Reuses `components/input.rs` folded-paste and image-marker machinery; attachments travel with the prompt. `ctrl+v` / `/paste` read the system clipboard through `paste::ClipboardCapture` (osascript on macOS, PowerShell `-STA` on Windows, `wl-paste`/`xclip` on Linux) on a blocking thread, and an image it writes becomes an `[Image #N]` attachment. Nothing leaves the machine |
-| File panel and preview | `alt+r` re-reads the tree; a directory is read when it opens (400 entries per level, said out loud when cut). A preview decodes an image to at most 1024 px on its long edge and draws it as half blocks; text is read bounded and cut on a character boundary |
+| File panel and preview | `alt+r` re-reads the tree; a directory is read when it opens (400 entries per level, said out loud when cut). A preview decodes an image to at most 2048 px on its long edge — those pixels are what keeps a zoom sharp — and downsamples the bitmap it transmits to the cells on screen; text is read bounded and cut on a character boundary |
 | Approvals | A parked request opens a full card with tool, kind, risk, action/paths, requested action and sandbox boundary. `y` / `n` allow once or deny; `a` first adds the agent-suggested **this-run** workspace rule, then approves. A rule failure leaves the request pending. Escape closes the card without deciding |
 | Diff review | `/diff` lists tracked and untracked changes from the session workspace and shows the selected real git patch. Wide terminals keep a fixed file navigator beside an independently scrolling patch. Narrow terminals switch between files and patch with `tab`; `up`/`down` operate the focused view and left/right choose a file. The arrow follows the cursor immediately, and `·` marks the file whose patch is already loaded while the reload is in flight. `r` refreshes. This is the current uncommitted working tree, not per-turn attribution; patches are preview-bounded |
 | Repository browser | `/git` (or `alt+g`) is a read-only tig-shaped panel with four tabs: 提交 (`git log --graph`, 200 commits, decorations), 引用 (local/remote branches and tags with upstream tracking), 改动 (the working tree, same porcelain read as `/diff`) and 暂存 (`git stash list`). Each row's detail loads on selection: a commit's stat and patch, a ref's upstream and tip, a file's patch, a stash's diff. `1`–`4` pick a tab, `tab` switches list/detail (the wide layout shows both), `enter` opens (a ref filters the log to it, a changed file opens in the preview box, a commit moves the keys to its patch), `y` copies the sha/ref/path, `backspace` clears the filter, `r` re-reads. Nothing here stages, commits, checks out or drops a stash, and every query is bounded and killed past its deadline |
@@ -331,10 +335,7 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 ## What is not here yet
 
 - **`@` file mentions** — not implemented; pasted image paths and folded pastes use `tui/src/paste.rs`.
-- **A preview is a preview.** The half-block renderer draws a picture at most a
-  couple of hundred cells wide, which is a thumbnail of a photo and a legible
-  view of a screenshot or a diagram. A reader who needs the pixels opens the
-  file in an image viewer; the TUI never transmits the image data anywhere.
+- **A preview is a preview.** The picture is placed over the cells the box has, at up to 6× the fitted size. For pixel-level work open it in the system image viewer; the TUI decodes locally and sends the picture nowhere.
 - **The command palette** lists the commands the adapter implements. Provider
   and tool management is intentionally compact (`/providers` and `/tools`);
   `/skills` remains the installed-skills list in the palette. Approval allow
@@ -362,7 +363,7 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | `tui/src/workbench/picker.rs` | The `/model`, `/theme` and `/sessions` list picker |
 | `tui/src/workbench/launchpad.rs` | The first screen |
 | `tui/src/workbench/files.rs` | The 文件 panel's tree and what a path can be previewed as |
-| `tui/src/workbench/image_view.rs` | An image as half blocks: fit, zoom, pan, 256-colour fallback |
+| `tui/src/workbench/image_view.rs` | Picture arithmetic for the placed bitmap: fit, zoom, pan, and the crop a zoomed box shows |
 | `tui/src/workbench/state.rs` | `WorkbenchData` and its parts |
 | `tui/src/workbench/theme.rs` | The six palettes: `dark`, `light`, `one-dark`, `one-light`, `high-contrast`, `dracula` |
 | `tui/src/workbench/i18n.rs` | Every piece of chrome, in Chinese and English, and the locale/preference resolution |

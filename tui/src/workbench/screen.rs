@@ -1385,6 +1385,173 @@ fn indent(rows: Vec<String>, left: usize, w: usize) -> Vec<String> {
         .collect()
 }
 
+/// The preview box's control row: the picture's zoom, and the folder's
+/// previous/next picture.
+///
+/// Every control here is also a key (`+`, `-`, `0`, `[`, `]`) and runs the same
+/// handler — the row exists so a reader with a mouse does not have to learn the
+/// chords, not as a second way to do things. A segment that would do nothing
+/// (the ends of the folder, a terminal that cannot place a bitmap) is drawn dim
+/// so the box never offers a live-looking target that is dead.
+///
+/// Returns the painted row and the segments it claims, left to right, as
+/// `(hit id, width in cells)`. The caller turns the widths into coordinates
+/// because only it knows where the box's left edge is; a segment carrying no
+/// action still gets a `"overlay.surface"` entry, so the widths keep adding up
+/// to what is on screen.
+fn controls_row(
+    workbench: &Workbench,
+    palette: &Palette,
+    inner: usize,
+    images: bool,
+) -> (String, Vec<(&'static str, u16)>) {
+    fn segment(
+        row: &mut String,
+        regions: &mut Vec<(&'static str, u16)>,
+        id: &'static str,
+        plain: &str,
+        painted: String,
+    ) {
+        row.push_str(&painted);
+        regions.push((id, plain.chars().count().max(1) as u16));
+    }
+
+    let lang = workbench.lang;
+    let zoom = workbench.preview_zoom;
+    let count = workbench.preview_siblings.len();
+    let index = workbench.preview_index;
+    let mut row = String::new();
+    let mut regions: Vec<(&'static str, u16)> = Vec::new();
+
+    segment(
+        &mut row,
+        &mut regions,
+        "overlay.surface",
+        " ",
+        " ".to_string(),
+    );
+    if images {
+        let out_label = format!("[{}]", t(lang, Key::PreviewZoomOut));
+        let out_live = zoom > 1;
+        segment(
+            &mut row,
+            &mut regions,
+            super::ZOOM_OUT,
+            &out_label,
+            if out_live {
+                palette.strong(palette.accent, &out_label)
+            } else {
+                palette.dim(&out_label)
+            },
+        );
+        let zoom_label = format!(" {zoom}x ");
+        segment(
+            &mut row,
+            &mut regions,
+            "overlay.surface",
+            &zoom_label,
+            palette.dim(&zoom_label),
+        );
+        let in_label = format!("[{}]", t(lang, Key::PreviewZoomIn));
+        let in_live = zoom < super::MAX_PREVIEW_ZOOM;
+        segment(
+            &mut row,
+            &mut regions,
+            super::ZOOM_IN,
+            &in_label,
+            if in_live {
+                palette.strong(palette.accent, &in_label)
+            } else {
+                palette.dim(&in_label)
+            },
+        );
+        let fit_label = format!("[{}]", t(lang, Key::PreviewFit));
+        let fit_live = zoom > 1 || workbench.preview_pan != (0, 0);
+        segment(
+            &mut row,
+            &mut regions,
+            super::ZOOM_FIT,
+            &fit_label,
+            if fit_live {
+                palette.strong(palette.accent, &fit_label)
+            } else {
+                palette.dim(&fit_label)
+            },
+        );
+        segment(
+            &mut row,
+            &mut regions,
+            "overlay.surface",
+            "   ",
+            "   ".to_string(),
+        );
+    }
+    if count > 1 {
+        let prev_label = format!("[{}]", t(lang, Key::PreviewPrev));
+        let prev_live = index > 0;
+        segment(
+            &mut row,
+            &mut regions,
+            super::PREV_IMAGE,
+            &prev_label,
+            if prev_live {
+                palette.strong(palette.accent, &prev_label)
+            } else {
+                palette.dim(&prev_label)
+            },
+        );
+        let counter = format!(" {}/{} ", index + 1, count);
+        segment(
+            &mut row,
+            &mut regions,
+            "overlay.surface",
+            &counter,
+            palette.dim(&counter),
+        );
+        let next_label = format!("[{}]", t(lang, Key::PreviewNext));
+        let next_live = index + 1 < count;
+        segment(
+            &mut row,
+            &mut regions,
+            super::NEXT_IMAGE,
+            &next_label,
+            if next_live {
+                palette.strong(palette.accent, &next_label)
+            } else {
+                palette.dim(&next_label)
+            },
+        );
+    }
+    let visible: String = {
+        // Clip to the box: the frame is text, and a row longer than the box
+        // would push its own border off the edge.
+        let mut width = 0usize;
+        let mut out = String::new();
+        let mut escape = false;
+        for ch in row.chars() {
+            if escape {
+                out.push(ch);
+                if ch == 'm' {
+                    escape = false;
+                }
+                continue;
+            }
+            if ch == '\x1b' {
+                escape = true;
+                out.push(ch);
+                continue;
+            }
+            if width >= inner {
+                break;
+            }
+            width += 1;
+            out.push(ch);
+        }
+        out
+    };
+    (visible, regions)
+}
+
 fn paint_box(
     palette: &Palette,
     title: &str,
@@ -2228,11 +2395,15 @@ fn preview_box(
             // (`ImageRequest`, painted by the driver after this frame), and a
             // terminal that cannot gets the picture's facts and an honest
             // sentence instead of a mosaic.
-            if crate::terminal_image::get_capabilities().images
-                == crate::terminal_image::ImageProtocol::Kitty
-            {
+            let images = crate::terminal_image::get_capabilities().images
+                == crate::terminal_image::ImageProtocol::Kitty;
+            // One row of the box is its controls: zoom, fit, and the folder's
+            // previous/next picture. They are text, so the picture starts below
+            // them — a bitmap cannot share a cell with a glyph.
+            let picture_h = content_h.saturating_sub(1).max(1);
+            if images {
                 let (cells_w, cells_h) =
-                    image_view::fitted_cells(pixels.width, pixels.height, inner, content_h, zoom);
+                    image_view::fitted_cells(pixels.width, pixels.height, inner, picture_h, zoom);
                 // Zoomed past the box, the window is what is on screen; it may
                 // not be panned beyond the picture's own edge.
                 let pan = image_view::clamp_pan(
@@ -2240,20 +2411,20 @@ fn preview_box(
                     cells_w,
                     cells_h,
                     inner,
-                    content_h,
+                    picture_h,
                 );
                 workbench.preview_pan = (pan.0 as i32, pan.1 as i32);
                 let shown_w = cells_w.min(inner).max(1);
-                let shown_h = cells_h.min(content_h).max(1);
+                let shown_h = cells_h.min(picture_h).max(1);
                 let crop = crop_of(pixels, cells_w, cells_h, pan, shown_w, shown_h);
                 let left = (inner.saturating_sub(shown_w) / 2) as u16;
-                let top = (content_h.saturating_sub(shown_h) / 2) as u16;
+                let top = (picture_h.saturating_sub(shown_h) / 2) as u16;
                 workbench.image_request = Some(ImageRequest {
                     // The *source* is what a repaint must not retransmit; the
                     // placement is the part that is cheap to repeat.
                     source: image_source_key(path, pixels, crop),
                     x: geometry.left + 1 + left,
-                    y: geometry.top + 1 + top,
+                    y: geometry.top + 2 + top,
                     columns: shown_w as u16,
                     rows: shown_h as u16,
                     crop,
@@ -2261,9 +2432,32 @@ fn preview_box(
                 // The box keeps its own background under the bitmap: the frame
                 // is text, and the picture is a layer above it.
                 content = vec![palette.panel_row("", inner); content_h];
+                // The picture is also the drag surface: a press on it starts a
+                // pan, which is the pointer's way of moving a zoomed picture.
+                workbench.hit_map().push(
+                    Rect::new(
+                        geometry.left + 1 + left,
+                        geometry.top + 2 + top,
+                        shown_w as u16,
+                        shown_h as u16,
+                    ),
+                    "preview.picture",
+                );
             } else {
                 content = unsupported_picture(palette, lang, preview.name(), pixels, inner);
+                while content.len() < content_h {
+                    content.push(String::new());
+                }
             }
+            let (row, controls) = controls_row(workbench, palette, inner, images);
+            let mut x = geometry.left + 1;
+            for (id, width) in controls {
+                workbench
+                    .hit_map()
+                    .push(Rect::new(x, geometry.top + 1, width, 1), id.to_string());
+                x += width;
+            }
+            content[0] = row;
             t(lang, Key::PreviewHintImage)
         }
         state::PreviewView::Markdown { text, .. } => {
