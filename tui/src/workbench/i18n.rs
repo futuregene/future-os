@@ -463,7 +463,6 @@ pub enum Key {
     CmdHelp,
     CmdQuit,
     CmdPreferences,
-    PrefDensity,
     PrefPosition,
     PrefWidth,
     PrefMouse,
@@ -474,8 +473,6 @@ pub enum Key {
     PrefDisabled,
     PrefShortcuts,
     PrefReset,
-    PrefFocused,
-    PrefComfortable,
     PrefLeft,
     PrefRight,
     PreferencesTitle,
@@ -837,7 +834,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         CmdHelp => ("帮助与快捷键", "Help and shortcuts"),
         CmdQuit => ("退出 workbench", "Leave the workbench"),
         CmdPreferences => ("布局、通知、可访问性和快捷键", "Layout, notifications, accessibility and shortcuts"),
-        PrefDensity => ("界面密度", "Density"),
         PrefPosition => ("侧栏位置", "Sidebar position"),
         PrefWidth => ("侧栏宽度", "Sidebar width"),
         PrefMouse => ("启动与运行时使用鼠标", "Mouse capture"),
@@ -848,8 +844,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         PrefDisabled => ("关闭", "Off"),
         PrefShortcuts => ("自定义快捷键", "Customize shortcuts"),
         PrefReset => ("恢复默认偏好", "Restore defaults"),
-        PrefFocused => ("专注：更多对话空间", "Focused: more room for conversation"),
-        PrefComfortable => ("舒适：完整品牌头部", "Comfortable: full identity header"),
         PrefLeft => ("左侧", "Left"),
         PrefRight => ("右侧", "Right"),
         PreferencesTitle => ("偏好设置", "Preferences"),
@@ -1185,7 +1179,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 276] = {
+    const ALL_KEYS: [Key; 273] = {
         use Key::*;
         [
             TabTodo,
@@ -1382,7 +1376,6 @@ mod tests {
             CmdHelp,
             CmdQuit,
             CmdPreferences,
-            PrefDensity,
             PrefPosition,
             PrefWidth,
             PrefMouse,
@@ -1393,8 +1386,6 @@ mod tests {
             PrefDisabled,
             PrefShortcuts,
             PrefReset,
-            PrefFocused,
-            PrefComfortable,
             PrefLeft,
             PrefRight,
             PreferencesTitle,

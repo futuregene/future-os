@@ -1,12 +1,8 @@
-//! The workbench's drawing primitives: rules, tabs, bars, badges, the spinner,
-//! the block wordmark.
+//! The workbench's drawing primitives: rules, tabs, bars, badges, the spinner.
 //!
 //! Every function here returns text that is *already* the width it was asked
 //! for (or is measured with [`crate::workbench::ansi::width`]), so the screen
-//! composer can concatenate them without re-measuring. Decoration is kept in
-//! this file for one reason: the wordmark is where a terminal
-//! font's block glyphs matter, and a width bug there corrupts every row below
-//! it.
+//! composer can concatenate them without re-measuring.
 
 use crate::workbench::ansi::{align_right, fit, width};
 use crate::workbench::i18n::{self, Key, Language};
@@ -121,51 +117,6 @@ pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦"
 
 pub fn spinner(frame: usize) -> &'static str {
     SPINNER[frame % SPINNER.len()]
-}
-
-/// The 5-row block font the header uses for `FUTURE OS` (35 columns). Only
-/// drawn at width ≥ 96, where it fits beside the session title.
-///
-/// Built from per-letter 3×5 cells rather than a pre-joined constant, so every
-/// row is the same width by construction — an off-by-one in a hand-written
-/// constant is invisible in review and shifts every row of the frame.
-const GLYPHS: [(char, [&str; 5]); 8] = [
-    ('F', ["███", "█  ", "██ ", "█  ", "█  "]),
-    ('U', ["█ █", "█ █", "█ █", "█ █", "███"]),
-    ('T', ["███", " █ ", " █ ", " █ ", " █ "]),
-    ('R', ["███", "█ █", "██ ", "█ █", "█ █"]),
-    ('E', ["███", "█  ", "██ ", "█  ", "███"]),
-    ('O', ["███", "█ █", "█ █", "█ █", "███"]),
-    ('S', ["███", "█  ", "███", "  █", "███"]),
-    (' ', ["   ", "   ", "   ", "   ", "   "]),
-];
-
-/// The word the header spells, in [`GLYPHS`] order.
-const WORDMARK_TEXT: &str = "FUTURE OS";
-
-pub fn wordmark_rows(palette: &Palette) -> [String; 5] {
-    let mut rows: [String; 5] = Default::default();
-    for (index, ch) in WORDMARK_TEXT.chars().enumerate() {
-        let glyph = GLYPHS
-            .iter()
-            .find(|(candidate, _)| *candidate == ch)
-            .map(|(_, rows)| *rows)
-            .unwrap_or(GLYPHS[GLYPHS.len() - 1].1);
-        for (row, cell) in glyph.iter().enumerate() {
-            if index > 0 {
-                rows[row].push(' ');
-            }
-            rows[row].push_str(cell);
-        }
-    }
-    rows.map(|row| palette.strong(palette.fg, &row))
-}
-
-/// Width of the wordmark block, which the header uses to decide whether there
-/// is room for it.
-pub fn wordmark_width() -> usize {
-    let letters = WORDMARK_TEXT.chars().count();
-    letters * 3 + letters.saturating_sub(1)
 }
 
 /// `◐ 42 tok/s · 缓存 96%` — the activity row's tail, so the numbers live in
@@ -533,18 +484,6 @@ mod tests {
             5,
             "{plain:?}"
         );
-    }
-
-    #[test]
-    fn the_wordmark_is_rectangular() {
-        let mark = wordmark_rows(&P);
-        assert_eq!(mark.len(), 5);
-        let mark_width = width(&mark[0]);
-        assert_eq!(mark_width, wordmark_width());
-        assert!(mark_width >= 30, "{mark_width}");
-        for row in &mark {
-            assert_eq!(width(row), mark_width, "the block font is a rectangle");
-        }
     }
 
     #[test]

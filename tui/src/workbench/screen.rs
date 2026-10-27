@@ -41,18 +41,12 @@ pub(crate) fn compose(
     } else {
         0
     };
-    let frame: Layout = layout::layout_with_preferences(
-        w,
-        h,
-        sidebar_w,
-        workbench.density,
-        workbench.sidebar_position,
-    );
+    let frame: Layout = layout::layout_with_position(w, h, sidebar_w, workbench.sidebar_position);
 
     paint(
         &mut rows,
         frame.header,
-        header(&palette, data, &frame, columns, workbench.density),
+        header(&palette, data, &frame, columns),
     );
 
     workbench.composer_width = widgets::input_content_width(frame.input.w as usize).max(1);
@@ -363,13 +357,7 @@ fn paint_overlay(rows: &mut [String], palette: &Palette, lines: Vec<String>, col
 
 // ─── header ────────────────────────────────────────────────────────────────
 
-fn header(
-    palette: &Palette,
-    data: &WorkbenchData,
-    frame: &Layout,
-    columns: usize,
-    density: super::preferences::Density,
-) -> Vec<String> {
+fn header(palette: &Palette, data: &WorkbenchData, frame: &Layout, columns: usize) -> Vec<String> {
     let compact = frame.compact;
     // The right corner is a *composition*, never a cut string: each candidate is
     // whole (dot, app, version), and the widest one that fits is drawn. Cutting
@@ -402,102 +390,30 @@ fn header(
         return lines;
     }
 
-    if density == super::preferences::Density::Focused {
-        let title = if data.session.title.is_empty() {
-            "workbench"
-        } else {
-            &data.session.title
-        };
-        let workspace = if data.session.branch.is_empty() {
-            data.session.cwd.clone()
-        } else {
-            format!("{} · @{}", data.session.cwd, data.session.branch)
-        };
-        let left = format!(
-            " {} {}",
-            palette.strong(palette.accent, "FUTURE OS"),
-            palette.dim(&format!("· {title} · {workspace}"))
-        );
-        let left = fit(
-            &left,
-            columns.saturating_sub(right_width + usize::from(right_width > 0)),
-        );
-        let pad = columns.saturating_sub(width(&left) + right_width);
-        return vec![
-            fit(&format!("{left}{}{right}", " ".repeat(pad)), columns),
-            widgets::rule(palette, columns),
-        ];
-    }
-    let wordmark = widgets::wordmark_rows(palette);
     let title = if data.session.title.is_empty() {
-        "workbench".to_string()
+        "workbench"
     } else {
-        data.session.title.clone()
+        &data.session.title
     };
-    // The launchpad has its own quieter hero, so the header falls back to its
-    // text brand there. One screen, one name treatment.
-    let show_wordmark = columns >= 96 && !data.on_launchpad();
-    let mut identity: Vec<String> = Vec::new();
-    if show_wordmark {
-        identity.extend(wordmark);
+    let workspace = if data.session.branch.is_empty() {
+        data.session.cwd.clone()
     } else {
-        identity.push(palette.strong(palette.accent, "FUTURE OS"));
-        identity.push(String::new());
-        identity.push(String::new());
-        identity.push(String::new());
-        identity.push(String::new());
-    }
-    // Five identity rows, then the hairline. Five is
-    // `wordmark_rows`' height: drawing four dropped the bottom stroke of every
-    // letter in `FUTURE OS`. The launchpad's separate four-row hero does not
-    // change the chat header's five-row identity block.
-    let detail = [
-        format!(" · {title}"),
-        // The workspace, then the branch it is on. `@` names *what* the second
-        // word is: `dev-x` alone beside a path reads as one more path segment,
-        // and a detached HEAD named `@sha` needs it even more.
-        if data.session.cwd.is_empty() {
-            "no workspace yet".to_string()
-        } else if data.session.branch.is_empty() {
-            data.session.cwd.clone()
-        } else {
-            format!("{} · @{}", data.session.cwd, data.session.branch)
-        },
-        format!("{} · {} · {}", data.model, data.effort, data.mode),
-        String::new(),
-        String::new(),
-    ];
-    for index in 0..5 {
-        let mut row = String::new();
-        if show_wordmark {
-            row.push_str(&identity.get(index).cloned().unwrap_or_default());
-            // The wordmark is the block; the session detail goes beside it so
-            // the header carries identity *and* context on the same five rows.
-            row.push_str("   ");
-            row.push_str(&palette.dim(&detail[index]));
-        } else {
-            row.push_str(&identity.get(index).cloned().unwrap_or_default());
-            if index == 0 {
-                row.push_str(&palette.dim(&detail[0]));
-            } else if index < detail.len() {
-                row.push_str(&palette.dim(&format!(" {}", detail[index].trim_start())));
-            }
-        }
-        if index == 0 {
-            // The corner is reserved first, then the rest of the row is clipped
-            // to what is left: a long title loses its tail, the corner never
-            // loses half a word.
-            let left = fit(
-                &row,
-                columns.saturating_sub(right_width + usize::from(right_width > 0)),
-            );
-            let pad = columns.saturating_sub(width(&left) + right_width);
-            row = format!("{left}{}{right}", " ".repeat(pad));
-        }
-        lines.push(fit(&row, columns));
-    }
-    lines.push(widgets::rule(palette, columns));
-    lines
+        format!("{} · @{}", data.session.cwd, data.session.branch)
+    };
+    let left = format!(
+        " {} {}",
+        palette.strong(palette.accent, "FUTURE OS"),
+        palette.dim(&format!("· {title} · {workspace}"))
+    );
+    let left = fit(
+        &left,
+        columns.saturating_sub(right_width + usize::from(right_width > 0)),
+    );
+    let pad = columns.saturating_sub(width(&left) + right_width);
+    vec![
+        fit(&format!("{left}{}{right}", " ".repeat(pad)), columns),
+        widgets::rule(palette, columns),
+    ]
 }
 
 /// The header's right corner: the widest whole composition that fits `avail`.
@@ -1639,14 +1555,6 @@ fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
         let selected = index == workbench.preferences_index;
         let label = preferences::preference_label(*row, lang);
         let value = match row {
-            PreferenceRow::Density => t(
-                lang,
-                if workbench.density == preferences::Density::Focused {
-                    Key::PrefFocused
-                } else {
-                    Key::PrefComfortable
-                },
-            ),
             PreferenceRow::Position => t(
                 lang,
                 if workbench.sidebar_position == preferences::SidebarPosition::Left {
@@ -1667,8 +1575,7 @@ fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
             format!("‹ {:>2} ›", workbench.sidebar_w)
         } else if matches!(
             row,
-            PreferenceRow::Density
-                | PreferenceRow::Position
+            PreferenceRow::Position
                 | PreferenceRow::Mouse
                 | PreferenceRow::Notifications
                 | PreferenceRow::NotificationBell
@@ -2824,51 +2731,19 @@ mod tests {
     }
 
     #[test]
-    fn the_header_draws_every_row_of_the_block_wordmark() {
-        // The header's identity block is the 5-row `FUTURE OS` block font, and
-        // the header used to be five rows tall *including* the hairline — so
-        // only four wordmark rows were painted and the bottom stroke of every
-        // letter (F `█  `, U `███`, E `███`, S `███`) was missing. Clipped art
-        // reads as a broken renderer, not as a deliberate crop, and the
-        // launchpad hero drew all five, so the two screens disagreed.
-        let mut workbench = Workbench::new();
-        workbench.density = super::super::preferences::Density::Comfortable;
-        let data = crate::workbench::demo::chat();
-        let rows = workbench.render(&data, 120, 38);
-        let mark = widgets::wordmark_rows(&FUTURE_DARK);
-        assert_eq!(mark.len(), 5, "the block font is five rows");
-        for (index, want) in mark.iter().enumerate() {
-            let got = plain(&rows[index]);
-            let want_plain = plain(want);
-            assert!(
-                got.contains(&want_plain),
-                "header row {index} is missing the wordmark row {want_plain:?}: {got:?}"
-            );
-        }
-        // And the hairline still closes the header, one row below the last one.
-        let hairline = plain(&rows[5]);
-        assert!(
-            hairline.chars().all(|ch| ch == '─'),
-            "row 5 should be the hairline: {hairline:?}"
-        );
-    }
-
-    #[test]
     fn the_launchpad_header_keeps_the_text_brand_so_the_hero_owns_the_name() {
         let mut workbench = Workbench::new();
-        workbench.density = super::super::preferences::Density::Comfortable;
         let launchpad = crate::workbench::demo::launchpad();
         let rows = workbench.render(&launchpad, 120, 38);
-        let header_rows: Vec<String> = rows[..5].iter().map(|row| plain(row)).collect();
-        for (index, row) in header_rows.iter().enumerate() {
-            // The name is text, not the block wordmark used by the chat header.
-            assert!(
-                !row.contains('█'),
-                "header row {index} still carries the block wordmark: {row:?}"
-            );
-        }
+        // Two header rows: the context line, then the hairline.
+        let header_rows: Vec<String> = rows[..2].iter().map(|row| plain(row)).collect();
         assert!(header_rows[0].contains("FUTURE OS"), "{:?}", header_rows[0]);
-        let body: String = rows[5..]
+        assert!(
+            header_rows[1].chars().all(|ch| ch == '─'),
+            "the hairline closes the header: {:?}",
+            header_rows[1]
+        );
+        let body: String = rows[2..]
             .iter()
             .map(|row| plain(row))
             .collect::<Vec<_>>()

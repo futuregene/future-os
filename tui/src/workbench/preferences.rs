@@ -12,36 +12,6 @@ use super::layout;
 use crate::workbench::i18n::{Key, Language};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Density {
-    /// A focused conversation: two context rows, generous body.
-    #[default]
-    Focused,
-    /// A roomier identity header with the wordmark and session details.
-    Comfortable,
-}
-
-impl Density {
-    pub fn next(self) -> Self {
-        match self {
-            Self::Focused => Self::Comfortable,
-            Self::Comfortable => Self::Focused,
-        }
-    }
-    pub fn as_wire(self) -> &'static str {
-        match self {
-            Self::Focused => "focused",
-            Self::Comfortable => "comfortable",
-        }
-    }
-    pub fn from_wire(value: &str) -> Self {
-        match value {
-            "comfortable" | "compact" => Self::Comfortable,
-            _ => Self::Focused,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SidebarPosition {
     Left,
     #[default]
@@ -71,7 +41,6 @@ impl SidebarPosition {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayoutPreferences {
-    pub density: Density,
     pub sidebar_position: SidebarPosition,
     pub sidebar_width: u16,
     pub sidebar_visible: bool,
@@ -83,7 +52,6 @@ pub struct LayoutPreferences {
 impl Default for LayoutPreferences {
     fn default() -> Self {
         Self {
-            density: Density::Focused,
             sidebar_position: SidebarPosition::Right,
             sidebar_width: layout::SIDEBAR_DEFAULT,
             // Hidden, the same as a first start: "restore defaults" must land
@@ -456,7 +424,6 @@ fn validate_key(key: &str) -> Result<(), String> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreferenceRow {
-    Density,
     Position,
     Width,
     Mouse,
@@ -467,8 +434,7 @@ pub enum PreferenceRow {
     Reset,
 }
 
-pub const PREFERENCE_ROWS: [PreferenceRow; 9] = [
-    PreferenceRow::Density,
+pub const PREFERENCE_ROWS: [PreferenceRow; 8] = [
     PreferenceRow::Position,
     PreferenceRow::Width,
     PreferenceRow::Mouse,
@@ -483,7 +449,6 @@ pub fn preference_label(row: PreferenceRow, lang: Language) -> &'static str {
     super::i18n::t(
         lang,
         match row {
-            PreferenceRow::Density => Key::PrefDensity,
             PreferenceRow::Position => Key::PrefPosition,
             PreferenceRow::Width => Key::PrefWidth,
             PreferenceRow::Mouse => Key::PrefMouse,
@@ -536,9 +501,6 @@ mod tests {
 
     #[test]
     fn preferences_use_stable_wire_values() {
-        for density in [Density::Focused, Density::Comfortable] {
-            assert_eq!(Density::from_wire(density.as_wire()), density);
-        }
         for position in [SidebarPosition::Left, SidebarPosition::Right] {
             assert_eq!(SidebarPosition::from_wire(position.as_wire()), position);
         }
