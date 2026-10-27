@@ -132,10 +132,14 @@ the prompt. The block teaches no key of its own: the footer's hint row already
 names them, and what the box takes beyond a sentence — `/` commands, `@` files,
 `#` sessions — is in the placeholder, where the reader is about to type it. The
 four chips are the desktop composer's own controls (model, thinking effort,
-approval mode) plus the workspace this TUI starts from — and that chip reads
-对话会话 when the next session is a plain chat, which is what the workspace
-chooser's "no workspace" row stages; there is no separate permission level,
-because no other client offers one.
+approval mode) plus the workspace this TUI starts from. With nothing chosen they
+name the product defaults a fresh screen opens on, not the values of the
+conversation `/new` left behind: the plain chat — no workspace, which runs in the
+agent's own `agent/workspace` and is filed under 对话会话 — the agent's default
+model at the level that model starts at, and 完全访问 (full access). The first
+message creates the session with exactly what the chips name, so a chip never
+names something the session will not run under; there is no separate permission
+level, because no other client offers one.
 
 **One prefix: `ctrl`.** No default uses `alt` — on macOS the Option key composes
 a character unless the reader turns on "Use Option as Meta", so an `alt`
@@ -348,7 +352,7 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | Usage / context / cost | `get_state`'s usage block, refreshed on the same events |
 | `ctrl+n` / `/new`, `ctrl+x` stop, `/refresh` | |
 | Delete a conversation (`/delete`, or `delete` in the rail) | One confirm box, then `delete_session` for the id it named. The successor in the list opens, so the transcript never stays on a conversation that is gone; deleting the last one detaches to the launchpad. A refusal (the agent keeps a session a compaction holds) leaves everything as it was and says so in the notice row |
-| Launchpad chips | Click 工作区 / 模型 / 强度 / 审批 to cycle them. On the launchpad the workspace, model, effort and approval choices are staged for the session the first message creates (the agent has no session to set them on yet); with a session attached they go over the wire. 工作区 cycles the directories this client has conversations in, and the notice row names the full path it chose |
+| Launchpad chips | Click 工作区 / 模型 / 强度 / 审批 to cycle them. On the launchpad the workspace, model, effort and approval choices are staged for the session the first message creates (the agent has no session to set them on yet); with a session attached they go over the wire. With nothing chosen they name the product defaults — 对话会话 (no workspace), the agent's default model at the level it starts at, and 完全访问 — and the first message creates the session with exactly that. 工作区 cycles 对话会话 and the directories this client has conversations in, and the notice row names the full path it chose |
 | Theme | Persisted in `~/.future/tui/settings.json` (`tui/src/settings.rs`); the reading level is deliberately not — `ctrl+e` is per run |
 
 ## What is not here yet

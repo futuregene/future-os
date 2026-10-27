@@ -6195,7 +6195,9 @@ mod tests {
             actions,
             vec![
                 WbAction::SetPendingModel("westlakehpc/Qwen".into()),
-                WbAction::SetPendingThinking("medium".into()),
+                // The level carried along is the one the slider stands on, which
+                // a fresh launchpad put at the agent's own starting level.
+                WbAction::SetPendingThinking("default".into()),
             ],
             "the row and the level it will run at, staged"
         );
@@ -6205,10 +6207,10 @@ mod tests {
         // "Could not set thinking: session not found" before.
         workbench.open_picker(PickerKind::Model, &data);
         workbench.handle(WbEvent::Key("up".into()), &data);
-        workbench.handle(WbEvent::Key("left".into()), &data);
+        workbench.handle(WbEvent::Key("right".into()), &data);
         assert_eq!(
             workbench.handle(WbEvent::Key("enter".into()), &data),
-            vec![WbAction::SetPendingThinking("low".into())]
+            vec![WbAction::SetPendingThinking("off".into())]
         );
 
         // Nothing on either road may reach the agent: no request can be built

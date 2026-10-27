@@ -479,7 +479,13 @@ fn header(
     } else {
         &data.session.title
     };
-    let workspace = if data.session.branch.is_empty() {
+    // The workspace the header names. A plain chat has no directory of its own —
+    // it runs in the app's scratch folder — so it is named the way the rail and
+    // the chip name it, rather than printing `~/.future/agent/workspace` as if
+    // it were a checkout.
+    let workspace = if data.session.chat {
+        t(lang, Key::WorkspaceChat).to_string()
+    } else if data.session.branch.is_empty() {
         data.session.cwd.clone()
     } else {
         format!("{} · @{}", data.session.cwd, data.session.branch)

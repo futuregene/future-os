@@ -246,6 +246,17 @@ model picker commits the model **and** the slider's level together (`SetModel` +
 state (connection dot, version) stays, the transcript goes, and the first
 message creates the session with whatever model/effort the launchpad shows.
 
+A launchpad with nothing staged names the **product defaults**, not the values of
+the conversation `/new` left behind: the plain chat (no workspace — the agent's
+own `agent/workspace`, the directory the rail's 对话会话 section files, created on
+the way), the agent's default model and the level that model starts at (both read
+from `list_models`: `isDefault`, `defaultThinkingLevel` — the same resolution
+`new_session` performs), and 完全访问 (`off`). Carrying the previous
+conversation's directory, model and approval into the next one made `/new` a copy
+of what came before instead of a fresh start — and the default approval is
+applied to the created session rather than only named, so a chip never names a
+mode the session will not run under.
+
 With no session attached — the launchpad, or a TUI started against an agent that
 has none — `enter` in a picker **stages** the choice instead of sending it: the
 agent answers `set_model`/`set_thinking_level` with `session not found — pass a

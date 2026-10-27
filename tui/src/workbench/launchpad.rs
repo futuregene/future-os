@@ -189,7 +189,17 @@ pub fn render(
     }
 
     // ── the input box ─────────────────────────────────────────────────
-    let mut title = if data.session.cwd.is_empty() {
+    //
+    // The title names where the first message will run, in the same word the
+    // 工作区 chip uses: a chat has no directory of its own to print, and the
+    // scratch path under `~/.future` would read like a project the reader chose.
+    let mut title = if data.session.chat {
+        i18n::render(
+            lang,
+            Key::LaunchpadNewChatIn,
+            &[&t(lang, Key::WorkspaceChat)],
+        )
+    } else if data.session.cwd.is_empty() {
         t(lang, Key::LaunchpadNewChat).to_string()
     } else {
         i18n::render(lang, Key::LaunchpadNewChatIn, &[&data.session.cwd])
@@ -423,9 +433,10 @@ mod tests {
             !text.contains("ctrl+") && !text.contains("alt+"),
             "the block repeats no key hint: {text}"
         );
-        // The approval chip names the mode the way the desktop does, and there
-        // is no second "permission" control beside it.
-        assert!(text.contains("手动审批"), "{text}");
+        // The approval chip names the mode the way the desktop does — the
+        // launchpad's own default, 完全访问 — and there is no second "permission"
+        // control beside it.
+        assert!(text.contains("完全访问"), "{text}");
         assert!(!text.contains("权限"), "{text}");
         // The rail lists the conversations; the launchpad does not repeat it.
         assert!(!text.contains("最近会话"), "{text}");

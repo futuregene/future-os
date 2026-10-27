@@ -959,6 +959,7 @@ mod tests {
                         .collect(),
                 ),
                 default_thinking_level: Some("default".into()),
+                is_default: true,
             },
             ModelChoice {
                 id: "gpt-6-astra".into(),
@@ -973,6 +974,7 @@ mod tests {
                         .collect(),
                 ),
                 default_thinking_level: Some("default".into()),
+                is_default: false,
             },
             // No declared list: an older agent's model, whose default level is
             // the only thinking fact the list has.
@@ -984,6 +986,7 @@ mod tests {
                 thinking_level: String::new(),
                 thinking_levels: None,
                 default_thinking_level: None,
+                is_default: false,
             },
         ];
         data.sessions = vec![
@@ -1611,6 +1614,7 @@ mod tests {
             thinking_level: String::new(),
             thinking_levels: None,
             default_thinking_level: None,
+            is_default: false,
         };
         assert_eq!(model_detail(&bare), "");
     }
