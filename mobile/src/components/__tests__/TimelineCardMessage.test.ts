@@ -1,5 +1,5 @@
 import { createElement } from "react";
-import { AppState, Dimensions, StyleSheet, type AppStateStatus } from "react-native";
+import { AppState, Dimensions, Image, StyleSheet, type AppStateStatus } from "react-native";
 import { layout, lightColors } from "../../theme/tokens";
 import * as Clipboard from "expo-clipboard";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
@@ -10,6 +10,7 @@ import { collapsedPromptHeight, PROMPT_COLLAPSE_LINES } from "../../features/cha
 import { lightTheme } from "../../theme/theme";
 import type { HistoryAttachment, TimelineItem, TimelineSegment } from "../../remote/types";
 import i18n from "../../i18n";
+import { ImageViewerContext } from "../imageViewer";
 import { setAppearance } from "../../theme/preferences";
 
 jest.mock("../MarkdownText", () => ({ MarkdownText: "MarkdownText" }));
@@ -129,6 +130,20 @@ describe("a user message is the user's own markdown, plus their attachments", ()
     press("shot.png");
     expect(onOpenAttachment).toHaveBeenCalledWith(attachments[1]);
     expect(hasText("legacy.bin")).toBe(true);
+  });
+
+  test("a picture the user sent is drawn as itself, and opens the full-screen viewer", () => {
+    // Desktop parity: an image in the conversation is the image, not a file name.
+    // A just-sent bubble names this phone's own copy, so the bytes are already
+    // here and the thumbnail opens the viewer without another transfer.
+    const openViewer = jest.fn();
+    const shot = attachment({ kind: "image", name: "shot.png", path: "file:///phone/shot.png" });
+    renderElement(createElement(ImageViewerContext, { value: openViewer },
+      createElement(TimelineCard, { item: message({ role: "user", text: "here", attachments: [shot] }), onOpenAttachment: jest.fn() })));
+    expect(glyphs("Paperclip")).toHaveLength(0);
+    expect(tree.root.findByType(Image).props.source).toEqual({ uri: "file:///phone/shot.png" });
+    pressLabelled("shot.png");
+    expect(openViewer).toHaveBeenCalledWith({ name: "shot.png", uri: "file:///phone/shot.png" });
   });
 
   test("attachments without an opener are disabled chips", () => {

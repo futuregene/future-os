@@ -229,6 +229,7 @@ export const demoEntries = [
       attachments: [
         { path: "/Users/lixin/Research/dopamine-decision/papers/frank-2024.pdf", name: "frank-2024.pdf", kind: "file" },
         { path: "/Users/lixin/Research/dopamine-decision/papers/dreher-2025.pdf", name: "dreher-2025.pdf", kind: "file" },
+        { path: "/Users/lixin/Research/dopamine-decision/notes/effect-size.png", name: "effect-size.png", kind: "image" },
       ],
     },
   },
