@@ -76,6 +76,7 @@ tui/src/workbench/screen.rs     // full-screen composition: header/body/sidebar/
 tui/src/workbench/panels.rs     // rendering of the 2 sidebar panels (pure functions over a row model)
 tui/src/workbench/picker.rs     // the /model, /thinking, /mode, /workspace, /theme, /sessions and /lang list overlay
 tui/src/workbench/files.rs      // the 文件 panel's tree, and what a path previews as
+tui/src/workbench/syntax.rs     // the preview box's code colouring: language, tokens, runs
 tui/src/workbench/image_view.rs // an image as half blocks: fit, zoom, pan
 tui/src/workbench/state.rs      // WorkbenchData / TodoItem / SessionRow / UsageData
 tui/src/workbench/demo.rs       // demo data (for screenshots/self-tests; does not connect to the agent)
@@ -298,6 +299,21 @@ desktop link) and happens once per file, downscaled to 1024 px on its long edge:
 a zoom redraws pixels already in hand. Text previews are read bounded
 (`MAX_TEXT_PREVIEW_BYTES`) and cut on a character boundary. A file that cannot be
 shown says why in the box rather than opening empty.
+
+A text preview is **coloured by language**. `syntax.rs` classifies every line
+into keywords, types, called names, strings, numbers, comments, attributes and
+keys; it names tokens, never colours, and `theme::Palette::token` decides what a
+token looks like — so highlighted code follows the theme in force instead of
+arriving in a dark highlighter's palette on a light canvas. The classification
+happens once, when the file is opened, and each line travels with its runs.
+
+It is deliberately not a parser. What a reader needs is the visible shape of a
+line: comments, literals (including Rust raw strings, Python docstrings and
+JavaScript template literals that run past their line) and declarations, at the
+cost of one forward walk per line and one bit of state between lines. An
+unrecognised extension is painted exactly as it came rather than guessed at.
+Tabs are expanded to four spaces: a literal `\t` in a painted row would move the
+cursor to the terminal's own tab stop and tear the frame's columns.
 
 ---
 

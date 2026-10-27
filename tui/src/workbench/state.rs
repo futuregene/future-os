@@ -10,6 +10,7 @@
 use crate::workbench::files::FileTree;
 use crate::workbench::i18n::{t, Key, Language};
 use crate::workbench::image_view::ImagePixels;
+use crate::workbench::syntax;
 
 /// Who the session is: the four facts the header and the launchpad print.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -535,7 +536,14 @@ pub enum PreviewView {
     },
     Text {
         path: String,
-        lines: Vec<String>,
+        /// The file's lines, already split and — for a language this build
+        /// knows — classified into coloured runs (`syntax::highlight`), so the
+        /// box paints a line without scanning it again on every frame.
+        ///
+        /// Shared rather than owned: the adapter rebuilds this data once per
+        /// event and once per frame, and a 500 KB preview is not something to
+        /// copy that often.
+        lines: std::sync::Arc<[syntax::Line]>,
         /// The file was longer than the preview cap.
         truncated: bool,
     },

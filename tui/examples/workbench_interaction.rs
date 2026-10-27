@@ -158,10 +158,23 @@ fn fixture(name: &str) -> (WorkbenchData, fn(&mut Workbench, &WorkbenchData)) {
         "preview-text" => (
             {
                 let mut data = chat();
+                let path = "tui/src/workbench/syntax.rs";
+                let source = r#"// Colour a code preview, once per line.
+use crate::workbench::syntax;
+
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+pub fn highlight(path: &str, text: &str) -> Vec<Line> {
+    let mut lexer = Lexer::new(Language::from_path(path));
+    text.lines().map(|line| lexer.line(line)).collect()
+}"#;
                 data.preview = Some(future_tui::workbench::state::PreviewView::Text {
-                    path: "README.md".into(),
-                    lines: (0..60).map(|n| format!("line {n}")).collect(),
-                    truncated: true,
+                    path: path.into(),
+                    lines: future_tui::workbench::syntax::highlight(path, source).into(),
+                    truncated: false,
                 });
                 data
             },

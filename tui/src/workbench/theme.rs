@@ -18,6 +18,7 @@
 
 use crate::theme::{bold, fg};
 use crate::utils::apply_background_to_line;
+use crate::workbench::syntax;
 
 /// One palette. The numbers are 256-colour indices; `future-dark` /
 /// `future-light` are the contract's own (see `docs/tui/workbench-spec.md` §3),
@@ -262,6 +263,27 @@ impl Palette {
     /// A panel row on the panel background.
     pub fn panel_row(&self, text: &str, columns: usize) -> String {
         self.on(self.panel, text, columns)
+    }
+
+    /// The colour a syntax token is painted in.
+    ///
+    /// The palette's semantic colours *are* the syntax palette, which is what
+    /// keeps highlighted code inside the theme the reader chose: a light theme
+    /// gets its own hues instead of a dark highlighter's. Two of the eight kinds
+    /// borrow a colour from one they never share a language with — a key wears
+    /// the function colour (keys belong to formats that have no functions), and
+    /// an attribute is a keyword in bold.
+    pub fn token(&self, token: syntax::Token, text: &str) -> String {
+        match token {
+            syntax::Token::Keyword => self.text(self.purple, text),
+            syntax::Token::Type => self.text(self.iris, text),
+            syntax::Token::Function => self.text(self.accent, text),
+            syntax::Token::String => self.text(self.green, text),
+            syntax::Token::Number => self.text(self.amber, text),
+            syntax::Token::Comment => self.dim(text),
+            syntax::Token::Attribute => self.strong(self.purple, text),
+            syntax::Token::Key => self.text(self.accent, text),
+        }
     }
 }
 

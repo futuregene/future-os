@@ -16,6 +16,7 @@ use crate::workbench::layout::{self, Layout, Rect};
 use crate::workbench::picker::{self, PickerKind};
 use crate::workbench::preferences;
 use crate::workbench::state::{self, ActivityKind, PanelId, WorkbenchData};
+use crate::workbench::syntax;
 use crate::workbench::theme::Palette;
 use crate::workbench::widgets;
 use crate::workbench::{launchpad, panels, Overlay, Workbench, COMMANDS, HELP_KEYS};
@@ -1943,7 +1944,11 @@ fn preview_box(
                 scroll,
                 content_h.saturating_sub(usize::from(*truncated)),
             );
-            content.extend(window.into_iter().map(|line| format!(" {line}")));
+            content.extend(
+                window
+                    .into_iter()
+                    .map(|line| format!(" {}", painted(palette, &line))),
+            );
             if *truncated {
                 content.push(palette.dim(&format!(" {}", t(lang, Key::PreviewTruncated))));
             }
@@ -1982,8 +1987,26 @@ fn preview_box(
     paint_box(palette, &title, content, w, h, &geometry)
 }
 
+/// A previewed line with its syntax runs in the palette's token colours.
+///
+/// The classification happened when the file was read (`syntax::highlight`),
+/// so this is a walk over spans — no scanning, no allocation beyond the row.
+fn painted(palette: &Palette, line: &syntax::Line) -> String {
+    if line.spans().is_empty() {
+        return palette.body(line.text());
+    }
+    let mut out = String::with_capacity(line.text().len() * 2);
+    for (run, token) in line.runs() {
+        match token {
+            Some(token) => out.push_str(&palette.token(token, run)),
+            None => out.push_str(&palette.body(run)),
+        }
+    }
+    out
+}
+
 /// `height` lines starting at `scroll`, clamped to the end of the text.
-fn window(lines: &[String], scroll: usize, height: usize) -> Vec<String> {
+fn window<T: Clone>(lines: &[T], scroll: usize, height: usize) -> Vec<T> {
     if lines.is_empty() || height == 0 {
         return Vec::new();
     }
