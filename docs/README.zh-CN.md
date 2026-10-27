@@ -25,6 +25,7 @@
 | [Headless unsigned 下载与结果](testing/headless-unsigned-results.zh-CN.md)（[en](testing/headless-unsigned-results.md)） | 实际 dev 包、公开地址、SHA-256、CLI/sidecar 和静态/旧 Linux 验证 |
 | [目录布局](guide/directory-layout.zh-CN.md)（[en](guide/directory-layout.md)） | `~/.future/` 下各目录职责（agent、channels、TUI、GUI、goal） |
 | [数据备份与恢复](guide/data-backup.zh-CN.md)（[en](guide/data-backup.md)） | `future data`：离线备份、校验、恢复到原 home、中断恢复后的 resume/rollback，以及启动围栏 |
+| [运行事件流的开销与回收](guide/run-journal.zh-CN.md)（[en](guide/run-journal.md)） | `agent.db` 里 `run_events` 的开销、4.4 GiB 与 1.3 GiB 下的实测读取耗时、`future session journal --reclaim`、一次性的 `VACUUM`，以及它永不触碰什么 |
 | [会话历史召回](guide/session-history.zh-CN.md)（[en](guide/session-history.md)） | 只读的历史检索／条目读取、字节分页，以及压缩后的模型指引 |
 | [移动端延迟诊断](guide/mobile-latency-diagnosis.zh-CN.md)（[en](guide/mobile-latency-diagnosis.md)） | 移动端端到端延迟测量与诊断 |
 | [截图工具](guide/screenshots.zh-CN.md)（[en](guide/screenshots.md)） | 用演示数据渲染真实桌面端 / 手机端界面，在无显示器环境产出截图、功能示意图与图文文档 |
