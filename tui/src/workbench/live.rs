@@ -354,10 +354,29 @@ impl Live {
         }
     }
 
-    pub async fn refresh_sessions(&mut self) {
-        if let Ok(sessions) = self.client.list_sessions().await {
-            self.sessions = sessions;
+    /// Re-read the conversation list, and answer whether anything the rail
+    /// paints changed — a row arrived, an age moved, a run started or stopped.
+    ///
+    /// The answer is what lets the driver poll (see `run::SESSIONS_POLL`)
+    /// without repainting a list that is already on screen: only a real change
+    /// owes a frame.
+    pub async fn refresh_sessions(&mut self) -> bool {
+        let Ok(sessions) = self.client.list_sessions().await else {
+            return false;
+        };
+        if sessions == self.sessions {
+            return false;
         }
+        self.sessions = sessions;
+        true
+    }
+
+    /// Is any listed conversation still writing? The rail's spinner animates on
+    /// it, and the driver keeps the list warm while it holds.
+    pub fn sessions_streaming(&self) -> bool {
+        self.sessions
+            .iter()
+            .any(|session| session.is_streaming.unwrap_or(false))
     }
 
     pub async fn refresh_models(&mut self) {
@@ -968,6 +987,11 @@ impl Live {
                 // On the launchpad nothing is attached, so no row claims to be
                 // the current one.
                 current: !self.launchpad && session.id == current,
+                // The agent's own flag, not a local run row: a conversation
+                // another client started writes here too, which is what makes
+                // 最近's 活跃 stretch a view of the agent and not of this
+                // terminal's own typing.
+                streaming: session.is_streaming.unwrap_or(false),
             })
             .collect();
         rows.sort_by(|a, b| {
@@ -1348,7 +1372,9 @@ impl Live {
                 // and workspace the reader chose there.
                 self.to_launchpad();
             }
-            "sessions" => self.refresh_sessions().await,
+            "sessions" => {
+                self.refresh_sessions().await;
+            }
             "compact" => {
                 self.compact(arg).await;
             }
@@ -3065,6 +3091,48 @@ mod tests {
             live.notice.as_deref(),
             Some(t(live.lang, Key::WorkspaceNone))
         );
+    }
+
+    /// The rail's 活跃 stretch is the agent's own flag, not a run row of this
+    /// client's: a conversation another client started reports `isStreaming` on
+    /// its summary, and an agent that never sends the field (or sends false) is
+    /// not "running".
+    #[tokio::test]
+    async fn a_streaming_summary_reaches_the_rail() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        let mut busy = row("s-1", Some("writing"), "/work/alpha");
+        busy.is_streaming = Some(true);
+        let mut quiet = row("s-2", Some("quiet"), "/work/alpha");
+        quiet.is_streaming = Some(false);
+        live.sessions = vec![busy, quiet, row("s-3", Some("older agent"), "/work/alpha")];
+        assert!(live.sessions_streaming(), "one conversation is writing");
+
+        let frame = crate::workbench::layout::Frame::new(
+            120,
+            38,
+            36,
+            crate::workbench::preferences::Density::Focused,
+            crate::workbench::preferences::SidebarPosition::Right,
+        );
+        let data = live.data(&frame);
+        let streaming: Vec<bool> = data.sessions.iter().map(|row| row.streaming).collect();
+        assert_eq!(streaming.iter().filter(|on| **on).count(), 1);
+        assert!(
+            data.sessions
+                .iter()
+                .any(|row| row.streaming && row.title == "writing"),
+            "the flag follows the conversation it was reported for"
+        );
+
+        // An agent that sends no flag at all is idle, not streaming.
+        live.sessions = vec![row("s-4", Some("legacy"), "/work/alpha")];
+        assert!(!live.sessions_streaming(), "no flag is not a run");
+        let data = live.data(&frame);
+        assert!(!data.sessions[0].streaming);
     }
 
     #[test]

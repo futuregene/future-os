@@ -265,6 +265,9 @@ pub enum Key {
     SectionPinned,
     SectionWorkspaces,
     SectionChats,
+    // ── the recent tab's two stretches ────────────────────────────────
+    SectionActive,
+    SectionEarlier,
     SummaryWorkspaces,
     SummaryFiles,
     SummaryUnitsSessions,
@@ -557,6 +560,8 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         SectionPinned => ("置顶", "Pinned"),
         SectionWorkspaces => ("工作区", "Workspaces"),
         SectionChats => ("对话会话", "Chats"),
+        SectionActive => ("活跃", "Active"),
+        SectionEarlier => ("更早", "Earlier"),
         SummaryWorkspaces => ("{} 个工作区", "{} workspaces"),
         SummaryUnitsSessions => ("会话", "chats"),
         PanelEmptyWorkspaces => ("没有工作区", "no workspaces"),
@@ -1168,7 +1173,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 271] = {
+    const ALL_KEYS: [Key; 273] = {
         use Key::*;
         [
             TabTodo,
@@ -1182,6 +1187,8 @@ mod tests {
             SectionPinned,
             SectionWorkspaces,
             SectionChats,
+            SectionActive,
+            SectionEarlier,
             SummaryWorkspaces,
             SummaryFiles,
             SummaryUnitsSessions,

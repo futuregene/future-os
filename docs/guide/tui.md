@@ -102,7 +102,11 @@ rather than opening an empty box.
 
 The rail is a *task* panel, in two tabs. **最近** (the default) lists every
 conversation — its name, then the workspace it is filed under and when it was
-last refreshed — newest first. A row names its workspace by *name*
+last refreshed — newest first. A conversation whose run is still in flight leads
+it under a 活跃 heading, with a spinner in its state slot; the rest follow under
+更早, captioned with how many each stretch holds (the desktop's recent view, in
+the rail's shape). The two headings are only drawn while there is a split: with
+nothing running the list is simply the list. A row names its workspace by *name*
 (`future-os`), not by path: the rail is 36 columns wide and a clipped path says
 less than the word. **工作区** files the same conversations the way the
 desktop's rail does: 置顶 (the workspaces pinned with `p`), then 工作区 (one
@@ -315,7 +319,7 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | Fork | `/fork` lists real user-message points from `get_fork_messages`; enter calls `fork` and opens the child |
 | Worktrees | `/worktree` lists real git worktrees and enter sets the session cwd. `/worktree new <branch>` creates under `.worktrees/` and moves the session. No remove/prune/reset/clean operations |
 | Existing settings | `/mode` (or `/sandbox`) opens the approval-mode chooser, `/thinking` the reasoning chooser, `/compact [instructions]`, `/tools a,b` or `/tools off`, `/providers`; `/skills` and `/model` retain their existing surfaces |
-| Sessions panel | `list_sessions`, newest first: 最近 as a flat list, 工作区 filed by directory with the pinned ones leading. Pins persist in `settings.json` (`pinnedWorkspaces`) |
+| Sessions panel | `list_sessions`, newest first: 最近 split into a 活跃 stretch (a run still in flight, spinner in the row's state slot) and 更早, the headings drawn only while both are non-empty. The list is re-read every five seconds while the rail is on screen, because another client's run reaches this surface no other way. 工作区 filed by directory with the pinned ones leading. Pins persist in `settings.json` (`pinnedWorkspaces`) |
 | Usage / context / cost | `get_state`'s usage block, refreshed on the same events |
 | `ctrl+n` / `/new`, `ctrl+x` stop, `alt+r` refresh | |
 | Launchpad chips | Click 工作区 / 模型 / 强度 / 审批 to cycle them. On the launchpad the workspace, model, effort and approval choices are staged for the session the first message creates (the agent has no session to set them on yet); with a session attached they go over the wire. 工作区 cycles the directories this client has conversations in, and the notice row names the full path it chose |
