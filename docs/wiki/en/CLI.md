@@ -131,6 +131,7 @@ Useful options and forms:
 | `--model <model>` | Choose the model. Supports `model:thinking`, e.g. `sonnet:high`. |
 | `--thinking <level>` | Thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. |
 | `@<path>` | Include a file's contents in the prompt. |
+| `--message-file <path>` | Send the file's contents **as** the message, verbatim: no `<file>` wrapper, nothing trimmed. Mutually exclusive with `@<path>` and a message argument; use it for scripted and agent-to-agent dispatch. |
 | `--continue`, `-c` | Continue the most recent session. |
 | `--session <id>` | Connect to an existing session by ID. |
 | `--fork <entry-id>` | Fork a new session from a specific entry in the current session. |
@@ -151,8 +152,17 @@ Examples:
 ```bash
 future run --model sonnet:high "Review the changes"
 future run @README.md "Summarize this file"
+future run --message-file /tmp/prompt.md --session abc123
 future run --tools read,shell "Read the README and list files"
 ```
+
+`@<path>` and `--message-file` are not two spellings of one thing. `@<path>` wraps
+the file in a `<file name="…">` block and joins your message text after it — what
+a person means when attaching a file in a terminal. `--message-file` sends the
+file's bytes as the whole turn, so the other side sees your text and nothing else;
+that is what scripted dispatch and agent-to-agent relay need, because the target
+conversation (and the title generated from its first turn) otherwise starts at a
+file wrapper rather than at the instruction.
 
 Run `future run --help` for every option.
 
