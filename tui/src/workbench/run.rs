@@ -971,6 +971,18 @@ async fn quit(
             save_settings(settings_path, settings);
             continue;
         }
+        // "Restore defaults" hands the palette back to the terminal: the stored
+        // id goes away, so the next start follows the light/dark hint instead of
+        // freezing whatever it said today.
+        if let WbAction::ResetTheme = action {
+            let palette = super::theme::resolve(None);
+            workbench.set_theme(palette.id);
+            live.theme_id = palette.id.to_string();
+            settings.theme_id = None;
+            **theme_explicit = false;
+            save_settings(settings_path, settings);
+            continue;
+        }
         if matches!(
             action,
             WbAction::SetPreferences | WbAction::ResizeSidebar(_) | WbAction::PersistSidebar

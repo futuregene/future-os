@@ -2260,28 +2260,34 @@ fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
                 } else {
                     Key::PrefRight
                 },
-            ),
-            PreferenceRow::Width => "",
-            PreferenceRow::Mouse => enabled(workbench.mouse_capture, lang),
-            PreferenceRow::Notifications => enabled(workbench.notify.enabled, lang),
-            PreferenceRow::NotificationBell => enabled(workbench.notify.bell, lang),
-            PreferenceRow::Motion => enabled(workbench.reduced_motion, lang),
-            PreferenceRow::Shortcuts => "›",
-            PreferenceRow::Reset => "↺",
+            )
+            .to_string(),
+            PreferenceRow::Width => String::new(),
+            PreferenceRow::SidebarVisible => enabled(workbench.sidebar_visible, lang).to_string(),
+            PreferenceRow::Mouse => enabled(workbench.mouse_capture, lang).to_string(),
+            PreferenceRow::Notifications => enabled(workbench.notify.enabled, lang).to_string(),
+            PreferenceRow::NotificationBell => enabled(workbench.notify.bell, lang).to_string(),
+            PreferenceRow::Motion => enabled(workbench.reduced_motion, lang).to_string(),
+            // The two menus show what is in force: the language *preference*
+            // (so a reader on `system` is not told they chose Chinese) and the
+            // palette id the surface is actually painting.
+            PreferenceRow::Language => workbench.language_pref.label(lang).to_string(),
+            PreferenceRow::Theme => super::theme::label(workbench.palette.id),
+            PreferenceRow::Shortcuts => "›".to_string(),
+            PreferenceRow::Reset => "↺".to_string(),
         };
-        let value = if *row == PreferenceRow::Width {
-            format!("‹ {:>2} ›", workbench.sidebar_w)
-        } else if matches!(
-            row,
+        let value = match row {
+            PreferenceRow::Width => format!("‹ {:>2} ›", workbench.sidebar_w),
+            // `‹ ›` says "this row steps through its values"; a lone `›` says
+            // "this row opens something", the same mark `快捷键` wears.
             PreferenceRow::Position
-                | PreferenceRow::Mouse
-                | PreferenceRow::Notifications
-                | PreferenceRow::NotificationBell
-                | PreferenceRow::Motion
-        ) {
-            format!("‹ {value} ›")
-        } else {
-            value.to_string()
+            | PreferenceRow::SidebarVisible
+            | PreferenceRow::Mouse
+            | PreferenceRow::Notifications
+            | PreferenceRow::NotificationBell
+            | PreferenceRow::Motion => format!("‹ {value} ›"),
+            PreferenceRow::Language | PreferenceRow::Theme => format!("{value} ›"),
+            PreferenceRow::Shortcuts | PreferenceRow::Reset => value,
         };
         let marker = if selected { "›" } else { " " };
         let line = format!(
@@ -2313,6 +2319,8 @@ fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
             continue;
         };
         let id = match row {
+            PreferenceRow::Language => "preferences.language".to_string(),
+            PreferenceRow::Theme => "preferences.theme".to_string(),
             PreferenceRow::Shortcuts => "preferences.shortcuts".to_string(),
             PreferenceRow::Reset => "preferences.reset".to_string(),
             _ => format!("preferences.row.{index}"),
@@ -3404,6 +3412,52 @@ mod tests {
         let inner = rows[top..=bottom].join("\n");
         assert!(inner.contains("Sidebar width"), "{inner}");
         assert!(inner.contains("choose"), "{inner}");
+    }
+
+    /// The box names the choices that are menus and shows what is in force for
+    /// each: the language *preference* (`中文`, not the bundle it resolved to)
+    /// and the palette the surface is actually painting.
+    #[test]
+    fn the_preference_box_shows_the_language_and_palette_in_force() {
+        use crate::workbench::i18n::LanguagePreference;
+        let mut workbench = Workbench::new();
+        let data = crate::workbench::demo::chat();
+        workbench.set_theme("dracula");
+        workbench.set_language(LanguagePreference::Zh);
+        workbench.open_preferences();
+        let zh = workbench
+            .render(&data, 120, 38)
+            .iter()
+            .map(|row| plain(row))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(zh.contains("界面语言"), "{zh}");
+        assert!(zh.contains("中文"), "{zh}");
+        assert!(zh.contains("配色主题"), "{zh}");
+        assert!(zh.contains("Dracula"), "{zh}");
+        assert!(zh.contains("显示侧栏"), "{zh}");
+
+        // Both rows are clickable, like 快捷键: the ids the frame registers are
+        // what a press resolves to.
+        for id in ["preferences.language", "preferences.theme"] {
+            assert!(
+                workbench.hits().regions().iter().any(|(_, hit)| hit == id),
+                "{id} is a target"
+            );
+        }
+
+        // The other bundle, and the same two rows in it.
+        workbench.set_language(LanguagePreference::En);
+        let en = workbench
+            .render(&data, 120, 38)
+            .iter()
+            .map(|row| plain(row))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(en.contains("Interface language"), "{en}");
+        assert!(en.contains("English"), "{en}");
+        assert!(en.contains("Color theme"), "{en}");
+        assert!(en.contains("Show sidebar"), "{en}");
     }
 
     #[test]

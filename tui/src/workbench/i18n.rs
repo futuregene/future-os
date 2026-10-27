@@ -497,6 +497,8 @@ pub enum Key {
     PrefNotifications,
     PrefNotificationBell,
     PrefMotion,
+    PrefSidebarVisible,
+    PrefTheme,
     PrefEnabled,
     PrefDisabled,
     PrefShortcuts,
@@ -914,13 +916,15 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         CmdTranscript => ("完整记录", "The whole record"),
         CmdHelp => ("帮助与快捷键", "Help and shortcuts"),
         CmdQuit => ("退出 workbench", "Leave the workbench"),
-        CmdPreferences => ("布局、通知、可访问性和快捷键", "Layout, notifications, accessibility and shortcuts"),
+        CmdPreferences => ("布局、外观、通知、可访问性和快捷键", "Layout, appearance, notifications, accessibility and shortcuts"),
         PrefPosition => ("侧栏位置", "Sidebar position"),
         PrefWidth => ("侧栏宽度", "Sidebar width"),
         PrefMouse => ("启动与运行时使用鼠标", "Mouse capture"),
         PrefNotifications => ("完成时通知", "Completion notifications"),
         PrefNotificationBell => ("通知包含提示音", "Notification bell"),
         PrefMotion => ("减少动态", "Reduce motion"),
+        PrefSidebarVisible => ("显示侧栏", "Show sidebar"),
+        PrefTheme => ("配色主题", "Color theme"),
         PrefEnabled => ("开启", "On"),
         PrefDisabled => ("关闭", "Off"),
         PrefShortcuts => ("自定义快捷键", "Customize shortcuts"),
@@ -1270,7 +1274,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 301] = {
+    const ALL_KEYS: [Key; 303] = {
         use Key::*;
         [
             TabTodo,
@@ -1494,6 +1498,8 @@ mod tests {
             PrefNotifications,
             PrefNotificationBell,
             PrefMotion,
+            PrefSidebarVisible,
+            PrefTheme,
             PrefEnabled,
             PrefDisabled,
             PrefShortcuts,
