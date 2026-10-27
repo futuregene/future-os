@@ -404,6 +404,15 @@ const ZOOM_OUT: &str = "preview.zoomOut";
 /// figures live in [`WorkbenchData`], which the app owns and passes in. Keeping
 /// them apart is what lets the surface be tested with fixtures and later fed by
 /// a real session without either side knowing the other's shape.
+/// A picture placed on screen by the terminal's image protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaintedImage {
+    /// The source bytes it was transmitted from (`screen::ImageRequest::source`).
+    pub source: u64,
+    /// The id it was transmitted under, which is how it is placed and deleted.
+    pub id: u32,
+}
+
 pub struct Workbench {
     pub palette: Palette,
     /// The language the chrome is drawn in. A stored preference resolves to one
@@ -484,6 +493,20 @@ pub struct Workbench {
     pub preview_zoom: u32,
     pub preview_pan: (i32, i32),
     pub preview_scroll: usize,
+    /// The workspace headings the reader folded shut, by path (see
+    /// [`panels::Folded`]). A rail with a long conversation list is scrolled a
+    /// group at a time once its workspaces are folded.
+    pub folded_workspaces: panels::Folded,
+    /// The picture the last frame wanted on screen, if any.
+    ///
+    /// A terminal picture is not text: the frame is a list of rows, and a
+    /// bitmap is placed by the terminal at a cell of its own. So the preview box
+    /// *asks* for one and the driver paints it after the frame it belongs to
+    /// (`run::paint_image`) — the one thing a text frame cannot express.
+    pub image_request: Option<screen::ImageRequest>,
+    /// The picture actually placed on screen: its terminal id, and the source
+    /// bytes it was transmitted from. `None` means nothing is placed.
+    pub painted_image: Option<PaintedImage>,
 }
 
 impl Default for Workbench {
@@ -555,6 +578,9 @@ impl Workbench {
             preview_zoom: 1,
             preview_pan: (0, 0),
             preview_scroll: 0,
+            folded_workspaces: panels::Folded::new(),
+            image_request: None,
+            painted_image: None,
         }
     }
 
@@ -626,6 +652,9 @@ impl Workbench {
         // whole token with no keystroke after it, so painting is what opens the
         // menu for it.
         self.sync_mention(data);
+        // Each frame asks again: a frame that paints no picture asks for none,
+        // and the driver takes that as "remove the one on screen".
+        self.image_request = None;
         let rows = screen::compose(self, data, w, h);
         debug_assert_eq!(
             rows.len(),
@@ -1203,7 +1232,23 @@ impl Workbench {
 
     /// The panel's rows, as the renderer paints them.
     fn panel_rows(&self, data: &WorkbenchData) -> Vec<panels::Row> {
-        panels::rows(self.panel, data)
+        panels::rows_with(self.panel, data, &self.folded_workspaces)
+    }
+
+    /// Fold a workspace's conversations away, or unfold them.
+    ///
+    /// The cursor stays on the heading it acted on, which is what lets `enter`
+    /// be pressed twice: the second one opens it again instead of the cursor
+    /// having moved to a conversation it never asked for.
+    fn toggle_workspace(&mut self, at: usize, data: &WorkbenchData) -> Vec<WbAction> {
+        let Some(workspace) = data.workspaces.get(at) else {
+            return Vec::new();
+        };
+        let path = workspace.path.clone();
+        if !self.folded_workspaces.remove(&path) {
+            self.folded_workspaces.insert(path);
+        }
+        vec![WbAction::Redraw]
     }
 
     /// The row the conversation on screen stands on, if the panel lists it.
@@ -1228,15 +1273,16 @@ impl Workbench {
 
     /// Move the cursor one row up or down, keeping the window on it.
     ///
-    /// In 最近 / 工作区 a row is a conversation, so the cursor skips the headings
-    /// (`step_session`); in 文件 every row is an entry of the tree and the cursor
-    /// walks all of them (`step_row`).
+    /// In 最近 a row is a conversation, so the cursor skips the headings
+    /// (`step_session`); in 文件 every row is an entry of the tree, and in 工作区
+    /// a workspace heading is a row the cursor can act on (it folds), so both
+    /// walk every selectable row (`step_row`).
     fn move_selection(&mut self, delta: i32, data: &WorkbenchData) -> Vec<WbAction> {
         let rows = self.panel_rows(data);
-        let next = if self.panel == PanelId::Files {
-            panels::step_row(&rows, self.sidebar_index, delta)
-        } else {
+        let next = if self.panel == PanelId::Recent {
             panels::step_session(&rows, self.sidebar_index, delta)
+        } else {
+            panels::step_row(&rows, self.sidebar_index, delta)
         };
         if let Some(next) = next {
             self.sidebar_index = next;
@@ -1257,6 +1303,9 @@ impl Workbench {
         let Some(row) = rows.get(self.sidebar_index) else {
             return Vec::new();
         };
+        if let panels::Row::Workspace(at) = row {
+            return self.toggle_workspace(*at, data);
+        }
         if let Some(index) = row.session() {
             return data
                 .sessions
@@ -2533,6 +2582,13 @@ impl Workbench {
                     self.sidebar_index = index;
                     self.open_selected(data)
                 }
+                // A workspace heading folds what is under it away, and opens it
+                // again on the next click: one click on a group is the quickest
+                // way to make a long rail scannable.
+                Some(panels::Row::Workspace(at)) => {
+                    self.sidebar_index = index;
+                    self.toggle_workspace(*at, data)
+                }
                 // A heading is not a verb: the click takes the keys and stops.
                 Some(_) => {
                     self.sidebar_index = index;
@@ -3582,8 +3638,9 @@ mod tests {
         assert_eq!(rows[workbench.sidebar_index].session(), Some(current));
     }
 
-    /// `up`/`down` walk the rail's conversations (never its headings) and
-    /// `enter` opens the one under the cursor.
+    /// `up`/`down` walk the rail's rows (a section heading is stepped over, a
+    /// workspace heading is not — it folds) and `enter` opens what is under the
+    /// cursor, or folds a group away when the cursor is on its heading.
     #[test]
     fn up_and_down_move_the_rail_cursor_and_enter_opens_it() {
         let data = demo::workspaces();
@@ -3592,17 +3649,40 @@ mod tests {
         workbench.panel = PanelId::Workspaces;
         workbench.sidebar_index = 0;
 
-        // The first rows are a section heading and a workspace heading, which
-        // `down` steps over.
+        // The first row is a section heading, which `down` steps over; the row
+        // it lands on is the first workspace heading and `enter` folds it.
         let rows = panels::rows(PanelId::Workspaces, &data);
         assert!(rows[0].session().is_none());
-        assert!(rows[1].session().is_none());
-        assert_eq!(rows[2].session(), Some(0));
+        assert!(matches!(rows[1], panels::Row::Workspace(_)));
         workbench.handle(WbEvent::Key("down".into()), &data);
-        assert_eq!(workbench.sidebar_index, 2, "the first conversation");
+        assert_eq!(workbench.sidebar_index, 1, "the first workspace heading");
+        let group = &data.workspaces[0];
+        let folded_rows =
+            panels::rows_with(PanelId::Workspaces, &data, &workbench.folded_workspaces).len();
+        workbench.handle(WbEvent::Key("enter".into()), &data);
+        assert!(
+            workbench.folded_workspaces.contains(&group.path),
+            "enter on a workspace heading folds it"
+        );
+        assert!(
+            panels::rows_with(PanelId::Workspaces, &data, &workbench.folded_workspaces).len()
+                < folded_rows,
+            "the folded group's conversations leave the list"
+        );
+        // The cursor stays on the heading, so `enter` again opens it: the fold
+        // is a toggle, not a one-way door.
+        assert_eq!(workbench.sidebar_index, 1);
+        workbench.handle(WbEvent::Key("enter".into()), &data);
+        assert!(
+            workbench.folded_workspaces.is_empty(),
+            "enter opens it again"
+        );
+
+        // A second press moves again, onto a conversation, and `enter` opens it.
         workbench.handle(WbEvent::Key("down".into()), &data);
         let index = workbench.sidebar_index;
-        assert_ne!(index, 2, "the second press moves again");
+        let rows = panels::rows(PanelId::Workspaces, &data);
+        assert!(index > 1, "the second press moves again");
         let session = rows[index].session().expect("a conversation row");
         assert_eq!(
             workbench.handle(WbEvent::Key("enter".into()), &data),
@@ -5189,10 +5269,13 @@ mod tests {
         }
     }
 
-    /// The preview box paints the picture it was given, names it, and keeps the
-    /// frame's size invariant at every terminal size.
+    /// The preview box names the picture and keeps the frame's size invariant at
+    /// every terminal size. A picture is either placed by the terminal's image
+    /// protocol — never drawn as half blocks, which is a mosaic of the thing the
+    /// reader opened — or named plainly with the reason it cannot be shown.
     #[test]
     fn the_preview_box_paints_the_picture_and_stays_in_the_frame() {
+        use crate::terminal_image::{set_capabilities, ImageProtocol, TerminalCapabilities};
         let mut data = demo::chat();
         data.preview = Some(demo::preview_image());
         for (w, h) in [(120u16, 38u16), (88, 24), (60, 16), (24, 8), (1, 1)] {
@@ -5204,20 +5287,59 @@ mod tests {
                 assert_eq!(ansi::width(row), w as usize, "{w}x{h}: {row:?}");
             }
         }
-        // At a size that can hold it, the box draws half blocks and its title
-        // carries the file's dimensions.
+
+        // A terminal with the kitty graphics protocol gets the picture: the box
+        // asks for a placement over its own content area and draws no pixels of
+        // its own.
+        let kitty = TerminalCapabilities {
+            images: ImageProtocol::Kitty,
+            true_color: true,
+            ..TerminalCapabilities::default()
+        };
+        set_capabilities(kitty);
         let (mut workbench, _rows) = frame(&data, 120, 38);
         workbench.overlay = Some(Overlay::FilePreview);
         let rows = workbench.render(&data, 120, 38);
         let text = plain(&rows);
         assert!(text.contains("design.png"), "{text}");
         assert!(text.contains("96×64"), "the title names the size: {text}");
-        assert!(text.contains('▀'), "the picture is half blocks: {text}");
-        assert!(!text.contains('▾'), "{text}");
-        // Zooming says so, so `+` is visible before the picture grows.
+        assert!(!text.contains('▀'), "no half-block mosaic: {text}");
+        let request = workbench
+            .image_request
+            .expect("a kitty terminal is asked to place the picture");
+        assert!(request.columns > 0 && request.rows > 0, "{request:?}");
+        assert_eq!(
+            request.crop,
+            (0, 0, 96, 64),
+            "at 1x the whole picture is transmitted"
+        );
+
+        // Zooming says so, so `+` is visible before the picture grows, and the
+        // window is what gets transmitted.
         workbench.handle(WbEvent::Key("+".into()), &data);
+        let rows = workbench.render(&data, 120, 38);
+        assert!(plain(&rows).contains("2x"), "{}", plain(&rows));
+        let zoomed = workbench.image_request.expect("still placed");
+        assert!(
+            zoomed.crop.2 - zoomed.crop.0 < 96 || zoomed.crop.3 - zoomed.crop.1 < 64,
+            "a zoomed window is a crop of the picture: {zoomed:?}"
+        );
+
+        // A terminal without the protocol gets the facts and an honest
+        // sentence, and still no mosaic.
+        set_capabilities(TerminalCapabilities::default());
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.overlay = Some(Overlay::FilePreview);
         let text = plain(&workbench.render(&data, 120, 38));
-        assert!(text.contains("2x"), "{text}");
+        assert!(text.contains("design.png"), "{text}");
+        assert!(text.contains("96×64"), "{text}");
+        assert!(
+            text.contains("cannot show pictures") || text.contains("不能显示图片"),
+            "{text}"
+        );
+        assert!(!text.contains('▀'), "{text}");
+        assert!(workbench.image_request.is_none());
+        crate::terminal_image::reset_capabilities_cache();
     }
 
     /// A preview whose bytes could not be read says why, in the reader's

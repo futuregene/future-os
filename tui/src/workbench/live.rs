@@ -908,7 +908,13 @@ impl Live {
                 // the tail of `D:/work/…/future-os` says less than the word
                 // itself. The path is still the group's identity (see
                 // `WorkspaceGroup`) and the header still names it in full.
-                workspace: workspace_name(&session.cwd),
+                //
+                // A plain chat has no workspace to name: its directory is the
+                // app's own scratch tree (`…/workspaces/chat/thread-…`), and
+                // printing that directory's name is how `thread-20261026-…`
+                // came to read like a project name. Blank, so the row says only
+                // what a chat has — its title and its age.
+                workspace: session_workspace_label(&session.cwd),
                 parent_id: session.parent_session_id.clone(),
                 age: age(session.updated_at_ms),
                 // On the launchpad nothing is attached, so no row claims to be
@@ -2366,6 +2372,21 @@ fn shorten(cwd: &str) -> String {
 
 /// A workspace's heading name: the directory's own name, or the whole path
 /// when there is no last segment to take (`/`).
+/// The workspace label a conversation row prints: its directory's name, or
+/// nothing at all for a plain chat.
+///
+/// A plain chat runs in the app's own scratch tree (`…/workspaces/chat/
+/// thread-…`), so printing that directory's name is how `thread-20261026-…`
+/// came to read like a project name in the rail. A chat has no workspace to
+/// name; the row says only what it has — its title and its age.
+fn session_workspace_label(cwd: &str) -> String {
+    if is_chat_directory(cwd) {
+        String::new()
+    } else {
+        workspace_name(cwd)
+    }
+}
+
 fn workspace_name(path: &str) -> String {
     let trimmed = path.trim_end_matches(['/', '\\']);
     let name = trimmed
@@ -2921,7 +2942,7 @@ mod tests {
             .map(|(index, session)| SessionRow {
                 id: session.id.clone(),
                 title: display_name(session),
-                workspace: workspace_name(&session.cwd),
+                workspace: session_workspace_label(&session.cwd),
                 age: format!("{index}h"),
                 ..SessionRow::default()
             })
@@ -2964,6 +2985,23 @@ mod tests {
         assert!(!groups
             .iter()
             .any(|group| group.session_ids.contains(&"e".into())));
+    }
+
+    /// A plain chat has no workspace to name. Its directory is the app's own
+    /// scratch tree, and printing that directory's name is how
+    /// `thread-20261026-121352-6627dd` came to read like a project in the rail.
+    #[test]
+    fn a_plain_chat_names_no_workspace() {
+        let scratch = crate::home::future_state_dir()
+            .join("workspaces")
+            .join("chat")
+            .join("thread-20261026-121352-6627dd")
+            .display()
+            .to_string();
+        assert_eq!(session_workspace_label(&scratch), "");
+        // Every other directory is named by its own last segment.
+        assert_eq!(session_workspace_label("/work/future-os"), "future-os");
+        assert_eq!(session_workspace_label("/work/future-os/"), "future-os");
     }
 
     /// The preview loader: pictures become pixels, documents become lines, and
