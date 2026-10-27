@@ -76,13 +76,14 @@ struct Paging {
 /// ([`super::Workbench::surface_command`]) and this list have to account for
 /// every entry exactly once. That is the check whose absence let five entries
 /// advertise themselves and then answer `Unknown command`.
-pub const APP_COMMANDS: [&str; 18] = [
+pub const APP_COMMANDS: [&str; 19] = [
     "/new",
     "/reply-detail",
     "/export",
     "/quit",
     "/copy",
     "/paste",
+    "/preview",
     "/mouse",
     "/compact",
     "/tools",

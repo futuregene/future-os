@@ -497,18 +497,20 @@ fn files_button_span(left: usize, pad: usize, button: usize) -> Option<(u16, u16
 }
 
 /// The header's button: `[ctrl+3] 文件`, the same `[key] label` shape the
-/// approval box uses for its answers.
+/// approval box uses for its answers — or the bare name when the action has no
+/// chord (`/files` is the door), because `[] 文件` reads as a broken label.
 ///
 /// A pointer target on a header row has to look like one, and the chord beside
 /// the name is how a reader who never opened the help discovers the key.
 fn header_button(palette: &Palette, keys: &preferences::Keybindings, lang: Language) -> String {
+    let key = keys.key(preferences::Action::Files);
+    let label = palette.strong(palette.iris, t(lang, Key::FilesTitle));
+    if key.is_empty() {
+        return label;
+    }
     format!(
-        "{} {}",
-        palette.text(
-            palette.iris,
-            &format!("[{}]", keys.key(preferences::Action::Files))
-        ),
-        palette.strong(palette.iris, t(lang, Key::FilesTitle))
+        "{} {label}",
+        palette.text(palette.iris, &format!("[{key}]"))
     )
 }
 
@@ -1291,7 +1293,17 @@ fn hint_row(
         (workbench.keys.key(Action::NewSession), Key::HintNewChat),
         (workbench.keys.key(Action::Preferences), Key::HintSettings),
     ];
-    let parts: &[(&str, Key)] = if compact { &wide[1..5] } else { &wide };
+    // An action with no chord (`help`, `preferences`: see `default_key`) would
+    // otherwise be hinted as " 帮助" — a hint with no key is not a hint.
+    let wide: Vec<(&str, Key)> = wide
+        .into_iter()
+        .filter(|(key, _)| !key.is_empty())
+        .collect();
+    let parts: &[(&str, Key)] = if compact {
+        &wide[1..5.min(wide.len())]
+    } else {
+        &wide
+    };
     let items: Vec<String> = parts
         .iter()
         .map(|(key, action)| {
@@ -2102,6 +2114,10 @@ fn help_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec
     // looking for "how do I change the model" should not have to read the
     // theme, copy and quit rows to find it.
     let row = |key: &str, description: &str, palette: &Palette| {
+        // A chordless action prints `—`: the column stays, so every key sits in
+        // the same cell, and the reader can tell "no shortcut" from "a shortcut
+        // this box forgot".
+        let key = if key.is_empty() { "\u{2014}" } else { key };
         format!(
             "   {}  {}",
             palette.text(palette.accent, &fit(key, 18)),
@@ -2276,7 +2292,12 @@ fn keybindings_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
         let key = if waiting {
             "…"
         } else {
-            workbench.keys.key(*action)
+            // `—` for an action with no default chord, in the padding helper's
+            // terms: the column exists, the chord does not.
+            match workbench.keys.key(*action) {
+                "" => "\u{2014}",
+                key => key,
+            }
         };
         let customized = if workbench.keys.is_default(*action) {
             ""
@@ -3377,14 +3398,17 @@ mod tests {
         // Wide keeps every entry; narrow drops from the right, never from the
         // middle of a key.
         let wide = plain(&hint_row(&Workbench::new(), &FUTURE_DARK, 200, false)[0]);
-        assert!(wide.contains("ctrl+o"));
+        // The last wide entry is the new-chat key; `help` and `preferences` have
+        // no chord, so the row does not name them at all.
+        assert!(wide.contains("ctrl+n"), "{wide:?}");
+        assert!(!wide.contains("\u{2014}"), "{wide:?}");
         assert!(wide
             .trim_end()
             .chars()
             .last()
             .is_some_and(|c| c.is_ascii_alphabetic()));
         let narrow = plain(&hint_row(&Workbench::new(), &FUTURE_DARK, 40, true)[0]);
-        assert!(narrow.contains("ctrl+b"), "{narrow:?}");
+        assert!(narrow.contains("ctrl+s"), "{narrow:?}");
         assert!(narrow.contains("tab"), "{narrow:?}");
         assert!(!narrow.contains("ctrl+p"), "whole hints are dropped");
     }

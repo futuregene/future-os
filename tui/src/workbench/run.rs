@@ -777,6 +777,16 @@ async fn quit(
                     live.paste_clipboard().await;
                     continue;
                 }
+                // Previewing the newest attachment has no chord (the surface's
+                // chords are reserved for the actions pressed while working), so
+                // this verb is its door.
+                "/preview" => {
+                    if live.load_attachment() {
+                        workbench.reset_preview();
+                        workbench.overlay = Some(super::Overlay::FilePreview);
+                    }
+                    continue;
+                }
                 "/mouse" => {
                     toggle_mouse(live, terminal, workbench, settings, settings_path);
                     continue;
