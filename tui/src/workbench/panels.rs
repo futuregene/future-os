@@ -17,6 +17,8 @@
 //! does the pointer (a click names a row index), so both read one definition
 //! instead of re-deriving "what is selectable" beside it.
 
+use std::collections::BTreeSet;
+
 use crate::workbench::ansi::{fit, width};
 use crate::workbench::i18n::{self, t, Key, Language};
 use crate::workbench::layout::{HitMap, Rect};
@@ -25,6 +27,14 @@ use crate::workbench::theme::Palette;
 
 /// Rows the panel uses for its heading (a title plus a blank line).
 const HEADING_ROWS: usize = 2;
+
+/// The workspace headings the reader has folded shut, by path — the group's
+/// identity (`two checkouts can share a name`).
+///
+/// It lives beside the painter rather than in [`WorkbenchData`] because it is
+/// the *surface's* memory, not the agent's: a fold is a view of the list, and
+/// the list itself is rebuilt from the agent every frame.
+pub type Folded = BTreeSet<String>;
 
 /// One row of the sidebar, in paint order.
 ///
@@ -61,11 +71,11 @@ impl Row {
         }
     }
 
-    /// Can `↑`/`↓` land here? A section heading and a workspace title cannot —
-    /// they name a group, and a cursor on a name that opens nothing is a cursor
-    /// the reader has to step over.
+    /// Can `↑`/`↓` land here? A section heading cannot — it names a block and
+    /// opens nothing, so a cursor on it is a cursor the reader has to step over.
+    /// A workspace heading *can*: `enter` folds its conversations away.
     pub fn selectable(self) -> bool {
-        matches!(self, Self::Session(_) | Self::File(_))
+        matches!(self, Self::Session(_) | Self::File(_) | Self::Workspace(_))
     }
 }
 
@@ -95,6 +105,12 @@ impl Section {
 
 /// The panel's rows, in paint order.
 pub fn rows(panel: PanelId, data: &WorkbenchData) -> Vec<Row> {
+    rows_with(panel, data, &Folded::new())
+}
+
+/// The panel's rows with the folded workspaces taken into account: a folded
+/// workspace paints its heading and none of its conversations.
+pub fn rows_with(panel: PanelId, data: &WorkbenchData, folded: &Folded) -> Vec<Row> {
     match panel {
         PanelId::Recent => (0..data.sessions.len()).map(Row::Session).collect(),
         PanelId::Files => (0..data.tree.rows().len()).map(Row::File).collect(),
@@ -113,6 +129,12 @@ pub fn rows(panel: PanelId, data: &WorkbenchData) -> Vec<Row> {
                         headed = true;
                     }
                     rows.push(Row::Workspace(index));
+                    // A folded workspace is its heading alone, which is what
+                    // makes a rail with two hundred conversations scrollable:
+                    // one line per group instead of one per conversation.
+                    if folded.contains(&data.workspaces[index].path) {
+                        continue;
+                    }
                     for id in &data.workspaces[index].session_ids {
                         if let Some(at) = data.sessions.iter().position(|row| &row.id == id) {
                             rows.push(Row::Session(at));
@@ -143,7 +165,7 @@ pub fn first_session(rows: &[Row], from: usize) -> Option<usize> {
     }
     (0..rows.len())
         .map(|offset| (from + offset) % rows.len())
-        .find(|index| rows[*index].selectable())
+        .find(|index| rows[*index].session().is_some())
 }
 
 /// The next row holding a conversation in `delta`'s direction, stopping (not
@@ -199,6 +221,22 @@ pub fn render(
     hit: &mut HitMap,
     lang: Language,
 ) -> Vec<String> {
+    render_with(panel, data, palette, area, view, hit, lang, &Folded::new())
+}
+
+/// [`render`] with the reader's folded workspaces, so a fold is drawn as a fold
+/// (`▸`) rather than a workspace that happens to list nothing.
+#[allow(clippy::too_many_arguments)]
+pub fn render_with(
+    panel: PanelId,
+    data: &WorkbenchData,
+    palette: &Palette,
+    area: Rect,
+    view: PanelView,
+    hit: &mut HitMap,
+    lang: Language,
+    folded: &Folded,
+) -> Vec<String> {
     let PanelView { scroll, selected } = view;
     if area.is_empty() {
         return Vec::new();
@@ -216,7 +254,7 @@ pub fn render(
     lines.push(palette.panel_row("", columns));
 
     let body_rows = rows.saturating_sub(HEADING_ROWS);
-    let items = item_rows(panel, data, palette, columns, lang, selected);
+    let items = item_rows(panel, data, palette, columns, lang, selected, folded);
     let total = items.len();
 
     // The window: `scroll` items in, filled a whole item at a time (a
@@ -327,8 +365,9 @@ fn item_rows(
     columns: usize,
     lang: Language,
     selected: usize,
+    folded: &Folded,
 ) -> Vec<Vec<String>> {
-    let model = rows(panel, data);
+    let model = rows_with(panel, data, folded);
     if model.is_empty() {
         // A tree with no rows is either an empty directory or a directory the
         // reader cannot read; both say what they are instead of painting blank
@@ -358,7 +397,14 @@ fn item_rows(
         .map(|(index, row)| match row {
             Row::Section(section) => vec![section_row(*section, palette, columns, lang)],
             Row::Workspace(at) => match data.workspaces.get(*at) {
-                Some(workspace) => vec![workspace_row(workspace, palette, columns, lang)],
+                Some(workspace) => vec![workspace_row(
+                    workspace,
+                    folded.contains(&workspace.path),
+                    index == selected,
+                    palette,
+                    columns,
+                    lang,
+                )],
                 None => vec![palette.panel_row("", columns)],
             },
             Row::Session(at) => match data.sessions.get(*at) {
@@ -472,9 +518,12 @@ fn section_row(section: Section, palette: &Palette, columns: usize, lang: Langua
     fit(&painted, columns)
 }
 
-/// A workspace's heading: its name, and how many conversations sit under it.
+/// A workspace's heading: the fold marker, its name, and how many
+/// conversations sit under it.
 fn workspace_row(
     workspace: &crate::workbench::state::WorkspaceGroup,
+    folded: bool,
+    selected: bool,
     palette: &Palette,
     columns: usize,
     lang: Language,
@@ -490,17 +539,29 @@ fn workspace_row(
         width(&tail_text).min(columns.saturating_sub(12).max(6)),
     );
     let tail_width = width(&tail);
-    let name = fit(&workspace.name, columns.saturating_sub(tail_width + 2));
-    let pad = columns.saturating_sub(1 + width(&name) + tail_width);
+    // `▾` open, `▸` folded: the same two glyphs the file tree uses, so
+    // "this line holds more" reads the same in both panels.
+    let marker = if folded { "▸" } else { "▾" };
+    let name = fit(&workspace.name, columns.saturating_sub(tail_width + 4));
+    let pad = columns.saturating_sub(3 + width(&name) + tail_width);
     format!(
-        " {}{}{}",
+        " {}{}{}{}",
+        palette.text(
+            if selected {
+                palette.accent
+            } else {
+                palette.muted
+            },
+            marker
+        ),
         palette.strong(palette.fg, &name),
         " ".repeat(pad),
         palette.dim(&tail)
     )
 }
 
-/// A conversation's rows: `▸ name` and, in 最近, `workspace · age` beneath it.
+/// A conversation's row: `▸ name` on the left and, in 最近, the workspace it is
+/// filed under and when it was refreshed on the right of the *same* row.
 fn session_rows(
     panel: PanelId,
     session: &SessionRow,
@@ -513,31 +574,39 @@ fn session_rows(
     } else {
         palette.dim(marker)
     };
-    let title = if session.current {
-        palette.strong(
-            palette.accent,
-            &fit(&session.title, columns.saturating_sub(2)),
-        )
-    } else {
-        palette.body(&fit(&session.title, columns.saturating_sub(2)))
-    };
     match panel {
         PanelId::Recent => {
-            // Three facts, two rows. The age is short and never worth cutting,
-            // so it is reserved and the *workspace* takes what is left; a path
-            // clipped at the end still reads as a path, a clipped age is `5`.
-            let room = columns.saturating_sub(3 + width(&session.age) + 3);
-            let workspace = fit(&session.workspace, room);
-            vec![
-                format!(" {marker}{title}"),
-                format!(
-                    "   {}",
-                    palette.dim(&fit(
-                        &format!("{workspace} · {}", session.age),
-                        columns.saturating_sub(3),
-                    ))
-                ),
-            ]
+            // One row: the name on the left, what it belongs to on the right.
+            //
+            // The old shape spent two rows per conversation (a name, then
+            // `workspace · age` beneath it), which halved how many
+            // conversations the rail could show for a fact that fits beside
+            // the name. The age is short and never worth cutting, so it is
+            // reserved; the workspace takes what is left, and a plain chat
+            // (no workspace at all) shows only its age.
+            let tail_text = if session.workspace.is_empty() {
+                session.age.clone()
+            } else {
+                format!("{} · {}", session.workspace, session.age)
+            };
+            // Half the row at most: the title is what the row is *for*. The
+            // tail is trimmed of the padding `fit` adds, so the title gets
+            // every cell the tail does not actually use.
+            let tail = fit(&tail_text, (columns / 2).max(5)).trim_end().to_string();
+            let tail_width = width(&tail);
+            // ` marker ` is three cells (a space, the marker, a space).
+            let title = fit(&session.title, columns.saturating_sub(3 + tail_width));
+            let pad = columns.saturating_sub(3 + width(&title) + tail_width);
+            let title = if session.current {
+                palette.strong(palette.accent, &title)
+            } else {
+                palette.body(&title)
+            };
+            vec![format!(
+                " {marker} {title}{}{}",
+                " ".repeat(pad),
+                palette.dim(&tail)
+            )]
         }
         PanelId::Workspaces => {
             let tail = fit(&session.age, (columns / 3).max(4));
@@ -556,7 +625,7 @@ fn session_rows(
                 palette.dim(&tail)
             )]
         }
-        // The file tree paints one row per entry, so a conversation's own two-row
+        // The file tree paints one row per entry, so a conversation's own row
         // shape does not apply here; `file_row` is the painter.
         PanelId::Files => vec![palette.panel_row("", columns)],
     }
@@ -580,8 +649,17 @@ mod tests {
     }
 
     fn panel_text(panel: PanelId, data: &WorkbenchData, lang: Language) -> String {
+        panel_text_with(panel, data, lang, &Folded::new())
+    }
+
+    fn panel_text_with(
+        panel: PanelId,
+        data: &WorkbenchData,
+        lang: Language,
+        folded: &Folded,
+    ) -> String {
         let mut hit = HitMap::new();
-        render(
+        render_with(
             panel,
             data,
             &P,
@@ -589,6 +667,7 @@ mod tests {
             PanelView::default(),
             &mut hit,
             lang,
+            folded,
         )
         .iter()
         .map(|line| crate::utils::strip_ansi_codes(line))
@@ -718,11 +797,10 @@ mod tests {
             LANG,
         );
         assert!(!lines.is_empty());
-        // Heading occupies rows 4 and 5. 最近 gives each conversation two rows,
-        // so both of the first one's rows answer as that one row.
+        // Heading occupies rows 4 and 5. 最近 gives each conversation one row.
         assert_eq!(hit.hit(12, 6), Some("sidebar.row.0"));
-        assert_eq!(hit.hit(12, 7), Some("sidebar.row.0"));
-        assert_eq!(hit.hit(12, 8), Some("sidebar.row.1"));
+        assert_eq!(hit.hit(12, 7), Some("sidebar.row.1"));
+        assert_eq!(hit.hit(12, 8), Some("sidebar.row.2"));
         assert_eq!(hit.hit(12, 5), None, "the blank heading row is not a row");
     }
 
@@ -837,7 +915,7 @@ mod tests {
     }
 
     #[test]
-    fn only_conversations_are_selectable() {
+    fn only_conversations_hold_the_session_cursor() {
         let data = demo::chat();
         let model = rows(PanelId::Workspaces, &data);
         assert!(model.iter().any(|row| row.session().is_none()));
@@ -851,5 +929,45 @@ mod tests {
         }
         assert_eq!(step_session(&model, index, 1), None);
         assert_eq!(step_session(&model, 0, -1), None);
+        // The *row* cursor, however, does stand on a workspace heading: that is
+        // where `enter` folds the group.
+        assert!(model.iter().any(|row| matches!(row, Row::Workspace(_))));
+        let heading = model
+            .iter()
+            .position(|row| matches!(row, Row::Workspace(_)))
+            .expect("a workspace heading");
+        assert!(model[heading].selectable());
+        assert_eq!(step_row(&model, heading - 1, 1), Some(heading));
+    }
+
+    /// A folded workspace paints its heading and nothing under it: with two
+    /// hundred conversations in one directory, one line per group is the
+    /// difference between a rail and a scroll bar.
+    #[test]
+    fn a_folded_workspace_hides_its_conversations() {
+        let data = demo::chat();
+        let group = data
+            .workspaces
+            .iter()
+            .find(|group| group.session_ids.len() > 1)
+            .expect("a workspace with more than one conversation")
+            .clone();
+        let open = rows(PanelId::Workspaces, &data);
+        let open_sessions = open.iter().filter(|row| row.session().is_some()).count();
+
+        let mut folded = Folded::new();
+        folded.insert(group.path.clone());
+        let closed = rows_with(PanelId::Workspaces, &data, &folded);
+        let closed_sessions = closed.iter().filter(|row| row.session().is_some()).count();
+        assert_eq!(
+            closed_sessions + group.session_ids.len(),
+            open_sessions,
+            "exactly this group's conversations are hidden"
+        );
+        // The heading itself stays, so the fold can be opened again.
+        assert!(closed.iter().any(|row| matches!(row, Row::Workspace(_))));
+        // And it is drawn as folded rather than as an empty workspace.
+        let text = panel_text_with(PanelId::Workspaces, &data, LANG, &folded);
+        assert!(text.contains('▸'), "{text}");
     }
 }

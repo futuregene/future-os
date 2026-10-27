@@ -34,10 +34,11 @@ type Hook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync + 'static>;
 /// The mouse reset comes first and is unconditional: a panic inside the
 /// workbench leaves `?1000h`/`?1002h`/`?1006h` armed, and a shell that inherits
 /// them eats every drag and prints escape chatter per click. `stop()` is not
-/// reached on this path, so this is the only teardown a crash gets.
+/// reached on this path, so this is the only teardown a crash gets — which is
+/// also why every mode here is reset without asking whether this run set it.
 fn restore_sequences() -> String {
     format!(
-        "{}\x1b[?2004l\x1b[<u\x1b[>4;0m\x1b[?1049l\x1b[?25h",
+        "{}\x1b[?2004l\x1b[?1004l\x1b[<9u\x1b[>4;0m\x1b[?1049l\x1b[?25h",
         crate::workbench::mouse::MOUSE_OFF
     )
 }
@@ -341,7 +342,8 @@ mod tests {
         // screen, pops the kitty keyboard mode and shows the cursor.
         for sequence in [
             "\x1b[?2004l",
-            "\x1b[<u",
+            "\x1b[?1004l",
+            "\x1b[<9u",
             "\x1b[>4;0m",
             "\x1b[?1049l",
             "\x1b[?25h",

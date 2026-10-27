@@ -5,19 +5,25 @@
 //! "a composer card on top of the chat" and "the TUI's home screen", and it is
 //! the one the contract calls for (§3, §4).
 //!
-//! The block — name, prompt, parameter chips, shortcut entries — is centred in
-//! the body rather than pinned to its top: with the conversation column empty
-//! below it, a block that starts at row 0 reads as a form that failed to load.
-//! Sections still drop from the end when the area is short (the chips and the
-//! shortcuts first, then the wordmark), and the input box is never dropped — a
-//! launchpad that cannot take a prompt is not a launchpad.
+//! The block — name, prompt, parameter chips — is centred in the body rather
+//! than pinned to its top: with the conversation column empty below it, a block
+//! that starts at row 0 reads as a form that failed to load. Sections still drop
+//! from the end when the area is short (the chips first, then the wordmark), and
+//! the input box is never dropped — a launchpad that cannot take a prompt is not
+//! a launchpad.
+//!
+//! The block teaches no key of its own. It used to carry a shortcut row
+//! (`/ Commands · ? Help · ctrl+n New Chat · …`), which was the footer's own
+//! hint row spelled a second time one screen above it, with `/` and `?` in
+//! place of the keys the footer actually names. What is left is what only this
+//! screen has: the parameter row, which is the same four choices the desktop
+//! composer shows, and a placeholder that names the three things the box takes.
 
 use crate::approval_mode::ApprovalMode;
 use crate::workbench::ansi::{clip, fit, width};
 use crate::workbench::i18n::{self, t, Key, Language};
 use crate::workbench::layout::{HitMap, Rect};
 use crate::workbench::picker;
-use crate::workbench::preferences::{Action, Keybindings};
 use crate::workbench::state::WorkbenchData;
 use crate::workbench::theme::Palette;
 use crate::workbench::widgets;
@@ -109,26 +115,6 @@ fn workspace_label(cwd: &str) -> String {
     }
 }
 
-/// How the launchpad's shortcut entry points read, with the *bound* keys: a
-/// rebound shortcut is shown rebound, because the row's whole job is to teach
-/// the key that works. The third field is what a click on the entry does — the
-/// same verb the key runs.
-pub fn shortcuts(keys: &Keybindings) -> Vec<(String, Key, &'static str)> {
-    vec![
-        ("/".to_string(), Key::ShortcutCommands, "palette"),
-        ("?".to_string(), Key::ShortcutHelp, "help"),
-        (keys.label(Action::NewSession), Key::ShortcutNewChat, "new"),
-        (keys.label(Action::Thinking), Key::ChipEffort, "thinking"),
-        (keys.label(Action::Approval), Key::ChipApproval, "mode"),
-        (
-            keys.label(Action::Workspaces),
-            Key::ChipWorkspace,
-            "workspace",
-        ),
-        (keys.label(Action::Sidebar), Key::ShortcutSidebar, "sidebar"),
-    ]
-}
-
 /// What a clickable piece of the block is, and where it is drawn.
 struct Region {
     row: usize,
@@ -148,7 +134,6 @@ pub fn render(
     hit: &mut HitMap,
     lang: Language,
     focused_chip: Option<&str>,
-    keys: &Keybindings,
 ) -> (Vec<String>, Option<(u16, u16)>) {
     if area.is_empty() {
         return (Vec::new(), None);
@@ -257,59 +242,10 @@ pub fn render(
         }
     }
 
-    // ── shortcuts ─────────────────────────────────────────────────────
-    if rows >= lines.len() + 2 {
-        push(&mut lines, String::new());
-        let separator = palette.dim("  ·  ");
-        // Wrapped, not clipped: the same rule as the chips, and the reason the
-        // list can grow to seven entries without losing the last two. A wrapped
-        // row starts with its first entry rather than a comma: the line break is
-        // already the separator.
-        let mut row = String::new();
-        let mut plain = String::new();
-        let gap = width("  ·  ");
-        for (key, label, action) in shortcuts(keys) {
-            let piece = format!("{} {}", key, t(lang, label));
-            let piece_width = width(&piece);
-            if !plain.is_empty() && width(&plain) + gap + piece_width > content_width {
-                lines.push(fit(
-                    &format!("{}{}", " ".repeat(left), fit(&row, content_width)),
-                    columns,
-                ));
-                row.clear();
-                plain.clear();
-            }
-            if !plain.is_empty() {
-                row.push_str(&separator);
-                plain.push_str("  ·  ");
-            }
-            let at = lines.len();
-            let x = left as u16 + width(&plain) as u16;
-            regions.push(Region {
-                row: at,
-                x,
-                w: piece_width.max(1) as u16,
-                id: format!("launchpad.command.{action}"),
-            });
-            row.push_str(&format!(
-                "{} {}",
-                palette.text(palette.accent, &key),
-                palette.dim(t(lang, label))
-            ));
-            plain.push_str(&piece);
-        }
-        if !row.is_empty() {
-            lines.push(fit(
-                &format!("{}{}", " ".repeat(left), fit(&row, content_width)),
-                columns,
-            ));
-        }
-    }
-
     // ── recent sessions ───────────────────────────────────────────────
     // None: the rail's 最近 tab is the list. A second copy under the prompt
-    // took the rows the parameter row and the shortcuts need, and the same
-    // conversation twice on one screen is one list too many.
+    // took the rows the parameter row needs, and the same conversation twice on
+    // one screen is one list too many.
 
     // ── placement ─────────────────────────────────────────────────────
     // A block taller than the area keeps the prompt: drop the decoration above
@@ -380,12 +316,6 @@ mod tests {
 
     const P: Palette = FUTURE_DARK;
 
-    /// The default shortcut map: what the launchpad draws unless the reader
-    /// rebound something.
-    fn keys() -> Keybindings {
-        Keybindings::default()
-    }
-
     fn text_of(lines: &[String]) -> String {
         lines
             .iter()
@@ -421,15 +351,7 @@ mod tests {
             (200, 60),
         ] {
             let mut hit = HitMap::new();
-            let (lines, _cursor) = render(
-                &data,
-                &P,
-                Rect::new(0, 0, w, h),
-                &mut hit,
-                LANG,
-                None,
-                &keys(),
-            );
+            let (lines, _cursor) = render(&data, &P, Rect::new(0, 0, w, h), &mut hit, LANG, None);
             assert_eq!(lines.len(), h as usize, "{w}x{h}");
             for line in &lines {
                 assert_eq!(width(line), w as usize, "{w}x{h}: {line:?}");
@@ -441,15 +363,7 @@ mod tests {
     fn a_tall_screen_shows_the_name_prompt_and_chips() {
         let data = demo::launchpad();
         let mut hit = HitMap::new();
-        let (lines, cursor) = render(
-            &data,
-            &P,
-            Rect::new(0, 0, 120, 38),
-            &mut hit,
-            LANG,
-            None,
-            &keys(),
-        );
+        let (lines, cursor) = render(&data, &P, Rect::new(0, 0, 120, 38), &mut hit, LANG, None);
         let text = text_of(&lines);
         // Typography alone carries the brand: no block art or icon.
         assert!(text.contains("F U T U R E   O S"), "{text}");
@@ -461,7 +375,16 @@ mod tests {
         assert!(text.contains("模型"), "{text}");
         assert!(text.contains("强度"), "{text}");
         assert!(text.contains("deepseek-flash"), "{text}");
-        assert!(text.contains("命令"), "{text}");
+        // The three things the box takes are named where the box is: `/` for the
+        // palette, `@` for a file, `#` for a session. Nothing else on the block
+        // teaches a key — the footer's hint row already does that.
+        for needle in ["/ 命令", "@ 文件", "# 会话"] {
+            assert!(text.contains(needle), "{needle} missing: {text}");
+        }
+        assert!(
+            !text.contains("ctrl+") && !text.contains("alt+"),
+            "the block repeats no key hint: {text}"
+        );
         // The approval chip names the mode the way the desktop does, and there
         // is no second "permission" control beside it.
         assert!(text.contains("手动审批"), "{text}");
@@ -481,15 +404,7 @@ mod tests {
         let data = demo::launchpad();
         for h in [20u16, 24, 30, 38, 50] {
             let mut hit = HitMap::new();
-            let (lines, _) = render(
-                &data,
-                &P,
-                Rect::new(0, 0, 100, h),
-                &mut hit,
-                LANG,
-                None,
-                &keys(),
-            );
+            let (lines, _) = render(&data, &P, Rect::new(0, 0, 100, h), &mut hit, LANG, None);
             let (first, last) = block_rows(&lines);
             let above = first;
             let below = h as usize - 1 - last;
@@ -505,15 +420,7 @@ mod tests {
     fn every_chip_is_clickable_and_lands_on_the_row_that_prints_it() {
         let data = demo::launchpad();
         let mut hit = HitMap::new();
-        let (lines, _) = render(
-            &data,
-            &P,
-            Rect::new(0, 0, 120, 38),
-            &mut hit,
-            LANG,
-            None,
-            &keys(),
-        );
+        let (lines, _) = render(&data, &P, Rect::new(0, 0, 120, 38), &mut hit, LANG, None);
         let ids: Vec<&str> = hit.regions().iter().map(|(_, id)| id.as_str()).collect();
         for expected in [
             "input",
@@ -546,43 +453,10 @@ mod tests {
     }
 
     #[test]
-    fn the_shortcut_row_teaches_the_keys_that_work() {
-        let data = demo::launchpad();
-        let mut keys = Keybindings::default();
-        keys.bind(Action::Thinking, "ctrl+k").unwrap();
-        let mut hit = HitMap::new();
-        let (lines, _) = render(
-            &data,
-            &P,
-            Rect::new(0, 0, 120, 38),
-            &mut hit,
-            LANG,
-            None,
-            &keys,
-        );
-        let text = text_of(&lines);
-        // The bound key is shown, the default one is not.
-        assert!(text.contains("ctrl+k"), "{text}");
-        assert!(!text.contains("ctrl+t"), "{text}");
-        // Every entry point the block offers is named.
-        for needle in ["ctrl+n", "ctrl+s", "ctrl+l", "ctrl+b", "ctrl+k", "帮助"] {
-            assert!(text.contains(needle), "{needle} missing: {text}");
-        }
-    }
-
-    #[test]
     fn the_focused_chip_says_so_without_moving_the_row() {
         let data = demo::launchpad();
         let mut plain = HitMap::new();
-        let (unfocused, _) = render(
-            &data,
-            &P,
-            Rect::new(0, 0, 120, 38),
-            &mut plain,
-            LANG,
-            None,
-            &keys(),
-        );
+        let (unfocused, _) = render(&data, &P, Rect::new(0, 0, 120, 38), &mut plain, LANG, None);
         let mut focused_hit = HitMap::new();
         let (focused, _) = render(
             &data,
@@ -591,7 +465,6 @@ mod tests {
             &mut focused_hit,
             LANG,
             Some("launchpad.model"),
-            &keys(),
         );
         assert_eq!(unfocused.len(), focused.len());
         let marker_row = text_of(&focused)
@@ -620,39 +493,23 @@ mod tests {
     fn a_short_screen_keeps_the_prompt_and_drops_the_rest() {
         let data = demo::launchpad();
         let mut hit = HitMap::new();
-        let (lines, cursor) = render(
-            &data,
-            &P,
-            Rect::new(0, 0, 60, 10),
-            &mut hit,
-            LANG,
-            None,
-            &keys(),
-        );
+        let (lines, cursor) = render(&data, &P, Rect::new(0, 0, 60, 10), &mut hit, LANG, None);
         assert_eq!(lines.len(), 10);
         let text = text_of(&lines);
         assert!(text.contains("新会话"), "the prompt survives: {text}");
-        // Ten rows cannot hold the chips and the shortcuts as well; the prompt
-        // is the one thing that must not go.
+        // Ten rows cannot hold the chips as well; the prompt is the one thing
+        // that must not go.
         assert!(cursor.is_some(), "{text}");
     }
 
     #[test]
     fn a_screen_too_short_for_the_block_drops_the_name_not_the_prompt() {
         let data = demo::launchpad();
-        // Narrow enough that the chips and the shortcuts wrap, and short enough
-        // that the block cannot fit: the decoration above the prompt goes first.
+        // Narrow enough that the chips wrap, and short enough that the block
+        // cannot fit: the decoration above the prompt goes first.
         let mut hit = HitMap::new();
-        let (lines, cursor) = render(
-            &data,
-            &P,
-            Rect::new(0, 0, 40, 12),
-            &mut hit,
-            LANG,
-            None,
-            &keys(),
-        );
-        assert_eq!(lines.len(), 12);
+        let (lines, cursor) = render(&data, &P, Rect::new(0, 0, 40, 9), &mut hit, LANG, None);
+        assert_eq!(lines.len(), 9);
         let text = text_of(&lines);
         assert!(text.contains("新会话"), "the prompt survives: {text}");
         assert!(
@@ -661,17 +518,9 @@ mod tests {
         );
         assert!(cursor.is_some(), "{text}");
 
-        // Two rows more and the name fits around the prompt again.
+        // A few rows more and the name fits around the prompt again.
         let mut hit = HitMap::new();
-        let (lines, _) = render(
-            &data,
-            &P,
-            Rect::new(0, 0, 40, 16),
-            &mut hit,
-            LANG,
-            None,
-            &keys(),
-        );
+        let (lines, _) = render(&data, &P, Rect::new(0, 0, 40, 13), &mut hit, LANG, None);
         let text = text_of(&lines);
         assert!(text.contains("F U T U R E"), "{text}");
         assert!(text.contains("新会话"), "{text}");

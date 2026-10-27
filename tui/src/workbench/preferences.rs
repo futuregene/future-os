@@ -87,7 +87,9 @@ impl Default for LayoutPreferences {
             density: Density::Focused,
             sidebar_position: SidebarPosition::Right,
             sidebar_width: layout::SIDEBAR_DEFAULT,
-            sidebar_visible: true,
+            // Hidden, the same as a first start: "restore defaults" must land
+            // on the layout a reader who never chose anything sees.
+            sidebar_visible: false,
             mouse_capture: true,
             notify: crate::notifications::NotifyConfig::default(),
             reduced_motion: false,

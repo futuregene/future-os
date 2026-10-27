@@ -105,15 +105,16 @@ the rail focused, `←`/`→` move between the two tabs.
 
 The launchpad is the *body*, not a dialog over the conversation: with no session
 attached the composer fills the surface (wordmark, box, workspace / model /
-effort / approval chips, shortcut entries) and there is no second input band.
-The block is centred in the body rather than pinned to its top, and the
-conversations are the rail's — the launchpad does not repeat them. `tab` walks
-the prompt and the chips, `enter` cycles the chip under the cursor, and typing
-(or `escape`) hands the keys back to the prompt. The shortcut entries carry the
-*effective* bindings, so a rebound key is shown rebound. The four chips are the
-desktop composer's own controls (model, thinking effort, approval mode) plus the
-workspace this TUI starts from; there is no separate permission level, because
-no other client offers one.
+effort / approval chips) and there is no second input band. The block is centred
+in the body rather than pinned to its top, and the conversations are the rail's —
+the launchpad does not repeat them. `tab` walks the prompt and the chips, `enter`
+cycles the chip under the cursor, and typing (or `escape`) hands the keys back to
+the prompt. The block teaches no key of its own: the footer's hint row already
+names them, and what the box takes beyond a sentence — `/` commands, `@` files,
+`#` sessions — is in the placeholder, where the reader is about to type it. The
+four chips are the desktop composer's own controls (model, thinking effort,
+approval mode) plus the workspace this TUI starts from; there is no separate
+permission level, because no other client offers one.
 
 No default shortcut is a function key: `F1`–`F12` need an `Fn` modifier on a
 laptop keyboard and are absent on a compact one, so the defaults are
@@ -168,6 +169,13 @@ Choices persist in `~/.future/tui/settings.json` as `density`, `sidebarPosition`
 `sidebarWidth`, `sidebarVisible`, `mouseCapture`, `notify`, `reducedMotion` and
 `linearReading`; incremental shortcut overrides live beside it in
 `keybindings.json`.
+
+With no stored `sidebarVisible` — a first start, or a file written before the
+key existed — the rail starts **hidden**: the conversation gets the whole
+width, and `ctrl+b` (or `ctrl+1`/`ctrl+2`/`ctrl+3`, which show the rail to reach
+their panel) brings it back. Once the reader has shown or hidden it, that choice
+is what the next start begins with, and `Restore defaults` lands back on the
+hidden layout.
 
 `/theme` retains the six-theme picker, including `high-contrast`; choosing a
 theme persists `themeId`. With no stored choice, the terminal's `COLORFGBG`
@@ -241,7 +249,7 @@ click on the rail's tab strip are the doors to the same places.
 | `ctrl+t` | Thinking effort: opens the six-level chooser (`/thinking`); on the launchpad the level is staged for the session the first message creates |
 | `ctrl+s` | Approval mode: opens the four-tier chooser (`/mode`), the desktop composer's own values — 手动审批 / 沙箱保护 / 自动审批 / 完全访问 |
 | `ctrl+l` | Workspaces: opens the workspace chooser (`/workspace`) — every directory this client has a conversation in, plus a row that creates one from the path typed into its search line |
-| `ctrl+b` | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal. The rail's own `›` edge button does the same hide/show with one click. The show/hide choice is written to `sidebarVisible` and is where the next start begins |
+| `ctrl+b` | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal. The rail's own `›` edge button does the same hide/show with one click. The show/hide choice is written to `sidebarVisible` and is where the next start begins (a first start begins hidden) |
 | `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run |
 | `ctrl+r` | Session picker (name, workspace and age of each conversation; the footer names the key) |
 | `ctrl+o` | Preferences and shortcut editor |
