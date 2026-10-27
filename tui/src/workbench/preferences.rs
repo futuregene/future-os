@@ -92,6 +92,8 @@ pub enum Action {
     /// The rail's neighbouring tab: `shift+←` / `shift+→`.
     PanelPrev,
     PanelNext,
+    /// The repository browser: log, refs, working tree and stashes.
+    Git,
     /// Read the clipboard into the draft: an image becomes an attachment.
     PasteImage,
     /// Show the image already attached to the draft.
@@ -134,7 +136,7 @@ impl Group {
 /// Every action, in the order the help overlay lists them: grouped, and inside
 /// a group from most to least used. `ACTIONS` is the one authority — the help
 /// table, the shortcut editor and the event dispatch all walk it.
-pub const ACTIONS: [Action; 29] = [
+pub const ACTIONS: [Action; 30] = [
     // Sessions
     Action::PrevSession,
     Action::NextSession,
@@ -157,6 +159,7 @@ pub const ACTIONS: [Action; 29] = [
     Action::PanelFiles,
     Action::PanelPrev,
     Action::PanelNext,
+    Action::Git,
     // Interface
     Action::Palette,
     Action::Help,
@@ -201,6 +204,7 @@ impl Action {
             Self::PanelFiles => "panelFiles",
             Self::PanelPrev => "panelPrevious",
             Self::PanelNext => "panelNext",
+            Self::Git => "git",
             Self::PasteImage => "pasteImage",
             Self::PreviewAttachment => "previewAttachment",
         }
@@ -227,7 +231,8 @@ impl Action {
             | Self::PanelWorkspaces
             | Self::PanelFiles
             | Self::PanelPrev
-            | Self::PanelNext => Group::Panels,
+            | Self::PanelNext
+            | Self::Git => Group::Panels,
             Self::Palette
             | Self::Help
             | Self::Preferences
@@ -269,6 +274,7 @@ impl Action {
             Self::PanelFiles => Key::HelpKeyPanelFiles,
             Self::PanelPrev => Key::HelpKeyPrevPanel,
             Self::PanelNext => Key::HelpKeyNextPanel,
+            Self::Git => Key::CmdGit,
             Self::PasteImage => Key::HelpKeyPasteImage,
             Self::PreviewAttachment => Key::HelpKeyPreviewAttachment,
         }
@@ -308,6 +314,7 @@ impl Action {
             Self::PanelFiles => "ctrl+3",
             Self::PanelPrev => "shift+left",
             Self::PanelNext => "shift+right",
+            Self::Git => "alt+g",
             Self::PasteImage => "ctrl+v",
             Self::PreviewAttachment => "alt+v",
             Self::PrevSession => "shift+up",

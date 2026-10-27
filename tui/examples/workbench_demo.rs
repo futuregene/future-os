@@ -141,6 +141,11 @@ fn main() {
                     _ => Overlay::Worktree,
                 });
             }
+            // The repository browser: demo rows, not a read of this checkout.
+            "git" => {
+                data.git = Some(demo::git());
+                workbench.overlay = Some(Overlay::Git);
+            }
             "recent" | "workspaces" => {
                 workbench.panel = match name {
                     "workspaces" => PanelId::Workspaces,

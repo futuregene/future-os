@@ -505,6 +505,8 @@ pub struct WorkbenchData {
     pub fork_points: Vec<ForkPoint>,
     /// Read-only git worktree list.
     pub worktrees: Vec<WorktreeView>,
+    /// The `/git` panel: log, refs, working tree and stashes.
+    pub git: Option<GitView>,
     /// Files a `@` mention can name, relative to the session's working
     /// directory. Filled by the adapter once per directory; empty disables the
     /// menu's file half rather than suggesting nothing.
@@ -615,6 +617,142 @@ pub struct WorktreeView {
     pub current: bool,
 }
 
+/// Which tab of the `/git` panel is showing.
+///
+/// The order is the order the tabs are painted in and the order the number keys
+/// select, so the two cannot drift apart.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum GitSection {
+    /// `git log --graph`: commits, newest first.
+    #[default]
+    Commits,
+    /// Branches, remote-tracking branches and tags.
+    Refs,
+    /// The working tree: tracked edits and untracked files.
+    Status,
+    /// `git stash list`.
+    Stash,
+}
+
+impl GitSection {
+    /// Every section, in tab order.
+    pub const ALL: [GitSection; 4] = [Self::Commits, Self::Refs, Self::Status, Self::Stash];
+}
+
+/// One painted line of the `/git` list.
+///
+/// `key` is what the row *is* (`abc1234`, `refs/heads/main`, `src/a.rs`,
+/// `stash@{0}`) and what the detail pane loads; a row without one is the log's
+/// graph continuing through a column that has no commit on it — painted, but
+/// never selected, the same way the graph is drawn in a terminal git client.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GitRow {
+    pub key: Option<String>,
+    /// The gutter before the fields: the graph (`* `, `| * `), a badge (`● `),
+    /// a porcelain status (`M `), a stash number (`#0 `).
+    pub prefix: String,
+    /// The row's fields, most important first — a narrow box drops the tail
+    /// whole rather than cutting a field in half.
+    pub pieces: Vec<String>,
+}
+
+/// The `/git` panel's content: one section's rows plus the selected row's
+/// detail.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GitView {
+    /// The repository's name, for the box title.
+    pub repo: String,
+    pub section: GitSection,
+    pub rows: Vec<GitRow>,
+    /// Which row's detail is loaded. A beat behind the cursor while a reload is
+    /// in flight, which is why the surface keeps its own cursor.
+    pub selected: usize,
+    pub detail: Vec<String>,
+    /// The revision the log is filtered to (`feature`, a tag, a sha).
+    pub filter: Option<String>,
+    /// The read failed; painted in place of the list.
+    pub error: Option<String>,
+}
+
+impl GitView {
+    /// Can the row at `index` be selected?
+    pub fn selectable(&self, index: usize) -> bool {
+        self.rows.get(index).is_some_and(|row| row.key.is_some())
+    }
+
+    /// The first selectable row at or after `from`, or the last one before it
+    /// when stepping backwards. `0` when there is nothing selectable.
+    pub fn nearest(&self, from: usize, forward: bool) -> usize {
+        if self.rows.is_empty() {
+            return 0;
+        }
+        let from = from.min(self.rows.len() - 1);
+        if forward {
+            (from..self.rows.len())
+                .find(|index| self.selectable(*index))
+                .or_else(|| self.last())
+                .unwrap_or(0)
+        } else {
+            (0..=from)
+                .rev()
+                .find(|index| self.selectable(*index))
+                .or_else(|| self.first())
+                .unwrap_or(0)
+        }
+    }
+
+    /// One selectable row past `from` in `direction` (+1 / -1), stopping at the
+    /// last selectable row: a row that is only a drawing is stepped over, and
+    /// running off the end leaves the cursor where it was.
+    pub fn step(&self, from: usize, direction: isize) -> usize {
+        if self.rows.is_empty() {
+            return 0;
+        }
+        let from = from.min(self.rows.len() - 1);
+        // Starting on a drawing (a section switch can land there): find the
+        // nearest real row first, or the walk below would report it back.
+        let index = if self.selectable(from) {
+            from
+        } else {
+            self.nearest(from, direction > 0)
+        };
+        let mut probe = index;
+        loop {
+            let next = probe as isize + direction;
+            if next < 0 || next as usize >= self.rows.len() {
+                return index;
+            }
+            probe = next as usize;
+            if self.selectable(probe) {
+                return probe;
+            }
+        }
+    }
+
+    pub fn first(&self) -> Option<usize> {
+        (0..self.rows.len()).find(|index| self.selectable(*index))
+    }
+
+    pub fn last(&self) -> Option<usize> {
+        (0..self.rows.len())
+            .rev()
+            .find(|index| self.selectable(*index))
+    }
+
+    /// The row a page key lands on: `page` selectable rows past `from`.
+    pub fn page(&self, from: usize, page: usize, forward: bool) -> usize {
+        let mut index = from;
+        for _ in 0..page.max(1) {
+            let next = self.step(index, if forward { 1 } else { -1 });
+            if next == index {
+                break;
+            }
+            index = next;
+        }
+        index
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QueuedPrompt {
     pub run_id: String,
@@ -631,6 +769,46 @@ impl WorkbenchData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `/git` cursor only ever lands on rows that name something: the log's
+    /// graph continuations are painted, never selected, and the ends clamp.
+    #[test]
+    fn the_git_cursor_skips_rows_that_are_only_drawing() {
+        let row = |key: Option<&str>| GitRow {
+            key: key.map(str::to_string),
+            prefix: String::new(),
+            pieces: Vec::new(),
+        };
+        let view = GitView {
+            rows: vec![
+                row(Some("a")),
+                row(None),
+                row(None),
+                row(Some("b")),
+                row(Some("c")),
+                row(None),
+            ],
+            ..GitView::default()
+        };
+        assert_eq!(view.step(0, 1), 3, "two graph rows in a row are skipped");
+        assert_eq!(view.step(3, -1), 0);
+        assert_eq!(view.step(4, 1), 4, "the last selectable row clamps");
+        assert_eq!(view.step(0, -1), 0);
+        assert_eq!(view.first(), Some(0));
+        assert_eq!(view.last(), Some(4));
+        assert_eq!(view.page(0, 2, true), 4);
+        assert_eq!(view.page(4, 2, false), 0, "two selectable rows back");
+        // A row asked for by index lands on the next thing that can be
+        // entered, whichever side it is on.
+        assert_eq!(view.nearest(1, true), 3);
+        assert_eq!(view.nearest(5, true), 4);
+
+        // An empty section has no cursor to place.
+        let empty = GitView::default();
+        assert_eq!(empty.step(0, 1), 0);
+        assert_eq!(empty.first(), None);
+        assert!(!empty.selectable(0));
+    }
 
     fn input(text: &str, cursor: usize) -> InputView {
         InputView {

@@ -26,6 +26,7 @@ use super::layout::{self, Frame};
 use super::live::{self, Live, Outcome};
 use super::mouse;
 use super::picker::PickerKind;
+use super::state::GitSection;
 use super::{VerbOutcome, WbAction, WbEvent, Workbench};
 
 /// What a run of the workbench needs to know before it starts.
@@ -719,6 +720,18 @@ async fn quit(
                     workbench.workflow_index = 0;
                     continue;
                 }
+                // The repository browser is the surface's own panel, like
+                // `/diff` and `/worktree`: the agent has no such verb, so the
+                // draft's `/git` must not reach it. Reopening resumes the tab
+                // and filter the reader left.
+                "/git" => {
+                    let (section, filter) = live
+                        .git()
+                        .map(|git| (git.section, git.filter.clone()))
+                        .unwrap_or((GitSection::Commits, None));
+                    open_git_panel(live, frame, workbench, section, filter, 0, true).await;
+                    continue;
+                }
                 "/worktree" | "/worktree " => {
                     let cwd = live.data(frame).session.cwd;
                     let result = tokio::task::spawn_blocking(move || {
@@ -896,6 +909,73 @@ async fn quit(
         }
         if matches!(action, WbAction::OpenApproval) {
             workbench.overlay = Some(super::Overlay::Approval);
+            continue;
+        }
+        // `/git`: the panel's data is the driver's to read (the surface owns no
+        // I/O), so every git verb lands here — the key, the palette entry, a tab
+        // switch, a cursor move and `r`.
+        if matches!(
+            action,
+            WbAction::OpenGit
+                | WbAction::GitSection(_)
+                | WbAction::GitFilter(_)
+                | WbAction::GitRefresh
+                | WbAction::SelectGit(_)
+        ) {
+            if let WbAction::SelectGit(index) = action {
+                open_git_detail(live, frame, workbench, index).await;
+                continue;
+            }
+            let current = live.git().cloned();
+            let (section, filter, want, reset_scroll) = match &action {
+                WbAction::OpenGit => (
+                    current
+                        .as_ref()
+                        .map(|git| git.section)
+                        .unwrap_or(GitSection::Commits),
+                    current.as_ref().and_then(|git| git.filter.clone()),
+                    0,
+                    true,
+                ),
+                WbAction::GitSection(section) => (
+                    *section,
+                    current.as_ref().and_then(|git| git.filter.clone()),
+                    0,
+                    true,
+                ),
+                WbAction::GitFilter(filter) => (GitSection::Commits, filter.clone(), 0, true),
+                WbAction::GitRefresh => (
+                    current
+                        .as_ref()
+                        .map(|git| git.section)
+                        .unwrap_or(GitSection::Commits),
+                    current.as_ref().and_then(|git| git.filter.clone()),
+                    workbench.workflow_index,
+                    false,
+                ),
+                _ => (GitSection::Commits, None, 0, true),
+            };
+            open_git_panel(live, frame, workbench, section, filter, want, reset_scroll).await;
+            continue;
+        }
+        if let WbAction::CopyText(text) = &action {
+            let text = text.clone();
+            let show = text.clone();
+            let copied =
+                tokio::task::spawn_blocking(move || crate::clipboard::copy_text(&text)).await;
+            live.notice = Some(match copied {
+                Ok(Ok(())) => {
+                    super::i18n::render(live.language(), super::i18n::Key::GitCopied, &[&show])
+                }
+                Ok(Err(error)) => {
+                    super::i18n::render(live.language(), super::i18n::Key::CopyFailed, &[&error])
+                }
+                Err(error) => super::i18n::render(
+                    live.language(),
+                    super::i18n::Key::CopyFailed,
+                    &[&error.to_string()],
+                ),
+            });
             continue;
         }
         if matches!(action, WbAction::CopyLast) {
@@ -1147,6 +1227,78 @@ fn frame_of(terminal: &Terminal, workbench: &Workbench) -> Frame {
         },
         workbench.sidebar_position,
     )
+}
+
+/// Read the `/git` panel for the session's workspace and open it.
+///
+/// The surface owns no I/O, so the read happens here — one section plus the
+/// selected row's detail, on the blocking pool because a large repository on a
+/// slow disk must not stall the frame that asked for it.
+async fn open_git_panel(
+    live: &mut Live,
+    frame: &Frame,
+    workbench: &mut Workbench,
+    section: GitSection,
+    filter: Option<String>,
+    want: usize,
+    reset_scroll: bool,
+) {
+    let cwd = live.data(frame).session.cwd;
+    // No workspace (the launchpad) has no repository to read: the panel says so
+    // with its own copy rather than showing git's "cannot change to ''".
+    if cwd.trim().is_empty() {
+        live.set_git(None);
+        if reset_scroll {
+            workbench.overlay_scroll = 0;
+        }
+        workbench.overlay = Some(super::Overlay::Git);
+        return;
+    }
+    let loaded = tokio::task::spawn_blocking(move || {
+        super::git_panel::read(std::path::Path::new(&cwd), section, filter, want)
+    })
+    .await;
+    match loaded {
+        Ok(view) => {
+            // The surface's cursor follows the view's selection: a section with
+            // a graph-only first line must not open with the arrow on a row that
+            // cannot be entered.
+            workbench.workflow_index = view.selected;
+            live.set_git(Some(view));
+        }
+        Err(error) => live.notice = Some(error.to_string()),
+    }
+    if reset_scroll {
+        workbench.overlay_scroll = 0;
+    }
+    workbench.overlay = Some(super::Overlay::Git);
+}
+
+/// Load one row's detail for the `/git` panel. Only the detail is re-read: the
+/// rows on screen are already the ones the reader is looking at.
+async fn open_git_detail(live: &mut Live, frame: &Frame, workbench: &mut Workbench, index: usize) {
+    let cwd = live.data(frame).session.cwd;
+    let Some(mut git) = live.git().cloned() else {
+        workbench.overlay = Some(super::Overlay::Git);
+        return;
+    };
+    let Some(key) = git.rows.get(index).and_then(|row| row.key.clone()) else {
+        workbench.overlay = Some(super::Overlay::Git);
+        return;
+    };
+    let section = git.section;
+    let loaded = tokio::task::spawn_blocking(move || {
+        super::git_panel::detail(std::path::Path::new(&cwd), section, &key)
+    })
+    .await;
+    git.selected = index;
+    match loaded {
+        Ok(Ok(lines)) => git.detail = lines,
+        Ok(Err(error)) => git.detail = vec![error],
+        Err(error) => git.detail = vec![error.to_string()],
+    }
+    live.set_git(Some(git));
+    workbench.overlay = Some(super::Overlay::Git);
 }
 
 async fn copy_last(live: &mut Live) {
