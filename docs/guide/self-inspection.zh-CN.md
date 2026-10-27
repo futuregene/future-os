@@ -292,10 +292,13 @@ future run --session <id> "<message>"     # 在那个会话里起一次 run
 **意图** —— 期望目标是据此行动，还是仅作知悉。缺了这两项，目标无法分辨
 「转发过来的通报」与「向它提出的请求」，可能去做没人让它做的工作。
 
-较长或含非 ASCII 的内容应写入文件后用 `@<file>` 传入，由 CLI 自己读取该文件。
-不要先把它读进 shell 变量：Windows PowerShell 5.1 下 `Get-Content` 会用 ANSI
-码页解码无 BOM 的 UTF-8 文件，最终落到另一个会话里的就是乱码（与 shell 工具
-「读已知文件用 read 工具、不要用 `Get-Content`」是同一条坑）。
+较长或含非 ASCII 的内容应写入文件后用 `--message-file <path>` 传入，由 CLI 自己读取该文件
+并把它的字节当作消息发出。不要先把它读进 shell 变量：Windows PowerShell 5.1 下
+`Get-Content` 会用 ANSI 码页解码无 BOM 的 UTF-8 文件，最终落到另一个会话里的就是乱码
+（与 shell 工具「读已知文件用 read 工具、不要用 `Get-Content`」是同一条坑）。
+这件事上 `@<file>` 不是正确的写法：它会把内容包进 `<file name="…">` 外壳，那是「人在
+终端里附带一个文件」的含义，目标收到的会是一个附件而不是本该是的那条普通 user turn；
+而它新建的会话还会用那一轮来生成标题。
 
 委派用的是同一套机制，只是目标换成了你自己的另一个会话 —— 子会话，用户也可能
 叫它 subagent、子agent、子代理：
