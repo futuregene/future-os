@@ -500,6 +500,7 @@ fn list_sessions_emits_canonical_keys() {
     for canonical in [
         "sessionName",
         "updatedAtMs",
+        "createdAtMs",
         "parentSessionId",
         "firstMessage",
         "queryCount",
@@ -507,10 +508,16 @@ fn list_sessions_emits_canonical_keys() {
     ] {
         assert!(entry.get(canonical).is_some(), "missing `{canonical}`");
     }
+    // Creation is a real stamp, not a zero filler: the rail's order depends on it.
+    assert!(
+        entry["createdAtMs"].as_i64().unwrap() > 0,
+        "createdAtMs must carry the session's creation time"
+    );
     // Canonical only — no legacy snake_case aliases.
     for legacy in [
         "session_name",
         "updated_at",
+        "created_at",
         "parent_session_id",
         "first_message",
         "query_count",

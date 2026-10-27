@@ -254,6 +254,7 @@ pub(crate) fn session_summary_to_proto(row: &SessionSummaryPayload) -> proto::Se
         model: row.model.clone(),
         cwd: row.cwd.clone(),
         updated_at_ms: row.updated_at_ms,
+        created_at_ms: row.created_at_ms,
         parent_session_id: row.parent_session_id.clone(),
         first_message: row.first_message.clone(),
         query_count: row.query_count as i32,

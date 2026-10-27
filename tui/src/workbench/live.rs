@@ -16,7 +16,7 @@
 //! * [`GrpcClient`] talks to the agent; this module never touches proto or a
 //!   socket directly.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -76,9 +76,10 @@ struct Paging {
 /// ([`super::Workbench::surface_command`]) and this list have to account for
 /// every entry exactly once. That is the check whose absence let five entries
 /// advertise themselves and then answer `Unknown command`.
-pub const APP_COMMANDS: [&str; 20] = [
+pub const APP_COMMANDS: [&str; 21] = [
     "/new",
     "/reply-detail",
+    "/tool-output",
     "/export",
     "/quit",
     "/copy",
@@ -105,12 +106,60 @@ struct DraftSnapshot {
     pending: crate::components::input::PendingDraft,
 }
 
+/// How many conversations the adapter keeps ready to paint.
+///
+/// The rail is a list the reader walks with `shift+↑/↓`, so the conversation
+/// they come back to is almost always one of the last few. Eight covers a
+/// there-and-back over a window's worth of neighbours and costs one transcript's
+/// worth of rows each (a page is ten exchanges; the rendered lines dominate).
+const CACHED_SESSIONS: usize = 8;
+
+/// A conversation that has been on screen, kept so that coming back to it is a
+/// repaint instead of a round trip.
+///
+/// The rows are the expensive half of a switch and the half that does not
+/// change: a cached `ChatArea` holds what the reader last read, so a switch
+/// that hits one paints immediately and then reconciles in the background
+/// (`Live::finish_switch`). `page` is the tail page those rows were built from
+/// — the reconcile compares it against the page the agent returns and keeps the
+/// rows when nothing moved.
+struct CachedSession {
+    chat: ChatArea,
+    paging: Paging,
+    state: RpcSessionState,
+    page: SessionEntriesPage,
+}
+
+/// The tail page the rows on screen were built from, and the conversation it
+/// belongs to.
+///
+/// The id is not redundant with the header's: a client with no session (the
+/// launchpad, or a `future tui` that attached to nothing) loads an empty page for
+/// an empty id while `get_state` still names a session, and caching those rows
+/// under that name would bring the reader back to a blank transcript.
+#[derive(Clone)]
+struct ShownPage {
+    session_id: String,
+    page: SessionEntriesPage,
+}
+
 /// One attached session plus everything the surface needs to paint it.
 pub struct Live {
     client: Arc<GrpcClient>,
     chat: ChatArea,
     state: RpcSessionState,
     paging: Paging,
+    /// Conversations the reader has already been shown, oldest first (see
+    /// [`CachedSession`]).
+    cached: VecDeque<(String, CachedSession)>,
+    /// The tail page the transcript on screen was built from, if it is known.
+    ///
+    /// A switch fetches the same page again and compares: unchanged means the
+    /// rows on screen are still the conversation's, so they are kept (that is
+    /// what makes a cached conversation cost no re-render at all); changed means
+    /// the conversation moved on while the reader was away and the transcript is
+    /// rebuilt from the new page.
+    shown_page: Option<ShownPage>,
     sessions: Vec<SessionSummary>,
     models: Vec<ModelInfo>,
     approval: Option<ApprovalPrompt>,
@@ -245,6 +294,8 @@ impl Live {
             chat,
             state: RpcSessionState::default(),
             paging: Paging::default(),
+            cached: VecDeque::new(),
+            shown_page: None,
             sessions: Vec::new(),
             models: Vec::new(),
             approval: None,
@@ -310,6 +361,18 @@ impl Live {
         let Ok(state) = self.client.get_state().await else {
             return;
         };
+        self.install_state(state);
+    }
+
+    /// Put one `get_state` answer on screen, and point the client at the
+    /// session it names.
+    ///
+    /// Split from [`Self::refresh_state`] because a switch reads the state of
+    /// the conversation it is opening in the same round trip as that
+    /// conversation's page (see [`Self::finish_switch`]) and then installs it
+    /// here — one place that decides what a state answer means, so the two
+    /// paths cannot drift.
+    fn install_state(&mut self, state: RpcSessionState) {
         // A `get_state` naming a live approval is the reconnect path: the prompt
         // has to come back, or nothing but another client could free the parked
         // run.
@@ -341,7 +404,11 @@ impl Live {
     /// `.worktrees/<name>` must show that checkout's goal, and moving to another
     /// workspace must re-read rather than keep painting the old one's list.
     fn refresh_local(&mut self) {
-        let cwd = self.state.cwd.clone().unwrap_or_default();
+        // The directory in force — the staged one on the launchpad, the session's
+        // own once one exists. A staged workspace the local facts did not follow
+        // made `@` list (and `@a-file` expand against) the directory `/new` left
+        // behind, while the chip and the session that got created named another.
+        let cwd = self.shown_cwd().unwrap_or_default();
         self.local_cwd = cwd;
         // The `@` menu's candidates belong to the directory, not to the session:
         // read them when the directory changes and not once per keystroke.
@@ -439,20 +506,37 @@ impl Live {
     /// Load the newest page of the transcript, replacing what is on screen.
     pub async fn load_tail(&mut self) {
         let session_id = self.client.get_current_session_id();
-        self.chat.clear_messages();
-        self.reset_scroll_revision();
-        self.paging = Paging {
-            session_id: session_id.clone(),
-            has_more: false,
-            next_offset: 0,
-        };
         if session_id.is_empty() {
+            self.show_page(session_id, SessionEntriesPage::default());
             return;
         }
         match self.client.session_tail_page(&session_id).await {
-            Ok(page) => self.apply_page(page, false),
-            Err(error) => self.notice = Some(format!("Could not load the transcript: {error}")),
+            Ok(page) => self.show_page(session_id, page),
+            Err(error) => {
+                self.show_page(session_id, SessionEntriesPage::default());
+                self.notice = Some(format!("Could not load the transcript: {error}"));
+            }
         }
+    }
+
+    /// Put `page` on screen in place of whatever was there.
+    ///
+    /// The page is also remembered as the one these rows were built from, which
+    /// is what lets the next switch to this conversation tell "the same page,
+    /// keep the rows" from "it moved on while you were away, rebuild".
+    fn show_page(&mut self, session_id: String, page: SessionEntriesPage) {
+        self.chat.clear_messages();
+        self.reset_scroll_revision();
+        self.shown_page = Some(ShownPage {
+            session_id: session_id.clone(),
+            page: page.clone(),
+        });
+        self.paging = Paging {
+            session_id,
+            has_more: false,
+            next_offset: 0,
+        };
+        self.apply_page(page, false);
     }
 
     /// Fetch the page above what is loaded and prepend it, keeping the reader's
@@ -464,6 +548,10 @@ impl Live {
         let session_id = self.paging.session_id.clone();
         let before = self.paging.next_offset;
         match self.client.session_older_page(&session_id, before).await {
+            // Prepending does not change the *tail* page, which is why
+            // `shown_page` is left alone here: a switch back to this
+            // conversation that finds the same tail keeps the older rows the
+            // reader loaded as well.
             Ok(page) => self.apply_page(page, true),
             Err(error) => self.notice = Some(format!("Could not load older rows: {error}")),
         }
@@ -741,6 +829,15 @@ impl Live {
         self.detail
     }
 
+    /// Expand or collapse every tool call's body (`/tool-output`).
+    ///
+    /// A view toggle like `ctrl+e`, not a preference, and — unlike a turn — not
+    /// new output either: the revision is left alone, so a reader scrolled up
+    /// does not get the `↓ new output` marker for rows they opened themselves.
+    pub fn toggle_tool_output(&mut self) -> bool {
+        self.chat.toggle_tool_output_expanded()
+    }
+
     // ─── painting ─────────────────────────────────────────────────────
 
     /// What the activity row is showing, without building a frame.
@@ -963,7 +1060,20 @@ impl Live {
         let messages = self.chat.render_all(frame.inner);
         let activity = self.activity_snapshot();
         let input = self.draft.clone();
-        let sessions = self.sessions.clone();
+        // The rail's list is the desktop's recent view: most recently spoken
+        // first. Only the `活跃` stretch is re-ordered after this, by when each
+        // conversation started (`panels::rows_with`) — an activity stamp moves
+        // every second while a run streams, so ordering *that* stretch by it
+        // would shuffle the rows under the reader, and a run would jump to the
+        // top of a list the reader is walking with the arrow keys.
+        //
+        // `updated_at_ms` is not "when I was last here" — it is the newest
+        // entry's stamp, and a `session_info` snapshot is an entry, so a storage
+        // migration that rewrites every snapshot restamps the whole list at
+        // once. That is why the running stretch, the one a reader watches, does
+        // not depend on it.
+        let mut sessions = self.sessions.clone();
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at_ms));
         // On the launchpad there is no session, so no session's title: the
         // header must not keep naming the conversation `/new` left behind.
         let title = if self.launchpad {
@@ -972,7 +1082,7 @@ impl Live {
             self.title()
         };
         let current = state.session_id.clone();
-        let mut rows: Vec<SessionRow> = sessions
+        let rows: Vec<SessionRow> = sessions
             .iter()
             .map(|session| SessionRow {
                 id: session.id.clone(),
@@ -991,6 +1101,12 @@ impl Live {
                 workspace: session_workspace_label(&session.cwd),
                 parent_id: session.parent_session_id.clone(),
                 age: age(session.updated_at_ms),
+                // 0 from an agent that predates the stamp: the activity stamp
+                // stands in, so the 活跃 stretch is ordered rather than tied.
+                created_at_ms: match session.created_at_ms {
+                    0 => session.updated_at_ms,
+                    created => created,
+                },
                 // On the launchpad nothing is attached, so no row claims to be
                 // the current one.
                 current: !self.launchpad && session.id == current,
@@ -1001,16 +1117,6 @@ impl Live {
                 streaming: session.is_streaming.unwrap_or(false),
             })
             .collect();
-        rows.sort_by(|a, b| {
-            let at = |row: &SessionRow| {
-                sessions
-                    .iter()
-                    .find(|s| s.id == row.id)
-                    .map(|s| s.updated_at_ms)
-                    .unwrap_or(0)
-            };
-            at(b).cmp(&at(a))
-        });
         // The 工作区 tab: the same rows, filed the way the desktop's rail files
         // them. A conversation that ran in one of the app's own scratch
         // directories belongs to no workspace, so it is a plain chat.
@@ -1036,6 +1142,10 @@ impl Live {
                 .collect()
         };
 
+        // The directory the header and the launchpad chip name: the staged one
+        // while nothing is attached, the agent's own otherwise.
+        let cwd = self.shown_cwd().unwrap_or_default();
+
         WorkbenchData {
             app_name: "future-tui".into(),
             version: crate::version::VERSION.to_string(),
@@ -1050,7 +1160,12 @@ impl Live {
                 // On the launchpad the chip names the workspace the first
                 // message will create the session in, not whatever session the
                 // client left behind.
-                cwd: self.shown_cwd().unwrap_or_default(),
+                cwd: cwd.clone(),
+                // A directory this client has not chosen (the launchpad's empty
+                // cwd) is not a chat yet: `is_chat_directory` answers "no
+                // workspace" for the empty string too, and a surface that has
+                // decided nothing must not tick a row either.
+                chat: !cwd.trim().is_empty() && is_chat_directory(&cwd),
                 branch: self.branch.for_cwd(&self.local_cwd).to_string(),
             },
             model: self
@@ -1087,6 +1202,7 @@ impl Live {
                     thinking_level: model.thinking_level.clone(),
                     thinking_levels: model.thinking_levels.clone(),
                     default_thinking_level: model.default_thinking_level.clone(),
+                    is_default: model.is_default,
                 })
                 .collect(),
             skills,
@@ -1200,6 +1316,7 @@ impl Live {
             WbAction::Compact(instructions) => self.compact(instructions).await,
             WbAction::SetApproval(mode) => self.set_approval(&mode).await,
             WbAction::SelectWorkspace(path) => self.select_workspace(&path).await,
+            WbAction::SelectChatWorkspace => self.select_chat_workspace().await,
             WbAction::ToggleFolder(path) => self.toggle_folder(&path),
             WbAction::RefreshFiles => self.refresh_tree(),
             // The preview itself is opened by the driver, which owns the
@@ -1208,6 +1325,7 @@ impl Live {
             WbAction::PasteClipboard => self.paste_clipboard().await, // The box is the driver's to open (`run::quit`): this layer reads
             // the bytes, the surface paints them.
             WbAction::PreviewAttachment => {}
+            WbAction::OpenUrl(url) => self.open_url(&url),
             WbAction::SetTools(tools) => match self.client.set_tools(&tools).await {
                 Ok(()) => self.notice = Some(t(self.lang, Key::ToolsDone).into()),
                 Err(error) => {
@@ -1229,8 +1347,9 @@ impl Live {
             WbAction::SetPendingThinking(level) => self.set_pending_effort(&level),
             WbAction::NewSession => self.to_launchpad(),
             // The surface owns its own palette; the driver persists it (it is
-            // the one that knows where `settings.json` is).
-            WbAction::SetTheme(_) => {}
+            // the one that knows where `settings.json` is). `ResetTheme` is the
+            // same split: forgetting the stored id is the driver's business.
+            WbAction::SetTheme(_) | WbAction::ResetTheme => {}
             // Same split for the language: the driver resolves the preference,
             // hands the bundle back here and persists it.
             WbAction::SetLanguage(_) => {}
@@ -1476,6 +1595,12 @@ impl Live {
                 };
                 self.set_detail(next);
             }
+            // The bodies under the tool rows: one row per call is the point of
+            // the transcript, and this is the door that opens a body (`ctrl+g`
+            // answered it before the chord became the git browser).
+            "tool-output" => {
+                self.toggle_tool_output();
+            }
             "refresh" => {
                 self.refresh_state().await;
                 self.refresh_sessions().await;
@@ -1511,24 +1636,184 @@ impl Live {
         Outcome::Continue
     }
 
+    /// Already on this conversation, and not on the launchpad?
+    ///
+    /// A click on the row the transcript is already showing, or a step that
+    /// found nowhere to go, must not re-read anything: the rows on screen are
+    /// this conversation's, and a rebuild would throw away the scroll position
+    /// and the older pages the reader loaded.
+    pub fn already_showing(&self, session_id: &str) -> bool {
+        !self.launchpad && session_id == self.state.session_id
+    }
+
+    /// Show one conversation: the synchronous half and the round trip.
+    ///
+    /// Kept as one call for every door that is not a held key (a click in the
+    /// rail, the launchpad's recents, `--continue`, a deleted row's
+    /// successor). Those doors paint once after this returns, so a cache hit's
+    /// rows and the reconcile's are one frame; `run::show_conversation` splits
+    /// the two only for `shift+↑/↓`, where painting the cache first is the
+    /// whole point.
     async fn switch(&mut self, session_id: &str) {
-        if !self.launchpad && session_id == self.state.session_id {
+        if self.already_showing(session_id) {
             return;
         }
+        self.begin_switch(session_id);
+        self.finish_switch(session_id).await;
+    }
+
+    /// Everything about a switch that costs no round trip.
+    ///
+    /// The draft is filed under the conversation being left, the cached
+    /// conversation (if any) is swapped onto the screen, and the rail's step is
+    /// forgotten. Returns whether cached rows are on screen *now*: `true` means
+    /// the caller may paint them before [`Self::finish_switch`] asks the agent
+    /// anything, which is the whole point of keeping them. A miss leaves the
+    /// transcript untouched — the rows are replaced when the page arrives, and
+    /// nothing paints in between — and returns `false`.
+    pub fn begin_switch(&mut self, session_id: &str) -> bool {
+        if self.already_showing(session_id) {
+            return false;
+        }
         self.save_draft();
-        match self.client.switch_session(session_id).await {
-            Ok(_) => {
-                self.launchpad = false;
-                self.notice = None;
-                self.refresh_state().await;
-                // The row is the session's: nothing of the one just left may
-                // stay on it (see [`Self::adopt_run`]).
-                self.adopt_run();
-                self.load_tail().await;
-                self.reset_scroll_revision();
-                self.restore_draft();
+        self.launchpad = false;
+        self.notice = None;
+        let cached = self.take_cached(session_id);
+        // The row is the session's: nothing of the one just left may stay on it
+        // (see [`Self::adopt_run`]). With cached rows this already uses the
+        // state that came in with them, so the frame painted from them is
+        // coherent; `finish_switch` re-runs it against the agent's answer.
+        self.adopt_run();
+        self.reset_scroll_revision();
+        cached
+    }
+
+    /// Point the client at `session_id` and reconcile what is on screen.
+    ///
+    /// The state and the tail page both address the session by name, so they go
+    /// out together — one round trip instead of the three a switch used to take
+    /// (`switch_session`, then `get_state`, then the page). `get_state` is what
+    /// hydrates the session on the agent's side as well, which is why the
+    /// `switch_session` RPC has no work left to do: it resolves the very same
+    /// `try_get_session`. A cached conversation whose page the agent answers
+    /// with unchanged keeps the rows it already has, so coming back to one is a
+    /// repaint and not a rebuild.
+    pub async fn finish_switch(&mut self, session_id: &str) {
+        let (state, page) = tokio::join!(
+            self.client.get_state_of(session_id),
+            self.client.session_tail_page(session_id)
+        );
+        match state {
+            Ok(state) => self.install_state(state),
+            // Nothing moved: the header and the transcript stay on the
+            // conversation that is still current, and the notice says why the
+            // one the reader picked did not open.
+            Err(error) => {
+                self.notice = Some(format!("Could not switch session: {error}"));
+                return;
             }
-            Err(error) => self.notice = Some(format!("Could not switch session: {error}")),
+        }
+        match page {
+            Ok(page) => {
+                // The rows on screen are worth keeping only when they are this
+                // conversation's and built from this very page.
+                let unchanged = self
+                    .shown_page
+                    .as_ref()
+                    .is_some_and(|shown| shown.session_id == session_id && shown.page == page);
+                if !unchanged {
+                    self.show_page(session_id.to_string(), page);
+                }
+            }
+            Err(error) => self.notice = Some(format!("Could not load the transcript: {error}")),
+        }
+        self.adopt_run();
+        self.restore_draft();
+    }
+
+    /// Is this conversation's transcript still in the cache — that is, can a
+    /// switch to it paint without asking the agent for anything?
+    pub fn is_cached(&self, session_id: &str) -> bool {
+        self.cached.iter().any(|(id, _)| id == session_id)
+    }
+
+    /// Swap the cached conversation for `session_id` onto the screen, keeping
+    /// what is there now for the way back.
+    fn take_cached(&mut self, session_id: &str) -> bool {
+        // What is on screen now, and everything needed to put it back.
+        let outgoing = (
+            self.state.session_id.clone(),
+            self.paging.clone(),
+            self.state.clone(),
+            self.shown_page.clone(),
+        );
+        match self.cached.iter().position(|(id, _)| id == session_id) {
+            Some(index) => {
+                let Some((_, cached)) = self.cached.remove(index) else {
+                    return false;
+                };
+                let CachedSession {
+                    chat,
+                    paging,
+                    state,
+                    page,
+                } = cached;
+                let previous = std::mem::replace(&mut self.chat, chat);
+                self.paging = paging;
+                self.state = state;
+                // The cached page stays the one these rows were built from, so
+                // the reconcile below can tell "unchanged, keep them" from
+                // "moved on, rebuild".
+                self.shown_page = Some(ShownPage {
+                    session_id: session_id.to_string(),
+                    page,
+                });
+                self.remember(outgoing, previous);
+                true
+            }
+            None => {
+                let fresh = self.chat.empty_like();
+                let previous = std::mem::replace(&mut self.chat, fresh);
+                self.paging = Paging::default();
+                self.shown_page = None;
+                self.remember(outgoing, previous);
+                false
+            }
+        }
+    }
+
+    /// Keep the conversation that was just on screen, so coming back to it is a
+    /// repaint.
+    ///
+    /// A conversation whose page this client cannot name — one it never finished
+    /// loading, or the launchpad — is dropped instead: the cache promises rows,
+    /// and rows it cannot check against the agent's page would be worse than a
+    /// round trip.
+    fn remember(
+        &mut self,
+        outgoing: (String, Paging, RpcSessionState, Option<ShownPage>),
+        chat: ChatArea,
+    ) {
+        let (id, paging, state, Some(shown)) = outgoing else {
+            return;
+        };
+        // Rows that belong to another conversation (or to none) are not this
+        // one's to keep.
+        if id.is_empty() || shown.session_id != id {
+            return;
+        }
+        self.cached.retain(|(known, _)| known != &id);
+        self.cached.push_back((
+            id,
+            CachedSession {
+                chat,
+                paging,
+                state,
+                page: shown.page,
+            },
+        ));
+        while self.cached.len() > CACHED_SESSIONS {
+            self.cached.pop_front();
         }
     }
 
@@ -1593,13 +1878,27 @@ impl Live {
     pub fn to_launchpad(&mut self) {
         self.save_draft();
         self.launchpad = true;
-        self.chat.clear_messages();
+        // The conversation being left keeps its rows for the way back: `/new`
+        // is not a reason to make the rail pay a round trip for it.
+        let outgoing = (
+            self.state.session_id.clone(),
+            self.paging.clone(),
+            self.state.clone(),
+            self.shown_page.take(),
+        );
+        let fresh = self.chat.empty_like();
+        let previous = std::mem::replace(&mut self.chat, fresh);
+        self.remember(outgoing, previous);
         self.paging = Paging::default();
         self.restore_draft();
         self.reset_scroll_revision();
         self.forget_run();
         self.approval = None;
         self.notice = None;
+        // The launchpad's own directory (`@` and the files panel read it, see
+        // `refresh_local`): the chat the chip now names, not the workspace the
+        // reader just left.
+        self.refresh_local();
     }
 
     /// Is the surface on the launchpad (no session attached)?
@@ -1618,30 +1917,55 @@ impl Live {
 
     /// The model the surface should name: the staged one while the launchpad
     /// has no session to read it from, otherwise the agent's own.
+    ///
+    /// A launchpad with nothing staged names the agent's *default* model — the
+    /// one `new_session` would pick for a session that asks for none (the same
+    /// model `list_models` flags `isDefault`) — rather than the model of the
+    /// conversation `/new` just left behind. A fresh screen is a fresh choice:
+    /// carrying the last conversation's model into the next one made `/new` a
+    /// copy of what came before instead of a clean start.
     fn shown_model(&self) -> Option<String> {
         if self.detached() {
             return self
                 .pending_model
                 .clone()
+                .or_else(|| self.default_model_id())
                 .or_else(|| self.state.model.clone());
         }
         self.state.model.clone()
+    }
+
+    /// The agent's default model, as `list_models` flags it (`isDefault` — the
+    /// agent resolves it with the same function `new_session` uses, so the chip
+    /// and the session that gets created agree). `None` on an agent that flags
+    /// nothing.
+    fn default_model_id(&self) -> Option<String> {
+        let model = self.models.iter().find(|model| model.is_default)?;
+        Some(if model.provider.is_empty() {
+            model.id.clone()
+        } else {
+            format!("{}/{}", model.provider, model.id)
+        })
     }
 
     /// The reasoning level the surface should name (see [`Self::shown_model`]).
     ///
     /// A launchpad with nothing staged starts at the reserved `default` (the
     /// provider default, i.e. no thinking parameter): an empty agent state is
-    /// not "no level", it is the implicit one.
+    /// not "no level", it is the implicit one. The default model's own starting
+    /// level is what the agent would hand a session created without one, so that
+    /// is what the chip names.
     fn shown_effort(&self) -> String {
         if self.detached() {
+            if let Some(level) = self.pending_effort.clone() {
+                return level;
+            }
             return self
-                .pending_effort
-                .clone()
-                .or_else(|| {
-                    (!self.state.thinking_level.trim().is_empty())
-                        .then(|| self.state.thinking_level.clone())
-                })
+                .models
+                .iter()
+                .find(|model| model.is_default)
+                .and_then(|model| model.default_thinking_level.clone())
+                .filter(|level| !level.trim().is_empty())
                 .unwrap_or_else(|| DEFAULT_THINKING_LEVEL_NAME.to_string());
         }
         self.state.thinking_level.clone()
@@ -1652,12 +1976,15 @@ impl Live {
     /// The agent reports the sandbox *tier* only, and `auto` is that tier with
     /// the model reviewer — so a mode chosen in this process is named from what
     /// was chosen, and a fresh attach reads the tier (`sandbox` rather than
-    /// `auto`). The empty state is the product default the desktop starts on.
+    /// `auto`). The launchpad starts from the product default it was asked for —
+    /// 完全访问 (`off`) — and [`Self::new_session`] applies it, so the chip is not
+    /// naming something the session will not run under.
     fn shown_mode(&self) -> String {
         if self.detached() {
-            if let Some(mode) = self.pending_mode.clone() {
-                return mode;
-            }
+            return self
+                .pending_mode
+                .clone()
+                .unwrap_or_else(|| "off".to_string());
         }
         self.state
             .sandbox_tier
@@ -1667,17 +1994,29 @@ impl Live {
     }
 
     /// The workspace the surface should name (see [`Self::shown_model`]).
+    ///
+    /// A launchpad with nothing staged names the plain chat: a fresh screen is a
+    /// conversation with no workspace until the reader picks one, not a copy of
+    /// the directory `/new` just left behind (see [`chat_workspace`]).
     fn shown_cwd(&self) -> Option<String> {
         if self.detached() {
-            return self.pending_cwd.clone().or_else(|| self.state.cwd.clone());
+            return Some(self.pending_cwd.clone().unwrap_or_else(chat_workspace));
         }
         self.state.cwd.clone()
     }
 
-    /// The directories a new session can be started in: the one that would be
-    /// used now, then every workspace this client has a conversation in, newest
-    /// first. Deduplicated by the same trailing-slash-insensitive comparison
-    /// the 工作区 filing uses, so one directory is one choice.
+    /// The directories a new session can be started in, as one *stable* ring:
+    /// the plain chat first (the launchpad's own default, the same row the
+    /// workspace picker lists), then every workspace this client has a
+    /// conversation in, newest first. Deduplicated by the same
+    /// trailing-slash-insensitive comparison the 工作区 filing uses, so one
+    /// directory is one choice.
+    ///
+    /// Stable rather than "the one in force first": the chip's `enter` walks
+    /// this list, and a list that reordered itself around the current choice made
+    /// two presses bounce between the same pair instead of walking the ring — and
+    /// it left the chat (the default it starts on) unreachable once the reader
+    /// stepped off it.
     pub fn workspace_choices(&self) -> Vec<String> {
         let mut choices: Vec<String> = Vec::new();
         let mut push = |path: &str| {
@@ -1689,9 +2028,7 @@ impl Live {
             }
             choices.push(path.to_string());
         };
-        if let Some(cwd) = self.shown_cwd() {
-            push(&cwd);
-        }
+        push(&chat_workspace());
         for session in &self.sessions {
             push(&session.cwd);
         }
@@ -1723,19 +2060,19 @@ impl Live {
             Key::WorkspaceChosen,
             &[&shorten(&path)],
         ));
+        // `@` and the files panel follow the directory the next session will run
+        // in (see `refresh_local`).
+        self.refresh_local();
     }
 
     /// The model a picker choice is made for: the staged one while detached,
     /// otherwise the agent's own.
     fn choice_model(&self) -> Option<&ModelInfo> {
-        let id = if self.detached() {
-            self.pending_model
-                .as_deref()
-                .or(self.state.model.as_deref())
-        } else {
-            self.state.model.as_deref()
-        }?;
-        find_model(&self.models, id)
+        // The model in force, staged or not: on the launchpad that is the
+        // agent's default (see `shown_model`), and the launchpad's own choice of
+        // wire vocabulary has to follow the model the chip names.
+        let id = self.shown_model()?;
+        find_model(&self.models, &id)
     }
 
     /// The level to send over the wire.
@@ -1785,9 +2122,26 @@ impl Live {
     async fn new_session(&mut self) {
         let cwd = self.shown_cwd().unwrap_or_default();
         // What the reader chose on the launchpad is what this session starts
-        // with; with nothing staged this is the state the agent already has.
+        // with; with nothing staged those are the product defaults the chips
+        // already name — the agent's default model and starting level, the plain
+        // chat, 完全访问.
         let model = self.shown_model().unwrap_or_default();
         let level = self.wire_thinking_level(&self.shown_effort());
+        let mode = crate::approval_mode::ApprovalMode::from_wire(&self.shown_mode());
+        // A chat runs in the app's own directory, which a fresh home does not
+        // have yet, and a session parked in a directory that is not there has no
+        // tool that works. Only a chat is created here: a directory the reader
+        // typed is theirs to have made, and a typo deserves the agent's error.
+        if !cwd.trim().is_empty() && is_chat_directory(&cwd) {
+            if let Err(error) = std::fs::create_dir_all(&cwd) {
+                self.notice = Some(i18n::render(
+                    self.lang,
+                    Key::WorkflowFailed,
+                    &[&error.to_string()],
+                ));
+                return;
+            }
+        }
         match self
             .client
             .new_session(
@@ -1806,16 +2160,17 @@ impl Live {
                 self.pending_model = None;
                 self.pending_effort = None;
                 self.pending_cwd = None;
+                self.pending_mode = None;
                 // The approval mode has no `new_session` argument: it is one
-                // call after the session exists.
-                if let Some(mode) = self.pending_mode.take() {
-                    if let Some(mode) = crate::approval_mode::ApprovalMode::from_wire(&mode) {
-                        match self.client.set_sandbox_policy(mode).await {
-                            Ok(_) => self.state.sandbox_tier = Some(mode.as_str().to_string()),
-                            Err(error) => {
-                                self.notice =
-                                    Some(format!("Could not set the approval mode: {error}"))
-                            }
+                // call after the session exists. The launchpad always names one
+                // (its default is 完全访问), so every session this surface
+                // starts is told — a chip that named a mode the session did not
+                // run under would be a lie.
+                if let Some(mode) = mode {
+                    match self.client.set_sandbox_policy(mode).await {
+                        Ok(_) => self.state.sandbox_tier = Some(mode.as_str().to_string()),
+                        Err(error) => {
+                            self.notice = Some(format!("Could not set the approval mode: {error}"))
                         }
                     }
                 }
@@ -2155,6 +2510,59 @@ impl Live {
         }
     }
 
+    /// Move the session to no workspace at all — the plain chat the workspace
+    /// picker lists above the directories.
+    ///
+    /// Two roads again, decided by whether anything is attached: staged for the
+    /// session the next message creates, or moved with `set_cwd` and re-filed by
+    /// the rail under 对话会话. The directory is the agent's own scratch
+    /// workspace (see [`chat_workspace`]) and is created here rather than left to
+    /// the agent: a session parked in a directory that is not there has no tool
+    /// that works, and nobody else is going to make this one — a directory the
+    /// reader typed is theirs, a typo deserves the agent's error, but this path
+    /// is the app's.
+    pub async fn select_chat_workspace(&mut self) {
+        if !self.detached() && is_chat_directory(&self.state.cwd.clone().unwrap_or_default()) {
+            // Already a chat: the row the reader would leave is the row they are
+            // on, which is what `esc` gives too.
+            self.notice = None;
+            return;
+        }
+        let path = chat_workspace();
+        if let Err(error) = std::fs::create_dir_all(&path) {
+            self.notice = Some(i18n::render(
+                self.lang,
+                Key::WorkflowFailed,
+                &[&error.to_string()],
+            ));
+            return;
+        }
+        let notice = i18n::render(
+            self.lang,
+            Key::WorkspaceChosen,
+            &[&t(self.lang, Key::WorkspaceChat)],
+        );
+        if self.detached() {
+            self.pending_cwd = Some(path);
+            self.notice = Some(notice);
+            // `@` and the files panel follow the directory the next session
+            // will run in (see `refresh_local`).
+            self.refresh_local();
+            return;
+        }
+        match self.client.set_cwd(&path).await {
+            Ok(()) => {
+                self.refresh_state().await;
+                self.refresh_worktrees();
+                self.diff = None;
+                self.notice = Some(notice);
+            }
+            Err(error) => {
+                self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
+            }
+        }
+    }
+
     /// Move the session to a workspace the reader picked (or typed).
     ///
     /// Two roads, decided by whether anything is attached — the same split the
@@ -2170,6 +2578,9 @@ impl Live {
         if self.detached() {
             self.pending_cwd = Some(path.to_string());
             self.notice = Some(notice);
+            // `@` and the files panel follow the directory the next session
+            // will run in (see `refresh_local`).
+            self.refresh_local();
             return;
         }
         if same_path(&self.state.cwd.clone().unwrap_or_default(), path) {
@@ -2203,6 +2614,22 @@ impl Live {
             // A directory that cannot be read is worth a notice; the tree keeps
             // the rest of its rows.
             self.notice = Some(error);
+        }
+    }
+
+    /// Hand a link to the desktop's own handler — a browser for an address, a
+    /// mail client for `mailto:`.
+    ///
+    /// Started, not waited on: the browser is the reader's program, and a TUI
+    /// that blocked until it exited would freeze for as long as they kept a tab
+    /// open.
+    fn open_url(&mut self, url: &str) {
+        if let Err(error) = open_external(url) {
+            self.notice = Some(i18n::render(
+                self.lang,
+                Key::NoticeOpenLinkFailed,
+                &[&url, &error.to_string()],
+            ));
         }
     }
 
@@ -2440,8 +2867,9 @@ fn file_sessions(
 ) -> (Vec<WorkspaceGroup>, Vec<String>) {
     let mut groups: Vec<WorkspaceGroup> = Vec::new();
     let mut chats: Vec<String> = Vec::new();
-    // `rows` is newest-first, so a group keeps that order inside itself and the
-    // first time a path is seen is that workspace's newest activity.
+    // `rows` is most recently spoken first, so a group keeps that order inside
+    // itself and the first time a path is seen is that workspace's newest
+    // activity.
     for row in rows {
         let Some(summary) = sessions.iter().find(|session| session.id == row.id) else {
             continue;
@@ -2469,6 +2897,42 @@ fn file_sessions(
     // the newest-activity order the rows already carry.
     groups.sort_by_key(|group| !group.pinned);
     (groups, chats)
+}
+
+/// Start the reader's handler for `target`: `open` on macOS, the shell's `start`
+/// on Windows, `xdg-open` everywhere else.
+///
+/// Not a library dependency: each platform has had its own opener since long
+/// before this program existed, and the one a reader configured is the one they
+/// expect a link to land in.
+fn open_external(target: &str) -> std::io::Result<()> {
+    use std::process::{Command, Stdio};
+    let mut command = if cfg!(target_os = "macos") {
+        let mut command = Command::new("open");
+        command.arg(target);
+        command
+    } else if cfg!(windows) {
+        // `start` is a shell builtin, and the empty string is the window title
+        // it would otherwise take the URL for.
+        let mut command = Command::new("cmd");
+        command.args(["/C", "start", "", target]);
+        command
+    } else {
+        let mut command = Command::new("xdg-open");
+        command.arg(target);
+        command
+    };
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    // Reaped on a thread of its own: nobody waits for a browser, and an
+    // unreaped child is a zombie for as long as the TUI stays open.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 /// The longest side a preview image is decoded to, in pixels.
@@ -2665,6 +3129,21 @@ fn is_chat_directory(cwd: &str) -> bool {
     let root = root.trim_end_matches('/');
     normalized == format!("{root}/agent/workspace")
         || normalized.starts_with(&format!("{root}/workspaces/chat/"))
+}
+
+/// The directory a conversation with no workspace runs in: the same
+/// `agent/workspace` [`is_chat_directory`] names, spelled as a path this process
+/// can hand the agent.
+///
+/// It is the agent's own home rather than one the reader chose, which is why a
+/// chat is the one workspace this surface creates itself (see
+/// [`Live::select_chat_workspace`]).
+fn chat_workspace() -> String {
+    crate::home::future_state_dir()
+        .join("agent")
+        .join("workspace")
+        .to_string_lossy()
+        .to_string()
 }
 
 fn age(updated_at_ms: i64) -> String {
@@ -2980,12 +3459,51 @@ mod tests {
         );
     }
 
+    /// `/tool-output` is the one door to a tool call's body: the chord that used
+    /// to open it (`ctrl+g`) is the git browser now, and the transcript's own
+    /// hint names this verb instead. It is a view toggle — the reader is asking
+    /// to see what this client already has, so nothing goes to the agent — and
+    /// pressing it again puts the transcript back to one row per call.
+    #[tokio::test]
+    async fn tool_output_toggles_the_bodies_without_asking_the_agent() {
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[(
+            "get_state",
+            r#"{"sessionId":"s1"}"#,
+        )]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the test agent");
+        let before = seen.lock().unwrap().len();
+        // One paint, so the toggle has a transcript to rebuild (an unpainted
+        // chat only records that it owes a frame).
+        live.chat.render_all(100);
+        let renders = live.chat.full_renders();
+
+        live.apply(WbAction::Command("/tool-output".into())).await;
+        assert!(live.chat.tool_output_expanded(), "the bodies are open");
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            before,
+            "a view toggle reaches the agent with nothing"
+        );
+        assert!(
+            live.chat.full_renders() > renders,
+            "the transcript is rebuilt for the rows it just gained"
+        );
+
+        live.apply(WbAction::Command("/tool-output".into())).await;
+        assert!(!live.chat.tool_output_expanded(), "and closed again");
+    }
+
     /// Deleting the conversation on screen opens the one that takes its place.
     ///
     /// The transcript must never stay on a conversation the agent no longer
     /// has: `delete_session` reaches the agent, and the successor in the list is
-    /// opened in the same breath (`switch_session`), which is the observable
-    /// half of "the row that slid into its place opens".
+    /// opened in the same breath — which is the observable half of "the row that
+    /// slid into its place opens". Opening it is a read of *that* session's
+    /// state (the switch addresses both of its reads by name); it used to be a
+    /// `switch_session` RPC as well, one of the three round trips a switch took.
     #[tokio::test]
     async fn deleting_the_current_session_opens_its_successor() {
         let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
@@ -3000,6 +3518,7 @@ mod tests {
             ("delete_session", r#"{"sessionId":"s1"}"#),
             ("switch_session", r#"{"cancelled":false}"#),
         ]);
+        let asked = mock.seen_sessions.clone();
         let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
         let (mut live, _events) = Live::attach(&addr, None, false, None)
             .await
@@ -3013,9 +3532,12 @@ mod tests {
             commands.iter().any(|command| command == "delete_session"),
             "the delete must reach the agent, saw {commands:?}"
         );
+        let opened = asked.lock().unwrap().clone();
         assert!(
-            commands.iter().any(|command| command == "switch_session"),
-            "the successor must open, saw {commands:?}"
+            opened
+                .iter()
+                .any(|(command, session)| command == "get_state" && session == "s2"),
+            "the successor must open, saw {opened:?}"
         );
         // The reader is told what happened — and it has to survive the switch,
         // which clears the notice row when it opens a conversation.
@@ -3136,12 +3658,131 @@ mod tests {
             id: id.into(),
             cwd: cwd.into(),
             updated_at_ms: 0,
+            created_at_ms: 0,
             model: "m".into(),
             session_name: name.map(str::to_string),
             parent_session_id: None,
             is_streaming: None,
             first_message: None,
         }
+    }
+
+    /// The workspace picker's "no workspace" row: a chat, staged while nothing
+    /// is attached and applied once a session exists, in a directory this
+    /// surface makes itself — a fresh home has no `agent/workspace`, and a
+    /// session parked in a directory that is not there has no tool that works.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // FUTURE_HOME is process-global and must stay pinned across awaits.
+    async fn the_chat_row_stages_a_session_then_moves_it() {
+        let _guard = crate::test_env::lock();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_env::EnvVarGuard::set("FUTURE_HOME", home.path());
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        let scratch = home.path().join("agent").join("workspace");
+        let notice = i18n::render(
+            live.lang,
+            Key::WorkspaceChosen,
+            &[&t(live.lang, Key::WorkspaceChat)],
+        );
+
+        // Nothing attached: the directory is staged for the session the next
+        // message creates.
+        live.to_launchpad();
+        live.select_chat_workspace().await;
+        assert_eq!(
+            live.pending_cwd.as_deref(),
+            Some(scratch.to_string_lossy().as_ref())
+        );
+        assert!(scratch.is_dir(), "the chat's directory is created for it");
+        assert_eq!(live.notice.as_deref(), Some(notice.as_str()));
+
+        // A session attached: the agent is told to move, and the rail re-files
+        // the conversation under 对话会话 because the directory is the app's.
+        live.launchpad = false;
+        live.state.session_id = "s-1".into();
+        live.state.cwd = Some("/work/alpha".into());
+        live.select_chat_workspace().await;
+        let commands = seen.lock().unwrap().clone();
+        assert!(
+            commands.iter().any(|command| command == "set_cwd"),
+            "a chat moves an attached session: {commands:?}"
+        );
+        assert_eq!(live.notice.as_deref(), Some(notice.as_str()));
+
+        // Already a chat: the row is where the reader stands, so nothing moves
+        // (the same no-op `esc` gives).
+        let before = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|command| *command == "set_cwd")
+            .count();
+        live.notice = None;
+        live.state.session_id = "s-1".into();
+        live.state.cwd = Some(scratch.to_string_lossy().to_string());
+        live.select_chat_workspace().await;
+        let after = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|command| *command == "set_cwd")
+            .count();
+        assert_eq!(after, before, "already a chat: no second move");
+        assert_eq!(live.notice, None);
+    }
+
+    /// A launchpad names the *product* defaults, not the conversation `/new`
+    /// left behind: the plain chat, the agent's default model and the level that
+    /// model starts at, and 完全访问. The state the client came from says
+    /// otherwise on every one of those ("future/old", high thinking, manual
+    /// approval in a project directory) — which is exactly what must not leak
+    /// into a fresh screen.
+    #[tokio::test]
+    async fn a_fresh_launchpad_names_the_product_defaults() {
+        let state = r#"{"sessionId":"s-1","cwd":"/work/alpha","model":"future/old","thinkingLevel":"high","sandboxTier":"manual"}"#;
+        let models = r#"{"models":[
+            {"id":"old","label":"old","provider":"future","thinkingLevel":"default",
+             "thinkingLevels":["default","high"],"defaultThinkingLevel":"high"},
+            {"id":"gpt-9","label":"gpt-9","provider":"future","isDefault":true,
+             "thinkingLevel":"default","thinkingLevels":["default","high"],
+             "defaultThinkingLevel":"default"}
+        ]}"#;
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("get_state", state),
+            ("list_models", models),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        live.to_launchpad();
+
+        let frame = crate::workbench::layout::Frame::new(
+            120,
+            38,
+            36,
+            crate::workbench::preferences::SidebarPosition::Right,
+        );
+        let data = live.data(&frame);
+        assert_eq!(data.session.cwd, chat_workspace());
+        assert!(data.session.chat, "the chip names the plain chat");
+        assert_eq!(data.model, "future/gpt-9", "the agent's default model");
+        assert_eq!(data.effort, "default", "the level that model starts at");
+        assert_eq!(data.mode, "off", "完全访问 / full access");
+
+        // What the reader picks still wins — the defaults are a starting point,
+        // not an override.
+        live.set_pending_model("future/old");
+        live.set_pending_effort("high");
+        live.set_approval("manual").await;
+        let data = live.data(&frame);
+        assert_eq!(data.model, "future/old");
+        assert_eq!(data.effort, "high");
+        assert_eq!(data.mode, "manual");
     }
 
     /// The rail, the `ctrl+r` list and the 工作区 tab name a workspace by its
@@ -3184,23 +3825,39 @@ mod tests {
         assert!(names.contains(&"alpha"), "{names:?}");
         assert!(names.contains(&"beta"), "{names:?}");
 
-        // The chip starts on the directory the session would run in…
-        assert_eq!(data.session.cwd, "/work/alpha");
-        assert_eq!(live.workspace_choices(), vec!["/work/alpha", "/other/beta"]);
+        // The chip starts on the plain chat: a fresh launchpad is a conversation
+        // with no workspace, not a copy of the directory `/new` left behind.
+        assert_eq!(data.session.cwd, chat_workspace());
+        assert!(data.session.chat, "the chip names it as 对话会话");
+        assert_eq!(
+            live.workspace_choices(),
+            vec![
+                chat_workspace(),
+                "/work/alpha".to_string(),
+                "/other/beta".to_string()
+            ]
+        );
 
         // …cycles to the next *distinct* one…
         live.cycle_pending_workspace();
-        assert_eq!(live.pending_cwd.as_deref(), Some("/other/beta"));
-        let data = live.data(&frame);
-        assert_eq!(data.session.cwd, "/other/beta");
-
-        // …and wraps back.
-        live.cycle_pending_workspace();
         assert_eq!(live.pending_cwd.as_deref(), Some("/work/alpha"));
+        let data = live.data(&frame);
+        assert_eq!(data.session.cwd, "/work/alpha");
+        assert!(!data.session.chat, "a workspace is not a chat");
+
+        // …and the `@` list, the files panel and the header's branch follow it,
+        // not the directory `/new` left behind.
+        assert_eq!(live.local_cwd, "/work/alpha");
+
+        // …and on to the next, then back to the chat it started on.
+        live.cycle_pending_workspace();
+        assert_eq!(live.pending_cwd.as_deref(), Some("/other/beta"));
+        live.cycle_pending_workspace();
+        assert_eq!(live.pending_cwd.as_deref(), Some(chat_workspace().as_str()));
     }
 
-    /// With a single workspace there is nothing to cycle: the chip says so
-    /// instead of silently keeping the only choice.
+    /// With a single choice there is nothing to cycle: the chip says so instead
+    /// of silently keeping the only one.
     #[tokio::test]
     async fn cycling_one_workspace_reports_that_there_is_nothing_else() {
         let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
@@ -3208,8 +3865,9 @@ mod tests {
         let (mut live, _events) = Live::attach(&addr, None, false, None)
             .await
             .expect("attach to the test agent");
-        live.sessions = vec![row("s-1", Some("only"), "/work/alpha")];
-        live.state.cwd = Some("/work/alpha".into());
+        // No conversation anywhere: the launchpad's own chat is the only choice
+        // left, and cycling it would be a chip that does nothing.
+        live.sessions = Vec::new();
         live.to_launchpad();
         live.cycle_pending_workspace();
         assert_eq!(live.pending_cwd, None);
@@ -3258,6 +3916,88 @@ mod tests {
         assert!(!live.sessions_streaming(), "no flag is not a run");
         let data = live.data(&frame);
         assert!(!data.sessions[0].streaming);
+    }
+
+    /// `最近` carries two stretches on two clocks. 活跃 (a run in flight) is
+    /// ordered by when each conversation started — the one stamp a streaming run
+    /// does not rewrite, so a running row keeps its place instead of trading
+    /// with its neighbour every second. 更早 is ordered by when it last spoke,
+    /// the same fact the row's age shows, because that stretch is a list a
+    /// reader scans for "what did I just touch".
+    #[tokio::test]
+    async fn the_recent_panel_orders_active_rows_by_start_and_the_rest_by_activity() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis() as i64)
+            .unwrap_or(0);
+        let minute = 60_000;
+        // Two running conversations whose creation order is the reverse of their
+        // activity order: `s-speaking` moved a second ago, yet it started first.
+        let mut speaking = row("s-speaking", Some("spoke a second ago"), "/work/alpha");
+        speaking.created_at_ms = now - 300 * minute;
+        speaking.updated_at_ms = now - minute;
+        speaking.is_streaming = Some(true);
+        let mut started = row("s-started", Some("started last"), "/work/alpha");
+        started.created_at_ms = now - 30 * minute;
+        started.updated_at_ms = now - 20 * minute;
+        started.is_streaming = Some(true);
+        // Two quiet ones, in activity order — and in the opposite creation order,
+        // so the stretch cannot be passing this by accident.
+        let mut newer = row("s-newer", Some("spoke an hour ago"), "/work/alpha");
+        newer.created_at_ms = now - 900 * minute;
+        newer.updated_at_ms = now - 60 * minute;
+        let mut older = row("s-older", Some("spoke yesterday"), "/work/alpha");
+        older.created_at_ms = now - 10 * minute;
+        older.updated_at_ms = now - 24 * 60 * minute;
+        // The list arrives in neither order: the panel does the sorting.
+        live.sessions = vec![older, speaking, newer, started];
+
+        let frame = crate::workbench::layout::Frame::new(
+            120,
+            38,
+            36,
+            crate::workbench::preferences::SidebarPosition::Right,
+        );
+        let data = live.data(&frame);
+        let painted: Vec<&str> =
+            crate::workbench::panels::rows(crate::workbench::state::PanelId::Recent, &data)
+                .iter()
+                .filter_map(|row| row.session())
+                .map(|index| data.sessions[index].id.as_str())
+                .collect();
+        assert_eq!(
+            painted,
+            ["s-started", "s-speaking", "s-newer", "s-older"],
+            "active rows newest-started first; the quiet ones by last activity"
+        );
+
+        // An agent that predates `createdAtMs` sends 0 for the running rows too:
+        // the activity stamp stands in, so the stretch is ordered rather than a
+        // page of ties.
+        let mut old_a = row("s-old-a", Some("old agent"), "/work/alpha");
+        old_a.is_streaming = Some(true);
+        old_a.updated_at_ms = now - 10 * minute;
+        let mut old_b = row("s-old-b", Some("old agent"), "/work/alpha");
+        old_b.is_streaming = Some(true);
+        old_b.updated_at_ms = now - minute;
+        live.sessions = vec![old_a, old_b];
+        let data = live.data(&frame);
+        let painted: Vec<&str> =
+            crate::workbench::panels::rows(crate::workbench::state::PanelId::Recent, &data)
+                .iter()
+                .filter_map(|row| row.session())
+                .map(|index| data.sessions[index].id.as_str())
+                .collect();
+        assert_eq!(
+            painted,
+            ["s-old-b", "s-old-a"],
+            "no stamp: activity orders it"
+        );
     }
 
     #[test]
@@ -3809,6 +4549,233 @@ mod tests {
         let activity = live.data(&frame()).activity;
         assert_eq!(activity.elapsed_secs, 0);
         assert_eq!(activity.tools, 0);
+    }
+
+    // ─── the session cache ────────────────────────────────────────────
+
+    /// One exchange of display history, shaped like the agent's page rows.
+    fn page_of(questions: &[&str]) -> String {
+        let rows: Vec<serde_json::Value> = questions
+            .iter()
+            .enumerate()
+            .map(|(index, question)| {
+                serde_json::json!({
+                    "id": format!("e{index}"),
+                    "role": "user",
+                    "blocks": [{"kind": "text", "text": question}],
+                })
+            })
+            .collect();
+        serde_json::json!({"entries": rows}).to_string()
+    }
+
+    /// How many transcript pages the mock agent has been asked for.
+    fn pages_fetched(seen: &std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> usize {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|kind| kind.as_str() == "get_session_entries")
+            .count()
+    }
+
+    fn rows_on_screen(live: &mut Live) -> Vec<String> {
+        live.data(&frame()).messages
+    }
+
+    /// A click on the row the transcript already shows reads nothing at all.
+    ///
+    /// The rows on screen are that conversation's, and the reader may have
+    /// scrolled and paged older turns into them: re-reading would rebuild the
+    /// transcript from the tail page and throw both away.
+    #[tokio::test]
+    async fn clicking_the_conversation_on_screen_reads_nothing() {
+        let answers =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
+                (
+                    "switch_session".to_string(),
+                    r#"{"success":true}"#.to_string(),
+                ),
+                (
+                    "get_state".to_string(),
+                    r#"{"sessionId":"s-a"}"#.to_string(),
+                ),
+                ("get_session_entries".to_string(), page_of(&["q1"])),
+            ])));
+        let mock = crate::rpc::grpc_client::tests::api_mock_with_table(answers);
+        let seen = mock.seen.clone();
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s-a"), false, None)
+            .await
+            .expect("attach to the test agent");
+        let before = seen.lock().unwrap().len();
+        let renders = live.chat.full_renders();
+
+        live.apply(WbAction::SwitchSession("s-a".into())).await;
+
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            before,
+            "the click reaches the agent with nothing"
+        );
+        assert_eq!(live.chat.full_renders(), renders, "and rebuilds nothing");
+    }
+
+    /// Coming back to a conversation the reader has already read is a repaint,
+    /// not a reload: the rows are still here, so a switch to them paints before
+    /// it asks the agent anything, and the reconcile that follows finds the same
+    /// page and keeps them.
+    ///
+    /// This is the `shift+↑/↓` case the rail is built around — a bounce to the
+    /// neighbour and back used to pay two round trips and a full re-render for
+    /// the conversation it had just left.
+    #[tokio::test]
+    async fn a_cached_conversation_comes_back_without_reloading_its_rows() {
+        let answers =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
+                (
+                    "switch_session".to_string(),
+                    r#"{"success":true}"#.to_string(),
+                ),
+                (
+                    "get_state".to_string(),
+                    r#"{"sessionId":"s-a"}"#.to_string(),
+                ),
+                ("get_session_entries".to_string(), page_of(&["q1"])),
+            ])));
+        let mock = crate::rpc::grpc_client::tests::api_mock_with_table(answers.clone());
+        let seen = mock.seen.clone();
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s-a"), false, None)
+            .await
+            .expect("attach to the test agent");
+        assert_eq!(pages_fetched(&seen), 1, "attach loads s-a's page");
+        let first = rows_on_screen(&mut live);
+        assert!(first.iter().any(|row| row.contains("q1")));
+        // `data()` has now rendered at the frame's width, so a rebuild is
+        // countable from here on.
+        let renders = live.chat.full_renders();
+
+        // To the neighbour, then straight back.
+        answers
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-b"}"#.into());
+        live.apply(WbAction::SwitchSession("s-b".into())).await;
+        assert_eq!(pages_fetched(&seen), 2, "s-b had to be fetched");
+        assert!(live.is_cached("s-a"), "the conversation just left is kept");
+
+        answers
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-a"}"#.into());
+        assert!(live.begin_switch("s-a"), "the cache has s-a's rows");
+        assert_eq!(
+            pages_fetched(&seen),
+            2,
+            "the switch paints before it asks the agent for anything"
+        );
+        assert_eq!(rows_on_screen(&mut live), first, "the rows came back");
+        assert_eq!(
+            live.chat.full_renders(),
+            renders,
+            "and they were not re-rendered"
+        );
+
+        // The reconcile still runs: it is what notices the conversation moving
+        // on while the reader was away.
+        live.finish_switch("s-a").await;
+        assert_eq!(pages_fetched(&seen), 3);
+        assert_eq!(
+            live.chat.full_renders(),
+            renders,
+            "the same page keeps the rows it was built from"
+        );
+    }
+
+    /// The other half of the cache: a conversation that gained turns while the
+    /// reader was elsewhere is rebuilt from the agent's page rather than having
+    /// that page *appended* to the rows the cache held — which would show the
+    /// last exchange twice.
+    #[tokio::test]
+    async fn a_cached_conversation_that_moved_on_is_rebuilt_not_appended() {
+        let answers =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
+                (
+                    "switch_session".to_string(),
+                    r#"{"success":true}"#.to_string(),
+                ),
+                (
+                    "get_state".to_string(),
+                    r#"{"sessionId":"s-a"}"#.to_string(),
+                ),
+                ("get_session_entries".to_string(), page_of(&["q1"])),
+            ])));
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(
+            crate::rpc::grpc_client::tests::api_mock_with_table(answers.clone()),
+        )
+        .await;
+        let (mut live, _events) = Live::attach(&addr, Some("s-a"), false, None)
+            .await
+            .expect("attach to the test agent");
+
+        answers
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-b"}"#.into());
+        live.apply(WbAction::SwitchSession("s-b".into())).await;
+
+        // s-a ran a turn while the reader was on s-b.
+        answers
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-a"}"#.into());
+        answers
+            .lock()
+            .unwrap()
+            .insert("get_session_entries".into(), page_of(&["q1", "q2"]));
+        assert!(live.begin_switch("s-a"), "the stale rows come back first");
+        live.finish_switch("s-a").await;
+
+        let screen = rows_on_screen(&mut live).join("\n");
+        assert!(screen.contains("q2"), "the new turn is on screen");
+        assert_eq!(
+            screen.matches("q1").count(),
+            1,
+            "and the cached rows were replaced, not appended to: {screen}"
+        );
+    }
+
+    /// `/new` is not a reason to make the way back cost a round trip: the
+    /// conversation being left keeps its rows.
+    #[tokio::test]
+    async fn the_launchpad_keeps_the_conversation_it_left() {
+        let answers =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
+                (
+                    "switch_session".to_string(),
+                    r#"{"success":true}"#.to_string(),
+                ),
+                (
+                    "get_state".to_string(),
+                    r#"{"sessionId":"s-a"}"#.to_string(),
+                ),
+                ("get_session_entries".to_string(), page_of(&["q1"])),
+            ])));
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(
+            crate::rpc::grpc_client::tests::api_mock_with_table(answers),
+        )
+        .await;
+        let (mut live, _events) = Live::attach(&addr, Some("s-a"), false, None)
+            .await
+            .expect("attach to the test agent");
+
+        live.to_launchpad();
+        assert!(
+            !rows_on_screen(&mut live).join("\n").contains("q1"),
+            "the transcript is gone"
+        );
+        assert!(live.is_cached("s-a"), "but its rows are kept");
+        assert!(live.begin_switch("s-a"), "and the way back is a repaint");
     }
 
     /// The two events that mean the agent knows more about the turn's spend than

@@ -6,17 +6,17 @@ use crate::session::model::SessionSummary;
 impl Snapshot {
     pub(crate) fn summary(store: &SqliteStore, session: &str) -> Result<SessionSummary> {
         let session = session.to_owned();
-        let (scope,raw,model,time,count,first)=store.db.read(move |db| {
+        let (scope,raw,model,time,created,count,first)=store.db.read(move |db| {
             let tx=db.transaction()?;
             let scope=Self::capture_from(&tx,&session)?;
             let session=BoundIdentity::session(&tx,&session)?;
-            let (raw,time):(Option<String>,Option<i64>)=tx.query_row("SELECT current_metadata_json,updated_at_ms FROM sessions WHERE id=?1",[&session],|row|Ok((row.get(0)?,row.get(1)?)))?;
+            let (raw,time,created):(Option<String>,Option<i64>,Option<i64>)=tx.query_row("SELECT current_metadata_json,updated_at_ms,created_at_ms FROM sessions WHERE id=?1",[&session],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
             ensure!(raw.as_ref().is_none_or(|raw|raw.len()<=super::super::WRITE_BYTES),"session summary metadata exceeds its thin budget");
             let model:Option<String>=tx.query_row("SELECT json_extract(content_json,'$.model') FROM entries WHERE session_id=?1 AND entry_type='model_change' AND json_type(content_json,'$.model')='text' AND json_extract(content_json,'$.model')<>'' ORDER BY position DESC LIMIT 1",[&session],|row|row.get(0)).optional()?;
             let count:i64=tx.query_row("SELECT count(*) FROM entries WHERE session_id=?1 AND entry_type='user'",[&session],|row|row.get(0))?;
             let first:Option<Entry>=tx.query_row("SELECT position,entry_id FROM entries WHERE session_id=?1 AND entry_type='user' ORDER BY position LIMIT 1",[&session],|row|Ok(Entry {position:row.get(0)?,id:row.get(1)?})).optional()?;
             let generation=super::super::metadata::generation(&tx,&session)?;
-            tx.commit()?;Ok(((scope,generation),raw,model,time,count,first))
+            tx.commit()?;Ok(((scope,generation),raw,model,time,created,count,first))
         })?;
         let (scope, metadata_generation) = scope;
         let info: Value = raw
@@ -72,6 +72,11 @@ impl Snapshot {
             )
             .context("session timestamp is out of range")?
             .with_timezone(&chrono::Local),
+            created_at: chrono::DateTime::from_timestamp_millis(
+                created.context("published session has no creation timestamp")?,
+            )
+            .context("session creation timestamp is out of range")?
+            .with_timezone(&chrono::Local),
             model: info["model"]
                 .as_str()
                 .filter(|model| !model.is_empty())
@@ -99,8 +104,8 @@ impl Snapshot {
         inline: &str,
     ) -> Result<String> {
         let (scope, locator, pointer) = (self.clone(), entry.clone(), field.to_owned());
-        let reference=store.db.read(move |db| {
-            let tx=db.transaction()?;scope.check(&tx)?;
+        let reference=self.read(store, move |db| {
+            let tx=db.savepoint()?;scope.check(&tx)?;
             let row:Option<(i64,i64,i64,String)>=tx.query_row("SELECT r.content_id,r.byte_offset,r.byte_length,r.encoding FROM content_references r JOIN entries e ON e.session_id=r.session_id AND e.entry_id=r.owner_id WHERE e.session_id=?1 AND e.position=?2 AND e.entry_id=?3 AND r.owner_kind='entry' AND r.field=?4",params![scope.session,locator.position,locator.id,pointer],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?;
             tx.commit()?;Ok(row)
         })?;

@@ -1,0 +1,403 @@
+{
+  "scope": {
+    "sourceDatabaseBytes": 102039552,
+    "sourceSha256": "b22adf4f046a79ee86e46f1e617f4a5abaf76fb83b5a6cc2726ddfa878bd1221",
+    "method": "Consistent immutable read-only copy, taken while WAL absent and source size/mtime/hash unchanged. No user database writes.",
+    "newFormatSessions": 1,
+    "privacy": "Aggregates only; prompts, body text, provider IDs and business IDs omitted.",
+    "capturedLocalDate": "2026-10-27",
+    "sourceModifiedUtc": "2026-10-27T08:48:36.295060+00:00"
+  },
+  "schema": {
+    "version": 8,
+    "layout": "compact-owned-stream-v2",
+    "pageSize": 4096
+  },
+  "session": {
+    "format": 2,
+    "sessionIdStorage": {
+      "type": "blob",
+      "bytes": 16,
+      "wireCharacters": 36
+    },
+    "counts": {
+      "entries": 38,
+      "message_blocks": 38,
+      "runs": 5,
+      "run_events": 0,
+      "run_snapshots": 0,
+      "content_references": 45,
+      "stream_runs": 6,
+      "history_shapes": 38,
+      "history_display": 28,
+      "entry_fingerprints": 38,
+      "content_operations": 0,
+      "content_entry_stages": 0,
+      "queued_run_receipts": 0
+    },
+    "entryKinds": {
+      "assistant": 12,
+      "run_started": 5,
+      "run_terminal": 5,
+      "session_info": 1,
+      "tool": 10,
+      "user": 5
+    },
+    "runStates": {
+      "completed": 5
+    },
+    "entryIdStorage": [
+      {
+        "type": "blob",
+        "bytes": 16,
+        "rows": 38
+      }
+    ],
+    "runIdStorage": [
+      {
+        "type": "text",
+        "bytes": 26,
+        "rows": 5
+      }
+    ]
+  },
+  "bodies": {
+    "uniqueObjects": 47,
+    "uniqueBodyBytes": 41840,
+    "segments": 918,
+    "sealedObjects": 47,
+    "transcriptObjects": 37,
+    "replayObjects": 37,
+    "sharedTranscriptAndReplayObjects": 37,
+    "referenceOwners": {
+      "entry": 45
+    },
+    "validationErrors": [],
+    "zeroLengthOwnerOnlyObjects": 10,
+    "nonemptyDuplicateDigestGroups": 0
+  },
+  "streams": [
+    {
+      "epoch": -1,
+      "changes": 13,
+      "firstCursor": 0,
+      "lastCursor": 12,
+      "durableCursor": 12,
+      "representedEvents": 13,
+      "cursorGaps": 0,
+      "endsAtDurableCursor": true,
+      "runIdStorage": {
+        "type": "text",
+        "bytes": 0
+      }
+    },
+    {
+      "epoch": 1,
+      "changes": 9,
+      "firstCursor": 0,
+      "lastCursor": 16,
+      "durableCursor": 16,
+      "representedEvents": 17,
+      "cursorGaps": 0,
+      "endsAtDurableCursor": true,
+      "runIdStorage": {
+        "type": "text",
+        "bytes": 26
+      }
+    },
+    {
+      "epoch": 2,
+      "changes": 66,
+      "firstCursor": 0,
+      "lastCursor": 277,
+      "durableCursor": 277,
+      "representedEvents": 278,
+      "cursorGaps": 0,
+      "endsAtDurableCursor": true,
+      "runIdStorage": {
+        "type": "text",
+        "bytes": 26
+      }
+    },
+    {
+      "epoch": 3,
+      "changes": 366,
+      "firstCursor": 0,
+      "lastCursor": 2304,
+      "durableCursor": 2304,
+      "representedEvents": 2305,
+      "cursorGaps": 0,
+      "endsAtDurableCursor": true,
+      "runIdStorage": {
+        "type": "text",
+        "bytes": 26
+      }
+    },
+    {
+      "epoch": 4,
+      "changes": 186,
+      "firstCursor": 0,
+      "lastCursor": 1620,
+      "durableCursor": 1620,
+      "representedEvents": 1621,
+      "cursorGaps": 0,
+      "endsAtDurableCursor": true,
+      "runIdStorage": {
+        "type": "text",
+        "bytes": 26
+      }
+    },
+    {
+      "epoch": 5,
+      "changes": 411,
+      "firstCursor": 0,
+      "lastCursor": 4217,
+      "durableCursor": 4217,
+      "representedEvents": 4218,
+      "cursorGaps": 0,
+      "endsAtDurableCursor": true,
+      "runIdStorage": {
+        "type": "text",
+        "bytes": 26
+      }
+    }
+  ],
+  "metadata": {
+    "changes": 1051,
+    "changeMetadataBytes": 88999,
+    "maxChangeMetadataBytes": 1876,
+    "contexts": 138,
+    "descriptorBytes": 12772,
+    "symbols": 120,
+    "symbolValueBytes": 3062,
+    "extraBodyLinks": 14,
+    "bodyOwners": 68,
+    "entryMetadataBytes": 4024
+  },
+  "eventTypes": {
+    "agent_end": 5,
+    "agent_start": 5,
+    "message_end": 12,
+    "message_start": 12,
+    "model_changed": 1,
+    "permission_level_changed": 5,
+    "sandbox_policy_changed": 5,
+    "session_name_changed": 1,
+    "text_chunk": 219,
+    "text_end": 5,
+    "text_start": 5,
+    "thinking_delta": 362,
+    "thinking_end": 8,
+    "thinking_level_changed": 1,
+    "thinking_start": 8,
+    "tool_delta": 333,
+    "tool_end": 10,
+    "tool_input_end": 10,
+    "tool_sandboxed": 7,
+    "tool_start": 20,
+    "usage": 12,
+    "user_message": 5
+  },
+  "compactTablesAndIndices": {
+    "checkpoint_generations": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 0
+    },
+    "checkpoint_generations_retirement": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 0
+    },
+    "content_collection": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 0
+    },
+    "content_entry_stages": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 0
+    },
+    "content_entry_stages_owner": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 0
+    },
+    "content_history_versions": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 21
+    },
+    "content_objects": {
+      "allocatedBytes": 12288,
+      "payloadBytes": 4503
+    },
+    "content_objects_digest": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 3350
+    },
+    "content_objects_json_digest": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 1173
+    },
+    "content_operations": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 0
+    },
+    "content_operations_session": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 0
+    },
+    "content_references": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 3159
+    },
+    "content_references_body": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 2705
+    },
+    "content_segments": {
+      "allocatedBytes": 65536,
+      "payloadBytes": 48259
+    },
+    "entry_fingerprints": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 3838
+    },
+    "retired_checkpoint_generations": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 0
+    },
+    "retired_streams": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 0
+    },
+    "session_formats": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 20
+    },
+    "sqlite_autoindex_content_entry_stages_1": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 0
+    },
+    "sqlite_autoindex_content_history_versions_1": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 19
+    },
+    "sqlite_autoindex_content_operations_1": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 0
+    },
+    "sqlite_autoindex_retired_checkpoint_generations_1": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 0
+    },
+    "sqlite_autoindex_session_formats_1": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 19
+    },
+    "sqlite_autoindex_stream_changes_1": {
+      "allocatedBytes": 20480,
+      "payloadBytes": 9181
+    },
+    "sqlite_autoindex_stream_runs_1": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 266
+    },
+    "sqlite_autoindex_stream_symbols_1": {
+      "allocatedBytes": 12288,
+      "payloadBytes": 3781
+    },
+    "stream_body_owners": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 1044
+    },
+    "stream_body_owners_content": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 474
+    },
+    "stream_change_content": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 475
+    },
+    "stream_change_content_body": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 286
+    },
+    "stream_changes": {
+      "allocatedBytes": 131072,
+      "payloadBytes": 115649
+    },
+    "stream_changes_body": {
+      "allocatedBytes": 16384,
+      "payloadBytes": 5567
+    },
+    "stream_changes_context": {
+      "allocatedBytes": 20480,
+      "payloadBytes": 11322
+    },
+    "stream_changes_pricing": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 108
+    },
+    "stream_contexts": {
+      "allocatedBytes": 24576,
+      "payloadBytes": 18402
+    },
+    "stream_contexts_digest": {
+      "allocatedBytes": 12288,
+      "payloadBytes": 5252
+    },
+    "stream_contexts_entry": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 372
+    },
+    "stream_contexts_key": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 90
+    },
+    "stream_contexts_tool": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 432
+    },
+    "stream_layout": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 26
+    },
+    "stream_runs": {
+      "allocatedBytes": 4096,
+      "payloadBytes": 277
+    },
+    "stream_symbols": {
+      "allocatedBytes": 12288,
+      "payloadBytes": 3662
+    }
+  },
+  "validation": {
+    "foreignKeyErrors": 0,
+    "integrity": "ok",
+    "contextScopeErrors": 0,
+    "rangeBoundsErrors": 0,
+    "unownedBodyObjects": 0
+  },
+  "limitations": [
+    "Logical body/metadata byte totals exclude SQLite record headers, pointers, free space, and indices.",
+    "B-tree allocations cover whole compact tables and indices, including fixed empty pages. Only one format2 session exists in this snapshot, but core tables also hold 26 legacy sessions and cannot be attributed by page to this session.",
+    "No per-session whole-database saving or physical I/O can be inferred. No old-format synthetic comparison is substituted for this actual sample."
+  ],
+  "compactAllocatedBytes": 458752,
+  "compactPayloadBytes": 243732,
+  "findings": [
+    {
+      "status": "pass",
+      "item": "New session/message IDs and entry reference owners are BLOB16; public UUIDs are 36 characters."
+    },
+    {
+      "status": "fix-required",
+      "item": "All five normal run IDs are Host-generated timestamp-prefixed TEXT26. Host create_run and prompt fallback are changed by this task to emit UUIDv4 for subsequent runs. Existing IDs remain exact."
+    },
+    {
+      "status": "pass",
+      "item": "37 transcript bodies are the same 37 objects used by replay; no duplicate non-empty body digests."
+    },
+    {
+      "status": "observation",
+      "item": "10 additional objects have zero length and are owned by stream initialization. They contain no duplicated body text and are not unowned orphans."
+    }
+  ]
+}

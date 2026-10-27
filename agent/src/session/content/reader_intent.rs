@@ -41,8 +41,8 @@ impl Snapshot {
                         }
                         let (scope, locator, field) =
                             (self.clone(), entry.clone(), reference.field.clone());
-                        let identity=store.db.read(move |db| {
-                            let tx=db.transaction()?;scope.check(&tx)?;
+                        let identity=self.read(store, move |db| {
+                            let tx=db.savepoint()?;scope.check(&tx)?;
                             let value=tx.query_row("SELECT o.json_sha256,o.sealed,r.byte_offset,r.byte_length,o.byte_length FROM content_references r JOIN entries e ON e.session_id=r.session_id AND e.entry_id=r.owner_id JOIN content_objects o ON o.id=r.content_id WHERE e.session_id=?1 AND e.position=?2 AND e.entry_id=?3 AND r.owner_kind='entry' AND r.field=?4",
                                 params![scope.session,locator.position,locator.id,field],|row|Ok((row.get::<_,Option<String>>(0)?,row.get::<_,bool>(1)?,row.get::<_,i64>(2)?,row.get::<_,i64>(3)?,row.get::<_,i64>(4)?)))?;
                             tx.commit()?;Ok(value)

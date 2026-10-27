@@ -283,33 +283,37 @@ impl Manager {
         fragment_offset: Option<i64>,
     ) -> Result<serde_json::Value> {
         let store = self.storage()?;
-        let owned = id.to_owned();
-        let page = store.db.read(move |db| {
-            let tx = db.transaction()?;
+        // Lease a warm query-only connection for this response. Its WAL read
+        // transaction spans the page locators and bounded body reads, so a
+        // startup configuration update cannot replace a locator underneath us.
+        let snapshot = store.db.read_snapshot()?;
+        let ready = snapshot.read(|db| super::recovery::history_index_ready(db, id))?;
+        let snapshot = if ready {
+            snapshot
+        } else {
+            // Rebuild disposable projections before capturing the page. No
+            // page or body has been read yet, and this is not a failed-read retry.
+            drop(snapshot);
+            let owned = id.to_owned();
+            store
+                .db
+                .call(move |db| super::with_history_index(db, &owned, |_| Ok(())))?;
+            store.db.read_snapshot()?
+        };
+        let mut page = snapshot.read(|db| {
+            let tx = db.savepoint()?;
             let skipped: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='skipped')",
-                [&owned], |row| row.get(0),
+                [id], |row| row.get(0),
             )?;
             anyhow::ensure!(!skipped, "session migration was skipped");
-            let page = if super::recovery::history_index_ready(&tx, &owned)? {
-                Some(read_display_page(&tx, &owned, before, offset, limit)?)
-            } else {
-                None
-            };
+            let page = read_display_page(&tx, id, before, offset, limit)?;
             tx.commit()?;
             Ok(page)
         })?;
-        let page = match page {
-            Some(page) => page,
-            None => {
-                let id = id.to_owned();
-                store.db.call(move |db| super::with_history_index(db,&id,|connection| {
-                    let skipped:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='skipped')",[&id],|r|r.get(0))?;
-                    if skipped {anyhow::bail!("session migration was skipped");}
-                    read_display_page(connection,&id,before,offset,limit)
-                }))?
-            }
-        };
+        if let Some(scope) = &mut page.snapshot {
+            scope.use_read_snapshot(snapshot);
+        }
         materialize_display_page(
             page,
             before,

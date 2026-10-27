@@ -208,6 +208,7 @@ pub(crate) fn cmd_list_sessions(state: &AppState, cmd: &RpcCommand, id: &str) ->
                 model: s.model,
                 cwd: s.cwd,
                 updated_at_ms: s.updated_at.timestamp_millis(),
+                created_at_ms: s.created_at.timestamp_millis(),
                 parent_session_id: (!s.parent_session_id.is_empty()).then_some(s.parent_session_id),
                 first_message: s.first_message,
                 query_count: s.query_count,

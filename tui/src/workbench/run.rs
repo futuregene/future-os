@@ -237,6 +237,9 @@ async fn event_loop(
     // rebuilding `WorkbenchData`, which asks the transcript for every row it
     // has rendered (see `Live::data`).
     let mut paint = true;
+    // A stepped conversation the reader has not stopped on yet (see
+    // [`OPEN_SETTLE`]).
+    let mut pending_open: Option<PendingOpen> = None;
 
     loop {
         // The frame's own metrics, computed once: the surface composes for
@@ -249,6 +252,7 @@ async fn event_loop(
             draw(terminal, workbench, live, &frame)?;
             clock.painted(workbench.spinner_frame(), Instant::now());
         }
+        let open_due = pending_open.as_ref().map(|open| open.due);
 
         // `paint` belongs to the *next* frame: every arm below assigns it — an
         // input or agent event paints, and the ticker asks the clock. Assign,
@@ -286,26 +290,50 @@ async fn event_loop(
                         continue;
                     }
                     // The rail's cursor moves now; the conversation it lands on
-                    // is opened once, after the burst, below.
+                    // is opened once the keys go quiet, below.
                     if let Some(delta) = session_step_of(workbench, &event) {
                         session_steps += delta;
                         continue;
+                    }
+                    // Anything else is the reader working *in* the conversation:
+                    // land the step first, or `enter` would submit to the one
+                    // they have already left. A step from this same burst counts
+                    // — the cursor is already on it.
+                    if let Some(open) = pending_open.take() {
+                        show_conversation(&open.id, terminal, workbench, live, &frame, &mut clock)
+                            .await?;
+                    } else if let Some(id) =
+                        resolve_step(&mut session_steps, workbench, live, &frame)
+                    {
+                        show_conversation(&id, terminal, workbench, live, &frame, &mut clock)
+                            .await?;
                     }
                     if quit(workbench, live, event, &frame, &mut InputIo { terminal, settings, settings_path, theme_explicit }).await? {
                         return Ok(());
                     }
                 }
-                if session_steps != 0 {
-                    // One switch for the whole burst. `step_session` moves the
-                    // surface's cursor the accumulated number of rows and names
-                    // the conversation it landed on; the app opens that one.
-                    let data = live.data(&frame);
-                    let target = workbench.step_session(session_steps, &data).into_iter().next();
-                    if let Some(WbAction::SwitchSession(id)) = target {
-                        let _ = live.apply(WbAction::SwitchSession(id)).await;
-                        let data = live.data(&frame);
-                        workbench.follow_current(&data);
+                if let Some(id) = resolve_step(&mut session_steps, workbench, live, &frame) {
+                    // A conversation the cache can paint goes up now — the
+                    // reader asked for it and it costs nothing to show. One the
+                    // client would have to fetch waits for the keys to go quiet
+                    // instead: a held `shift+↓` used to open every conversation
+                    // it passed through (see [`OPEN_SETTLE`]).
+                    if live.is_cached(&id) {
+                        pending_open = None;
+                        show_conversation(&id, terminal, workbench, live, &frame, &mut clock)
+                            .await?;
+                    } else {
+                        pending_open = Some(PendingOpen::stepped(id, Instant::now()));
                     }
+                }
+                paint = true;
+            }
+            _ = tokio::time::sleep_until(tokio::time::Instant::from_std(
+                    open_due.unwrap_or_else(Instant::now),
+                )), if open_due.is_some() => {
+                if let Some(open) = pending_open.take() {
+                    show_conversation(&open.id, terminal, workbench, live, &frame, &mut clock)
+                        .await?;
                 }
                 paint = true;
             }
@@ -455,6 +483,40 @@ const COALESCE_LIMIT: usize = 4096;
 /// starving the agent events that share this loop.
 const INPUT_BURST_LIMIT: usize = 64;
 
+/// How long a stepped conversation waits for the keys to go quiet.
+///
+/// A held `shift+↑/↓` arrives as one step per terminal repeat. Every repeat
+/// used to open the conversation it landed on — a round trip, a transcript page
+/// and a full repaint each, all replaced by the next repeat. Measured on a
+/// 180×50 terminal: eight repeats wrote 178 KB in six frames and took 412 ms to
+/// settle, so the transcript trailed the reader's fingers by a tenth of a second
+/// and every conversation in between was loaded only to be thrown away.
+///
+/// The window sits between the two costs it trades: shorter than a repeat
+/// interval, so a held key keeps deferring, and shorter than the pause a reader
+/// notices, so letting go lands the conversation at once. A conversation the
+/// cache can paint skips the wait entirely — there is nothing to fetch.
+const OPEN_SETTLE: Duration = Duration::from_millis(80);
+
+/// A conversation the rail's cursor has landed on whose rows are not on screen
+/// yet, and when to open it.
+struct PendingOpen {
+    id: String,
+    /// The last step's arrival plus [`OPEN_SETTLE`]: every repeat pushes it out.
+    due: Instant,
+}
+
+impl PendingOpen {
+    /// The reader stepped onto `id`: the window restarts from `now`, which is
+    /// what makes a held key one open instead of one per repeat.
+    fn stepped(id: String, now: Instant) -> Self {
+        Self {
+            id,
+            due: now + OPEN_SETTLE,
+        }
+    }
+}
+
 /// The net step a *session* key asks for, if this event is one.
 ///
 /// The driver reads this before the key reaches `quit`, so a held `shift+↑` /
@@ -473,6 +535,60 @@ fn session_step_of(workbench: &Workbench, event: &WbEvent) -> Option<i32> {
         Some(super::preferences::Action::NextSession) => Some(1),
         _ => None,
     }
+}
+
+/// The conversation a burst's accumulated steps land on, after moving the
+/// surface's cursor that many rows.
+///
+/// `step_session` owns both halves — the rail's cursor, which is what the reader
+/// watches move, and the conversation the cursor is now on. A step that finds
+/// nowhere to go (either end of the list) answers `None`, and nothing opens.
+fn resolve_step(
+    steps: &mut i32,
+    workbench: &mut Workbench,
+    live: &mut Live,
+    frame: &Frame,
+) -> Option<String> {
+    let wanted = std::mem::take(steps);
+    if wanted == 0 {
+        return None;
+    }
+    let data = live.data(frame);
+    workbench
+        .step_session(wanted, &data)
+        .into_iter()
+        .find_map(|action| match action {
+            WbAction::SwitchSession(id) => Some(id),
+            _ => None,
+        })
+}
+
+/// Open one conversation, painting what the cache can show of it before the
+/// round trip the agent still owes.
+///
+/// The mid-switch paint is the payoff of keeping cached rows: the reader sees
+/// the conversation they landed on immediately, and the reconcile that follows
+/// only replaces the rows when that conversation moved on while they were away
+/// (see `Live::finish_switch`).
+async fn show_conversation(
+    id: &str,
+    terminal: &mut Terminal,
+    workbench: &mut Workbench,
+    live: &mut Live,
+    frame: &Frame,
+    clock: &mut TickClock,
+) -> Result<(), String> {
+    if live.already_showing(id) {
+        return Ok(());
+    }
+    if live.begin_switch(id) {
+        draw(terminal, workbench, live, frame)?;
+        clock.painted(workbench.spinner_frame(), Instant::now());
+    }
+    live.finish_switch(id).await;
+    let data = live.data(frame);
+    workbench.follow_current(&data);
+    Ok(())
 }
 
 /// Apply every agent event that is already queued, stopping at
@@ -792,7 +908,7 @@ async fn quit(
                 "/preview" => {
                     if live.load_attachment() {
                         workbench.reset_preview();
-                        workbench.overlay = Some(super::Overlay::FilePreview);
+                        workbench.open_preview();
                     }
                     continue;
                 }
@@ -855,6 +971,18 @@ async fn quit(
             save_settings(settings_path, settings);
             continue;
         }
+        // "Restore defaults" hands the palette back to the terminal: the stored
+        // id goes away, so the next start follows the light/dark hint instead of
+        // freezing whatever it said today.
+        if let WbAction::ResetTheme = action {
+            let palette = super::theme::resolve(None);
+            workbench.set_theme(palette.id);
+            live.theme_id = palette.id.to_string();
+            settings.theme_id = None;
+            **theme_explicit = false;
+            save_settings(settings_path, settings);
+            continue;
+        }
         if matches!(
             action,
             WbAction::SetPreferences | WbAction::ResizeSidebar(_) | WbAction::PersistSidebar
@@ -889,13 +1017,15 @@ async fn quit(
             // folder with its own buttons — the reader opened a row, and the
             // rows around it are the neighbours they expect.
             workbench.set_preview_siblings(super::files::image_siblings(path));
-            workbench.overlay = Some(super::Overlay::FilePreview);
+            // Opened *over* the panel the row came from: `esc` from the box
+            // walks back to that panel (see `Workbench::open_preview`).
+            workbench.open_preview();
             continue;
         }
         if matches!(action, WbAction::PreviewAttachment) {
             if live.load_attachment() {
                 workbench.reset_preview();
-                workbench.overlay = Some(super::Overlay::FilePreview);
+                workbench.open_preview();
             }
             continue;
         }
@@ -1417,9 +1547,84 @@ fn draw(
 ) -> Result<(), String> {
     let data = live.data(frame);
     let rows = workbench.render(&data, frame.width, frame.height);
-    terminal.write(&frame_bytes(&rows, workbench.cursor()));
+    let canvas = canvas_rows(
+        &rows,
+        usize::from(frame.width),
+        workbench.palette.fg,
+        workbench.palette.bg,
+    );
+    terminal.write(&frame_bytes(&canvas, workbench.cursor()));
     paint_image(terminal, workbench, &data);
     Ok(())
+}
+
+/// Paint the surface's own canvas onto every row — and its own default text
+/// colour onto the rows that do not paint a surface of their own.
+///
+/// The surface owns its colours instead of borrowing the terminal profile's.
+/// A workbench row is a string of styled spans and `styled` closes each span
+/// with a reset (`\x1b[m`), which clears both colours — so setting them once per
+/// row is not enough: every reset is followed by the palette's pair again, and
+/// the row is padded out to the frame's width with them.
+///
+/// Without the background the canvas was whatever the reader's terminal painted,
+/// which on a profile whose default is a mid slate (Ghostty ships `#282c34`)
+/// washed the frozen palette out and dropped secondary text under 4.5:1 —
+/// measured at 120x38, 98.6% of the cells carried no background of ours.
+///
+/// The foreground is applied only where the row left it to the terminal: a row
+/// that paints a surface of its own (the user bubble, a tool block) chose its
+/// colours, and a reader's own background pair is the one that reads on it. On
+/// the canvas, though, the pair has to be ours: leaving plain text to the
+/// profile is what put white-on-white light palettes and black-on-black dark ones
+/// in front of readers whose profile is the other way round.
+fn canvas_rows(rows: &[String], width: usize, fg: u8, bg: u8) -> Vec<String> {
+    let background = format!("\x1b[48;5;{bg}m");
+    rows.iter()
+        .map(|row| {
+            let paint = if row.contains("\x1b[48;5;") {
+                background.clone()
+            } else {
+                format!("\x1b[38;5;{fg}m{background}")
+            };
+            let padding = width.saturating_sub(crate::utils::visible_width(
+                &crate::utils::strip_ansi_codes(row),
+            ));
+            format!(
+                "{paint}{}\x1b[0m{paint}{}\x1b[0m",
+                repaint_after_resets(row, &paint),
+                " ".repeat(padding)
+            )
+        })
+        .collect()
+}
+
+/// Replace every `\x1b[m` / `\x1b[0m` with `\x1b[0m` + `paint`, so a span
+/// boundary cannot drop the canvas.
+fn repaint_after_resets(line: &str, paint: &str) -> String {
+    let mut out = String::with_capacity(line.len() + 16);
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b && i + 2 < bytes.len() && bytes[i + 1] == b'[' {
+            if bytes[i + 2] == b'm' {
+                out.push_str("\x1b[0m");
+                out.push_str(paint);
+                i += 3;
+                continue;
+            }
+            if bytes[i + 2] == b'0' && i + 3 < bytes.len() && bytes[i + 3] == b'm' {
+                out.push_str("\x1b[0m");
+                out.push_str(paint);
+                i += 4;
+                continue;
+            }
+        }
+        let ch = line[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
 }
 
 /// Paint (or remove) the picture the frame asked for.
@@ -1746,6 +1951,80 @@ mod tests {
         assert_eq!(count, COALESCE_LIMIT + 7);
     }
 
+    /// The canvas is the palette's, not the reader's terminal profile.
+    ///
+    /// Every row is filled to the frame's width with `bg` and survives the resets
+    /// `styled` writes at the end of each span — otherwise the colours are cleared
+    /// mid-row and the terminal's own show through. That was the "background not
+    /// black enough" state this replaced (98.6% of the cells carried no colour of
+    /// ours, measured at 120x38 on Ghostty's `#282c34`).
+    ///
+    /// A row that paints a surface of its own keeps its colours and only gets the
+    /// canvas as the *fallback* background; a row on the canvas gets the palette's
+    /// text colour too, so neither a white-on-white light palette nor a
+    /// black-on-black dark one depends on the reader's profile.
+    #[test]
+    fn canvas_rows_fill_every_column_and_survive_resets() {
+        // A row of two spans, a plain row (no colour of its own) and an empty
+        // row: the three shapes the compositor produces.
+        let rows = vec![
+            format!(
+                "\x1b[38;5;252mgreeting\x1b[m{}hello\x1b[m",
+                crate::theme::bold(" ")
+            ),
+            "short".to_string(),
+            String::new(),
+        ];
+        let width = 20;
+        let canvas = canvas_rows(&rows, width, 252, 232);
+        for (index, row) in canvas.iter().enumerate() {
+            assert!(
+                row.starts_with("\x1b[38;5;252m\x1b[48;5;232m"),
+                "row {index} must open on the palette's pair: {row:?}"
+            );
+            assert_eq!(
+                crate::utils::visible_width(row),
+                width,
+                "row {index} must be filled to the frame width: {row:?}"
+            );
+            // A reset must never leave the terminal painting its own colours:
+            // every piece after a reset re-opens with the palette's pair, and
+            // only the row's own final reset may stand alone.
+            let pieces: Vec<&str> = row.split("\x1b[0m").collect();
+            for (piece, text) in pieces.iter().enumerate().skip(1) {
+                if text.is_empty() && piece == pieces.len() - 1 {
+                    continue;
+                }
+                assert!(
+                    text.starts_with("\x1b[38;5;252m\x1b[48;5;232m"),
+                    "row {index} drops the palette after a reset: {row:?}"
+                );
+            }
+        }
+        // Painting is a fill, not a rewrite: the text is still there.
+        assert!(canvas[0].contains("hello"));
+        assert!(canvas[1].contains("short"));
+
+        // A row with a surface of its own keeps it: the bubble's background is
+        // written over the canvas, and its text keeps the reader's own colour.
+        let bubble = canvas_rows(
+            &["\x1b[48;5;59m a message \x1b[0m".to_string()],
+            20,
+            252,
+            232,
+        );
+        assert!(
+            bubble[0].starts_with("\x1b[48;5;232m\x1b[48;5;59m"),
+            "the bubble's own background wins: {:?}",
+            bubble[0]
+        );
+        assert!(
+            !bubble[0].contains("38;5;252"),
+            "a row that paints a surface decides its own text colour: {:?}",
+            bubble[0]
+        );
+    }
+
     /// A frame must never advance with a line feed: on a terminal shorter than
     /// the frame (or one whose resize has not reached the process yet) that
     /// scrolls the alternate screen and every row lands above its coordinate.
@@ -2003,5 +2282,45 @@ mod tests {
         assert!(layout_preferences(&shown, true).sidebar_visible);
         let hidden = TuiSettings::from_json(&serde_json::json!({"sidebarVisible": false}));
         assert!(!layout_preferences(&hidden, true).sidebar_visible);
+    }
+
+    /// A held `shift+↑/↓` opens one conversation, the one the reader stops on.
+    ///
+    /// Each repeat restarts the settle window, so nothing opens while the key
+    /// keeps producing steps — the conversations passed through are never
+    /// loaded at all (measured before this: eight repeats wrote 178 KB in six
+    /// frames and took 412 ms to settle, each frame a conversation that was
+    /// replaced 30 ms later). The two constants have to bracket a repeat
+    /// interval and stay under the pause a reader notices.
+    #[test]
+    fn a_held_session_key_opens_the_conversation_it_stops_on() {
+        let start = Instant::now();
+        let mut open = PendingOpen::stepped("s-1".into(), start);
+        assert_eq!(open.due, start + OPEN_SETTLE);
+
+        // Repeats at the fastest rate a terminal uses (~30/s): every one pushes
+        // the deadline past the next, so it never expires under the key.
+        let mut held = start;
+        for step in 1..=30u32 {
+            assert!(held < open.due, "the window expired under a held key");
+            held = start + Duration::from_millis(33) * step;
+            open = PendingOpen::stepped(format!("s-{step}"), held);
+        }
+        assert_eq!(open.id, "s-30", "the last step is the one that opens");
+        // Still pending at the moment of that last repeat…
+        assert!(held < open.due);
+        // …and due one settle after it.
+        assert_eq!(open.due, held + OPEN_SETTLE);
+    }
+
+    /// The settle window's own bounds, so a future tweak cannot quietly break
+    /// the property the test above relies on.
+    #[test]
+    fn the_settle_window_outlasts_a_repeat_and_beats_a_noticeable_pause() {
+        // Slower than a repeat interval (30–40 ms), or a held key would still
+        // open every conversation it passed through.
+        assert!(OPEN_SETTLE > Duration::from_millis(40));
+        // …and under the ~100 ms at which a pause reads as a delay.
+        assert!(OPEN_SETTLE <= Duration::from_millis(100));
     }
 }

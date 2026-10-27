@@ -37,6 +37,11 @@ pub struct SessionSummary {
     pub cwd: String,
     #[serde(rename = "updated_at")]
     pub updated_at: DateTime<Local>,
+    /// When the session was created. Listing clients order their conversation
+    /// lists by this, because `updated_at` moves whenever a run — or a
+    /// `session_info` snapshot — touches the session.
+    #[serde(rename = "created_at")]
+    pub created_at: DateTime<Local>,
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,

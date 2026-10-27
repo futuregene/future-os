@@ -330,7 +330,7 @@ pub(super) async fn agent_prompt_inner(
     // persisted by both the observer and this collector.
     let run_id = match run_id.filter(|id| !id.trim().is_empty()) {
         Some(id) => id,
-        None => crate::store::create_id("run"),
+        None => crate::store::create_run_id(),
     };
     let replica_lease = AGENT_REPLICAS
         .acquire(&run_id)

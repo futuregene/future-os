@@ -521,28 +521,55 @@ fn validate_key(key: &str) -> Result<(), String> {
     }
 }
 
+/// The rows of the preferences box, in the order it lists them: the frame's
+/// shape, then its input and its feedback, then the two choices that are
+/// themselves menus (the language and the palette), then the doors.
+///
+/// Every row here is one persisted setting: the box is the one screen a reader
+/// visits to see what this terminal client remembers, so a preference with no
+/// row is one with no visible home. The rows whose value is a list — `Language`
+/// and `Theme` — open their own picker (`/lang`, `/theme`) instead of cycling
+/// in place, because a list of twenty-two palettes is not a two-state toggle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreferenceRow {
     Position,
     Width,
+    SidebarVisible,
     Mouse,
     Notifications,
     NotificationBell,
     Motion,
+    Language,
+    Theme,
     Shortcuts,
     Reset,
 }
 
-pub const PREFERENCE_ROWS: [PreferenceRow; 8] = [
+pub const PREFERENCE_ROWS: [PreferenceRow; 11] = [
     PreferenceRow::Position,
     PreferenceRow::Width,
+    PreferenceRow::SidebarVisible,
     PreferenceRow::Mouse,
     PreferenceRow::Notifications,
     PreferenceRow::NotificationBell,
     PreferenceRow::Motion,
+    PreferenceRow::Language,
+    PreferenceRow::Theme,
     PreferenceRow::Shortcuts,
     PreferenceRow::Reset,
 ];
+
+impl PreferenceRow {
+    /// Where this row stands in [`PREFERENCE_ROWS`] — what the key handler and
+    /// the hit regions both address it by, so a click and a keystroke land on
+    /// the same row.
+    pub fn index(self) -> usize {
+        PREFERENCE_ROWS
+            .iter()
+            .position(|row| *row == self)
+            .unwrap_or(0)
+    }
+}
 
 pub fn preference_label(row: PreferenceRow, lang: Language) -> &'static str {
     super::i18n::t(
@@ -550,10 +577,16 @@ pub fn preference_label(row: PreferenceRow, lang: Language) -> &'static str {
         match row {
             PreferenceRow::Position => Key::PrefPosition,
             PreferenceRow::Width => Key::PrefWidth,
+            PreferenceRow::SidebarVisible => Key::PrefSidebarVisible,
             PreferenceRow::Mouse => Key::PrefMouse,
             PreferenceRow::Notifications => Key::PrefNotifications,
             PreferenceRow::NotificationBell => Key::PrefNotificationBell,
             PreferenceRow::Motion => Key::PrefMotion,
+            // The language row reuses the command's wording (`界面语言` names the
+            // setting, not the act of switching it); the theme's command reads
+            // `切换主题` — a verb — so the row has its own noun.
+            PreferenceRow::Language => Key::CmdLanguage,
+            PreferenceRow::Theme => Key::PrefTheme,
             PreferenceRow::Shortcuts => Key::PrefShortcuts,
             PreferenceRow::Reset => Key::PrefReset,
         },

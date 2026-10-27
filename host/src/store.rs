@@ -97,7 +97,7 @@ pub use threads::{
     update_thread_thinking_level, ThreadRecord,
 };
 pub use util::strip_verbatim_prefix;
-pub use util::{create_id, now_millis, take_catalog_dirty};
+pub use util::{create_id, create_run_id, now_millis, take_catalog_dirty};
 pub use workspace_files::{search_workspace_files, WorkspaceFileResult, WorkspaceFileSearchInput};
 pub use workspaces::{
     create_workspace, delete_workspace, file_session_workspace, get_or_create_chat_workspace,

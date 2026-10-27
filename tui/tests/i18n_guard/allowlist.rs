@@ -163,15 +163,12 @@ pub const ALLOW: &[Allow] = &[
     ),
     Allow::known_gap(
         "components/chat_area.rs",
-        "  … {hidden} more line{plural} · {hint}",
+        "  … {hidden} more line{plural} · truncated",
         "the folded-output footer: pluralised inline and cut to width",
     ),
-    Allow::known_gap(
-        "components/chat_area.rs",
-        "ctrl+g to expand",
-        "the footer's hint half (the other half is `truncated`, one word, so the rule \
-         does not reach it)",
-    ),
+    // The tool-output footer used to need a row here: its hint half named a
+    // chord, and a chord is chrome. It names `/tool-output` now, which the
+    // guard reads as a command rather than as a sentence to translate.
     // The notice row. One row per message rather than one per call site: the
     // same sentence is drawn from two places in `live.rs`.
     Allow::known_gap(
@@ -256,6 +253,48 @@ pub const ALLOW: &[Allow] = &[
         "new session",
         "the title a nameless session falls back to — a title is content",
     ),
+    // The `/git` detail pane colours a patch line by the prefix it starts with.
+    // These seven are tokens of git's *diff header* — the line git printed, not
+    // text this tree writes: `git_detail_line` compares against them to decide
+    // between iris, dim and body, and paints the line itself. A reader who
+    // picked 中文 still sees `new file mode 100644`, because that is git's output
+    // for their repository and translating it would invent a word git never
+    // printed. Nothing here belongs in the table.
+    Allow::not_chrome(
+        "workbench/screen.rs",
+        "diff --git",
+        "a token of git's diff header, matched with `starts_with` to pick a colour — never drawn",
+    ),
+    Allow::not_chrome(
+        "workbench/screen.rs",
+        "new file mode",
+        "a token of git's diff header (file creation), matched to pick a colour — never drawn",
+    ),
+    Allow::not_chrome(
+        "workbench/screen.rs",
+        "deleted file mode",
+        "a token of git's diff header (file deletion), matched to pick a colour — never drawn",
+    ),
+    Allow::not_chrome(
+        "workbench/screen.rs",
+        "similarity index",
+        "a token of git's diff header (rename/copy similarity), matched to pick a colour — never drawn",
+    ),
+    Allow::not_chrome(
+        "workbench/screen.rs",
+        "rename from ",
+        "a token of git's diff header (rename source), matched to pick a colour — never drawn",
+    ),
+    Allow::not_chrome(
+        "workbench/screen.rs",
+        "old mode ",
+        "a token of git's diff header (pre-change mode), matched to pick a colour — never drawn",
+    ),
+    Allow::not_chrome(
+        "workbench/screen.rs",
+        "new mode ",
+        "a token of git's diff header (post-change mode), matched to pick a colour — never drawn",
+    ),
 ];
 
 /// A file whose literals are all content rather than chrome.
@@ -301,4 +340,19 @@ pub const FILES: &[FileExempt] = &[FileExempt {
 /// git's own stderr to turn an empty repository into an empty log. It is a
 /// comparison, never drawn; the panel's other copy (the silent failure, the
 /// ahead/behind counts, the tip template) went into the table instead.
-pub const BUDGET: usize = 42;
+///
+/// 42 → 43: the full-width `？` a Chinese IME types where `?` sits. It is a key
+/// spelling matched in the dispatch, never drawn (the help table and the footer
+/// spell the ASCII mark), so it has nothing to translate — the same reason
+/// `ctrl+d` has no row in the table.
+///
+/// 43 → 42: the tool-output footer's hint half names `/tool-output` now, a
+/// command spelling the scanner does not read as a sentence to translate, so
+/// the `ctrl+g to expand` row it needed went away.
+///
+/// 42 → 49: the seven tokens `git_detail_line` compares a patch line against to
+/// colour it — `diff --git`, the file-mode, similarity and rename headers. They
+/// are git's own diff format, read and never written: the row on screen is the
+/// line git printed, so a Chinese reader seeing `new file mode` is seeing their
+/// repository, not the surface failing to translate itself.
+pub const BUDGET: usize = 49;
