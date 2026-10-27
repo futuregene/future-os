@@ -301,4 +301,9 @@ pub const FILES: &[FileExempt] = &[FileExempt {
 /// git's own stderr to turn an empty repository into an empty log. It is a
 /// comparison, never drawn; the panel's other copy (the silent failure, the
 /// ahead/behind counts, the tip template) went into the table instead.
-pub const BUDGET: usize = 42;
+///
+/// 42 → 43: the full-width `？` a Chinese IME types where `?` sits. It is a key
+/// spelling matched in the dispatch, never drawn (the help table and the footer
+/// spell the ASCII mark), so it has nothing to translate — the same reason
+/// `ctrl+d` has no row in the table.
+pub const BUDGET: usize = 43;

@@ -1345,23 +1345,33 @@ fn hint_row(
     // is the one key every terminal reader tries first, and the focus caret says
     // where it went; the cells it frees are what keep both `ctrl+q` and
     // `ctrl+n` on the row in English at 120 columns.
+    //
+    // `esc` is not listed either: it is the key that leaves *whatever the reader
+    // is in* — an overlay, the queue, a scrolled-back transcript — so a hint
+    // that spelled it named one of the five things it does, and the boxes that
+    // answer it print it in their own hint row (`FilesHint`, `PickerHint*`).
+    //
+    // `?` is a literal rather than `Action::Help`'s chord: help has no chord on
+    // purpose (a printable key that opens a box cannot also be typed into the
+    // draft), so the row names the character that opens it, as the help
+    // overlay's own inline table does.
     let wide = [
-        ("Esc", Key::HintBackToChat),
         (workbench.keys.key(Action::Sidebar), Key::HintSidebar),
         (workbench.keys.key(Action::Sessions), Key::HintSessions),
         (workbench.keys.key(Action::Palette), Key::HintCommands),
         (workbench.keys.key(Action::Preferences), Key::HintSettings),
         (workbench.keys.key(Action::NewSession), Key::HintNewChat),
-        (workbench.keys.key(Action::Help), Key::HintHelp),
+        ("?", Key::HintHelp),
     ];
-    // An action with no chord (`help`, `preferences`: see `default_key`) would
-    // otherwise be hinted as " 帮助" — a hint with no key is not a hint.
+    // A rebindable action whose chord the reader cleared (`preferences`, see
+    // `default_key`) would otherwise be hinted as " 布局" — a hint with no key
+    // is not a hint.
     let wide: Vec<(&str, Key)> = wide
         .into_iter()
         .filter(|(key, _)| !key.is_empty())
         .collect();
     let parts: &[(&str, Key)] = if compact {
-        &wide[1..5.min(wide.len())]
+        &wide[..4.min(wide.len())]
     } else {
         &wide
     };
@@ -2175,18 +2185,24 @@ fn help_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec
     // looking for "how do I change the model" should not have to read the
     // theme, copy and quit rows to find it.
     let row = |key: &str, description: &str, palette: &Palette| {
-        // A chordless action prints `—`: the column stays, so every key sits in
-        // the same cell, and the reader can tell "no shortcut" from "a shortcut
-        // this box forgot".
-        let key = if key.is_empty() { "\u{2014}" } else { key };
         format!(
             "   {}  {}",
             palette.text(palette.accent, &fit(key, 18)),
             palette.body(description)
         )
     };
+    // A key table lists keys. An action with no chord has a typed door instead
+    // (`/queue`, `/lang`, `/copy`, `/refresh`…), and those are listed further
+    // down under the commands — so printing an empty-key row here (one per
+    // chordless action, standing in the same column as the chords) spent a line
+    // saying "there is nothing to say". The shortcut *editor* still lists every
+    // action: that screen exists to give the chordless ones a chord.
     let mut group = None;
     for action in ACTIONS {
+        let key = workbench.keys.key(action);
+        if key.is_empty() {
+            continue;
+        }
         if group != Some(action.group()) {
             if group.is_some() {
                 content.push(String::new());
@@ -2197,11 +2213,7 @@ fn help_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec
                 palette.strong(palette.iris, t(lang, action.group().title()))
             ));
         }
-        content.push(row(
-            workbench.keys.key(action),
-            t(lang, action.description()),
-            palette,
-        ));
+        content.push(row(key, t(lang, action.description()), palette));
     }
     // The keys that are not actions: they are spelled inside the composer or on
     // the pointer, so a rebind has nothing to bind.
@@ -3449,8 +3461,12 @@ mod tests {
 
     #[test]
     fn the_hint_row_drops_whole_hints_and_never_ends_in_a_separator() {
+        // Pinned to Chinese, so the last entry's label is a fixed string: the
+        // row's *tail* is what this test is about.
+        let mut workbench = Workbench::new();
+        workbench.set_language(crate::workbench::i18n::LanguagePreference::Zh);
         for columns in [120usize, 60, 40, 24, 12, 1] {
-            let rows = hint_row(&Workbench::new(), &FUTURE_DARK, columns, true);
+            let rows = hint_row(&workbench, &FUTURE_DARK, columns, true);
             assert_eq!(width(&rows[0]), columns, "{columns}");
             let text = plain(&rows[0]);
             assert!(!text.trim_end().ends_with('·'), "{columns}: {text:?}");
@@ -3458,23 +3474,38 @@ mod tests {
         }
         // Wide keeps every entry; narrow drops from the right, never from the
         // middle of a key.
-        let wide = plain(&hint_row(&Workbench::new(), &FUTURE_DARK, 200, false)[0]);
-        // Both ends of the row: the settings door and the new-chat key. `help`
-        // has no chord, so the row does not name it at all.
+        let wide = plain(&hint_row(&workbench, &FUTURE_DARK, 200, false)[0]);
+        // Both ends of the row: the rail's key and the new-chat key.
+        assert!(wide.contains("ctrl+d"), "{wide:?}");
         assert!(wide.contains("ctrl+q"), "{wide:?}");
         assert!(wide.contains("ctrl+n"), "{wide:?}");
         assert!(!wide.contains("\u{2014}"), "{wide:?}");
-        assert!(wide
-            .trim_end()
-            .chars()
-            .last()
-            .is_some_and(|c| c.is_ascii_alphabetic()));
-        // Narrow keeps the head of the row whole and drops the tail: at 40
-        // columns even the palette hint is gone, and nothing is cut mid-key.
-        let narrow = plain(&hint_row(&Workbench::new(), &FUTURE_DARK, 40, true)[0]);
+        // `esc` is not on the row: it leaves whatever the reader is in, and the
+        // box that answers it prints it in its own hint. The row ends on `?`
+        // instead — a character, not a chord, and the way into this list.
+        assert_eq!(
+            wide.trim_end().split(" · ").last().map(str::trim),
+            Some("? 帮助"),
+            "{wide:?}"
+        );
+        // Narrow keeps the head of the row whole and drops the tail, and never
+        // cuts a hint in half. Measured at a width where the dropped entry is
+        // gone in *both* languages: the Chinese labels are half as wide as the
+        // English ones, so a 40-column row that ends after `ctrl+r` in English
+        // still reaches `ctrl+p` in Chinese.
+        let narrow = plain(&hint_row(&workbench, &FUTURE_DARK, 40, true)[0]);
         assert!(narrow.contains("ctrl+d"), "{narrow:?}");
         assert!(narrow.contains("ctrl+r"), "{narrow:?}");
-        assert!(!narrow.contains("ctrl+p"), "whole hints are dropped");
+        let narrow = plain(&hint_row(&workbench, &FUTURE_DARK, 24, true)[0]);
+        assert!(narrow.contains("ctrl+d"), "{narrow:?}");
+        assert!(
+            !narrow.contains("ctrl+p"),
+            "whole hints are dropped: {narrow:?}"
+        );
+        assert!(
+            !narrow.contains('?'),
+            "the help door is the tail: {narrow:?}"
+        );
     }
 
     #[test]
