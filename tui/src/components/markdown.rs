@@ -124,8 +124,17 @@ enum MdInline {
     Html {
         raw: String,
     },
-    /// Renders nothing (`case "image": break`).
-    Image,
+    /// A picture: `![alt](src)`.
+    ///
+    /// The picture itself is not painted — a text surface has no pixels for it,
+    /// and a mosaic of `▀` was tried and taken out again (see
+    /// `workbench::image_view`). What is painted is the alt text, linked to the
+    /// source, so the row says a picture is here and `tab`/`enter` can open the
+    /// real one in the preview box.
+    Image {
+        href: String,
+        alt: Vec<MdInline>,
+    },
     /// Task-list checkbox — renders nothing in the TUI renderer.
     Checkbox,
 }
@@ -858,9 +867,10 @@ impl<'a> MdParser<'a> {
                             inline: inner,
                         });
                     }
-                    Tag::Image { .. } => {
-                        let _inner = self.parse_inline_until(TagEnd::Image);
-                        tokens.push(MdInline::Image);
+                    Tag::Image { dest_url, .. } => {
+                        let href = dest_url.to_string();
+                        let inner = self.parse_inline_until(TagEnd::Image);
+                        tokens.push(MdInline::Image { href, alt: inner });
                     }
                     _ => {
                         // Nested block inside inline (shouldn't happen).
@@ -967,9 +977,10 @@ impl<'a> MdParser<'a> {
                         });
                         end_byte = self.events[self.pos - 1].1.end;
                     }
-                    Tag::Image { .. } => {
-                        let _inner = self.parse_inline_until(TagEnd::Image);
-                        inline.push(MdInline::Image);
+                    Tag::Image { dest_url, .. } => {
+                        let href = dest_url.to_string();
+                        let inner = self.parse_inline_until(TagEnd::Image);
+                        inline.push(MdInline::Image { href, alt: inner });
                         end_byte = self.events[self.pos - 1].1.end;
                     }
                     _ => break,
@@ -1520,7 +1531,22 @@ impl MarkdownRenderer {
                 MdInline::Html { raw } => {
                     result.push_str(&apply_text_nl(&*style_ctx.apply_text, raw));
                 }
-                MdInline::Image => {}
+                MdInline::Image { href, alt } => {
+                    // The alt text is the picture's caption, and an empty one
+                    // still names the file: a row with nothing on it cannot be
+                    // selected, and the reader would have no way to reach the
+                    // picture at all.
+                    let label = self.render_inline_tokens(alt, style_ctx);
+                    let label = if label.trim().is_empty() {
+                        href.clone()
+                    } else {
+                        label
+                    };
+                    let underlined = (self.theme.underline)(&label);
+                    let styled = (self.theme.link)(&underlined);
+                    result.push_str(&hyperlink(&styled, href));
+                    result.push_str(style_prefix);
+                }
                 MdInline::Checkbox => {}
             }
         }
@@ -2034,7 +2060,17 @@ fn blockquote_raw_text(blocks: &[MdBlock]) -> String {
                 MdInline::Link { inline, .. } => s.push_str(&render_inline_text(inline)),
                 MdInline::Br => s.push('\n'),
                 MdInline::Html { raw } => s.push_str(raw),
-                MdInline::Image | MdInline::Checkbox => {}
+                // The caption is the picture's text: it is what the alt-text
+                // body of a blockquote should say.
+                MdInline::Image { href, alt } => {
+                    let label = render_inline_text(alt);
+                    s.push_str(if label.trim().is_empty() {
+                        href
+                    } else {
+                        &label
+                    });
+                }
+                MdInline::Checkbox => {}
             }
         }
         s
@@ -2176,10 +2212,20 @@ mod tests {
         );
     }
 
+    /// A picture is not painted here — a text surface has no pixels for one —
+    /// but its alt text is, linked to the file, so the row says a picture is
+    /// there and `tab`/`enter` can open the real one.
     #[test]
-    fn image_renders_nothing() {
-        let lines = plain("![alt](img.png)", 40);
-        assert_eq!(lines, vec![""]);
+    fn an_image_renders_its_alt_text_as_a_link() {
+        let lines = render("![the shot](img.png)", 40);
+        assert!(lines[0].contains("\x1b]8;;img.png"), "{lines:?}");
+        assert!(plain("![the shot](img.png)", 40)[0].contains("the shot"));
+    }
+
+    #[test]
+    fn an_image_with_no_alt_text_names_its_file() {
+        let lines = plain("![](/tmp/shot.png)", 40);
+        assert!(lines[0].contains("/tmp/shot.png"), "{lines:?}");
     }
 
     #[test]
@@ -2926,7 +2972,12 @@ mod tests {
                     MdInline::Html {
                         raw: "<b>raw</b>".into(),
                     },
-                    MdInline::Image,
+                    MdInline::Image {
+                        href: "shot.png".into(),
+                        alt: vec![MdInline::Text {
+                            text: "shot".into(),
+                        }],
+                    },
                     MdInline::Checkbox,
                 ],
             },
@@ -3507,11 +3558,18 @@ mod tests {
         };
         let mut r =
             MarkdownRenderer::with_theme_and_style(MarkdownThemePartial::default(), Some(style));
-        // An image-only inline run renders just the style prefix, which is
-        // then stripped back off.
+        // A picture with no alt text renders its source as a link, and the
+        // trailing style prefix is stripped back off.
         let ctx = bare_ctx(&mut r);
-        let out = r.render_inline_tokens(&[MdInline::Image], &ctx);
-        assert_eq!(out, "");
+        let image = MdInline::Image {
+            href: "shot.png".into(),
+            alt: Vec::new(),
+        };
+        let out = r.render_inline_tokens(&[image], &ctx);
+        assert!(out.contains("\x1b]8;;shot.png"), "{out:?}");
+        // The default text style's own prefix closes the run; it does not sit
+        // after it.
+        assert!(!out.ends_with("\x1b[38;5;99m"), "{out:?}");
     }
 
     #[test]

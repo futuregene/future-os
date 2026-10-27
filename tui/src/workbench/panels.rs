@@ -90,9 +90,11 @@ impl Row {
 ///
 /// 工作区 has three, in the desktop's order (置顶 / 工作区 / 对话会话). 最近 has two,
 /// and they are the desktop's recent view: the conversations with a run still in
-/// flight above the ones that have gone quiet. Inside a stretch rows are ordered
-/// newest-created first — the rail is a chronology, and a conversation keeps its
-/// place for its whole life (see `Live::data`).
+/// flight above the ones that have gone quiet — and the two stretches are
+/// ordered by different clocks. 活跃 runs newest-started first, because a run
+/// rewrites its activity stamp once a second and the stretch would otherwise
+/// shuffle under the reader; 更早 is the list a reader scans for "what did I just
+/// touch", so it stays most recently spoken first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     /// Conversations of the workspaces the reader pinned.
@@ -102,9 +104,9 @@ pub enum Section {
     /// Conversations that belong to no workspace at all.
     Chats,
     /// 最近's first stretch: a run that has not finished (see
-    /// [`SessionRow::streaming`]).
+    /// [`SessionRow::streaming`]), newest-started first.
     Active,
-    /// 最近's second stretch: everything else, newest-created first.
+    /// 最近's second stretch: everything else, most recently spoken first.
     Earlier,
 }
 
@@ -145,18 +147,21 @@ pub fn rows_with(panel: PanelId, data: &WorkbenchData, folded: &Folded) -> Vec<R
     match panel {
         PanelId::Recent => {
             // The desktop's recent view, in the rail's own shape: a run that is
-            // still in flight leads, everything else follows. The split is only
-            // drawn when there is a split to draw — with nothing running the
-            // whole list *is* 更早, and a heading saying so would spend a row of
-            // a rail that shows twenty.
+            // still in flight leads, everything else follows by when it last
+            // spoke. The split is only drawn when there is a split to draw —
+            // with nothing running the whole list *is* 更早, and a heading
+            // saying so would spend a row of a rail that shows twenty.
             //
-            // Both stretches keep the list's own order, which is newest-created
-            // first (`Live::data` sorts once, deliberately not by activity):
-            // that is what keeps the two running rows from trading places on
-            // every five-second poll as each one's activity stamp moves.
-            let streaming: Vec<usize> = (0..data.sessions.len())
+            // 活跃 is ordered by when each conversation *started*, the one stamp
+            // a streaming run does not rewrite: ordering it by activity would
+            // trade places once a second, and a finished run would drop out of
+            // the stretch from a different row every poll. 更早 keeps the list's
+            // own order (most recently spoken first) — the age in each row is
+            // that same fact, so the tail of the rail reads as one clock.
+            let mut streaming: Vec<usize> = (0..data.sessions.len())
                 .filter(|index| data.sessions[*index].streaming)
                 .collect();
+            streaming.sort_by_key(|index| std::cmp::Reverse(data.sessions[*index].created_at_ms));
             let quiet: Vec<usize> = (0..data.sessions.len())
                 .filter(|index| !data.sessions[*index].streaming)
                 .collect();
@@ -1028,6 +1033,7 @@ mod tests {
 
                 parent_id: None,
                 streaming: false,
+                created_at_ms: 0,
             })
             .collect();
         let mut hit = HitMap::new();
@@ -1086,6 +1092,7 @@ mod tests {
 
                 parent_id: None,
                 streaming: false,
+                created_at_ms: 0,
             })
             .collect();
         let total = rows(PanelId::Recent, &data).len();

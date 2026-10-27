@@ -1231,10 +1231,11 @@ message SessionSummary {
   int32 query_count = 8;
   // Whether the agent is streaming a response for this session right now.
   bool is_streaming = 9;
-  // When the session was created. Clients order their conversation lists by
-  // this rather than `updated_at_ms`: an activity stamp moves whenever a run
-  // touches the session (and a `session_info` snapshot rewrites it), so a list
-  // sorted by it reshuffles under the reader.
+  // When the session was created. A client that puts running conversations in
+  // their own stretch (the TUI's 活跃 list) orders that stretch by this rather
+  // than `updated_at_ms`: an activity stamp moves on every run event, and a
+  // `session_info` snapshot rewrites it, so the rows would trade places while
+  // the reader watches. The quiet list stays on `updated_at_ms`.
   int64 created_at_ms = 11;
 }
 

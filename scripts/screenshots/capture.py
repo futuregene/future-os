@@ -1471,6 +1471,11 @@ TUI_SCENARIO_KEYS: dict[str, str] = {
     # A click that hands the keys back to the conversation, then three wheel-ups:
     # the frame is the chat scrolled up, with the `↑ 更早` badge.
     "scrolled": "\x1b[<0;20;20M\x1b[<0;20;20m" + "\x1b[<64;20;20M" * 3,
+    # `ctrl+g` opens the repository browser on the session's workspace. The
+    # panel reads the real repository the workbench runs in, so this frame is a
+    # checkout's own log — the same one `git log` would print — and the capture
+    # needs `FUTURE_DEMO_CWD` for the scripted session to have one.
+    "git": "\x07",
 }
 # Each entry lists the label in every language the surface ships: the capture
 # pins one language (`--lang`), and a tab the frame spells differently is a
