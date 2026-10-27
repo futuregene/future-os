@@ -114,9 +114,12 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
             && level != "off";
         if target.capabilities.reasoning.supported && level_is_thinking {
             let mut reasoning = Map::new();
-            if let Some(effort) = crate::llm::schema::effort_value(level) {
-                // The declared wire value travels verbatim.
-                reasoning.insert("effort".into(), json!(effort));
+            // The Responses API has one location for the depth
+            // (`reasoning.effort`), so a vocabulary's `param` is not used here.
+            if let Some(effort) =
+                crate::llm::schema::effort_wire_value(level, config.reasoning_effort.as_ref())
+            {
+                reasoning.insert("effort".into(), effort);
             }
             if config.supports_reasoning_summary {
                 reasoning.insert("summary".into(), json!("auto"));

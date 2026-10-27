@@ -1,16 +1,20 @@
 //! Thinking-level behavior end to end through the real loader + adapters.
 //!
-//! The contract: `thinkingLevels` is the list of wire values the model accepts.
-//! `default` is implicit (always first, never stored) and sends no thinking
-//! parameter; `off` sends the protocol's explicit disable spelling; every other
-//! value travels verbatim. `reasoning` is legacy metadata with no behavior.
+//! The contract: `thinkingLevels` is the set of levels the model offers (the
+//! pickers show exactly this list). `default` is implicit (always first, never
+//! stored) and sends no thinking parameter; `off` sends the protocol's explicit
+//! disable spelling; every other value travels verbatim — unless the model
+//! declares `compat.reasoningEffort`, which names the values its access path
+//! actually accepts and onto which each level is mapped (see
+//! `ReasoningEffortVocabulary`). `reasoning` is legacy metadata with no
+//! behavior.
 
 use super::*;
 use crate::llm::{
     adapters::AdapterRegistry,
     schema::{
-        clamp_thinking_level, ApiProtocol, ModelRequest, ResolvedModelTarget,
-        DEFAULT_THINKING_LEVEL,
+        clamp_thinking_level, effort_wire_value, parse_reasoning_effort_vocabulary, ApiProtocol,
+        ModelRequest, ProtocolConfig, ResolvedModelTarget, DEFAULT_THINKING_LEVEL,
     },
 };
 use serde_json::{json, Value};
@@ -391,4 +395,276 @@ fn clamp_helper_matches_the_model_method() {
         DEFAULT_THINKING_LEVEL
     );
     assert_eq!(clamp_thinking_level("", &allowed), DEFAULT_THINKING_LEVEL);
+}
+
+// ─── declared effort vocabularies ───────────────────────────────────────
+
+/// The shape that produced the live failure: `westlakehpc/deepseek-flash`
+/// accepts `low|high|xhigh|max`, or an integer 1..=100 that the gateway only
+/// validates inside `chat_template_kwargs`. Sending `medium` verbatim answered
+///
+/// ```text
+/// HTTP 400: DeepSeek V4.1 reasoning_effort must be low, high, xhigh, max,
+/// or an integer within [1, 100] in chat_template_kwargs
+/// ```
+fn deepseek_v4_entry() -> Value {
+    json!({
+        "id": "deepseek-flash",
+        "thinkingLevels": ["off", "low", "medium", "high", "xhigh", "max"],
+        "compat": {
+            "thinkingFormat": "deepseek",
+            "reasoningEffort": {
+                "values": ["low", "high", "xhigh", "max"],
+                "integer": {"min": 1, "max": 100},
+                "param": "chat_template_kwargs.reasoning_effort"
+            }
+        }
+    })
+}
+
+#[test]
+fn a_declared_vocabulary_replaces_a_spelling_the_provider_refuses() {
+    let model = configured_model("openai-completions", deepseek_v4_entry());
+    assert_eq!(
+        levels(&model),
+        vec![
+            DEFAULT_THINKING_LEVEL.to_string(),
+            "off".to_string(),
+            "low".to_string(),
+            "medium".to_string(),
+            "high".to_string(),
+            "xhigh".to_string(),
+            "max".to_string(),
+        ],
+        "the middle level stays selectable — that is the whole point"
+    );
+    // The session clamps to this list, so `medium` survives clamping.
+    assert_eq!(model.clamp_thinking_level("medium"), "medium");
+
+    // A spelled level travels as itself, inside the declared parameter.
+    let body = request_at_level(&model, "low");
+    assert_eq!(body["thinking"], json!({"type": "enabled"}));
+    assert_eq!(
+        body["chat_template_kwargs"]["reasoning_effort"],
+        json!("low")
+    );
+    assert!(body.get("reasoning_effort").is_none());
+
+    // The middle level is sent as the integer the provider accepts, rather
+    // than a spelling it refuses with a 400.
+    let body = request_at_level(&model, "medium");
+    assert_eq!(body["chat_template_kwargs"]["reasoning_effort"], json!(50));
+
+    // `off` still disables thinking and sends no effort at all.
+    let body = request_at_level(&model, "off");
+    assert_eq!(body["thinking"], json!({"type": "disabled"}));
+    assert!(body.get("chat_template_kwargs").is_none());
+    assert!(body.get("reasoning_effort").is_none());
+
+    // Every level the model offers lands on a value the declaration accepts.
+    let vocabulary = parse_reasoning_effort_vocabulary(&model)
+        .unwrap()
+        .expect("declared vocabulary");
+    for level in levels(&model) {
+        if let Some(wire) = effort_wire_value(&level, Some(&vocabulary)) {
+            assert!(
+                vocabulary.accepts(&wire),
+                "`{level}` travels as {wire}, which the declaration does not accept"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_vocabulary_without_an_integer_range_snaps_to_a_spelling() {
+    // A provider that names only two spellings and takes no number: the middle
+    // level cannot be invented, so it snaps to the closest accepted one.
+    let model = configured_model(
+        "openai-completions",
+        json!({
+            "id": "names-only",
+            "thinkingLevels": ["minimal", "low", "medium", "high", "xhigh"],
+            "compat": {"reasoningEffort": {"values": ["low", "high"]}}
+        }),
+    );
+    assert_eq!(
+        request_at_level(&model, "medium")["reasoning_effort"],
+        json!("low")
+    );
+    assert_eq!(
+        request_at_level(&model, "high")["reasoning_effort"],
+        json!("high")
+    );
+    assert_eq!(
+        request_at_level(&model, "minimal")["reasoning_effort"],
+        json!("low")
+    );
+    assert_eq!(
+        request_at_level(&model, "xhigh")["reasoning_effort"],
+        json!("high")
+    );
+}
+
+#[test]
+fn a_vocabulary_works_for_every_chat_format_and_for_responses() {
+    // The declaration is data about the access path, not about one thinking
+    // format: each format keeps its own toggle and places the value where the
+    // declaration says (or at `reasoning.effort` for the Responses API).
+    for format in ["openai", "qwen", "qwen-chat-template", "deepseek", "zai"] {
+        let model = configured_model(
+            "openai-completions",
+            json!({
+                "id": format!("vocab-{format}"),
+                "thinkingLevels": ["low", "medium", "high"],
+                "compat": {
+                    "thinkingFormat": format,
+                    "reasoningEffort": {
+                        "values": ["low", "high"],
+                        "integer": {"min": 1, "max": 100}
+                    }
+                }
+            }),
+        );
+        let body = request_at_level(&model, "medium");
+        assert_eq!(
+            body["reasoning_effort"],
+            json!(50),
+            "format {format:?} must map `medium` instead of sending it"
+        );
+    }
+
+    let responses = configured_model(
+        "openai-responses",
+        json!({
+            "id": "vocab-responses",
+            "thinkingLevels": ["low", "medium", "high"],
+            "compat": {"reasoningEffort": {
+                "values": ["low", "high"],
+                "integer": {"min": 1, "max": 100}
+            }}
+        }),
+    );
+    assert_eq!(
+        request_at_level(&responses, "medium")["reasoning"]["effort"],
+        json!(50)
+    );
+}
+
+/// The regression this guards: "I forgot to declare the vocabulary" is only a
+/// *choice* while every offered level is sent as itself. Every registered model
+/// is walked at every level it offers, and the value that actually goes on the
+/// wire has to be one the model declares it accepts — so adding a model whose
+/// levels the provider refuses turns this red before a user meets the 400.
+#[test]
+fn every_registered_model_at_every_level_sends_only_declared_values() {
+    /// Effort values across every place a level can end up.
+    fn sent_effort(body: &Value) -> Option<Value> {
+        let nested = |path: &[&str]| -> Option<Value> {
+            let mut value = body;
+            for key in path {
+                value = value.get(key)?;
+            }
+            Some(value.clone())
+        };
+        nested(&["reasoning_effort"])
+            .or_else(|| nested(&["chat_template_kwargs", "reasoning_effort"]))
+            .or_else(|| nested(&["reasoning", "effort"]))
+    }
+
+    let mut models = builtin_models();
+    // User-shaped declarations (the shape the live failure had), through the
+    // real loader.
+    for entry in [
+        deepseek_v4_entry(),
+        json!({"id": "sweep-names", "thinkingLevels": ["low", "high"]}),
+        json!({"id": "sweep-raw", "thinkingLevels": ["minimal", "low", "medium", "high"]}),
+        json!({
+            "id": "sweep-split",
+            "thinkingLevels": ["low", "high"],
+            "compat": {"thinkingFormat": "reasoning-split"}
+        }),
+    ] {
+        models.push(configured_model("openai-completions", entry));
+    }
+    for entry in [
+        json!({"id": "sweep-responses", "thinkingLevels": ["low", "medium", "max"]}),
+        json!({
+            "id": "sweep-responses-vocab",
+            "thinkingLevels": ["low", "medium", "max"],
+            "compat": {"reasoningEffort": {"values": ["low", "max"], "integer": {"min": 1, "max": 64}}}
+        }),
+    ] {
+        models.push(configured_model("openai-responses", entry));
+    }
+    models.push(configured_model(
+        "anthropic",
+        json!({"id": "sweep-anthropic", "thinkingLevels": ["low", "medium", "max"]}),
+    ));
+
+    let mut checked = 0usize;
+    let mut declared = 0usize;
+    for model in &models {
+        if ApiProtocol::from_str(&model.api).is_err() {
+            continue; // an unknown api never reaches an adapter
+        }
+        let vocabulary = parse_reasoning_effort_vocabulary(model).unwrap();
+        let target = ResolvedModelTarget::from_model(model, String::new(), None, Some(16384))
+            .unwrap_or_else(|error| panic!("{}: {error}", model.id));
+        let protocol = target.protocol.clone();
+        let depth_is_a_budget = matches!(protocol, ProtocolConfig::AnthropicMessages(_));
+        let format_has_no_depth = matches!(
+            &protocol,
+            ProtocolConfig::OpenAiChat(config)
+                if matches!(config.reasoning, crate::llm::schema::ChatReasoningFormat::ReasoningSplit)
+        );
+        if vocabulary.is_some() {
+            declared += 1;
+        }
+
+        for level in model.allowed_thinking_levels() {
+            let body = request_at_level(model, &level);
+            let sent = sent_effort(&body);
+            let enabled = !level.is_empty() && level != DEFAULT_THINKING_LEVEL && level != "off";
+            match &vocabulary {
+                Some(vocabulary) => {
+                    if let Some(sent) = &sent {
+                        assert!(
+                            vocabulary.accepts(sent),
+                            "{} at `{level}` sends {sent}, which it does not declare \
+                             (accepts {})",
+                            model.id,
+                            vocabulary.describe()
+                        );
+                    } else if enabled && !depth_is_a_budget && !format_has_no_depth {
+                        // A declared level whose effort vanished is the silent
+                        // failure this test exists to catch.
+                        let wire = effort_wire_value(&level, Some(vocabulary));
+                        panic!(
+                            "{} at `{level}` sends no effort at all (mapping: {wire:?}); \
+                             body: {body}",
+                            model.id
+                        );
+                    }
+                }
+                None => {
+                    if let Some(sent) = &sent {
+                        assert_eq!(
+                            sent,
+                            &json!(level),
+                            "{} at `{level}` has no declared vocabulary, so the level must \
+                             travel verbatim",
+                            model.id
+                        );
+                    }
+                }
+            }
+            checked += 1;
+        }
+    }
+
+    assert!(checked > 1_000, "walked too few levels: {checked}");
+    assert!(
+        declared >= 2,
+        "walked too few vocabulary models: {declared}"
+    );
 }
