@@ -60,6 +60,14 @@ rows — activity, status, hint — stay full width. The composer band is exactl
 the box it draws (top rule, prompt, closing rule); it used to reserve a fourth
 row and leave it blank.
 
+The activity row describes the conversation **on screen**: its kind (思考 / 工具 /
+生成), how long this client has been watching the run, and how many tool calls
+the run has made — one per call, though the agent announces every call twice
+while its arguments stream. Switching conversations — a click in the rail,
+`ctrl+r`, `shift+←`/`shift+→` — therefore starts the row over, and a conversation
+whose run is still in flight (started here, by the desktop, by a queued run)
+takes the spinner back rather than showing `idle`.
+
 The rail has **three tabs**: 最近 (conversations by refresh time), 工作区 (filed
 by directory) and **文件** — a browser of the session workspace. 文件 lists one level
 at a time and reads a directory when it is opened, never before: a repository
