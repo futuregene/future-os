@@ -1095,19 +1095,28 @@ impl Workbench {
             "enter" => self.submit_draft(data),
             "up" if self.sidebar_focus => self.move_selection(-1, data),
             "down" if self.sidebar_focus => self.move_selection(1, data),
-            // The rail's two tabs, from the rail itself: a focused panel answers
-            // left/right with its neighbour the way a tab strip does with a
-            // click. The cursor lands on the conversation on screen, exactly as
-            // the click on a tab leaves it.
+            // The rail's three tabs, from the rail itself: a focused panel
+            // answers left/right with its neighbour the way a tab strip does
+            // with a click. The cursor lands on the conversation on screen,
+            // exactly as the click on a tab leaves it.
             //
-            // 文件 is the exception: there, left/right walk the tree (close a
-            // directory, open it) the way every other tree in every other
-            // editor does. The tabs are still one keystroke away (`ctrl+1`…
-            // `ctrl+3`, or a click on the strip).
-            "left" if self.sidebar_focus && self.panel == PanelId::Files => self.file_close(data),
-            "right" if self.sidebar_focus && self.panel == PanelId::Files => self.file_open(data),
+            // *Every* tab answers them, 文件 included. It used to keep the
+            // arrows for its tree, which made the third tab a dead end: the
+            // rail's own hint row promises `←→ 页签`, the other two tabs do it,
+            // and a reader who arrived in the tree by arrow could only leave by
+            // `ctrl+1`…`ctrl+3` or the pointer — one arrow away from feeling
+            // broken. The tree keeps the keys that are its own (`enter` opens,
+            // `↑↓` walk, `backspace` closes a directory or walks up to the one
+            // holding the row).
             "left" if self.sidebar_focus => self.switch_panel(-1, data),
             "right" if self.sidebar_focus => self.switch_panel(1, data),
+            // The tree's own step out of a level, on the key a file browser's
+            // "up one" has always been. Placed before the editor's `backspace`
+            // so a focused rail keeps it, and only in 文件: in the other two
+            // panels there is no level to leave.
+            "backspace" if self.sidebar_focus && self.panel == PanelId::Files => {
+                self.file_close(data)
+            }
             // Pin the workspace the selected conversation belongs to, so the
             // 置顶 section is reachable with the keyboard. Only a *focused* rail
             // takes it: elsewhere `p` is a letter in the draft.
@@ -1333,42 +1342,12 @@ impl Workbench {
         }
     }
 
-    /// `→` in the tree: open the directory, or step into its first child.
+    /// `backspace` in the tree: close the directory, or jump to the one that
+    /// holds the row.
     ///
-    /// On an already-open directory the key does what the reader is pointing
-    /// at — it moves the cursor into the directory rather than collapsing it,
-    /// which is the one thing `→` means in every file tree.
-    fn file_open(&mut self, data: &WorkbenchData) -> Vec<WbAction> {
-        let rows = self.panel_rows(data);
-        let Some(index) = rows.get(self.sidebar_index).and_then(|row| row.file()) else {
-            return Vec::new();
-        };
-        let Some(node) = data.tree.get(index) else {
-            return Vec::new();
-        };
-        if !node.is_dir() {
-            // A file is not a folder: `→` on it is the preview, the same as `enter`.
-            return vec![WbAction::PreviewFile(
-                node.path.to_string_lossy().to_string(),
-            )];
-        }
-        if !node.expanded {
-            return vec![WbAction::ToggleFolder(
-                node.path.to_string_lossy().to_string(),
-            )];
-        }
-        // Open already: step onto the first child, if it is on screen.
-        if data
-            .tree
-            .get(index + 1)
-            .is_some_and(|child| child.depth > node.depth)
-        {
-            self.sidebar_index = index + 1;
-        }
-        vec![WbAction::Redraw]
-    }
-
-    /// `←` in the tree: close the directory, or jump to the one that holds it.
+    /// It is the file browser's "up one" rather than a tree key stolen from the
+    /// tab strip: `←`/`→` switch the rail's tabs on every tab (see `handle_key`),
+    /// so the level keys have to be their own.
     fn file_close(&mut self, data: &WorkbenchData) -> Vec<WbAction> {
         let rows = self.panel_rows(data);
         let Some(index) = rows.get(self.sidebar_index).and_then(|row| row.file()) else {
@@ -4220,8 +4199,9 @@ mod tests {
         assert!(text.contains("README.md"), "{text}");
     }
 
-    /// The tree's own keys: `↑↓` walk every row, `→`/`←` open and close a
-    /// directory, `enter` previews a file or opens a directory.
+    /// The tree's own keys: `↑↓` walk every row, `enter` previews a file or
+    /// opens a directory, `backspace` closes a directory or walks up to the one
+    /// holding the row. None of them is the tab strip's arrow.
     #[test]
     fn the_file_panel_navigates_the_tree_with_the_keyboard() {
         let data = demo::chat();
@@ -4253,22 +4233,59 @@ mod tests {
                 data.tree.rows()[3].path.to_string_lossy().to_string()
             )]
         );
-        // `→` opens what is closed, `←` closes what is open, and neither
-        // switches the panel (that is `ctrl+1`…`ctrl+3` on this tab).
-        assert!(matches!(
-            workbench
-                .handle(WbEvent::Key("right".into()), &data)
-                .as_slice(),
-            [WbAction::ToggleFolder(_)]
-        ));
+        // `backspace` closes a directory that is open…
+        workbench.sidebar_index = 0; // `docs`, open in the fixture
+        assert_eq!(
+            workbench.handle(WbEvent::Key("backspace".into()), &data),
+            vec![WbAction::ToggleFolder(
+                data.tree.rows()[0].path.to_string_lossy().to_string()
+            )]
+        );
+        // …and on a row inside one it walks up to the directory holding it
+        // rather than folding that directory away.
+        workbench.sidebar_index = 2; // `docs/README.md`, depth 1
+        assert_eq!(
+            workbench.handle(WbEvent::Key("backspace".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(workbench.sidebar_index, 0, "up one level, to `docs`");
+        assert_eq!(workbench.panel, PanelId::Files, "the panel did not move");
+    }
+
+    /// A third tab that swallows the strip's arrows is a dead end: the reader
+    /// who arrives in 文件 by `→` could only leave by `ctrl+1`…`ctrl+3` or the
+    /// pointer, while the rail's own hint row promises `←→ 页签`. Every row
+    /// (a file, a closed directory, an open one) answers them with the tab.
+    #[test]
+    fn the_rail_arrows_switch_tabs_from_the_file_panel_too() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.handle(WbEvent::Key("ctrl+3".into()), &data);
+        assert_eq!(workbench.panel, PanelId::Files);
+        // 0 = open `docs`, 2 = a file, 3 = a closed directory, 6 = a picture.
+        for index in [0, 2, 3, 6] {
+            workbench.sidebar_index = index;
+            assert_eq!(
+                workbench.handle(WbEvent::Key("right".into()), &data),
+                vec![WbAction::SwitchPanel(PanelId::Recent)],
+                "`→` on row {index} must be the strip's arrow"
+            );
+            assert_eq!(workbench.panel, PanelId::Recent);
+            assert_eq!(
+                workbench.handle(WbEvent::Key("left".into()), &data),
+                vec![WbAction::SwitchPanel(PanelId::Files)],
+                "`←` must come back to the tree"
+            );
+            assert_eq!(workbench.panel, PanelId::Files);
+        }
+        // The tree keeps the keys that are its own.
         workbench.sidebar_index = 0;
         assert!(matches!(
             workbench
-                .handle(WbEvent::Key("left".into()), &data)
+                .handle(WbEvent::Key("backspace".into()), &data)
                 .as_slice(),
             [WbAction::ToggleFolder(_)]
         ));
-        assert_eq!(workbench.panel, PanelId::Files, "the panel did not move");
     }
 
     /// A preview keeps its own view state, and a new file starts fresh.
@@ -4887,6 +4904,15 @@ mod tests {
                 .all(|(rect, _)| rect.y as usize != footer),
             "nothing is clickable on the hint row"
         );
+        // 文件 answers one key the other two do not, so its footer names it;
+        // the panels without a tree do not claim a key they ignore.
+        workbench.handle(WbEvent::Key("ctrl+3".into()), &data);
+        assert_eq!(workbench.panel, PanelId::Files);
+        let files = plain(&workbench.render(&data, 120, 38));
+        assert!(files.contains("⌫ 收起"), "{files}");
+        workbench.handle(WbEvent::Key("ctrl+1".into()), &data);
+        let recent = plain(&workbench.render(&data, 120, 38));
+        assert!(!recent.contains("⌫"), "{recent}");
     }
 
     #[test]

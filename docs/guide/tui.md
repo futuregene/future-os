@@ -64,11 +64,12 @@ The rail has **three tabs**: 最近 (conversations by refresh time), 工作区 (
 by directory) and **文件** — a browser of the session workspace. 文件 lists one level
 at a time and reads a directory when it is opened, never before: a repository
 with a `node_modules` opens instantly, and each listing is capped at 400 entries
-with a line saying so. `↑`/`↓` walk the rows, `→` opens a directory (or steps into
-it, if it is already open), `←` closes it (or jumps to the directory that holds
-the row), `enter` opens a directory and previews a file, and a click does what
-`enter` does on the row it landed on. On this tab `←`/`→` belong to the tree; the
-tabs are `ctrl+1`…`ctrl+3` or a click on the strip.
+with a line saying so. `↑`/`↓` walk the rows, `enter` opens a directory and
+previews a file, `backspace` closes a directory (or jumps to the directory that
+holds the row), and a click does what `enter` does on the row it landed on.
+`←`/`→` switch tabs on this tab too — a third tab that kept the arrows for
+itself was a dead end, since the other two answer them — and the rail's last row
+names the keys the panel in force answers.
 
 ## Pictures
 
