@@ -568,6 +568,7 @@ pub enum Key {
     NoticeUnpinned,
     NoticePinUnavailable,
     NoticeModeUnknown,
+    NoticeOpenLinkFailed,
     // ── the adapter (`live`, `local`, `widgets`) ──────────────────────
     InputHintLaunchpad,
     ApprovalWaiting,
@@ -946,7 +947,10 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "Delete the selected conversation (asks first)",
         ),
         HelpKeySidebar => ("侧栏：打开 / 聚焦 / 收起", "Sidebar: show / focus / hide"),
-        HelpKeyFocus => ("在输入框与侧栏之间移动", "Move between the input and the sidebar"),
+        HelpKeyFocus => (
+            "在对话里逐个选中链接与图片，⏎ 打开",
+            "Step through the conversation's links and pictures, enter opens one",
+        ),
         HelpKeyScroll => ("滚动聊天，或侧栏列表", "Scroll the chat, or the sidebar's list"),
         HelpKeyPage => ("整页滚动聊天", "Scroll the chat a page at a time"),
         HelpKeyPalette => ("命令面板", "Command palette"),
@@ -1055,6 +1059,7 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "未知的审批模式：{}",
             "Unknown approval mode: {}",
         ),
+        NoticeOpenLinkFailed => ("打不开 {}：{}", "Could not open {}: {}"),
 
         InputHintLaunchpad => (
             // What the *draft* can hold, in the order the reader types it: the
@@ -1567,6 +1572,7 @@ mod tests {
             NoticePinned,
             NoticeUnpinned,
             NoticePinUnavailable,
+            NoticeOpenLinkFailed,
             DeleteTitle,
             DeleteBody,
             DeleteWhere,

@@ -34,6 +34,7 @@ pub mod i18n;
 pub mod image_view;
 pub mod launchpad;
 pub mod layout;
+pub mod links;
 pub mod live;
 pub mod local;
 pub mod mouse;
@@ -311,6 +312,9 @@ pub enum WbAction {
     PasteClipboard,
     /// Show the newest image already attached to the draft.
     PreviewAttachment,
+    /// Hand a link from the conversation to the reader's browser (or mail
+    /// client). The app owns the process; the surface only knows the address.
+    OpenUrl(String),
     SetTools(Vec<String>),
     CancelQueued(String),
     RecallQueued(String),
@@ -533,6 +537,19 @@ pub struct Workbench {
     pub launch_field: LaunchField,
     pub chat_scroll: usize,
     pub scroll: scroll::ScrollState,
+    /// The conversation's openable spans — what `tab` steps through. Cached
+    /// until the transcript, the width it was wrapped at or the working
+    /// directory changes (see [`links::Cache`]).
+    links: links::Cache,
+    /// Which span `tab` put the cursor on, as an index into that list.
+    ///
+    /// An index rather than a copy of the span: the list is rebuilt as the
+    /// conversation grows, and a stored span would then point at a row that has
+    /// moved. Out-of-range is clamped at the point of use.
+    link_index: Option<usize>,
+    /// The width the transcript was last wrapped at. Part of the span cache's
+    /// key, because a resize rewraps every row while no message changes.
+    chat_inner: usize,
     pub queue_index: usize,
     pub workflow_index: usize,
     /// How many list rows the last frame showed. Only the renderer knows,
@@ -660,6 +677,9 @@ impl Workbench {
             launch_field: LaunchField::Prompt,
             chat_scroll: 0,
             scroll: scroll::ScrollState::default(),
+            links: links::Cache::default(),
+            link_index: None,
+            chat_inner: 0,
             queue_index: 0,
             workflow_index: 0,
             list_page: 10,
@@ -756,6 +776,9 @@ impl Workbench {
         if self.session_key != data.session.id {
             self.session_key = data.session.id.clone();
             self.scroll.reset();
+            // The cursor belonged to the conversation that just left the screen.
+            self.link_index = None;
+            self.links.clear();
         }
         self.scroll.observe(data.revision);
         self.mouse_capture = data.mouse_capture;
@@ -1009,6 +1032,13 @@ impl Workbench {
     }
 
     fn handle_key(&mut self, key: &str, data: &WorkbenchData) -> Vec<WbAction> {
+        // Every key but the three that move or use the link cursor means the
+        // reader is aiming at something else: typing, scrolling or opening a
+        // panel takes the highlight away instead of leaving it on a row the
+        // next frame may not even show.
+        if !matches!(key, "tab" | "shift+tab" | "enter") {
+            self.link_index = None;
+        }
         // The mention menu answers the navigation keys while it is up, and
         // nothing else: every other key still edits the draft, which is what
         // keeps the query and the menu from disagreeing.
@@ -1149,7 +1179,7 @@ impl Workbench {
                 }
             }
             Some(preferences::Action::Sidebar) => {
-                return self.toggle_sidebar();
+                return self.toggle_sidebar(data);
             }
             Some(preferences::Action::Copy) => return vec![WbAction::CopyLast],
             Some(preferences::Action::Queue) => return vec![WbAction::OpenQueue],
@@ -1187,27 +1217,26 @@ impl Workbench {
                 self.open_palette();
                 vec![WbAction::Redraw]
             }
+            // `tab` walks the conversation's links and pictures — the one job
+            // it has on a screen that is a conversation. The rail keeps its own
+            // door (`ctrl+b`, or a click on a tab), which is why focusing it is
+            // no longer something `tab` does: a reader stepping towards a link
+            // should never watch the caret jump into the sidebar instead.
             "tab" => {
                 if data.on_launchpad() {
                     self.launch_field = self.launch_field.next();
-                } else if self.sidebar_visible && layout::sidebar_fits(self.last_frame.0) {
-                    // A hidden rail cannot take the keys: focusing it would
-                    // swallow up/down with nothing on screen to show for it.
-                    self.sidebar_focus = !self.sidebar_focus;
-                    if self.sidebar_focus {
-                        // Arriving in the rail lands on the conversation that
-                        // is on screen, not on row 0 of an unrelated list.
-                        let row = self.current_row(data);
-                        self.select_row(row, data);
-                    }
+                    vec![WbAction::Redraw]
+                } else {
+                    self.step_link(1, data)
                 }
-                vec![WbAction::Redraw]
             }
             "shift+tab" => {
                 if data.on_launchpad() {
                     self.launch_field = self.launch_field.previous();
+                    vec![WbAction::Redraw]
+                } else {
+                    self.step_link(-1, data)
                 }
-                vec![WbAction::Redraw]
             }
             // On the launchpad a focused chip answers `enter`: it cycles the
             // choice it names, which is what clicking it does. Without a chip,
@@ -1224,6 +1253,10 @@ impl Workbench {
                 self.launch_field = LaunchField::Prompt;
                 vec![WbAction::Redraw]
             }
+            // A link under the `tab` cursor answers `enter` first: the reader
+            // put the cursor there to open it, and `esc` is what hands the key
+            // back to the draft.
+            "enter" if self.link_index.is_some() && !self.sidebar_focus => self.open_link(data),
             "enter" if self.sidebar_focus => self.open_selected(data),
             "enter" => self.submit_draft(data),
             "up" if self.sidebar_focus => self.move_selection(-1, data),
@@ -1302,7 +1335,7 @@ impl Workbench {
         }
     }
 
-    fn toggle_sidebar(&mut self) -> Vec<WbAction> {
+    fn toggle_sidebar(&mut self, data: &WorkbenchData) -> Vec<WbAction> {
         if !layout::sidebar_fits(self.last_frame.0) {
             self.overlay = Some(Overlay::PanelFull);
         } else if !self.sidebar_visible {
@@ -1313,6 +1346,13 @@ impl Workbench {
         } else {
             self.sidebar_visible = false;
             self.sidebar_focus = false;
+        }
+        // Arriving in the rail lands on the conversation that is on screen, not
+        // on row 0 of a list the reader never looked at: `enter` there would
+        // open somebody else's session.
+        if self.sidebar_focus {
+            let row = self.current_row(data);
+            self.select_row(row, data);
         }
         if layout::sidebar_fits(self.last_frame.0) {
             vec![WbAction::SetPreferences]
@@ -1449,6 +1489,77 @@ impl Workbench {
             .and_then(|index| data.sessions.get(index))
             .map(|session| vec![WbAction::SwitchSession(session.id.clone())])
             .unwrap_or_default()
+    }
+
+    /// The conversation's openable spans, rescanned only when something they
+    /// were derived from changed.
+    ///
+    /// Shared with the compositor ([`screen::conversation`]) deliberately: the
+    /// rows that are highlighted and the rows that answer a click have to be the
+    /// same list, and two scans could disagree on the frame they straddle.
+    pub(crate) fn link_spans(&mut self, data: &WorkbenchData) -> &[links::LinkSpan] {
+        self.links.spans(
+            &data.messages,
+            &data.session.cwd,
+            data.revision,
+            self.chat_inner,
+        )
+    }
+
+    /// The span `tab` has the cursor on — its index (what a click names it by)
+    /// and a copy of it, if the list still has it.
+    pub(crate) fn selected_link(
+        &mut self,
+        data: &WorkbenchData,
+    ) -> Option<(usize, links::LinkSpan)> {
+        let index = self.link_index?;
+        let spans = self.link_spans(data);
+        let count = spans.len();
+        if count == 0 {
+            self.link_index = None;
+            return None;
+        }
+        let selected = index.min(count - 1);
+        let span = spans[selected].clone();
+        if selected != index {
+            self.link_index = Some(selected);
+        }
+        Some((selected, span))
+    }
+
+    /// `tab` / `shift+tab`: step the link cursor, wrapping at both ends.
+    ///
+    /// It wraps rather than stopping because the reader is walking a short list
+    /// inside a long transcript: running off the last link and having nothing
+    /// happen reads as "this conversation has no links", when the first one is
+    /// one more press away.
+    fn step_link(&mut self, delta: isize, data: &WorkbenchData) -> Vec<WbAction> {
+        let count = self.link_spans(data).len();
+        if count == 0 {
+            self.link_index = None;
+            return vec![WbAction::Redraw];
+        }
+        let next = match self.link_index {
+            None if delta < 0 => count - 1,
+            None => 0,
+            Some(index) => (index as isize + delta).rem_euclid(count as isize) as usize,
+        };
+        self.link_index = Some(next);
+        vec![WbAction::Redraw]
+    }
+
+    /// `enter` on the link cursor: a URL goes to the browser, a conversation
+    /// link switches to it, a file opens in the preview box — a picture as a
+    /// picture.
+    fn open_link(&mut self, data: &WorkbenchData) -> Vec<WbAction> {
+        let Some((_, span)) = self.selected_link(data) else {
+            return Vec::new();
+        };
+        match span.target {
+            links::LinkTarget::Url(url) => vec![WbAction::OpenUrl(url)],
+            links::LinkTarget::Session(id) => vec![WbAction::SwitchSession(id)],
+            links::LinkTarget::File(path) => vec![WbAction::PreviewFile(path)],
+        }
     }
 
     /// `enter`/`→` on a tree row (the files panel): a directory opens, a file
@@ -3090,6 +3201,27 @@ impl Workbench {
             self.sidebar_focus = false;
             return vec![WbAction::FocusPane(PaneId::Input)];
         }
+        // A click that is not on a link means the reader is aiming somewhere
+        // else: the highlight goes with the key path's own rule.
+        if !id.starts_with("chat.link.") {
+            self.link_index = None;
+        }
+        // A link in the conversation. A click both puts the cursor on it and
+        // opens it — the pointer has already named its target, so a second
+        // `enter` would be asking the reader to say it twice.
+        if let Some(index) = id
+            .strip_prefix("chat.link.")
+            .and_then(|rest| rest.parse::<usize>().ok())
+        {
+            self.link_index = Some(index);
+            self.sidebar_focus = false;
+            let actions = self.open_link(data);
+            return if actions.is_empty() {
+                vec![WbAction::Redraw]
+            } else {
+                actions
+            };
+        }
         if id == "chat" {
             self.sidebar_focus = false;
             return vec![WbAction::FocusPane(PaneId::Chat)];
@@ -3615,6 +3747,12 @@ mod tests {
     use super::*;
     use crate::workbench::state::{ActivityKind, SessionRow};
     use crate::workbench::theme::{FUTURE_DARK, PALETTES};
+
+    /// One row's worth of a markdown link, as the renderer writes it — an OSC 8
+    /// hyperlink around its label.
+    fn md_link(href: &str, text: &str) -> String {
+        format!("\x1b]8;;{href}\x1b\\{text}\x1b]8;;\x1b\\")
+    }
 
     fn plain(rows: &[String]) -> String {
         rows.iter()
@@ -4239,18 +4377,134 @@ mod tests {
         );
     }
 
-    /// `tab` takes the keys into the rail and lands the cursor on the
+    /// What `enter` does is decided by the link, not by the surface: an address
+    /// goes to the browser, another conversation is opened, a file is handed to
+    /// the preview box (a picture as a picture).
+    #[test]
+    fn enter_opens_the_link_under_the_cursor() {
+        let file = format!("{}/src/main.rs", env!("CARGO_MANIFEST_DIR"));
+        let mut data = demo::chat();
+        data.messages = vec![format!(
+            "{} {} {}",
+            md_link("https://example.com/a", "the site"),
+            md_link("futureos://session/s-2", "that chat"),
+            md_link(&file, "the source"),
+        )];
+        let (mut workbench, _rows) = frame(&data, 150, 38);
+        let enter =
+            |workbench: &mut Workbench| workbench.handle(WbEvent::Key("enter".into()), &data);
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        assert_eq!(
+            enter(&mut workbench),
+            vec![WbAction::OpenUrl("https://example.com/a".into())]
+        );
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        assert_eq!(
+            enter(&mut workbench),
+            vec![WbAction::SwitchSession("s-2".into())]
+        );
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        assert_eq!(enter(&mut workbench), vec![WbAction::PreviewFile(file)]);
+        // `esc` puts the cursor back in the draft, so `enter` is a submission
+        // again rather than the link the reader has finished with.
+        workbench.handle(WbEvent::Key("escape".into()), &data);
+        assert_eq!(workbench.link_index, None);
+    }
+
+    /// A click names its own link and opens it: the pointer has already said
+    /// which one it means, so asking for `enter` as well would be asking twice.
+    #[test]
+    fn a_click_on_a_link_opens_it() {
+        let mut data = demo::chat();
+        data.messages = vec![format!(
+            "{} {}",
+            md_link("https://example.com/a", "the site"),
+            md_link("futureos://session/s-2", "that chat"),
+        )];
+        let mut workbench = workbench();
+        assert_eq!(
+            click_region(&mut workbench, &data, 150, 38, "chat.link.1"),
+            vec![WbAction::SwitchSession("s-2".into())]
+        );
+        assert_eq!(workbench.link_index, Some(1));
+        // Every painted link answers a click, not just the one the cursor is
+        // on: the first one has its own region.
+        assert_eq!(
+            click_region(&mut workbench, &data, 150, 38, "chat.link.0"),
+            vec![WbAction::OpenUrl("https://example.com/a".into())]
+        );
+    }
+
+    /// The cursor is painted: the row the reader tabbed to is in reverse video,
+    /// and only that row.
+    #[test]
+    fn the_cursor_marks_the_link_it_is_on() {
+        let mut data = demo::chat();
+        data.messages = vec![
+            format!(
+                "{} and {}",
+                md_link("https://example.com/a", "the first"),
+                "prose"
+            ),
+            format!("then {}", md_link("https://example.com/b", "the second")),
+        ];
+        let (mut workbench, _rows) = frame(&data, 150, 38);
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        let rows = workbench.render(&data, 150, 38);
+        let marked: Vec<&String> = rows.iter().filter(|row| row.contains("\x1b[7m")).collect();
+        assert_eq!(marked.len(), 1, "one marked row: {rows:?}");
+        assert!(
+            plain(&[marked[0].clone()]).contains("the second"),
+            "the marked row is the link the cursor walked to: {marked:?}"
+        );
+        // The reverse video covers the label and nothing else: an offset that
+        // was one cell off would mark a space or half the word.
+        let marked = marked[0];
+        let from = marked.find("\x1b[7m").expect("a marked run");
+        let to = marked.rfind("\x1b[27m").expect("the run is closed");
+        let inside = crate::utils::strip_ansi_codes(&marked[from + 4..to]);
+        assert_eq!(inside, "the second", "the marked cells are the label");
+    }
+
+    /// `tab` can walk to a link a page above the window; the transcript follows
+    /// it, because a highlight nobody can see is not a cursor.
+    #[test]
+    fn the_transcript_scrolls_to_the_link_the_cursor_walked_to() {
+        let mut data = demo::chat();
+        let mut messages = vec![format!(
+            "top {}",
+            md_link("https://example.com/top", "the oldest link")
+        )];
+        messages.extend((0..80).map(|n| format!("line {n}")));
+        data.messages = messages;
+        let (mut workbench, rows) = frame(&data, 120, 30);
+        assert!(
+            !plain(&rows).contains("the oldest link"),
+            "the link starts above the window: {}",
+            plain(&rows)
+        );
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        let rows = workbench.render(&data, 120, 30);
+        assert!(
+            plain(&rows).contains("the oldest link"),
+            "the window followed the cursor: {}",
+            plain(&rows)
+        );
+    }
+
+    /// The rail's chord takes the keys into the rail and lands the cursor on the
     /// conversation that is on screen: a cursor left at row 0 of a list the
     /// reader never looked at would answer `enter` with someone else's session.
     #[test]
-    fn tab_focuses_the_rail_on_the_conversation_on_screen() {
+    fn the_rail_key_focuses_the_conversation_on_screen() {
         let mut data = demo::chat();
         // Put the conversation on screen second in the list, so "row 0" and
         // "the current conversation" are different answers.
         data.sessions.swap(0, 1);
         let (mut workbench, _rows) = frame(&data, 120, 38);
         assert!(!workbench.sidebar_focus);
-        workbench.handle(WbEvent::Key("tab".into()), &data);
+        workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
         assert!(workbench.sidebar_focus);
         let rows = panels::rows(PanelId::Recent, &data);
         let current = data
@@ -4261,6 +4515,36 @@ mod tests {
         assert_eq!(current, 1, "the fixture moved it off row 0");
         assert_eq!(workbench.sidebar_index, 1, "the cursor lands on the chat");
         assert_eq!(rows[workbench.sidebar_index].session(), Some(current));
+    }
+
+    /// `tab` belongs to the conversation, and to nothing else: it steps between
+    /// the transcript's links and pictures and never moves the keys into the
+    /// rail. A reader walking towards a link must not watch the caret jump into
+    /// the sidebar instead — the rail has its own chord.
+    #[test]
+    fn tab_walks_the_conversations_links_and_never_the_rail() {
+        let mut data = demo::chat();
+        data.messages = vec![format!(
+            "read {} then {}",
+            md_link("https://a.example", "the first"),
+            md_link("https://b.example", "the second"),
+        )];
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let step = |workbench: &mut Workbench, data: &WorkbenchData| {
+            workbench.handle(WbEvent::Key("tab".into()), data);
+            workbench.link_index
+        };
+        assert_eq!(step(&mut workbench, &data), Some(0));
+        assert_eq!(step(&mut workbench, &data), Some(1));
+        assert_eq!(step(&mut workbench, &data), Some(0), "the walk wraps");
+        workbench.handle(WbEvent::Key("shift+tab".into()), &data);
+        assert_eq!(workbench.link_index, Some(1), "shift+tab walks back");
+        assert!(!workbench.sidebar_focus, "the rail was never focused");
+        assert!(workbench.sidebar_visible);
+        // Typing takes the cursor back to the draft: the highlight cannot
+        // outlive the aim that put it there.
+        workbench.handle(WbEvent::Key("x".into()), &data);
+        assert_eq!(workbench.link_index, None);
     }
 
     /// Deleting a conversation asks before it acts: `/delete` (or the rail's
@@ -4314,7 +4598,7 @@ mod tests {
         let (mut workbench, _rows) = frame(&data, 120, 38);
         // `x` stays a letter in the draft even with the rail focused: the rail
         // takes the list keys, not the alphabet.
-        workbench.handle(WbEvent::Key("tab".into()), &data);
+        workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
         workbench.handle(WbEvent::Key("x".into()), &data);
         assert_eq!(workbench.overlay, None);
         workbench.handle(WbEvent::Key("down".into()), &data);
@@ -4377,7 +4661,7 @@ mod tests {
     fn up_and_down_move_the_rail_cursor_and_enter_opens_it() {
         let data = demo::workspaces();
         let (mut workbench, _rows) = frame(&data, 120, 38);
-        workbench.handle(WbEvent::Key("tab".into()), &data);
+        workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
         workbench.panel = PanelId::Workspaces;
         workbench.sidebar_index = 0;
 
@@ -4429,7 +4713,7 @@ mod tests {
     fn left_and_right_move_the_rail_between_its_two_tabs() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
-        workbench.handle(WbEvent::Key("tab".into()), &data);
+        workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
         assert!(workbench.sidebar_focus);
         assert_eq!(workbench.panel, PanelId::Recent);
 
@@ -4603,7 +4887,7 @@ mod tests {
             "{typed:?}"
         );
 
-        workbench.handle(WbEvent::Key("tab".into()), &data);
+        workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
         workbench.sidebar_index = 0;
         let workspace = &data.workspaces[0];
         assert!(workspace.pinned);
@@ -7159,7 +7443,7 @@ mod tests {
         workbench.handle(WbEvent::Key("enter".into()), &data);
         workbench.overlay = None;
         assert!(workbench.reduced_motion && !workbench.motion_enabled());
-        workbench.handle(WbEvent::Key("tab".into()), &data);
+        workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
         assert!(workbench.sidebar_visible && workbench.sidebar_focus);
         assert!(
             workbench.reduced_motion,

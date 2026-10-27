@@ -1316,6 +1316,7 @@ impl Live {
             WbAction::PasteClipboard => self.paste_clipboard().await, // The box is the driver's to open (`run::quit`): this layer reads
             // the bytes, the surface paints them.
             WbAction::PreviewAttachment => {}
+            WbAction::OpenUrl(url) => self.open_url(&url),
             WbAction::SetTools(tools) => match self.client.set_tools(&tools).await {
                 Ok(()) => self.notice = Some(t(self.lang, Key::ToolsDone).into()),
                 Err(error) => {
@@ -2607,6 +2608,22 @@ impl Live {
         }
     }
 
+    /// Hand a link to the desktop's own handler — a browser for an address, a
+    /// mail client for `mailto:`.
+    ///
+    /// Started, not waited on: the browser is the reader's program, and a TUI
+    /// that blocked until it exited would freeze for as long as they kept a tab
+    /// open.
+    fn open_url(&mut self, url: &str) {
+        if let Err(error) = open_external(url) {
+            self.notice = Some(i18n::render(
+                self.lang,
+                Key::NoticeOpenLinkFailed,
+                &[&url, &error.to_string()],
+            ));
+        }
+    }
+
     /// Read a file for the preview box.
     pub async fn load_preview(&mut self, path: &str) {
         let path = path.to_string();
@@ -2870,6 +2887,42 @@ fn file_sessions(
     // the newest-activity order the rows already carry.
     groups.sort_by_key(|group| !group.pinned);
     (groups, chats)
+}
+
+/// Start the reader's handler for `target`: `open` on macOS, the shell's `start`
+/// on Windows, `xdg-open` everywhere else.
+///
+/// Not a library dependency: each platform has had its own opener since long
+/// before this program existed, and the one a reader configured is the one they
+/// expect a link to land in.
+fn open_external(target: &str) -> std::io::Result<()> {
+    use std::process::{Command, Stdio};
+    let mut command = if cfg!(target_os = "macos") {
+        let mut command = Command::new("open");
+        command.arg(target);
+        command
+    } else if cfg!(windows) {
+        // `start` is a shell builtin, and the empty string is the window title
+        // it would otherwise take the URL for.
+        let mut command = Command::new("cmd");
+        command.args(["/C", "start", "", target]);
+        command
+    } else {
+        let mut command = Command::new("xdg-open");
+        command.arg(target);
+        command
+    };
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    // Reaped on a thread of its own: nobody waits for a browser, and an
+    // unreaped child is a zombie for as long as the TUI stays open.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 /// The longest side a preview image is decoded to, in pixels.
