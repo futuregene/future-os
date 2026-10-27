@@ -26,8 +26,8 @@ use crate::workbench::layout::{HitMap, Rect};
 use crate::workbench::state::{PanelId, SessionRow, WorkbenchData};
 use crate::workbench::theme::Palette;
 
-/// Rows the panel uses for its heading (a title plus a blank line).
-const HEADING_ROWS: usize = 2;
+/// The blank row between the tab strip and the list.
+const TOP_GAP: usize = 1;
 
 /// The workspace headings the reader has folded shut, by path — the group's
 /// identity (`two checkouts can share a name`).
@@ -316,15 +316,12 @@ pub fn render_with(
     let rows = area.h as usize;
     let mut lines: Vec<String> = Vec::with_capacity(rows);
 
-    let heading = format!(
-        "{}{}",
-        palette.strong(palette.fg, panel.label(lang)),
-        palette.dim(&format!("  {}", summary(panel, data, lang)))
-    );
-    lines.push(palette.panel_row(&fit(&heading, columns), columns));
-    lines.push(palette.panel_row("", columns));
+    // The panel has no heading of its own: the tab strip above names it, and a
+    // count printed under that name cost a row of every list. What is left is
+    // the blank row that keeps the first item off the tabs.
+    lines.push(fit("", columns));
 
-    let body_rows = rows.saturating_sub(HEADING_ROWS);
+    let body_rows = rows.saturating_sub(TOP_GAP);
     let items = item_rows(panel, data, palette, columns, lang, selected, folded, frame);
     let total = items.len();
 
@@ -381,45 +378,33 @@ pub fn render_with(
         let index = start + offset;
         let Some(item) = items.get(index) else { break };
         for text in item {
-            let y = area.y + (HEADING_ROWS + painted) as u16;
+            let y = area.y + (TOP_GAP + painted) as u16;
             hit.push(
                 Rect::new(area.x, y, area.w, 1),
                 format!("sidebar.row.{index}"),
             );
-            lines.push(palette.panel_row(&fit(text, columns), columns));
+            lines.push(fit(text, columns));
             painted += 1;
         }
     }
     if painted < body_rows {
         if total > start + visible {
             let more = total - start - visible;
-            lines.push(palette.panel_row(
-                &palette.dim(&fit(&format!("  ↓ {more} more"), columns)),
-                columns,
-            ));
+            lines.push(fit(&palette.dim(&format!("  ↓ {more} more")), columns));
         } else {
-            lines.push(palette.panel_row("", columns));
+            lines.push(fit("", columns));
         }
     }
 
-    // Whatever the panel did not fill is the panel's own background, not the
-    // canvas showing through.
+    // The list keeps the canvas, like the chat and the composer beside it: a
+    // band of our own `panel` colour reads as a black rectangle on every
+    // terminal whose palette is not ours. The divider column already says where
+    // the rail starts, so an empty row is simply empty.
     while lines.len() < rows {
-        lines.push(palette.panel_row("", columns));
+        lines.push(fit("", columns));
     }
     lines.truncate(rows);
     lines
-}
-
-/// The one-line counts beside the panel title.
-fn summary(panel: PanelId, data: &WorkbenchData, lang: Language) -> String {
-    match panel {
-        PanelId::Recent => i18n::render(lang, Key::SummarySessions, &[&data.sessions.len()]),
-        PanelId::Workspaces => {
-            i18n::render(lang, Key::SummaryWorkspaces, &[&data.workspaces.len()])
-        }
-        PanelId::Files => i18n::render(lang, Key::SummaryFiles, &[&data.tree.rows().len()]),
-    }
 }
 
 /// Each item's painted rows, already colourised and clipped to `columns`.
@@ -489,15 +474,15 @@ fn item_rows(
                     columns,
                     lang,
                 )],
-                None => vec![palette.panel_row("", columns)],
+                None => vec![fit("", columns)],
             },
             Row::Session(at) => match data.sessions.get(*at) {
                 Some(session) => session_rows(panel, session, palette, columns, frame),
-                None => vec![palette.panel_row("", columns)],
+                None => vec![fit("", columns)],
             },
             Row::File(at) => match data.tree.get(*at) {
                 Some(node) => vec![file_row(node, index == selected, palette, columns)],
-                None => vec![palette.panel_row("", columns)],
+                None => vec![fit("", columns)],
             },
         })
         .collect();
@@ -733,7 +718,7 @@ fn session_rows(
         }
         // The file tree paints one row per entry, so a conversation's own row
         // shape does not apply here; `file_row` is the painter.
-        PanelId::Files => vec![palette.panel_row("", columns)],
+        PanelId::Files => vec![fit("", columns)],
     }
 }
 
@@ -848,7 +833,6 @@ mod tests {
         .map(|line| crate::utils::strip_ansi_codes(line))
         .collect::<Vec<_>>()
         .join("\n");
-        assert!(text.contains("最近"), "{text}");
         for session in &data.sessions {
             assert!(text.contains(&session.title), "{session:?}: {text}");
             assert!(text.contains(&session.workspace), "{session:?}: {text}");
@@ -1008,11 +992,15 @@ mod tests {
             0,
         );
         assert!(!lines.is_empty());
-        // Heading occupies rows 4 and 5. 最近 gives each conversation one row.
-        assert_eq!(hit.hit(12, 6), Some("sidebar.row.0"));
-        assert_eq!(hit.hit(12, 7), Some("sidebar.row.1"));
-        assert_eq!(hit.hit(12, 8), Some("sidebar.row.2"));
-        assert_eq!(hit.hit(12, 5), None, "the blank heading row is not a row");
+        // One blank row under the tabs; 最近 gives each conversation one row.
+        assert_eq!(
+            hit.hit(12, 4),
+            None,
+            "the blank row under the tabs is not a row"
+        );
+        assert_eq!(hit.hit(12, 5), Some("sidebar.row.0"));
+        assert_eq!(hit.hit(12, 6), Some("sidebar.row.1"));
+        assert_eq!(hit.hit(12, 7), Some("sidebar.row.2"));
     }
 
     #[test]

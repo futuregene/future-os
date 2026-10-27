@@ -3538,7 +3538,7 @@ mod tests {
         assert!(workbench.sidebar_visible);
         let text = plain(&workbench.render(&data, 120, 38));
         assert!(
-            text.contains("最近"),
+            text.contains(&data.sessions[0].title),
             "the recent panel is on screen: {text}"
         );
 
@@ -3549,7 +3549,7 @@ mod tests {
         assert_eq!(workbench.panel, PanelId::Workspaces);
         let text = plain(&workbench.render(&data, 120, 38));
         assert!(
-            text.contains("个工作区"),
+            text.contains("对话会话"),
             "the workspace panel is on screen: {text}"
         );
 

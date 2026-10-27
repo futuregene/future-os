@@ -1066,13 +1066,14 @@ fn sidebar_rows(
             Key::RailHint
         };
         let hint = fit(t(lang, hint_key), columns);
-        lines.push(palette.panel_row(&palette.dim(&hint), columns));
+        lines.push(fit(&palette.dim(&hint), columns));
     }
     lines.truncate(area.h as usize);
-    // The panel background runs to the bottom of the band even when the panel's
-    // own rows stopped early.
+    // A rail row carries no background of its own, the same as the chat beside
+    // it: painting one here is what made the rail a black rectangle on any
+    // terminal whose palette is not ours.
     while lines.len() < area.h as usize {
-        lines.push(palette.panel_row("", columns));
+        lines.push(fit("", columns));
     }
     lines
 }
