@@ -268,8 +268,6 @@ pub enum Key {
     // ── the recent tab's two stretches ────────────────────────────────
     SectionActive,
     SectionEarlier,
-    SummaryWorkspaces,
-    SummaryFiles,
     SummaryUnitsSessions,
     PanelEmptyWorkspaces,
     PanelEmptyFiles,
@@ -277,7 +275,6 @@ pub enum Key {
     // ── the sidebar's panels ──────────────────────────────────────────
     SummaryTodo,
     SummaryJobs,
-    SummarySessions,
     SummarySkills,
     UsageContext,
     UsageCost,
@@ -562,17 +559,14 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         SectionChats => ("对话会话", "Chats"),
         SectionActive => ("活跃", "Active"),
         SectionEarlier => ("更早", "Earlier"),
-        SummaryWorkspaces => ("{} 个工作区", "{} workspaces"),
         SummaryUnitsSessions => ("会话", "chats"),
         PanelEmptyWorkspaces => ("没有工作区", "no workspaces"),
         TabFiles => ("文件", "Files"),
-        SummaryFiles => ("{} 项", "{} items"),
         PanelEmptyFiles => ("目录是空的", "empty directory"),
         PanelTreeTruncated => ("只列出前 {} 项", "listing stopped at {} entries"),
 
         SummaryTodo => ("{} 待办 / {} 合计", "{} open / {} total"),
         SummaryJobs => ("{} 个任务", "{} jobs"),
-        SummarySessions => ("{} 个会话", "{} sessions"),
         SummarySkills => ("{} 个技能", "{} skills"),
         UsageContext => ("上下文", "Context"),
         UsageCost => ("成本", "Cost"),
@@ -1179,7 +1173,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 273] = {
+    const ALL_KEYS: [Key; 270] = {
         use Key::*;
         [
             TabTodo,
@@ -1195,15 +1189,12 @@ mod tests {
             SectionChats,
             SectionActive,
             SectionEarlier,
-            SummaryWorkspaces,
-            SummaryFiles,
             SummaryUnitsSessions,
             PanelEmptyWorkspaces,
             PanelEmptyFiles,
             PanelTreeTruncated,
             SummaryTodo,
             SummaryJobs,
-            SummarySessions,
             SummarySkills,
             UsageContext,
             UsageCost,
