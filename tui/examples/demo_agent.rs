@@ -136,6 +136,65 @@ fn models() -> Value {
     ]})
 }
 
+/// What the scripted *live* turn says, one delta at a time.
+///
+/// A screenshot of a reply that is still arriving needs the agent to emit
+/// events, and a real model cannot: the frame would differ per run and per
+/// machine. So the tutorial's answer is a fixed list of deltas — the last one
+/// deliberately stops mid-sentence, which is what a frame captured mid-stream
+/// looks like. The surface lays it out through its ordinary path
+/// (`Live::handle_event` → `ChatArea` → the frame); only the words are scripted.
+const STREAM_DELTAS: [&str; 44] = [
+    "先看边界：",
+    "`parse_expr` 在循环里先消费了运算符，",
+    "再检查 `peek()`，",
+    "于是最后一个 token 永远没有机会触发收尾分支。\n\n",
+    "复现也简单，",
+    "输入 `1+2` 是对的，",
+    "输入 `1+2+` 就少一个右操作数",
+    "——",
+    "因为循环在**先**前进后才判断端点。\n\n",
+    "修法是把检查提到前进之前：",
+    "\n\n```rust\n",
+    "while let Some(tok) = lexer.peek() {\n",
+    "    if tok.is_eof() { break; }\n",
+    "    let op = lexer.next();\n",
+    "    let rhs = parse_atom(lexer)?;\n",
+    "    lhs = apply(lhs, op, rhs);\n",
+    "}\n",
+    "```\n\n",
+    "回归测试就盯这一件事：",
+    "一个以运算符结尾的表达式",
+    "必须报 `UnexpectedEof`，",
+    "而不是悄悄返回左边那一项。",
+    "\n\n",
+    "另外还有两处同样的写法，",
+    "分别在 `parse_list` 和 `parse_args` 里；",
+    "我先把这三处一起改掉，",
+    "然后跑一遍 `cargo test -p parser`。",
+    "\n\n",
+    "测试这边我加了两条：",
+    "一条钉住 `1+2+`，",
+    "一条钉住 `[1,2,`",
+    "和 `f(a,` 的空参数情况。",
+    "\n\n",
+    "顺便说一句，",
+    "这类 off-by-one 都长成同一个形状：",
+    "**先推进、后判断**。",
+    "所以在 review 里看到 `next()` 出现在条件之前，",
+    "就值得多看一眼，",
+    "哪怕当下测试是绿的。",
+    "\n\n",
+    "要我把这三处的改动拆成两个 commit 吗？",
+    "一个只做循环边界的调整，",
+    "另一个补测试，",
+    "这样 revert 的粒度",
+];
+
+/// One delta every this many milliseconds: slow enough that a screenshot catches
+/// the reply in flight, fast enough that a capture does not wait on prose.
+const STREAM_DELTA: std::time::Duration = std::time::Duration::from_millis(120);
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -143,8 +202,61 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-#[derive(Clone)]
-struct DemoAgent;
+/// The demo agent's handle on its event stream.
+///
+/// `stream_events` is where the client's subscription lands, and a scripted turn
+/// has to write into that very stream — so the sender is kept here instead of
+/// being parked inside the function (see the note there). `None` before any
+/// client subscribes: a prompt that arrives that early has nowhere to go, and
+/// the surface is not watching anyway.
+#[derive(Clone, Default)]
+struct DemoAgent {
+    events:
+        std::sync::Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<StreamEvent>>>>,
+}
+
+impl DemoAgent {
+    /// Emit the scripted turn on the subscribed stream: `agent_start`, then one
+    /// `text_chunk` per [`STREAM_DELTAS`] entry, then nothing.
+    ///
+    /// Nothing after the last delta is the point — an `agent_end` would take the
+    /// activity row away and leave a *finished* reply on screen, while a
+    /// screenshot of streaming output needs the turn still in flight. The
+    /// surface keeps drawing its spinner for as long as the capture runs.
+    fn start_turn(&self, run_id: &str) {
+        let Some(tx) = self.events.lock().ok().and_then(|slot| slot.clone()) else {
+            return;
+        };
+        let run_id = run_id.to_string();
+        tokio::spawn(async move {
+            let event = |kind: &str, data: Value| StreamEvent {
+                r#type: kind.to_string(),
+                session_id: SESSION_ID.to_string(),
+                run_id: run_id.clone(),
+                data: data.to_string(),
+                ..Default::default()
+            };
+            if tx
+                .send(event(
+                    "agent_start",
+                    json!({"model": MODEL, "sessionId": SESSION_ID}),
+                ))
+                .is_err()
+            {
+                return;
+            }
+            for delta in STREAM_DELTAS {
+                tokio::time::sleep(STREAM_DELTA).await;
+                if tx
+                    .send(event("text_chunk", json!({"text": delta})))
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+    }
+}
 
 #[tonic::async_trait]
 impl FutureAgent for DemoAgent {
@@ -167,9 +279,21 @@ impl FutureAgent for DemoAgent {
             "list_sessions" => sessions(),
             "list_models" => models(),
             "get_session_entries" => journal(),
-            // A prompt from the screenshot run would need a model; answer with
-            // an ack so the surface shows its "sent" state instead of an error.
-            "prompt" => json!({"runId": "demo-run", "runEpoch": 1, "acceptedState": "running"}),
+            // A launchpad submit creates the session it then prompts; answer with
+            // the id the scripted session has so both halves name one session.
+            "new_session" => json!({"sessionId": SESSION_ID}),
+            // A prompt needs a model in a real agent. Here it starts the scripted
+            // turn: the ack is what the surface expects from a running run, and
+            // the deltas arrive on the event stream this agent was subscribed to.
+            "prompt" => {
+                let run_id = format!("demo-run-{}", now_ms());
+                self.start_turn(&run_id);
+                // `RunAck` reads snake_case (`run_id`, `run_epoch`,
+                // `accepted_state`): a camelCase ack is what produced a
+                // "Failed to send: missing field `run_id`" notice the first
+                // time a scripted turn was screenshotted.
+                json!({"run_id": run_id, "run_epoch": 1, "accepted_state": "running"})
+            }
             _ => json!({}),
         };
         Ok(tonic::Response::new(RpcResponse {
@@ -204,6 +328,11 @@ impl FutureAgent for DemoAgent {
         // the surface never painted at all. So the sender is parked in a task
         // that never finishes instead of living on the stack.
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
+        // The scripted turn writes into this same stream, so the sender is kept
+        // on the service rather than only in the parked task below.
+        if let Ok(mut slot) = self.events.lock() {
+            *slot = Some(tx.clone());
+        }
         tokio::spawn(async move {
             let _held = tx;
             std::future::pending::<()>().await;
@@ -264,7 +393,7 @@ async fn main() {
     println!("demo_agent listening on {addr}");
     let incoming = TcpIncoming::from_listener(listener, true, None).expect("listener usable");
     let _ = Server::builder()
-        .add_service(FutureAgentServer::new(DemoAgent))
+        .add_service(FutureAgentServer::new(DemoAgent::default()))
         .serve_with_incoming(incoming)
         .await;
 }

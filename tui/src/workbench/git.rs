@@ -68,17 +68,30 @@ fn run(cwd: &Path, args: &[&str]) -> (i32, String, String) {
     }
 }
 
-/// The branch of one workspace, re-read only when the workspace changes.
+/// The branch of one workspace, installed once and then only read.
 ///
-/// The surface asks for the header on every frame and for the local facts on
-/// every state refresh; a `git` spawn per frame would show up as a stutter on a
-/// large repository, and the answer only changes when the reader moves.
+/// The surface asks for the header on every frame, so a `git` spawn per frame
+/// would show up as a stutter on a large repository. It also asks *right after a
+/// switch*, which is the worst moment to wait for a process — and a read can take
+/// up to [`BRANCH_TIMEOUT`] on a repository another session has locked. So this
+/// type never reads: it holds the last answer, says when a workspace still needs
+/// one, and the caller reads on its own thread.
+///
+/// Two rules, both about not letting a repository annoy the reader:
+///
+/// * **No read here.** [`Self::get`] answers from memory and never spawns; the
+///   frame that names the workspace cannot wait for a process. The read itself
+///   belongs to [`crate::workbench::live::LocalReads`], which also decides *when*
+///   one is owed (a workspace move) and drops an answer for a workspace the
+///   reader has already left.
+/// * **No stale name.** A workspace that has not been read yet has no branch to
+///   name — an empty string, never the previous workspace's branch.
 #[derive(Debug, Default)]
 pub struct BranchCache {
     cwd: String,
     branch: String,
-    /// Whether a workspace has ever been asked about: `""` is a real answer
-    /// (a terminal outside a repository), so it cannot double as "unset".
+    /// Whether a workspace has ever been installed: `""` is a real answer (a
+    /// terminal outside a repository), so it cannot double as "unset".
     loaded: bool,
 }
 
@@ -87,72 +100,46 @@ impl BranchCache {
         Self::default()
     }
 
-    /// The branch for `cwd`, reading it only if this is a different workspace
-    /// than the last answer was for. `""` asks nothing and answers nothing.
-    pub fn for_cwd(&mut self, cwd: &str) -> &str {
-        self.for_cwd_with(cwd, branch)
+    /// The branch of `cwd`, or nothing while its read is still running.
+    pub fn get(&self, cwd: &str) -> &str {
+        if self.loaded && self.cwd == cwd {
+            &self.branch
+        } else {
+            ""
+        }
     }
 
-    /// The same cache with the reader injected, so the "one read per workspace"
-    /// rule is a unit test instead of a process count.
-    pub fn for_cwd_with<F>(&mut self, cwd: &str, read: F) -> &str
-    where
-        F: FnOnce(&Path) -> String,
-    {
+    /// Install a finished read for `cwd`. An empty `cwd` names no workspace and
+    /// installs nothing.
+    pub fn install(&mut self, cwd: &str, branch: String) {
         if cwd.is_empty() {
-            self.cwd.clear();
-            self.branch.clear();
-            self.loaded = false;
-            return &self.branch;
+            return;
         }
-        let changed = !self.loaded || self.cwd != cwd;
-        if changed {
-            // A failed read is "no branch", not the previous workspace's
-            // branch: a header that keeps naming the old branch after a move is
-            // worse than one that names none.
-            self.branch = read(Path::new(cwd));
-            self.cwd = cwd.to_string();
-            self.loaded = true;
-        }
-        &self.branch
+        self.cwd = cwd.to_string();
+        self.branch = branch;
+        self.loaded = true;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
 
-    /// One read per workspace: the second and third refreshes at the same cwd
-    /// spawn nothing, and a move reads again.
+    /// A workspace that has not been read yet names no branch — an empty string,
+    /// never the previous workspace's.
     #[test]
-    fn the_branch_is_read_once_per_cwd() {
-        let calls = Cell::new(0);
+    fn a_workspace_that_was_never_read_names_no_branch() {
         let mut cache = BranchCache::new();
-        let read = |path: &Path| {
-            calls.set(calls.get() + 1);
-            assert_eq!(path, Path::new("/w/one"));
-            "dev-huichen".to_string()
-        };
-        assert_eq!(cache.for_cwd_with("/w/one", read), "dev-huichen");
+        assert_eq!(cache.get("/w/one"), "");
+        cache.install("/w/one", "dev-huichen".to_string());
+        assert_eq!(cache.get("/w/one"), "dev-huichen");
+        assert_eq!(cache.get("/w/one"), "dev-huichen", "a cache, not one shot");
         assert_eq!(
-            cache.for_cwd_with("/w/one", |_| unreachable!("cached")),
-            "dev-huichen"
+            cache.get("/w/two"),
+            "",
+            "and nothing for a workspace it has not been told about"
         );
-        assert_eq!(
-            cache.for_cwd_with("/w/one", |_| unreachable!("cached")),
-            "dev-huichen"
-        );
-        assert_eq!(calls.get(), 1);
-        // A worktree move: a different workspace, a second read.
-        assert_eq!(
-            cache.for_cwd_with("/w/two", |path| {
-                assert_eq!(path, Path::new("/w/two"));
-                "fix/workbench-defects".to_string()
-            }),
-            "fix/workbench-defects"
-        );
-        assert_eq!(calls.get(), 1);
+        assert_eq!(cache.get("/w/one"), "dev-huichen", "which it still holds");
     }
 
     /// A workspace that is not a repository, a read that failed, and a session
@@ -161,22 +148,16 @@ mod tests {
     #[test]
     fn a_failed_read_is_an_empty_branch_not_a_stale_one() {
         let mut cache = BranchCache::new();
-        assert_eq!(
-            cache.for_cwd_with("/w/repo", |_| "main".to_string()),
-            "main"
-        );
-        assert_eq!(cache.for_cwd_with("/w/plain", |_| String::new()), "");
-        // Back to a repository reads again rather than replaying the empty one.
-        assert_eq!(
-            cache.for_cwd_with("/w/repo", |_| "main".to_string()),
-            "main"
-        );
-        // No workspace at all: nothing to name, and the next real one reads.
-        assert_eq!(cache.for_cwd_with("", |_| unreachable!("no cwd")), "");
-        assert_eq!(
-            cache.for_cwd_with("/w/repo", |_| "main".to_string()),
-            "main"
-        );
+        cache.install("/w/repo", "main".to_string());
+        assert_eq!(cache.get("/w/repo"), "main");
+        cache.install("/w/plain", String::new());
+        assert_eq!(cache.get("/w/plain"), "", "not a repository, no branch");
+        assert_eq!(cache.get("/w/repo"), "", "and not the previous one either");
+        // No workspace at all: nothing to name.
+        assert_eq!(cache.get(""), "");
+        cache.install("", "ignored".to_string());
+        assert_eq!(cache.get(""), "", "an install for no workspace is ignored");
+        assert_eq!(cache.get("/w/plain"), "");
     }
 
     /// The real read, in this repository: the branch the checkout is on, and

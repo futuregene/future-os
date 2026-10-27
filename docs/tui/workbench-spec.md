@@ -141,16 +141,16 @@ Content — a conversation, a session title, a path — is never translated.
 
 | Semantic | dark | light | one-dark | one-light | high-contrast | dracula | Use |
 |---|---|---|---|---|---|---|
-| bg | 232 | 254 | 232 | 231 | 16 | 232 | canvas |
-| panel | 234 | 252 | 234 | 254 | 17 | 234 | menu, picker and overlay fill (the rail, the chat and the composer keep the canvas) |
+| bg | 232 | 254 | 235 | 255 | 16 | 235 | canvas |
+| panel | 234 | 252 | 236 | 231 | 233 | 236 | menu, picker and overlay fill (the rail, the chat and the composer keep the canvas) |
 | border | 238 | 246 | 240 | 250 | 250 | 239 | borders, dividers |
 | fg | 252 | 236 | 249 | 236 | 231 | 255 | body text |
-| muted | 245 | 240 | 245 | 241 | 246 | 245 | secondary notes |
+| muted | 245 | 240 | 247 | 241 | 246 | 247 | secondary notes |
 | accent | 80 (teal) | 30 | 75 | 25 | 51 | 141 | brand, selection, progress |
 | iris | 111 | 62 | 73 | 30 | 123 | 117 | links, active tab |
 | amber | 179 | 130 | 180 | 130 | 226 | 228 | thinking, warning |
 | green | 114 | 28 | 108 | 28 | 46 | 84 | success |
-| red | 203 | 124 | 168 | 160 | 196 | 203 | error, danger |
+| red | 203 | 124 | 174 | 160 | 196 | 204 | error, danger |
 | purple | 141 | 91 | 176 | 91 | 213 | 212 | sub-agent / skills |
 
 The table above is the six palettes the contract froze, and those numbers are
@@ -163,40 +163,67 @@ renditions of five of them — are the same `Palette` shape in
 
 Two rules hold across the whole table, pinned by
 `workbench::theme::tests::text_roles_clear_aa_on_their_own_canvas` and
-`every_dark_canvas_is_the_same_near_black`:
+`every_palette_paints_its_own_canvas`:
 
-- **The canvas is the surface's, and it is black.** The frame paints `bg` on
-every row to the last column (`workbench::run::canvas_rows`). It used to paint
-only the panels, so the canvas was whatever the reader's terminal profile drew
-— Ghostty ships `#282c34`, a mid slate — and every dark theme read washed out
-regardless of the palette. Every dark palette now uses the same near-black
-`232` with `panel` one step above (`234`); `high-contrast` keeps true black
-(`16`/`17`). A theme's identity is its hues, not a lighter canvas.
+- **The canvas is the surface's, and it is the theme's own.** The frame paints
+`bg` on every row to the last column (`workbench::run::canvas_rows`). It used
+to paint only the panels, so the canvas was whatever the reader's terminal
+profile drew — Ghostty ships `#282c34`, a mid slate — and every dark theme read
+washed out regardless of the palette. It then became one shared near-black
+(`232`) behind every dark palette, which made twenty-two themes read as one
+theme with different accents. Each palette now carries the nearest 256-colour
+step to its own background, the one `desktop/src/theme/palettes.json` paints
+for that theme; `panel` is the first step above the canvas that reads as
+raised (> 1.1:1). `dark` keeps the near-black it shipped with and
+`high-contrast` keeps true black. A 256-colour terminal can express a *tinted*
+dark background only as a saturated primary (`17` is `#00005f`, `23` is
+`#005f5f`), so the hue of, say, Solarized's `#002b36` is not available as a
+canvas; what the table can carry is lightness and temperature.
+
+| id | bg | panel | | id | bg | panel |
+|---|---|---|---|---|---|---|
+| dark | 232 `#080808` | 234 | | one-dark | 235 `#262626` | 236 |
+| light | 254 `#e4e4e4` | 252 | | one-light | 255 `#eeeeee` | 231 |
+| high-contrast | 16 `#000000` | 233 | | dracula | 235 `#262626` | 236 |
+| ayu | 235 `#262626` | 236 | | catppuccin | 233 `#121212` | 235 |
+| catppuccin-light | 255 `#eeeeee` | 231 | | everforest | 236 `#303030` | 237 |
+| everforest-light | 230 `#ffffd7` | 254 | | gruvbox | 234 `#1c1c1c` | 235 |
+| gruvbox-light | 223 `#ffd7af` | 230 | | kanagawa | 234 `#1c1c1c` | 235 |
+| nightfox | 235 `#262626` | 236 | | nord | 236 `#303030` | 237 |
+| rose-pine | 234 `#1c1c1c` | 235 | | rose-pine-light | 255 `#eeeeee` | 231 |
+| solarized | 234 `#1c1c1c` | 235 | | solarized-light | 254 `#e4e4e4` | 230 |
+| tokyo-night | 234 `#1c1c1c` | 235 | | vesper | 233 `#121212` | 235 |
+
 - **Every text role clears WCAG AA (4.5:1)** against both the canvas and the
 panel, and `fg` clears 7:1 on the canvas. This is what lifted `muted` — at
 2.9:1 on `one-dark`'s and `dracula`'s own panel it was decoration rather than
-text — and, where a dark palette's accent colour sat below 4.0, that colour too
-(`gruvbox` iris, `nord` red, `solarized` purple).
+text — and, where moving a canvas up the ramp dropped a role below the floor,
+that role too: `muted` on ten of the dark palettes, `red` on five
+(`one-dark`, `dracula`, `kanagawa`, `everforest`, `nord`), `purple` on four
+(`kanagawa`, `everforest`, `nord`, `solarized`), and `everforest-light`'s
+`muted`. Each lifted value keeps its hue family; the notes beside them in
+`theme.rs` record what was raised and by how much.
 
 The **light** palettes keep their hues because the numbers are shared with the
-desktop app's table; only their `fg`/`muted` were lifted. Four of them still
+desktop app's table; only their `fg`/`muted` were lifted. Several of them still
 carry an accent below AA on their own canvas, reported rather than silently
-changed: `light` accent 30 (2.8:1), iris 62 (3.3:1), amber 130 (3.1:1), green
-28 (3.1:1); `one-light` iris 30 (3.4:1), amber 130 (3.7:1), green 28 (3.7:1);
-`catppuccin-light` iris 31 (3.6:1), purple 99 (3.5:1); `everforest-light` iris
-66 (3.4:1), green 64 (3.7:1), red 131 (3.9:1), purple 132 (3.8:1);
-`gruvbox-light` iris 66 (2.9:1), amber 94 (4.3:1), purple 95 (4.1:1);
-`rose-pine-light` red 131 (3.9:1), purple 99 (3.5:1); `solarized-light` iris 30
-(3.4:1), purple 61 (4.4:1). Raising them means editing the desktop's palette
-table as well, which is a separate change.
+changed: `light` accent 30 (3.4:1), iris 62 (4.0:1), amber 130 (3.7:1), green
+28 (3.7:1); `one-light` iris 30 (3.8:1), amber 130 (4.1:1), green 28 (4.1:1);
+`catppuccin-light` accent 62 (4.4:1), iris 31 (3.6:1), green 28 (4.1:1), purple
+99 (3.5:1); `everforest-light` iris 66 (3.9:1), green 64 (4.1:1), red 131
+(4.4:1), purple 132 (4.3:1); `gruvbox-light` iris 66 (2.9:1), amber 94
+(4.3:1), purple 95 (4.1:1); `rose-pine-light` red 131 (3.9:1), purple 99
+(3.5:1); `solarized-light` iris 30 (3.4:1), purple 61 (4.4:1). Raising them
+means editing the desktop's palette table as well, which is a separate change.
 
 Every palette mirrors `crate::themes`' colours wherever the inline
 `Theme` has the same semantic (`accent`, `fg`, `border`, `dim`, `error`,
 `success`, `md_link`, `md_heading`, `md_code`), except where the inline value
 was below AA on this surface's canvas and the workbench lifted it (`muted`,
-and three dark palettes' accent colours). `bg` and `panel` are the workbench's
-own, because a full-screen canvas paints an explicit background step where the
-inline theme inherits the terminal's. Ids older workbench builds
+and the accents listed above). `bg` and `panel` are the workbench's own: they
+follow each theme's real background rather than the inline theme's, because a
+full-screen canvas paints an explicit background step where the inline theme
+inherits the terminal's. Ids older workbench builds
 wrote (`future-dark`, `future-light`) still resolve, to `dark` and `light`.
 
 There is no logo or icon in the TUI. The chat header's wordmark `FUTURE OS`
@@ -379,6 +406,30 @@ unchanged keeps the rows it is compared against, and one that changed rebuilds
 the transcript. That pair replaces the three sequential round trips a switch used
 to take — `switch_session`, `get_state`, then the page — because `get_state`
 already hydrates the session it is asked about.
+
+### The rail's search line and remembered folds
+
+Both tabs list conversations, so one query searches both. `/` while the rail has
+the keys opens the line the panel already spends on the blank row under its tabs
+(`/ 搜索会话` while it is closed and empty, `❯ <query>▏` while it is taking
+keys), every printable key joins the query, and the list narrows to the
+conversations whose title, workspace or id contains it — case-insensitively, the
+same three facts the history picker matches (`workflows::filtered_sessions`). A
+workspace whose own name matches keeps every conversation under it, and a search
+opens folded groups: a match the reader cannot see is not a result. (While a
+query is in force a heading is context, not a control — its group is already
+open — so `enter` on one folds nothing, now or later.) `enter` hands
+the keys back to the list and keeps the filter (`↑`/`↓` walk the matches, `⏎`
+opens the row); `esc` clears it and closes the line, because a filter whose end
+the reader cannot see is conversations that went missing. Nothing matched says
+`没有匹配的会话` rather than `没有会话`. The full-screen panel (`ctrl+d` on a
+terminal too narrow for a rail) is the same list and the same search.
+
+A fold (`enter` on a workspace heading, or a click on one) outlives the process:
+the paths are written to `~/.future/tui/settings.json` as `foldedWorkspaces`, and
+the next start hides their conversations before anything is pressed. The query
+is not written anywhere — a filter left over from yesterday reads as sessions
+that went missing overnight, the same rule the desktop's rail follows.
 
 ### Pictures in a text surface
 
