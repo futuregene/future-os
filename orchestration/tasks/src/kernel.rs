@@ -22,6 +22,69 @@ pub const RESULT_SUMMARY_CHARS: usize = 2_000;
 /// answer, kept so a run stays readable after its conversation is gone —
 /// head…tail, and large enough for a report rather than a paragraph.
 pub const RUN_OUTPUT_CHARS: usize = 16_000;
+/// Cap on the one-line "where did the output go" note (`task_runs.finish_note`).
+pub const FINISH_NOTE_CHARS: usize = 400;
+
+/// The ledger's `finish_reason` for a run that ended with `answer`.
+///
+/// Whitespace-only counts as empty: a terminal that printed two newlines is the
+/// same silence as one that printed nothing, and treating it as an answer is
+/// exactly how an idle sweep passed as a finished one.
+pub fn finish_reason_for_answer(answer: &str) -> &'static str {
+    if answer.trim().is_empty() {
+        crate::types::finish_reason::EMPTY_ANSWER
+    } else {
+        crate::types::finish_reason::ANSWER
+    }
+}
+
+/// The ledger's `finish_reason` for a failed run, from the failure text the
+/// prompt pipeline produces.
+///
+/// Those failures carry a stable `[CODE]` prefix (`[RUN_CANCELLED] …`) so the
+/// cause survives the trip through a `String` error; the ledger must not
+/// collapse "the agent was restarted under it" and "the provider refused the
+/// request" into one word. An unrecognized error is `error` — never `answer`.
+pub fn finish_reason_for_error(error: &str) -> &'static str {
+    use crate::types::finish_reason as fr;
+    let code = error
+        .strip_prefix('[')
+        .and_then(|rest| rest.split(']').next())
+        .unwrap_or("");
+    match code {
+        "RUN_CANCELLED" | "RUN_QUEUED" => fr::CANCELLED,
+        "INTERRUPTED_BY_RESTART" => fr::INTERRUPTED,
+        "RESPONSE_TIMEOUT" => fr::TIMEOUT,
+        "UPSTREAM_DISCONNECTED"
+        | "PROVIDER_CANCELLED"
+        | "MODEL_RESPONSE_ERROR"
+        | "MODEL_CONTENT_FILTER"
+        | "MODEL_PAUSED"
+        | "OUTPUT_LIMIT"
+        | "AGENT_FAILED" => fr::PROVIDER_ERROR,
+        // `RESPONSE_UNCONFIRMED` is the agent's "ended without confirming
+        // completion" — the run was cut off, not answered.
+        "RESPONSE_UNCONFIRMED" => fr::INTERRUPTED,
+        _ => fr::ERROR,
+    }
+}
+
+/// The one-line note left beside a run that produced nothing usable.
+///
+/// A `session_retention = delete` task throws its conversation away after every
+/// run, so this line is the whole of what the next reader gets: enough to know
+/// whether the run got anywhere (did it call tools? did it stream any text?)
+/// without keeping a transcript.
+pub fn finish_note(answer_chars: usize, last_tool: Option<&str>) -> String {
+    let tool = match last_tool {
+        Some(name) if !name.trim().is_empty() => format!("last tool call: {name}"),
+        _ => "last tool call: none".to_string(),
+    };
+    truncate(
+        &format!("answer: {answer_chars} chars · {tool}"),
+        FINISH_NOTE_CHARS,
+    )
+}
 
 /// Truncate to `max` bytes, keeping the head (context) and tail (conclusion)
 /// with a single `…` marker. Byte-budget safe for any UTF-8 content.
@@ -1376,5 +1439,69 @@ mod tests {
         assert_eq!(rows[0].version, 2);
         assert_eq!(rows[0].prompt, "second");
         assert_eq!(rows[0].status, crate::types::REVISION_STATUS_SUPERSEDED);
+    }
+}
+
+#[cfg(test)]
+mod finish_reason_tests {
+    use super::*;
+    use crate::types::finish_reason as fr;
+
+    /// A blank answer is not an answer. This is the case that used to reach the
+    /// ledger as `completed` with an empty summary: the agent ended cleanly, so
+    /// the run looked like a success with nothing in it.
+    #[test]
+    fn a_blank_answer_is_empty_not_an_answer() {
+        assert_eq!(finish_reason_for_answer(""), fr::EMPTY_ANSWER);
+        assert_eq!(finish_reason_for_answer("  \n\t\n "), fr::EMPTY_ANSWER);
+        assert_eq!(finish_reason_for_answer("\u{a0}"), fr::EMPTY_ANSWER);
+    }
+
+    #[test]
+    fn real_text_is_an_answer() {
+        assert_eq!(finish_reason_for_answer("done"), fr::ANSWER);
+        assert_eq!(finish_reason_for_answer(" 报告在 /tmp/x.md "), fr::ANSWER);
+    }
+
+    /// Each way a run can end carries its own token, so the ledger says *why*
+    /// rather than only that it was not an answer.
+    #[test]
+    fn every_failure_code_maps_to_its_own_reason() {
+        assert_eq!(
+            finish_reason_for_error("[RUN_CANCELLED] run was cancelled"),
+            fr::CANCELLED
+        );
+        assert_eq!(
+            finish_reason_for_error("[INTERRUPTED_BY_RESTART] the Agent restarted"),
+            fr::INTERRUPTED
+        );
+        assert_eq!(
+            finish_reason_for_error("[RESPONSE_TIMEOUT] response timed out"),
+            fr::TIMEOUT
+        );
+        assert_eq!(
+            finish_reason_for_error("[MODEL_RESPONSE_ERROR] invalid model response"),
+            fr::PROVIDER_ERROR
+        );
+        // An unknown failure is never mistaken for a success.
+        assert_eq!(finish_reason_for_error("something else"), fr::ERROR);
+        assert_eq!(finish_reason_for_error(""), fr::ERROR);
+    }
+
+    #[test]
+    fn the_note_names_the_answer_size_and_the_last_tool() {
+        assert_eq!(
+            finish_note(0, None),
+            "answer: 0 chars · last tool call: none"
+        );
+        assert_eq!(
+            finish_note(1234, Some("shell")),
+            "answer: 1234 chars · last tool call: shell"
+        );
+        // An empty tool name is "none", not a blank after the colon.
+        assert_eq!(
+            finish_note(0, Some("  ")),
+            "answer: 0 chars · last tool call: none"
+        );
     }
 }

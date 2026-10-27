@@ -402,6 +402,41 @@
           }
         ]
       },
+      "image-preview-files": {
+        "steps": [
+          { "wait": 900 },
+          { "tap": "展开上下文面板" },
+          { "wait": 900 },
+          { "tap": "figures" },
+          { "wait": 900 },
+          { "tap": "effect-size.png" },
+          { "wait": 1500 },
+          {
+            "eval": "(() => { const byLabel = name => [...document.querySelectorAll('button[aria-label]')].find(node => node.getAttribute('aria-label') === name); const picture = name => document.querySelector(`img[alt=\"${name}\"]`); const prev = byLabel('上一张图片'), next = byLabel('下一张图片'); if (!prev || !next) throw new Error('the preview offers no way to step through the folder'); if (!byLabel('放大') || !byLabel('缩小')) throw new Error('the preview offers no zoom controls'); const counter = [...document.querySelectorAll('span')].map(node => (node.textContent || '').trim()).find(text => /^\\d+ \\/ \\d+$/.test(text)); if (!counter) throw new Error('the preview does not say where it is in the folder'); const img = picture('effect-size.png'); if (!img) throw new Error('the opened picture is not on screen'); return { alt: img.alt, counter, nextDisabled: next.disabled, prevDisabled: prev.disabled }; })()"
+          },
+          { "shot": "d-image-preview-files.png" },
+          { "tap": "下一张图片" },
+          { "wait": 1200 },
+          {
+            "eval": "(() => { const byLabel = name => [...document.querySelectorAll('button[aria-label]')].find(node => node.getAttribute('aria-label') === name); const img = document.querySelector('img[alt=\"forest-plot.png\"]'); const counter = [...document.querySelectorAll('span')].map(node => (node.textContent || '').trim()).find(text => /^\\d+ \\/ \\d+$/.test(text)); if (!img || img.alt !== 'forest-plot.png') throw new Error('the next picture did not open: ' + (img && img.alt)); if (byLabel('下一张图片').disabled !== true) throw new Error('the last picture still offers a next one'); return { alt: img.alt, counter }; })()"
+          },
+          { "tap": "上一张图片" },
+          { "wait": 800 },
+          { "key": "ArrowRight" },
+          { "wait": 1200 },
+          {
+            "eval": "(() => { const img = document.querySelector('img[alt=\"forest-plot.png\"]'); const counter = [...document.querySelectorAll('span')].map(node => (node.textContent || '').trim()).find(text => /^\\d+ \\/ \\d+$/.test(text)); if (!img) throw new Error('the arrow key did not step to the next picture'); if (counter !== '2 / 2') throw new Error('the arrow key left the position readout at ' + counter); return counter; })()"
+          },
+          { "shot": "d-image-preview-files-next.png" },
+          { "tap": "放大" },
+          { "tap": "放大" },
+          { "wait": 800 },
+          {
+            "eval": "(() => { const img = document.querySelector('img[alt=\"forest-plot.png\"]'); const percent = [...document.querySelectorAll('span')].map(node => (node.textContent || '').trim()).find(text => /^\\d+%$/.test(text)); const shown = Number.parseInt(percent || '0', 10); const box = img.getBoundingClientRect(); const scaled = /scale\\(([\\d.]+)\\)/.exec(img.style.transform); if (shown < 120) throw new Error('zooming did not grow the picture: ' + percent); if (!scaled || Math.round(box.width) < Math.round(img.naturalWidth)) throw new Error('the picture did not reach its own pixels'); return { percent, width: Math.round(box.width), natural: img.naturalWidth }; })()"
+          },
+          { "shot": "d-image-preview-files-zoom.png" }
+        ]
+      },
       "code-preview": {
         "steps": [
           {
@@ -797,6 +832,35 @@
           {
             "shot": "d-running-icon.png"
           }
+        ]
+      },
+      "user-bubble-border-variants": {
+        "note": "Variant sheet: the user's own message with and without the accent hairline around its soft fill. The window is narrower than the default and the frame is the first user message, because two 1280 panels halve a 2x capture and a 1px hairline then becomes a judgement about a blur. The frame is scrolled last — the fixture's approval card settles after boot and would move the bubble under an earlier scroll — and it is asserted to be fully on screen, so a sheet that framed something else fails instead of looking plausible.",
+        "width": 900,
+        "variantsTitle": "会话历史 · 用户输入气泡：有边框 / 无边框",
+        "variants": [
+          {
+            "label": "A · 有边框（现在的样子）",
+            "inject": "injects/user-bubble-border-on.js"
+          },
+          {
+            "label": "B · 无边框（只剩浅底色）",
+            "inject": "injects/user-bubble-border-off.js"
+          }
+        ],
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          { "wait": 2500 },
+          {
+            "eval": "(() => { const el = document.querySelector('[data-message-id=\"m_e1\"] > div:nth-child(2)'); if (!el) throw new Error('the conversation has no user bubble to frame'); el.scrollIntoView({ block: 'center' }); })()"
+          },
+          { "wait": 900 },
+          {
+            "eval": "(() => { const el = document.querySelector('[data-message-id=\"m_e1\"] > div:nth-child(2)'); const r = el.getBoundingClientRect(); if (r.top < 80 || r.bottom > innerHeight - 80) throw new Error('the user bubble is not framed: ' + JSON.stringify([r.top, r.bottom, innerHeight])); if (r.width < 200) throw new Error('the framed element is not a bubble: width ' + r.width); return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]; })()"
+          },
+          { "inject": "{variantInject}" },
+          { "wait": 400 },
+          { "shot": "d-user-bubble-border.png" }
         ]
       },
       "compare-baseline": {
@@ -3228,7 +3292,7 @@
   },
   "mobile": {
     "port": 8099,
-    "assetsPort": 7391,
+    "assetsPort": 7392,
     "url": "http://localhost:8099/",
     "settle": 600,
     "viewport": {
@@ -4339,6 +4403,30 @@
           {
             "shot": "m-image.png"
           }
+        ]
+      },
+      "image-attachment": {
+        "_comment": "A picture the user sent is drawn as itself in the bubble, and tapping it opens the same full-screen viewer a reply's picture uses — no transfer dialog in between, because the phone already holds the bytes.",
+        "steps": [
+          { "wait": 900 },
+          { "tap": "稍后再说" },
+          { "wait": 1200 },
+          { "tap": "工作区" },
+          { "wait": 1200 },
+          { "tapText": "整理两篇文献的结论对比表" },
+          { "wait": 2500 },
+          { "scroll": [0, -900] },
+          { "wait": 1200 },
+          {
+            "eval": "(() => { const chip = document.querySelector('[aria-label=\"effect-size.png\"]'); if (!chip) throw new Error('the sent picture is not a picture in the bubble'); const thumb = chip.querySelector('img'); if (!thumb || thumb.getBoundingClientRect().width < 120) throw new Error('the attachment is not drawn as a thumbnail'); if (document.querySelector('[data-testid=\"image-viewer\"]')) throw new Error('the viewer opened before it was asked to'); return { width: Math.round(thumb.getBoundingClientRect().width) }; })()"
+          },
+          { "shot": "m-image-attachment.png" },
+          { "tap": "effect-size.png" },
+          { "wait": 1500 },
+          {
+            "eval": "(() => { const viewer = document.querySelector('[data-testid=\"image-viewer\"]'); if (!viewer) throw new Error('tapping the sent picture opened nothing'); const img = viewer.querySelector('img'); if (!img || !(img.getAttribute('src') || '').includes('effect-size.png')) throw new Error('the viewer is showing something else'); return { src: img.getAttribute('src') }; })()"
+          },
+          { "shot": "m-image-attachment-viewer.png" }
         ]
       },
       "image-zoom": {

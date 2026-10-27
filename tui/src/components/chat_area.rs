@@ -55,15 +55,18 @@ pub enum ToolStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReplyDetail {
     /// A settled reply keeps only the answer it ends on; the reasoning, calls
-    /// and notes that produced it fold into one summary row above it. Work
-    /// stays on screen while the reply streams — the reader is watching it
-    /// happen — and a reply with no prose has no answer to isolate, so it
-    /// stays whole.
+    /// and notes that produced it fold into one summary row above it. The
+    /// work stays on screen while the reply streams — the reader is watching
+    /// it happen — but reasoning is collapsed from the start into a
+    /// `▸ thinking` marker, the way the desktop and the phone show it; its text
+    /// is this level's only exception to "the whole process". A reply with no
+    /// prose has no answer to isolate, so it stays whole.
     #[default]
     Default,
-    /// Every slice stays in place, in the order it happened. Each tool call
-    /// is still one row: its body waits for `ctrl+g`, exactly as at the
-    /// default level.
+    /// Every slice stays in place, in the order it happened, reasoning text
+    /// included — this is the level that answers "what did it think?". Each
+    /// tool call is still one row: its body waits for `ctrl+g`, exactly as at
+    /// the default level.
     Detailed,
 }
 
@@ -537,6 +540,9 @@ pub struct ChatArea {
     rendered_lines: Vec<RenderedLine>,
     auto_scroll: bool,
     width: usize,
+    /// `ctrl+e` (the full-process reading level) reveals the reasoning text;
+    /// at the default level it stays collapsed into a `▸ thinking` marker, as
+    /// the desktop and the phone start it. See [`ReplyDetail`].
     thinking_hidden: bool,
     last_render_width: i64,
     dirty: bool,
@@ -594,7 +600,10 @@ impl ChatArea {
             rendered_lines: Vec::new(),
             auto_scroll: true,
             width: max_width,
-            thinking_hidden: false,
+            // Reasoning starts collapsed, like the desktop: a streamed reply
+            // would otherwise spend the screen on its own thinking and push
+            // the answer it just wrote off the bottom.
+            thinking_hidden: true,
             last_render_width: -1,
             dirty: false,
             pending_rerender: BTreeSet::new(),
@@ -689,11 +698,19 @@ impl ChatArea {
     }
 
     /// Set the reading level (`/reply-detail`, the persisted setting).
+    ///
+    /// The level also decides whether reasoning is on screen: `detailed` is
+    /// the full process, which is the one place the thinking text belongs, and
+    /// `default` is the answer, where a `▸ thinking` marker is all the reader
+    /// needs. Keeping the two in step is what lets `ctrl+e` alone answer "what
+    /// did it think?" without a second key.
     pub fn set_reply_detail(&mut self, detail: ReplyDetail) {
-        if self.reply_detail == detail {
+        let thinking_hidden = detail == ReplyDetail::Default;
+        if self.reply_detail == detail && self.thinking_hidden == thinking_hidden {
             return;
         }
         self.reply_detail = detail;
+        self.thinking_hidden = thinking_hidden;
         self.rerender();
     }
 
@@ -1123,11 +1140,18 @@ impl ChatArea {
         }
     }
 
-    /// Flip thinking visibility for all messages (ctrl+o); returns the new
-    /// state (`true` = hidden). Re-renders on change and jumps to the
-    /// bottom — after expanding, the fresh content would otherwise grow
-    /// off-screen; after collapsing, the answer lands at the bottom anyway.
-    /// (Also keeps `viewport_top` valid: collapsing shrinks the line count.)
+    /// Is the reasoning text collapsed (`▸ thinking` instead of the text)?
+    pub fn thinking_hidden(&self) -> bool {
+        self.thinking_hidden
+    }
+
+    /// Flip thinking visibility for all messages; returns the new state
+    /// (`true` = hidden). The workbench reaches this through the reading level
+    /// (`ctrl+e`), not a key of its own — see [`Self::set_reply_detail`].
+    /// Re-renders on change and jumps to the bottom — after expanding, the
+    /// fresh content would otherwise grow off-screen; after collapsing, the
+    /// answer lands at the bottom anyway. (Also keeps `viewport_top` valid:
+    /// collapsing shrinks the line count.)
     pub fn toggle_thinking_hidden(&mut self) -> bool {
         self.set_thinking_hidden(!self.thinking_hidden);
         self.set_auto_scroll(true);
@@ -1242,21 +1266,27 @@ impl ChatArea {
         self.last_render_width = -1;
     }
 
-    /// Render every slice, ignoring the reading level and the compact view —
-    /// what `/transcript` copies into its pager. The two folds are screen
-    /// preferences; a transcript is a record, so it shows the whole thing.
-    /// The screen's own layout is restored before returning.
+    /// Render every slice, ignoring the reading level, the thinking fold and
+    /// the compact view — what `/transcript` copies into its pager. The three
+    /// folds are screen preferences; a transcript is a record, so it shows the
+    /// whole thing. The screen's own layout is restored before returning.
     pub fn render_all_detailed(&mut self, width: usize) -> Vec<String> {
-        if self.reply_detail == ReplyDetail::Detailed && !self.compact_activity {
+        if self.reply_detail == ReplyDetail::Detailed
+            && !self.thinking_hidden
+            && !self.compact_activity
+        {
             return self.render_all(width);
         }
         let detail = self.reply_detail;
+        let thinking_hidden = self.thinking_hidden;
         let compact = self.compact_activity;
         self.reply_detail = ReplyDetail::Detailed;
+        self.thinking_hidden = false;
         self.compact_activity = false;
         self.rerender();
         let lines = self.render_all(width);
         self.reply_detail = detail;
+        self.thinking_hidden = thinking_hidden;
         self.compact_activity = compact;
         self.rerender();
         lines
@@ -1779,16 +1809,19 @@ impl ChatArea {
             self.push_reply_summary(summary);
         }
 
-        // Render thinking block FIRST (before content). Collapsed thinking
-        // (ctrl+o) renders nothing — except a one-line hint while thinking is
-        // actively streaming (pending, no content yet) so a live run doesn't
-        // look frozen; historical thinking stays fully hidden. A folded reply
-        // hides it too: the summary row already counts it.
-        if has_thinking && !self.thinking_hidden && fold.is_none() {
-            if self.compact_activity {
-                // Compact view: the reasoning is summarized on one row (and, for
-                // an uninterrupted run of thinking blocks, on one row for the
-                // whole run — the followers render nothing at all).
+        // Render thinking block FIRST (before content). Collapsed reasoning —
+        // the default level, and the compact view — shows a one-line marker
+        // instead of the text, the row the desktop's `Thinking` block and the
+        // phone's thought row use: that the model reasoned, not what it said.
+        // A folded reply hides the marker too: its summary row already counts
+        // the thought.
+        if has_thinking && fold.is_none() {
+            // The reasoning text is what the *full process* level is for. At
+            // the default level — and in the compact view, whose runs are
+            // summarized anyway — the block keeps one marker row, which is
+            // what keeps a long streamed thought from scrolling its own
+            // answer off the bottom.
+            if self.thinking_hidden || self.compact_activity {
                 self.push_thinking_marker(msg, run);
             } else {
                 let thinking = msg.thinking.as_deref().unwrap_or("");
@@ -1821,21 +1854,16 @@ impl ChatArea {
                     }
                 }
             }
-        } else if has_thinking && msg.pending && msg.content.trim().is_empty() {
-            // The thinking is hidden (ctrl+o) but still streaming: a live run
-            // must not look frozen while nothing else is on screen.
-            self.rendered_lines.push(RenderedLine {
-                text: fg(
-                    self.theme.thinking_text as u8,
-                    &italic(" Thinking... (ctrl+o to expand)"),
-                ),
-                dim: true,
-            });
         }
 
-        // Spacer between thinking and content (only when thinking is shown —
-        // the streaming placeholder never coexists with content).
-        if has_thinking && !self.thinking_hidden && fold.is_none() && !msg.content.trim().is_empty()
+        // Spacer between thinking and content (only when the reasoning text is
+        // on screen — a marker row and the answer read fine without it, and the
+        // streaming marker never coexists with content).
+        if has_thinking
+            && !self.thinking_hidden
+            && !self.compact_activity
+            && fold.is_none()
+            && !msg.content.trim().is_empty()
         {
             self.rendered_lines.push(RenderedLine {
                 text: String::new(),
@@ -1996,14 +2024,15 @@ impl ChatArea {
     }
 
     /// One row standing in for a thinking block (or an uninterrupted run of
-    /// them) in the compact view: that the model reasoned, and how many blocks —
-    /// not the text.
+    /// them): that the model reasoned, and how many blocks — not the text. The
+    /// ellipsis marks the reasoning *itself* still arriving (`pending` alone is
+    /// not enough: the flag also covers the answer streaming after it).
     fn push_thinking_marker(&mut self, msg: &ChatMessage, run: usize) {
         let mut label = "thinking".to_string();
         if run > 1 {
             label.push_str(&format!(" ×{run}"));
         }
-        if msg.pending {
+        if msg.pending && msg.content.trim().is_empty() {
             label.push('…');
         }
         let text = format!(" {} {}", dim(FOLD_MARKER), italic(&label));
@@ -2378,9 +2407,10 @@ mod tests {
     }
 
     /// The same transcript at the *detailed* reading level — every slice in
-    /// place. Tests about what a slice looks like (thinking colours, a folded
-    /// run's marker, `ctrl+o`) render at this level so the reading-level fold
-    /// does not stand between them and the row under test.
+    /// place, reasoning text included. Tests about what a slice looks like
+    /// (thinking colours, a call's row) render at this level so neither the
+    /// reading-level fold nor the collapsed reasoning stands between them and
+    /// the row under test.
     fn detailed_chat() -> ChatArea {
         let mut chat = ChatArea::new(W, None);
         chat.set_reply_detail(ReplyDetail::Detailed);
@@ -2429,33 +2459,97 @@ mod tests {
     }
 
     #[test]
-    fn collapsed_thinking_placeholder_only_while_streaming() {
+    fn collapsed_thinking_shows_a_marker_never_its_text() {
         let mut chat = new_chat();
         chat.render(W);
-        chat.set_thinking_hidden(true);
 
-        // Thinking actively streaming (start_thinking marks the message
-        // pending): one-line placeholder, never the reasoning text.
+        // Reasoning streaming (start_thinking marks the message pending): a
+        // one-line marker that it is thinking, never the reasoning text. The
+        // default level starts reasoning collapsed, like the desktop.
         chat.start_thinking();
         chat.append_thinking_delta("secret reasoning");
         let lines = chat.render_all(W);
-        assert!(lines.iter().any(|l| l.contains("Thinking...")));
-        assert!(!lines.iter().any(|l| l.contains("secret reasoning")));
+        assert!(lines.iter().any(|l| l.contains("thinking")), "{lines:?}");
+        assert!(
+            !lines.iter().any(|l| l.contains("secret reasoning")),
+            "{lines:?}"
+        );
 
-        // Content starts (thinking done): placeholder gone, answer visible,
-        // reasoning still hidden.
+        // Content starts (thinking done): the marker stays — one collapsed row
+        // above the answer, as on the desktop — and the reasoning is still
+        // hidden.
         chat.append_to_last_message("answer");
         let lines = chat.render_all(W);
-        assert!(!lines.iter().any(|l| l.contains("Thinking...")));
-        assert!(!lines.iter().any(|l| l.contains("secret reasoning")));
+        assert!(lines.iter().any(|l| l.contains("thinking")), "{lines:?}");
+        assert!(
+            !lines.iter().any(|l| l.contains("secret reasoning")),
+            "{lines:?}"
+        );
         assert!(lines.iter().any(|l| l.contains("answer")));
 
-        // Run complete: still nothing but the answer.
+        // Run complete: the reply folds to its answer, with the thought
+        // counted in the summary row — not shown.
         chat.mark_last_message_complete();
         let lines = chat.render_all(W);
-        assert!(!lines.iter().any(|l| l.contains("Thinking...")));
-        assert!(!lines.iter().any(|l| l.contains("secret reasoning")));
+        assert!(
+            !lines.iter().any(|l| l.contains("secret reasoning")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("thought")),
+            "the fold counts the thought: {lines:?}"
+        );
         assert!(lines.iter().any(|l| l.contains("answer")));
+    }
+
+    /// The reasoning-only shape (a thought with no prose of its own) keeps its
+    /// marker after it settles — the reply has no answer to fold into, so the
+    /// row is the only sign the model thought at all.
+    #[test]
+    fn a_settled_reasoning_only_block_keeps_its_marker() {
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.start_thinking();
+        chat.append_thinking_delta("hmm");
+        chat.end_thinking();
+        let lines = chat.render_all(W);
+        let plain = lines
+            .iter()
+            .map(|l| crate::utils::strip_ansi_codes(l))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(plain.contains("▸ thinking"), "{plain:?}");
+        assert!(!plain.contains("hmm"), "{plain:?}");
+    }
+
+    /// The full-process level is where the reasoning text lives, and toggling
+    /// it is the only key a reader needs: `ctrl+e` in, `ctrl+e` out.
+    #[test]
+    fn the_full_process_level_reveals_the_reasoning_text() {
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.start_thinking();
+        chat.append_thinking_delta("secret reasoning");
+        chat.end_thinking();
+        chat.append_to_last_message("answer");
+        chat.mark_last_message_complete();
+        assert!(chat.thinking_hidden());
+
+        chat.set_reply_detail(ReplyDetail::Detailed);
+        assert!(!chat.thinking_hidden());
+        let lines = chat.render_all(W);
+        assert!(
+            lines.iter().any(|l| l.contains("secret reasoning")),
+            "{lines:?}"
+        );
+
+        chat.set_reply_detail(ReplyDetail::Default);
+        assert!(chat.thinking_hidden());
+        let lines = chat.render_all(W);
+        assert!(
+            !lines.iter().any(|l| l.contains("secret reasoning")),
+            "{lines:?}"
+        );
     }
 
     #[test]
@@ -2798,10 +2892,12 @@ mod tests {
         assert_matches_fresh_render(&mut chat);
     }
 
-    /// `ctrl+o` still wins over the compact marker: hiding thinking is an
-    /// explicit request, and a marker is still thinking on screen.
+    /// Hiding reasoning keeps the reasoning *text* off screen, but the marker
+    /// row stays: it is the one row that says a thought happened, and the
+    /// compact view is where a run of them is counted. This is the same row the
+    /// default level draws (reasoning starts collapsed there too).
     #[test]
-    fn compact_view_does_not_show_hidden_thinking() {
+    fn hidden_thinking_keeps_its_marker_and_loses_its_text() {
         let mut chat = detailed_chat();
         chat.render(W);
         chat.set_compact_activity(true);
@@ -2809,7 +2905,8 @@ mod tests {
         let mut msg = ChatMessage::new("a1".into(), ChatRole::Assistant, "answer");
         msg.thinking = Some("reasoning".into());
         chat.add_message(msg);
-        assert_eq!(compact_lines(&mut chat), vec!["answer"]);
+        let lines = compact_lines(&mut chat);
+        assert_eq!(lines, vec!["▸ thinking", "answer"], "{lines:?}");
     }
 
     /// `ctrl+g` asks for every tool body; that cannot be reconciled with hiding
@@ -3008,10 +3105,10 @@ mod tests {
         set_messages(&mut chat, messages);
 
         let lines = compact_lines(&mut chat);
-        assert!(
-            lines.iter().any(|l| l.contains("weighing the options")),
-            "{lines:?}"
-        );
+        // Reasoning is collapsed at the default level, so the live rows are the
+        // marker, the call and the answer being written.
+        assert!(lines.iter().any(|l| l.contains("▸ thinking")), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.contains("weighing the options")));
         assert!(
             lines.iter().any(|l| l.contains("read /src/parser.rs")),
             "{lines:?}"
@@ -3048,10 +3145,10 @@ mod tests {
             ],
         );
         let lines = compact_lines(&mut chat);
-        assert!(
-            lines.iter().any(|l| l.contains("where to look")),
-            "{lines:?}"
-        );
+        // No answer to fold into, so the work stays — the reasoning as its
+        // collapsed marker (the text waits for `ctrl+e`).
+        assert!(lines.iter().any(|l| l.contains("▸ thinking")), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.contains("where to look")));
         assert!(lines.iter().any(|l| l.contains("read /a.rs")), "{lines:?}");
         assert!(!lines.iter().any(|l| l.contains("tool call")), "{lines:?}");
     }
@@ -3072,12 +3169,14 @@ mod tests {
         set_messages(&mut chat, messages);
 
         let lines = compact_lines(&mut chat);
+        // The newest reply is still streaming, so it is not folded: its call is
+        // a row, and its reasoning is the collapsed marker.
         assert!(
             lines.iter().any(|l| l == "▸ 1 tool call · 1 thought"),
             "{lines:?}"
         );
         assert!(
-            lines.iter().any(|l| l.contains("running the suite")),
+            !lines.iter().any(|l| l.contains("running the suite")),
             "{lines:?}"
         );
         assert!(lines.iter().any(|l| l.contains("Tests")), "{lines:?}");
@@ -3128,10 +3227,16 @@ mod tests {
         chat.finish_tool("c1", None, false);
         chat.append_to_last_message("the answer");
 
-        // While it runs, the work is on screen: the reader is watching it.
+        // While it runs, the work is on screen: the reader is watching it. The
+        // reasoning itself is collapsed (the default level), so the row says
+        // that the model thought rather than showing the text.
         let live = compact_lines(&mut chat);
         assert!(
-            live.iter().any(|line| line.contains("weighing it")),
+            live.iter().any(|line| line.contains("▸ thinking")),
+            "{live:?}"
+        );
+        assert!(
+            !live.iter().any(|line| line.contains("weighing it")),
             "{live:?}"
         );
         assert!(
@@ -3438,15 +3543,16 @@ mod tests {
         assert_eq!(folded_rows(&mut chat), 1, "{lines:?}");
         // …and the unanswered one is the exception the rule describes.
         assert!(
-            lines.iter().any(|line| line.contains("read /src/cut.rs")),
+            lines.iter().any(|l| l.contains("read /src/cut.rs")),
             "an interrupted turn stays whole — if this now folds, the rule on \
              `ReplyDetail::Default` changed and the doc comment owes an update: \
              {lines:?}"
         );
         assert!(
-            lines.iter().any(|line| line.contains("thinking about cut")),
-            "{lines:?}"
+            lines.iter().any(|l| l.contains("▸ thinking")),
+            "an unanswered turn keeps its reasoning marker: {lines:?}"
         );
+        assert!(!lines.iter().any(|l| l.contains("thinking about cut")));
     }
 
     /// The same shape arriving from the session store.
@@ -4150,6 +4256,9 @@ mod tests {
     #[test]
     fn concatenates_consecutive_thinking_blocks_directly() {
         let mut chat = ChatArea::new(60, None);
+        // The reasoning text is the full-process level's (`ctrl+e`); the
+        // default starts it collapsed.
+        chat.set_reply_detail(ReplyDetail::Detailed);
         chat.add_message(ChatMessage::new("1".into(), ChatRole::Assistant, ""));
         chat.start_thinking();
         chat.append_thinking_delta("first block");

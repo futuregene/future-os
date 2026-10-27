@@ -167,6 +167,78 @@ pub fn set_capabilities(caps: TerminalCapabilities) {
     *CACHED_CAPABILITIES.lock().unwrap() = Some(caps);
 }
 
+/// A test's exclusive hold on the capability cache, restored when it drops.
+///
+/// The cache is one value per process and a `cargo test` binary runs its tests
+/// as threads of one process, so a test that draws a frame against a pinned
+/// protocol has to be the only one touching it. Without that, a frame asserts a
+/// fact nobody pinned: `the_preview_box_controls_step_through_the_folder` looks
+/// for the zoom buttons a kitty terminal gets, while a sibling test's
+/// `set_capabilities(default)` — or the reset inside
+/// `capabilities_cache_and_reset` — lands in the middle of its render and the
+/// box is drawn for a terminal that cannot show pictures at all. Measured:
+/// `cargo test -p future-tui --lib` with no kitty/ghostty in the environment
+/// (what CI has) fails those two tests every run, and passes them in a
+/// developer's Ghostty only because detection then answers kitty by itself; the
+/// intermittent case is the same race in the other direction, when the
+/// kitty-setting sibling happens to run between its own two `set_capabilities`.
+///
+/// The lock serialises and the drop restores. Both are needed: a mutex is not a
+/// restore (`FLAKES.md` §4c), and a value left behind fails a later test for
+/// reasons of its own.
+#[cfg(test)]
+pub struct CapabilitiesGuard {
+    previous: Option<TerminalCapabilities>,
+    _exclusive: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl CapabilitiesGuard {
+    /// Take the cache for this test, leaving its value as it is.
+    pub fn hold() -> Self {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let exclusive = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = *CACHED_CAPABILITIES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self {
+            previous,
+            _exclusive: exclusive,
+        }
+    }
+
+    /// Take the cache with `images` installed — what a terminal speaking that
+    /// protocol answers.
+    pub fn pin(images: ImageProtocol) -> Self {
+        let guard = Self::hold();
+        guard.install(TerminalCapabilities {
+            images,
+            true_color: images != ImageProtocol::None,
+            hyperlinks: images != ImageProtocol::None,
+        });
+        guard
+    }
+
+    /// Install `caps` for the rest of the hold.
+    pub fn install(&self, caps: TerminalCapabilities) {
+        set_capabilities(caps);
+    }
+
+    /// Forget the cache for the rest of the hold: the next reader detects.
+    pub fn forget(&self) {
+        reset_capabilities_cache();
+    }
+}
+
+#[cfg(test)]
+impl Drop for CapabilitiesGuard {
+    fn drop(&mut self) {
+        *CACHED_CAPABILITIES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.previous;
+    }
+}
+
 const KITTY_PREFIX: &str = "\x1b_G";
 const ITERM2_PREFIX: &str = "\x1b]1337;File=";
 
@@ -821,6 +893,9 @@ mod tests {
     #[test]
     fn capabilities_cache_and_reset() {
         let _guard = env_lock();
+        // Everything below goes through this hold, so no sibling test can
+        // repopulate the cache from its own view of the environment mid-test.
+        let held = CapabilitiesGuard::hold();
         env::remove_var("TERM_PROGRAM");
         env::remove_var("TERM");
         env::remove_var("COLORTERM");
@@ -829,7 +904,7 @@ mod tests {
         env::remove_var("GHOSTTY_RESOURCES_DIR");
         env::remove_var("WEZTERM_PANE");
         env::remove_var("ITERM_SESSION_ID");
-        reset_capabilities_cache();
+        held.forget();
         let caps = get_capabilities();
         assert_eq!(caps.images, ImageProtocol::None);
         // setCapabilities overrides the cache
@@ -839,7 +914,7 @@ mod tests {
             hyperlinks: true,
         });
         assert_eq!(get_capabilities().images, ImageProtocol::Kitty);
-        reset_capabilities_cache();
+        held.forget();
         let caps = get_capabilities();
         assert_eq!(caps.images, ImageProtocol::None);
     }
@@ -1200,12 +1275,7 @@ mod tests {
 
     #[test]
     fn render_image_kitty() {
-        let _guard = env_lock();
-        set_capabilities(TerminalCapabilities {
-            images: ImageProtocol::Kitty,
-            true_color: true,
-            hyperlinks: true,
-        });
+        let _caps = CapabilitiesGuard::pin(ImageProtocol::Kitty);
         let dims = ImageDimensions {
             width_px: 100,
             height_px: 100,
@@ -1258,12 +1328,7 @@ mod tests {
 
     #[test]
     fn render_image_iterm2() {
-        let _guard = env_lock();
-        set_capabilities(TerminalCapabilities {
-            images: ImageProtocol::Iterm2,
-            true_color: true,
-            hyperlinks: true,
-        });
+        let _caps = CapabilitiesGuard::pin(ImageProtocol::Iterm2);
         let dims = ImageDimensions {
             width_px: 100,
             height_px: 100,
@@ -1278,12 +1343,7 @@ mod tests {
 
     #[test]
     fn render_image_none_capabilities_returns_null() {
-        let _guard = env_lock();
-        set_capabilities(TerminalCapabilities {
-            images: ImageProtocol::None,
-            true_color: true,
-            hyperlinks: false,
-        });
+        let _caps = CapabilitiesGuard::pin(ImageProtocol::None);
         let dims = ImageDimensions {
             width_px: 100,
             height_px: 100,

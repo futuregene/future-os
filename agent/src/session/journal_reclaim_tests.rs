@@ -281,8 +281,14 @@ fn an_unretirable_run_does_not_keep_the_sweep_looping() {
     store
         .db
         .call(|db| {
-            // The last event is not `agent_end`, so it may still be appended to.
+            // The last event is not `agent_end`, and the run settled just now, so
+            // its producer may still append that tail: inside the grace window
+            // nothing may retire it, and the sweep must not loop on it either.
             db.execute("DELETE FROM run_events WHERE run_id='stuck' AND idx=4", [])?;
+            db.execute(
+                "UPDATE runs SET completed_at_ms=?1 WHERE run_id='stuck'",
+                [crate::session::journal_compaction::now_ms()],
+            )?;
             Ok(())
         })
         .unwrap();
@@ -315,4 +321,154 @@ fn explicit_legacy_reclaim_never_rewrites_canonical_conversations() {
     assert_eq!(outcome.deleted, 0);
     assert_eq!(store.entries("s").unwrap(), before);
     assert_eq!(store.journal_stats().unwrap()["runSnapshots"]["rows"], 0);
+}
+
+/// The other half of that rule: the same truncated run, once its settle time is
+/// older than the grace window, is exactly what the sweep should reclaim. This
+/// is the 50-run / 762k-event (179 MiB) leftover the first measurement found.
+#[test]
+fn the_sweep_folds_a_truncated_stream_once_its_run_has_settled() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+    settled_run(&store, "crash", 40);
+    store
+        .db
+        .call(|db| {
+            db.execute("DELETE FROM run_events WHERE run_id='crash' AND idx=41", [])?;
+            db.execute(
+                "UPDATE runs SET status='interrupted' WHERE run_id='crash'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let report = store
+        .reclaim_settled_journals(Duration::from_secs(30), false)
+        .unwrap();
+    assert_eq!(report["reclaimedRuns"], 1);
+    assert_eq!(raw_rows(&store), 0);
+    assert_eq!(
+        report["entries"][0]["skip"],
+        serde_json::Value::Null,
+        "kept means the run was refused; this one had to be folded"
+    );
+    let stats = store.journal_stats().unwrap();
+    assert_eq!(stats["truncatedPublishes"], 1);
+}
+
+/// The startup catch-up is the reason a store no longer drifts: it folds what a
+/// crash or a stop left behind without anybody asking. Its bounds are the point,
+/// so this asserts both — the plan stops at `max_runs`, the leftovers are
+/// announced with `hasMore`, and a second pass continues.
+#[test]
+fn the_startup_catch_up_is_bounded_and_resumable() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+    store.bind_legacy_events("s").unwrap();
+    for run in ["r0", "r1", "r2", "r3", "r4", "r5"] {
+        settled_run(&store, run, 2);
+    }
+    let first = store
+        .catch_up_settled_journals(2, Duration::from_secs(30))
+        .unwrap();
+    assert_eq!(first.folded, 2, "max_runs is a hard bound");
+    assert!(first.has_more, "the rest is the next start's work");
+    assert_eq!(raw_rows(&store), 16, "four runs still hold their journal");
+
+    let second = store
+        .catch_up_settled_journals(2, Duration::from_secs(30))
+        .unwrap();
+    assert_eq!(second.folded, 2);
+    assert!(second.has_more);
+
+    let third = store
+        .catch_up_settled_journals(2, Duration::from_secs(30))
+        .unwrap();
+    assert_eq!(third.folded, 2);
+    assert!(!third.has_more, "the backlog is drained");
+    assert_eq!(raw_rows(&store), 0);
+    assert_eq!(third.errors, 0);
+    assert!(
+        third.refused.is_empty(),
+        "nothing was kept: {:?}",
+        third.refused
+    );
+
+    // A drained store says so instead of folding anything on the next start.
+    let idle = store
+        .catch_up_settled_journals(2, Duration::from_secs(30))
+        .unwrap();
+    assert_eq!(idle.examined, 0);
+    assert_eq!(idle.folded, 0);
+}
+
+/// A catch-up must not spend its whole budget on runs it has to refuse — the
+/// refusal is decided from one indexed read, before any fold is built.
+#[test]
+fn the_startup_catch_up_reports_why_it_kept_a_journal() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+    settled_run(&store, "fresh", 3);
+    store
+        .db
+        .call(|db| {
+            db.execute("DELETE FROM run_events WHERE run_id='fresh' AND idx=4", [])?;
+            db.execute(
+                "UPDATE runs SET completed_at_ms=?1 WHERE run_id='fresh'",
+                [crate::session::journal_compaction::now_ms()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let report = store
+        .catch_up_settled_journals(4, Duration::from_secs(30))
+        .unwrap();
+    assert_eq!(report.folded, 0);
+    assert_eq!(report.examined, 1);
+    assert_eq!(report.refused, vec![("not_terminal".to_string(), 1)]);
+    assert_eq!(raw_rows(&store), 4, "the journal is untouched");
+}
+
+/// The sweep's whole purpose is that the raw journal is the *only* thing it
+/// removes: the conversation a reader sees is `entries` plus `message_blocks`,
+/// and a reclamation that touched either would be data loss dressed as
+/// maintenance. Measured on a real 4.4 GiB store, all 337 transcripts were
+/// byte-identical across a sweep; this pins the same invariant in the store.
+#[test]
+fn a_sweep_leaves_the_conversation_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+    settled_run(&store, "run", 40);
+    store
+        .db
+        .call(|db| {
+            db.execute(
+                "INSERT INTO entries(session_id,position,entry_id,entry_type,role,run_id,
+                                     timestamp_ms,metadata_json,content_json)
+                 VALUES ('s',0,'e0','message','user','run',1,'{}','{\"text\":\"hi\"}')",
+                [],
+            )?;
+            db.execute(
+                "INSERT INTO message_blocks(session_id,entry_position,ordinal,kind,text,
+                                            metadata_json)
+                 VALUES ('s',0,0,'text','hi','{}')",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let conversation = |db: &mut rusqlite::Connection| -> anyhow::Result<(i64, String, String)> {
+        Ok((
+            db.query_row("SELECT count(*) FROM entries", [], |row| row.get(0))?,
+            db.query_row("SELECT content_json FROM entries", [], |row| row.get(0))?,
+            db.query_row("SELECT text FROM message_blocks", [], |row| row.get(0))?,
+        ))
+    };
+    let before = store.db.call(conversation).unwrap();
+    let report = store
+        .reclaim_settled_journals(Duration::from_secs(30), false)
+        .unwrap();
+    assert_eq!(report["reclaimedRuns"], 1);
+    assert_eq!(raw_rows(&store), 0);
+    assert_eq!(store.db.call(conversation).unwrap(), before);
 }

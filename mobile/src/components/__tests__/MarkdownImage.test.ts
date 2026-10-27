@@ -3,12 +3,18 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { Image, Text } from "react-native";
 import { MarkdownText } from "../MarkdownText";
 import { MarkdownImageLoaderContext, resolveMarkdownPath, type MarkdownImageLoader } from "../MarkdownImage";
+import { ImageViewerContext } from "../imageViewer";
 
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 
 let tree: ReactTestRenderer;
 afterEach(() => { act(() => tree?.unmount()); });
 const button = (label: string) => tree.root.findAll(node => node.props.accessibilityLabel === label && node.props.onPress)[0]!;
+/** The tappable picture carrying a screen-reader label. */
+const pressLabel = (label: string) => {
+  const node = tree.root.findAll(candidate => candidate.props.accessibilityLabel === label && typeof candidate.props.onPress === "function").at(-1)!;
+  act(() => node.props.onPress());
+};
 function render(loader: MarkdownImageLoader, text = "![chart](assets/a.png)", imageBasePath?: string) {
   return createElement(MarkdownImageLoaderContext, { value: loader }, createElement(MarkdownText, { text, imageBasePath }));
 }
@@ -121,6 +127,66 @@ test("session/desktop changes cancel loads and never display a previous session'
   expect(signals[0]!.aborted).toBe(true);
   await act(async () => resolveFirst("file:///old-session.png"));
   expect(tree.root.findAllByType(Image)).toHaveLength(0);
+});
+
+test("a link's picture opens its link, not the viewer", async () => {
+  // A picture inside a link is the link's target: tapping it must go where the
+  // author pointed, the same as tapping the text beside it.
+  const onOpenFile = jest.fn();
+  const openImageViewer = jest.fn();
+  const loader = { scope: "one", cached: () => "file:///cached.png", load: jest.fn() };
+  await act(async () => {
+    tree = create(createElement(MarkdownImageLoaderContext, { value: loader },
+      createElement(ImageViewerContext, { value: openImageViewer },
+        createElement(MarkdownText, { text: "[![chart](a.png)](./b.md)", onOpenFile }))));
+  });
+  act(() => button("chart").props.onPress());
+  expect(openImageViewer).not.toHaveBeenCalled();
+  expect(onOpenFile).toHaveBeenCalledWith("b.md");
+});
+
+test("a picture the reply drew full screen on a tap, without another transfer", async () => {
+  const openImageViewer = jest.fn();
+  const onOpenFile = jest.fn();
+  const loader = { scope: "one", cached: () => null, load: jest.fn(async () => "file:///verified.png") };
+  await act(async () => {
+    tree = create(createElement(MarkdownImageLoaderContext, { value: loader },
+      createElement(ImageViewerContext, { value: openImageViewer },
+        createElement(MarkdownText, { text: "![chart](assets/a.png)", onOpenFile }))));
+  });
+  pressLabel("chart");
+  // The bytes are already here: the viewer opens on them, it does not route
+  // through the file-preview download flow.
+  expect(openImageViewer).toHaveBeenCalledWith({ name: "chart", uri: "file:///verified.png" });
+  expect(onOpenFile).not.toHaveBeenCalled();
+});
+
+test("an image linked from elsewhere is still tappable", async () => {
+  // No workspace file to read and no href: the only reason this one was dead to
+  // touch is that nobody had anywhere to put it.
+  const openImageViewer = jest.fn();
+  const loader = { scope: "one", cached: () => null, load: jest.fn() };
+  await act(async () => {
+    tree = create(createElement(MarkdownImageLoaderContext, { value: loader },
+      createElement(ImageViewerContext, { value: openImageViewer },
+        createElement(MarkdownText, { text: "![forest](https://example.com/forest.png)" }))));
+  });
+  pressLabel("forest");
+  expect(openImageViewer).toHaveBeenCalledWith({ name: "forest", uri: "https://example.com/forest.png" });
+});
+
+test("without a viewer the picture keeps its old open-file target", async () => {
+  // Every surface that is not the conversation (and any host with no viewer
+  // mounted) must not grow a button with nowhere to go: the tap still means
+  // "open this file", exactly as before.
+  const onOpenFile = jest.fn();
+  const loader = { scope: "one", cached: () => "file:///cached.png", load: jest.fn() };
+  await act(async () => {
+    tree = create(createElement(MarkdownImageLoaderContext, { value: loader },
+      createElement(MarkdownText, { onOpenFile, text: "![chart](assets/a.png)" })));
+  });
+  pressLabel("chart");
+  expect(onOpenFile).toHaveBeenCalledWith("assets/a.png");
 });
 
 test("unsupported inline images retain the existing open-file fallback", async () => {

@@ -235,6 +235,13 @@ fn report(stats: &Value, out: &Output) {
             count(number(stats, "oversizePublishes"))
         ),
     );
+    row(
+        "Truncated",
+        format!(
+            "{} snapshot(s) folded from a run that never sent agent_end",
+            count(number(stats, "truncatedPublishes"))
+        ),
+    );
     let skipped = &stats["skipped"];
     let kept: Vec<String> = skipped
         .as_object()
@@ -449,6 +456,7 @@ mod tests {
             "database":{"bytes":1008119808,"freeBytes":0},
             "reclaimed":{"runs":15,"events":1213282,"atMs":1761461892000},
             "oversizePublishes":1,
+            "truncatedPublishes":3,
             "skipped":{"not_terminal":2,"oversized_event":1}}"#
     }
 
@@ -495,6 +503,10 @@ mod tests {
         assert!(printed.contains("Largest run"), "{printed}");
         assert!(printed.contains("22 settled runs"), "{printed}");
         assert!(printed.contains("not_terminal=2"), "{printed}");
+        assert!(
+            printed.contains("3 snapshot(s) folded from a run that never sent agent_end"),
+            "{printed}"
+        );
         assert!(printed.contains("Nothing was deleted"), "{printed}");
     }
 

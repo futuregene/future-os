@@ -117,6 +117,32 @@ pub enum RunStatus {
     Skipped,
 }
 
+/// Why a settled run ended, as a stable token stored beside its status.
+///
+/// `status` alone cannot say this: a run that produced no answer and a run
+/// that answered both used to read `completed`, which is why an idle sweep
+/// looked exactly like a finished one and nothing in the ledger named a cause.
+/// The token is orthogonal to `status` — `empty_answer` and `cancelled` are
+/// failures, `answer` is the success case — so history that predates it keeps
+/// `NULL` and is read as "unknown", never as "fine".
+pub mod finish_reason {
+    /// The run ended with an answer (`status=completed`).
+    pub const ANSWER: &str = "answer";
+    /// The terminal was clean but the final assistant text was empty or blank:
+    /// the provider answered without content, or the turn ended on tool calls.
+    pub const EMPTY_ANSWER: &str = "empty_answer";
+    /// Cancelled (a user/UI stop, or the agent's own budget) before it finished.
+    pub const CANCELLED: &str = "cancelled";
+    /// The agent carrying the run was restarted or killed under it.
+    pub const INTERRUPTED: &str = "interrupted";
+    /// The prompt stream timed out.
+    pub const TIMEOUT: &str = "timeout";
+    /// The provider/model call failed (4xx/5xx, invalid response, filter).
+    pub const PROVIDER_ERROR: &str = "provider_error";
+    /// Anything else that failed before an answer existed.
+    pub const ERROR: &str = "error";
+}
+
 /// A task definition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Task {
@@ -178,6 +204,13 @@ pub struct TaskRun {
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
     pub error_message: Option<String>,
+    /// Why the run ended — one of [`finish_reason`]'s tokens, or `None` for a
+    /// run that has not settled (and for rows written before the column).
+    pub finish_reason: Option<String>,
+    /// One short line saying where this run's output went, written when the run
+    /// produced nothing usable — the only trace left once a `session_retention
+    /// = delete` task has thrown its conversation away.
+    pub finish_note: Option<String>,
     /// The run's conversation was deleted after it settled (`session_retention
     /// = delete`). The ids are cleared at the same time — a conversation nobody
     /// can open should not look openable — so this is what says the run *had*

@@ -124,6 +124,7 @@ future run "介绍一下这个项目"
 | `--model <model>` | 选择模型。支持 `model:thinking`,例如 `sonnet:high`。 |
 | `--thinking <level>` | 思考级别:`off`、`minimal`、`low`、`medium`、`high`、`xhigh`。 |
 | `@<path>` | 把某个文件的内容包含进 prompt。 |
+| `--message-file <path>` | 把文件内文**当作**消息本身发出，逐字不变：不包 `<file>` 外壳、不截断也不裁空白。与 `@<path>` 和位置消息互斥；供脚本与 agent 之间的派发使用。 |
 | `--continue`、`-c` | 继续最近的会话。 |
 | `--session <id>` | 连接指定 ID 的已有会话。 |
 | `--fork <entry-id>` | 从当前会话的某个条目分叉出新会话。 |
@@ -144,8 +145,15 @@ future run "介绍一下这个项目"
 ```bash
 future run --model sonnet:high "审查这些改动"
 future run @README.md "总结这个文件"
+future run --message-file /tmp/prompt.md --session abc123
 future run --tools read,shell "读一下 README 并列出文件"
 ```
+
+`@<path>` 与 `--message-file` 不是同一个东西的两种写法。`@<path>` 会把文件包进
+`<file name="…">` 外壳，再把你的消息文字接在后面——这是人在终端里“附带一个文件”的意思。
+`--message-file` 则把文件字节当作整轮消息发出，对端看到的只有你的文字；脚本化派发和
+agent 之间转达需要的就是这个，否则目标会话（以及从首轮生成的标题）开头是一个文件外壳，
+而不是那条指令。
 
 完整选项见 `future run --help`。
 

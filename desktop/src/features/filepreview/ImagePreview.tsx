@@ -1,4 +1,5 @@
 import type { Size, ZoomState } from "./imageZoom";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { prepareImagePreviewUrl } from "../../integrations/storage/files";
@@ -25,26 +26,49 @@ const WHEEL_SENSITIVITY = 0.002;
 const DRAG_THRESHOLD_PX = 4;
 
 /**
- * Renders a local image at its natural size, shrinking to fit the overlay when
- * larger (`max-h/w-full`) and never upscaling. Bytes come through the backend
+ * Where the picture sits among its neighbours — the images in the same folder,
+ * in the order the file tree lists them. Supplying this adds the ← / → controls
+ * (and the Left/Right keys) that walk the folder without going back to the tree.
+ */
+export interface ImageNavigation {
+  /** Zero-based position of the picture on screen. */
+  index: number;
+  /** How many images the list holds. `index < count - 1` means there is a next. */
+  count: number;
+  onNext: () => void;
+  onPrev: () => void;
+}
+
+/**
+ * Renders a local image, shrunk to fit the overlay when larger and never
+ * upscaled past its own pixels (`fitScale`). Bytes come through the backend
  * through a path-validated Tauri asset URL (25MB cap), so paths outside the
  * workspace still preview without copying or Base64-encoding their bytes.
  *
- * Desktop interaction added on top of the fit-to-window baseline:
- * - Wheel/trackpad scroll zooms in and out, anchored at the cursor.
- * - Double-click toggles between "fit to window" and "actual size" (100%).
- * - On-screen controls zoom in/out/reset and are keyboard-focusable.
- * - When zoomed in, drag (or hold space and drag) to pan; panning is clamped
- *   to the image bounds so the picture cannot be lost.
+ * Desktop interaction on top of that baseline:
+ * - Wheel/trackpad scroll zooms in and out, anchored at the cursor; a
+ *   double-click toggles between "fit to window" and "actual size" (1:1).
+ * - An on-screen bar zooms in/out, returns to fit, jumps to actual size, and —
+ *   when `navigation` is supplied — steps to the previous/next image. Every
+ *   control is a real button, so it is reachable by keyboard and named for
+ *   screen readers.
+ * - The percentage is the picture's real scale against its own pixels, so 100%
+ *   always means one image pixel per screen pixel. A screenshot of a large
+ *   document therefore reads e.g. 34% while fitted, which is what "zoom in to
+ *   read it" is for.
+ * - When zoomed in, drag to pan; panning is clamped to the image bounds so the
+ *   picture cannot be lost.
  */
 export function ImagePreview({
   path,
   name,
   onError,
+  navigation,
 }: {
   path: string;
   name: string;
   onError: () => void;
+  navigation?: ImageNavigation;
 }) {
   const { t } = useTranslation("markdown");
   const { data: src, error, loading } = useAsyncResource<string | null>(
@@ -74,7 +98,9 @@ export function ImagePreview({
   const dragStartRef = useRef<{ x: number; y: number; originX: number; originY: number } | null>(null);
   const hasPannedRef = useRef(false);
 
-  // Reset zoom whenever the image (path/src) changes or the overlay closes.
+  // Reset zoom whenever the image (path/src) changes or the overlay closes, so
+  // stepping to the next picture always starts from "fit" rather than carrying
+  // the previous one's pan.
   useEffect(() => {
     setZoom(resetZoom());
   }, [path, src]);
@@ -146,6 +172,24 @@ export function ImagePreview({
     });
   }, [containerSize, naturalSize]);
 
+  /** Zoom to an absolute target (a scale relative to "fit") about the centre. */
+  const zoomTo = useCallback((target: number) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    const anchor = rect ? { x: rect.width / 2, y: rect.height / 2 } : { x: 0, y: 0 };
+    setZoom(prev => zoomAtAnchor(containerSize, naturalSize, prev, anchor, target));
+  }, [containerSize, naturalSize]);
+
+  /**
+   * Step the zoom by `factor` about the centre. Functional so two clicks inside
+   * one task (a fast double press) compose instead of both starting from the
+   * scale this render saw.
+   */
+  const zoomBy = useCallback((factor: number) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    const anchor = rect ? { x: rect.width / 2, y: rect.height / 2 } : { x: 0, y: 0 };
+    setZoom(prev => zoomAtAnchor(containerSize, naturalSize, prev, anchor, prev.scale * factor));
+  }, [containerSize, naturalSize]);
+
   const handleDoubleClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect)
@@ -193,27 +237,6 @@ export function ImagePreview({
     dragStartRef.current = null;
   }, []);
 
-  // Space-bar "drag to pan" mode.
-  const spacePressedRef = useRef(false);
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.code === "Space" && !event.repeat && !spacePressedRef.current) {
-        spacePressedRef.current = true;
-      }
-    }
-    function onKeyUp(event: KeyboardEvent) {
-      if (event.code === "Space") {
-        spacePressedRef.current = false;
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("keyup", onKeyUp);
-    };
-  }, []);
-
   // Attach / detach global mouseup so a drag that leaves the window still ends.
   useEffect(() => {
     if (!isDragging)
@@ -222,20 +245,29 @@ export function ImagePreview({
     return () => window.removeEventListener("mouseup", handleMouseUp);
   }, [isDragging, handleMouseUp]);
 
-  const handleZoomIn = useCallback(() => {
-    const rect = containerRef.current?.getBoundingClientRect();
-    const anchor = rect ? { x: rect.width / 2, y: rect.height / 2 } : { x: 0, y: 0 };
-    setZoom(prev => zoomAtAnchor(containerSize, naturalSize, prev, anchor, prev.scale * 1.25));
-  }, [containerSize, naturalSize]);
-
-  const handleZoomOut = useCallback(() => {
-    const rect = containerRef.current?.getBoundingClientRect();
-    const anchor = rect ? { x: rect.width / 2, y: rect.height / 2 } : { x: 0, y: 0 };
-    setZoom(prev => zoomAtAnchor(containerSize, naturalSize, prev, anchor, prev.scale / 1.25));
-  }, [containerSize, naturalSize]);
-
-  const handleReset = useCallback(() => {
-    setZoom(resetZoom());
+  // Left/Right step through the folder. The listener is held in a ref so the
+  // arrows always see the current index without re-binding on every render.
+  const navigationRef = useRef(navigation);
+  navigationRef.current = navigation;
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      const nav = navigationRef.current;
+      if (!nav || event.defaultPrevented)
+        return;
+      // A modified arrow belongs to the OS/app shortcut layer, not to browsing.
+      if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey)
+        return;
+      if (event.key === "ArrowLeft" && nav.index > 0) {
+        event.preventDefault();
+        nav.onPrev();
+      }
+      else if (event.key === "ArrowRight" && nav.index < nav.count - 1) {
+        event.preventDefault();
+        nav.onNext();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
   if (!readySrc && !gate.showLoading)
@@ -277,6 +309,7 @@ export function ImagePreview({
                 });
               }}
               src={readySrc}
+              title={zoom.scale > MIN_SCALE ? t("filePreview.panHint") : t("filePreview.zoomHint")}
               style={{
                 transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${actualScale / fit})`,
                 transformOrigin: "center center",
@@ -286,11 +319,13 @@ export function ImagePreview({
         : null}
       {gate.showContent && !failed && readySrc
         ? (
-            <ZoomControls
-              onReset={handleReset}
-              onZoomIn={handleZoomIn}
-              onZoomOut={handleZoomOut}
-              scale={zoom.scale}
+            <PreviewControls
+              navigation={navigation}
+              onActualSize={() => zoomTo(1 / fit)}
+              onFit={() => setZoom(resetZoom())}
+              onZoomIn={() => zoomBy(1.25)}
+              onZoomOut={() => zoomBy(1 / 1.25)}
+              scale={actualScale}
               t={t}
             />
           )
@@ -299,39 +334,99 @@ export function ImagePreview({
   );
 }
 
-function ZoomControls({
+/**
+ * The floating control bar: folder navigation (only when the caller knows the
+ * neighbours), then zoom. Buttons stay enabled at the ends of the zoom range so
+ * a click is never silently swallowed, and navigation is disabled at the first
+ * and last image so the bar says where you are without lying about it.
+ */
+function PreviewControls({
+  navigation,
+  onActualSize,
+  onFit,
   onZoomIn,
   onZoomOut,
-  onReset,
   scale,
   t,
 }: {
+  navigation?: ImageNavigation;
+  onActualSize: () => void;
+  onFit: () => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
-  onReset: () => void;
   scale: number;
   t: (key: string) => string;
 }) {
+  const hasPrev = navigation !== undefined && navigation.index > 0;
+  const hasNext = navigation !== undefined && navigation.index < navigation.count - 1;
   return (
-    <div className="fixed bottom-6 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full border border-line-soft bg-surface/90 p-1.5 shadow-panel">
-      <IconButton label={t("filePreview.zoomIn")} onClick={onZoomIn}>
-        <ZoomIcon type="in" />
-      </IconButton>
+    <div className="fixed bottom-6 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1 rounded-full border border-line-soft bg-surface/90 p-1.5 shadow-panel">
+      {navigation
+        ? (
+            <>
+              <IconButton disabled={!hasPrev} label={t("filePreview.prevImage")} onClick={() => navigation.onPrev()}>
+                <ChevronLeft className="size-4" />
+              </IconButton>
+              <IconButton disabled={!hasNext} label={t("filePreview.nextImage")} onClick={() => navigation.onNext()}>
+                <ChevronRight className="size-4" />
+              </IconButton>
+              <span className="px-2 text-xs tabular-nums text-ink-muted">
+                {navigation.index + 1}
+                {" / "}
+                {navigation.count}
+              </span>
+              <span aria-hidden className="mx-0.5 h-4 w-px bg-line-soft" />
+            </>
+          )
+        : null}
       <IconButton label={t("filePreview.zoomOut")} onClick={onZoomOut}>
         <ZoomIcon type="out" />
-      </IconButton>
-      <IconButton label={t("filePreview.resetZoom")} onClick={onReset}>
-        <ZoomIcon type="reset" />
       </IconButton>
       <span className="px-2 text-xs tabular-nums text-ink-muted">
         {Math.round(scale * 100)}
         %
       </span>
+      <IconButton label={t("filePreview.zoomIn")} onClick={onZoomIn}>
+        <ZoomIcon type="in" />
+      </IconButton>
+      <span aria-hidden className="mx-0.5 h-4 w-px bg-line-soft" />
+      <TextButton label={t("filePreview.actualSize")} onClick={onActualSize}>
+        <span className="text-xs tabular-nums">1:1</span>
+      </TextButton>
+      <IconButton label={t("filePreview.resetZoom")} onClick={onFit}>
+        <ZoomIcon type="reset" />
+      </IconButton>
     </div>
   );
 }
 
 function IconButton({
+  label,
+  onClick,
+  disabled = false,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      aria-label={label}
+      className="inline-flex size-8 items-center justify-center rounded-full text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:pointer-events-none disabled:opacity-40 disabled:hover:bg-transparent"
+      disabled={disabled}
+      onClick={onClick}
+      title={label}
+      type="button"
+    >
+      {children}
+    </button>
+  );
+}
+
+/** A wide control for the one action whose meaning is not a glyph. */
+function TextButton({
   label,
   onClick,
   children,
@@ -343,7 +438,7 @@ function IconButton({
   return (
     <button
       aria-label={label}
-      className="inline-flex size-8 items-center justify-center rounded-full text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+      className="inline-flex h-8 items-center justify-center rounded-full px-2.5 text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
       onClick={onClick}
       title={label}
       type="button"

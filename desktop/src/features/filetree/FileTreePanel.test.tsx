@@ -17,15 +17,26 @@ vi.mock("../../integrations/storage/files", () => ({
 }));
 
 vi.mock("../filepreview/FilePreviewOverlay", () => ({
-  FilePreviewOverlay: (props: { kind: string; name: string; onClose?: () => void; onOpenExternal?: () => void; path: string }) =>
+  FilePreviewOverlay: (props: {
+    kind: string;
+    name: string;
+    navigation?: { count: number; index: number; onNext: () => void; onPrev: () => void };
+    onClose?: () => void;
+    onOpenExternal?: () => void;
+    path: string;
+  }) =>
     createElement("div", {
       "data-kind": props.kind,
       "data-name": props.name,
+      "data-nav-count": props.navigation ? String(props.navigation.count) : "",
+      "data-nav-index": props.navigation ? String(props.navigation.index) : "",
       "data-path": props.path,
       "data-testid": "overlay",
     }, [
       createElement("button", { "data-testid": "overlay-close", "key": "close", "onClick": () => props.onClose?.(), "type": "button" }, "overlay-close"),
       createElement("button", { "data-testid": "overlay-external", "key": "external", "onClick": () => props.onOpenExternal?.(), "type": "button" }, "overlay-external"),
+      createElement("button", { "data-testid": "overlay-prev", "key": "prev", "onClick": () => props.navigation?.onPrev(), "type": "button" }, "overlay-prev"),
+      createElement("button", { "data-testid": "overlay-next", "key": "next", "onClick": () => props.navigation?.onNext(), "type": "button" }, "overlay-next"),
     ]),
 }));
 
@@ -337,6 +348,58 @@ describe("fileTreePanel file activation", () => {
     });
     await flush();
     expect(openPath).toHaveBeenCalledWith(`${rootPath}/archive.bin`);
+  });
+
+  it("steps through the images of the folder the row came from", async () => {
+    const rootPath = freshRoot("image-nav");
+    listDirectory.mockResolvedValue([
+      entry("a.md", false, rootPath),
+      entry("b.png", false, rootPath),
+      entry("c.txt", false, rootPath),
+      entry("d.png", false, rootPath),
+    ]);
+    await mount({ rootPath });
+
+    await act(async () => {
+      rowButton("b.png")?.click();
+    });
+    const overlay = () => container.querySelector("[data-testid='overlay']");
+    expect(overlay()?.getAttribute("data-path")).toBe(`${rootPath}/b.png`);
+    // Two images in this folder, the opened one first: nothing before it, one
+    // after it. The text file between them is not part of the walk.
+    expect(overlay()?.getAttribute("data-nav-index")).toBe("0");
+    expect(overlay()?.getAttribute("data-nav-count")).toBe("2");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("[data-testid='overlay-next']")?.click();
+    });
+    expect(overlay()?.getAttribute("data-path")).toBe(`${rootPath}/d.png`);
+    expect(overlay()?.getAttribute("data-nav-index")).toBe("1");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("[data-testid='overlay-prev']")?.click();
+    });
+    expect(overlay()?.getAttribute("data-path")).toBe(`${rootPath}/b.png`);
+  });
+
+  it("offers no stepping for a file that is not an image", async () => {
+    const rootPath = freshRoot("nav-text");
+    listDirectory.mockResolvedValue([entry("note.md", false, rootPath), entry("b.png", false, rootPath)]);
+    await mount({ rootPath });
+    await act(async () => {
+      rowButton("note.md")?.click();
+    });
+    expect(container.querySelector("[data-testid='overlay']")?.getAttribute("data-nav-count")).toBe("");
+  });
+
+  it("offers no stepping when the folder holds a single image", async () => {
+    const rootPath = freshRoot("nav-single");
+    listDirectory.mockResolvedValue([entry("note.md", false, rootPath), entry("only.png", false, rootPath)]);
+    await mount({ rootPath });
+    await act(async () => {
+      rowButton("only.png")?.click();
+    });
+    expect(container.querySelector("[data-testid='overlay']")?.getAttribute("data-nav-count")).toBe("");
   });
 
   it("opens the original file from the overlay", async () => {

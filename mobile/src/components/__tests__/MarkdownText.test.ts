@@ -103,7 +103,7 @@ describe("MarkdownText layout and fidelity", () => {
     expect(widths.slice(2, 4)).toEqual(widths.slice(0, 2));
   });
 
-  test("large code previews a bounded wrapped head and expands to the whole source", () => {
+  test("large code previews a bounded head and expands to the whole source", () => {
     const code = "line with real indentation\n".repeat(5000) + "x".repeat(100000);
     const root = render(`\`\`\`ts\n${code}\n\`\`\``);
     const rows = () => root.findAllByType(Text).filter(node => node.props.selectable);
@@ -274,22 +274,27 @@ describe("MarkdownText layout and fidelity", () => {
     expect(wider[3]).toBe(widths[3]);
   });
 
-  test("code wraps to the block width, stays selectable and uses an iOS-safe monospace font", () => {
-    const code = `const veryLongLine = '${"x".repeat(200)}';\n  indented();`;
+  test("a code block never wraps: a long line keeps its line and pans sideways", () => {
+    // Box-drawing art is what forced this: folded, the line after the fold loses
+    // the frame it was drawn in, and every column to its right shifts.
+    const code = "const frame = [\n" + `╭─ New Chat ─╮\n│ ${"x".repeat(200)} │\n╰──────────╯\n` + "  indented();";
     const root = render(`\`\`\`typescript\n${code}\n\`\`\``);
-    // No scroll container of either axis: the surrounding message list scrolls.
-    expect(root.findAllByType(ScrollView)).toHaveLength(0);
-    const text = root.findAllByType(Text).find(node => node.props.selectable)!;
-    const source = text.findAllByType(Text).filter(node => typeof node.props.children === "string")
-      .map(node => node.props.children).join("");
-    expect(source).toContain("const");
+    // The block pans sideways in place; the surrounding message list keeps the
+    // vertical pan, so no inner vertical viewport is created.
+    const scroll = root.findByType(ScrollView);
+    expect(scroll.props).toMatchObject({ horizontal: true, nestedScrollEnabled: true });
+    const text = scroll.findAllByType(Text).find(node => node.props.selectable)!;
+    // Nothing pins a width or asks the platform to fold a line.
+    expect(text.props.numberOfLines).toBeUndefined();
+    expect(text.props.ellipsizeMode).toBeUndefined();
+    expect(StyleSheet.flatten(text.props.style).width).toBeUndefined();
+    expect(paintedText(text)).toContain("╭─ New Chat ─╮");
     expect(text.findAllByType(Text).some(node => StyleSheet.flatten(node.props.style)?.color === lightCodeColors.keyword)).toBe(true);
     expect(text.props.selectable).toBe(true);
-    // Wrapping is the native Text behaviour once nothing pins a fixed width.
-    expect(text.props.numberOfLines).toBeUndefined();
-    expect(StyleSheet.flatten(text.props.style).width).toBeUndefined();
-    for (let parent = text.parent; parent; parent = parent.parent) expect(parent.type).not.toBe(ScrollView);
     expect(StyleSheet.flatten(text.props.style).fontFamily).toBe(Platform.OS === "ios" ? "Menlo" : "monospace");
+    // The gutter is on the scrolling content and the rows stack (a horizontal
+    // ScrollView's content is a row by default).
+    expect(StyleSheet.flatten(scroll.props.contentContainerStyle)).toMatchObject({ flexDirection: "column", padding: 12 });
     expect(root.findAllByType(Text).some(node => node.props.children === "typescript")).toBe(true);
   });
 
@@ -348,8 +353,9 @@ describe("MarkdownText layout and fidelity", () => {
 
   test("inline and display math render as native vectors while Mermaid retains its source fallback", () => {
     const root = render("Formula $x^2$\n\n$$\n\\frac{a}{b}\n$$\n\n```mermaid\ngraph TD; A-->B;\n```");
-    // Only the math block scrolls; code wraps in place.
-    expect(root.findAllByType(ScrollView)).toHaveLength(1);
+    // The display formula pans, and so does the code block beside it: neither
+    // wraps, so each is its own sideways scroller.
+    expect(root.findAllByType(ScrollView)).toHaveLength(2);
     const formulas = root.findAllByType(SvgXml);
     expect(formulas).toHaveLength(2);
     expect(formulas.every(node => node.props.xml.includes("<path"))).toBe(true);

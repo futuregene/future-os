@@ -12,36 +12,6 @@ use super::layout;
 use crate::workbench::i18n::{Key, Language};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Density {
-    /// A focused conversation: two context rows, generous body.
-    #[default]
-    Focused,
-    /// A roomier identity header with the wordmark and session details.
-    Comfortable,
-}
-
-impl Density {
-    pub fn next(self) -> Self {
-        match self {
-            Self::Focused => Self::Comfortable,
-            Self::Comfortable => Self::Focused,
-        }
-    }
-    pub fn as_wire(self) -> &'static str {
-        match self {
-            Self::Focused => "focused",
-            Self::Comfortable => "comfortable",
-        }
-    }
-    pub fn from_wire(value: &str) -> Self {
-        match value {
-            "comfortable" | "compact" => Self::Comfortable,
-            _ => Self::Focused,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SidebarPosition {
     Left,
     #[default]
@@ -71,20 +41,17 @@ impl SidebarPosition {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayoutPreferences {
-    pub density: Density,
     pub sidebar_position: SidebarPosition,
     pub sidebar_width: u16,
     pub sidebar_visible: bool,
     pub mouse_capture: bool,
     pub notify: crate::notifications::NotifyConfig,
     pub reduced_motion: bool,
-    pub linear_reading: bool,
 }
 
 impl Default for LayoutPreferences {
     fn default() -> Self {
         Self {
-            density: Density::Focused,
             sidebar_position: SidebarPosition::Right,
             sidebar_width: layout::SIDEBAR_DEFAULT,
             // Hidden, the same as a first start: "restore defaults" must land
@@ -93,7 +60,6 @@ impl Default for LayoutPreferences {
             mouse_capture: true,
             notify: crate::notifications::NotifyConfig::default(),
             reduced_motion: false,
-            linear_reading: false,
         }
     }
 }
@@ -113,7 +79,6 @@ pub enum Action {
     Copy,
     Queue,
     Mouse,
-    LinearReading,
     ReduceMotion,
     Model,
     Thinking,
@@ -123,13 +88,24 @@ pub enum Action {
     Language,
     PanelRecent,
     PanelWorkspaces,
-    PanelFiles,
+    /// The workspace tree of the conversation on screen — its own overlay, not
+    /// a rail tab (see `PanelId::TABS`).
+    Files,
+    /// The rail's neighbouring tab: `shift+←` / `shift+→`.
+    PanelPrev,
+    PanelNext,
+    /// The repository browser: log, refs, working tree and stashes.
+    Git,
     /// Read the clipboard into the draft: an image becomes an attachment.
     PasteImage,
     /// Show the image already attached to the draft.
     PreviewAttachment,
     PrevSession,
     NextSession,
+    /// Delete the conversation the rail's cursor stands on (the one on screen
+    /// when the rail does not have the keys). The one destructive verb on the
+    /// surface, so it opens a confirm box instead of acting.
+    DeleteSession,
 }
 
 /// An action's place in the help overlay.
@@ -162,12 +138,13 @@ impl Group {
 /// Every action, in the order the help overlay lists them: grouped, and inside
 /// a group from most to least used. `ACTIONS` is the one authority — the help
 /// table, the shortcut editor and the event dispatch all walk it.
-pub const ACTIONS: [Action; 27] = [
+pub const ACTIONS: [Action; 30] = [
     // Sessions
     Action::PrevSession,
     Action::NextSession,
     Action::Sessions,
     Action::NewSession,
+    Action::DeleteSession,
     Action::Queue,
     Action::Stop,
     Action::ReplyDetail,
@@ -181,7 +158,10 @@ pub const ACTIONS: [Action; 27] = [
     Action::Sidebar,
     Action::PanelRecent,
     Action::PanelWorkspaces,
-    Action::PanelFiles,
+    Action::Files,
+    Action::PanelPrev,
+    Action::PanelNext,
+    Action::Git,
     // Interface
     Action::Palette,
     Action::Help,
@@ -191,7 +171,6 @@ pub const ACTIONS: [Action; 27] = [
     Action::PasteImage,
     Action::PreviewAttachment,
     Action::Mouse,
-    Action::LinearReading,
     Action::ReduceMotion,
     Action::Quit,
 ];
@@ -213,10 +192,10 @@ impl Action {
             Self::Copy => "copy",
             Self::Queue => "queue",
             Self::Mouse => "mouse",
-            Self::LinearReading => "linearReading",
             Self::ReduceMotion => "reduceMotion",
             Self::PrevSession => "previousSession",
             Self::NextSession => "nextSession",
+            Self::DeleteSession => "deleteSession",
             Self::Thinking => "thinking",
             Self::Approval => "approval",
             Self::Workspaces => "workspaces",
@@ -224,12 +203,19 @@ impl Action {
             Self::Model => "model",
             Self::PanelRecent => "panelRecent",
             Self::PanelWorkspaces => "panelWorkspaces",
-            Self::PanelFiles => "panelFiles",
+            Self::Files => "files",
+            Self::PanelPrev => "panelPrevious",
+            Self::PanelNext => "panelNext",
+            Self::Git => "git",
             Self::PasteImage => "pasteImage",
             Self::PreviewAttachment => "previewAttachment",
         }
     }
     fn from_id(id: &str) -> Option<Self> {
+        // `panelFiles` is the id 文件 wore while it was a rail tab: a
+        // `keybindings.json` written by that build keeps working instead of
+        // silently losing its chord.
+        let id = if id == "panelFiles" { "files" } else { id };
         ACTIONS.into_iter().find(|action| action.id() == id)
     }
     /// The heading this action is listed under in the help overlay.
@@ -239,15 +225,20 @@ impl Action {
             | Self::NextSession
             | Self::Sessions
             | Self::NewSession
+            | Self::DeleteSession
             | Self::Queue
             | Self::Stop
             | Self::ReplyDetail => Group::Sessions,
             Self::Model | Self::Thinking | Self::Approval | Self::Workspaces | Self::Language => {
                 Group::Choice
             }
-            Self::Sidebar | Self::PanelRecent | Self::PanelWorkspaces | Self::PanelFiles => {
-                Group::Panels
-            }
+            Self::Sidebar
+            | Self::PanelRecent
+            | Self::PanelWorkspaces
+            | Self::Files
+            | Self::PanelPrev
+            | Self::PanelNext
+            | Self::Git => Group::Panels,
             Self::Palette
             | Self::Help
             | Self::Preferences
@@ -256,7 +247,6 @@ impl Action {
             | Self::PasteImage
             | Self::PreviewAttachment
             | Self::Mouse
-            | Self::LinearReading
             | Self::ReduceMotion
             | Self::Quit => Group::Interface,
         }
@@ -265,6 +255,7 @@ impl Action {
         match self {
             Self::Quit => Key::HelpKeyQuit,
             Self::NewSession => Key::HelpKeyNew,
+            Self::DeleteSession => Key::HelpKeyDelete,
             Self::Palette => Key::HelpKeyPalette,
             Self::Help => Key::HelpKeyHelp,
             Self::Sidebar => Key::HelpKeySidebar,
@@ -276,7 +267,6 @@ impl Action {
             Self::Copy => Key::CmdCopy,
             Self::Queue => Key::CmdQueue,
             Self::Mouse => Key::CmdMouse,
-            Self::LinearReading => Key::PrefLinear,
             Self::ReduceMotion => Key::PrefMotion,
             Self::PrevSession => Key::HelpKeyPrevSession,
             Self::NextSession => Key::HelpKeyNextSession,
@@ -287,49 +277,104 @@ impl Action {
             Self::Model => Key::CmdModel,
             Self::PanelRecent => Key::HelpKeyPanelRecent,
             Self::PanelWorkspaces => Key::HelpKeyPanelWorkspaces,
-            Self::PanelFiles => Key::HelpKeyPanelFiles,
+            Self::Files => Key::HelpKeyFiles,
+            Self::PanelPrev => Key::HelpKeyPrevPanel,
+            Self::PanelNext => Key::HelpKeyNextPanel,
+            Self::Git => Key::CmdGit,
             Self::PasteImage => Key::HelpKeyPasteImage,
             Self::PreviewAttachment => Key::HelpKeyPreviewAttachment,
         }
     }
     /// The key an action answers to when the reader has not rebound it.
     ///
-    /// No function key is a default: F1–F12 sit behind an `Fn` modifier on a
+    /// **One prefix: `ctrl`.** No default uses `alt`: on macOS the Option key
+    /// composes a character instead of sending `ESC` + letter unless the reader
+    /// turns on "Use Option as Meta", so an `alt` shortcut is one that silently
+    /// does nothing on the terminal this surface is developed against. No
+    /// default is a function key either: F1–F12 sit behind an `Fn` modifier on a
     /// laptop keyboard, behind a screen-reader chord on some terminals, and are
-    /// simply absent on a compact one — a shortcut that needs three fingers to
-    /// reach, or that does not exist, is not a shortcut. `alt` + a letter is one
-    /// keystroke everywhere the modifier reporting works (see `keys::parse_key`),
-    /// and everywhere else these actions keep a typed command or a visible
-    /// control as the second door.
+    /// absent on a compact one.
+    ///
+    /// The letters are not free to pick, and the exclusions are why the map
+    /// stops at fourteen:
+    ///
+    /// * `ctrl+h` / `ctrl+i` / `ctrl+j` / `ctrl+m` never arrive as themselves —
+    ///   a terminal sends Backspace, Tab, `\n` and Enter for them (see
+    ///   `keys::parse_key`). `ctrl+m` is why the model chooser is not `ctrl+m`.
+    /// * `ctrl+a` and `ctrl+b` are the default prefixes of `screen` and `tmux`,
+    ///   and `ctrl+z` is the suspend key everywhere else: a chord a multiplexer
+    ///   eats is worse than no chord.
+    /// * `ctrl+u` / `ctrl+k` / `ctrl+w` / `ctrl+y` / `ctrl+z` are the composer's
+    ///   readline set — a global chord there would shadow editing the draft,
+    ///   which is what the reader does most. `ctrl+a` / `ctrl+e` / `ctrl+f`
+    ///   only duplicate Home / End / Right, so `e` and `f` are the two the map
+    ///   does take (Home/End/arrows still edit the draft).
+    ///
+    /// An action that has no chord keeps a typed door (`/copy`, `/preferences`,
+    /// `/preview`, `/lang`, `/refresh`…) and a visible control instead: `""` is
+    /// that "no default", and [`Keybindings::action`] never resolves it.
+    ///
+    /// The fourteen go to what is pressed *while working*: the commands, the
+    /// sessions, the three answers that decide what runs next (model, effort,
+    /// approval), the two places a reader keeps going back to (the workspace
+    /// list and the files of this session's workspace), the rail, the
+    /// repository, the run under them, and leaving. Switching the interface
+    /// language, refreshing the view, the queue of prompts sent mid-run, and
+    /// deleting a conversation are things a reader does once in a while, so they
+    /// keep commands instead of taking a letter from something pressed every
+    /// minute.
     pub fn default_key(self) -> &'static str {
         match self {
             Self::Quit => "ctrl+c",
             Self::NewSession => "ctrl+n",
-            Self::Palette => "ctrl+p",
-            Self::Help => "alt+h",
-            Self::Sidebar => "ctrl+b",
             Self::Sessions => "ctrl+r",
-            Self::Preferences => "ctrl+o",
-            Self::Refresh => "alt+r",
-            Self::ReplyDetail => "ctrl+e",
             Self::Stop => "ctrl+x",
-            Self::Copy => "alt+c",
-            Self::Queue => "alt+q",
-            Self::Mouse => "alt+m",
-            Self::LinearReading => "alt+l",
-            Self::ReduceMotion => "alt+a",
-            Self::Model => "ctrl+m",
+            Self::ReplyDetail => "ctrl+e",
+            Self::Palette => "ctrl+p",
+            // `m` is Enter on a terminal that does not report modifiers; `o`
+            // (the chooser's own options) is the nearest free letter.
+            Self::Model => "ctrl+o",
             Self::Thinking => "ctrl+t",
+            // The approval-mode chooser: `s` is the sandbox it switches to, and
+            // it is the chord it answered to before the scheme was unified.
             Self::Approval => "ctrl+s",
+            // The workspace chooser: `l` is the list of directories it opens.
             Self::Workspaces => "ctrl+l",
-            Self::Language => "ctrl+g",
-            Self::PanelRecent => "ctrl+1",
-            Self::PanelWorkspaces => "ctrl+2",
-            Self::PanelFiles => "ctrl+3",
+            Self::Git => "ctrl+g",
+            // The rail: `d` is the dock it slides in and out of, and it is the
+            // letter the destructive verb gave up (a conversation is deleted
+            // with `/delete` or the rail's own `delete` key, both of which ask
+            // first).
+            Self::Sidebar => "ctrl+d",
+            // The session workspace's own tree — the panel a reader opens to
+            // find the file the agent just mentioned.
+            Self::Files => "ctrl+f",
             Self::PasteImage => "ctrl+v",
-            Self::PreviewAttachment => "alt+v",
-            Self::PrevSession => "shift+left",
-            Self::NextSession => "shift+right",
+            // No chord: a typed door and a visible control instead.
+            Self::Copy => "",
+            Self::Help => "",
+            Self::Preferences => "",
+            // Deleting a conversation is the one destructive verb on the
+            // surface; it asks first, and it is rare enough that its doors are
+            // `/delete` and the rail's own `delete` key rather than a chord that
+            // something pressed every minute could take.
+            Self::DeleteSession => "",
+            Self::Language => "",
+            Self::Refresh => "",
+            Self::Mouse => "",
+            Self::ReduceMotion => "",
+            Self::PreviewAttachment => "",
+            // The queue is the list of prompts sent while a run was in flight —
+            // a diagnostic the status bar already counts, not something pressed
+            // while working.
+            Self::Queue => "",
+            Self::PanelRecent | Self::PanelWorkspaces => "",
+            // Arrows, not chords: stepping is navigation, and these four are
+            // the only defaults that are not `ctrl`.
+            Self::PanelPrev => "shift+left",
+            Self::PanelNext => "shift+right",
+            Self::PrevSession => "shift+up",
+            Self::NextSession => "shift+down",
         }
     }
 }
@@ -350,6 +395,11 @@ impl Keybindings {
         self.key(action).to_string()
     }
     pub fn action(&self, key: &str) -> Option<Action> {
+        // `""` is "this action has no default chord" (see `default_key`); it
+        // must never answer for an empty key event.
+        if key.is_empty() {
+            return None;
+        }
         ACTIONS.into_iter().find(|action| self.key(*action) == key)
     }
     pub fn is_default(&self, action: Action) -> bool {
@@ -363,6 +413,10 @@ impl Keybindings {
             if other == action {
                 return Ok(());
             }
+            // The chord's previous owner trades places with this action. When
+            // *this* action had no chord, the other one is left with none: the
+            // empty override is the way this map says "no chord", so the pair
+            // never ends up sharing one.
             let previous = self.key(action).to_string();
             self.overrides.insert(other, previous);
         }
@@ -388,6 +442,12 @@ impl Keybindings {
             let (Some(action), Some(key)) = (Action::from_id(id), key.as_str()) else {
                 continue;
             };
+            // `""` is a real value here: the reader moved this action's chord
+            // onto another one, and this action was left with none.
+            if key.is_empty() {
+                bindings.overrides.insert(action, String::new());
+                continue;
+            }
             let _ = bindings.bind(action, key);
         }
         bindings
@@ -398,6 +458,8 @@ impl Keybindings {
         }
         let mut map = serde_json::Map::new();
         for action in ACTIONS {
+            // An override may be `""` — an action the reader gave up its chord
+            // for (see `bind`); that is exactly what has to survive a restart.
             if !self.is_default(action) {
                 map.insert(
                     action.id().into(),
@@ -455,27 +517,23 @@ fn validate_key(key: &str) -> Result<(), String> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreferenceRow {
-    Density,
     Position,
     Width,
     Mouse,
     Notifications,
     NotificationBell,
     Motion,
-    Linear,
     Shortcuts,
     Reset,
 }
 
-pub const PREFERENCE_ROWS: [PreferenceRow; 10] = [
-    PreferenceRow::Density,
+pub const PREFERENCE_ROWS: [PreferenceRow; 8] = [
     PreferenceRow::Position,
     PreferenceRow::Width,
     PreferenceRow::Mouse,
     PreferenceRow::Notifications,
     PreferenceRow::NotificationBell,
     PreferenceRow::Motion,
-    PreferenceRow::Linear,
     PreferenceRow::Shortcuts,
     PreferenceRow::Reset,
 ];
@@ -484,14 +542,12 @@ pub fn preference_label(row: PreferenceRow, lang: Language) -> &'static str {
     super::i18n::t(
         lang,
         match row {
-            PreferenceRow::Density => Key::PrefDensity,
             PreferenceRow::Position => Key::PrefPosition,
             PreferenceRow::Width => Key::PrefWidth,
             PreferenceRow::Mouse => Key::PrefMouse,
             PreferenceRow::Notifications => Key::PrefNotifications,
             PreferenceRow::NotificationBell => Key::PrefNotificationBell,
             PreferenceRow::Motion => Key::PrefMotion,
-            PreferenceRow::Linear => Key::PrefLinear,
             PreferenceRow::Shortcuts => Key::PrefShortcuts,
             PreferenceRow::Reset => Key::PrefReset,
         },
@@ -507,14 +563,36 @@ mod tests {
         let mut keys = Keybindings::default();
         keys.bind(Action::Palette, "ctrl+j").unwrap();
         keys.bind(Action::Sidebar, "ctrl+j").unwrap();
-        assert_eq!(keys.key(Action::Palette), "ctrl+b");
+        // The chord's previous owner trades places with the new one: the rail's
+        // own chord (`ctrl+d`) is now the palette's, so nothing is claimed twice.
+        assert_eq!(keys.key(Action::Palette), "ctrl+d");
         assert_eq!(keys.key(Action::Sidebar), "ctrl+j");
         assert_eq!(keys.action("ctrl+j"), Some(Action::Sidebar));
         let dir = tempfile::tempdir().unwrap();
         keys.save(&dir.path().join("keys.json")).unwrap();
         let restored = Keybindings::load(&dir.path().join("keys.json"));
-        assert_eq!(restored.key(Action::Palette), "ctrl+b");
+        assert_eq!(restored.key(Action::Palette), "ctrl+d");
         assert_eq!(restored.key(Action::Sidebar), "ctrl+j");
+    }
+
+    /// An action with no chord takes one, and the action that owned it loses
+    /// its default instead of being written an empty override the loader would
+    /// reject.
+    #[test]
+    fn binding_a_chordless_action_takes_the_chord_from_its_owner() {
+        let mut keys = Keybindings::default();
+        assert_eq!(keys.key(Action::Copy), "");
+        keys.bind(Action::Copy, "ctrl+p").unwrap();
+        assert_eq!(keys.key(Action::Copy), "ctrl+p");
+        assert_eq!(keys.key(Action::Palette), "");
+        assert_eq!(keys.action("ctrl+p"), Some(Action::Copy));
+        assert_eq!(keys.action(""), None, "an empty key resolves to nothing");
+
+        let dir = tempfile::tempdir().unwrap();
+        keys.save(&dir.path().join("keys.json")).unwrap();
+        let restored = Keybindings::load(&dir.path().join("keys.json"));
+        assert_eq!(restored.key(Action::Copy), "ctrl+p");
+        assert_eq!(restored.key(Action::Palette), "");
     }
 
     #[test]
@@ -538,9 +616,6 @@ mod tests {
 
     #[test]
     fn preferences_use_stable_wire_values() {
-        for density in [Density::Focused, Density::Comfortable] {
-            assert_eq!(Density::from_wire(density.as_wire()), density);
-        }
         for position in [SidebarPosition::Left, SidebarPosition::Right] {
             assert_eq!(SidebarPosition::from_wire(position.as_wire()), position);
         }
@@ -550,13 +625,24 @@ mod tests {
     /// laptop, behind a screen-reader chord on some terminals, and are absent on
     /// a compact keyboard — a shortcut that needs three fingers, or that does not
     /// exist, is not a shortcut. A reader may still *rebind* to one.
+    ///
+    /// Nor is `alt`: on macOS Option composes a character unless the reader turns
+    /// on "Use Option as Meta", so an `alt` default is one that does nothing on
+    /// the terminal this surface is developed against.
     #[test]
-    fn no_default_binding_is_a_function_key() {
+    fn no_default_binding_is_a_function_or_alt_key() {
         for action in ACTIONS {
             let key = action.default_key();
+            if key.is_empty() {
+                continue;
+            }
             assert!(
                 !key.starts_with('f') || !key[1..].chars().all(|ch| ch.is_ascii_digit()),
                 "{action:?} defaults to {key}"
+            );
+            assert!(
+                !key.starts_with("alt+"),
+                "{action:?} defaults to {key}; the scheme is ctrl-only"
             );
             assert!(
                 validate_key(key).is_ok(),
@@ -566,10 +652,14 @@ mod tests {
     }
 
     /// Two defaults on one chord would make one of them dead: the map resolves a
-    /// chord to the first action that claims it.
+    /// chord to the first action that claims it. Actions with no chord (`""`)
+    /// do not compete for one.
     #[test]
     fn every_default_binding_is_claimed_by_one_action() {
         for (index, action) in ACTIONS.iter().enumerate() {
+            if action.default_key().is_empty() {
+                continue;
+            }
             for other in &ACTIONS[index + 1..] {
                 assert_ne!(
                     action.default_key(),

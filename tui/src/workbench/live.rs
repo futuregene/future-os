@@ -16,7 +16,7 @@
 //! * [`GrpcClient`] talks to the agent; this module never touches proto or a
 //!   socket directly.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -33,9 +33,9 @@ use crate::rpc::GrpcClient;
 use super::i18n::{self, t, Key, Language, LanguagePreference};
 use super::layout::Frame;
 use super::state::{
-    effective_thinking_levels, legacy_wire_thinking_level, next_thinking_level, Activity,
-    ActivityKind, InputView, ModelChoice, PreviewView, QueuedPrompt, SessionMeta, SessionRow,
-    SkillRow, UsageData, WorkbenchData, WorkspaceGroup, DEFAULT_THINKING_LEVEL_NAME,
+    effective_thinking_levels, legacy_wire_thinking_level, model_reference, next_thinking_level,
+    Activity, ActivityKind, InputView, ModelChoice, PreviewView, QueuedPrompt, SessionMeta,
+    SessionRow, SkillRow, UsageData, WorkbenchData, WorkspaceGroup, DEFAULT_THINKING_LEVEL_NAME,
 };
 use super::WbAction;
 
@@ -76,18 +76,22 @@ struct Paging {
 /// ([`super::Workbench::surface_command`]) and this list have to account for
 /// every entry exactly once. That is the check whose absence let five entries
 /// advertise themselves and then answer `Unknown command`.
-pub const APP_COMMANDS: [&str; 16] = [
+pub const APP_COMMANDS: [&str; 20] = [
     "/new",
     "/reply-detail",
     "/export",
     "/quit",
     "/copy",
     "/paste",
+    "/preview",
+    "/refresh",
     "/mouse",
     "/compact",
     "/tools",
     "/providers",
     "/diff",
+    "/git",
+    "/files",
     "/approval",
     "/history",
     "/tree",
@@ -113,12 +117,22 @@ pub struct Live {
     diff: Option<super::state::DiffView>,
     fork_points: Vec<super::state::ForkPoint>,
     worktrees: Vec<super::state::WorktreeView>,
+    /// The `/git` panel's content, once it has been read for this workspace.
+    git: Option<super::state::GitView>,
     /// A failed request or command, shown above the status bar until the next
     /// successful action replaces it.
     pub notice: Option<String>,
     activity: Activity,
     activity_start: Option<Instant>,
-    open_tools: usize,
+    /// The tool calls this run has made, by the agent's own call id — what the
+    /// row's `· {n} 工具` counts.
+    ///
+    /// A set, because the agent announces one call twice: `phase: "input"`
+    /// while its arguments stream, then `phase: "execution"` when it runs
+    /// (`agent/src/rpc/prompt_helpers.rs`). Counting the events made the row
+    /// claim twice the calls the transcript beneath it showed — 53 for the 26
+    /// that ran.
+    run_tools: HashSet<String>,
     draft: InputView,
     /// Drafts are local to this client, one per session and launchpad.
     drafts: HashMap<String, DraftSnapshot>,
@@ -237,10 +251,11 @@ impl Live {
             diff: None,
             fork_points: Vec::new(),
             worktrees: Vec::new(),
+            git: None,
             notice: None,
             activity: Activity::default(),
             activity_start: None,
-            open_tools: 0,
+            run_tools: HashSet::new(),
             draft: InputView::from_editor(
                 super::editor::EditorState::default(),
                 t(lang, Key::InputHintLaunchpad).into(),
@@ -278,6 +293,9 @@ impl Live {
             live.client.switch_session(id).await?;
         }
         live.refresh_state().await;
+        // A conversation that is already writing when the terminal attaches
+        // owns the row from the first frame (see [`Live::adopt_run`]).
+        live.adopt_run();
         live.refresh_sessions().await;
         live.refresh_models().await;
         live.load_tail().await;
@@ -343,10 +361,29 @@ impl Live {
         }
     }
 
-    pub async fn refresh_sessions(&mut self) {
-        if let Ok(sessions) = self.client.list_sessions().await {
-            self.sessions = sessions;
+    /// Re-read the conversation list, and answer whether anything the rail
+    /// paints changed — a row arrived, an age moved, a run started or stopped.
+    ///
+    /// The answer is what lets the driver poll (see `run::SESSIONS_POLL`)
+    /// without repainting a list that is already on screen: only a real change
+    /// owes a frame.
+    pub async fn refresh_sessions(&mut self) -> bool {
+        let Ok(sessions) = self.client.list_sessions().await else {
+            return false;
+        };
+        if sessions == self.sessions {
+            return false;
         }
+        self.sessions = sessions;
+        true
+    }
+
+    /// Is any listed conversation still writing? The rail's spinner animates on
+    /// it, and the driver keeps the list warm while it holds.
+    pub fn sessions_streaming(&self) -> bool {
+        self.sessions
+            .iter()
+            .any(|session| session.is_streaming.unwrap_or(false))
     }
 
     pub async fn refresh_models(&mut self) {
@@ -490,7 +527,7 @@ impl Live {
                 self.chat.append_to_last_message(&text);
             }
             "agent_start" => {
-                self.open_tools = 0;
+                self.run_tools.clear();
                 self.run_started = Some(Instant::now());
                 self.run_output_tokens = 0;
                 self.run_tps = 0.0;
@@ -514,8 +551,9 @@ impl Live {
                     Value::String(text) => text.clone(),
                     other => other.to_string(),
                 });
+                // One call, however many phases announce it — see the field.
+                self.run_tools.insert(tool_id.clone());
                 self.chat.add_tool_start(&tool_id, &name, args);
-                self.open_tools += 1;
                 self.mark(ActivityKind::Tool);
             }
             "tool_delta" => {
@@ -532,7 +570,6 @@ impl Live {
                     .unwrap_or(false);
                 let output = event.data.get("text").and_then(Value::as_str);
                 self.chat.finish_tool(&tool_id, output, failed);
-                self.open_tools = self.open_tools.saturating_sub(1);
                 self.mark(ActivityKind::Thinking);
             }
             "agent_end" => {
@@ -550,7 +587,7 @@ impl Live {
                 self.run_tps = self.live_tps();
                 self.run_started = None;
                 self.activity_start = None;
-                self.open_tools = 0;
+                self.run_tools.clear();
             }
             "usage" => self.apply_usage(event.data.get("usage")),
             "approval_request" => {
@@ -594,6 +631,40 @@ impl Live {
             self.activity_start = Some(Instant::now());
         }
         self.activity.kind = kind;
+    }
+
+    /// Forget the run this client was narrating.
+    ///
+    /// The activity row describes the session on screen, and a run belongs to
+    /// the session that started it: a switch, a fork or `/new` has to drop the
+    /// previous conversation's kind, clock, tool tally and rate, or the next
+    /// one's footer keeps showing them (`思考 · 1071s · 53 工具`, minutes after
+    /// the reader left that conversation).
+    ///
+    /// `agent_end` deliberately does not use this: the run is over, but its
+    /// rate is what the row keeps showing until the next one.
+    fn forget_run(&mut self) {
+        self.activity = Activity::default();
+        self.activity_start = None;
+        self.run_tools.clear();
+        self.run_started = None;
+        self.run_output_tokens = 0;
+        self.run_tps = 0.0;
+    }
+
+    /// Make the activity row describe the session this client just attached to.
+    ///
+    /// `get_state` is the other half of it: a conversation whose run is still in
+    /// flight (`is_streaming`) — started here, by the desktop, by a queued run —
+    /// owns the spinner again. Its clock starts now, because that is when this
+    /// client began watching it, and its tool tally starts empty: the calls the
+    /// run made before the switch are the transcript's to show, not this row's.
+    fn adopt_run(&mut self) {
+        self.forget_run();
+        if self.state.is_streaming {
+            self.mark(ActivityKind::Thinking);
+            self.run_started = Some(Instant::now());
+        }
     }
 
     /// Fold one `usage` event's numbers into the state the footer paints.
@@ -923,6 +994,11 @@ impl Live {
                 // On the launchpad nothing is attached, so no row claims to be
                 // the current one.
                 current: !self.launchpad && session.id == current,
+                // The agent's own flag, not a local run row: a conversation
+                // another client started writes here too, which is what makes
+                // 最近's 活跃 stretch a view of the agent and not of this
+                // terminal's own typing.
+                streaming: session.is_streaming.unwrap_or(false),
             })
             .collect();
         rows.sort_by(|a, b| {
@@ -1036,6 +1112,7 @@ impl Live {
             diff: self.diff.clone(),
             fork_points: self.fork_points.clone(),
             worktrees: self.worktrees.clone(),
+            git: self.git.clone(),
         }
     }
 
@@ -1056,7 +1133,7 @@ impl Live {
                     ],
                 ),
                 elapsed_secs: 0,
-                tools: self.open_tools,
+                tools: self.run_tools.len(),
             };
         }
         Activity {
@@ -1066,7 +1143,7 @@ impl Live {
                 .activity_start
                 .map(|start| start.elapsed().as_secs())
                 .unwrap_or(0),
-            tools: self.open_tools,
+            tools: self.run_tools.len(),
         }
     }
 
@@ -1103,6 +1180,13 @@ impl Live {
             | WbAction::OpenQueue
             | WbAction::OpenApproval
             | WbAction::OpenDiff
+            | WbAction::OpenGit
+            | WbAction::OpenFiles
+            | WbAction::GitSection(_)
+            | WbAction::GitFilter(_)
+            | WbAction::GitRefresh
+            | WbAction::SelectGit(_)
+            | WbAction::CopyText(_)
             | WbAction::OpenHistory
             | WbAction::OpenTree
             | WbAction::OpenFork
@@ -1137,6 +1221,7 @@ impl Live {
             WbAction::Scroll(_) => {}
             WbAction::LoadOlder => self.load_older().await,
             WbAction::SwitchSession(id) => self.switch(&id).await,
+            WbAction::DeleteSession(id) => self.delete_session(&id).await,
             WbAction::SetModel(id) => self.set_model(&id).await,
             WbAction::SetThinking(level) => self.set_thinking(&level).await,
             // No session to apply them to: stage, do not call.
@@ -1303,7 +1388,9 @@ impl Live {
                 // and workspace the reader chose there.
                 self.to_launchpad();
             }
-            "sessions" => self.refresh_sessions().await,
+            "sessions" => {
+                self.refresh_sessions().await;
+            }
             "compact" => {
                 self.compact(arg).await;
             }
@@ -1434,6 +1521,9 @@ impl Live {
                 self.launchpad = false;
                 self.notice = None;
                 self.refresh_state().await;
+                // The row is the session's: nothing of the one just left may
+                // stay on it (see [`Self::adopt_run`]).
+                self.adopt_run();
                 self.load_tail().await;
                 self.reset_scroll_revision();
                 self.restore_draft();
@@ -1442,8 +1532,59 @@ impl Live {
         }
     }
 
-    /// `/new`: detach from the session and show the launchpad.
+    /// Delete one conversation — its record and its file.
     ///
+    /// The conversation on screen cannot be deleted out from under the
+    /// transcript, so the row that slides into its place in the list takes
+    /// over; deleting the last one leaves the launchpad, which is where a
+    /// client with no session belongs. A refusal (the agent does not delete a
+    /// session a compaction holds) keeps everything as it was and says why on
+    /// the notice row.
+    async fn delete_session(&mut self, session_id: &str) {
+        let was_current = !self.detached() && session_id == self.state.session_id;
+        let position = self.sessions.iter().position(|row| row.id == session_id);
+        let title = self
+            .sessions
+            .iter()
+            .find(|row| row.id == session_id)
+            .map(display_name)
+            .unwrap_or_else(|| session_id.to_string());
+        if let Err(error) = self.client.delete_session(session_id).await {
+            self.notice = Some(i18n::render(self.lang, Key::NoticeDeleteFailed, &[&error]));
+            return;
+        }
+        // The list is re-read before anything is opened: the successor is named
+        // from what the agent has now, not from what the rail painted a moment
+        // ago.
+        self.refresh_sessions().await;
+        if was_current {
+            // The row that slid into the deleted one's place takes over, and
+            // the walk wraps: the last row has no successor, so it falls back
+            // to the first. The deleted id is skipped wherever it lands — a
+            // list that still names it (a stale read) must not reopen it.
+            let start = position.unwrap_or(0);
+            let successor = (start..self.sessions.len())
+                .chain(0..start)
+                .map(|index| &self.sessions[index])
+                .find(|row| row.id != session_id)
+                .map(|row| row.id.clone());
+            match successor {
+                Some(next) => self.switch(&next).await,
+                None => {
+                    self.to_launchpad();
+                    // Nothing is attached any more, and the id the agent still
+                    // knows as "current" names the conversation that is gone.
+                    self.state.session_id.clear();
+                    self.client.set_current_session_id("");
+                }
+            }
+        }
+        // Last: opening a conversation clears the notice row, and "deleted" is
+        // what the reader just asked for, so it has to survive the switch.
+        self.notice = Some(i18n::render(self.lang, Key::NoticeDeleted, &[&title]));
+    }
+
+    /// `/new`: detach from the session and show the launchpad.
     /// Nothing is created and nothing is asked of the agent — the header keeps
     /// its connection state and version, the transcript goes, and the first
     /// message starts the session (`submit` already handled that on a fresh
@@ -1456,9 +1597,7 @@ impl Live {
         self.paging = Paging::default();
         self.restore_draft();
         self.reset_scroll_revision();
-        self.activity = Activity::default();
-        self.activity_start = None;
-        self.open_tools = 0;
+        self.forget_run();
         self.approval = None;
         self.notice = None;
     }
@@ -1596,9 +1735,7 @@ impl Live {
         } else {
             self.state.model.as_deref()
         }?;
-        let tail = |name: &str| name.rsplit('/').next().unwrap_or(name).to_lowercase();
-        let needle = tail(id);
-        self.models.iter().find(|model| tail(&model.id) == needle)
+        find_model(&self.models, id)
     }
 
     /// The level to send over the wire.
@@ -1683,6 +1820,9 @@ impl Live {
                     }
                 }
                 self.refresh_state().await;
+                // A brand-new session has no run of its own, and the one this
+                // client left behind (the launchpad's `/new`) is not its.
+                self.forget_run();
                 self.refresh_sessions().await;
                 self.load_tail().await;
             }
@@ -1746,28 +1886,41 @@ impl Live {
 
     /// The next model in the agent's own order, staged for the next session.
     ///
-    /// Matched by id *tail* so a state that names the model with its provider
-    /// (`future/deepseek-flash`) still finds the row the list holds.
+    /// The list is walked as references (`future/deepseek-flash`), and the
+    /// current one is resolved the same way so a state naming its model with
+    /// the provider still finds its place in the list.
     fn cycle_pending_model(&mut self) {
-        let tail = |name: &str| name.rsplit('/').next().unwrap_or(name).to_lowercase();
-        let current = self
-            .pending_model
-            .clone()
-            .or_else(|| self.state.model.clone());
-        let ids: Vec<String> = self.models.iter().map(|model| model.id.clone()).collect();
-        if ids.is_empty() {
+        // The references, not the bare ids: two providers may offer one id, and
+        // staging the bare id would land the session on whichever of them the
+        // agent resolves first.
+        let references: Vec<String> = self
+            .models
+            .iter()
+            .map(|model| model_reference(&model.provider, &model.id))
+            .collect();
+        if references.is_empty() {
             // Not loaded yet (`refresh_models` runs after the first state):
             // say so rather than silently doing nothing.
             self.notice = Some("No models to choose from yet".into());
             return;
         }
-        let here = current.as_deref().map(tail).unwrap_or_default();
-        let index = ids
-            .iter()
-            .position(|id| tail(id) == here)
+        let current = self
+            .pending_model
+            .clone()
+            .or_else(|| self.state.model.clone());
+        let here = current
+            .as_deref()
+            .and_then(|current| find_model(&self.models, current))
+            .map(|model| model_reference(&model.provider, &model.id));
+        let index = here
+            .and_then(|reference| {
+                references
+                    .iter()
+                    .position(|candidate| *candidate == reference)
+            })
             .map(|index| index + 1)
             .unwrap_or(0);
-        let next = ids[index % ids.len()].clone();
+        let next = references[index % references.len()].clone();
         self.set_pending_model(&next);
     }
 
@@ -1915,6 +2068,9 @@ impl Live {
                 self.launchpad = false;
                 self.notice = None;
                 self.refresh_state().await;
+                // A fork is another conversation: the run in flight here is
+                // the parent's to finish, not something to show on it.
+                self.adopt_run();
                 self.refresh_sessions().await;
                 self.load_tail().await;
                 self.restore_draft();
@@ -1930,6 +2086,18 @@ impl Live {
 
     pub fn set_diff(&mut self, diff: super::state::DiffView) {
         self.diff = Some(diff);
+    }
+
+    /// Install a freshly read `/git` panel. The view carries its own section and
+    /// selection, so the surface keeps painting what the driver last read while
+    /// a reload is in flight.
+    pub fn set_git(&mut self, git: Option<super::state::GitView>) {
+        self.git = git;
+    }
+
+    /// The `/git` view as the driver last read it.
+    pub fn git(&self) -> Option<&super::state::GitView> {
+        self.git.as_ref()
     }
 
     pub fn set_worktrees(&mut self, rows: Vec<crate::worktree::WorktreeInfo>) {
@@ -2169,8 +2337,12 @@ impl Live {
         if let Err(error) = self.client.abort().await {
             self.notice = Some(format!("Could not stop the run: {error}"));
         } else {
+            // The stopped run's calls will never report an end, and the row
+            // must not keep counting them. The rate stays: that is what the
+            // row shows after any run ends.
             self.activity = Activity::default();
             self.activity_start = None;
+            self.run_tools.clear();
         }
     }
 
@@ -2301,11 +2473,13 @@ fn file_sessions(
 
 /// The longest side a preview image is decoded to, in pixels.
 ///
-/// The renderer draws at most a couple of hundred cells wide, so anything past
-/// this is detail nobody can see — and a 4000×3000 photo kept at full size is
-/// 48 MB of RGBA in the surface's own state. One downscale at load time keeps a
-/// zoom cheap and the frame's memory flat.
-pub const MAX_PREVIEW_IMAGE_PX: u32 = 1024;
+/// This is the resolution a *zoom* sees, so it decides how much a reader can
+/// read in a dense screenshot: at 1024 a picture zoomed twice was already an
+/// upscaled guess. 2048 is 16 MB of RGBA in the surface's own state — one
+/// picture at a time, and the transmitted bitmap is downsampled to the cells on
+/// screen anyway (see `run::transmit_bitmap`), so the extra pixels cost memory
+/// when zoomed and nothing at all when fitted.
+pub const MAX_PREVIEW_IMAGE_PX: u32 = 2048;
 
 /// Read `path` as the preview box will show it.
 ///
@@ -2351,7 +2525,7 @@ pub fn read_preview(path: &str, kind: super::files::PreviewKind) -> PreviewView 
                 let (text, truncated) = read_text(path)?;
                 Ok(PreviewView::Text {
                     path: path.to_string(),
-                    lines: text.lines().map(str::to_string).collect(),
+                    lines: super::syntax::highlight(path, &text).into(),
                     truncated,
                 })
             }
@@ -2721,14 +2895,39 @@ impl Live {
 /// list, or the legacy fallback when the id is unknown (not loaded yet, or from
 /// an older agent that never sent one).
 fn level_ring(models: &[ModelInfo], model_id: Option<&str>) -> Vec<String> {
-    let tail = |name: &str| name.rsplit('/').next().unwrap_or(name).to_lowercase();
-    let declared = model_id.map(tail).and_then(|needle| {
-        models
-            .iter()
-            .find(|model| tail(&model.id) == needle)
-            .and_then(|model| model.thinking_levels.as_deref())
-    });
+    let declared = model_id
+        .and_then(|id| find_model(models, id))
+        .and_then(|model| model.thinking_levels.as_deref());
     effective_thinking_levels(declared)
+}
+
+/// The model a reference names: `provider/id` exactly, and only then a bare id
+/// or an id tail for a session (or a saved setting) that names the model
+/// without its provider.
+///
+/// The order matters as much as the lookup: with two providers offering one
+/// id, a tail match can land on the other provider's model, which is how a
+/// picker row ended up describing a different model's thinking levels.
+fn find_model<'a>(models: &'a [ModelInfo], reference: &str) -> Option<&'a ModelInfo> {
+    let reference = reference.trim();
+    if reference.is_empty() {
+        return None;
+    }
+    let qualified = |model: &ModelInfo| {
+        !model.provider.is_empty()
+            && reference.eq_ignore_ascii_case(&model_reference(&model.provider, &model.id))
+    };
+    let tail = |name: &str| name.rsplit('/').next().unwrap_or(name).to_lowercase();
+    let needle = tail(reference);
+    models
+        .iter()
+        .find(|model| qualified(model))
+        .or_else(|| {
+            models
+                .iter()
+                .find(|model| reference.eq_ignore_ascii_case(&model.id))
+        })
+        .or_else(|| models.iter().find(|model| tail(&model.id) == needle))
 }
 
 #[cfg(test)]
@@ -2778,6 +2977,52 @@ mod tests {
         assert!(
             painted.contains("hello there"),
             "the transcript keeps what was said:\n{painted}"
+        );
+    }
+
+    /// Deleting the conversation on screen opens the one that takes its place.
+    ///
+    /// The transcript must never stay on a conversation the agent no longer
+    /// has: `delete_session` reaches the agent, and the successor in the list is
+    /// opened in the same breath (`switch_session`), which is the observable
+    /// half of "the row that slid into its place opens".
+    #[tokio::test]
+    async fn deleting_the_current_session_opens_its_successor() {
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            (
+                "list_sessions",
+                r#"{"sessions":[
+                    {"id":"s1","cwd":"/tmp","updatedAt":"2026-01-02","model":"m"},
+                    {"id":"s2","cwd":"/tmp","updatedAt":"2026-01-01","model":"m"}
+                ]}"#,
+            ),
+            ("delete_session", r#"{"sessionId":"s1"}"#),
+            ("switch_session", r#"{"cancelled":false}"#),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        assert_eq!(live.state.session_id, "s1", "the fixture attaches to s1");
+
+        live.apply(WbAction::DeleteSession("s1".into())).await;
+
+        let commands = seen.lock().unwrap().clone();
+        assert!(
+            commands.iter().any(|command| command == "delete_session"),
+            "the delete must reach the agent, saw {commands:?}"
+        );
+        assert!(
+            commands.iter().any(|command| command == "switch_session"),
+            "the successor must open, saw {commands:?}"
+        );
+        // The reader is told what happened — and it has to survive the switch,
+        // which clears the notice row when it opens a conversation.
+        let notice = live.notice.unwrap_or_default();
+        assert!(
+            notice.contains("Deleted") || notice.contains("已删除"),
+            "{notice}"
         );
     }
 
@@ -2924,7 +3169,6 @@ mod tests {
             120,
             38,
             36,
-            crate::workbench::preferences::Density::Focused,
             crate::workbench::preferences::SidebarPosition::Right,
         );
         let data = live.data(&frame);
@@ -2973,6 +3217,47 @@ mod tests {
             live.notice.as_deref(),
             Some(t(live.lang, Key::WorkspaceNone))
         );
+    }
+
+    /// The rail's 活跃 stretch is the agent's own flag, not a run row of this
+    /// client's: a conversation another client started reports `isStreaming` on
+    /// its summary, and an agent that never sends the field (or sends false) is
+    /// not "running".
+    #[tokio::test]
+    async fn a_streaming_summary_reaches_the_rail() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        let mut busy = row("s-1", Some("writing"), "/work/alpha");
+        busy.is_streaming = Some(true);
+        let mut quiet = row("s-2", Some("quiet"), "/work/alpha");
+        quiet.is_streaming = Some(false);
+        live.sessions = vec![busy, quiet, row("s-3", Some("older agent"), "/work/alpha")];
+        assert!(live.sessions_streaming(), "one conversation is writing");
+
+        let frame = crate::workbench::layout::Frame::new(
+            120,
+            38,
+            36,
+            crate::workbench::preferences::SidebarPosition::Right,
+        );
+        let data = live.data(&frame);
+        let streaming: Vec<bool> = data.sessions.iter().map(|row| row.streaming).collect();
+        assert_eq!(streaming.iter().filter(|on| **on).count(), 1);
+        assert!(
+            data.sessions
+                .iter()
+                .any(|row| row.streaming && row.title == "writing"),
+            "the flag follows the conversation it was reported for"
+        );
+
+        // An agent that sends no flag at all is idle, not streaming.
+        live.sessions = vec![row("s-4", Some("legacy"), "/work/alpha")];
+        assert!(!live.sessions_streaming(), "no flag is not a run");
+        let data = live.data(&frame);
+        assert!(!data.sessions[0].streaming);
     }
 
     #[test]
@@ -3143,10 +3428,27 @@ mod tests {
             PreviewView::Text {
                 lines, truncated, ..
             } => {
-                assert_eq!(lines, vec!["one".to_string(), "two".to_string()]);
+                assert_eq!(
+                    lines.iter().map(|line| line.text()).collect::<Vec<_>>(),
+                    vec!["one", "two"]
+                );
                 assert!(!truncated);
             }
             other => panic!("text must stay text: {other:?}"),
+        }
+        // A file whose language is known arrives classified: the box paints
+        // the runs, it does not scan the text again.
+        let source = dir.path().join("lib.rs");
+        std::fs::write(&source, "pub fn f() -> u32 { 1 } // done\n").unwrap();
+        match read_preview(&source.to_string_lossy(), preview_kind(&source)) {
+            PreviewView::Text { lines, .. } => {
+                assert!(!lines[0].spans().is_empty(), "a .rs line is classified");
+                assert_eq!(
+                    lines[0].spans().last().map(|span| span.token),
+                    Some(crate::workbench::syntax::Token::Comment)
+                );
+            }
+            other => panic!("a .rs file must stay text: {other:?}"),
         }
         let long = dir.path().join("long.log");
         std::fs::write(
@@ -3318,6 +3620,195 @@ mod tests {
             next_thinking_level(&ring, DEFAULT_THINKING_LEVEL_NAME).as_deref(),
             Some("off")
         );
+    }
+
+    /// Two providers may offer one id, and a reference says which one: the
+    /// lookup must not answer with the other provider's model, whose thinking
+    /// ring (and therefore the staged effort) is a different set.
+    #[test]
+    fn a_reference_names_one_model_when_two_providers_share_its_id() {
+        let mut westlake = model_info("deepseek-flash", Some(&["default", "off"]));
+        westlake.provider = "westlakehpc".into();
+        let mut future = model_info("deepseek-flash", Some(&["default", "low", "high"]));
+        future.provider = "future".into();
+        let models = vec![westlake, future];
+
+        assert_eq!(
+            find_model(&models, "future/deepseek-flash").map(|model| model.provider.as_str()),
+            Some("future")
+        );
+        assert_eq!(
+            level_ring(&models, Some("future/deepseek-flash")),
+            vec!["default", "low", "high"]
+        );
+        // A bare id (or a tail) is all an older surface gives us: it keeps the
+        // list's own order rather than failing.
+        assert_eq!(
+            find_model(&models, "deepseek-flash").map(|model| model.provider.as_str()),
+            Some("westlakehpc")
+        );
+    }
+
+    fn event(kind: &str, data: serde_json::Value) -> AgentEvent {
+        AgentEvent {
+            r#type: kind.into(),
+            data,
+            ..Default::default()
+        }
+    }
+
+    fn frame() -> crate::workbench::layout::Frame {
+        crate::workbench::layout::Frame::new(
+            120,
+            38,
+            36,
+            crate::workbench::preferences::SidebarPosition::Right,
+        )
+    }
+
+    /// `· {n} 工具` counts the run's tool *calls*, and the agent announces one
+    /// call twice (`phase: "input"` while its arguments stream, then
+    /// `phase: "execution"` when it runs, see `prompt_helpers.rs`). Counting
+    /// events made the row claim twice the calls the transcript showed — the
+    /// reported `53 工具` on a run of 26 — so the count is a set of call ids.
+    #[tokio::test]
+    async fn a_tool_call_is_counted_once_though_the_agent_announces_it_twice() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        live.handle_event(event("agent_start", serde_json::json!({})));
+        for phase in ["input", "execution"] {
+            live.handle_event(event(
+                "tool_start",
+                serde_json::json!({"tool_id": "t1", "tool_name": "read", "phase": phase}),
+            ));
+            assert_eq!(live.data(&frame()).activity.tools, 1, "after {phase}");
+        }
+        // A second call is a second one, and the first one's end does not make
+        // the run forget it: the row is a tally for the run, not a count of the
+        // calls still open (that number would read `0` while the model thinks).
+        live.handle_event(event(
+            "tool_end",
+            serde_json::json!({"tool_id": "t1", "text": "ok"}),
+        ));
+        live.handle_event(event(
+            "tool_start",
+            serde_json::json!({"tool_id": "t2", "tool_name": "shell", "phase": "input"}),
+        ));
+        live.handle_event(event(
+            "tool_start",
+            serde_json::json!({"tool_id": "t2", "tool_name": "shell", "phase": "execution"}),
+        ));
+        assert_eq!(live.data(&frame()).activity.tools, 2);
+        // The next run starts its own tally.
+        live.handle_event(event("agent_start", serde_json::json!({})));
+        assert_eq!(live.data(&frame()).activity.tools, 0);
+    }
+
+    /// The activity row describes the conversation on screen. It used to carry
+    /// the one the reader left: its kind (`思考`), its clock (`1071s`, still
+    /// climbing) and its tool count sat on another conversation's footer because
+    /// all three are the client's own run state and nothing dropped them at a
+    /// switch.
+    #[tokio::test]
+    async fn a_switch_forgets_the_run_the_previous_session_was_narrating() {
+        // Two conversations: the one this client is on runs, then the reader
+        // clicks the other one in the rail.
+        let answers =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
+                (
+                    "switch_session".to_string(),
+                    r#"{"success":true}"#.to_string(),
+                ),
+                (
+                    "get_state".to_string(),
+                    r#"{"sessionId":"s-a"}"#.to_string(),
+                ),
+                (
+                    "get_session_entries".to_string(),
+                    r#"{"entries":[]}"#.to_string(),
+                ),
+            ])));
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(
+            crate::rpc::grpc_client::tests::api_mock_with_table(answers.clone()),
+        )
+        .await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        live.handle_event(event("agent_start", serde_json::json!({})));
+        live.handle_event(event(
+            "tool_start",
+            serde_json::json!({"tool_id": "t1", "tool_name": "read", "phase": "execution"}),
+        ));
+        assert_eq!(live.activity_kind(), ActivityKind::Tool);
+        assert_eq!(live.data(&frame()).activity.tools, 1);
+
+        answers
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-b"}"#.into());
+        live.apply(WbAction::SwitchSession("s-b".into())).await;
+
+        let activity = live.data(&frame()).activity;
+        assert_eq!(
+            activity.kind,
+            ActivityKind::Idle,
+            "the row is the session's"
+        );
+        assert_eq!(activity.elapsed_secs, 0, "no clock from the session left");
+        assert_eq!(activity.tools, 0, "no tool tally either");
+        assert!(!live.activity_animating(), "and nothing left to animate");
+    }
+
+    /// The other half of a switch: a conversation whose run is still in flight
+    /// (`get_state`'s `isStreaming` — started here, by the desktop, by a queued
+    /// run) owns the row again, rather than showing `idle` until its next event.
+    #[tokio::test]
+    async fn a_session_already_writing_owns_the_row_after_a_switch() {
+        // `get_state` answers for the session the client is on, so the map is
+        // held here and rewritten at the switch: the conversation the reader
+        // clicked is the one already writing (it may have been started by the
+        // desktop, or by a queued run).
+        let answers =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
+                (
+                    "switch_session".to_string(),
+                    r#"{"success":true}"#.to_string(),
+                ),
+                (
+                    "get_state".to_string(),
+                    r#"{"sessionId":"s-a"}"#.to_string(),
+                ),
+                (
+                    "get_session_entries".to_string(),
+                    r#"{"entries":[]}"#.to_string(),
+                ),
+            ])));
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(
+            crate::rpc::grpc_client::tests::api_mock_with_table(answers.clone()),
+        )
+        .await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        assert_eq!(live.activity_kind(), ActivityKind::Idle);
+
+        answers.lock().unwrap().insert(
+            "get_state".into(),
+            r#"{"sessionId":"s-b","isStreaming":true}"#.into(),
+        );
+        live.apply(WbAction::SwitchSession("s-b".into())).await;
+
+        assert_eq!(live.activity_kind(), ActivityKind::Thinking);
+        assert!(live.activity_animating(), "a run in flight spins the row");
+        // The clock is this client's: it began watching at the switch, and the
+        // calls made before it are the transcript's to show.
+        let activity = live.data(&frame()).activity;
+        assert_eq!(activity.elapsed_secs, 0);
+        assert_eq!(activity.tools, 0);
     }
 
     /// The two events that mean the agent knows more about the turn's spend than
