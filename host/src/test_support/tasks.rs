@@ -31,6 +31,22 @@ pub fn task(name: &str) -> Task {
 /// Script the commands a run sends before its stream: session creation,
 /// the permission/sandbox push, and the idle probe.
 pub fn script_agent_setup(mock: &crate::test_support::agent::MockAgentGuard, session: &str) {
+    script_agent_setup_with_answer(
+        mock,
+        session,
+        serde_json::json!({ "text": "the finished answer" }),
+    );
+}
+
+/// [`script_agent_setup`], with the answer the run reads back from
+/// `get_last_assistant_text`. `{"text": null}` is what an empty answer looks
+/// like, and `lastTool` is the only clue a `session_retention = delete` task
+/// keeps after deleting the conversation.
+pub fn script_agent_setup_with_answer(
+    mock: &crate::test_support::agent::MockAgentGuard,
+    session: &str,
+    answer: serde_json::Value,
+) {
     mock.push_data("new_session", serde_json::json!({ "sessionId": session }));
     mock.push_data("set_permission_level", serde_json::json!({}));
     mock.push_data(
@@ -45,8 +61,5 @@ pub fn script_agent_setup(mock: &crate::test_support::agent::MockAgentGuard, ses
             crate::test_support::agent::get_state_payload(session, false),
         );
     }
-    mock.push_data(
-        "get_last_assistant_text",
-        serde_json::json!({ "text": "the finished answer" }),
-    );
+    mock.push_data("get_last_assistant_text", answer);
 }

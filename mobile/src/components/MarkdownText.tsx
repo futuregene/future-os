@@ -228,10 +228,12 @@ function CodeSource({ code, language }: { code: string; language?: string }) {
     [code, language, codeColors, tone],
   );
   const rowTokens = useMemo(() => codeTokenRows(tokens, rows), [tokens, rows]);
-  // Wrapping (never a horizontal scroll view) keeps a phone-width block
-  // readable; an explicit toggle, not a nested vertical viewport, is what makes
-  // the tail of a long block reachable — an inner scroll region loses the
-  // gesture to the surrounding message list.
+  // A code block never wraps. Its layout *is* its meaning: one folded line
+  // shifts every column after it, so box-drawing art, an aligned table and a TUI
+  // capture all come out scrambled (the desktop's `<pre>` scrolls sideways for
+  // the same reason). The pan is horizontal, which — unlike a nested *vertical*
+  // viewport — is not contended for by the surrounding message list; the tables
+  // below rely on that too. Long-block reachability is the explicit toggle.
   const collapsed = large && !expanded;
   return (
     <View style={styles.codeContainer}>
@@ -245,15 +247,17 @@ function CodeSource({ code, language }: { code: string; language?: string }) {
           </Pressable>
         </View>
       ) : language ? <Text style={styles.codeLanguage}>{language}</Text> : null}
-      {large ? rows.slice(0, collapsed ? 1 : rows.length).map((row, index) => (
-        <Text key={index} selectable style={styles.code} numberOfLines={collapsed ? collapsedCodeLines : undefined}
-          ellipsizeMode={collapsed ? "tail" : undefined}>
-          {row.continuation ? "↪ " : ""}
-          <CodeTokens fallback={codeRowText(row.text)} tokens={rowTokens[index] ?? null} />
-        </Text>
-      )) : (
-        <Text selectable style={styles.code}><CodeTokens fallback={code} tokens={tokens} /></Text>
-      )}
+      <ScrollView horizontal nestedScrollEnabled contentContainerStyle={styles.codeContent}>
+        {large ? rows.slice(0, collapsed ? 1 : rows.length).map((row, index) => (
+          <Text key={index} selectable style={styles.code} numberOfLines={collapsed ? collapsedCodeLines : undefined}
+            ellipsizeMode={collapsed ? "tail" : undefined}>
+            {row.continuation ? "↪ " : ""}
+            <CodeTokens fallback={codeRowText(row.text)} tokens={rowTokens[index] ?? null} />
+          </Text>
+        )) : (
+          <Text selectable style={styles.code}><CodeTokens fallback={code} tokens={tokens} /></Text>
+        )}
+      </ScrollView>
       {large ? (
         <Pressable accessibilityRole="button"
           accessibilityLabel={t(collapsed ? "chat.expandCode" : "chat.collapseCode")}
@@ -658,12 +662,16 @@ function buildStyles(theme: Theme, tone: MarkdownTone) {
   codeToggle: { padding: spacing.sm, minHeight: 44, alignItems: "center", justifyContent: "center", borderTopWidth: 1, borderTopColor: hairline },
   codeLanguage: { color: textMuted, fontSize: theme.font(12), paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   code: {
-    padding: spacing.md,
     color: text,
     fontFamily: monospace,
     fontSize: theme.font(13),
     lineHeight: theme.leading(20),
   },
+  // The gutter belongs to the scrolling content, so an unwrapped line still
+  // starts at it instead of against the block's edge. A horizontal ScrollView's
+  // content is laid out as a row, which would put a long block's rows side by
+  // side; the column direction stacks them.
+  codeContent: { padding: spacing.md, flexDirection: "column" },
   quote: {
     marginBottom: spacing.md,
     paddingLeft: spacing.md,

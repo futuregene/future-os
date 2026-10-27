@@ -27,6 +27,7 @@
 | [Hostname resolution](guide/dns-resolution.md) ([中文](guide/dns-resolution.zh-CN.md)) | How the static musl CLI resolves names when `/etc/resolv.conf` is absent, the candidate paths, `FUTURE_DNS_SERVER` / `FUTURE_RESOLV_CONF`, the NSS limits, and the measured behaviour |
 | [Directory layout](guide/directory-layout.md) ([中文](guide/directory-layout.zh-CN.md)) | What lives where under `~/.future/` ((agent, channels, TUI, GUI, goal)) |
 | [Data backup and recovery](guide/data-backup.md) ([中文](guide/data-backup.zh-CN.md)) | `future data`: offline backup, verify, restore to the original home, resume/rollback after an interrupted restore, and the startup fence |
+| [Run-journal cost and reclamation](guide/run-journal.md) ([中文](guide/run-journal.zh-CN.md)) | What `run_events` costs in `agent.db`, measured read timings at 4.4 GiB vs 1.3 GiB, `future session journal --reclaim`, the one-off `VACUUM`, and what it never touches |
 | [Session history recall](guide/session-history.md) ([中文](guide/session-history.zh-CN.md)) | Read-only history search/entry reads, byte paging, and post-compaction model guidance |
 | [Self-inspection](guide/self-inspection.md) ([中文](guide/self-inspection.zh-CN.md)) | Reading an agent's own state (settings, skills, tools, sessions) and the user–agent record, and changing global settings from the CLI |
 | [Mobile latency diagnosis](guide/mobile-latency-diagnosis.md) ([中文](guide/mobile-latency-diagnosis.zh-CN.md)) | Mobile end-to-end latency measurement and diagnosis |

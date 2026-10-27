@@ -447,10 +447,23 @@ fn a_concurrent_append_never_produces_an_inconsistent_snapshot() {
         .map(|snapshot| snapshot.events)
         .unwrap_or(page.events);
     assert_eq!(events.first().map(|event| event.idx), Some(0));
+    // A folded snapshot merges runs of deltas into one segment, so its indices
+    // step by the size of each merged run; a raw journal is one row per event.
+    // What must hold in *both* cases is that nothing is duplicated and nothing
+    // goes backwards, and that the last index is exactly the branch's claim.
     assert!(
-        events.windows(2).all(|pair| pair[1].idx == pair[0].idx + 1),
-        "a replayed journal must not have a gap or a duplicate"
+        events.windows(2).all(|pair| pair[0].idx < pair[1].idx),
+        "a replayed journal must not duplicate or reorder an event: published={published} \
+         appended={:?} indices={:?}",
+        appended.is_ok(),
+        events.iter().map(|event| event.idx).collect::<Vec<_>>()
     );
+    if !published {
+        assert!(
+            events.windows(2).all(|pair| pair[1].idx == pair[0].idx + 1),
+            "a raw journal is one row per event, so it must be gapless"
+        );
+    }
     match (published, appended.is_ok()) {
         (true, false) => assert_eq!(
             events.last().map(|event| event.idx),

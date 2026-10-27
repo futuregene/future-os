@@ -35,6 +35,11 @@ fn git(cwd: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
 }
 
 /// Paths touched by tracked edits and untracked files, in git's order.
+pub fn files(cwd: &Path) -> Result<Vec<DiffFile>, String> {
+    changed_paths(cwd)
+}
+
+/// Paths touched by tracked edits and untracked files, in git's order.
 fn changed_paths(cwd: &Path) -> Result<Vec<DiffFile>, String> {
     let bytes = git(
         cwd,

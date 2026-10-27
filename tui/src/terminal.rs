@@ -311,18 +311,6 @@ impl Terminal {
         *self.exit_signal_cb.lock() = cb;
     }
 
-    /// Is the full-screen terminal session active? Linear reading deliberately
-    /// runs without it so output remains in native scrollback.
-    pub fn raw_enabled(&self) -> bool {
-        self.raw_enabled
-    }
-
-    /// Whether the alternate screen is owned. Raw linear input is active too,
-    /// so raw mode alone cannot distinguish the two rendering modes.
-    pub fn alternate_screen(&self) -> bool {
-        self.alternate_screen
-    }
-
     pub fn started(&self) -> bool {
         self.reader_thread.is_some()
     }
@@ -362,7 +350,7 @@ impl Terminal {
     }
 
     /// Whether interactive input is a terminal. Kept separate from output
-    /// mode so notification and native-scrollback decisions share one fact.
+    /// mode so notification decisions can share one fact.
     pub fn is_tty(&self) -> bool {
         self.backend.is_tty()
     }
@@ -373,26 +361,6 @@ impl Terminal {
         &mut self,
         on_input: Box<dyn FnMut(String) + Send + 'static>,
         on_resize: Box<dyn FnMut() + Send + 'static>,
-    ) -> io::Result<()> {
-        self.start_mode(on_input, on_resize, true)
-    }
-
-    /// Raw key input without taking the alternate screen. Output uses CRLF so
-    /// cooked mode is not required for native-scrollback newline semantics. Native-scrollback linear
-    /// reading uses this, and therefore never throws away the shell's history.
-    pub fn start_linear(
-        &mut self,
-        on_input: Box<dyn FnMut(String) + Send + 'static>,
-        on_resize: Box<dyn FnMut() + Send + 'static>,
-    ) -> io::Result<()> {
-        self.start_mode(on_input, on_resize, false)
-    }
-
-    fn start_mode(
-        &mut self,
-        on_input: Box<dyn FnMut(String) + Send + 'static>,
-        on_resize: Box<dyn FnMut() + Send + 'static>,
-        alternate: bool,
     ) -> io::Result<()> {
         if self.reader_thread.is_some() {
             return Err(io::Error::new(
@@ -413,15 +381,12 @@ impl Terminal {
         self.backend.enable_raw()?;
         self.raw_enabled = true;
 
-        // Enable bracketed paste + focus reporting. Only the full-screen mode
-        // takes the alternate buffer; linear output stays in native scrollback.
-        self.alternate_screen = alternate;
-        self.alternate_active.store(alternate, Ordering::SeqCst);
-        if alternate {
-            write_str(&self.write_lock, "\x1b[?1049h");
-            // Entering it preserves the cursor row on some terminals.
-            write_str(&self.write_lock, "\x1b[H");
-        }
+        // Enable bracketed paste + focus reporting.
+        self.alternate_screen = true;
+        self.alternate_active.store(true, Ordering::SeqCst);
+        write_str(&self.write_lock, "\x1b[?1049h");
+        // Entering it preserves the cursor row on some terminals.
+        write_str(&self.write_lock, "\x1b[H");
         write_str(&self.write_lock, "\x1b[?2004h");
         write_str(&self.write_lock, "\x1b[?1004h");
         if self.mouse {
@@ -727,8 +692,8 @@ impl Terminal {
         write_str(&self.write_lock, "\x1b[>4;0m");
         self.modify_other_keys_active.store(false, Ordering::SeqCst);
 
-        // Linear mode never took the buffer, so stopping it must not restore
-        // an unrelated saved screen or discard native scrollback.
+        // A run that never took the buffer must not restore an unrelated
+        // saved screen.
         if self.alternate_screen {
             write_str(&self.write_lock, "\x1b[?1049l");
             self.alternate_screen = false;
@@ -2135,8 +2100,8 @@ mod tests {
         let keyboard = taken.find("\x1b[<9u").unwrap();
         let screen = taken.find("\x1b[?1049l").unwrap();
         assert!(keyboard < screen, "screen change before the keyboard reset");
-        // Linear reading never took the alternate screen: leaving it there would
-        // restore an unrelated saved screen over the user's scrollback.
+        // A run that never took the buffer must not restore an unrelated saved
+        // screen over the shell's scrollback.
         assert!(!teardown_sequences(false).contains("\x1b[?1049l"));
     }
 

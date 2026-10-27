@@ -131,7 +131,6 @@ const PAGES: &[&str] = &[
     "picker-theme",
     "picker-sessions",
     "picker-language",
-    "linear",
 ];
 
 /// The fixture each page needs, and the call that opens it.
@@ -158,10 +157,23 @@ fn fixture(name: &str) -> (WorkbenchData, fn(&mut Workbench, &WorkbenchData)) {
         "preview-text" => (
             {
                 let mut data = chat();
+                let path = "tui/src/workbench/syntax.rs";
+                let source = r#"// Colour a code preview, once per line.
+use crate::workbench::syntax;
+
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+pub fn highlight(path: &str, text: &str) -> Vec<Line> {
+    let mut lexer = Lexer::new(Language::from_path(path));
+    text.lines().map(|line| lexer.line(line)).collect()
+}"#;
                 data.preview = Some(future_tui::workbench::state::PreviewView::Text {
-                    path: "README.md".into(),
-                    lines: (0..60).map(|n| format!("line {n}")).collect(),
-                    truncated: true,
+                    path: path.into(),
+                    lines: future_tui::workbench::syntax::highlight(path, source).into(),
+                    truncated: false,
                 });
                 data
             },
@@ -306,7 +318,6 @@ fn fixture(name: &str) -> (WorkbenchData, fn(&mut Workbench, &WorkbenchData)) {
         "picker-language" => (chat(), |wb, data| {
             wb.open_picker(PickerKind::Language, data);
         }),
-        "linear" => (chat(), |wb, _| wb.linear_reading = true),
         other => panic!("no fixture for {other}"),
     }
 }

@@ -48,6 +48,9 @@ struct RunArgs {
     no_wait: bool,
     file_args: Vec<String>,
     messages: Vec<String>,
+    /// A file whose contents ARE the message, verbatim (no `<file>` wrapper).
+    /// Programmatic dispatch uses this; `@<file>` stays the human shape.
+    message_file: Option<String>,
 }
 
 // ─── Help Text ─────────────────────────────────────────────────────────
@@ -103,6 +106,12 @@ Prompt control:
                            On a run that creates a new session these are
                            one-shot in practice; with --session/--continue they
                            change that session from now on.
+  --message-file <path>    Send the file's contents as the message, verbatim:
+                           no <file> wrapper, no joining, nothing trimmed.
+                           Mutually exclusive with @files and a message
+                           argument. Use this for scripted or agent-to-agent
+                           dispatch, where the other side must see a bare user
+                           turn; use @<file> when a human attaches a file.
 
 Output:
   --mode <mode>            text (default): stream to stdout; json: one JSON object on exit
@@ -137,6 +146,7 @@ Examples:
   future run --session abc123 "Queue this behind the current run"
   future run --tools read,shell "Read the README and list files"
   future run --permission workspace "Summarize AGENTS.md"
+  future run --message-file /tmp/prompt.md --session abc123
   future run --mode json "What is 2+2?"
   future run @README.md @src/main.rs "Summarize these files""#,
     );
@@ -170,6 +180,7 @@ fn parse_run_args(args: &[String], out: &Output) -> Option<RunArgs> {
         no_wait: false,
         file_args: Vec::new(),
         messages: Vec::new(),
+        message_file: None,
     };
 
     let mut i = 0;
@@ -288,6 +299,14 @@ fn parse_run_args(args: &[String], out: &Output) -> Option<RunArgs> {
                     result.cwd = Some(args[i].clone());
                 }
             }
+            "--message-file" => {
+                if i + 1 >= args.len() {
+                    out.log_err("--message-file requires a path");
+                    return None;
+                }
+                i += 1;
+                result.message_file = Some(args[i].clone());
+            }
             "--verbose" => result.verbose = true,
             "--help" | "-h" => {
                 print_run_help(out);
@@ -307,12 +326,29 @@ fn parse_run_args(args: &[String], out: &Output) -> Option<RunArgs> {
         i += 1;
     }
 
+    // `--message-file` IS the turn; a positional message or an `@file` would
+    // say it a second time. Refuse rather than let one silently win (checked
+    // in `run_command`, which can report a handled exit; a parse-level
+    // rejection would exit 0).
+
     Some(result)
 }
 
 // ─── Prompt Builder ────────────────────────────────────────────────────
 
-async fn build_prompt(file_args: &[String], messages: &[String], out: &Output) -> Option<String> {
+async fn build_prompt(
+    file_args: &[String],
+    messages: &[String],
+    message_file: Option<&str>,
+    out: &Output,
+) -> Option<String> {
+    // The two shapes are deliberately different: `@<file>` wraps the content
+    // in a `<file name="…">` block (a human attaching a file), while
+    // `--message-file` sends the bytes as the message itself so the other side
+    // sees a bare user turn (programmatic dispatch).
+    if let Some(path) = message_file {
+        return read_message_file(path, out).await;
+    }
     if file_args.is_empty() && messages.is_empty() {
         return None;
     }
@@ -331,6 +367,44 @@ async fn build_prompt(file_args: &[String], messages: &[String], out: &Output) -
     }
     parts.extend(messages.iter().cloned());
     Some(parts.join("\n"))
+}
+
+/// Read `--message-file` as the message: bytes in, bytes out, nothing added.
+///
+/// Every rejection is explicit — an empty turn, a typo'd path and a binary
+/// blob are different mistakes and each names itself. Nothing is trimmed or
+/// truncated: the caller's bytes are what the other conversation receives.
+async fn read_message_file(path: &str, out: &Output) -> Option<String> {
+    let bytes = match tokio::fs::read(&absolute_path(path)).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            out.log_err(&format!("Failed to read message file: {path}"));
+            return None;
+        }
+    };
+    let text = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(_) => {
+            out.log_err(&format!(
+                "Failed to read message file: {path} (message file is not valid UTF-8)"
+            ));
+            return None;
+        }
+    };
+    // NUL bytes are valid UTF-8, so a binary file passes the decode above.
+    if text.contains('\0') {
+        out.log_err(&format!(
+            "Failed to read message file: {path} (message file is binary: contains NUL bytes)"
+        ));
+        return None;
+    }
+    if text.trim().is_empty() {
+        out.log_err(&format!(
+            "Failed to read message file: {path} (message file is empty)"
+        ));
+        return None;
+    }
+    Some(text)
 }
 
 /// `path.resolve(filePath)` — absolute, normalized, platform-native.
@@ -373,9 +447,34 @@ pub async fn run_command(args: &[String], out: &Output) -> Result<(), String> {
         return Ok(());
     };
 
-    // Build prompt
-    let Some(prompt) = build_prompt(&parsed.file_args, &parsed.messages, out).await else {
+    // `--message-file` carries the whole turn, so a positional message or an
+    // `@file` would state it twice. Checked here rather than in the parser:
+    // this path reports a handled exit, while a parse-level rejection exits 0.
+    if parsed.message_file.is_some()
+        && (!parsed.messages.is_empty() || !parsed.file_args.is_empty())
+    {
+        out.log_err(
+            "--message-file cannot be combined with a message argument or @files \
+             (the file's contents are the whole message)",
+        );
+        return Err(crate::HANDLED_EXIT.to_string());
+    }
+
+    // Build prompt. An input was given but rejected (unreadable file, binary
+    // payload, …) — that error is already reported, so do not add the
+    // "no prompt" usage line on top of it.
+    if parsed.message_file.is_none() && parsed.file_args.is_empty() && parsed.messages.is_empty() {
         out.log_err("No prompt provided. Usage: future run [options] [@files...] [message...]");
+        return Err(crate::HANDLED_EXIT.to_string());
+    }
+    let Some(prompt) = build_prompt(
+        &parsed.file_args,
+        &parsed.messages,
+        parsed.message_file.as_deref(),
+        out,
+    )
+    .await
+    else {
         return Err(crate::HANDLED_EXIT.to_string());
     };
 
@@ -569,6 +668,26 @@ mod tests {
         assert_eq!(parsed.messages, vec!["summarize"]);
     }
 
+    /// `--message-file` takes the turn on its own: it is not a message
+    /// argument and not an `@file`, so it lands in neither list.
+    #[test]
+    fn parse_message_file_flag() {
+        let parsed = parse(&["--message-file", "/tmp/prompt.md"]).unwrap();
+        assert_eq!(parsed.message_file.as_deref(), Some("/tmp/prompt.md"));
+        assert!(parsed.messages.is_empty());
+        assert!(parsed.file_args.is_empty());
+
+        // Without a path it is a usage error, not a message-less run.
+        let (out, cap) = Output::memory();
+        let args: Vec<String> = ["--message-file"].iter().map(|s| s.to_string()).collect();
+        assert!(parse_run_args(&args, &out).is_none());
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(
+            stderr.contains("--message-file requires a path"),
+            "{stderr}"
+        );
+    }
+
     #[test]
     fn parse_append_system_prompt_repeats() {
         let parsed = parse(&[
@@ -710,6 +829,18 @@ mod tests {
             stdout.contains("future session status <id>"),
             "the run help must point at the read-back: {stdout}"
         );
+        // The two file forms look alike and are not: `--message-file` sends the
+        // bytes as the message, `@<file>` wraps them. The help has to say which
+        // is which, or the difference is only discoverable by experiment.
+        assert!(stdout.contains("--message-file <path>"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("no <file> wrapper"),
+            "the help must contrast --message-file with @<file>: {stdout}"
+        );
+        assert!(
+            stdout.contains("Mutually exclusive with @files"),
+            "the help must state the exclusion: {stdout}"
+        );
 
         // No message and no @files → usage error.
         let (out, cap) = Output::memory();
@@ -734,6 +865,257 @@ mod tests {
             stderr.contains("Failed to read file: /no/such/file.txt"),
             "stderr: {stderr}"
         );
+    }
+
+    // ── --message-file ────────────────────────────────────────────────
+    //
+    // The flag exists for PROGRAMMATIC dispatch (agent → agent, model
+    // fan-out, goal workers): the file IS the message, so the child's first
+    // user turn is the caller's text and nothing else. `@<file>` keeps its
+    // own shape — a `<file name="…">` wrapper — for a human attaching a file
+    // in a terminal.
+
+    /// A mock agent that answers one run, for `--message-file` cases.
+    async fn message_file_mock() -> (crate::test_server::MockAgent, String) {
+        let mut agent = crate::test_server::MockAgent::default();
+        agent.responses.insert(
+            "new_session".into(),
+            "{\"sessionId\":\"s-msg-file\"}".into(),
+        );
+        agent.events = vec![
+            crate::test_server::stream_event("text_chunk", "{\"text\":\"ok\"}"),
+            crate::test_server::stream_event("agent_end", "{}"),
+        ];
+        let addr = crate::test_server::spawn_mock(agent.clone()).await;
+        (agent, addr)
+    }
+
+    /// The message is the file's bytes, verbatim: no `<file>` wrapper, no
+    /// joining, no trimming, no re-encoding of non-ASCII content.
+    #[tokio::test]
+    async fn run_command_message_file_sends_verbatim_message() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("prompt.md");
+        // CJK + Latin + emoji + a trailing newline the caller wrote on purpose.
+        let sample = "第一行：中英混排 mixed text 😀🎯\n\n第二轮 · 结论\n结尾无空行\n";
+        tokio::fs::write(&file, sample).await.unwrap();
+        let (agent, addr) = message_file_mock().await;
+
+        let (out, cap) = Output::memory();
+        run_command(
+            &[
+                "--grpc-addr".to_string(),
+                addr,
+                "--message-file".to_string(),
+                file.display().to_string(),
+            ],
+            &out,
+        )
+        .await
+        .expect("run --message-file");
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.is_empty(), "stderr: {stderr}");
+
+        let prompts = agent.seen_of("prompt");
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(
+            prompts[0].message.as_bytes(),
+            sample.as_bytes(),
+            "message must be the file's bytes: {:?}",
+            prompts[0].message
+        );
+        assert!(
+            !prompts[0].message.contains("<file"),
+            "@file's wrapper must not appear: {:?}",
+            prompts[0].message
+        );
+        assert!(
+            !prompts[0].message.contains(file.to_str().unwrap()),
+            "the path must not be part of the message: {:?}",
+            prompts[0].message
+        );
+    }
+
+    /// `--message-file` and a positional message are two ways to say what the
+    /// turn is; accepting both would silently pick one.
+    #[tokio::test]
+    async fn run_command_message_file_rejects_positional_message() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("prompt.md");
+        tokio::fs::write(&file, "hello").await.unwrap();
+        let (agent, addr) = message_file_mock().await;
+
+        let (out, cap) = Output::memory();
+        let result = run_command(
+            &[
+                "--grpc-addr".to_string(),
+                addr,
+                "--message-file".to_string(),
+                file.display().to_string(),
+                "extra message".to_string(),
+            ],
+            &out,
+        )
+        .await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(
+            stderr.contains("--message-file cannot be combined"),
+            "stderr: {stderr}"
+        );
+        assert!(agent.seen_of("prompt").is_empty(), "nothing may be sent");
+    }
+
+    /// Same for `@files`: the wrapper plus a verbatim message has no defined
+    /// meaning, so it is a usage error rather than a guess.
+    #[tokio::test]
+    async fn run_command_message_file_rejects_at_files() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("prompt.md");
+        tokio::fs::write(&file, "hello").await.unwrap();
+        let attached = dir.path().join("note.txt");
+        tokio::fs::write(&attached, "FILE-CONTENTS").await.unwrap();
+        let (agent, addr) = message_file_mock().await;
+
+        let (out, cap) = Output::memory();
+        let result = run_command(
+            &[
+                "--grpc-addr".to_string(),
+                addr,
+                "--message-file".to_string(),
+                file.display().to_string(),
+                format!("@{}", attached.display()),
+            ],
+            &out,
+        )
+        .await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(
+            stderr.contains("--message-file cannot be combined"),
+            "stderr: {stderr}"
+        );
+        assert!(agent.seen_of("prompt").is_empty(), "nothing may be sent");
+    }
+
+    /// An empty (or whitespace-only) file is a mistake, not an empty turn:
+    /// say so instead of sending nothing.
+    #[tokio::test]
+    async fn run_command_message_file_rejects_empty_file() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("empty.md");
+        tokio::fs::write(&file, "  \n\n\t").await.unwrap();
+        let (agent, addr) = message_file_mock().await;
+
+        let (out, cap) = Output::memory();
+        let result = run_command(
+            &[
+                "--grpc-addr".to_string(),
+                addr,
+                "--message-file".to_string(),
+                file.display().to_string(),
+            ],
+            &out,
+        )
+        .await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("message file is empty"), "stderr: {stderr}");
+        assert!(agent.seen_of("prompt").is_empty(), "nothing may be sent");
+    }
+
+    /// A missing file names the path and sends nothing.
+    #[tokio::test]
+    async fn run_command_message_file_rejects_missing_file() {
+        let _guard = crate::test_env::lock_env().await;
+        let (agent, addr) = message_file_mock().await;
+
+        let (out, cap) = Output::memory();
+        let result = run_command(
+            &[
+                "--grpc-addr".to_string(),
+                addr,
+                "--message-file".to_string(),
+                "/no/such/prompt.md".to_string(),
+            ],
+            &out,
+        )
+        .await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(
+            stderr.contains("Failed to read message file: /no/such/prompt.md"),
+            "stderr: {stderr}"
+        );
+        assert!(agent.seen_of("prompt").is_empty(), "nothing may be sent");
+    }
+
+    /// NUL bytes are legal UTF-8, so a binary file would otherwise sail
+    /// through as a message with control characters in it. Refuse it.
+    #[tokio::test]
+    async fn run_command_message_file_rejects_binary_file() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("blob.bin");
+        tokio::fs::write(&file, b"prompt\0\x01\x02tail")
+            .await
+            .unwrap();
+        let (agent, addr) = message_file_mock().await;
+
+        let (out, cap) = Output::memory();
+        let result = run_command(
+            &[
+                "--grpc-addr".to_string(),
+                addr,
+                "--message-file".to_string(),
+                file.display().to_string(),
+            ],
+            &out,
+        )
+        .await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(
+            stderr.contains("message file is binary"),
+            "stderr: {stderr}"
+        );
+        assert!(agent.seen_of("prompt").is_empty(), "nothing may be sent");
+    }
+
+    /// Invalid UTF-8 gets its own message (not "binary") so the caller knows
+    /// to fix the encoding rather than the content.
+    #[tokio::test]
+    async fn run_command_message_file_rejects_non_utf8_file() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("gbk.md");
+        tokio::fs::write(&file, [0xB0, 0xA1, 0xBA, 0xC3])
+            .await
+            .unwrap(); // GBK "啊好"
+        let (agent, addr) = message_file_mock().await;
+
+        let (out, cap) = Output::memory();
+        let result = run_command(
+            &[
+                "--grpc-addr".to_string(),
+                addr,
+                "--message-file".to_string(),
+                file.display().to_string(),
+            ],
+            &out,
+        )
+        .await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(
+            stderr.contains("message file is not valid UTF-8"),
+            "stderr: {stderr}"
+        );
+        assert!(agent.seen_of("prompt").is_empty(), "nothing may be sent");
     }
 
     #[tokio::test]

@@ -15,6 +15,7 @@ import { previewKindForPath } from "../filepreview/previewKind";
 import { LinkContextMenu } from "../markdown/renderers/LinkContextMenu";
 import { useLinkContextMenu } from "../markdown/renderers/useLinkContextMenu";
 import { FileTreeNode } from "./FileTreeNode";
+import { parentDirectory, siblingImages } from "./imageSiblings";
 import { useFileTree } from "./useFileTree";
 
 /**
@@ -164,6 +165,40 @@ export function FileTreePanel({
   const previewKind = previewTarget
     ? previewKindForPath(previewTarget.path)
     : null;
+
+  // Pictures step through their own folder: the ← / → controls walk the images
+  // of the directory the row was opened from, in the order the tree lists them
+  // (so "next" is the row below). The listing is already in hand — the row could
+  // not have been drawn otherwise — so this costs no extra read.
+  const previewDirectory = previewTarget ? parentDirectory(previewTarget.path) : "";
+  const previewSiblings = previewTarget && previewKind === "image"
+    ? siblingImages(
+        previewDirectory === (rootPath ?? "").replace(/[/\\]+$/, "")
+          ? tree.rootEntries
+          : tree.childrenOf(previewDirectory),
+        previewTarget.path,
+      )
+    : [];
+  const previewIndex = previewTarget
+    ? previewSiblings.findIndex(entry => entry.path === previewTarget.path)
+    : -1;
+  // A lone image has nothing to step to: no list, no controls.
+  const previewNavigation = previewIndex >= 0 && previewSiblings.length > 1
+    ? {
+        count: previewSiblings.length,
+        index: previewIndex,
+        onNext: () => {
+          const next = previewSiblings[previewIndex + 1];
+          if (next)
+            setPreviewTarget(next);
+        },
+        onPrev: () => {
+          const prev = previewSiblings[previewIndex - 1];
+          if (prev)
+            setPreviewTarget(prev);
+        },
+      }
+    : undefined;
   // While the shared cursor-anchored menu is open, keep its target row's `...`
   // trigger visible instead of fading out with hover.
   const activeMenuPath = menu.position ? (menuTarget?.path ?? null) : null;
@@ -280,6 +315,7 @@ export function FileTreePanel({
             <FilePreviewOverlay
               kind={previewKind}
               name={previewTarget.name}
+              navigation={previewNavigation}
               onClose={() => setPreviewTarget(null)}
               onOpenExternal={() => void openEntry(previewTarget)}
               open

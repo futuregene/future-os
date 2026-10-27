@@ -19,6 +19,7 @@ import { useAttachmentPicker } from "./useAttachmentPicker";
 import { useChatFiles } from "./files/useChatFiles";
 import { useMarkdownImageLoader } from "./useMarkdownImageLoader";
 import { MarkdownImageLoaderContext } from "../../components/MarkdownImage";
+import { ImageViewerContext, type ImageViewerTarget } from "../../components/imageViewer";
 import { useChatScroll } from "./useChatScroll";
 import { useQuestionNav } from "./useQuestionNav";
 import { useTimelinePaging } from "./useTimelinePaging";
@@ -33,6 +34,7 @@ import { ComposerDock } from "./components/ComposerDock";
 import { ModelSelectorSheet } from "./components/ModelSelectorSheet";
 import { DownloadProgressModal } from "./components/DownloadProgressModal";
 import { PreviewModal } from "./components/PreviewModal";
+import { ImageViewer } from "./components/ImageViewer";
 import { SessionUsageSheet } from "./components/SessionUsageSheet";
 import { NativeFileActionSheet } from "./components/NativeFileActionSheet";
 import { newestFirst } from "./timelineListModel";
@@ -131,6 +133,10 @@ export function ChatScreen() {
   );
   const chatFiles = useChatFiles(remote, t, setTransferProgress);
   const markdownImageLoader = useMarkdownImageLoader(remote, t);
+  // The picture the viewer is showing, if any. Held here rather than per image:
+  // one viewer covers every picture on the screen, and the modal has to sit
+  // above the transcript and the file preview both.
+  const [viewedImage, setViewedImage] = useState<ImageViewerTarget | null>(null);
   const openTimelineAttachment = chatFiles.openAttachment;
   const openTimelineFile = chatFiles.openFileLink;
   const compactContext = useCompactContext(remote, t);
@@ -460,208 +466,213 @@ export function ChatScreen() {
       : 0;
 
   return (
-    <MarkdownImageLoaderContext value={markdownImageLoader}>
-      <SafeAreaView style={styles.safe}>
-        {attachmentMenu}
-        {albumPicker}
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          style={styles.keyboard}
-        >
-          <ChatTopBar
-            title={title}
-            contextLabel={contextLabel}
-            draft={remote.draft}
-            machine={machine}
-            backLabel={t("common.back")}
-            usageLabel={t("chat.usageOpen")}
-            onBack={goBack}
-            onUsage={() => {
-              Keyboard.dismiss();
-              // The sheet shows the session's spend, so read it as it opens: the
-              // figure is only as fresh as the last get_state, and this is the
-              // moment it is being looked at.
-              void remote.refreshSessionUsage();
-              setUsageOpen(true);
-            }}
-            filesLabel={t("files.title")}
-            filesOpen={filesOpen}
-            onFiles={() => {
-              Keyboard.dismiss();
-              setFilesSession(filesOpen ? null : conversationKey);
-            }}
-          />
-
-          {remote.error && connection.level === "connected" && (
-            <ErrorBanner
-              message={remote.error}
-              onDismiss={
-                remote.connectionPresentation.level === "disconnected" &&
-                  remote.connectionPresentation.supportCode
-                  ? undefined
-                  : remote.clearError
-              }
-            />
-          )}
-
-          <View
-            style={[
-              styles.chatContent,
-              keyboardLift > 0 ? { paddingBottom: keyboardLift } : null,
-            ]}
+    <ImageViewerContext value={setViewedImage}>
+      <MarkdownImageLoaderContext value={markdownImageLoader}>
+        <SafeAreaView style={styles.safe}>
+          {attachmentMenu}
+          {albumPicker}
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : undefined}
+            style={styles.keyboard}
           >
-            <View
-              style={styles.chatContent}
-              accessibilityElementsHidden={filesOpen}
-              importantForAccessibility={
-                filesOpen ? "no-hide-descendants" : "auto"
-              }
-            >
-              <PausedTimeline
-                key={conversationKey}
-                paused={filesOpen || chatFiles.preview !== null || chatFiles.activeDownload !== null}
-              >
-                <ChatTimeline
-                  remote={remote}
-                  t={t}
-                  invertedTranscriptItems={invertedTranscriptItems}
-                  scroll={scroll}
-                  questionNav={questionNav}
-                  paging={paging}
-                  renderTimelineItem={renderTimelineItem}
-                  onChatScroll={onChatScroll}
-                  loadingHistory={loadingHistory}
-                  pullRefresh={pullRefresh}
-                  pullRefreshActive={pullRefreshActive}
-                  showSyncNotice={showSyncNotice}
-                  noticeState={noticeState}
-                />
+            <ChatTopBar
+              title={title}
+              contextLabel={contextLabel}
+              draft={remote.draft}
+              machine={machine}
+              backLabel={t("common.back")}
+              usageLabel={t("chat.usageOpen")}
+              onBack={goBack}
+              onUsage={() => {
+                Keyboard.dismiss();
+                // The sheet shows the session's spend, so read it as it opens: the
+                // figure is only as fresh as the last get_state, and this is the
+                // moment it is being looked at.
+                void remote.refreshSessionUsage();
+                setUsageOpen(true);
+              }}
+              filesLabel={t("files.title")}
+              filesOpen={filesOpen}
+              onFiles={() => {
+                Keyboard.dismiss();
+                setFilesSession(filesOpen ? null : conversationKey);
+              }}
+            />
 
-                {/* Where the sending happens, not just in the header: a user
-                    composing here will not tap a small dot to find out why the
-                    send button does nothing. */}
-                {remote.presence?.control === "standby" && (
-                  <StandbyNotice
-                    holder={remote.presence?.holder ?? null}
-                    onTakeControl={remote.takeControl}
-                  />
-                )}
-
-                <ComposerDock
-                  key={`${conversationKey}:${remote.draft}:${remote.draftWorkspaceId}`}
-                  draftRestoring={restoring}
-                  keyboardHeight={keyboardHeight}
-                  message={message}
-                  setMessage={setMessage}
-                  sessionRefs={sessionRefs}
-                  rememberSessionRef={rememberSessionRef}
-                  attachments={attachments}
-                  setAttachments={setAttachments}
-                  supportsImages={supportsImages}
-                  activeModelLabel={activeModelLabel}
-                  remote={controls}
-                  t={t}
-                  openAttachmentMenu={openAttachmentMenu}
-                  send={sendFromComposer}
-                  atLatest={atLatest}
-                  scrollToLatest={scrollToLatest}
-                  pendingApprovals={pendingApprovals}
-                  approvalSubmitting={approvalSubmitting}
-                  approvalError={approvalError}
-                  decideApproval={decideApproval}
-                  selector={selector}
-                  setSelector={setSelector}
-                  onCompactContext={compactContext.compact}
-                  compactionPending={compactContext.pending}
-                  skillSuggestion={skillRecommendation.suggestion}
-                  skillEvaluating={skillRecommendation.evaluating}
-                  skillInstalling={installingSkill}
-                  onInstallSkill={installSuggestedSkill}
-                  onDismissSkill={dismissSuggestedSkill}
-                />
-              </PausedTimeline>
-            </View>
-
-            {filesOpen && (
-              <SessionFilesPanel
-                key={conversationKey}
-                online={remote.desktopOnline}
-                supported={remote.capabilities.has("session_files_v1")}
-                isWorkspace={
-                  remote.sessions.find(
-                    (session) => session.sessionId === remote.selectedSessionId,
-                  )?.mode === "workspace"
+            {remote.error && connection.level === "connected" && (
+              <ErrorBanner
+                message={remote.error}
+                onDismiss={
+                  remote.connectionPresentation.level === "disconnected" &&
+                    remote.connectionPresentation.supportCode
+                    ? undefined
+                    : remote.clearError
                 }
-                listFiles={remote.listSessionFiles}
-                onOpenFile={(path) => chatFiles.openFileLink(path, true)}
-                onClose={() => setFilesSession(null)}
               />
             )}
 
-            {transferProgress != null && (
-              <View pointerEvents="none" style={styles.transferTrack}>
-                <View
-                  style={[
-                    styles.transferFill,
-                    { width: `${Math.max(2, transferProgress * 100)}%` },
-                  ]}
-                />
+            <View
+              style={[
+                styles.chatContent,
+                keyboardLift > 0 ? { paddingBottom: keyboardLift } : null,
+              ]}
+            >
+              <View
+                style={styles.chatContent}
+                accessibilityElementsHidden={filesOpen}
+                importantForAccessibility={
+                  filesOpen ? "no-hide-descendants" : "auto"
+                }
+              >
+                <PausedTimeline
+                  key={conversationKey}
+                  paused={filesOpen || chatFiles.preview !== null || chatFiles.activeDownload !== null}
+                >
+                  <ChatTimeline
+                    remote={remote}
+                    t={t}
+                    invertedTranscriptItems={invertedTranscriptItems}
+                    scroll={scroll}
+                    questionNav={questionNav}
+                    paging={paging}
+                    renderTimelineItem={renderTimelineItem}
+                    onChatScroll={onChatScroll}
+                    loadingHistory={loadingHistory}
+                    pullRefresh={pullRefresh}
+                    pullRefreshActive={pullRefreshActive}
+                    showSyncNotice={showSyncNotice}
+                    noticeState={noticeState}
+                  />
+
+                  {/* Where the sending happens, not just in the header: a user
+                      composing here will not tap a small dot to find out why the
+                      send button does nothing. */}
+                  {remote.presence?.control === "standby" && (
+                    <StandbyNotice
+                      holder={remote.presence?.holder ?? null}
+                      onTakeControl={remote.takeControl}
+                    />
+                  )}
+
+                  <ComposerDock
+                    key={`${conversationKey}:${remote.draft}:${remote.draftWorkspaceId}`}
+                    draftRestoring={restoring}
+                    keyboardHeight={keyboardHeight}
+                    message={message}
+                    setMessage={setMessage}
+                    sessionRefs={sessionRefs}
+                    rememberSessionRef={rememberSessionRef}
+                    attachments={attachments}
+                    setAttachments={setAttachments}
+                    supportsImages={supportsImages}
+                    activeModelLabel={activeModelLabel}
+                    remote={controls}
+                    t={t}
+                    openAttachmentMenu={openAttachmentMenu}
+                    send={sendFromComposer}
+                    atLatest={atLatest}
+                    scrollToLatest={scrollToLatest}
+                    pendingApprovals={pendingApprovals}
+                    approvalSubmitting={approvalSubmitting}
+                    approvalError={approvalError}
+                    decideApproval={decideApproval}
+                    selector={selector}
+                    setSelector={setSelector}
+                    onCompactContext={compactContext.compact}
+                    compactionPending={compactContext.pending}
+                    skillSuggestion={skillRecommendation.suggestion}
+                    skillEvaluating={skillRecommendation.evaluating}
+                    skillInstalling={installingSkill}
+                    onInstallSkill={installSuggestedSkill}
+                    onDismissSkill={dismissSuggestedSkill}
+                  />
+                </PausedTimeline>
               </View>
-            )}
-          </View>
 
-          <NativeFileActionSheet
-            action={chatFiles.fileAction}
-            onClose={() => chatFiles.setFileAction(null)}
-            onSelect={(action, operation) => {
-              void chatFiles.openOrShare(
-                action.info,
-                action.cachedFile,
-                operation,
-              );
-            }}
-            openLabel={t("attachment.open")}
-            saveLabel={t("attachment.save")}
-            shareLabel={t("attachment.share")}
-          />
+              {filesOpen && (
+                <SessionFilesPanel
+                  key={conversationKey}
+                  online={remote.desktopOnline}
+                  supported={remote.capabilities.has("session_files_v1")}
+                  isWorkspace={
+                    remote.sessions.find(
+                      (session) => session.sessionId === remote.selectedSessionId,
+                    )?.mode === "workspace"
+                  }
+                  listFiles={remote.listSessionFiles}
+                  onOpenFile={(path) => chatFiles.openFileLink(path, true)}
+                  onClose={() => setFilesSession(null)}
+                />
+              )}
 
-          <PreviewModal
-            activeDownload={chatFiles.activeDownload}
-            closePreview={chatFiles.closePreview}
-            dismissPreviewThen={chatFiles.dismissPreviewThen}
-            downloadOriginal={chatFiles.downloadOriginal}
-            flushPendingPreviewAction={chatFiles.flushPendingPreviewAction}
-            openLinkedFile={chatFiles.openLinkedFile}
-            popPreview={chatFiles.popPreview}
-            previews={chatFiles.previews}
-            t={t}
-          />
+              {transferProgress != null && (
+                <View pointerEvents="none" style={styles.transferTrack}>
+                  <View
+                    style={[
+                      styles.transferFill,
+                      { width: `${Math.max(2, transferProgress * 100)}%` },
+                    ]}
+                  />
+                </View>
+              )}
+            </View>
 
-          <DownloadProgressModal
-            activeDownload={chatFiles.activeDownload}
-            activeDownloadFraction={chatFiles.activeDownloadFraction}
-            cancelActiveDownload={chatFiles.cancelActiveDownload}
-            flushPendingDownloadModal={chatFiles.flushPendingDownloadModal}
-            onDownloadModalShow={chatFiles.onDownloadModalShow}
-            t={t}
-          />
+            <NativeFileActionSheet
+              action={chatFiles.fileAction}
+              onClose={() => chatFiles.setFileAction(null)}
+              onSelect={(action, operation) => {
+                void chatFiles.openOrShare(
+                  action.info,
+                  action.cachedFile,
+                  operation,
+                );
+              }}
+              openLabel={t("attachment.open")}
+              saveLabel={t("attachment.save")}
+              shareLabel={t("attachment.share")}
+            />
 
-          <ModelSelectorSheet
-            selector={selector}
-            setSelector={setSelector}
-            remote={remote}
-            t={t}
-          />
+            <PreviewModal
+              activeDownload={chatFiles.activeDownload}
+              closePreview={chatFiles.closePreview}
+              dismissPreviewThen={chatFiles.dismissPreviewThen}
+              downloadOriginal={chatFiles.downloadOriginal}
+              flushPendingPreviewAction={chatFiles.flushPendingPreviewAction}
+              openLinkedFile={chatFiles.openLinkedFile}
+              popPreview={chatFiles.popPreview}
+              previews={chatFiles.previews}
+              t={t}
+            />
 
-          <SessionUsageSheet
-            title={title}
-            usage={remote.sessionUsage}
-            visible={usageOpen}
-            onClose={() => setUsageOpen(false)}
-            t={t}
-          />
-        </KeyboardAvoidingView>
-      </SafeAreaView>
-    </MarkdownImageLoaderContext>
+            <DownloadProgressModal
+              activeDownload={chatFiles.activeDownload}
+              activeDownloadFraction={chatFiles.activeDownloadFraction}
+              cancelActiveDownload={chatFiles.cancelActiveDownload}
+              flushPendingDownloadModal={chatFiles.flushPendingDownloadModal}
+              onDownloadModalShow={chatFiles.onDownloadModalShow}
+              t={t}
+            />
+
+            <ModelSelectorSheet
+              selector={selector}
+              setSelector={setSelector}
+              remote={remote}
+              t={t}
+            />
+
+            <SessionUsageSheet
+              title={title}
+              usage={remote.sessionUsage}
+              visible={usageOpen}
+              onClose={() => setUsageOpen(false)}
+              t={t}
+            />
+            {/* Last of the surfaces so the viewer stacks above a file preview it
+                was opened from. */}
+            <ImageViewer onClose={() => setViewedImage(null)} target={viewedImage} />
+          </KeyboardAvoidingView>
+        </SafeAreaView>
+      </MarkdownImageLoaderContext>
+    </ImageViewerContext>
   );
 }

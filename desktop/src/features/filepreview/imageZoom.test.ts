@@ -38,7 +38,10 @@ describe("imageZoom", () => {
 
     it("clamps below MIN_SCALE and above MAX_SCALE", () => {
       expect(clampScale(0.5)).toBe(MIN_SCALE);
-      expect(clampScale(10)).toBe(MAX_SCALE);
+      expect(clampScale(MAX_SCALE + 4)).toBe(MAX_SCALE);
+      // The ceiling has to clear 1:1 for a very large image, whose fit is small
+      // (8000px wide in a 1200px window fits at 0.15).
+      expect(MAX_SCALE * 0.15).toBeGreaterThan(1);
     });
 
     it("falls back to MIN_SCALE for non-finite values", () => {

@@ -244,13 +244,13 @@ alt screen、鼠标模式与帧时钟 `[F:tui/src/workbench/run.rs:92]`；旧内
 | 帧 | 恰好 `h` 行的一整帧：页眉（+细线）、主体、输入带、activity、状态、提示；浮层整张覆盖 | `[F:tui/src/workbench/screen.rs:29]`、`[S:workbench-chat.png]` |
 | 终端会话 | alt screen、括号粘贴、Kitty 键盘、鼠标模式随 alt screen 一起写入并在 stop/崩溃时写回 | `[F:tui/src/terminal.rs:233]`、`[F:tui/src/workbench/run.rs:92]`、`[V]`（运行中 `mouse_any_flag=1`，退出后 `0`） |
 | 帧字节 | 每行都用绝对定位（`CSI row;1H`），帧从不让光标前进；底行换行会把 alt screen 顶上去一行、所有点击整体错一格 | `[F:tui/src/workbench/run.rs:368]` |
-| 鼠标 | SGR 1006 解析（`Press/Release/Drag/Move/WheelUp/WheelDown`），绘制与命中共用一张 hit map；可点输入框/聊天/分隔条/页签/行/选择器行；聊天与聚焦面板可滚轮；分隔条可拖（边缘跟着指针走，`30..48` 钳住）；选择器点行即应用；只开 `?1000h?1002h?1006h`（不开 hover） | `[F:tui/src/workbench/mouse.rs:56]`、`[F:tui/src/workbench/mod.rs:534]`、`[V]`（点 `用量` 切了面板）、`[S:workbench-panel-usage.png]`、`[S:workbench-drag-fixed.png]` |
-| 布局 | `NARROW_WIDTH = 88`、`SMALL_HEIGHT = 24`、`SIDEBAR_DEFAULT/MIN/MAX = 36/30/48`、聊天左右各 2 格内边距；绘制与命中用同一份 `Metrics` | `[F:tui/src/workbench/layout.rs:65]` |
-| 侧栏 | 五个页签 `待办 任务 会话 用量 技能`，≥88 列常驻，以下 `ctrl+b` 开全屏面板；分隔条拖 30..48 并在松手后持久化 | `[F:tui/src/workbench/panels.rs:18]`、`[S:workbench-panel-full-60x20.png]` |
+| 鼠标 | SGR 1006 解析（`Press/Release/Drag/Move/WheelUp/WheelDown`），绘制与命中共用一张 hit map；可点输入框/聊天/分隔条/页签/行/选择器行；聊天与聚焦面板可滚轮；分隔条可拖（边缘跟着指针走，`30..60` 钳住）；选择器点行即应用；只开 `?1000h?1002h?1006h`（不开 hover） | `[F:tui/src/workbench/mouse.rs:56]`、`[F:tui/src/workbench/mod.rs:534]`、`[V]`（点 `用量` 切了面板）、`[S:workbench-panel-usage.png]`、`[S:workbench-drag-fixed.png]` |
+| 布局 | `NARROW_WIDTH = 88`、`SMALL_HEIGHT = 24`、`SIDEBAR_DEFAULT/MIN/MAX = 36/30/60`、聊天左右各 2 格内边距；绘制与命中用同一份 `Metrics` | `[F:tui/src/workbench/layout.rs:65]` |
+| 侧栏 | 五个页签 `待办 任务 会话 用量 技能`，≥88 列常驻，以下 `ctrl+b` 开全屏面板；分隔条拖 30..60 并在松手后持久化 | `[F:tui/src/workbench/panels.rs:18]`、`[S:workbench-panel-full-60x20.png]` |
 | 面板数据 | 待办读 `events.jsonl`（✔/◉/○/✖ + 优先级）、技能读 `get_state` + 两个技能目录、任务读只读 `tasks.db`、会话读 `list_sessions`、用量读 `get_state` | `[F:tui/src/workbench/local.rs:92]`、`[F:tui/src/workbench/live.rs:201]`、`[S:workbench-panel-todo.png]`、`[S:workbench-panel-skills.png]` |
 | 启动台 | 字标 + 主张句、带框输入框、整块上下居中、参数 chip（工作区/模型/强度/审批）；这一块自己不列按键行（底部提示行负责），`/` `@` `#` 写在 placeholder 上 | `[F:tui/src/workbench/launchpad.rs]`、`[S:workbench-launchpad.png]` |
 | 状态 / activity | `模型 · 强度 · 权限 | 进度条 + ctx 用量/总量 + % · ≈¥`；activity 为 `转轮 + 动词 + 用时 + 工具数 + tok/s`，另有 `缓存 N%` | `[F:tui/src/workbench/screen.rs:468]`、`[F:tui/src/workbench/screen.rs:430]`、`[S:workbench-chat.png]` |
-| 主题 | 六套 256 色调色板（`dark`、`light`、`one-dark`、`one-light`、`high-contrast`、`dracula`），沿用内联目录的 id，因为 `themeId` 是两个界面共用的一把键；`/theme` 打开选择器，高亮移动即预览，`esc` 恢复，只有 `enter` 持久化 | `[F:tui/src/workbench/theme.rs:54]`、`[F:tui/src/workbench/picker.rs:312]`、`[S:workbench-picker-theme.png]`、`[S:workbench-light-120x38.png]` |
+| 主题 | 22 套 256 色调色板：工作台一开始的六套（`dark`、`light`、`one-dark`、`one-light`、`high-contrast`、`dracula`）加上桌面端那一族（`ayu`、`catppuccin`、`everforest`、`gruvbox`、`kanagawa`、`nightfox`、`nord`、`rose-pine`、`solarized`、`tokyo-night`、`vesper`）及其中五套的 `-light` 版本；沿用内联目录的 id，因为 `themeId` 是两个界面共用的一把键，色相取自 `desktop/src/theme/palettes.json`；`/theme` 打开选择器，高亮移动即预览，`esc` 恢复，只有 `enter` 持久化 | `[F:tui/src/workbench/theme.rs:54]`、`[F:tui/src/themes.rs:236]`、`[F:tui/src/workbench/picker.rs:312]`、`[S:workbench-picker-theme.png]`、`[S:workbench-light-120x38.png]` |
 | 选择器 | `/model`、`/theme`、`/sessions` 共用同一张浮层：搜索行、分组标题、当前值上的 `✓`、模型选择器的强度滑杆，点击行会**同时**移动高亮并应用 | `[F:tui/src/workbench/picker.rs]`、`[F:tui/src/workbench/screen.rs:721]`、`[S:workbench-picker-model.png]`、`[S:workbench-picker-sessions.png]` |
 | 命令面板 / 帮助 | `/` 过滤 12 条带描述的命令；`/model`、`/theme`、`/sessions` 打开各自的选择器，另有五条仍无处理函数；`?` 键位表；两者都整张覆盖帧 | `[F:tui/src/workbench/mod.rs:904]`、`[F:tui/src/workbench/run.rs:249]`、`[S:workbench-palette.png]`、`[S:workbench-help.png]` |
 | 审批 | 挂起的审批接管 `y`/`n`；activity 行写出工具名与摘要 | `[F:tui/src/workbench/run.rs:189]`、`[F:tui/src/workbench/live.rs:586]` |
@@ -286,7 +286,7 @@ alt screen、鼠标模式与帧时钟 `[F:tui/src/workbench/run.rs:92]`；旧内
 | 8 | 状态栏：分支、缓存率、TPS、标题 | 有 `[S:dsh_chat]` | 模型·强度·权限、进度条+ctx、成本、`缓存 N%`；**分支从未读取**（`branch: String::new()`），TPS 仅运行中 | partial | partial | P0 |
 | 9 | Activity 行（动词+用时+工具+速率） | ActivityLine `[R]` | `转轮 + 动词 + 用时 + 工具数 + tok/s`，空闲静止 | equivalent | partial | — |
 | 10 | 覆盖全部命令的可过滤面板 | `/` 浮层 + `?` 两栏 | `/` 过滤 12 条带描述；`/model`、`/theme`、`/sessions` 打开选择器；另有 5 条仍回 `Unknown command` `[V]` | partial | partial | P0 |
-| 11 | 256 色主题套件 | 主题 + 热切换 `[R]` | 六套调色板，`/theme` 选择器实时预览、`esc` 恢复、`enter` 持久化 `[S:workbench-picker-theme.png]`、`[S:workbench-light-120x38.png]` | equivalent | equivalent | — |
+| 11 | 256 色主题套件 | 主题 + 热切换 `[R]` | 22 套调色板（原有六套加桌面端那一族），`/theme` 选择器实时预览、`esc` 恢复、`enter` 持久化 `[S:workbench-picker-theme.png]`、`[S:workbench-light-120x38.png]` | equivalent | equivalent | — |
 | 12 | 带构成配色的上下文条 | 有 `[R]` | 单色强调色填充 | partial | partial | P1 |
 | 13 | 可点击时间轴轨道 | 有 `[R]` | 无 | missing | missing | P1 |
 | 14 | 左右两栏 diff，单侧占满 | 有 `[R]` | 单栏 unified diff | partial | partial | P1 |

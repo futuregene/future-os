@@ -26,19 +26,26 @@ implementation may extend it, but may not change its meaning.
    sessions.
 4. Sidebar with 2 real panels: recent conversations (name, workspace, age) and
    the same conversations filed by workspace (pinned / workspaces / chats).
-   A third, **文件**, browses the session workspace: one level at a time, a
-   directory read when it opens, `↑`/`↓` to walk, `←`/`→` to close/open, `enter`
-   to open a directory or preview a file. Its rows are the same `HitMap` rows
-   every other panel registers, so a click opens what it landed on.
+   **文件** is not a third tab: it is the session workspace as its own overlay
+   (`/files`, or the 文件 button in the header; no chord — the ctrl-only map has
+   no letter left for it) — one level at a
+   time, a directory read when it opens, `↑`/`↓` to walk, `enter` to open a
+   directory or preview a file, `backspace` to close a directory or walk up to
+   the one holding the row. It is scoped to the conversation on screen, the way
+   `/git` is, and re-reads when the session moves. Its rows are the same
+   `HitMap` rows the rail registers, so a click opens what it landed on.
 5. Real metrics in the status bar: model · effort · cwd · git branch · context
    gauge · tokens · cost / cache.
 6. `/` command palette (with descriptions, Tab completion), `?` help overlay,
    `/` filter, ↑↓ history.
-7. Themes: six built-in 256-colour palettes — `dark`, `light`, `one-dark`,
-   `one-light`, `high-contrast`, `dracula` — selectable with `/theme`, which
-   opens a picker that previews each one as the highlight moves. The ids are the
-   inline TUI's catalogue (`crate::themes::THEME_SPECS`), because
-   `settings.json` → `themeId` is one key for both surfaces.
+7. Themes: built-in 256-colour palettes — the six the contract shipped (`dark`,
+   `light`, `one-dark`, `one-light`, `high-contrast`, `dracula`) plus the
+   desktop's palette family (`ayu`, `catppuccin`, `everforest`, `gruvbox`,
+   `kanagawa`, `nightfox`, `nord`, `rose-pine`, `solarized`, `tokyo-night`,
+   `vesper`, and `-light` renditions for five of them) — selectable with
+   `/theme`, which opens a picker that previews each one as the highlight moves.
+   The ids are the inline TUI's catalogue (`crate::themes::THEME_SPECS`),
+   because `settings.json` → `themeId` is one key for both surfaces.
 8. **The terminal UI, and it is `future tui`**: the workbench has its own
    full-screen render loop and `future tui` starts it. The previous inline UI is
    **deleted**, not deprecated — its code, its page and its `--legacy` flag are
@@ -75,6 +82,7 @@ tui/src/workbench/screen.rs     // full-screen composition: header/body/sidebar/
 tui/src/workbench/panels.rs     // rendering of the 2 sidebar panels (pure functions over a row model)
 tui/src/workbench/picker.rs     // the /model, /thinking, /mode, /workspace, /theme, /sessions and /lang list overlay
 tui/src/workbench/files.rs      // the 文件 panel's tree, and what a path previews as
+tui/src/workbench/syntax.rs     // the preview box's code colouring: language, tokens, runs
 tui/src/workbench/image_view.rs // an image as half blocks: fit, zoom, pan
 tui/src/workbench/state.rs      // WorkbenchData / TodoItem / SessionRow / UsageData
 tui/src/workbench/demo.rs       // demo data (for screenshots/self-tests; does not connect to the agent)
@@ -117,11 +125,11 @@ Content — a conversation, a session title, a path — is never translated.
 ├───────────────────────────────────────────────┴──────────────────────────────┤
 │ row h-3        ACTIVITY: ⠋ 思考 3s · 2 工具 · 42 tok/s · 缓存 96%            │
 │ row h-2        STATUS: model · effort · 审批模式 · ctx bar · ≈¥0.01          │
-│ row h-1        HINT: Esc 聊天 · ctrl+b 侧栏 · / 命令 · ? 帮助                │
+│ row h-1        HINT: Esc 聊天 · ctrl+s 侧栏 · / 命令 · ? 帮助                │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Width < 88: the sidebar collapses to 0; `ctrl+b` opens a full-screen overlay
+- Width < 88: the sidebar collapses to 0; `ctrl+s` opens a full-screen overlay
   panel; the divider column becomes a 2-column timeline rail.
 - Height < 24: HEADER is squeezed to 1 row (wordmark inline), INPUT to 2 rows,
   ACTIVITY is hidden.
@@ -134,7 +142,7 @@ Content — a conversation, a session title, a path — is never translated.
 | Semantic | dark | light | one-dark | one-light | high-contrast | dracula | Use |
 |---|---|---|---|---|---|---|
 | bg | 233 | 254 | 236 | 231 | 16 | 236 | canvas |
-| panel | 235 | 252 | 237 | 254 | 17 | 237 | sidebar / menu background (the composer keeps the canvas) |
+| panel | 235 | 252 | 237 | 254 | 17 | 237 | menu, picker and overlay fill (the rail, the chat and the composer keep the canvas) |
 | border | 238 | 246 | 240 | 250 | 250 | 239 | borders, dividers |
 | fg | 252 | 236 | 249 | 236 | 231 | 255 | body text |
 | muted | 245 | 243 | 243 | 245 | 246 | 243 | secondary notes |
@@ -145,7 +153,15 @@ Content — a conversation, a session title, a path — is never translated.
 | red | 203 | 124 | 168 | 160 | 196 | 203 | error, danger |
 | purple | 141 | 91 | 176 | 91 | 213 | 212 | sub-agent / skills |
 
-The four newer palettes mirror `crate::themes`' colours wherever the inline
+The table above is the six palettes the contract froze, and those numbers are
+still binding for those ids (the acceptance screenshots were taken against
+them). The palettes added afterwards — the desktop's own family and the light
+renditions of five of them — are the same `Palette` shape in
+`tui/src/workbench/theme.rs` (`PALETTES`, one entry per id in
+`crate::themes::THEME_SPECS`), with their hues taken from
+`desktop/src/theme/palettes.json` and their backgrounds stepped the same way.
+
+Every palette mirrors `crate::themes`' colours wherever the inline
 `Theme` has the same semantic (`accent`, `fg`, `border`, `dim`, `error`,
 `success`, `md_link`, `md_heading`, `md_code`); `bg` and `panel` are the
 workbench's own, because a full-screen canvas paints an explicit background
@@ -259,27 +275,44 @@ the row under the pointer rather than one beside it.
 
 ### Keyboard
 
-Keep the existing global bindings; add/override:
-`ctrl+m` model chooser; `ctrl+t` thinking-effort chooser; `ctrl+s` approval-mode
-chooser; `ctrl+l` workspace chooser; `ctrl+1` / `ctrl+2` / `ctrl+3` the rail's
-three tabs; `ctrl+v` read the clipboard (an image becomes a draft attachment,
-text is pasted); `alt+v` preview the newest attached image;
-`ctrl+b` sidebar open/focus/close (the rail's own `›` edge button does the same
-with one click, and leaves a `‹` in the same column when the rail is closed);
-`tab` focus within a panel; `shift+tab`
-reverse; `ctrl+q` collapse todos; `alt+z` enlarge the sidebar; `/` command
-palette; `?` help; `esc` close one layer at a time. A focused rail spends its
-last row on the keys it answers (`↑↓ 选择 · ⏎ 打开 · ←→ 页签`).
+**One prefix: `ctrl`.** Every global default is a `ctrl` chord (or an arrow with
+`shift`): `ctrl+o` model chooser; `ctrl+t` thinking-effort chooser; `ctrl+l`
+language chooser; `ctrl+g` the git browser; `ctrl+s` sidebar open/focus/close
+(the rail's own `›` edge button does the same with one click, and leaves a `‹` in
+the same column when the rail is closed); `ctrl+f` refresh; `ctrl+q` queue;
+`ctrl+v` read the clipboard (an image becomes a draft attachment, text is
+pasted); `tab` focus within a panel; `shift+tab` reverse; `/` command palette;
+`?` help; `esc` close one layer at a time.
+
+No default is `alt` — on macOS Option composes a character unless the reader
+turns on "Use Option as Meta" — and the letters left over after the collisions
+run out, so the remaining actions have **no chord**: approval mode (`/mode`),
+workspaces (`/workspace`), copy (`/copy`), mouse capture (`/mouse`), preferences
+(`/preferences`), the newest attachment (`/preview`), the files panel
+(`/files`), the three rail/files panels (a click, or `shift+←`/`shift+→`), and
+reduced motion (the preferences overlay). The help overlay prints `—` in the key
+column for those. The collisions are the reason: a terminal sends Backspace,
+Tab, `\n` and Enter for `ctrl+h`/`i`/`j`/`m`; `ctrl+a`/`ctrl+b` are the `screen`
+and `tmux` prefixes; `ctrl+z` is suspend; `ctrl+u`/`k`/`w`/`y` are the
+composer's own editing keys. `shift+←` / `shift+→` walk
+the rail's two tabs from anywhere — they show a hidden rail and take the keys —
+and `shift+↑` / `shift+↓` switch to the previous / next conversation. A focused
+rail spends its last row on exactly those two chords
+(`shift+←→ 页签 · shift+↑↓ 切换会话`): `↑↓` alone only moves the list cursor and
+`⏎` only opens the row it stands on, so the row that says how to *change* the
+conversation is the one thing the rail cannot leave to guesswork. The files
+panel is its own box and spends a row on its own set
+(`↑↓ 选择 · ⏎ 打开 · ⌫ 上一层 · r 刷新 · esc 关闭`).
 
 No **default** is a function key: `F1`–`F12` need an `Fn` modifier on a laptop
-and are absent on a compact keyboard, so those actions default to `alt` + a
-letter (`alt+h` help, `alt+r` refresh, `alt+c` copy, `alt+m` mouse, `alt+l`
-linear reading, `alt+a` reduced motion). Rebinding to an F key stays supported.
+and are absent on a compact keyboard. Rebinding to an F key or to `alt` stays
+supported — only the shipped defaults are `ctrl`.
 The help overlay lists `ACTIONS` **grouped** (chats / choices / panels /
 interface), then the non-rebindable inline keys, then the commands.
 
-A held `shift+←`/`shift+→` is one switch, not one per key repeat: the key returns
-`WbAction::SessionStep(delta)`, the driver reads the whole input burst andapplies the net step once through `Workbench::step_session`.
+A held `shift+↑`/`shift+↓` is one switch, not one per key repeat: the key returns
+`WbAction::SessionStep(delta)`, the driver reads the whole input burst and
+applies the net step once through `Workbench::step_session`.
 
 ### Pictures in a text surface
 
@@ -295,6 +328,21 @@ desktop link) and happens once per file, downscaled to 1024 px on its long edge:
 a zoom redraws pixels already in hand. Text previews are read bounded
 (`MAX_TEXT_PREVIEW_BYTES`) and cut on a character boundary. A file that cannot be
 shown says why in the box rather than opening empty.
+
+A text preview is **coloured by language**. `syntax.rs` classifies every line
+into keywords, types, called names, strings, numbers, comments, attributes and
+keys; it names tokens, never colours, and `theme::Palette::token` decides what a
+token looks like — so highlighted code follows the theme in force instead of
+arriving in a dark highlighter's palette on a light canvas. The classification
+happens once, when the file is opened, and each line travels with its runs.
+
+It is deliberately not a parser. What a reader needs is the visible shape of a
+line: comments, literals (including Rust raw strings, Python docstrings and
+JavaScript template literals that run past their line) and declarations, at the
+cost of one forward walk per line and one bit of state between lines. An
+unrecognised extension is painted exactly as it came rather than guessed at.
+Tabs are expanded to four spaces: a literal `\t` in a painted row would move the
+cursor to the terminal's own tab stop and tear the frame's columns.
 
 ---
 
@@ -328,7 +376,7 @@ pub struct WorkbenchData {
 pub enum WbEvent { Key(KeyEvent), Mouse(MouseEvent), Resize(u16,u16), Tick }
 pub enum WbAction {
     Submit(String), Command(String), Scroll(i32), LoadOlder,
-    SwitchSession(String), SetModel(String), SetThinking(String),
+    SwitchSession(String), DeleteSession(String), SetModel(String), SetThinking(String),
     SetApproval(String), SelectWorkspace(String),
     SetTheme(String), NewSession,
     SetPanel(PanelId), ResizeSidebar(u16), FocusPane(PaneId),

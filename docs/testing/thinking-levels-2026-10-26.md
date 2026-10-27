@@ -1,5 +1,11 @@
 # thinkingLevels 成为唯一思考档位来源（2026-10-26）
 
+> **2026-10-27 补充**：档位词表不再是“约定”。当模型的访问路径不接受我们的档位拼写时，
+> 模型用 `compat.reasoningEffort` 声明它实际接受的值，档位按单调规则映射上去
+> （例如 DeepSeek V4 的 `medium → 50`）。`thinkingLevels` 因此读作“模型提供的档位”，
+> 未声明词表的模型行为与本篇完全一致。见
+> [reasoning-effort-vocabulary-2026-10-27.md](reasoning-effort-vocabulary-2026-10-27.md)。
+
 一次性实现与验证记录。设计结论：**`thinkingLevels` 就是 wire 值列表**；`default` 是隐式的
 第一档，表示“不发送任何 thinking/effort 参数”；`off` 表示显式关闭；其余值原样发送。
 `compat.reasoningEffortValues`、`thinkingLevelMap`、`supportsReasoningEffort`、

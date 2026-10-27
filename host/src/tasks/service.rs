@@ -79,6 +79,13 @@ pub struct RunView {
     pub prompt_version: Option<i64>,
     pub result_summary: Option<String>,
     pub error_message: Option<String>,
+    /// Why the run ended (`answer`, `empty_answer`, `cancelled`, …), so a run
+    /// that produced nothing is not just an empty string with `completed` on
+    /// it. Absent for rows written before the ledger recorded it.
+    pub finish_reason: Option<String>,
+    /// The one-line trace of where the output went, kept for runs that produced
+    /// nothing usable.
+    pub finish_note: Option<String>,
     /// The conversation this run used was deleted after it settled, so the
     /// panel shows the run without an "open conversation" link and says why.
     pub session_deleted: bool,
@@ -98,6 +105,8 @@ fn run_view(run: future_tasks::TaskRun) -> RunView {
         prompt_version: run.prompt_version,
         result_summary: run.result_summary,
         error_message: run.error_message,
+        finish_reason: run.finish_reason,
+        finish_note: run.finish_note,
         session_deleted: run.session_deleted,
     }
 }
@@ -986,6 +995,8 @@ mod tests {
                 finished_at: Some(2),
                 error_message: Some("agent unreachable".into()),
                 session_deleted: false,
+                finish_reason: None,
+                finish_note: None,
             })
             .expect("insert run");
 

@@ -113,6 +113,8 @@ async fn output(args: &[String], out: &Output) -> Result<()> {
                 "sessionDeleted": run.session_deleted,
                 "finishedAt": run.finished_at,
                 "summary": run.result_summary,
+                "finishReason": run.finish_reason,
+                "finishNote": run.finish_note,
                 "text": text,
                 // Where the text came from: the run's own saved answer, or the
                 // conversation (only for a run recorded before it was saved).
@@ -1366,11 +1368,19 @@ fn wait_for_run(
                             "startedAt": run.started_at,
                             "finishedAt": run.finished_at,
                             "errorMessage": run.error_message,
+                            "finishReason": run.finish_reason,
+                            "finishNote": run.finish_note,
                         }))
                         .map_err(|e| e.to_string())?,
                     );
                 } else {
                     out.log(&format!("Run {} [{:?}]", run.id, run.status));
+                    if let Some(reason) = &run.finish_reason {
+                        out.log(&format!("finish: {reason}"));
+                    }
+                    if let Some(note) = &run.finish_note {
+                        out.log(note);
+                    }
                     if let Some(s) = &run.result_summary {
                         out.log(s);
                     }
@@ -1416,6 +1426,11 @@ fn runs(args: &[String], out: &Output) -> Result<()> {
                     "promptVersion": r.prompt_version,
                     "resultSummary": r.result_summary,
                     "errorMessage": r.error_message,
+                    // Why the run ended, and the one-line trace kept when it
+                    // produced nothing: `completed` plus an empty summary used
+                    // to be all an idle run left behind.
+                    "finishReason": r.finish_reason,
+                    "finishNote": r.finish_note,
                     // A verdict recorded with `future task feedback` has to be
                     // readable back, or recording it is a write-only gesture.
                     "feedback": r.feedback,
@@ -1442,12 +1457,16 @@ fn runs(args: &[String], out: &Output) -> Result<()> {
             .map(|f| format!(" [{f}]"))
             .unwrap_or_default();
         out.log(&format!(
-            "{:<14} {:<10} {:<10}{:<10} {:<18} {}",
+            "{:<14} {:<10} {:<10}{:<10} {:<18} {}{}",
             r.id,
             kind,
             status,
             verdict,
             format_ms(r.started_at, future_tasks::task_timezone(&t)),
+            r.finish_reason
+                .as_deref()
+                .map(|reason| format!("[{reason}] "))
+                .unwrap_or_default(),
             r.error_message.as_deref().unwrap_or("")
         ));
     }
@@ -2105,6 +2124,8 @@ mod tests {
                 finished_at: Some(2),
                 error_message: None,
                 session_deleted: false,
+                finish_reason: None,
+                finish_note: None,
             })
             .unwrap();
 
@@ -2696,6 +2717,8 @@ mod tests {
                 finished_at: Some(1_700_000_060_000),
                 error_message: None,
                 session_deleted: false,
+                finish_reason: None,
+                finish_note: None,
             })
             .unwrap();
 
@@ -2966,6 +2989,8 @@ mod tests {
                 finished_at: Some(started + 1),
                 error_message: None,
                 session_deleted: false,
+                finish_reason: None,
+                finish_note: None,
             })
             .unwrap();
 
@@ -3036,6 +3061,8 @@ mod tests {
                 finished_at: Some(now_ms() + 60_001),
                 error_message: Some("agent unreachable".into()),
                 session_deleted: false,
+                finish_reason: None,
+                finish_note: None,
             })
             .unwrap();
         let (out, captured) = Output::memory();
@@ -3075,6 +3102,8 @@ mod tests {
                 finished_at: Some(1_700_000_001_000),
                 error_message: Some("overlap".into()),
                 session_deleted: false,
+                finish_reason: None,
+                finish_note: None,
             })
             .unwrap();
 
@@ -3112,6 +3141,65 @@ mod tests {
         runs(&args(&["r"]), &out).unwrap();
         let printed = text(captured.out);
         assert!(printed.contains("[bad]"), "{printed}");
+    }
+
+    /// Why a run ended has to be readable from the ledger, not inferred from a
+    /// blank `resultSummary`. A run that answered nothing is the case that cost
+    /// a whole investigation: `completed` plus an empty summary said nothing,
+    /// and the conversation had already been deleted.
+    #[tokio::test]
+    async fn runs_report_why_a_run_produced_nothing() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let (out, _captured) = Output::memory();
+        add(
+            &args(&["--name", "empty", "--prompt", "p", "--cwd", "/tmp"]),
+            &out,
+        )
+        .unwrap();
+        let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
+        let task = store.find_task_by_name("empty").unwrap().unwrap();
+        store
+            .insert_run(&future_tasks::TaskRun {
+                id: future_tasks::new_run_id(),
+                task_id: task.id.clone(),
+                kind: future_tasks::RunKind::Main,
+                origin: future_tasks::RunOrigin::Schedule,
+                actor: None,
+                due_at: Some(1_700_000_000_000),
+                status: future_tasks::RunStatus::Failed,
+                thread_id: None,
+                session_id: None,
+                run_id: None,
+                prompt_version: Some(3),
+                result_summary: None,
+                feedback: None,
+                feedback_note: None,
+                started_at: Some(1_700_000_000_000),
+                finished_at: Some(1_700_000_071_000),
+                error_message: Some("[EMPTY_ANSWER] the run finished without any answer".into()),
+                session_deleted: true,
+                finish_reason: Some(future_tasks::finish_reason::EMPTY_ANSWER.to_string()),
+                finish_note: Some("answer: 0 chars · last tool call: shell".into()),
+            })
+            .unwrap();
+
+        let (out, captured) = Output::memory();
+        runs(&args(&["empty", "--json"]), &out).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text(captured.out)).unwrap();
+        assert_eq!(parsed[0]["status"], "failed");
+        assert_eq!(parsed[0]["finishReason"], "empty_answer");
+        assert_eq!(
+            parsed[0]["finishNote"],
+            "answer: 0 chars · last tool call: shell"
+        );
+        assert_eq!(parsed[0]["resultSummary"], serde_json::Value::Null);
+
+        let (out, captured) = Output::memory();
+        runs(&args(&["empty"]), &out).unwrap();
+        let printed = text(captured.out);
+        assert!(printed.contains("[empty_answer]"), "{printed}");
+        assert!(printed.contains("[EMPTY_ANSWER]"), "{printed}");
     }
 
     #[tokio::test]
@@ -3163,6 +3251,8 @@ mod tests {
                 finished_at: Some(started + 1),
                 error_message: None,
                 session_deleted: false,
+                finish_reason: None,
+                finish_note: None,
             })
             .unwrap();
 
@@ -3209,6 +3299,8 @@ mod tests {
                 finished_at: None,
                 error_message: None,
                 session_deleted: false,
+                finish_reason: None,
+                finish_note: None,
             })
             .unwrap();
 
@@ -3292,6 +3384,8 @@ mod tests {
                 finished_at: Some(2),
                 error_message: None,
                 session_deleted: false,
+                finish_reason: None,
+                finish_note: None,
             })
             .unwrap();
         let (out, _c) = Output::memory();
@@ -3550,6 +3644,8 @@ mod tests {
                 finished_at: Some(2_000),
                 error_message: None,
                 session_deleted: false,
+                finish_reason: None,
+                finish_note: None,
             })
             .unwrap();
 
@@ -3670,6 +3766,8 @@ mod tests {
             finished_at: Some(2_000),
             error_message: None,
             session_deleted: false,
+            finish_reason: None,
+            finish_note: None,
         };
         store.insert_run(&run).unwrap();
         let full = "x".repeat(RUN_OUTPUT_CHARS);
@@ -3762,6 +3860,8 @@ mod tests {
             finished_at: None,
             error_message: None,
             session_deleted: false,
+            finish_reason: None,
+            finish_note: None,
         };
         // The run asked for is the earlier one and has no saved answer, so the
         // text comes from the conversation — which the later run also wrote to.

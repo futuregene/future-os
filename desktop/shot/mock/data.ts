@@ -839,6 +839,8 @@ export const workspaceFiles: Record<string, Array<{ name: string; path: string; 
   ],
   [`${HOME}/Research/dopamine-decision/figures`]: [
     { name: "plot-effect-size.py", path: `${HOME}/Research/dopamine-decision/figures/plot-effect-size.py`, isDir: false, size: 486, modified: now - 40 * minute },
+    { name: "effect-size.png", path: `${HOME}/Research/dopamine-decision/figures/effect-size.png`, isDir: false, size: 62_400, modified: now - 4 * minute },
+    { name: "forest-plot.png", path: `${HOME}/Research/dopamine-decision/figures/forest-plot.png`, isDir: false, size: 88_100, modified: now - 2 * minute },
   ],
   [`${HOME}/Research/dopamine-decision/notes`]: [
     { name: "compare.md", path: `${HOME}/Research/dopamine-decision/notes/compare.md`, isDir: false, size: 4_180, modified: now - 3 * minute },

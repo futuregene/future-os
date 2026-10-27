@@ -2,16 +2,19 @@
  * Pure, DOM-free helpers for desktop image zoom.
  *
  * Design constraints:
- * - Scale is clamped to a minimum that fits the image inside the container and
- *   a generous maximum for reading dense screenshots. No value below "fit" is
- *   allowed, so the image never shrinks smaller than the available space.
+ * - Scale is relative to "fit": 1 draws the picture exactly inside the
+ *   container, and 1/fit is its own pixel size. It is clamped to a minimum of 1
+ *   (the picture never shrinks past the space it was sized for) and a maximum
+ *   high enough that a very large screenshot can still be brought past 1:1 —
+ *   `fit` for an 8000px-wide image in a 1200px window is 0.15, so the ceiling
+ *   has to clear 1/0.15.
  * - Panning is bounded so the image can never be dragged completely offscreen.
  * - Zooming uses the cursor as the anchor point: the pixel under the pointer
  *   stays under the pointer as scale changes.
  */
 
 export const MIN_SCALE = 1;
-export const MAX_SCALE = 6;
+export const MAX_SCALE = 12;
 
 export interface Size {
   width: number;

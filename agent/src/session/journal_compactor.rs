@@ -10,6 +10,8 @@ use std::sync::{mpsc, Arc};
 // uncommitted build between pages and joins before releasing the store.
 enum CompactionRequest {
     Compact(String, String, PendingCompaction),
+    /// The one bounded startup pass: the runs no completion notification covered.
+    CatchUp,
     Stop,
     #[cfg(test)]
     Barrier(mpsc::SyncSender<()>),
@@ -45,12 +47,29 @@ impl CompletedRunCompactor {
                                 tracing::warn!(%error, %session, %run, "could not compact completed journal; raw rows retained without retry");
                             }
                         }
+                        Ok(CompactionRequest::CatchUp) => {
+                            if stopping.load(Ordering::Acquire) { break; }
+                            // Bounded on both axes and logged either way: a
+                            // catch-up that finds nothing and one that never ran
+                            // must not look the same in a store that stops
+                            // shrinking.
+                            if let Err(error) = store.catch_up_settled_journals(
+                                super::journal_reclaim::CATCH_UP_MAX_RUNS,
+                                super::journal_reclaim::CATCH_UP_BUDGET,
+                            ) {
+                                tracing::warn!(%error, "run-journal catch-up could not run; the next start retries it");
+                            }
+                        }
                         #[cfg(test)]
                         Ok(CompactionRequest::Barrier(sender)) => { let _ = sender.send(()); }
                         Ok(CompactionRequest::Stop) | Err(_) => break,
                     }
                 }
             })?;
+        // First request on the queue, so a start folds what the last stop left
+        // behind before it handles new completions. Queued rather than run here:
+        // starting the Agent must not wait for maintenance.
+        let _ = sender.try_send(CompactionRequest::CatchUp);
         Ok(Self {
             sender,
             thread: Some(thread),

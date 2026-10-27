@@ -347,10 +347,14 @@ take note. Without them the target cannot tell a relayed report from a request
 addressed to it, and may start work nobody asked for.
 
 A long or non-ASCII payload should be written to a file and passed as
-`@<file>`; the CLI reads that file itself. Do not read it into a shell variable
-first: on Windows PowerShell 5.1 `Get-Content` decodes a BOM-less UTF-8 file
-with the ANSI code page, so what arrives in the other conversation is mojibake
-(the same wart as the `read`-tool-not-`Get-Content` rule for the shell).
+`--message-file <path>`; the CLI reads that file itself and sends its bytes as
+the message. Do not read it into a shell variable first: on Windows PowerShell
+5.1 `Get-Content` decodes a BOM-less UTF-8 file with the ANSI code page, so what
+arrives in the other conversation is mojibake (the same wart as the
+`read`-tool-not-`Get-Content` rule for the shell). `@<file>` is not the form for
+this: it wraps the content in a `<file name="…">` block meant for a human
+attaching a file, so the target would receive an attachment where the bare turn
+should be — and a conversation it creates is titled from that first turn.
 
 Delegation is the same machinery aimed at a conversation of your own — a
 sub-session, which users may also call a subagent, a sub-agent or 子agent/子代理:

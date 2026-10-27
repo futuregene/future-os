@@ -1,7 +1,7 @@
 use super::{parse_json_arguments, ProtocolAdapter};
 use crate::llm::schema::{
-    ApiProtocol, ChatReasoningFormat, FinishReason, ModelRequest, ModelStreamEvent, ProtocolConfig,
-    ResolvedModelTarget,
+    apply_effort_param, ApiProtocol, ChatReasoningFormat, FinishReason, ModelRequest,
+    ModelStreamEvent, ProtocolConfig, ResolvedModelTarget,
 };
 use crate::llm::sse::SseFrame;
 use crate::types::{ContentBlock, ProviderMetadata, Usage};
@@ -313,14 +313,14 @@ fn apply_reasoning(
         return;
     }
     let enabled = level != "off";
-    // Any other level is the wire value itself (or nothing for `off`).
-    let mapped = crate::llm::schema::effort_value(level);
+    // Any other level is the wire value itself (or nothing for `off`), unless
+    // the model declared `compat.reasoningEffort`: then the level is mapped onto
+    // the values that access path accepts (see ReasoningEffortVocabulary).
+    let vocabulary = config.reasoning_effort.as_ref();
     match config.reasoning {
         ChatReasoningFormat::None | ChatReasoningFormat::ReasoningEffort => {
             if enabled {
-                if let Some(mapped) = mapped {
-                    body["reasoning_effort"] = json!(mapped);
-                }
+                apply_effort_param(body, level, vocabulary);
             }
         }
         ChatReasoningFormat::Qwen { chat_template } => {
@@ -333,25 +333,19 @@ fn apply_reasoning(
                 body["enable_thinking"] = json!(enabled);
             }
             if enabled {
-                if let Some(mapped) = mapped {
-                    body["reasoning_effort"] = json!(mapped);
-                }
+                apply_effort_param(body, level, vocabulary);
             }
         }
         ChatReasoningFormat::DeepSeek => {
             body["thinking"] = json!({"type": if enabled { "enabled" } else { "disabled" }});
             if enabled {
-                if let Some(mapped) = mapped {
-                    body["reasoning_effort"] = json!(mapped);
-                }
+                apply_effort_param(body, level, vocabulary);
             }
         }
         ChatReasoningFormat::Zai => {
             body["enable_thinking"] = json!(enabled);
             if enabled {
-                if let Some(mapped) = mapped {
-                    body["reasoning_effort"] = json!(mapped);
-                }
+                apply_effort_param(body, level, vocabulary);
             }
         }
         ChatReasoningFormat::ReasoningSplit => {

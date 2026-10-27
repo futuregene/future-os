@@ -1,16 +1,23 @@
-//! The sidebar's two panels, as pure renderers.
+//! The workbench's list panels, as pure renderers.
 //!
-//! The rail is a *task* panel: 最近 lists every conversation by when it was
-//! last refreshed, and 工作区 files the same conversations the way the desktop
-//! does — pinned workspaces first, then the workspaces themselves, then the
-//! plain chats. Nothing else lives here: the usage figures are on the status
-//! bar, and skills are the palette's business.
+//! Two of them are the rail's tabs, and both list *conversations*: 最近 lists
+//! every conversation by when it was last refreshed — a run still in flight
+//! first, under its own heading — and 工作区 files the same conversations the way
+//! the desktop does — pinned workspaces first, then the workspaces themselves,
+//! then the plain chats. Nothing else lives here: the usage figures are on the
+//! status bar, and skills are the palette's business.
+//!
+//! The third, [`PanelId::Files`], is not a tab: it is the session workspace as a
+//! tree, painted inside the files overlay (`screen::files_box`). It shares the
+//! renderer because a tree row is a row like any other — one model, one window,
+//! one hit region per row — and differs only in the id prefix its callers pass
+//! (`sidebar.row.` for the rail, `files.row.` for the box).
 //!
 //! Each `render` receives an area, the shared data and the palette, and returns
 //! exactly as many rows as the area is tall (padded), each exactly as wide as
 //! the area — while registering a hit region per interactive row. Keeping them
-//! pure is what lets the same code serve the sidebar and the `ctrl+b`
-//! full-screen panel: only the area changes.
+//! pure is what lets the same code serve the sidebar, the `ctrl+b` full-screen
+//! panel and the files box: only the area changes.
 //!
 //! [`rows`] is the *model* behind those rows: the same list, without paint or a
 //! width. The keyboard needs it (to know which rows hold a conversation) and so
@@ -25,8 +32,8 @@ use crate::workbench::layout::{HitMap, Rect};
 use crate::workbench::state::{PanelId, SessionRow, WorkbenchData};
 use crate::workbench::theme::Palette;
 
-/// Rows the panel uses for its heading (a title plus a blank line).
-const HEADING_ROWS: usize = 2;
+/// The blank row between the tab strip and the list.
+const TOP_GAP: usize = 1;
 
 /// The workspace headings the reader has folded shut, by path — the group's
 /// identity (`two checkouts can share a name`).
@@ -79,7 +86,11 @@ impl Row {
     }
 }
 
-/// The 工作区 tab's three sections, in the desktop's order.
+/// The panel's sections.
+///
+/// 工作区 has three, in the desktop's order (置顶 / 工作区 / 对话会话). 最近 has two,
+/// and they are the desktop's recent view: the conversations with a run still in
+/// flight above the ones that have gone quiet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     /// Conversations of the workspaces the reader pinned.
@@ -88,6 +99,11 @@ pub enum Section {
     Workspaces,
     /// Conversations that belong to no workspace at all.
     Chats,
+    /// 最近's first stretch: a run that has not finished (see
+    /// [`SessionRow::streaming`]).
+    Active,
+    /// 最近's second stretch: everything else, by when it last spoke.
+    Earlier,
 }
 
 impl Section {
@@ -98,8 +114,21 @@ impl Section {
                 Self::Pinned => Key::SectionPinned,
                 Self::Workspaces => Key::SectionWorkspaces,
                 Self::Chats => Key::SectionChats,
+                Self::Active => Key::SectionActive,
+                Self::Earlier => Key::SectionEarlier,
             },
         )
+    }
+
+    /// Does this heading caption a flat block of conversations, rather than
+    /// head a run of workspaces?
+    ///
+    /// 最近's two stretches do, so their heading carries the count (`活跃 3`) —
+    /// the desktop's caption, in the rail's shape. 工作区's sections head
+    /// workspaces instead, and a workspace heading already counts what sits
+    /// under it.
+    fn counts_sessions(self) -> bool {
+        matches!(self, Self::Active | Self::Earlier)
     }
 }
 
@@ -112,7 +141,40 @@ pub fn rows(panel: PanelId, data: &WorkbenchData) -> Vec<Row> {
 /// workspace paints its heading and none of its conversations.
 pub fn rows_with(panel: PanelId, data: &WorkbenchData, folded: &Folded) -> Vec<Row> {
     match panel {
-        PanelId::Recent => (0..data.sessions.len()).map(Row::Session).collect(),
+        PanelId::Recent => {
+            // The desktop's recent view, in the rail's own shape: a run that is
+            // still in flight leads, everything else follows by when it last
+            // spoke. The split is only drawn when there is a split to draw —
+            // with nothing running the whole list *is* 更早, and a heading
+            // saying so would spend a row of a rail that shows twenty.
+            //
+            // The running rows keep the list's own order (newest activity
+            // first). The desktop ranks them by when they *started* instead,
+            // because a streaming run rewrites its activity stamp once a
+            // second; `list_sessions` sends no start time, and here the worst
+            // case is two running rows trading places on a five-second poll.
+            let streaming: Vec<usize> = (0..data.sessions.len())
+                .filter(|index| data.sessions[*index].streaming)
+                .collect();
+            let quiet: Vec<usize> = (0..data.sessions.len())
+                .filter(|index| !data.sessions[*index].streaming)
+                .collect();
+            let split = !streaming.is_empty() && !quiet.is_empty();
+            let mut rows: Vec<Row> = Vec::with_capacity(data.sessions.len() + 2);
+            if !streaming.is_empty() {
+                if split {
+                    rows.push(Row::Section(Section::Active));
+                }
+                rows.extend(streaming.into_iter().map(Row::Session));
+            }
+            if !quiet.is_empty() {
+                if split {
+                    rows.push(Row::Section(Section::Earlier));
+                }
+                rows.extend(quiet.into_iter().map(Row::Session));
+            }
+            rows
+        }
         PanelId::Files => (0..data.tree.rows().len()).map(Row::File).collect(),
         PanelId::Workspaces => {
             let mut rows: Vec<Row> = Vec::new();
@@ -212,6 +274,9 @@ pub struct PanelView {
     pub selected: usize,
 }
 
+/// `frame` is the animation frame the spinner is on — the same one the activity
+/// row draws (`Workbench::spinner_frame`), so the two spinners turn together.
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     panel: PanelId,
     data: &WorkbenchData,
@@ -220,12 +285,27 @@ pub fn render(
     view: PanelView,
     hit: &mut HitMap,
     lang: Language,
+    frame: usize,
 ) -> Vec<String> {
-    render_with(panel, data, palette, area, view, hit, lang, &Folded::new())
+    render_with(
+        panel,
+        data,
+        palette,
+        area,
+        view,
+        hit,
+        lang,
+        frame,
+        &Folded::new(),
+        "sidebar.row.",
+    )
 }
 
 /// [`render`] with the reader's folded workspaces, so a fold is drawn as a fold
 /// (`▸`) rather than a workspace that happens to list nothing.
+/// `prefix` names the hit regions this paints (`sidebar.row.` for the rail,
+/// `files.row.` for the files overlay): the same rows are drawn on two
+/// surfaces, and a click has to be resolved against the one it landed on.
 #[allow(clippy::too_many_arguments)]
 pub fn render_with(
     panel: PanelId,
@@ -235,7 +315,9 @@ pub fn render_with(
     view: PanelView,
     hit: &mut HitMap,
     lang: Language,
+    frame: usize,
     folded: &Folded,
+    prefix: &str,
 ) -> Vec<String> {
     let PanelView { scroll, selected } = view;
     if area.is_empty() {
@@ -245,16 +327,13 @@ pub fn render_with(
     let rows = area.h as usize;
     let mut lines: Vec<String> = Vec::with_capacity(rows);
 
-    let heading = format!(
-        "{}{}",
-        palette.strong(palette.fg, panel.label(lang)),
-        palette.dim(&format!("  {}", summary(panel, data, lang)))
-    );
-    lines.push(palette.panel_row(&fit(&heading, columns), columns));
-    lines.push(palette.panel_row("", columns));
+    // The panel has no heading of its own: the tab strip above names it, and a
+    // count printed under that name cost a row of every list. What is left is
+    // the blank row that keeps the first item off the tabs.
+    lines.push(fit("", columns));
 
-    let body_rows = rows.saturating_sub(HEADING_ROWS);
-    let items = item_rows(panel, data, palette, columns, lang, selected, folded);
+    let body_rows = rows.saturating_sub(TOP_GAP);
+    let items = item_rows(panel, data, palette, columns, lang, selected, folded, frame);
     let total = items.len();
 
     // The window: `scroll` items in, filled a whole item at a time (a
@@ -310,45 +389,30 @@ pub fn render_with(
         let index = start + offset;
         let Some(item) = items.get(index) else { break };
         for text in item {
-            let y = area.y + (HEADING_ROWS + painted) as u16;
-            hit.push(
-                Rect::new(area.x, y, area.w, 1),
-                format!("sidebar.row.{index}"),
-            );
-            lines.push(palette.panel_row(&fit(text, columns), columns));
+            let y = area.y + (TOP_GAP + painted) as u16;
+            hit.push(Rect::new(area.x, y, area.w, 1), format!("{prefix}{index}"));
+            lines.push(fit(text, columns));
             painted += 1;
         }
     }
     if painted < body_rows {
         if total > start + visible {
             let more = total - start - visible;
-            lines.push(palette.panel_row(
-                &palette.dim(&fit(&format!("  ↓ {more} more"), columns)),
-                columns,
-            ));
+            lines.push(fit(&palette.dim(&format!("  ↓ {more} more")), columns));
         } else {
-            lines.push(palette.panel_row("", columns));
+            lines.push(fit("", columns));
         }
     }
 
-    // Whatever the panel did not fill is the panel's own background, not the
-    // canvas showing through.
+    // The list keeps the canvas, like the chat and the composer beside it: a
+    // band of our own `panel` colour reads as a black rectangle on every
+    // terminal whose palette is not ours. The divider column already says where
+    // the rail starts, so an empty row is simply empty.
     while lines.len() < rows {
-        lines.push(palette.panel_row("", columns));
+        lines.push(fit("", columns));
     }
     lines.truncate(rows);
     lines
-}
-
-/// The one-line counts beside the panel title.
-fn summary(panel: PanelId, data: &WorkbenchData, lang: Language) -> String {
-    match panel {
-        PanelId::Recent => i18n::render(lang, Key::SummarySessions, &[&data.sessions.len()]),
-        PanelId::Workspaces => {
-            i18n::render(lang, Key::SummaryWorkspaces, &[&data.workspaces.len()])
-        }
-        PanelId::Files => i18n::render(lang, Key::SummaryFiles, &[&data.tree.rows().len()]),
-    }
 }
 
 /// Each item's painted rows, already colourised and clipped to `columns`.
@@ -358,6 +422,7 @@ fn summary(panel: PanelId, data: &WorkbenchData, lang: Language) -> String {
 /// that do not fit one 34-column row without shredding the name. Under a
 /// workspace heading the heading already names the workspace, so there the
 /// conversation is one row: its name and its age.
+#[allow(clippy::too_many_arguments)]
 fn item_rows(
     panel: PanelId,
     data: &WorkbenchData,
@@ -366,6 +431,7 @@ fn item_rows(
     lang: Language,
     selected: usize,
     folded: &Folded,
+    frame: usize,
 ) -> Vec<Vec<String>> {
     let model = rows_with(panel, data, folded);
     if model.is_empty() {
@@ -395,7 +461,18 @@ fn item_rows(
         .iter()
         .enumerate()
         .map(|(index, row)| match row {
-            Row::Section(section) => vec![section_row(*section, palette, columns, lang)],
+            Row::Section(section) => {
+                // 最近's stretches count the conversations they hold (the
+                // desktop's "Active 3"); 工作区's sections head a run of
+                // workspaces, which the workspace heading counts instead.
+                let count = section.counts_sessions().then(|| {
+                    model[index + 1..]
+                        .iter()
+                        .take_while(|row| row.session().is_some())
+                        .count()
+                });
+                vec![section_row(*section, count, palette, columns, lang)]
+            }
             Row::Workspace(at) => match data.workspaces.get(*at) {
                 Some(workspace) => vec![workspace_row(
                     workspace,
@@ -405,15 +482,15 @@ fn item_rows(
                     columns,
                     lang,
                 )],
-                None => vec![palette.panel_row("", columns)],
+                None => vec![fit("", columns)],
             },
             Row::Session(at) => match data.sessions.get(*at) {
-                Some(session) => session_rows(panel, session, palette, columns),
-                None => vec![palette.panel_row("", columns)],
+                Some(session) => session_rows(panel, session, palette, columns, frame),
+                None => vec![fit("", columns)],
             },
             Row::File(at) => match data.tree.get(*at) {
                 Some(node) => vec![file_row(node, index == selected, palette, columns)],
-                None => vec![palette.panel_row("", columns)],
+                None => vec![fit("", columns)],
             },
         })
         .collect();
@@ -507,8 +584,21 @@ fn file_row(
 
 /// A section heading with a dim rule to the edge, so the three blocks read as
 /// blocks rather than as more rows.
-fn section_row(section: Section, palette: &Palette, columns: usize, lang: Language) -> String {
-    let label = format!(" {} ", section.label(lang));
+///
+/// `count` is the number of conversations the block holds, when it holds a flat
+/// block of them (最近's 活跃 / 更早); the workspace sections leave it out because
+/// each workspace heading already counts its own.
+fn section_row(
+    section: Section,
+    count: Option<usize>,
+    palette: &Palette,
+    columns: usize,
+    lang: Language,
+) -> String {
+    let label = match count {
+        Some(count) => format!(" {} {count} ", section.label(lang)),
+        None => format!(" {} ", section.label(lang)),
+    };
     let rule = "─".repeat(columns.saturating_sub(width(&label)));
     let painted = format!(
         "{}{}",
@@ -560,19 +650,28 @@ fn workspace_row(
     )
 }
 
-/// A conversation's row: `▸ name` on the left and, in 最近, the workspace it is
-/// filed under and when it was refreshed on the right of the *same* row.
+/// A conversation's row: the state slot, the name, and — in 最近 — the
+/// workspace it is filed under and when it was refreshed on the right of the
+/// *same* row.
 fn session_rows(
     panel: PanelId,
     session: &SessionRow,
     palette: &Palette,
     columns: usize,
+    frame: usize,
 ) -> Vec<String> {
-    let marker = if session.current { "▸" } else { " " };
-    let marker = if session.current {
-        palette.text(palette.accent, marker)
+    // The leading cell is the row's state slot, the desktop rail's indicator
+    // seen from a terminal: a run still in flight spins there (the one thing in
+    // this list that moves), the conversation on screen marks itself `▸`, and a
+    // quiet row leaves it blank. A streaming row that is *also* the one on
+    // screen draws the spinner — the title is already accent-bold, so nothing
+    // is lost, and "this one is still writing" is the fact worth the cell.
+    let marker = if session.streaming {
+        palette.text(palette.accent, crate::workbench::widgets::spinner(frame))
+    } else if session.current {
+        palette.text(palette.accent, "▸")
     } else {
-        palette.dim(marker)
+        palette.dim(" ")
     };
     match panel {
         PanelId::Recent => {
@@ -627,7 +726,7 @@ fn session_rows(
         }
         // The file tree paints one row per entry, so a conversation's own row
         // shape does not apply here; `file_row` is the painter.
-        PanelId::Files => vec![palette.panel_row("", columns)],
+        PanelId::Files => vec![fit("", columns)],
     }
 }
 
@@ -667,7 +766,9 @@ mod tests {
             PanelView::default(),
             &mut hit,
             lang,
+            0,
             folded,
+            "sidebar.row.",
         )
         .iter()
         .map(|line| crate::utils::strip_ansi_codes(line))
@@ -689,6 +790,7 @@ mod tests {
                     PanelView::default(),
                     &mut hit,
                     LANG,
+                    0,
                 );
                 assert_eq!(lines.len(), rows as usize, "{panel:?} at {rows} rows");
                 for line in &lines {
@@ -711,6 +813,7 @@ mod tests {
                 PanelView::default(),
                 &mut hit,
                 LANG,
+                0,
             );
             assert_eq!(lines.len(), 6);
             for line in &lines {
@@ -733,17 +836,117 @@ mod tests {
             PanelView::default(),
             &mut hit,
             Language::Zh,
+            0,
         )
         .iter()
         .map(|line| crate::utils::strip_ansi_codes(line))
         .collect::<Vec<_>>()
         .join("\n");
-        assert!(text.contains("最近"), "{text}");
         for session in &data.sessions {
             assert!(text.contains(&session.title), "{session:?}: {text}");
             assert!(text.contains(&session.workspace), "{session:?}: {text}");
             assert!(text.contains(&session.age), "{session:?}: {text}");
         }
+    }
+
+    /// One conversation's painted row, found by its title.
+    fn row_line(data: &WorkbenchData, title: &str, frame: usize) -> String {
+        let mut hit = HitMap::new();
+        render(
+            PanelId::Recent,
+            data,
+            &P,
+            Rect::new(0, 0, 60, 24),
+            PanelView::default(),
+            &mut hit,
+            LANG,
+            frame,
+        )
+        .iter()
+        .map(|line| crate::utils::strip_ansi_codes(line))
+        .find(|line| line.contains(title))
+        .unwrap_or_else(|| panic!("no row for {title}"))
+    }
+
+    /// A run in flight leads 最近, and the two stretches say how many
+    /// conversations each holds — the desktop's recent view, in the rail's own
+    /// shape.
+    #[test]
+    fn a_run_in_flight_leads_the_recent_list() {
+        let mut data = demo::chat();
+        // The second conversation of the fixture is the one writing.
+        data.sessions[1].streaming = true;
+        let model = rows(PanelId::Recent, &data);
+        assert_eq!(model[0], Row::Section(Section::Active));
+        assert_eq!(model[1].session(), Some(1), "the running one leads");
+        let earlier = model
+            .iter()
+            .position(|row| *row == Row::Section(Section::Earlier))
+            .expect("a heading for the quiet stretch once there is a split");
+        assert_eq!(model[earlier + 1].session(), Some(0));
+        // Nothing is lost or listed twice by the regrouping.
+        let mut listed: Vec<usize> = model.iter().filter_map(|row| row.session()).collect();
+        listed.sort_unstable();
+        assert_eq!(listed, (0..data.sessions.len()).collect::<Vec<_>>());
+
+        let text = panel_text(PanelId::Recent, &data, LANG);
+        assert!(text.contains("活跃 1"), "{text}");
+        assert!(
+            text.contains(&format!("更早 {}", data.sessions.len() - 1)),
+            "{text}"
+        );
+        // The running row draws the spinner where its marker would be.
+        assert!(
+            text.contains(crate::workbench::widgets::spinner(0)),
+            "{text}"
+        );
+    }
+
+    /// With nothing running the list is undivided: a lone 更早 heading would
+    /// spend one of the rail's rows saying what the panel title already says.
+    #[test]
+    fn a_quiet_list_has_no_headings() {
+        let data = demo::chat();
+        let model = rows(PanelId::Recent, &data);
+        assert_eq!(model.len(), data.sessions.len(), "{model:?}");
+        assert!(model.iter().all(|row| row.session().is_some()), "{model:?}");
+        let text = panel_text(PanelId::Recent, &data, LANG);
+        assert!(!text.contains("活跃"), "{text}");
+        assert!(!text.contains("更早"), "{text}");
+    }
+
+    /// The rail's spinner is the activity row's spinner: the same clock, the
+    /// same frames. A quiet row's marker does not move with it.
+    #[test]
+    fn the_row_spinner_turns_with_the_frame() {
+        let mut data = demo::chat();
+        data.sessions[1].streaming = true;
+        let title = data.sessions[1].title.clone();
+        let first = row_line(&data, &title, 0);
+        let second = row_line(&data, &title, 1);
+        assert!(
+            first.contains(crate::workbench::widgets::spinner(0)),
+            "{first}"
+        );
+        assert!(
+            second.contains(crate::workbench::widgets::spinner(1)),
+            "{second}"
+        );
+        assert_ne!(first, second, "the spinner has to move");
+        // The spinner takes the state slot, so a running row that is also the
+        // one on screen shows it rather than `▸` — its title is already the
+        // accent one.
+        let mut busy_current = demo::chat();
+        busy_current.sessions[0].streaming = true;
+        let current = row_line(&busy_current, &busy_current.sessions[0].title, 0);
+        assert!(
+            current.contains(crate::workbench::widgets::spinner(0)),
+            "{current}"
+        );
+        assert!(!current.contains('▸'), "{current}");
+        // …and a quiet row on screen still marks itself.
+        let quiet = row_line(&data, &data.sessions[0].title, 0);
+        assert!(quiet.contains('▸'), "{quiet}");
     }
 
     #[test]
@@ -795,13 +998,18 @@ mod tests {
             PanelView::default(),
             &mut hit,
             LANG,
+            0,
         );
         assert!(!lines.is_empty());
-        // Heading occupies rows 4 and 5. 最近 gives each conversation one row.
-        assert_eq!(hit.hit(12, 6), Some("sidebar.row.0"));
-        assert_eq!(hit.hit(12, 7), Some("sidebar.row.1"));
-        assert_eq!(hit.hit(12, 8), Some("sidebar.row.2"));
-        assert_eq!(hit.hit(12, 5), None, "the blank heading row is not a row");
+        // One blank row under the tabs; 最近 gives each conversation one row.
+        assert_eq!(
+            hit.hit(12, 4),
+            None,
+            "the blank row under the tabs is not a row"
+        );
+        assert_eq!(hit.hit(12, 5), Some("sidebar.row.0"));
+        assert_eq!(hit.hit(12, 6), Some("sidebar.row.1"));
+        assert_eq!(hit.hit(12, 7), Some("sidebar.row.2"));
     }
 
     #[test]
@@ -816,7 +1024,9 @@ mod tests {
                 workspace: "~/future-os".into(),
                 age: "1h".into(),
                 current: index == 0,
+
                 parent_id: None,
+                streaming: false,
             })
             .collect();
         let mut hit = HitMap::new();
@@ -828,6 +1038,7 @@ mod tests {
             PanelView::default(),
             &mut hit,
             LANG,
+            0,
         );
         let text: String = lines
             .iter()
@@ -850,6 +1061,7 @@ mod tests {
             },
             &mut hit,
             LANG,
+            0,
         );
         let text: String = lines
             .iter()
@@ -870,7 +1082,9 @@ mod tests {
                 workspace: "~/future-os".into(),
                 age: "1h".into(),
                 current: index == 0,
+
                 parent_id: None,
+                streaming: false,
             })
             .collect();
         let total = rows(PanelId::Recent, &data).len();
@@ -887,6 +1101,7 @@ mod tests {
             },
             &mut hit,
             LANG,
+            0,
         );
         let text: String = lines
             .iter()

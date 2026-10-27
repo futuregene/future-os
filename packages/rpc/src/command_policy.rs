@@ -233,11 +233,23 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
         | "list_session_ids"
         | "get_session_presence"
         | "get_storage_health"
-        | "get_journal_stats"
         | "list_sessions"
         | "probe_sandbox"
         | "probe_windows_sandbox" => policy(
             STORAGE_TIMEOUT,
+            RetryPolicy::SafeRead,
+            ExecutionKind::Bounded,
+        ),
+        // Diagnosis of the raw run journal. Unlike every read above, this one
+        // scales with the journal it reports on: it sums the payload length of
+        // every `run_events` row, which is the table that grows without bound.
+        // Measured on one real 4.4 GiB store: 23.8 s the first time the pages
+        // were not cached, and an earlier cold run hit the 30 s storage wall and
+        // printed `Timeout expired` — the command failing on the very database
+        // it exists to diagnose. Optional maintenance, so it gets the
+        // maintenance deadline, and only a caller that asked for it waits.
+        "get_journal_stats" => policy(
+            MAINTENANCE_TIMEOUT,
             RetryPolicy::SafeRead,
             ExecutionKind::Bounded,
         ),
@@ -342,6 +354,25 @@ mod tests {
         assert_eq!(command_policy("compact").unwrap().timeout, CONTROL_TIMEOUT);
         assert_eq!(command_policy("shell").unwrap().timeout, SHELL_RPC_TIMEOUT);
         assert!(command_policy("unknown").is_none());
+    }
+
+    /// The journal report scans the table it reports on, so it is sized like the
+    /// reclamation next to it rather than like a storage read: on a large store
+    /// the 30 s storage deadline is not enough to answer its own question.
+    #[test]
+    fn journal_report_gets_the_maintenance_deadline() {
+        let stats = command_policy("get_journal_stats").unwrap();
+        assert_eq!(stats.timeout, MAINTENANCE_TIMEOUT);
+        assert_eq!(stats.retry, RetryPolicy::SafeRead);
+        assert_eq!(
+            stats.timeout,
+            command_policy("reclaim_run_journals").unwrap().timeout
+        );
+        // The cheapest reads must not follow it into the longer deadline.
+        assert_eq!(
+            command_policy("list_sessions").unwrap().timeout,
+            STORAGE_TIMEOUT
+        );
     }
 
     #[test]

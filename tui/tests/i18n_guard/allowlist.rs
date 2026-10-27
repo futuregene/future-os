@@ -82,6 +82,41 @@ pub const ALLOW: &[Allow] = &[
         "High Contrast",
         "a theme's name — a proper noun, spelled the same in both languages",
     ),
+    Allow::not_chrome(
+        "themes.rs",
+        "Catppuccin Light",
+        "a theme's name — a proper noun, spelled the same in both languages",
+    ),
+    Allow::not_chrome(
+        "themes.rs",
+        "Everforest Light",
+        "a theme's name — a proper noun, spelled the same in both languages",
+    ),
+    Allow::not_chrome(
+        "themes.rs",
+        "Gruvbox Light",
+        "a theme's name — a proper noun, spelled the same in both languages",
+    ),
+    Allow::not_chrome(
+        "themes.rs",
+        "Rose Pine",
+        "a theme's name — a proper noun, spelled the same in both languages",
+    ),
+    Allow::not_chrome(
+        "themes.rs",
+        "Rose Pine Light",
+        "a theme's name — a proper noun, spelled the same in both languages",
+    ),
+    Allow::not_chrome(
+        "themes.rs",
+        "Solarized Light",
+        "a theme's name — a proper noun, spelled the same in both languages",
+    ),
+    Allow::not_chrome(
+        "themes.rs",
+        "Tokyo Night",
+        "a theme's name — a proper noun, spelled the same in both languages",
+    ),
     // The approval-mode chip's four rows come from the desktop's
     // `approvalTier.*` vocabulary, which is English in both languages there
     // too. `Manual` and `Sandboxed` are one word each, so the sentence rule
@@ -115,11 +150,6 @@ pub const ALLOW: &[Allow] = &[
         "components/chat_area.rs",
         "merged into the previous run",
         "a run state's description in the conversation",
-    ),
-    Allow::known_gap(
-        "components/chat_area.rs",
-        " Thinking... (ctrl+o to expand)",
-        "the live-run placeholder shown while the thinking is folded away",
     ),
     Allow::known_gap(
         "components/chat_area.rs",
@@ -226,11 +256,6 @@ pub const ALLOW: &[Allow] = &[
         "new session",
         "the title a nameless session falls back to — a title is content",
     ),
-    Allow::known_gap(
-        "workbench/screen.rs",
-        "no workspace yet",
-        "the header's word for a session that has no workspace",
-    ),
 ];
 
 /// A file whose literals are all content rather than chrome.
@@ -261,4 +286,19 @@ pub const FILES: &[FileExempt] = &[FileExempt {
 /// 35 → 37: the two `@path` inlining notes in `workbench/live.rs`. They are the
 /// prompt text the model reads in place of a file it was not given — never
 /// drawn — so they stay in the language the prompt is written in.
-pub const BUDGET: usize = 36;
+///
+/// 37 → 35 → 34: the folded-thinking placeholder's exemption closed, then the
+/// header's `no workspace yet` — the five-row identity header it belonged to
+/// went away, leaving the two-row context line as the only header.
+/// 37 → 35 → 34: the folded-thinking placeholder's exemption closed, then the
+/// header's `no workspace yet` — the five-row identity header it belonged to
+/// went away, leaving the two-row context line as the only header.
+///
+/// 34 → 41: the `/theme` picker, the files panel's entry and the rest of the
+/// work that landed beside this change.
+///
+/// 41 → 42: the `/git` panel's `does not have any commits`, matched against
+/// git's own stderr to turn an empty repository into an empty log. It is a
+/// comparison, never drawn; the panel's other copy (the silent failure, the
+/// ahead/behind counts, the tip template) went into the table instead.
+pub const BUDGET: usize = 42;
