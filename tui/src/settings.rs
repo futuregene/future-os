@@ -38,8 +38,6 @@ pub struct TuiSettings {
     /// Interface language (`language`: `system` | `zh` | `en`). Absent ⇒
     /// `system`, the same default the desktop and the phone use.
     pub language: Option<String>,
-    /// Conversation density (`focused` | `comfortable`).
-    pub density: Option<String>,
     /// Sidebar position (`left` | `right`) and width in terminal columns.
     pub sidebar_position: Option<String>,
     pub sidebar_width: Option<u16>,
@@ -86,9 +84,6 @@ impl TuiSettings {
         }
         if let Some(language) = &self.language {
             obj.insert("language".into(), Value::String(language.clone()));
-        }
-        if let Some(density) = &self.density {
-            obj.insert("density".into(), Value::String(density.clone()));
         }
         if let Some(position) = &self.sidebar_position {
             obj.insert("sidebarPosition".into(), Value::String(position.clone()));
@@ -142,7 +137,6 @@ impl TuiSettings {
                 }),
             theme_id: string("themeId"),
             language: string("language"),
-            density: string("density"),
             sidebar_position: string("sidebarPosition"),
             sidebar_width: value
                 .get("sidebarWidth")
@@ -183,7 +177,6 @@ mod tests {
             enabled_model_ids: Some(vec!["a".into(), "b".into()]),
             theme_id: Some("future-light".into()),
             language: Some("system".into()),
-            density: Some("focused".into()),
             sidebar_position: Some("left".into()),
             sidebar_width: Some(42),
             sidebar_visible: Some(false),
@@ -205,7 +198,6 @@ mod tests {
         assert_eq!(back.enabled_model_ids, Some(vec!["a".into(), "b".into()]));
         assert_eq!(back.theme_id.as_deref(), Some("future-light"));
         assert_eq!(back.language.as_deref(), Some("system"));
-        assert_eq!(back.density.as_deref(), Some("focused"));
         assert_eq!(back.sidebar_position.as_deref(), Some("left"));
         assert_eq!(back.sidebar_width, Some(42));
         assert_eq!(back.sidebar_visible, Some(false));

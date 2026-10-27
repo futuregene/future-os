@@ -77,11 +77,6 @@ fn layout_preferences(
     mouse_capture: bool,
 ) -> super::preferences::LayoutPreferences {
     super::preferences::LayoutPreferences {
-        density: settings
-            .density
-            .as_deref()
-            .map(super::preferences::Density::from_wire)
-            .unwrap_or_default(),
         sidebar_position: settings
             .sidebar_position
             .as_deref()
@@ -1150,7 +1145,6 @@ fn frame_of(terminal: &Terminal, workbench: &Workbench) -> Frame {
         } else {
             0
         },
-        workbench.density,
         workbench.sidebar_position,
     )
 }
@@ -1364,7 +1358,6 @@ fn frame_bytes(rows: &[String], cursor: Option<(u16, u16)>) -> String {
 
 fn persist_preferences(workbench: &Workbench, settings: &mut TuiSettings, path: &Path) {
     let preferences = workbench.preferences();
-    settings.density = Some(preferences.density.as_wire().into());
     settings.sidebar_position = Some(preferences.sidebar_position.as_wire().into());
     settings.sidebar_width = Some(preferences.sidebar_width);
     settings.sidebar_visible = Some(preferences.sidebar_visible);
@@ -1723,7 +1716,7 @@ mod tests {
         let fresh = layout_preferences(&TuiSettings::default(), true);
         assert!(!fresh.sidebar_visible, "a fresh start hides the rail");
         // A file with other keys but no `sidebarVisible` is the same start.
-        let older = TuiSettings::from_json(&serde_json::json!({"density": "comfortable"}));
+        let older = TuiSettings::from_json(&serde_json::json!({"mouseCapture": false}));
         assert!(!layout_preferences(&older, true).sidebar_visible);
 
         let shown = TuiSettings::from_json(&serde_json::json!({"sidebarVisible": true}));

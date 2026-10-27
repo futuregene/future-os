@@ -136,7 +136,7 @@ pub enum Overlay {
     DeleteSession,
     /// The file preview: a picture (zoomable) or a document's text.
     FilePreview,
-    /// Layout, density and the entry to the shortcut editor.
+    /// Layout and the entry to the shortcut editor.
     Preferences,
     Keybindings,
 }
@@ -446,7 +446,6 @@ pub struct Workbench {
     /// decides whether it *can*.
     pub sidebar_visible: bool,
     pub sidebar_w: u16,
-    pub density: preferences::Density,
     pub sidebar_position: preferences::SidebarPosition,
     pub reduced_motion: bool,
     pub notify: crate::notifications::NotifyConfig,
@@ -551,7 +550,6 @@ impl Workbench {
             // settings file.
             sidebar_visible: true,
             sidebar_w: layout::SIDEBAR_DEFAULT,
-            density: preferences::Density::Focused,
             sidebar_position: preferences::SidebarPosition::Right,
             reduced_motion: false,
             notify: crate::notifications::NotifyConfig::default(),
@@ -603,7 +601,6 @@ impl Workbench {
 
     /// Restore persisted surface choices before the first frame.
     pub fn set_preferences(&mut self, preferences: preferences::LayoutPreferences) {
-        self.density = preferences.density;
         self.sidebar_position = preferences.sidebar_position;
         self.sidebar_w = preferences
             .sidebar_width
@@ -616,7 +613,6 @@ impl Workbench {
 
     pub fn preferences(&self) -> preferences::LayoutPreferences {
         preferences::LayoutPreferences {
-            density: self.density,
             sidebar_position: self.sidebar_position,
             sidebar_width: self.sidebar_w,
             sidebar_visible: self.sidebar_visible,
@@ -1701,7 +1697,6 @@ impl Workbench {
                     let row = preferences::PREFERENCE_ROWS[self.preferences_index];
                     let direction = if key == "left" { -1 } else { 1 };
                     match row {
-                        preferences::PreferenceRow::Density => self.density = self.density.next(),
                         preferences::PreferenceRow::Position => {
                             self.sidebar_position = self.sidebar_position.next()
                         }
@@ -2265,7 +2260,7 @@ impl Workbench {
             return self.handle_picker_mouse(kind, event, data);
         }
         let (w, h) = self.last_frame;
-        let frame = layout::layout_with_preferences(
+        let frame = layout::layout_with_position(
             w,
             h,
             if self.sidebar_visible {
@@ -2273,7 +2268,6 @@ impl Workbench {
             } else {
                 0
             },
-            self.density,
             self.sidebar_position,
         );
         if self.overlay.is_some() && !matches!(self.overlay, Some(Overlay::Picker(_))) {
@@ -3378,9 +3372,9 @@ mod tests {
         assert_eq!(wb.overlay, Some(Overlay::Palette));
         wb.overlay = None;
         wb.open_preferences();
-        wb.handle(WbEvent::Key("right".into()), &data);
-        assert_eq!(wb.density, preferences::Density::Comfortable);
-        wb.handle(WbEvent::Key("down".into()), &data);
+        // The first row is the rail position: `right` moves the rail, and the
+        // frame follows it on the next paint.
+        assert_eq!(wb.preferences_index, 0);
         wb.handle(WbEvent::Key("right".into()), &data);
         assert_eq!(wb.sidebar_position, preferences::SidebarPosition::Left);
         let _ = wb.render(&data, 120, 38);
@@ -3390,7 +3384,6 @@ mod tests {
             .iter()
             .any(|(rect, id)| id == "divider" && rect.x == wb.sidebar_w));
         wb.overlay = None;
-        wb.density = preferences::Density::Focused;
         let _ = wb.render(&data, 120, 38);
         let rail = wb
             .hits()
@@ -3452,8 +3445,8 @@ mod tests {
         let data = demo::chat();
         let (workbench, rows) = frame(&data, 120, 38);
         let text = plain(&rows);
-        // Focused density gives the conversation the space the old branding
-        // block consumed, while keeping identity and context on the first row.
+        // The two-row context header keeps identity and context on one line and
+        // gives the conversation every other row.
         assert!(
             text.contains("FUTURE OS"),
             "the text brand is drawn: {text}"

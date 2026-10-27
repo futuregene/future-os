@@ -41,8 +41,7 @@ conversations, to see the rail's window and its `↓ N more` row).
 ## The frame
 
 ```
- focused header (2 rows: session · workspace · backend dot, then hairline)
- comfortable header (optional 6 rows: wordmark and full identity)
+ header (2 rows: session · workspace · backend dot, then hairline)
  ──────────────────────────────────────────┬──────────────────────
  conversation (bottom-anchored, ↑ 更早)     │ rail: 最近 工作区
                                             │ ▸ the conversation's name  ~/future-os · 2m
@@ -116,7 +115,7 @@ live on the status bar, so no panel repeats them; skills are the palette's. With
 the rail focused, `←`/`→` move between the two tabs.
 
 The launchpad is the *body*, not a dialog over the conversation: with no session
-attached the composer fills the surface (wordmark, box, workspace / model /
+attached the composer fills the surface (the name, the box, workspace / model /
 effort / approval chips) and there is no second input band. The block is centred
 in the body rather than pinned to its top, and the conversations are the rail's —
 the launchpad does not repeat them. `tab` walks the prompt and the chips, `enter`
@@ -173,13 +172,13 @@ the same line: a key added in one language only does not compile.
 
 ## Layout and personalization
 
-The default **focused density** uses a two-row context header, reclaiming four
-rows for the conversation. `Ctrl+O` or `/preferences` opens the preference
-panel: switch to the comfortable identity header, move the sidebar left or
+The header is a two-row context line — session, workspace and the backend dot,
+with the hairline under it — leaving the rest of the frame to the conversation.
+`Ctrl+O` or `/preferences` opens the preference panel: move the sidebar left or
 right, adjust its 30–60-column width, control mouse capture and completion
 notifications, enable reduced motion, and rebind global
 shortcuts. The panel keeps the selected row and help visible on short terminals.
-Choices persist in `~/.future/tui/settings.json` as `density`, `sidebarPosition`,
+Choices persist in `~/.future/tui/settings.json` as `sidebarPosition`,
 `sidebarWidth`, `sidebarVisible`, `mouseCapture`, `notify` and `reducedMotion`;
 incremental shortcut overrides live beside it in
 `keybindings.json`.
@@ -348,7 +347,7 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | `tui/src/workbench/screen.rs` | Frame composition: the bands, splicing partial bands into a row, overlays |
 | `tui/src/workbench/layout.rs` | Band rectangles, the two breakpoints, the hit map |
 | `tui/src/workbench/ansi.rs` | Width-safe text: `fit`, `pad`, `clip`, column slicing |
-| `tui/src/workbench/widgets.rs` | Rules, boxes, tabs, bars, badges, spinner, logo, wordmark, the input box |
+| `tui/src/workbench/widgets.rs` | Rules, boxes, tabs, bars, badges, spinner, the input box |
 | `tui/src/workbench/panels.rs` | The rail's three panels (pure renderers over one row model) |
 | `tui/src/workbench/picker.rs` | The `/model`, `/theme` and `/sessions` list picker |
 | `tui/src/workbench/launchpad.rs` | The first screen |

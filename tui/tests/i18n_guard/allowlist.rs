@@ -221,11 +221,6 @@ pub const ALLOW: &[Allow] = &[
         "new session",
         "the title a nameless session falls back to — a title is content",
     ),
-    Allow::known_gap(
-        "workbench/screen.rs",
-        "no workspace yet",
-        "the header's word for a session that has no workspace",
-    ),
 ];
 
 /// A file whose literals are all content rather than chrome.
@@ -256,4 +251,8 @@ pub const FILES: &[FileExempt] = &[FileExempt {
 /// 35 → 37: the two `@path` inlining notes in `workbench/live.rs`. They are the
 /// prompt text the model reads in place of a file it was not given — never
 /// drawn — so they stay in the language the prompt is written in.
-pub const BUDGET: usize = 35;
+///
+/// 37 → 35 → 34: the folded-thinking placeholder's exemption closed, then the
+/// header's `no workspace yet` — the five-row identity header it belonged to
+/// went away, leaving the two-row context line as the only header.
+pub const BUDGET: usize = 34;

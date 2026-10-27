@@ -3140,7 +3140,6 @@ mod tests {
             120,
             38,
             36,
-            crate::workbench::preferences::Density::Focused,
             crate::workbench::preferences::SidebarPosition::Right,
         );
         let data = live.data(&frame);
@@ -3213,7 +3212,6 @@ mod tests {
             120,
             38,
             36,
-            crate::workbench::preferences::Density::Focused,
             crate::workbench::preferences::SidebarPosition::Right,
         );
         let data = live.data(&frame);
@@ -3635,7 +3633,6 @@ mod tests {
             120,
             38,
             36,
-            crate::workbench::preferences::Density::Focused,
             crate::workbench::preferences::SidebarPosition::Right,
         )
     }
