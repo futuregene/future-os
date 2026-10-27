@@ -331,10 +331,13 @@ pub fn input_box(
     if !compact {
         rows.push(bottom);
     }
+    // The caret is clamped to the last cell *inside* the box, not to its last
+    // column: that one is the right border, and a caret parked on it reads as a
+    // stray block in the gutter beside the draft.
+    let last_inside = columns.saturating_sub(1 + usize::from(framed));
     (
         rows,
-        (draft.cursor_column + prompt_width + usize::from(framed)).min(columns.saturating_sub(1))
-            as u16,
+        (draft.cursor_column + prompt_width + usize::from(framed)).min(last_inside) as u16,
         draft.cursor_row + 1,
     )
 }
@@ -346,6 +349,55 @@ mod tests {
     use crate::workbench::theme::FUTURE_DARK;
 
     const P: Palette = FUTURE_DARK;
+
+    /// A draft that fills the box's content width is painted whole, and every
+    /// row of the box is exactly `columns` wide.
+    ///
+    /// The row the caret sits on used to come out one column wider than its
+    /// neighbours — the caret's fallback cell was counted as draft — and the
+    /// box's own `fit` paid for that column by clipping the draft's last
+    /// character into an "…". The reader's text ended in an ellipsis they never
+    /// typed, exactly when a line was full, and the caret sat past it: this
+    /// test is that state, at the widths where the phrase fills the line.
+    #[test]
+    fn a_draft_that_fills_the_line_keeps_its_last_character() {
+        let phrase = "我在lin双双适当放松地方史蒂夫，"; // 31 columns
+        assert_eq!(crate::utils::visible_width(phrase), 31);
+        for columns in [35usize, 39, 45, 51] {
+            let content = input_content_width(columns);
+            let draft = format!("{phrase}{}", "x".repeat(content.saturating_sub(31)));
+            let mut editor = crate::workbench::editor::EditorState::default();
+            editor.set(&draft, draft.len());
+            let view =
+                crate::workbench::state::InputView::from_editor(editor, "描述你要做的事".into());
+            let (lines, cursor_column, _) = input_box(&P, columns, &view, "Message", false, 8);
+            for line in &lines {
+                assert_eq!(
+                    width(line),
+                    columns,
+                    "columns={columns}: a row is not the box's width: {line:?}"
+                );
+            }
+            let body: Vec<&String> = lines
+                .iter()
+                .filter(|line| line.contains('❯') || line.contains(&draft[..8]))
+                .collect();
+            assert_eq!(body.len(), 1, "columns={columns}: no draft row: {lines:?}");
+            let plain = crate::utils::strip_ansi_codes(body[0]);
+            assert!(
+                !plain.contains('…'),
+                "columns={columns}: the draft was clipped into an ellipsis: {plain:?}"
+            );
+            assert!(
+                plain.contains(&draft),
+                "columns={columns}: the draft lost its tail: {plain:?}"
+            );
+            assert!(
+                (cursor_column as usize) < columns - 1,
+                "columns={columns}: the caret sits on the box's border (column {cursor_column})"
+            );
+        }
+    }
 
     #[test]
     fn the_rules_and_boxes_are_exactly_their_width() {
