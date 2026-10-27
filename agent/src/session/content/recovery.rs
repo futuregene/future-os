@@ -384,28 +384,21 @@ impl SqliteStore {
     /// Each job examines at most 64 metadata rows; published change ranges and
     /// recovered entry references remain authoritative. No historical sweep.
     fn release_unpublished_stream_owners(&self, stream: &StreamIdentity) -> Result<()> {
-        let prefix = format!(
-            "[{},{},",
-            serde_json::to_string(&stream.run_id)?,
-            stream.epoch
-        );
-        let mut after = (String::new(), String::new());
+        let mut after = -1i64;
         loop {
-            let (scope, prefix, cursor) = (stream.clone(), prefix.clone(), after.clone());
-            let page = self.db.call(move |db| {
-                let tx = crate::session::database::begin_write_transaction(db)?;
+            let scope = stream.clone();
+            let page=self.db.call(move|db| {
+                let tx=crate::session::database::begin_write_transaction(db)?;
                 let scope=scope.bind(&tx)?;
-                let owners:Vec<(String,String,i64)> = {
-                    let mut query = tx.prepare("SELECT owner_id,field,content_id FROM content_references WHERE session_id=?1 AND owner_kind='stream' AND owner_id>=?2 AND owner_id<?3 AND (owner_id,field)>(?4,?5) ORDER BY owner_id,field LIMIT 64")?;
-                    let rows = query.query_map(params![scope.session_id,prefix,format!("{prefix}\u{10ffff}"),cursor.0,cursor.1],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-                    rows
+                let owners:Vec<(i64,i64,i64)>={
+                    let mut query=tx.prepare("SELECT r.id,b.key_id,b.content_id FROM stream_runs r JOIN stream_body_owners b ON b.stream_id=r.id WHERE r.session_id=?1 AND r.run_id=?2 AND r.epoch=?3 AND b.key_id>?4 ORDER BY b.key_id LIMIT 64")?;
+                    let rows=query.query_map(params![scope.session_id,scope.run_id,scope.epoch,after],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;rows
                 };
-                for (owner,field,content) in &owners {
-                    let published:bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM stream_content_ranges b JOIN stream_changes c ON c.id=b.change_id JOIN stream_runs r ON r.id=c.stream_id WHERE b.content_id=?1 AND r.session_id=?2 AND r.run_id=?3 AND r.epoch=?4)",params![content,scope.session_id,scope.run_id,scope.epoch],|row|row.get(0))?;
-                    if !published { tx.execute("DELETE FROM content_references WHERE session_id=?1 AND owner_kind='stream' AND owner_id=?2 AND field=?3",params![scope.session_id,owner,field])?; }
+                for (stream,key,content) in &owners {
+                    let published:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM stream_content_ranges b JOIN stream_changes c ON c.id=b.change_id WHERE b.content_id=?1 AND c.stream_id=?2)",params![content,stream],|r|r.get(0))?;
+                    if !published {tx.execute("DELETE FROM stream_body_owners WHERE stream_id=?1 AND key_id=?2",params![stream,key])?;}
                 }
-                let next = owners.last().map(|(owner,field,_)|(owner.clone(),field.clone()));
-                tx.commit()?; Ok(next)
+                let next=owners.last().map(|(_,key,_)|*key);tx.commit()?;Ok(next)
             })?;
             let Some(next) = page else {
                 break;

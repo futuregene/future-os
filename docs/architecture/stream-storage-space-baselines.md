@@ -116,3 +116,13 @@ This is low-level staging stress: high-churn blocks in one message exceed the fi
 One regression run that reused the old binary in a shared Cargo target was explicitly invalidated. Valid results verify source records, distinct binary hashes and the new 2695-test inventory.
 
 The dictionary removes candidate 1's allocation regression but still increases cumulative writes. Normalize body ownership and remeasure; allocation savings cannot hide write amplification.
+
+## B3.3: structured body ownership, intermediate candidate
+
+[Candidate 3 raw evidence](../testing/compact-storage-candidate-3-2026-10-27.json) retains one measurement of integer stream/symbol owners, binary and production-source hashes, and process resources.
+For the same high-churn stress, the complete database is 7,933,952 bytes, versus 11,964,416 for the old implementation and 10,407,936 for candidate 2.
+Logical WAL page bytes are 576,319,488, down from candidate 2's 614,146,048 but still about 38.7% above the old 415,535,104; batch p99 is 1049 microseconds.
+High-reuse logical WAL page bytes remain 177,676,288. Delivery remains withheld pending further write-amplification work.
+
+Ownership moved from `content_references` to `stream_body_owners`; a `stream_` name subtotal is no longer comparable with earlier candidates.
+These figures use complete database files and the same page-write counter scope. Raw evidence retains all structure allocations; final acceptance still needs matched ownership totals, repeated samples and equal-work reads.

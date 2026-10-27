@@ -99,6 +99,7 @@ pub(super) fn validate_authoritative_history(connection: &Connection, version: i
             "SELECT id,session_id,run_id,epoch,durable_cursor FROM stream_runs LIMIT 0",
             "SELECT id,stream_id,context_id,first_cursor,last_cursor,event_kind,unknown_kind,event_type,flags,metadata_json,content_id,byte_offset,byte_length FROM stream_changes LIMIT 0",
             "SELECT id,stream_id,value FROM stream_symbols LIMIT 0",
+            "SELECT stream_id,key_id,content_id,byte_offset,byte_length,encoding FROM stream_body_owners LIMIT 0",
             "SELECT id,stream_id,digest,descriptor_json,symbol_bytes,event_kind,entry_id,tool_id,content_key,block_key,tool_name_key,tool_type_key,tc_index,direct_field,direct_encoding FROM stream_contexts LIMIT 0",
             "SELECT change_id,field,encoding,content_id,byte_offset,byte_length FROM stream_change_content LIMIT 0",
             "SELECT content_id FROM content_collection LIMIT 0",

@@ -377,28 +377,29 @@ pub(crate) fn stage_named(
     };
     let (body, mut offset, complete) = store.db.call(move |db| {
         let tx = crate::session::database::begin_write_transaction(db)?;
-        let owner_key=super::owner_key(&tx,&scope.0,kind,&scope.1)?;
-        let stored_session=crate::session::identity::session_key(&tx,&scope.0)?;
-        let prior = resolve(&tx, &scope.0, kind, &scope.1, &scope.2)?;
-        if kind == "stream" && prior.is_none() {
-            let owner: Value = serde_json::from_str(&scope.1)?;
-            let run=crate::session::identity::BoundIdentity::run(&tx,&scope.0,owner[0].as_str().context("stream owner run is missing")?)?;
-            let session=crate::session::identity::session_key(&tx,&scope.0)?;
-            let closed: bool = tx.query_row("SELECT coalesce((SELECT c.event_type='agent_end' FROM stream_runs r JOIN stream_changes c ON c.stream_id=r.id WHERE r.session_id=?1 AND r.run_id=?2 AND r.epoch=?3 ORDER BY c.last_cursor DESC LIMIT 1),0)",
-                params![session,run,owner[1].as_i64()],|row|row.get(0))?;
-            ensure!(!closed,"terminal stream cannot stage a new content owner");
-        }
-        let result = if let Some(prior) = prior {
-            let prior_encoding:String=tx.query_row("SELECT encoding FROM content_references WHERE session_id=?1 AND owner_kind=?2 AND owner_id=?3 AND field=?4",params![stored_session,kind,&owner_key,scope.2],|row|row.get(0))?;
-            ensure!(prior_encoding==encoding.name(),"conflicting content field encoding");
+        let stored_session = crate::session::identity::session_key(&tx, &scope.0)?;
+        let prior = super::resolve_encoded(&tx, &scope.0, kind, &scope.1, &scope.2)?;
+        let result = if let Some((prior, prior_encoding)) = prior {
+            ensure!(
+                prior_encoding == encoding,
+                "conflicting content field encoding"
+            );
             let sealed: Option<String> = tx.query_row(
                 "SELECT sha256 FROM content_objects WHERE id=?1",
                 [prior.id],
                 |r| r.get(0),
             )?;
-            if kind=="entry" && sealed.is_none() {
-                let published:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM entries WHERE session_id=?1 AND entry_id=?2)",params![stored_session,&owner_key],|row|row.get(0))?;
-                ensure!(!published,"published entry content is immutable; preserve its committed prefix");
+            if kind == "entry" && sealed.is_none() {
+                let owner_key = super::owner_key(&tx, &scope.0, kind, &scope.1)?;
+                let published: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM entries WHERE session_id=?1 AND entry_id=?2)",
+                    params![stored_session, &owner_key],
+                    |row| row.get(0),
+                )?;
+                ensure!(
+                    !published,
+                    "published entry content is immutable; preserve its committed prefix"
+                );
             }
             if json {
                 let json_hash: Option<String> = tx.query_row(
@@ -432,7 +433,7 @@ pub(crate) fn stage_named(
         } else {
             find_sealed(&tx, &hash, bytes)?
         } {
-            super::bind_encoded(&tx, &scope.0, kind, &scope.1, &scope.2, range,encoding)?;
+            super::bind_encoded(&tx, &scope.0, kind, &scope.1, &scope.2, range, encoding)?;
             (range.id, range.length, true)
         } else {
             let id = create(&tx)?;
@@ -580,18 +581,20 @@ fn append_piece(
     piece: &str,
 ) -> Result<()> {
     let tx = crate::session::database::begin_write_transaction(db)?;
-    let owner_key = super::owner_key(&tx, &scope.session, scope.kind, &scope.owner)?;
-    let stored_session = crate::session::identity::session_key(&tx, &scope.session)?;
-    let current:(i64,String)=tx.query_row("SELECT byte_length,encoding FROM content_references WHERE session_id=?1 AND owner_kind=?2 AND owner_id=?3 AND field=?4 AND content_id=?5",
-        params![stored_session,scope.kind,&owner_key,scope.field,scope.body],|row|Ok((row.get(0)?,row.get(1)?)))?;
+    let (current, encoding) =
+        super::resolve_encoded(&tx, &scope.session, scope.kind, &scope.owner, &scope.field)?
+            .context("staged body owner changed")?;
+    ensure!(current.id == scope.body, "staged body owner changed");
     ensure!(
-        current.1 == scope.encoding.name(),
+        encoding == scope.encoding,
         "staged content encoding changed"
     );
     let next = offset
         .checked_add(i64::try_from(piece.len())?)
         .context("staged content length overflow")?;
-    if scope.kind == "entry" && next > current.0 {
+    if scope.kind == "entry" && next > current.length {
+        let owner_key = super::owner_key(&tx, &scope.session, scope.kind, &scope.owner)?;
+        let stored_session = crate::session::identity::session_key(&tx, &scope.session)?;
         let published: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM entries WHERE session_id=?1 AND entry_id=?2)",
             params![stored_session, &owner_key],
@@ -606,8 +609,15 @@ fn append_piece(
     // An identical retry may have captured an older staging offset before a
     // concurrent retry finished/published. Its already-committed prefix is
     // idempotent; it must never move a visible reference length backwards.
-    tx.execute("UPDATE content_references SET byte_length=max(byte_length,?6) WHERE session_id=?1 AND owner_kind=?2 AND owner_id=?3 AND field=?4 AND content_id=?5",
-        params![stored_session,scope.kind,&owner_key,scope.field,scope.body,next])?;
+    super::extend_reference(
+        &tx,
+        &scope.session,
+        scope.kind,
+        &scope.owner,
+        &scope.field,
+        scope.body,
+        next,
+    )?;
     tx.commit()?;
     Ok(())
 }

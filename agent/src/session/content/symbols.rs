@@ -22,6 +22,29 @@ const FIELDS: &[&str] = &[
 ];
 pub(super) type Symbols = HashMap<i64, (i64, String)>;
 
+pub(super) fn intern_value(tx: &Transaction<'_>, stream: i64, value: &str) -> Result<i64> {
+    ensure!(
+        value.len() <= super::stream::CHANGE_METADATA_BYTES,
+        "stream symbol exceeds byte budget"
+    );
+    let stored = key(value);
+    let id: Option<i64> = tx
+        .query_row(
+            "SELECT id FROM stream_symbols WHERE stream_id=?1 AND value=?2 COLLATE BINARY",
+            params![stream, &stored],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(id) = id {
+        return Ok(id);
+    }
+    tx.execute(
+        "INSERT INTO stream_symbols(stream_id,value) VALUES (?1,?2)",
+        params![stream, &stored],
+    )?;
+    Ok(tx.last_insert_rowid())
+}
+
 /// IDs never leave their publication transaction until COMMIT. String lookup
 /// uses SQLite's exact BINARY equality, including empty strings and embedded NUL.
 pub(super) fn intern(
@@ -37,24 +60,7 @@ pub(super) fn intern(
                 continue;
             };
             bytes = bytes.saturating_add(value.len());
-            let stored = key(value);
-            let id: Option<i64> = tx
-                .query_row(
-                    "SELECT id FROM stream_symbols WHERE stream_id=?1 AND value=?2 COLLATE BINARY",
-                    params![stream, &stored],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            let id = match id {
-                Some(id) => id,
-                None => {
-                    tx.execute(
-                        "INSERT INTO stream_symbols(stream_id,value) VALUES (?1,?2)",
-                        params![stream, &stored],
-                    )?;
-                    tx.last_insert_rowid()
-                }
-            };
+            let id = intern_value(tx, stream, value)?;
             symbols.insert((*field).into(), json!(id));
             data.remove(*field);
         }

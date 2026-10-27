@@ -1,0 +1,1908 @@
+{
+  "candidate": "C3-structured-stream-body-ownership",
+  "status": "intermediate-not-accepted",
+  "sourceBase": "0260f9bcbbb422e12a8f40643f1a0f5ae83d0a05",
+  "productionAndWorkloadSha256": {
+    "agent/src/session/content/acceptance_tests.rs": "c394e15bb70922e39bc9061cc31b55a95d01a1c8545382738eed9cacbea77e8c",
+    "agent/src/session/content/compact.rs": "daa957204d4b376144bd99de954ca9d938473d0f1cc3699bb8b1d2c45c0a0404",
+    "agent/src/session/content/entries.rs": "ed7d8d3f2167d60d16dce98b8d9fd0605fe156f6e51b69330cbe27ec72886c7f",
+    "agent/src/session/content/mod.rs": "271ab921ac851be9e3dcdffed448813e5bd02c6d955527c4297ff4262bb9e1e6",
+    "agent/src/session/content/recovery.rs": "70179a59cb630fe2e7b6b7404b699e158f6e70f00fa62582f06d6f1a4c16a950",
+    "agent/src/session/content/reset.rs": "ded9dcda512c18231fb218826c5168ec1db034ef8dc6b2144727ce0e59d6ddf2",
+    "agent/src/session/content/schema.sql": "b591d538fe16bea768d6d3c30007b96e68a6cd69d4f2976289f86d44cd6177d0",
+    "agent/src/session/content/stream.rs": "6815ca4fab5c99fd1bed4cdfa232fe08d22e4a2cb6add6a8e736b12a25c08471",
+    "agent/src/session/content/stream_body.rs": "0048b54bbf1157ce87518158615ad53e13a2fc4328b8b660011dc01a6d5c1b2b",
+    "agent/src/session/content/symbols.rs": "3c35699cc82b7b48fa4454bb8bbd76dfeaf6565890f818118bb5978e79c4eddd",
+    "agent/src/session/database/schema.rs": "6e59d359edabd7025570f00a65200434d6777c6fb257ced5a605c715a92fda6a",
+    "agent/src/session/sqlite_store/transcript.rs": "9c4c5b86da3375619b98ba491568912ba14f84b6e95bc2570f80e99e92a9e89a"
+  },
+  "binarySha256": "220295756927f3084d0bb663b073213db4c5e77e0a3ecad5ecee589c45883a3f",
+  "binaryNote": "Built from task worktree with structured ownership and first two ownership tests. Additional terminal test was added after this frozen binary; not included in this measurement.",
+  "measurement": {
+    "workload": "synthetic-long-identities-1MiB-four-fragment-flushes",
+    "cases": [
+      {
+        "contextChurn": false,
+        "bodyBytes": 1048630,
+        "fragmentBytes": 55,
+        "fragmentsPerFlush": 4,
+        "elapsedMicros": 2581610,
+        "batchMicros": {
+          "p95": 471,
+          "p99": 544,
+          "max": 4639
+        },
+        "readerMicros": {
+          "p95": 5457,
+          "max": 5662
+        },
+        "readerWork": [
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 1,
+            "dataBytes": 762
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 29,
+            "dataBytes": 22208
+          }
+        ],
+        "walWrites": {
+          "cacheWritePages": 43378,
+          "logicalPageBytes": 177676288,
+          "pageSize": 4096,
+          "scope": "writer SQLITE_DBSTATUS_CACHE_WRITE in WAL mode; logical page payload only, excludes WAL frame/header bytes, checkpoint copies, fsync counts and physical device IO; not used after IO failures"
+        },
+        "databaseBytes": 2621440,
+        "walBytes": 179463112,
+        "rows": {
+          "run_events": 0,
+          "run_snapshots": 0,
+          "stream_changes": 4768,
+          "stream_contexts": 2,
+          "stream_change_content": 0,
+          "content_segments": 4768,
+          "content_objects": 2,
+          "structures": {
+            "checkpoint_generations": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "checkpoint_generations_retirement": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "compaction_operations": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "content_collection": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "content_entry_stages": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "content_entry_stages_owner": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "content_history_versions": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 5,
+              "unusedBytes": 4079
+            },
+            "content_objects": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 146,
+              "unusedBytes": 3934
+            },
+            "content_objects_digest": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 143,
+              "unusedBytes": 3939
+            },
+            "content_objects_json_digest": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "content_operations": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "content_operations_session": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "content_references": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 39,
+              "unusedBytes": 4046
+            },
+            "content_references_body": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 31,
+              "unusedBytes": 4054
+            },
+            "content_segments": {
+              "allocatedBytes": 1310720,
+              "payloadBytes": 1091402,
+              "unusedBytes": 196412
+            },
+            "entries": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 259,
+              "unusedBytes": 3817
+            },
+            "entries_identity_unique": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 30,
+              "unusedBytes": 4049
+            },
+            "entries_kind": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 48,
+              "unusedBytes": 4031
+            },
+            "entries_run": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 23,
+              "unusedBytes": 4056
+            },
+            "entry_fingerprints": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 223,
+              "unusedBytes": 3856
+            },
+            "fork_operations": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "fork_operations_parent": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "history_display": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 445,
+              "unusedBytes": 3634
+            },
+            "history_index_state": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 5,
+              "unusedBytes": 4079
+            },
+            "history_shapes": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 384,
+              "unusedBytes": 3690
+            },
+            "history_sources": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 13,
+              "unusedBytes": 4069
+            },
+            "history_users": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 13,
+              "unusedBytes": 4069
+            },
+            "legacy_imports": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "message_blocks": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 18,
+              "unusedBytes": 4066
+            },
+            "message_blocks_tool": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 10,
+              "unusedBytes": 4075
+            },
+            "queued_run_receipts": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "retired_checkpoint_generations": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "retired_streams": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "run_events": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "run_events_custom_id": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "run_snapshots": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "runs": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 31,
+              "unusedBytes": 4053
+            },
+            "runs_status": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 13,
+              "unusedBytes": 4072
+            },
+            "session_formats": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 5,
+              "unusedBytes": 4079
+            },
+            "session_tombstones": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sessions": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 50,
+              "unusedBytes": 4034
+            },
+            "sessions_pending_content": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "skill_installations": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "skill_installations_name": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "skill_operations": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "skills": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "skills_meta": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_compaction_operations_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_content_entry_stages_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_content_history_versions_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 4,
+              "unusedBytes": 4081
+            },
+            "sqlite_autoindex_content_operations_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_entries_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 18,
+              "unusedBytes": 4061
+            },
+            "sqlite_autoindex_fork_operations_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_fork_operations_2": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_history_display_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 11,
+              "unusedBytes": 4071
+            },
+            "sqlite_autoindex_history_index_state_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 4,
+              "unusedBytes": 4081
+            },
+            "sqlite_autoindex_history_shapes_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 18,
+              "unusedBytes": 4061
+            },
+            "sqlite_autoindex_legacy_imports_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_message_blocks_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 6,
+              "unusedBytes": 4079
+            },
+            "sqlite_autoindex_queued_run_receipts_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_queued_run_receipts_2": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_retired_checkpoint_generations_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_run_events_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_run_snapshots_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_runs_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 6,
+              "unusedBytes": 4079
+            },
+            "sqlite_autoindex_session_formats_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 4,
+              "unusedBytes": 4081
+            },
+            "sqlite_autoindex_session_tombstones_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_sessions_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 4,
+              "unusedBytes": 4081
+            },
+            "sqlite_autoindex_skill_installations_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_skill_operations_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_skills_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_skills_meta_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_storage_meta_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 54,
+              "unusedBytes": 4025
+            },
+            "sqlite_autoindex_stream_changes_1": {
+              "allocatedBytes": 65536,
+              "payloadBytes": 37984,
+              "unusedBytes": 13060
+            },
+            "sqlite_autoindex_stream_runs_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 7,
+              "unusedBytes": 4078
+            },
+            "sqlite_autoindex_stream_symbols_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 370,
+              "unusedBytes": 3708
+            },
+            "sqlite_schema": {
+              "allocatedBytes": 49152,
+              "payloadBytes": 37472,
+              "unusedBytes": 10858
+            },
+            "storage_meta": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 125,
+              "unusedBytes": 3951
+            },
+            "stream_body_owners": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 15,
+              "unusedBytes": 4070
+            },
+            "stream_body_owners_content": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 5,
+              "unusedBytes": 4080
+            },
+            "stream_change_content": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "stream_change_content_body": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "stream_changes": {
+              "allocatedBytes": 704512,
+              "payloadBytes": 643456,
+              "unusedBytes": 29839
+            },
+            "stream_changes_body": {
+              "allocatedBytes": 53248,
+              "payloadBytes": 28474,
+              "unusedBytes": 10321
+            },
+            "stream_changes_context": {
+              "allocatedBytes": 73728,
+              "payloadBytes": 47521,
+              "unusedBytes": 11691
+            },
+            "stream_changes_pricing": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "stream_contexts": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 251,
+              "unusedBytes": 3828
+            },
+            "stream_contexts_digest": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 73,
+              "unusedBytes": 4009
+            },
+            "stream_contexts_entry": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "stream_contexts_identity": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 14,
+              "unusedBytes": 4068
+            },
+            "stream_contexts_key": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 9,
+              "unusedBytes": 4076
+            },
+            "stream_contexts_tool": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "stream_layout": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 26,
+              "unusedBytes": 4058
+            },
+            "stream_runs": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 10,
+              "unusedBytes": 4074
+            },
+            "stream_symbols": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 368,
+              "unusedBytes": 3707
+            },
+            "stream_symbols_identity": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 16,
+              "unusedBytes": 4063
+            }
+          },
+          "pragmas": {
+            "pageSize": 4096,
+            "journalMode": "wal",
+            "synchronous": 2
+          },
+          "contentBytes": 1048646
+        },
+        "io": {
+          "writerQueue": {
+            "count": 4781,
+            "failures": 0,
+            "totalMicros": 11027,
+            "lastMicros": 3,
+            "maxMicros": 240,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              4780,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "writerJob": {
+            "count": 4781,
+            "failures": 0,
+            "totalMicros": 1277146,
+            "lastMicros": 7,
+            "maxMicros": 5984,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              3,
+              4770,
+              6,
+              0,
+              1,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "readerQueue": {
+            "count": 6958,
+            "failures": 0,
+            "totalMicros": 20586,
+            "lastMicros": 22,
+            "maxMicros": 94,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              6958,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "readerJob": {
+            "count": 6958,
+            "failures": 0,
+            "totalMicros": 180672,
+            "lastMicros": 1374,
+            "maxMicros": 1752,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              6915,
+              40,
+              0,
+              3,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "foregroundCommit": {
+            "count": 4779,
+            "failures": 0,
+            "totalMicros": 368638,
+            "lastMicros": 98,
+            "maxMicros": 4280,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              4408,
+              370,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkpoint": {
+            "count": 10,
+            "failures": 0,
+            "totalMicros": 4684,
+            "lastMicros": 380,
+            "maxMicros": 662,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              0,
+              6,
+              4,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "commitTiming": "SQLite COMMIT elapsed including FULL synchronization; not an isolated fsync measurement",
+          "commitCoverage": "begin_write_transaction helper; writerJob covers complete queued work",
+          "fileSamplePeriodMs": 250,
+          "walPeak": "sampled maximum, not every filesystem write",
+          "checkpointMode": "PASSIVE on a separate connection/thread",
+          "checkpointBusy": 0,
+          "walFrames": 43403,
+          "checkpointedFrames": 43403,
+          "databaseBytes": 2621440,
+          "walBytes": 178853352,
+          "maxWalBytes": 178853352
+        }
+      },
+      {
+        "contextChurn": true,
+        "bodyBytes": 1048630,
+        "fragmentBytes": 55,
+        "fragmentsPerFlush": 4,
+        "elapsedMicros": 4381508,
+        "batchMicros": {
+          "p95": 902,
+          "p99": 1049,
+          "max": 5802
+        },
+        "readerMicros": {
+          "p95": 4473,
+          "max": 4603
+        },
+        "readerWork": [
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 2,
+            "dataBytes": 1162
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          },
+          {
+            "requestedEvents": 128,
+            "returnedEvents": 32,
+            "dataBytes": 18646
+          }
+        ],
+        "walWrites": {
+          "cacheWritePages": 140703,
+          "logicalPageBytes": 576319488,
+          "pageSize": 4096,
+          "scope": "writer SQLITE_DBSTATUS_CACHE_WRITE in WAL mode; logical page payload only, excludes WAL frame/header bytes, checkpoint copies, fsync counts and physical device IO; not used after IO failures"
+        },
+        "databaseBytes": 7933952,
+        "walBytes": 66393832,
+        "rows": {
+          "run_events": 0,
+          "run_snapshots": 0,
+          "stream_changes": 9534,
+          "stream_contexts": 9534,
+          "stream_change_content": 0,
+          "content_segments": 4768,
+          "content_objects": 4768,
+          "structures": {
+            "checkpoint_generations": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "checkpoint_generations_retirement": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "compaction_operations": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "content_collection": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "content_entry_stages": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "content_entry_stages_owner": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "content_history_versions": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 5,
+              "unusedBytes": 4079
+            },
+            "content_objects": {
+              "allocatedBytes": 380928,
+              "payloadBytes": 348062,
+              "unusedBytes": 7679
+            },
+            "content_objects_digest": {
+              "allocatedBytes": 417792,
+              "payloadBytes": 347934,
+              "unusedBytes": 54334
+            },
+            "content_objects_json_digest": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "content_operations": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "content_operations_session": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "content_references": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 39,
+              "unusedBytes": 4046
+            },
+            "content_references_body": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 31,
+              "unusedBytes": 4054
+            },
+            "content_segments": {
+              "allocatedBytes": 1310720,
+              "payloadBytes": 1081893,
+              "unusedBytes": 205921
+            },
+            "entries": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 259,
+              "unusedBytes": 3817
+            },
+            "entries_identity_unique": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 30,
+              "unusedBytes": 4049
+            },
+            "entries_kind": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 48,
+              "unusedBytes": 4031
+            },
+            "entries_run": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 23,
+              "unusedBytes": 4056
+            },
+            "entry_fingerprints": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 223,
+              "unusedBytes": 3856
+            },
+            "fork_operations": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "fork_operations_parent": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "history_display": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 445,
+              "unusedBytes": 3634
+            },
+            "history_index_state": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 5,
+              "unusedBytes": 4079
+            },
+            "history_shapes": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 384,
+              "unusedBytes": 3690
+            },
+            "history_sources": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 13,
+              "unusedBytes": 4069
+            },
+            "history_users": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 13,
+              "unusedBytes": 4069
+            },
+            "legacy_imports": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "message_blocks": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 18,
+              "unusedBytes": 4066
+            },
+            "message_blocks_tool": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 10,
+              "unusedBytes": 4075
+            },
+            "queued_run_receipts": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "retired_checkpoint_generations": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "retired_streams": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "run_events": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "run_events_custom_id": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "run_snapshots": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "runs": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 31,
+              "unusedBytes": 4053
+            },
+            "runs_status": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 13,
+              "unusedBytes": 4072
+            },
+            "session_formats": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 5,
+              "unusedBytes": 4079
+            },
+            "session_tombstones": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sessions": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 50,
+              "unusedBytes": 4034
+            },
+            "sessions_pending_content": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "skill_installations": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "skill_installations_name": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "skill_operations": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "skills": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "skills_meta": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_compaction_operations_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_content_entry_stages_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_content_history_versions_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 4,
+              "unusedBytes": 4081
+            },
+            "sqlite_autoindex_content_operations_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_entries_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 18,
+              "unusedBytes": 4061
+            },
+            "sqlite_autoindex_fork_operations_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_fork_operations_2": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_history_display_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 11,
+              "unusedBytes": 4071
+            },
+            "sqlite_autoindex_history_index_state_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 4,
+              "unusedBytes": 4081
+            },
+            "sqlite_autoindex_history_shapes_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 18,
+              "unusedBytes": 4061
+            },
+            "sqlite_autoindex_legacy_imports_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_message_blocks_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 6,
+              "unusedBytes": 4079
+            },
+            "sqlite_autoindex_queued_run_receipts_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_queued_run_receipts_2": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_retired_checkpoint_generations_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_run_events_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_run_snapshots_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_runs_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 6,
+              "unusedBytes": 4079
+            },
+            "sqlite_autoindex_session_formats_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 4,
+              "unusedBytes": 4081
+            },
+            "sqlite_autoindex_session_tombstones_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_sessions_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 4,
+              "unusedBytes": 4081
+            },
+            "sqlite_autoindex_skill_installations_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_skill_operations_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_skills_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_skills_meta_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "sqlite_autoindex_storage_meta_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 54,
+              "unusedBytes": 4025
+            },
+            "sqlite_autoindex_stream_changes_1": {
+              "allocatedBytes": 122880,
+              "payloadBytes": 76094,
+              "unusedBytes": 17828
+            },
+            "sqlite_autoindex_stream_runs_1": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 7,
+              "unusedBytes": 4078
+            },
+            "sqlite_autoindex_stream_symbols_1": {
+              "allocatedBytes": 1032192,
+              "payloadBytes": 907778,
+              "unusedBytes": 102320
+            },
+            "sqlite_schema": {
+              "allocatedBytes": 49152,
+              "payloadBytes": 37472,
+              "unusedBytes": 10858
+            },
+            "storage_meta": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 125,
+              "unusedBytes": 3951
+            },
+            "stream_body_owners": {
+              "allocatedBytes": 110592,
+              "payloadBytes": 80786,
+              "unusedBytes": 15185
+            },
+            "stream_body_owners_content": {
+              "allocatedBytes": 65536,
+              "payloadBytes": 37884,
+              "unusedBytes": 13163
+            },
+            "stream_change_content": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "stream_change_content_body": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "stream_changes": {
+              "allocatedBytes": 1306624,
+              "payloadBytes": 1239063,
+              "unusedBytes": 10163
+            },
+            "stream_changes_body": {
+              "allocatedBytes": 57344,
+              "payloadBytes": 33178,
+              "unusedBytes": 9701
+            },
+            "stream_changes_context": {
+              "allocatedBytes": 167936,
+              "payloadBytes": 114102,
+              "unusedBytes": 24744
+            },
+            "stream_changes_pricing": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "stream_contexts": {
+              "allocatedBytes": 1306624,
+              "payloadBytes": 1222917,
+              "unusedBytes": 26309
+            },
+            "stream_contexts_digest": {
+              "allocatedBytes": 458752,
+              "payloadBytes": 362164,
+              "unusedBytes": 66646
+            },
+            "stream_contexts_entry": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "stream_contexts_identity": {
+              "allocatedBytes": 147456,
+              "payloadBytes": 95084,
+              "unusedBytes": 23342
+            },
+            "stream_contexts_key": {
+              "allocatedBytes": 90112,
+              "payloadBytes": 61719,
+              "unusedBytes": 13832
+            },
+            "stream_contexts_tool": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 0,
+              "unusedBytes": 4088
+            },
+            "stream_layout": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 26,
+              "unusedBytes": 4058
+            },
+            "stream_runs": {
+              "allocatedBytes": 4096,
+              "payloadBytes": 10,
+              "unusedBytes": 4074
+            },
+            "stream_symbols": {
+              "allocatedBytes": 958464,
+              "payloadBytes": 898368,
+              "unusedBytes": 27885
+            },
+            "stream_symbols_identity": {
+              "allocatedBytes": 65536,
+              "payloadBytes": 37896,
+              "unusedBytes": 13145
+            }
+          },
+          "pragmas": {
+            "pageSize": 4096,
+            "journalMode": "wal",
+            "synchronous": 2
+          },
+          "contentBytes": 1048646
+        },
+        "io": {
+          "writerQueue": {
+            "count": 9547,
+            "failures": 0,
+            "totalMicros": 30154,
+            "lastMicros": 2,
+            "maxMicros": 1085,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              9544,
+              1,
+              1,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "writerJob": {
+            "count": 9547,
+            "failures": 0,
+            "totalMicros": 2939080,
+            "lastMicros": 6,
+            "maxMicros": 4378,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              8,
+              9489,
+              40,
+              5,
+              5,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "readerQueue": {
+            "count": 5996,
+            "failures": 0,
+            "totalMicros": 18124,
+            "lastMicros": 6,
+            "maxMicros": 570,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              5994,
+              1,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "readerJob": {
+            "count": 5996,
+            "failures": 0,
+            "totalMicros": 127920,
+            "lastMicros": 3989,
+            "maxMicros": 3989,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              5942,
+              51,
+              2,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "foregroundCommit": {
+            "count": 9545,
+            "failures": 0,
+            "totalMicros": 974998,
+            "lastMicros": 87,
+            "maxMicros": 4186,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              5227,
+              4308,
+              4,
+              4,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "checkpoint": {
+            "count": 16,
+            "failures": 0,
+            "totalMicros": 14955,
+            "lastMicros": 990,
+            "maxMicros": 1780,
+            "durationUpperBoundsMicros": [
+              100,
+              500,
+              1000,
+              2000,
+              5000,
+              10000,
+              25000,
+              50000,
+              100000,
+              250000,
+              1000000
+            ],
+            "durationCounts": [
+              0,
+              0,
+              14,
+              2,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "commitTiming": "SQLite COMMIT elapsed including FULL synchronization; not an isolated fsync measurement",
+          "commitCoverage": "begin_write_transaction helper; writerJob covers complete queued work",
+          "fileSamplePeriodMs": 250,
+          "walPeak": "sampled maximum, not every filesystem write",
+          "checkpointMode": "PASSIVE on a separate connection/thread",
+          "checkpointBusy": 0,
+          "walFrames": 8502,
+          "checkpointedFrames": 8502,
+          "databaseBytes": 7933952,
+          "walBytes": 35155992,
+          "maxWalBytes": 514048312
+        }
+      }
+    ],
+    "limitations": "Direct writer batches and bounded replay; timer cadence, admission backlog, native UI and physical power loss are not simulated. No VACUUM, historical compression or completion rewrite."
+  },
+  "processResources": "real 8.97\nuser 5.88\nsys 0.97\n            36880384  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                2688  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n               18116  voluntary context switches\n               71290  involuntary context switches\n        118702425215  instructions retired\n         31952939661  cycles elapsed\n            14303808  peak memory footprint\n",
+  "comparisonReferences": [
+    "compact-storage-candidate-1-2026-10-27.json",
+    "compact-storage-candidate-2-2026-10-27.json"
+  ],
+  "limitations": [
+    "Single run; not final acceptance.",
+    "Long opaque IDs and low-level high-context-churn stress; not a valid complete assistant message above the field limit.",
+    "Reader pages return different work; timings cannot establish equal-work read performance.",
+    "Ownership moved from content_references to stream_body_owners; stream_* subtotal alone is not comparable. Use complete database and separately matched ownership/category totals.",
+    "WAL file size can reflect checkpoint/reuse. Logical cache-write page bytes remain the write-amplification comparison."
+  ],
+  "highChurnComparison": {
+    "baselineLogicalWalPageBytes": 415535104,
+    "previousCandidateLogicalWalPageBytes": 614146048,
+    "thisCandidateLogicalWalPageBytes": 576319488,
+    "baselineDatabaseBytes": 11964416,
+    "previousCandidateDatabaseBytes": 10407936,
+    "thisCandidateDatabaseBytes": 7933952
+  },
+  "nextGate": "Resolve remaining high-churn logical WAL write amplification and rerun full migration, durability, lifecycle and performance acceptance before integration."
+}

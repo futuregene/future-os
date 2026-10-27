@@ -11,7 +11,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
-pub(crate) const LAYOUT: &str = "compact-native-uuid-v1";
+pub(crate) const LAYOUT: &str = "compact-owned-stream-v1";
 // Frozen wire-independent codes. Append only; never use enum ordinals.
 const KINDS: &[&str] = &[
     "agent_start",
@@ -395,6 +395,7 @@ pub(crate) fn validate_layout(db: &Connection) -> Result<()> {
     ensure!(marker.as_deref()==Some(LAYOUT),"unsupported unpublished Agent storage layout; preserve agent.db and use the matching candidate or a released backup");
     for (name, columns) in [
         ("stream_symbols_identity", vec!["id", "stream_id"]),
+        ("stream_body_owners_content", vec!["content_id"]),
         (
             "stream_contexts_identity",
             vec!["id", "stream_id", "event_kind"],
@@ -457,6 +458,8 @@ pub(crate) fn validate_layout(db: &Connection) -> Result<()> {
         ("stream_changes", "content_id", "content_objects"),
         ("stream_contexts", "stream_id", "stream_runs"),
         ("stream_symbols", "stream_id", "stream_runs"),
+        ("stream_body_owners", "stream_id", "stream_runs"),
+        ("stream_body_owners", "content_id", "content_objects"),
     ] {
         let valid: bool=db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_list(?1) WHERE \"from\"=?2 AND \"table\"=?3 AND \"to\"='id')",params![table,column,target],|r|r.get(0))?;
         ensure!(
@@ -484,6 +487,7 @@ pub(crate) fn validate_layout(db: &Connection) -> Result<()> {
         );
     }
     for trigger in [
+        "stream_body_owner_removed",
         "stream_direct_removed",
         "stream_content_removed",
         "stream_context_immutable",
@@ -500,6 +504,12 @@ pub(crate) fn validate_layout(db: &Connection) -> Result<()> {
         );
     }
     db.prepare("SELECT change_id,field,encoding,content_id,byte_offset,byte_length FROM stream_content_ranges LIMIT 0")?;
+    db.prepare("SELECT stream_id,key_id,content_id,byte_offset,byte_length,encoding FROM stream_body_owners LIMIT 0")?;
+    let owned:bool=db.query_row(r#"SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_list('stream_body_owners') p JOIN pragma_foreign_key_list('stream_body_owners') q ON p.id=q.id WHERE p."from"='key_id' AND p."table"='stream_symbols' AND p."to"='id' AND q."from"='stream_id' AND q."to"='stream_id')"#,[],|r|r.get(0))?;
+    ensure!(
+        owned,
+        "missing stream body key ownership; preserve database for recovery"
+    );
     Ok(())
 }
 

@@ -369,6 +369,13 @@
       "scope": "same-machine synthetic metadata stress; see raw artifact for measurements and limitations",
       "implementationCheckpoint": "96bcfb69",
       "provenanceValidation": "All recorded source hashes match this checkpoint; newer main merges and later candidates do not replace these measurements."
+    },
+    {
+      "id": "B3.3-structured-stream-body-owners",
+      "status": "withheld: remaining high-context-churn logical WAL page-write regression",
+      "artifact": "docs/testing/compact-storage-candidate-3-2026-10-27.json",
+      "artifactSha256": "7fd4bf6737dcb4e7923bed2d5e642043b5840d841c0338d2ec59d03780b0c767",
+      "scope": "single intermediate stress sample; ownership category changed; see artifact and bilingual baselines for limitations"
     }
   ]
 }

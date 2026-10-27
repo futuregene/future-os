@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS content_segments (
 -- Sharing a body never grants a caller access to the other session's records.
 CREATE TABLE IF NOT EXISTS content_references (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    owner_kind TEXT NOT NULL CHECK(owner_kind IN ('entry','stream','tool','checkpoint')),
+    owner_kind TEXT NOT NULL CHECK(owner_kind IN ('entry','tool','checkpoint')),
     owner_id TEXT NOT NULL,
     field TEXT NOT NULL,
     encoding TEXT NOT NULL DEFAULT 'text' CHECK(encoding IN ('text','json','shell_summary','tool_args_string_v1')),
@@ -53,9 +53,9 @@ CREATE TABLE IF NOT EXISTS stream_runs (
 -- Draft layout identity: old schema-8 candidates are rejected, never converted.
 CREATE TABLE IF NOT EXISTS stream_layout (
     singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-    layout TEXT NOT NULL CHECK(layout='compact-native-uuid-v1')
+    layout TEXT NOT NULL CHECK(layout='compact-owned-stream-v1')
 );
-INSERT OR IGNORE INTO stream_layout VALUES(1,'compact-native-uuid-v1');
+INSERT OR IGNORE INTO stream_layout VALUES(1,'compact-owned-stream-v1');
 -- Dictionary values are exact strings, including empty/NUL and Unicode.
 CREATE TABLE IF NOT EXISTS stream_symbols (
     id INTEGER PRIMARY KEY,
@@ -66,6 +66,22 @@ CREATE TABLE IF NOT EXISTS stream_symbols (
 CREATE UNIQUE INDEX IF NOT EXISTS stream_symbols_identity ON stream_symbols(id,stream_id);
 CREATE TRIGGER IF NOT EXISTS stream_symbol_immutable BEFORE UPDATE ON stream_symbols BEGIN
     SELECT RAISE(ABORT,'stream symbols are immutable');
+END;
+-- Staging ownership shares the same short key dictionary as semantic changes.
+-- No encoded [run,epoch,key] string is repeated in ownership or reverse indices.
+CREATE TABLE IF NOT EXISTS stream_body_owners (
+    stream_id INTEGER NOT NULL REFERENCES stream_runs(id) ON DELETE CASCADE,
+    key_id INTEGER NOT NULL,
+    content_id INTEGER NOT NULL REFERENCES content_objects(id),
+    byte_offset INTEGER NOT NULL CHECK(byte_offset>=0),
+    byte_length INTEGER NOT NULL CHECK(byte_length>=0),
+    encoding TEXT NOT NULL CHECK(encoding IN ('text','json','shell_summary','tool_args_string_v1')),
+    PRIMARY KEY(stream_id,key_id),
+    FOREIGN KEY(key_id,stream_id) REFERENCES stream_symbols(id,stream_id)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS stream_body_owners_content ON stream_body_owners(content_id);
+CREATE TRIGGER IF NOT EXISTS stream_body_owner_removed AFTER DELETE ON stream_body_owners BEGIN
+    INSERT OR IGNORE INTO content_collection(content_id) VALUES (OLD.content_id);
 END;
 -- Descriptor is [stable fields, direct field, direct encoding, symbol map, kind].
 -- Digest narrows lookup; the complete descriptor is always compared on reuse.

@@ -7,7 +7,7 @@ This is the implementation contract; verification results are recorded separatel
 ## Layout and release boundary
 
 Agent schema 8 directly replaces the unpublished target; logical conversation format remains 2.
-The `stream_layout` singleton is `compact-native-uuid-v1`. There is no draft conversion, dual codec,
+The `stream_layout` singleton is `compact-owned-stream-v1`. There is no draft conversion, dual codec,
 dual writing or historical body compression. Released schema 2–7 and released Desktop SQL/checksums
 remain unchanged, and existing conversations continue using format 1.
 Admission checks the marker, authoritative columns, index definitions, foreign keys and collection
@@ -84,8 +84,13 @@ low-frequency terminal extensions also read through this authority.
 
 ## Publication and lifecycle
 
-Body staging, watermarks and confirmation boundaries retain the segmented contract. Symbols, contexts,
-changes, body references and watermarks become visible atomically. Retries compare first cursor,
+Body staging, watermarks and confirmation boundaries retain the segmented contract. Staged bodies
+use `stream_body_owners`, keyed by integer `(stream_id,key_id)` and sharing the stream symbol dictionary.
+The encoded `[run,epoch,key]` adapter is transient and is never persisted in ownership rows or indices.
+Staging may reserve a stream, symbol and body before publication; it does not advance the durable cursor.
+The transaction publishing a change atomically publishes its contexts, ranges and watermark over durable bytes.
+Unpublished owners protect staged bodies from collection; deletion queues collection and retired streams
+release owners in bounded slices. Retries compare first cursor,
 kind, complete decoded metadata and all body ranges/encodings; differing data conflicts explicitly.
 Delta coalescing requires all metadata except derived range fields and the last-fragment envelope
 clock to match, preserving changing extensions instead of overwriting them.

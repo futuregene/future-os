@@ -21,6 +21,7 @@ pub(crate) mod reader;
 mod recovery;
 pub(crate) mod reset;
 pub(crate) mod stream;
+mod stream_body;
 pub(crate) mod stream_entry;
 mod symbols;
 pub(crate) mod terminal;
@@ -314,6 +315,7 @@ pub(crate) fn find_json(db: &Connection, sha256: &str) -> Result<Option<ContentR
     Ok(db.query_row("SELECT id,byte_length FROM content_objects WHERE sealed=1 AND json_sha256=?1 ORDER BY id LIMIT 1",[sha256],|r|Ok(ContentRange{id:r.get(0)?,offset:0,length:r.get(1)?})).optional()?)
 }
 
+#[cfg(test)]
 pub(crate) fn bind(
     tx: &Transaction<'_>,
     session: &str,
@@ -333,8 +335,8 @@ pub(crate) fn bind(
     )
 }
 
-/// Entry owners share the authoritative entry key representation. Stream and
-/// operation staging names remain opaque until their structured owner adapter.
+/// Entry owners share the authoritative entry key representation. Operation
+/// names are opaque; stream owners use their own structured adapter.
 pub(crate) fn owner_key(
     db: &Connection,
     session: &str,
@@ -359,8 +361,6 @@ pub(crate) fn bind_encoded(
     range: ContentRange,
     encoding: stream::Encoding,
 ) -> Result<()> {
-    let stored_session = super::identity::session_key(tx, session)?;
-    let stored_owner = owner_key(tx, session, kind, owner)?;
     ensure!(
         range.offset >= 0 && range.length >= 0,
         "invalid content reference"
@@ -375,6 +375,13 @@ pub(crate) fn bind_encoded(
         .checked_add(range.length)
         .context("content range overflow")?;
     ensure!(end <= total, "content reference exceeds durable bytes");
+    if kind == "stream" {
+        ensure!(field.is_empty(), "stream body field must be empty");
+        let (scope, key) = stream_body::decode(session, owner)?;
+        return stream_body::bind(tx, &scope, &key, range, encoding);
+    }
+    let stored_session = super::identity::session_key(tx, session)?;
+    let stored_owner = owner_key(tx, session, kind, owner)?;
     let old: Option<(i64,i64,i64,String)>=tx.query_row("SELECT content_id,byte_offset,byte_length,encoding FROM content_references WHERE session_id=?1 AND owner_kind=?2 AND owner_id=?3 AND field=?4",params![&stored_session,kind,&stored_owner,field],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
     if let Some(old) = old {
         ensure!(
@@ -401,9 +408,52 @@ pub(crate) fn resolve(
     owner: &str,
     field: &str,
 ) -> Result<Option<ContentRange>> {
+    Ok(resolve_encoded(db, session, kind, owner, field)?.map(|(range, _)| range))
+}
+
+pub(super) fn resolve_encoded(
+    db: &Connection,
+    session: &str,
+    kind: &str,
+    owner: &str,
+    field: &str,
+) -> Result<Option<(ContentRange, stream::Encoding)>> {
+    if kind == "stream" {
+        ensure!(field.is_empty(), "stream body field must be empty");
+        let (scope, key) = stream_body::decode(session, owner)?;
+        return stream_body::get(db, &scope, &key);
+    }
     let stored_session = super::identity::session_key(db, session)?;
     let stored_owner = owner_key(db, session, kind, owner)?;
-    Ok(db.query_row("SELECT content_id,byte_offset,byte_length FROM content_references WHERE session_id=?1 AND owner_kind=?2 AND owner_id=?3 AND field=?4",params![stored_session,kind,stored_owner,field],|r|Ok(ContentRange{id:r.get(0)?,offset:r.get(1)?,length:r.get(2)?})).optional()?)
+    let raw:Option<(i64,i64,i64,String)>=db.query_row("SELECT content_id,byte_offset,byte_length,encoding FROM content_references WHERE session_id=?1 AND owner_kind=?2 AND owner_id=?3 AND field=?4",params![stored_session,kind,stored_owner,field],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+    raw.map(|(id, offset, length, encoding)| {
+        Ok((
+            ContentRange { id, offset, length },
+            stream::Encoding::parse(&encoding)?,
+        ))
+    })
+    .transpose()
+}
+
+pub(super) fn extend_reference(
+    tx: &Transaction<'_>,
+    session: &str,
+    kind: &str,
+    owner: &str,
+    field: &str,
+    body: i64,
+    next: i64,
+) -> Result<()> {
+    if kind == "stream" {
+        ensure!(field.is_empty(), "stream body field must be empty");
+        let (scope, key) = stream_body::decode(session, owner)?;
+        return stream_body::extend(tx, &scope, &key, body, next);
+    }
+    let owner = owner_key(tx, session, kind, owner)?;
+    let session = super::identity::session_key(tx, session)?;
+    let changed=tx.execute("UPDATE content_references SET byte_length=max(byte_length,?6) WHERE session_id=?1 AND owner_kind=?2 AND owner_id=?3 AND field=?4 AND content_id=?5",params![session,kind,owner,field,body,next])?;
+    ensure!(changed == 1, "staged body owner changed");
+    Ok(())
 }
 
 pub(crate) fn read(db: &Connection, id: i64, offset: i64, max_bytes: usize) -> Result<ContentPage> {
@@ -474,7 +524,7 @@ pub(crate) fn collect(tx: &Transaction<'_>, candidates: &[i64]) -> Result<usize>
     let mut remaining_segments = 4i64;
     for id in candidates {
         tx.execute("INSERT OR IGNORE INTO content_collection(content_id) SELECT id FROM content_objects WHERE id=?1",[id])?;
-        let shared:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM content_references WHERE content_id=?1) OR EXISTS(SELECT 1 FROM stream_content_ranges WHERE content_id=?1)",[id],|r|r.get(0))?;
+        let shared:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM content_references WHERE content_id=?1) OR EXISTS(SELECT 1 FROM stream_content_ranges WHERE content_id=?1) OR EXISTS(SELECT 1 FROM stream_body_owners WHERE content_id=?1)",[id],|r|r.get(0))?;
         if shared {
             tx.execute("DELETE FROM content_collection WHERE content_id=?1", [id])?;
             continue;

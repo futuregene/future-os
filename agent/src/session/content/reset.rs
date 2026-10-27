@@ -260,18 +260,23 @@ impl SqliteStore {
 /// One small idle slice, requested only by explicit reset/prune operations.
 /// Readers exclude the retirement marker immediately; no historical scan.
 pub(crate) fn reclaim_retired(db: &mut Connection) -> Result<bool> {
-    let scope: Option<(i64,crate::session::identity::BoundIdentity,crate::session::identity::BoundIdentity,i64)> = db.query_row("SELECT r.id,r.session_id,r.run_id,r.epoch FROM retired_streams d JOIN stream_runs r ON r.id=d.stream_id ORDER BY d.stream_id LIMIT 1",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?;
-    let Some((id, session, run, epoch)) = scope else {
+    let id: Option<i64> = db
+        .query_row(
+            "SELECT stream_id FROM retired_streams ORDER BY stream_id LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(id) = id else {
         return Ok(true);
     };
     database::try_maintenance_transaction(db, |tx| {
         tx.execute("DELETE FROM stream_change_content WHERE (change_id,field) IN (SELECT b.change_id,b.field FROM stream_change_content b JOIN stream_changes c ON c.id=b.change_id WHERE c.stream_id=?1 LIMIT 64)",[id])?;
         tx.execute("DELETE FROM stream_changes WHERE id IN (SELECT c.id FROM stream_changes c WHERE c.stream_id=?1 AND NOT EXISTS(SELECT 1 FROM stream_change_content b WHERE b.change_id=c.id) LIMIT 64)",[id])?;
         tx.execute("DELETE FROM stream_contexts WHERE id IN (SELECT x.id FROM stream_contexts x WHERE x.stream_id=?1 AND NOT EXISTS(SELECT 1 FROM stream_changes c WHERE c.context_id=x.id) LIMIT 64)",[id])?;
-        tx.execute("DELETE FROM stream_symbols WHERE id IN (SELECT id FROM stream_symbols WHERE stream_id=?1 AND NOT EXISTS(SELECT 1 FROM stream_contexts WHERE stream_id=?1) LIMIT 64)",[id])?;
-        let prefix = format!("[{},{epoch},", serde_json::to_string(&run)?);
-        tx.execute("DELETE FROM content_references WHERE (session_id,owner_kind,owner_id,field) IN (SELECT session_id,owner_kind,owner_id,field FROM content_references WHERE session_id=?1 AND owner_kind='stream' AND owner_id>=?2 AND owner_id<?3 LIMIT 64)",params![session,prefix,format!("{prefix}\u{10ffff}")])?;
-        let remaining: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM stream_changes WHERE stream_id=?1) OR EXISTS(SELECT 1 FROM stream_contexts WHERE stream_id=?1) OR EXISTS(SELECT 1 FROM stream_symbols WHERE stream_id=?1) OR EXISTS(SELECT 1 FROM content_references WHERE session_id=?2 AND owner_kind='stream' AND owner_id>=?3 AND owner_id<?4)",params![id,session,prefix,format!("{prefix}\u{10ffff}")],|row|row.get(0))?;
+        tx.execute("DELETE FROM stream_body_owners WHERE (stream_id,key_id) IN (SELECT stream_id,key_id FROM stream_body_owners WHERE stream_id=?1 LIMIT 64)",[id])?;
+        tx.execute("DELETE FROM stream_symbols WHERE id IN (SELECT s.id FROM stream_symbols s WHERE s.stream_id=?1 AND NOT EXISTS(SELECT 1 FROM stream_contexts WHERE stream_id=?1) AND NOT EXISTS(SELECT 1 FROM stream_body_owners b WHERE b.stream_id=?1 AND b.key_id=s.id) LIMIT 64)",[id])?;
+        let remaining:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM stream_changes WHERE stream_id=?1) OR EXISTS(SELECT 1 FROM stream_contexts WHERE stream_id=?1) OR EXISTS(SELECT 1 FROM stream_symbols WHERE stream_id=?1) OR EXISTS(SELECT 1 FROM stream_body_owners WHERE stream_id=?1)",[id],|row|row.get(0))?;
         if !remaining {
             tx.execute("DELETE FROM stream_runs WHERE id=?1", [id])?;
         }

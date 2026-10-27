@@ -129,6 +129,118 @@ fn rollback_removes_segments_references_and_format_together() {
 }
 
 #[test]
+fn structured_stream_owners_isolate_scopes_and_protect_staged_bodies() {
+    let mut db = connection();
+    let tx = db.transaction().unwrap();
+    enable(&tx, "parent").unwrap();
+    enable(&tx, "child").unwrap();
+    let scope = stream::StreamIdentity {
+        session_id: "parent".into(),
+        run_id: "r".into(),
+        epoch: 0,
+    };
+    let body = create(&tx).unwrap();
+    let range = append(&tx, body, 0, "staged").unwrap();
+    stream_body::bind(&tx, &scope, "same-key", range, stream::Encoding::Text).unwrap();
+    assert_eq!(
+        stream_body::get(&tx, &scope, "same-key")
+            .unwrap()
+            .unwrap()
+            .0,
+        range
+    );
+    for other in [
+        stream::StreamIdentity {
+            session_id: "child".into(),
+            ..scope.clone()
+        },
+        stream::StreamIdentity {
+            run_id: "other".into(),
+            ..scope.clone()
+        },
+        stream::StreamIdentity {
+            epoch: 1,
+            ..scope.clone()
+        },
+    ] {
+        assert!(stream_body::get(&tx, &other, "same-key").unwrap().is_none());
+    }
+    assert_eq!(collect(&tx, &[body]).unwrap(), 0);
+    assert_eq!(
+        tx.query_row("SELECT count(*) FROM content_references", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(tx.query_row("SELECT count(*) FROM stream_body_owners WHERE typeof(stream_id)='integer' AND typeof(key_id)='integer'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    tx.execute("DELETE FROM stream_runs", []).unwrap();
+    assert_eq!(
+        tx.query_row(
+            "SELECT count(*) FROM content_collection WHERE content_id=?1",
+            [body],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(collect(&tx, &[body]).unwrap(), 1);
+}
+
+#[test]
+fn structured_stream_reservations_rollback_without_publishing_or_reusing_ids() {
+    let mut db = connection();
+    {
+        let tx = db.transaction().unwrap();
+        enable(&tx, "parent").unwrap();
+        let scope = stream::StreamIdentity {
+            session_id: "parent".into(),
+            run_id: "r".into(),
+            epoch: 0,
+        };
+        let body = create(&tx).unwrap();
+        let range = append(&tx, body, 0, "uncommitted").unwrap();
+        stream_body::bind(&tx, &scope, "key", range, stream::Encoding::Text).unwrap();
+    }
+    for table in [
+        "stream_runs",
+        "stream_symbols",
+        "stream_body_owners",
+        "stream_changes",
+        "content_objects",
+    ] {
+        assert_eq!(
+            db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+}
+
+#[test]
+fn terminal_stream_owners_allow_exact_retry_but_reject_new_or_growing_bodies() {
+    let mut db = connection();
+    let tx = db.transaction().unwrap();
+    enable(&tx, "parent").unwrap();
+    let scope = stream::StreamIdentity {
+        session_id: "parent".into(),
+        run_id: "r".into(),
+        epoch: 0,
+    };
+    let body = create(&tx).unwrap();
+    let range = append(&tx, body, 0, "prefix").unwrap();
+    stream_body::bind(&tx, &scope, "key", range, stream::Encoding::Text).unwrap();
+    stream::append_boundary(&tx, &scope, "agent_end", serde_json::json!({})).unwrap();
+    stream_body::bind(&tx, &scope, "key", range, stream::Encoding::Text).unwrap();
+    assert!(stream_body::bind(&tx, &scope, "new", range, stream::Encoding::Text).is_err());
+    assert!(stream_body::extend(&tx, &scope, "key", body, range.length + 1).is_err());
+    assert_eq!(
+        stream_body::get(&tx, &scope, "key").unwrap().unwrap().0,
+        range
+    );
+}
+
+#[test]
 fn bounded_read_rejects_a_missing_committed_segment() {
     let mut db = connection();
     let tx = db.transaction().unwrap();
@@ -160,7 +272,19 @@ fn segmented_transcripts_round_trip_extensions_and_reuse_sealed_stream_bodies() 
             let mut digest = ContentDigest::default();
             digest.push("shared text")?;
             let range = seal(&tx, id, digest)?;
-            bind(&tx, "new", "stream", "live-block", "", range)?;
+            let stream = stream::StreamIdentity {
+                session_id: "new".into(),
+                run_id: "r".into(),
+                epoch: 0,
+            };
+            bind(
+                &tx,
+                "new",
+                "stream",
+                &stream::owner(&stream, "live-block"),
+                "",
+                range,
+            )?;
             tx.commit()?;
             Ok(())
         })
@@ -238,7 +362,19 @@ fn streamed_tool_arguments_are_shared_despite_json_whitespace() {
             append(&tx, id, 0, raw)?;
             let digest = JsonContentDigest::verified(raw, &json!({"command":"pwd"}))?;
             let range = seal_json(&tx, id, digest)?;
-            bind(&tx, "new", "stream", "arguments", "", range)?;
+            let stream = stream::StreamIdentity {
+                session_id: "new".into(),
+                run_id: "r".into(),
+                epoch: 0,
+            };
+            bind(
+                &tx,
+                "new",
+                "stream",
+                &stream::owner(&stream, "arguments"),
+                "",
+                range,
+            )?;
             tx.commit()?;
             Ok(())
         })

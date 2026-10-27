@@ -161,8 +161,10 @@ impl SqliteStore {
                     "DELETE FROM run_snapshots WHERE session_id=?1 AND run_id=?2",
                     params![session, run],
                 )?;
-                tx.execute("DELETE FROM stream_runs WHERE session_id=?1 AND run_id=?2",params![session,run])?;
-                tx.execute("DELETE FROM content_references WHERE session_id=?1 AND owner_kind='stream' AND json_valid(owner_id) AND json_extract(owner_id,'$[0]')=?2",params![session,run])?;
+                tx.execute(
+                    "DELETE FROM stream_runs WHERE session_id=?1 AND run_id=?2",
+                    params![session, run],
+                )?;
             }
             tx.commit()?;
             Ok(planned.plan)
