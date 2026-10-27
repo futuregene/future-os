@@ -1340,6 +1340,12 @@ pub struct SessionSummary {
     /// Whether the agent is streaming a response for this session right now.
     #[prost(bool, tag = "9")]
     pub is_streaming: bool,
+    /// When the session was created. Clients order their conversation lists by
+    /// this rather than `updated_at_ms`: an activity stamp moves whenever a run
+    /// touches the session (and a `session_info` snapshot rewrites it), so a list
+    /// sorted by it reshuffles under the reader.
+    #[prost(int64, tag = "11")]
+    pub created_at_ms: i64,
 }
 /// One displayable entry. Content blocks preserve order; extensible metadata
 /// alone uses explicit JSON carrier fields.

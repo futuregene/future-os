@@ -60,6 +60,7 @@ impl Manager {
             id: sess.id.clone(),
             cwd: sess.cwd.clone(),
             updated_at: sess.updated_at,
+            created_at: sess.created_at,
             model: sess.model.clone(),
             name: if !sess.name.is_empty() {
                 Some(sess.name.clone())

@@ -302,6 +302,11 @@ pub struct SessionSummary {
     pub cwd: String,
     #[serde(default, deserialize_with = "de_null_default")]
     pub updated_at_ms: i64,
+    /// When the session was created — the rail orders conversations newest
+    /// first by this. Defaults to 0 for an agent that predates the stamp; the
+    /// rail then falls back to `updated_at_ms`.
+    #[serde(default, deserialize_with = "de_null_default")]
+    pub created_at_ms: i64,
     #[serde(default, deserialize_with = "de_null_default")]
     pub model: String,
     #[serde(default)]
@@ -664,6 +669,7 @@ mod tests {
             model: "future/deepseek-flash".into(),
             cwd: "/tmp".into(),
             updated_at_ms: 1786060800000,
+            created_at_ms: 1786030800000,
             parent_session_id: None,
             first_message: None,
             query_count: 3,
@@ -673,6 +679,7 @@ mod tests {
         let summary: SessionSummary =
             serde_json::from_value(wire).expect("TUI must parse list_sessions rows");
         assert_eq!(summary.id, "s1");
+        assert_eq!(summary.created_at_ms, 1786030800000);
         assert_eq!(summary.session_name.as_deref(), Some("hi"));
         assert_eq!(summary.is_streaming, Some(true));
     }
