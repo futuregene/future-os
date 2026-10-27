@@ -404,6 +404,15 @@ const ZOOM_OUT: &str = "preview.zoomOut";
 /// figures live in [`WorkbenchData`], which the app owns and passes in. Keeping
 /// them apart is what lets the surface be tested with fixtures and later fed by
 /// a real session without either side knowing the other's shape.
+/// A picture placed on screen by the terminal's image protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaintedImage {
+    /// The source bytes it was transmitted from (`screen::ImageRequest::source`).
+    pub source: u64,
+    /// The id it was transmitted under, which is how it is placed and deleted.
+    pub id: u32,
+}
+
 pub struct Workbench {
     pub palette: Palette,
     /// The language the chrome is drawn in. A stored preference resolves to one
@@ -488,6 +497,16 @@ pub struct Workbench {
     /// [`panels::Folded`]). A rail with a long conversation list is scrolled a
     /// group at a time once its workspaces are folded.
     pub folded_workspaces: panels::Folded,
+    /// The picture the last frame wanted on screen, if any.
+    ///
+    /// A terminal picture is not text: the frame is a list of rows, and a
+    /// bitmap is placed by the terminal at a cell of its own. So the preview box
+    /// *asks* for one and the driver paints it after the frame it belongs to
+    /// (`run::paint_image`) — the one thing a text frame cannot express.
+    pub image_request: Option<screen::ImageRequest>,
+    /// The picture actually placed on screen: its terminal id, and the source
+    /// bytes it was transmitted from. `None` means nothing is placed.
+    pub painted_image: Option<PaintedImage>,
 }
 
 impl Default for Workbench {
@@ -560,6 +579,8 @@ impl Workbench {
             preview_pan: (0, 0),
             preview_scroll: 0,
             folded_workspaces: panels::Folded::new(),
+            image_request: None,
+            painted_image: None,
         }
     }
 
@@ -631,6 +652,9 @@ impl Workbench {
         // whole token with no keystroke after it, so painting is what opens the
         // menu for it.
         self.sync_mention(data);
+        // Each frame asks again: a frame that paints no picture asks for none,
+        // and the driver takes that as "remove the one on screen".
+        self.image_request = None;
         let rows = screen::compose(self, data, w, h);
         debug_assert_eq!(
             rows.len(),
@@ -5245,10 +5269,13 @@ mod tests {
         }
     }
 
-    /// The preview box paints the picture it was given, names it, and keeps the
-    /// frame's size invariant at every terminal size.
+    /// The preview box names the picture and keeps the frame's size invariant at
+    /// every terminal size. A picture is either placed by the terminal's image
+    /// protocol — never drawn as half blocks, which is a mosaic of the thing the
+    /// reader opened — or named plainly with the reason it cannot be shown.
     #[test]
     fn the_preview_box_paints_the_picture_and_stays_in_the_frame() {
+        use crate::terminal_image::{set_capabilities, ImageProtocol, TerminalCapabilities};
         let mut data = demo::chat();
         data.preview = Some(demo::preview_image());
         for (w, h) in [(120u16, 38u16), (88, 24), (60, 16), (24, 8), (1, 1)] {
@@ -5260,20 +5287,59 @@ mod tests {
                 assert_eq!(ansi::width(row), w as usize, "{w}x{h}: {row:?}");
             }
         }
-        // At a size that can hold it, the box draws half blocks and its title
-        // carries the file's dimensions.
+
+        // A terminal with the kitty graphics protocol gets the picture: the box
+        // asks for a placement over its own content area and draws no pixels of
+        // its own.
+        let kitty = TerminalCapabilities {
+            images: ImageProtocol::Kitty,
+            true_color: true,
+            ..TerminalCapabilities::default()
+        };
+        set_capabilities(kitty);
         let (mut workbench, _rows) = frame(&data, 120, 38);
         workbench.overlay = Some(Overlay::FilePreview);
         let rows = workbench.render(&data, 120, 38);
         let text = plain(&rows);
         assert!(text.contains("design.png"), "{text}");
         assert!(text.contains("96×64"), "the title names the size: {text}");
-        assert!(text.contains('▀'), "the picture is half blocks: {text}");
-        assert!(!text.contains('▾'), "{text}");
-        // Zooming says so, so `+` is visible before the picture grows.
+        assert!(!text.contains('▀'), "no half-block mosaic: {text}");
+        let request = workbench
+            .image_request
+            .expect("a kitty terminal is asked to place the picture");
+        assert!(request.columns > 0 && request.rows > 0, "{request:?}");
+        assert_eq!(
+            request.crop,
+            (0, 0, 96, 64),
+            "at 1x the whole picture is transmitted"
+        );
+
+        // Zooming says so, so `+` is visible before the picture grows, and the
+        // window is what gets transmitted.
         workbench.handle(WbEvent::Key("+".into()), &data);
+        let rows = workbench.render(&data, 120, 38);
+        assert!(plain(&rows).contains("2x"), "{}", plain(&rows));
+        let zoomed = workbench.image_request.expect("still placed");
+        assert!(
+            zoomed.crop.2 - zoomed.crop.0 < 96 || zoomed.crop.3 - zoomed.crop.1 < 64,
+            "a zoomed window is a crop of the picture: {zoomed:?}"
+        );
+
+        // A terminal without the protocol gets the facts and an honest
+        // sentence, and still no mosaic.
+        set_capabilities(TerminalCapabilities::default());
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.overlay = Some(Overlay::FilePreview);
         let text = plain(&workbench.render(&data, 120, 38));
-        assert!(text.contains("2x"), "{text}");
+        assert!(text.contains("design.png"), "{text}");
+        assert!(text.contains("96×64"), "{text}");
+        assert!(
+            text.contains("cannot show pictures") || text.contains("不能显示图片"),
+            "{text}"
+        );
+        assert!(!text.contains('▀'), "{text}");
+        assert!(workbench.image_request.is_none());
+        crate::terminal_image::reset_capabilities_cache();
     }
 
     /// A preview whose bytes could not be read says why, in the reader's

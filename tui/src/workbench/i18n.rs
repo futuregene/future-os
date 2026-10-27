@@ -407,6 +407,7 @@ pub enum Key {
     PreviewHintImage,
     PreviewHintText,
     PreviewNothing,
+    PreviewImageUnsupported,
     PreviewTruncated,
     PreviewEmptyFile,
     AttachmentsInDraft,
@@ -806,6 +807,10 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "↑↓ scroll · pageUp/pageDown page · esc closes",
         ),
         PreviewNothing => ("没有可预览的内容", "nothing to preview"),
+        PreviewImageUnsupported => (
+            "这个终端不能显示图片。在终端之外打开这个文件就能看到它。",
+            "This terminal cannot show pictures. Open the file outside the TUI to see it.",
+        ),
         PreviewTruncated => ("（只显示开头）", "(showing the beginning)"),
         PreviewEmptyFile => ("空文件", "empty file"),
         AttachmentsInDraft => ("· 📎 {} 张图片", "· 📎 {} images"),
@@ -1038,7 +1043,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 272] = {
+    const ALL_KEYS: [Key; 273] = {
         use Key::*;
         [
             TabTodo,
@@ -1287,6 +1292,7 @@ mod tests {
             PreviewHintImage,
             PreviewHintText,
             PreviewNothing,
+            PreviewImageUnsupported,
             PreviewTruncated,
             PreviewEmptyFile,
             AttachmentsInDraft,

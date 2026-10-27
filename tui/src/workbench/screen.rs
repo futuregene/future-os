@@ -533,6 +533,118 @@ fn header_right(palette: &Palette, data: &WorkbenchData, avail: usize) -> String
 
 // ─── conversation ──────────────────────────────────────────────────────────
 
+/// A picture the preview box wants on screen, in frame cells.
+///
+/// The frame is text and a bitmap is not: the terminal places it at a cell, out
+/// of band. So the box asks for one here and the driver writes it after the
+/// frame (`run::paint_image`), which is the only place that owns the terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageRequest {
+    /// A hash of the bytes that will be transmitted (the file, and the crop of
+    /// it): unchanged means the picture is already on screen and only its
+    /// placement has to be repeated.
+    pub source: u64,
+    /// Top-left cell of the picture, in frame coordinates.
+    pub x: u16,
+    pub y: u16,
+    /// How much room the picture takes, in cells.
+    pub columns: u16,
+    pub rows: u16,
+    /// The part of the image being shown, in pixels: the whole picture at 1x,
+    /// the window a zoomed picture has been panned to otherwise.
+    pub crop: (usize, usize, usize, usize),
+}
+
+/// The window of a picture that a zoomed, panned box shows, in pixels.
+fn crop_of(
+    pixels: &image_view::ImagePixels,
+    cells_w: usize,
+    cells_h: usize,
+    pan: (usize, usize),
+    shown_w: usize,
+    shown_h: usize,
+) -> (usize, usize, usize, usize) {
+    let whole = (0, 0, pixels.width, pixels.height);
+    if pixels.is_empty() || cells_w == 0 || cells_h == 0 {
+        return whole;
+    }
+    let scale_x = pixels.width as f64 / cells_w as f64;
+    let scale_y = pixels.height as f64 / cells_h as f64;
+    let x0 = ((pan.0 as f64) * scale_x).floor().max(0.0) as usize;
+    let y0 = ((pan.1 as f64) * scale_y).floor().max(0.0) as usize;
+    let x1 = (((pan.0 + shown_w) as f64) * scale_x).ceil() as usize;
+    let y1 = (((pan.1 + shown_h) as f64) * scale_y).ceil() as usize;
+    let x0 = x0.min(pixels.width.saturating_sub(1));
+    let y0 = y0.min(pixels.height.saturating_sub(1));
+    let x1 = x1.clamp(x0 + 1, pixels.width).max(x0 + 1);
+    let y1 = y1.clamp(y0 + 1, pixels.height).max(y0 + 1);
+    (x0, y0, x1, y1)
+}
+
+/// A hash of what will be transmitted: the file and the crop of it.
+fn image_source_key(
+    path: &str,
+    pixels: &image_view::ImagePixels,
+    crop: (usize, usize, usize, usize),
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    pixels.width.hash(&mut hasher);
+    pixels.height.hash(&mut hasher);
+    crop.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// What a terminal without an image protocol shows in place of a picture: the
+/// facts a reader can act on, on one screen, instead of a half-block mosaic.
+fn unsupported_picture(
+    palette: &Palette,
+    lang: Language,
+    name: &str,
+    pixels: &image_view::ImagePixels,
+    inner: usize,
+) -> Vec<String> {
+    let mut lines = vec![
+        String::new(),
+        palette.strong(palette.fg, &format!(" {name}")),
+        palette.dim(&format!(" {}", image_view::describe(pixels))),
+        String::new(),
+    ];
+    for line in wrap_words(
+        t(lang, Key::PreviewImageUnsupported),
+        inner.saturating_sub(2),
+    ) {
+        lines.push(palette.dim(&format!(" {line}")));
+    }
+    lines
+}
+
+/// Greedy word wrap by display cells (the picture's own sentence, which is a
+/// sentence and not a row of a table).
+fn wrap_words(text: &str, line_width: usize) -> Vec<String> {
+    let line_width = line_width.max(1);
+    let mut out: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let candidate = if line.is_empty() {
+            word.to_string()
+        } else {
+            format!("{line} {word}")
+        };
+        if width(&candidate) > line_width && !line.is_empty() {
+            out.push(std::mem::take(&mut line));
+            line = word.to_string();
+        } else {
+            line = candidate;
+        }
+    }
+    if !line.is_empty() {
+        out.push(line);
+    }
+    out
+}
+
 fn conversation(
     workbench: &mut Workbench,
     data: &WorkbenchData,
@@ -1720,20 +1832,53 @@ fn preview_box(
     let scroll = workbench.preview_scroll;
     let mut content: Vec<String> = Vec::new();
     let hint = match preview {
-        state::PreviewView::Image { pixels, .. } => {
-            // The box's own colour depth decides the renderer: a 256-colour
-            // terminal gets the cube, a truecolor one gets the pixels.
-            let true_color = crate::terminal_image::get_capabilities().true_color;
-            content = image_view::render(
-                pixels,
-                palette,
-                inner,
-                content_h,
-                zoom,
-                workbench.preview_pan,
-                true_color,
-            );
-            let _ = pixels;
+        state::PreviewView::Image { path, pixels } => {
+            // A picture is shown either at its own resolution, by the terminal's
+            // image protocol, or not at all.
+            //
+            // The half-block renderer this replaces drew a ▀ per cell pair: at a
+            // hundred columns that is a 200-pixel-wide thumbnail of a 2000-pixel
+            // photograph, which the reader opened the box to *see*, not to
+            // squint at. So a terminal that can place a bitmap gets the pixels
+            // (`ImageRequest`, painted by the driver after this frame), and a
+            // terminal that cannot gets the picture's facts and an honest
+            // sentence instead of a mosaic.
+            if crate::terminal_image::get_capabilities().images
+                == crate::terminal_image::ImageProtocol::Kitty
+            {
+                let (cells_w, cells_h) =
+                    image_view::fitted_cells(pixels.width, pixels.height, inner, content_h, zoom);
+                // Zoomed past the box, the window is what is on screen; it may
+                // not be panned beyond the picture's own edge.
+                let pan = image_view::clamp_pan(
+                    workbench.preview_pan,
+                    cells_w,
+                    cells_h,
+                    inner,
+                    content_h,
+                );
+                workbench.preview_pan = (pan.0 as i32, pan.1 as i32);
+                let shown_w = cells_w.min(inner).max(1);
+                let shown_h = cells_h.min(content_h).max(1);
+                let crop = crop_of(pixels, cells_w, cells_h, pan, shown_w, shown_h);
+                let left = (inner.saturating_sub(shown_w) / 2) as u16;
+                let top = (content_h.saturating_sub(shown_h) / 2) as u16;
+                workbench.image_request = Some(ImageRequest {
+                    // The *source* is what a repaint must not retransmit; the
+                    // placement is the part that is cheap to repeat.
+                    source: image_source_key(path, pixels, crop),
+                    x: geometry.left + 1 + left,
+                    y: geometry.top + 1 + top,
+                    columns: shown_w as u16,
+                    rows: shown_h as u16,
+                    crop,
+                });
+                // The box keeps its own background under the bitmap: the frame
+                // is text, and the picture is a layer above it.
+                content = vec![palette.panel_row("", inner); content_h];
+            } else {
+                content = unsupported_picture(palette, lang, preview.name(), pixels, inner);
+            }
             t(lang, Key::PreviewHintImage)
         }
         state::PreviewView::Markdown { text, .. } => {

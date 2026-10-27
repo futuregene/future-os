@@ -1337,7 +1337,100 @@ fn draw(
     let data = live.data(frame);
     let rows = workbench.render(&data, frame.width, frame.height);
     terminal.write(&frame_bytes(&rows, workbench.cursor()));
+    paint_image(terminal, workbench, &data);
     Ok(())
+}
+
+/// Paint (or remove) the picture the frame asked for.
+///
+/// A terminal bitmap is not a row of text: it is placed at a cell by the
+/// terminal itself, above whatever the frame wrote there. So the preview box
+/// only *describes* what it wants ([`screen::ImageRequest`]) and this — the one
+/// place holding the terminal — writes it after the frame it belongs to,
+/// leaving the hardware cursor exactly where the frame put it.
+///
+/// The pixels are transmitted once per source (the file, and the crop of it a
+/// zoomed box shows); every later frame only re-places the image, which is a
+/// hundred bytes instead of a megabyte. Re-placing every frame is what keeps a
+/// picture on screen: the frame under it is rewritten each paint, and a placed
+/// image is not part of that text.
+fn paint_image(terminal: &mut Terminal, workbench: &mut Workbench, data: &super::WorkbenchData) {
+    let request = workbench.image_request;
+    let Some(request) = request else {
+        if let Some(painted) = workbench.painted_image.take() {
+            terminal.write(&crate::terminal_image::delete_kitty_image(painted.id));
+        }
+        return;
+    };
+    // The pixels are the box's own preview: the same image the frame drew.
+    let Some(super::state::PreviewView::Image { pixels, .. }) = data.preview.as_ref() else {
+        return;
+    };
+    let mut out = String::new();
+    match workbench.painted_image {
+        Some(painted) if painted.source == request.source => {
+            // Same bytes, new place: `a=p` places an already-transmitted image
+            // by id, and `p=1` keeps the placement one thing (a new `a=p` each
+            // frame would otherwise stack copies).
+            out.push_str(&format!(
+                "\x1b[{};{}H\x1b_Ga=p,i={},p=1,c={},r={},q=2,C=1\x1b\\",
+                request.y + 1,
+                request.x + 1,
+                painted.id,
+                request.columns,
+                request.rows
+            ));
+        }
+        other => {
+            if let Some(painted) = other {
+                out.push_str(&crate::terminal_image::delete_kitty_image(painted.id));
+            }
+            let id = crate::terminal_image::allocate_image_id();
+            let rgb = crop_rgb(pixels, request.crop);
+            let (w, h) = (
+                request.crop.2 - request.crop.0,
+                request.crop.3 - request.crop.1,
+            );
+            out.push_str(&format!("\x1b[{};{}H", request.y + 1, request.x + 1));
+            out.push_str(&crate::terminal_image::encode_kitty_rgb(
+                &rgb,
+                w,
+                h,
+                request.columns as usize,
+                request.rows as usize,
+                id,
+            ));
+            workbench.painted_image = Some(super::PaintedImage {
+                source: request.source,
+                id,
+            });
+        }
+    }
+    // Put the cursor back where the frame left it; the image itself does not
+    // move it (`C=1`), but the addressing above did.
+    if let Some((x, y)) = workbench.cursor() {
+        out.push_str(&format!("\x1b[{};{}H", y + 1, x + 1));
+    }
+    terminal.write(&out);
+}
+
+/// The RGB bytes of a crop of `pixels`, row-major — what kitty's `f=24` wants.
+fn crop_rgb(
+    pixels: &super::image_view::ImagePixels,
+    crop: (usize, usize, usize, usize),
+) -> Vec<u8> {
+    let (x0, y0, x1, y1) = crop;
+    let mut out = Vec::with_capacity((x1 - x0) * (y1 - y0) * 3);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let offset = (y * pixels.width + x) * 4;
+            match pixels.rgba.get(offset..offset + 3) {
+                Some(rgb) => out.extend_from_slice(rgb),
+                None => out.extend_from_slice(&[0, 0, 0]),
+            }
+        }
+    }
+    out
 }
 
 /// The bytes one frame becomes: cursor hidden, each row placed at its own
@@ -1574,6 +1667,30 @@ mod tests {
         assert_eq!(events_of("a"), vec![WbEvent::Key("a".into())]);
         assert_eq!(events_of("\u{3}"), vec![WbEvent::Key("ctrl+c".into())]);
     }
+    /// The RGB bytes of a crop, row-major: what `f=24` transmits, and what a
+    /// zoomed, panned picture shows.
+    #[test]
+    fn a_crop_is_transmitted_row_major_and_inside_the_picture() {
+        use super::super::image_view::ImagePixels;
+        // 3x2: each pixel's red channel is its index.
+        let mut rgba = Vec::new();
+        for index in 0..6u8 {
+            rgba.extend_from_slice(&[index, 0, 0, 255]);
+        }
+        let pixels = ImagePixels {
+            width: 3,
+            height: 2,
+            rgba,
+        };
+        // The middle column only.
+        let rgb = crop_rgb(&pixels, (1, 0, 2, 2));
+        assert_eq!(rgb, vec![1, 0, 0, 4, 0, 0]);
+        // A crop that asks past the edge is clamped by the caller's own maths;
+        // a missing pixel is black rather than a panic.
+        let rgb = crop_rgb(&pixels, (2, 1, 4, 3));
+        assert_eq!(rgb, vec![5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    }
+
     #[test]
     fn a_bracketed_paste_is_one_event_without_its_marks() {
         let events = events_of("\x1b[200~hello\nworld\x1b[201~");
