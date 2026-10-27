@@ -12,6 +12,20 @@ use std::{
 const READ_WORKERS: usize = 2;
 const READ_QUEUE: usize = 64;
 
+/// Warm, query-only connection; also used by bounded page snapshot leases.
+pub(super) fn open_connection(path: &Path) -> Result<Connection> {
+    let db = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    crate::session::content::install_functions(&db)?;
+    db.busy_timeout(Duration::from_millis(250))?;
+    db.pragma_update(None, "query_only", true)?;
+    db.pragma_update(None, "foreign_keys", true)?;
+    drop(db.prepare("SELECT id FROM sessions LIMIT 0")?);
+    Ok(db)
+}
+
 pub(super) struct Readers {
     sender: parking_lot::Mutex<Option<mpsc::SyncSender<DatabaseJob>>>,
     threads: parking_lot::Mutex<Vec<JoinHandle<()>>>,
@@ -32,21 +46,7 @@ impl Readers {
             let worker = std::thread::Builder::new()
                 .name(format!("agent-sqlite-read-{index}"))
                 .spawn(move || {
-                    let connection = (|| -> Result<Connection> {
-                        let db = Connection::open_with_flags(
-                            path,
-                            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-                        )?;
-                        crate::session::content::install_functions(&db)?;
-                        db.busy_timeout(Duration::from_millis(250))?;
-                        db.pragma_update(None, "query_only", true)?;
-                        db.pragma_update(None, "foreign_keys", true)?;
-                        // Prepare the schema before advertising readiness. The
-                        // first visible read must not pay lazy schema parsing
-                        // separately on each worker. LIMIT 0 reads no history.
-                        drop(db.prepare("SELECT id FROM sessions LIMIT 0")?);
-                        Ok(db)
-                    })();
+                    let connection = open_connection(&path);
                     let mut db = match connection {
                         Ok(db) => db,
                         Err(error) => {

@@ -399,6 +399,14 @@
       "artifactSha256": "0c0f91363074a1636341f7d6b56e66de3a4440de8907379361544a5e6c34da33",
       "implementationCheckpoint": "52b6b3f8b13e5a4db45e06f21721830e92a6a51d",
       "scope": "Final migration/fault/static/full regression plus fresh paired 1/10 MiB, large tools, native concurrency, production admission and headless browser results; C5 repeated realistic comparisons retained."
+    },
+    {
+      "id": "B4-first-native-test-conversation",
+      "status": "read-only live aggregate audit; Host run-ID generation omission fixed prospectively",
+      "artifact": "docs/testing/first-history-load-storage-audit-2026-10-27.json",
+      "artifactSha256": "02475de59fdd346eb49aa4bee6217a20c46c5c94519ec846f6f513b8695566d3",
+      "acceptanceArtifact": "docs/testing/first-history-load-acceptance-2026-10-27.json",
+      "scope": "One real five-turn format2 conversation. Do not compare to different synthetic workloads or attribute shared core-table pages to this session."
     }
   ]
 }

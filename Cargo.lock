@@ -2050,6 +2050,7 @@ dependencies = [
  "tokio-rustls",
  "tonic",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -12,6 +12,7 @@ pub(crate) struct Snapshot {
     identity: future_rpc::content_range::StorageIdentity,
     generation: i64,
     until: i64,
+    read_snapshot: Option<crate::session::database::ReadSnapshot>,
 }
 #[derive(Debug, Clone)]
 pub(crate) struct Entry {
@@ -80,6 +81,7 @@ impl Snapshot {
         ensure!(live, "session is missing or not published");
         Ok(Self {
             session: session.clone(),
+            read_snapshot: None,
             identity: super::transport::storage_identity(db)?,
             generation: generation(db, &session)?,
             until: db.query_row(
@@ -90,7 +92,28 @@ impl Snapshot {
         })
     }
 
+    pub(crate) fn use_read_snapshot(&mut self, snapshot: crate::session::database::ReadSnapshot) {
+        self.read_snapshot = Some(snapshot);
+    }
+
+    fn read<T: Send + 'static>(
+        &self,
+        store: &SqliteStore,
+        read: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        if let Some(snapshot) = &self.read_snapshot {
+            snapshot.read(read)
+        } else {
+            store.db.read(read)
+        }
+    }
+
     pub(crate) fn verify(&self, store: &SqliteStore) -> Result<()> {
+        if let Some(snapshot) = &self.read_snapshot {
+            snapshot.read(|_| Ok(()))?;
+        }
+        // The final authorization uses current data, not the leased old view:
+        // deletion/reset/restore must still invalidate the response.
         let scope = self.clone();
         store.db.read(move |db| scope.check(db))
     }
@@ -128,8 +151,8 @@ impl Snapshot {
 
     pub(crate) fn page(&self, store: &SqliteStore, after: i64) -> Result<Vec<Entry>> {
         let scope = self.clone();
-        store.db.read(move |db| {
-            let tx=db.transaction()?;scope.check(&tx)?;
+        self.read(store, move |db| {
+            let tx=db.savepoint()?;scope.check(&tx)?;
             let mut query=tx.prepare("SELECT position,entry_id FROM entries WHERE session_id=?1 AND position>?2 AND position<=?3 ORDER BY position LIMIT 64")?;
             let rows=query.query_map(params![scope.session,after,scope.until],|row|Ok(Entry {position:row.get(0)?,id:row.get(1)?}))?.collect::<rusqlite::Result<Vec<_>>>()?;
             ensure!(rows.iter().map(|entry|entry.id.len()+16).sum::<usize>()<=READ_BYTES,"entry identity page exceeds budget");
@@ -163,8 +186,8 @@ impl Snapshot {
             "entry is beyond the captured transcript"
         );
         let (scope, locator) = (self.clone(), entry.clone());
-        let header=store.db.read(move |db| {
-            let tx=db.transaction()?;scope.check(&tx)?;
+        let header=self.read(store, move |db| {
+            let tx=db.savepoint()?;scope.check(&tx)?;
             let header=tx.query_row("SELECT e.entry_type,e.role,e.run_id,coalesce(v.metadata_generation,0) FROM entries e LEFT JOIN content_history_versions v ON v.session_id=e.session_id WHERE e.session_id=?1 AND e.position=?2 AND e.entry_id=?3",
                 params![scope.session,locator.position,locator.id],|row|Ok(Header {kind:row.get(0)?,role:row.get(1)?,run:row.get(2)?,metadata_generation:row.get(3)?}))?;
             tx.commit()?;Ok(header)
@@ -240,8 +263,8 @@ impl Snapshot {
         self.verify(store)?;
         if header.kind == "session_info" {
             let (scope, expected) = (self.clone(), header.metadata_generation);
-            store.db.read(move |db| {
-                let tx = db.transaction()?;
+            self.read(store, move |db| {
+                let tx = db.savepoint()?;
                 scope.check(&tx)?;
                 ensure!(
                     super::metadata::generation(&tx, &scope.session)? == expected,
@@ -267,8 +290,8 @@ impl Snapshot {
             "entry is beyond the captured transcript"
         );
         let (scope, locator, field) = (self.clone(), entry.clone(), pointer.to_owned());
-        let reference=store.db.read(move |db| {
-            let tx=db.transaction()?;scope.check(&tx)?;
+        let reference=self.read(store, move |db| {
+            let tx=db.savepoint()?;scope.check(&tx)?;
             let reference=tx.query_row("SELECT r.content_id,r.byte_offset,r.byte_length,r.encoding FROM content_references r JOIN entries e ON e.session_id=r.session_id AND e.entry_id=r.owner_id WHERE e.session_id=?1 AND e.position=?2 AND e.entry_id=?3 AND r.owner_kind='entry' AND r.field=?4",
                 params![scope.session,locator.position,locator.id,field],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get::<_,String>(3)?))).optional()?;
             tx.commit()?;Ok(reference)
@@ -340,8 +363,8 @@ impl Snapshot {
         let mut expected = None;
         loop {
             let (scope, entry, offset) = (self.clone(), entry.clone(), i64::try_from(bytes.len())?);
-            let (length,piece)=store.db.read(move |db| {
-                let tx=db.transaction()?;scope.check(&tx)?;
+            let (length,piece)=self.read(store, move |db| {
+                let tx=db.savepoint()?;scope.check(&tx)?;
                 let (expression,join,ordinal)=match column {
                     Column::Metadata=>("e.metadata_json","",None),
                     Column::Content=>("e.content_json","",None),
@@ -394,8 +417,8 @@ impl Snapshot {
         let mut blocks = Vec::new();
         loop {
             let (scope, locator) = (self.clone(), entry.clone());
-            let rows=store.db.read(move |db| {
-                let tx=db.transaction()?;scope.check(&tx)?;
+            let rows=self.read(store, move |db| {
+                let tx=db.savepoint()?;scope.check(&tx)?;
                 let mut query=tx.prepare("SELECT b.ordinal,b.kind,b.tool_call_id,b.tool_name,b.is_error FROM message_blocks b JOIN entries e ON e.session_id=b.session_id AND e.position=b.entry_position WHERE e.session_id=?1 AND e.entry_id=?2 AND e.position=?3 AND b.ordinal>?4 ORDER BY b.ordinal LIMIT 64")?;
                 let rows=query.query_map(params![scope.session,locator.id,locator.position,after],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,Option<String>>(2)?,row.get::<_,Option<String>>(3)?,row.get::<_,Option<bool>>(4)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
                 ensure!(rows.iter().map(|(_,kind,id,name,_)|kind.as_ref().map_or(0,String::len)+id.as_ref().map_or(0,String::len)+name.as_ref().map_or(0,String::len)+40).sum::<usize>()<=READ_BYTES,"block identity page exceeds budget");
@@ -455,8 +478,8 @@ impl Snapshot {
         after: &str,
     ) -> Result<Vec<Reference>> {
         let (scope, entry, after) = (self.clone(), entry.clone(), after.to_owned());
-        store.db.read(move |db| {
-            let tx=db.transaction()?;scope.check(&tx)?;
+        self.read(store, move |db| {
+            let tx=db.savepoint()?;scope.check(&tx)?;
             let mut query=tx.prepare("SELECT r.field,r.content_id,r.byte_offset,r.byte_length,r.encoding FROM content_references r JOIN entries e ON e.session_id=r.session_id AND e.entry_id=r.owner_id WHERE r.session_id=?1 AND e.position=?2 AND e.entry_id=?3 AND r.owner_kind='entry' AND r.field>?4 ORDER BY r.field LIMIT 64")?;
             let mut cursor=query.query(params![scope.session,entry.position,entry.id,after])?;
             let mut rows=Vec::new();let mut bytes=0usize;
@@ -526,8 +549,8 @@ impl Snapshot {
             "content read exceeds its field range"
         );
         let (scope, entry, reference) = (self.clone(), entry.clone(), reference.clone());
-        store.db.read(move |db| {
-            let tx = db.transaction()?;
+        self.read(store, move |db| {
+            let tx = db.savepoint()?;
             scope.check_reference(&tx, &entry, &reference)?;
             let piece = super::read(&tx, reference.range.id, offset, limit)?;
             tx.commit()?;
@@ -559,8 +582,8 @@ impl Snapshot {
         reference: &Reference,
     ) -> Result<()> {
         let (scope, entry, reference) = (self.clone(), entry.clone(), reference.clone());
-        store.db.read(move |db| {
-            let tx = db.transaction()?;
+        self.read(store, move |db| {
+            let tx = db.savepoint()?;
             scope.check_reference(&tx, &entry, &reference)?;
             tx.commit()?;
             Ok(())

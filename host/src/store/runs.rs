@@ -111,7 +111,7 @@ pub fn create_run(input: CreateRunInput) -> Result<RunRecord, crate::Error> {
     let id = input
         .id
         .filter(|id| !id.trim().is_empty())
-        .unwrap_or_else(|| create_id("run"));
+        .unwrap_or_else(create_run_id);
     let now = now_millis();
     let mut conn = connect()?;
     let tx = conn.transaction()?;
@@ -1403,6 +1403,21 @@ mod tests {
             model_id: None,
         })
         .expect("create run");
+        let generated = create_run(CreateRunInput {
+            id: None,
+            thread_id: "thread".to_string(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("create native UUID run");
+        let parsed = uuid::Uuid::parse_str(&generated.id).expect("generated run UUID");
+        assert_eq!(parsed.get_version(), Some(uuid::Version::Random));
+        assert_eq!(parsed.to_string(), generated.id);
+        assert!(
+            get_run("run_activity").unwrap().is_some(),
+            "caller-supplied opaque IDs stay unchanged"
+        );
 
         let conn = connect().expect("connect");
         let activity: Option<i64> = conn

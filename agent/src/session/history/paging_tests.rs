@@ -533,3 +533,89 @@ fn a_damaged_display_index_is_reported_instead_of_paging_a_blank_history() {
     let backward = page(&db, Some(10));
     assert!(backward.contains("is_user"), "{backward}");
 }
+
+#[test]
+fn first_native_page_keeps_one_snapshot_across_startup_metadata_replacement() {
+    let root = tempfile::tempdir().unwrap();
+    let session = uuid::Uuid::new_v4().to_string();
+    {
+        let manager = Manager::new(root.path().join("sessions"));
+        let store = manager.storage().unwrap();
+        store.reserve_segmented(&session).unwrap();
+        store.replace(&session, vec![
+            json!({"id":uuid::Uuid::new_v4().to_string(),"type":"session_info","timestamp":"2026-10-27T00:00:00Z","content":{"model":"mock","session_name":"initial","system_prompt":"persistent configuration🙂".repeat(2000)}}),
+            json!({"id":uuid::Uuid::new_v4().to_string(),"type":"user","role":"user","timestamp":"2026-10-27T00:00:01Z","content":"retained question"}),
+            json!({"id":uuid::Uuid::new_v4().to_string(),"type":"assistant","role":"assistant","timestamp":"2026-10-27T00:00:02Z","content":[{"type":"text","text":"retained answer"}]})
+        ]).unwrap();
+    }
+    let manager = Manager::new(root.path().join("sessions"));
+    let store = manager.storage().unwrap();
+    for before in [None, Some(i64::MAX)] {
+        let expected = manager
+            .history_page(&session, before, Some(0), Some(10))
+            .unwrap();
+        let snapshot = store.db.read_snapshot().unwrap();
+        let mut page = snapshot
+            .read(|db| read_display_page(db, &session, before, Some(0), Some(10)))
+            .unwrap();
+        page.snapshot.as_mut().unwrap().use_read_snapshot(snapshot);
+        // Reproduce startup publication between capturing locators and reading
+        // their bodies. Also replace an externalized configuration field and
+        // actually collect its old body before completing the original page.
+        manager.update_session_info_fields(&session, serde_json::from_value(json!({
+            "session_name":"restored", "system_prompt":"updated configuration🙂".repeat(2000)
+        })).unwrap()).unwrap();
+        store
+            .db
+            .call(|db| {
+                let tx = db.transaction()?;
+                let ids = {
+                    let mut q = tx.prepare("SELECT content_id FROM content_collection")?;
+                    let rows = q
+                        .query_map([], |row| row.get(0))?
+                        .collect::<rusqlite::Result<Vec<i64>>>()?;
+                    rows
+                };
+                crate::session::content::collect(&tx, &ids)?;
+                tx.commit()?;
+                Ok(())
+            })
+            .unwrap();
+        let actual = materialize_display_page(page, before, None, Some(store), None).unwrap();
+        assert_eq!(
+            actual, expected,
+            "one successful read, with no internal retry"
+        );
+        let current = manager
+            .history_page(&session, before, Some(0), Some(10))
+            .unwrap();
+        assert_eq!(current["entries"][0]["session"]["sessionName"], "restored");
+        assert!(current["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["blocks"][0]["text"] == "retained answer"));
+    }
+}
+
+#[test]
+fn pinned_page_still_rejects_deletion_and_releases_snapshot_on_error() {
+    let root = tempfile::tempdir().unwrap();
+    let manager = Manager::new(root.path().join("sessions"));
+    let store = manager.storage().unwrap();
+    store.reserve_segmented("s").unwrap();
+    store.replace("s", vec![json!({"id":"u","type":"user","role":"user","timestamp":"2026-10-27T00:00:00Z","content":"history"})]).unwrap();
+    let snapshot = store.db.read_snapshot().unwrap();
+    let mut page = snapshot
+        .read(|db| read_display_page(db, "s", None, Some(0), Some(10)))
+        .unwrap();
+    page.snapshot.as_mut().unwrap().use_read_snapshot(snapshot);
+    store.delete("s").unwrap();
+    assert!(materialize_display_page(page, None, None, Some(store), None).is_err());
+    // Errors return the lease; normal history workers and all snapshot slots
+    // remain available, and the deleted history is not served as success.
+    let leases = (0..4)
+        .map(|_| store.db.read_snapshot().unwrap())
+        .collect::<Vec<_>>();
+    drop(leases);
+}

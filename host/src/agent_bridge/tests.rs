@@ -2276,11 +2276,10 @@ mod pipeline_tests {
         .expect("prompt");
         assert!(!response.complete, "an instantly-closed stream is a prefix");
         let prompt = &fixture.mock.requests_of("prompt")[0];
-        assert!(
-            prompt.requested_run_id.starts_with("run-"),
-            "generated id: {}",
-            prompt.requested_run_id
-        );
+        let generated = uuid::Uuid::parse_str(&prompt.requested_run_id)
+            .expect("Host-generated run identity must reach the Agent as a UUID");
+        assert_eq!(generated.get_version(), Some(uuid::Version::Random));
+        assert_eq!(generated.to_string(), prompt.requested_run_id);
     }
 
     #[tokio::test]

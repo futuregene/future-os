@@ -259,6 +259,11 @@ fn the_idle_reclaim_reports_a_lock_it_cannot_wait_for_and_then_recovers() {
     // fires; the reclaim cannot wait it out, so the worker takes the `Err` arm.
     let writer = Connection::open(&path).unwrap();
     writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    // Startup reclamation may already be disarmed after read connections warm
+    // up under load. Production deletion explicitly requests reclamation too;
+    // arm it while the foreign lock is held so this exercises the error/retry
+    // contract rather than depending on startup scheduling speed.
+    store.request_space_reclamation();
     // Long enough for several idle slices, so "the slice happened to land after
     // the release" cannot explain a pass.
     std::thread::sleep(Duration::from_millis(250));

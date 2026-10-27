@@ -53,6 +53,12 @@ pub fn create_id(prefix: &str) -> String {
     app_workspaces::new_id(prefix)
 }
 
+/// Public run identity shared with the Agent's native UUID storage boundary.
+/// Existing caller-supplied IDs remain opaque; only newly generated runs use it.
+pub fn create_run_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
 pub fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

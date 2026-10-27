@@ -23,6 +23,7 @@ pub(crate) struct Database {
 struct DatabaseWorker {
     reclaim_requested: Arc<AtomicBool>,
     readers: readers::Readers,
+    snapshots: snapshots::Readers,
     wal: wal::Checkpointer,
     metrics: Arc<metrics::Metrics>,
     sender: parking_lot::Mutex<Option<mpsc::SyncSender<DatabaseJob>>>,
@@ -108,6 +109,15 @@ impl Database {
                 return Err(error);
             }
         };
+        let snapshots = match snapshots::Readers::open(&read_path, metrics.clone()) {
+            Ok(snapshots) => snapshots,
+            Err(error) => {
+                drop(readers);
+                drop(sender);
+                let _ = thread.join();
+                return Err(error);
+            }
+        };
         let wal = match wal::Checkpointer::open(&read_path, metrics.clone()) {
             Ok(wal) => wal,
             Err(error) => {
@@ -120,6 +130,7 @@ impl Database {
         Ok(Self {
             inner: Arc::new(DatabaseWorker {
                 readers,
+                snapshots,
                 wal,
                 metrics,
                 sender: parking_lot::Mutex::new(Some(sender)),
@@ -175,10 +186,15 @@ impl Database {
         self.inner.metrics.snapshot()
     }
 
+    pub(crate) fn read_snapshot(&self) -> Result<ReadSnapshot> {
+        self.inner.snapshots.acquire()
+    }
+
     /// Close admission and join the ordered worker after its accepted jobs.
     /// The service supervisor owns the deadline, so a stuck job cannot cause
     /// the host to incorrectly report Stopped or release instance ownership.
     pub(crate) fn shutdown(&self) -> Result<()> {
+        self.inner.snapshots.shutdown();
         self.inner.readers.shutdown()?;
         self.inner.sender.lock().take();
         if let Some(thread) = self.inner.thread.lock().take() {
@@ -203,6 +219,8 @@ mod metrics;
 mod readers;
 mod reclamation;
 mod schema;
+mod snapshots;
+pub(crate) use snapshots::ReadSnapshot;
 mod transactions;
 mod wal;
 #[cfg(test)]
