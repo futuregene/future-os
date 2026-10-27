@@ -234,6 +234,598 @@ const DRACULA: Theme = Theme {
     assistant_bg: 236,
 };
 
+/// `ayu` — Ayu, by Dmitri Voronianski (#1f2430 canvas, #ffcc66 accent).
+const AYU: Theme = Theme {
+    bg: 235,          // #262626 ≈ #1f2430
+    fg: 251,          // #c6c6c6 ≈ #cbccc6
+    accent: 221,      // #ffd75f ≈ #ffcc66
+    border: 240,      // #585858 ≈ #505664
+    selected_bg: 237, // #3a3a3a ≈ #2d3444
+    selected_fg: 254, // #e4e4e4 ≈ #e8e8e3
+    dim: 245,         // #8a8a8a ≈ #7f8899
+    error: 210,       // #ff8787 ≈ #f28779
+    success: 150,     // #afd787 ≈ #bae67e
+
+    md_heading: 222,           // #ffd787 ≈ #ffd580
+    md_link: 81,               // #5fd7ff ≈ #73d0ff
+    md_code: 116,              // #87d7d7 ≈ #95e6cb
+    md_code_block: 150,        // #afd787 ≈ #bae67e
+    md_code_block_border: 240, // #585858 ≈ #505664
+    md_quote: 245,             // #8a8a8a ≈ #7f8899
+
+    tool_pending_bg: 236, // #303030
+    tool_success_bg: 239, // #4e4e4e ≈ #455541
+    tool_error_bg: 237,   // #3a3a3a ≈ #4f343a
+    tool_title: 81,       // #5fd7ff ≈ #73d0ff
+    tool_output: 145,     // #afafaf ≈ #a9adb5
+
+    thinking_off: 245,    // #8a8a8a ≈ #7f8899
+    thinking_minimal: 81, // #5fd7ff ≈ #73d0ff
+    thinking_low: 221,    // #ffd75f ≈ #ffcc66
+    thinking_medium: 183, // #d7afff ≈ #d4bfff
+    thinking_high: 222,   // #ffd787 ≈ #ffd580
+    thinking_xhigh: 210,  // #ff8787 ≈ #f28779
+    thinking_text: 145,   // #afafaf ≈ #a9adb5
+
+    user_bg: 237,      // #3a3a3a ≈ #2d3444
+    assistant_bg: 235, // #262626 ≈ #1f2430
+};
+
+/// `catppuccin` — Catppuccin — Mocha (#11111b canvas, #89b4fa accent).
+const CATPPUCCIN: Theme = Theme {
+    bg: 233,          // #121212 ≈ #11111b
+    fg: 189,          // #d7d7ff ≈ #cdd6f4
+    accent: 111,      // #87afff ≈ #89b4fa
+    border: 239,      // #4e4e4e ≈ #45475a
+    selected_bg: 237, // #3a3a3a ≈ #313244
+    selected_fg: 255, // #eeeeee ≈ #e6e9f8
+    dim: 103,         // #8787af ≈ #7f849c
+    error: 211,       // #ff87af ≈ #f38ba8
+    success: 151,     // #afd7af ≈ #a6e3a1
+
+    md_heading: 223,           // #ffd7af ≈ #f9e2af
+    md_link: 111,              // #87afff ≈ #89b4fa
+    md_code: 116,              // #87d7d7 ≈ #94e2d5
+    md_code_block: 151,        // #afd7af ≈ #a6e3a1
+    md_code_block_border: 239, // #4e4e4e ≈ #45475a
+    md_quote: 103,             // #8787af ≈ #7f849c
+
+    tool_pending_bg: 234, // #1c1c1c ≈ #181825
+    tool_success_bg: 235, // #262626 ≈ #1f2d28
+    tool_error_bg: 236,   // #303030
+    tool_title: 111,      // #87afff ≈ #89b4fa
+    tool_output: 146,     // #afafd7 ≈ #a6adc8
+
+    thinking_off: 103,     // #8787af ≈ #7f849c
+    thinking_minimal: 117, // #87d7ff
+    thinking_low: 111,     // #87afff ≈ #89b4fa
+    thinking_medium: 218,  // #ffafd7 ≈ #f5c2e7
+    thinking_high: 223,    // #ffd7af ≈ #f9e2af
+    thinking_xhigh: 211,   // #ff87af ≈ #f38ba8
+    thinking_text: 146,    // #afafd7 ≈ #a6adc8
+
+    user_bg: 237,      // #3a3a3a ≈ #313244
+    assistant_bg: 233, // #121212 ≈ #11111b
+};
+
+/// `catppuccin-light` — Catppuccin — Latte (#e8ebf1 canvas, #3b5bdb accent).
+const CATPPUCCIN_LIGHT: Theme = Theme {
+    bg: 255,          // #eeeeee ≈ #e8ebf1
+    fg: 239,          // #4e4e4e ≈ #474962
+    accent: 62,       // #5f5fd7 ≈ #3b5bdb
+    border: 252,      // #d0d0d0 ≈ #ccd0da
+    selected_bg: 254, // #e4e4e4
+    selected_fg: 237, // #3a3a3a ≈ #303242
+    dim: 103,         // #8787af ≈ #81849e
+    error: 125,       // #af005f ≈ #c10f33
+    success: 28,      // #008700 ≈ #2f7d1f
+
+    md_heading: 94,            // #875f00 ≈ #9b6200
+    md_link: 62,               // #5f5fd7 ≈ #3b5bdb
+    md_code: 24,               // #005f87 ≈ #1f7087
+    md_code_block: 28,         // #008700 ≈ #2f7d1f
+    md_code_block_border: 252, // #d0d0d0 ≈ #ccd0da
+    md_quote: 103,             // #8787af ≈ #81849e
+
+    tool_pending_bg: 253, // #dadada
+    tool_success_bg: 194, // #d7ffd7
+    tool_error_bg: 224,   // #ffd7d7
+    tool_title: 62,       // #5f5fd7 ≈ #3b5bdb
+    tool_output: 243,     // #767676 ≈ #6c6f85
+
+    thinking_off: 103,    // #8787af ≈ #81849e
+    thinking_minimal: 62, // #5f5fd7 ≈ #3b5bdb
+    thinking_low: 62,     // #5f5fd7 ≈ #3b5bdb
+    thinking_medium: 99,  // #875fff ≈ #8839ef
+    thinking_high: 94,    // #875f00 ≈ #9b6200
+    thinking_xhigh: 125,  // #af005f ≈ #c10f33
+    thinking_text: 243,   // #767676 ≈ #6c6f85
+
+    user_bg: 189,      // #d7d7ff
+    assistant_bg: 255, // #eeeeee ≈ #e8ebf1
+};
+
+/// `everforest` — Everforest, by sainnhe (#2b3339 canvas, #7fbbb3 accent).
+const EVERFOREST: Theme = Theme {
+    bg: 236,          // #303030 ≈ #2b3339
+    fg: 188,          // #d7d7d7 ≈ #e2dbcb
+    accent: 109,      // #87afaf
+    border: 59,       // #5f5f5f ≈ #586260
+    selected_bg: 238, // #444444 ≈ #3a464c
+    selected_fg: 188, // #d7d7d7 ≈ #e8ddc5
+    dim: 245,         // #8a8a8a ≈ #87948b
+    error: 174,       // #d78787 ≈ #e88a8c
+    success: 144,     // #afaf87 ≈ #a7c080
+
+    md_heading: 180,          // #d7af87 ≈ #dbbc7f
+    md_link: 109,             // #87afaf ≈ #7fbbb3
+    md_code: 108,             // #87af87 ≈ #83c092
+    md_code_block: 144,       // #afaf87 ≈ #a7c080
+    md_code_block_border: 59, // #5f5f5f ≈ #586260
+    md_quote: 245,            // #8a8a8a ≈ #87948b
+
+    tool_pending_bg: 237, // #3a3a3a
+    tool_success_bg: 235, // #262626
+    tool_error_bg: 236,   // #303030
+    tool_title: 109,      // #87afaf ≈ #7fbbb3
+    tool_output: 187,     // #d7d7af
+
+    thinking_off: 245,     // #8a8a8a ≈ #87948b
+    thinking_minimal: 109, // #87afaf ≈ #7fbbb3
+    thinking_low: 109,     // #87afaf
+    thinking_medium: 175,  // #d787af ≈ #d699b6
+    thinking_high: 180,    // #d7af87 ≈ #dbbc7f
+    thinking_xhigh: 174,   // #d78787 ≈ #e88a8c
+    thinking_text: 187,    // #d7d7af
+
+    user_bg: 238,      // #444444 ≈ #3a464c
+    assistant_bg: 236, // #303030 ≈ #2b3339
+};
+
+/// `everforest-light` — Everforest — Light (#f3efdf canvas, #5f8700 accent).
+const EVERFOREST_LIGHT: Theme = Theme {
+    bg: 255,          // #eeeeee ≈ #f3efdf
+    fg: 239,          // #4e4e4e ≈ #414c51
+    accent: 58,       // #5f5f00 ≈ #627300
+    border: 188,      // #d7d7d7 ≈ #e0dccc
+    selected_bg: 254, // #e4e4e4 ≈ #ebe5d4
+    selected_fg: 239, // #4e4e4e ≈ #465157
+    dim: 244,         // #808080 ≈ #78857a
+    error: 131,       // #af5f5f ≈ #c33d32
+    success: 64,      // #5f8700 ≈ #637400
+
+    md_heading: 94,            // #875f00 ≈ #8e6506
+    md_link: 66,               // #5f8787 ≈ #377483
+    md_code: 29,               // #00875f
+    md_code_block: 64,         // #5f8700 ≈ #637400
+    md_code_block_border: 188, // #d7d7d7 ≈ #e0dccc
+    md_quote: 244,             // #808080 ≈ #78857a
+
+    tool_pending_bg: 253, // #dadada
+    tool_success_bg: 194, // #d7ffd7
+    tool_error_bg: 224,   // #ffd7d7
+    tool_title: 66,       // #5f8787 ≈ #377483
+    tool_output: 242,     // #6c6c6c ≈ #65726b
+
+    thinking_off: 244,    // #808080 ≈ #78857a
+    thinking_minimal: 66, // #5f8787 ≈ #377483
+    thinking_low: 58,     // #5f5f00 ≈ #627300
+    thinking_medium: 132, // #af5f87 ≈ #b0568c
+    thinking_high: 94,    // #875f00 ≈ #8e6506
+    thinking_xhigh: 131,  // #af5f5f ≈ #c33d32
+    thinking_text: 242,   // #6c6c6c ≈ #65726b
+
+    user_bg: 189,      // #d7d7ff
+    assistant_bg: 255, // #eeeeee ≈ #f3efdf
+};
+
+/// `gruvbox` — Gruvbox, by Pavel Pertsev (#1d2021 canvas, #83a598 accent).
+const GRUVBOX: Theme = Theme {
+    bg: 234,          // #1c1c1c ≈ #1d2021
+    fg: 187,          // #d7d7af ≈ #ebdbb2
+    accent: 108,      // #87af87 ≈ #83a598
+    border: 239,      // #4e4e4e ≈ #504945
+    selected_bg: 236, // #303030 ≈ #32302f
+    selected_fg: 230, // #ffffd7 ≈ #fbf1c7
+    dim: 138,         // #af8787 ≈ #a89984
+    error: 209,       // #ff875f ≈ #fb7564
+    success: 142,     // #afaf00 ≈ #b8bb26
+
+    md_heading: 214,           // #ffaf00 ≈ #fabd2f
+    md_link: 66,               // #5f8787
+    md_code: 108,              // #87af87 ≈ #8ec07c
+    md_code_block: 142,        // #afaf00 ≈ #b8bb26
+    md_code_block_border: 239, // #4e4e4e ≈ #504945
+    md_quote: 138,             // #af8787 ≈ #a89984
+
+    tool_pending_bg: 235, // #262626
+    tool_success_bg: 236, // #303030 ≈ #33381f
+    tool_error_bg: 237,   // #3a3a3a
+    tool_title: 66,       // #5f8787
+    tool_output: 187,     // #d7d7af ≈ #d5c4a1
+
+    thinking_off: 138,    // #af8787 ≈ #a89984
+    thinking_minimal: 66, // #5f8787
+    thinking_low: 108,    // #87af87 ≈ #83a598
+    thinking_medium: 174, // #d78787 ≈ #d3869b
+    thinking_high: 214,   // #ffaf00 ≈ #fabd2f
+    thinking_xhigh: 209,  // #ff875f ≈ #fb7564
+    thinking_text: 187,   // #d7d7af ≈ #d5c4a1
+
+    user_bg: 236,      // #303030 ≈ #32302f
+    assistant_bg: 234, // #1c1c1c ≈ #1d2021
+};
+
+/// `gruvbox-light` — Gruvbox — Light (#f2e5bc canvas, #076678 accent).
+const GRUVBOX_LIGHT: Theme = Theme {
+    bg: 223,          // #ffd7af ≈ #f2e5bc
+    fg: 237,          // #3a3a3a ≈ #3c3836
+    accent: 24,       // #005f87 ≈ #076678
+    border: 187,      // #d7d7af ≈ #d5c4a1
+    selected_bg: 230, // #ffffd7 ≈ #ebdbb2
+    selected_fg: 235, // #262626 ≈ #282828
+    dim: 242,         // #6c6c6c ≈ #7e7364
+    error: 124,       // #af0000 ≈ #9d0006
+    success: 58,      // #5f5f00 ≈ #4f6a12
+
+    md_heading: 94,            // #875f00 ≈ #945e05
+    md_link: 24,               // #005f87 ≈ #076678
+    md_code: 65,               // #5f875f ≈ #427b58
+    md_code_block: 58,         // #5f5f00 ≈ #4f6a12
+    md_code_block_border: 187, // #d7d7af ≈ #d5c4a1
+    md_quote: 242,             // #6c6c6c ≈ #7e7364
+
+    tool_pending_bg: 230, // #ffffd7 ≈ #f6ecc6
+    tool_success_bg: 194, // #d7ffd7
+    tool_error_bg: 224,   // #ffd7d7 ≈ #f8e3dc
+    tool_title: 24,       // #005f87 ≈ #076678
+    tool_output: 59,      // #5f5f5f ≈ #665c54
+
+    thinking_off: 242,    // #6c6c6c ≈ #7e7364
+    thinking_minimal: 24, // #005f87 ≈ #076678
+    thinking_low: 24,     // #005f87 ≈ #076678
+    thinking_medium: 95,  // #875f5f ≈ #8f3f71
+    thinking_high: 94,    // #875f00 ≈ #945e05
+    thinking_xhigh: 124,  // #af0000 ≈ #9d0006
+    thinking_text: 59,    // #5f5f5f ≈ #665c54
+
+    user_bg: 230,      // #ffffd7
+    assistant_bg: 223, // #ffd7af ≈ #f2e5bc
+};
+
+/// `kanagawa` — Kanagawa, by rebelot (#1f1f28 canvas, #7e9cd8 accent).
+const KANAGAWA: Theme = Theme {
+    bg: 235,          // #262626 ≈ #1f1f28
+    fg: 187,          // #d7d7af ≈ #dcd7ba
+    accent: 110,      // #87afd7 ≈ #7e9cd8
+    border: 240,      // #585858 ≈ #585653
+    selected_bg: 237, // #3a3a3a ≈ #363646
+    selected_fg: 254, // #e4e4e4 ≈ #f2ecd8
+    dim: 244,         // #808080 ≈ #8b8779
+    error: 168,       // #d75f87 ≈ #e56e7b
+    success: 107,     // #87af5f ≈ #98bb6c
+
+    md_heading: 180,           // #d7af87 ≈ #e6c384
+    md_link: 110,              // #87afd7 ≈ #7fb4ca
+    md_code: 109,              // #87afaf ≈ #7aa89f
+    md_code_block: 107,        // #87af5f ≈ #98bb6c
+    md_code_block_border: 240, // #585858 ≈ #585653
+    md_quote: 244,             // #808080 ≈ #8b8779
+
+    tool_pending_bg: 234, // #1c1c1c ≈ #16161d
+    tool_success_bg: 238, // #444444 ≈ #3d463c
+    tool_error_bg: 236,   // #303030 ≈ #3e252f
+    tool_title: 110,      // #87afd7 ≈ #7fb4ca
+    tool_output: 180,     // #d7af87 ≈ #c8c093
+
+    thinking_off: 244,     // #808080 ≈ #8b8779
+    thinking_minimal: 110, // #87afd7 ≈ #7fb4ca
+    thinking_low: 110,     // #87afd7 ≈ #7e9cd8
+    thinking_medium: 103,  // #8787af ≈ #957fb8
+    thinking_high: 180,    // #d7af87 ≈ #e6c384
+    thinking_xhigh: 168,   // #d75f87 ≈ #e56e7b
+    thinking_text: 180,    // #d7af87 ≈ #c8c093
+
+    user_bg: 237,      // #3a3a3a ≈ #363646
+    assistant_bg: 235, // #262626 ≈ #1f1f28
+};
+
+/// `nightfox` — Nightfox, by EdenEast (#192330 canvas, #719cd6 accent).
+const NIGHTFOX: Theme = Theme {
+    bg: 235,          // #262626 ≈ #192330
+    fg: 252,          // #d0d0d0 ≈ #cdcecf
+    accent: 74,       // #5fafd7 ≈ #719cd6
+    border: 59,       // #5f5f5f ≈ #4e5a67
+    selected_bg: 237, // #3a3a3a ≈ #29394f
+    selected_fg: 254, // #e4e4e4 ≈ #e6e7e8
+    dim: 245,         // #8a8a8a ≈ #7d8b98
+    error: 174,       // #d78787 ≈ #d17b8c
+    success: 108,     // #87af87 ≈ #81b29a
+
+    md_heading: 180,          // #d7af87 ≈ #dbc074
+    md_link: 74,              // #5fafd7 ≈ #719cd6
+    md_code: 80,              // #5fd7d7 ≈ #63cdcf
+    md_code_block: 108,       // #87af87 ≈ #81b29a
+    md_code_block_border: 59, // #5f5f5f ≈ #4e5a67
+    md_quote: 245,            // #8a8a8a ≈ #7d8b98
+
+    tool_pending_bg: 234, // #1c1c1c ≈ #131a24
+    tool_success_bg: 237, // #3a3a3a ≈ #2d4045
+    tool_error_bg: 236,   // #303030 ≈ #392736
+    tool_title: 74,       // #5fafd7 ≈ #719cd6
+    tool_output: 145,     // #afafaf ≈ #aeafb0
+
+    thinking_off: 245,    // #8a8a8a ≈ #7d8b98
+    thinking_minimal: 74, // #5fafd7 ≈ #719cd6
+    thinking_low: 74,     // #5fafd7 ≈ #719cd6
+    thinking_medium: 140, // #af87d7 ≈ #9d79d6
+    thinking_high: 180,   // #d7af87 ≈ #dbc074
+    thinking_xhigh: 174,  // #d78787 ≈ #d17b8c
+    thinking_text: 145,   // #afafaf ≈ #aeafb0
+
+    user_bg: 237,      // #3a3a3a ≈ #29394f
+    assistant_bg: 235, // #262626 ≈ #192330
+};
+
+/// `nord` — Nord, by Arctic Ice Studio (#2e3440 canvas, #88c0d0 accent).
+const NORD: Theme = Theme {
+    bg: 237,          // #3a3a3a ≈ #2e3440
+    fg: 255,          // #eeeeee ≈ #eceff4
+    accent: 110,      // #87afd7 ≈ #88c0d0
+    border: 240,      // #585858 ≈ #4c566a
+    selected_bg: 239, // #4e4e4e ≈ #434c5e
+    selected_fg: 231, // #ffffff ≈ #ffffff
+    dim: 109,         // #87afaf ≈ #9aa6bb
+    error: 174,       // #d78787
+    success: 144,     // #afaf87 ≈ #a3be8c
+
+    md_heading: 186,           // #d7d787 ≈ #ebcb8b
+    md_link: 109,              // #87afaf
+    md_code: 109,              // #87afaf ≈ #8fbcbb
+    md_code_block: 144,        // #afaf87 ≈ #a3be8c
+    md_code_block_border: 240, // #585858 ≈ #4c566a
+    md_quote: 109,             // #87afaf ≈ #9aa6bb
+
+    tool_pending_bg: 236, // #303030 ≈ #2b303b
+    tool_success_bg: 237, // #3a3a3a ≈ #37452f
+    tool_error_bg: 237,   // #3a3a3a
+    tool_title: 109,      // #87afaf
+    tool_output: 254,     // #e4e4e4 ≈ #d8dee9
+
+    thinking_off: 109,     // #87afaf ≈ #9aa6bb
+    thinking_minimal: 146, // #afafd7 ≈ #a3c0dd
+    thinking_low: 110,     // #87afd7 ≈ #88c0d0
+    thinking_medium: 139,  // #af87af ≈ #b48ead
+    thinking_high: 186,    // #d7d787 ≈ #ebcb8b
+    thinking_xhigh: 131,   // #af5f5f
+    thinking_text: 254,    // #e4e4e4 ≈ #d8dee9
+
+    user_bg: 239,      // #4e4e4e ≈ #434c5e
+    assistant_bg: 237, // #3a3a3a ≈ #2e3440
+};
+
+/// `rose-pine` — Rosé Pine — Main (#191724 canvas, #c4a7e7 accent).
+const ROSE_PINE: Theme = Theme {
+    bg: 234,          // #1c1c1c ≈ #191724
+    fg: 189,          // #d7d7ff ≈ #e0def4
+    accent: 182,      // #d7afd7 ≈ #c4a7e7
+    border: 238,      // #444444 ≈ #393552
+    selected_bg: 236, // #303030 ≈ #2a273f
+    selected_fg: 231, // #ffffff ≈ #f6f4ff
+    dim: 103,         // #8787af ≈ #8f8aa8
+    error: 168,       // #d75f87 ≈ #eb6f92
+    success: 152,     // #afd7d7 ≈ #9ccfd8
+
+    md_heading: 216,           // #ffaf87 ≈ #f6c177
+    md_link: 74,               // #5fafd7 ≈ #6cb2cc
+    md_code: 152,              // #afd7d7 ≈ #9ccfd8
+    md_code_block: 152,        // #afd7d7 ≈ #9ccfd8
+    md_code_block_border: 238, // #444444 ≈ #393552
+    md_quote: 103,             // #8787af ≈ #8f8aa8
+
+    tool_pending_bg: 235, // #262626
+    tool_success_bg: 236, // #303030 ≈ #212f38
+    tool_error_bg: 237,   // #3a3a3a
+    tool_title: 74,       // #5fafd7 ≈ #6cb2cc
+    tool_output: 146,     // #afafd7 ≈ #b0acc8
+
+    thinking_off: 103,    // #8787af ≈ #8f8aa8
+    thinking_minimal: 74, // #5fafd7 ≈ #6cb2cc
+    thinking_low: 182,    // #d7afd7 ≈ #c4a7e7
+    thinking_medium: 141, // #af87ff
+    thinking_high: 216,   // #ffaf87 ≈ #f6c177
+    thinking_xhigh: 168,  // #d75f87 ≈ #eb6f92
+    thinking_text: 146,   // #afafd7 ≈ #b0acc8
+
+    user_bg: 236,      // #303030 ≈ #2a273f
+    assistant_bg: 234, // #1c1c1c ≈ #191724
+};
+
+/// `rose-pine-light` — Rosé Pine — Dawn (#faf4ed canvas, #76608e accent).
+const ROSE_PINE_LIGHT: Theme = Theme {
+    bg: 255,          // #eeeeee ≈ #faf4ed
+    fg: 240,          // #585858 ≈ #4f4a6e
+    accent: 96,       // #875f87 ≈ #76608e
+    border: 253,      // #dadada ≈ #e4dcd8
+    selected_bg: 254, // #e4e4e4 ≈ #f2e9e1
+    selected_fg: 238, // #444444 ≈ #403c5c
+    dim: 245,         // #8a8a8a ≈ #87829b
+    error: 131,       // #af5f5f ≈ #a4475e
+    success: 24,      // #005f87 ≈ #286983
+
+    md_heading: 94,            // #875f00 ≈ #9a5f10
+    md_link: 60,               // #5f5f87 ≈ #3f7180
+    md_code: 60,               // #5f5f87 ≈ #3f7180
+    md_code_block: 24,         // #005f87 ≈ #286983
+    md_code_block_border: 253, // #dadada ≈ #e4dcd8
+    md_quote: 245,             // #8a8a8a ≈ #87829b
+
+    tool_pending_bg: 253, // #dadada
+    tool_success_bg: 194, // #d7ffd7
+    tool_error_bg: 224,   // #ffd7d7
+    tool_title: 60,       // #5f5f87 ≈ #3f7180
+    tool_output: 243,     // #767676
+
+    thinking_off: 245,    // #8a8a8a ≈ #87829b
+    thinking_minimal: 60, // #5f5f87 ≈ #3f7180
+    thinking_low: 96,     // #875f87 ≈ #76608e
+    thinking_medium: 96,  // #875f87 ≈ #7c6595
+    thinking_high: 94,    // #875f00 ≈ #9a5f10
+    thinking_xhigh: 131,  // #af5f5f ≈ #a4475e
+    thinking_text: 243,   // #767676
+
+    user_bg: 189,      // #d7d7ff
+    assistant_bg: 255, // #eeeeee ≈ #faf4ed
+};
+
+/// `solarized` — Solarized — Dark (#002b36 canvas, #5fb3e8 accent).
+const SOLARIZED: Theme = Theme {
+    bg: 235,          // #262626 ≈ #002b36
+    fg: 254,          // #e4e4e4 ≈ #eee8d5
+    accent: 74,       // #5fafd7 ≈ #5fb3e8
+    border: 23,       // #005f5f ≈ #12505f
+    selected_bg: 24,  // #005f87
+    selected_fg: 230, // #ffffd7 ≈ #fdf6e3
+    dim: 247,         // #9e9e9e ≈ #8ba09c
+    error: 210,       // #ff8787 ≈ #f08a7f
+    success: 143,     // #afaf5f ≈ #b5bb63
+
+    md_heading: 179,          // #d7af5f ≈ #e2c261
+    md_link: 74,              // #5fafd7 ≈ #6cb6e8
+    md_code: 116,             // #87d7d7 ≈ #7fd0d8
+    md_code_block: 143,       // #afaf5f ≈ #b5bb63
+    md_code_block_border: 23, // #005f5f ≈ #12505f
+    md_quote: 247,            // #9e9e9e ≈ #8ba09c
+
+    tool_pending_bg: 234, // #1c1c1c ≈ #012129
+    tool_success_bg: 236, // #303030 ≈ #1e3a2c
+    tool_error_bg: 236,   // #303030 ≈ #40242a
+    tool_title: 74,       // #5fafd7 ≈ #6cb6e8
+    tool_output: 250,     // #bcbcbc ≈ #b7c4bf
+
+    thinking_off: 247,    // #9e9e9e ≈ #8ba09c
+    thinking_minimal: 74, // #5fafd7 ≈ #6cb6e8
+    thinking_low: 74,     // #5fafd7 ≈ #5fb3e8
+    thinking_medium: 61,  // #5f5faf
+    thinking_high: 179,   // #d7af5f ≈ #e2c261
+    thinking_xhigh: 210,  // #ff8787 ≈ #f08a7f
+    thinking_text: 250,   // #bcbcbc ≈ #b7c4bf
+
+    user_bg: 24,       // #005f87
+    assistant_bg: 235, // #262626 ≈ #002b36
+};
+
+/// `solarized-light` — Solarized — Light (#f4ecd8 canvas, #1e6fa8 accent).
+const SOLARIZED_LIGHT: Theme = Theme {
+    bg: 254,          // #e4e4e4 ≈ #f4ecd8
+    fg: 236,          // #303030 ≈ #073642
+    accent: 25,       // #005faf ≈ #1e6fa8
+    border: 187,      // #d7d7af ≈ #ded6bf
+    selected_bg: 230, // #ffffd7 ≈ #eee8d5
+    selected_fg: 235, // #262626 ≈ #002b36
+    dim: 244,         // #808080 ≈ #6d7f80
+    error: 124,       // #af0000 ≈ #b52a27
+    success: 58,      // #5f5f00 ≈ #5f6f00
+
+    md_heading: 94,            // #875f00 ≈ #8b6a00
+    md_link: 25,               // #005faf ≈ #1e6fa8
+    md_code: 30,               // #008787 ≈ #2a7c85
+    md_code_block: 58,         // #5f5f00 ≈ #5f6f00
+    md_code_block_border: 187, // #d7d7af ≈ #ded6bf
+    md_quote: 244,             // #808080 ≈ #6d7f80
+
+    tool_pending_bg: 255, // #eeeeee ≈ #f6efdc
+    tool_success_bg: 194, // #d7ffd7
+    tool_error_bg: 224,   // #ffd7d7
+    tool_title: 25,       // #005faf ≈ #1e6fa8
+    tool_output: 242,     // #6c6c6c ≈ #586e75
+
+    thinking_off: 244,    // #808080 ≈ #6d7f80
+    thinking_minimal: 25, // #005faf ≈ #1e6fa8
+    thinking_low: 25,     // #005faf ≈ #1e6fa8
+    thinking_medium: 96,  // #875f87 ≈ #8a4b8f
+    thinking_high: 94,    // #875f00 ≈ #8b6a00
+    thinking_xhigh: 124,  // #af0000 ≈ #b52a27
+    thinking_text: 242,   // #6c6c6c ≈ #586e75
+
+    user_bg: 230,      // #ffffd7
+    assistant_bg: 254, // #e4e4e4 ≈ #f4ecd8
+};
+
+/// `tokyo-night` — Tokyo Night, by enkia (#1a1b26 canvas, #88acf8 accent).
+const TOKYO_NIGHT: Theme = Theme {
+    bg: 234,          // #1c1c1c ≈ #1a1b26
+    fg: 153,          // #afd7ff ≈ #c0caf5
+    accent: 111,      // #87afff ≈ #88acf8
+    border: 59,       // #5f5f5f ≈ #4f546f
+    selected_bg: 236, // #303030 ≈ #292e42
+    selected_fg: 189, // #d7d7ff ≈ #d5ddff
+    dim: 103,         // #8787af ≈ #7f87ad
+    error: 210,       // #ff8787 ≈ #f8849a
+    success: 149,     // #afd75f ≈ #9ece6a
+
+    md_heading: 179,          // #d7af5f ≈ #e0af68
+    md_link: 111,             // #87afff ≈ #84a9f8
+    md_code: 117,             // #87d7ff ≈ #7dcfff
+    md_code_block: 149,       // #afd75f ≈ #9ece6a
+    md_code_block_border: 59, // #5f5f5f ≈ #4f546f
+    md_quote: 103,            // #8787af ≈ #7f87ad
+
+    tool_pending_bg: 235, // #262626
+    tool_success_bg: 238, // #444444 ≈ #3b4b3c
+    tool_error_bg: 236,   // #303030
+    tool_title: 111,      // #87afff ≈ #84a9f8
+    tool_output: 146,     // #afafd7 ≈ #a9b1d6
+
+    thinking_off: 103,     // #8787af ≈ #7f87ad
+    thinking_minimal: 111, // #87afff ≈ #84a9f8
+    thinking_low: 111,     // #87afff ≈ #88acf8
+    thinking_medium: 141,  // #af87ff ≈ #bb9af7
+    thinking_high: 179,    // #d7af5f ≈ #e0af68
+    thinking_xhigh: 210,   // #ff8787 ≈ #f8849a
+    thinking_text: 146,    // #afafd7 ≈ #a9b1d6
+
+    user_bg: 236,      // #303030 ≈ #292e42
+    assistant_bg: 234, // #1c1c1c ≈ #1a1b26
+};
+
+/// `vesper` — Vesper, by Rauno Freiberg (#101010 canvas, #ffc799 accent).
+const VESPER: Theme = Theme {
+    bg: 233,          // #121212 ≈ #101010
+    fg: 188,          // #d7d7d7 ≈ #d7d7d7
+    accent: 222,      // #ffd787 ≈ #ffc799
+    border: 239,      // #4e4e4e ≈ #4e4e4e
+    selected_bg: 234, // #1c1c1c ≈ #1f1f1f
+    selected_fg: 255, // #eeeeee ≈ #f2f2f2
+    dim: 244,         // #808080 ≈ #828282
+    error: 210,       // #ff8787 ≈ #ff8080
+    success: 150,     // #afd787 ≈ #a8d582
+
+    md_heading: 222,           // #ffd787 ≈ #ffc799
+    md_link: 116,              // #87d7d7 ≈ #8fc8e0
+    md_code: 122,              // #87ffd7 ≈ #99ffe4
+    md_code_block: 150,        // #afd787 ≈ #a8d582
+    md_code_block_border: 239, // #4e4e4e ≈ #4e4e4e
+    md_quote: 244,             // #808080 ≈ #828282
+
+    tool_pending_bg: 232, // #080808 ≈ #0b0b0b
+    tool_success_bg: 237, // #3a3a3a ≈ #3a492e
+    tool_error_bg: 236,   // #303030
+    tool_title: 116,      // #87d7d7 ≈ #8fc8e0
+    tool_output: 249,     // #b2b2b2 ≈ #b6b6b6
+
+    thinking_off: 244,     // #808080 ≈ #828282
+    thinking_minimal: 116, // #87d7d7 ≈ #8fc8e0
+    thinking_low: 222,     // #ffd787 ≈ #ffc799
+    thinking_medium: 182,  // #d7afd7 ≈ #d4a9e8
+    thinking_high: 222,    // #ffd787 ≈ #ffc799
+    thinking_xhigh: 210,   // #ff8787 ≈ #ff8080
+    thinking_text: 249,    // #b2b2b2 ≈ #b6b6b6
+
+    user_bg: 234,      // #1c1c1c ≈ #1f1f1f
+    assistant_bg: 233, // #121212 ≈ #101010
+};
+
 // ─── Catalog ────────────────────────────────────────────────────────────────
 
 /// Every selectable theme, in picker order (default first).
@@ -268,6 +860,86 @@ pub const THEME_SPECS: &[ThemeSpec] = &[
         label: "Dracula",
         dark: true,
     },
+    ThemeSpec {
+        id: "ayu",
+        label: "Ayu",
+        dark: true,
+    },
+    ThemeSpec {
+        id: "catppuccin",
+        label: "Catppuccin",
+        dark: true,
+    },
+    ThemeSpec {
+        id: "catppuccin-light",
+        label: "Catppuccin Light",
+        dark: false,
+    },
+    ThemeSpec {
+        id: "everforest",
+        label: "Everforest",
+        dark: true,
+    },
+    ThemeSpec {
+        id: "everforest-light",
+        label: "Everforest Light",
+        dark: false,
+    },
+    ThemeSpec {
+        id: "gruvbox",
+        label: "Gruvbox",
+        dark: true,
+    },
+    ThemeSpec {
+        id: "gruvbox-light",
+        label: "Gruvbox Light",
+        dark: false,
+    },
+    ThemeSpec {
+        id: "kanagawa",
+        label: "Kanagawa",
+        dark: true,
+    },
+    ThemeSpec {
+        id: "nightfox",
+        label: "Nightfox",
+        dark: true,
+    },
+    ThemeSpec {
+        id: "nord",
+        label: "Nord",
+        dark: true,
+    },
+    ThemeSpec {
+        id: "rose-pine",
+        label: "Rose Pine",
+        dark: true,
+    },
+    ThemeSpec {
+        id: "rose-pine-light",
+        label: "Rose Pine Light",
+        dark: false,
+    },
+    ThemeSpec {
+        id: "solarized",
+        label: "Solarized",
+        dark: true,
+    },
+    ThemeSpec {
+        id: "solarized-light",
+        label: "Solarized Light",
+        dark: false,
+    },
+    ThemeSpec {
+        id: "tokyo-night",
+        label: "Tokyo Night",
+        dark: true,
+    },
+    ThemeSpec {
+        id: "vesper",
+        label: "Vesper",
+        dark: true,
+    },
 ];
 
 /// Canonicalise a user-supplied id: trim ASCII whitespace, lower-case it and
@@ -290,6 +962,22 @@ fn theme_for_spec(id: &str) -> Theme {
         "one-light" => ONE_LIGHT,
         "high-contrast" => HIGH_CONTRAST,
         "dracula" => DRACULA,
+        "ayu" => AYU,
+        "catppuccin" => CATPPUCCIN,
+        "catppuccin-light" => CATPPUCCIN_LIGHT,
+        "everforest" => EVERFOREST,
+        "everforest-light" => EVERFOREST_LIGHT,
+        "gruvbox" => GRUVBOX,
+        "gruvbox-light" => GRUVBOX_LIGHT,
+        "kanagawa" => KANAGAWA,
+        "nightfox" => NIGHTFOX,
+        "nord" => NORD,
+        "rose-pine" => ROSE_PINE,
+        "rose-pine-light" => ROSE_PINE_LIGHT,
+        "solarized" => SOLARIZED,
+        "solarized-light" => SOLARIZED_LIGHT,
+        "tokyo-night" => TOKYO_NIGHT,
+        "vesper" => VESPER,
         _ => DARK,
     }
 }
@@ -425,7 +1113,8 @@ mod tests {
     #[test]
     fn id_set_is_frozen_because_it_is_persisted() {
         // Renaming or dropping an id resets every user's saved `themeId`, so the
-        // literal set is pinned here on purpose.
+        // literal set is pinned here on purpose. Appending is safe; reordering
+        // is not (the picker order and `THEME_SPECS[0]` are part of the API).
         let ids: Vec<&str> = THEME_SPECS.iter().map(|spec| spec.id).collect();
         assert_eq!(
             ids,
@@ -435,7 +1124,23 @@ mod tests {
                 "one-dark",
                 "one-light",
                 "high-contrast",
-                "dracula"
+                "dracula",
+                "ayu",
+                "catppuccin",
+                "catppuccin-light",
+                "everforest",
+                "everforest-light",
+                "gruvbox",
+                "gruvbox-light",
+                "kanagawa",
+                "nightfox",
+                "nord",
+                "rose-pine",
+                "rose-pine-light",
+                "solarized",
+                "solarized-light",
+                "tokyo-night",
+                "vesper"
             ]
         );
         assert_eq!(THEME_SPECS[0].id, default_theme_id());
@@ -511,7 +1216,7 @@ mod tests {
             "dark theme",
             "onedark",
             "one dark",
-            "solarized",
+            "solarized-dark",
             "dark-",
             "😀",
             &"x".repeat(4096),

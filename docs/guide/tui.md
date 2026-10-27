@@ -211,9 +211,13 @@ width, and `ctrl+s` (or `shift+←`/`shift+→`, which show the rail to reach
 their panel) brings it back. Once the reader has shown or hidden it, that choice
 is what the next start begins with, and `Restore defaults` lands back on the
 hidden layout.
-
-`/theme` retains the six-theme picker, including `high-contrast`; choosing a
-theme persists `themeId`. With no stored choice, the terminal's `COLORFGBG`
+`/theme` opens the theme picker: the six palettes the TUI has always shipped
+(`dark`, `light`, `one-dark`, `one-light`, `high-contrast`, `dracula`) plus the
+desktop's palette family (`ayu`, `catppuccin`, `everforest`, `gruvbox`,
+`kanagawa`, `nightfox`, `nord`, `rose-pine`, `solarized`, `tokyo-night`,
+`vesper`, and `-light` renditions of catppuccin, everforest, gruvbox, rose pine
+and solarized). Choosing one persists `themeId` and recolors both surfaces. With
+no stored choice, the terminal's `COLORFGBG`
 hint selects its light/dark palette (unknown hints use dark). `NO_COLOR`
 disables styling by variable presence, including an empty value. **Reduced
 motion** (the preferences overlay's 动态 row) stops the spinner and its elapsed
@@ -376,7 +380,8 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | `tui/src/workbench/files.rs` | The 文件 panel's tree and what a path can be previewed as |
 | `tui/src/workbench/image_view.rs` | Picture arithmetic for the placed bitmap: fit, zoom, pan, and the crop a zoomed box shows |
 | `tui/src/workbench/state.rs` | `WorkbenchData` and its parts |
-| `tui/src/workbench/theme.rs` | The six palettes: `dark`, `light`, `one-dark`, `one-light`, `high-contrast`, `dracula` |
+| `tui/src/themes.rs` | The palette catalogue: `Theme` values plus the id/label/dark table `/theme` reads |
+| `tui/src/workbench/theme.rs` | The workbench `Palette` per catalogue id (22), and the semantic colours the screen paints with |
 | `tui/src/workbench/i18n.rs` | Every piece of chrome, in Chinese and English, and the locale/preference resolution |
 | `tui/src/workbench/demo.rs` | Deterministic demo data (screenshots, tests) |
 | `tui/examples/demo_agent.rs` | The scripted gRPC agent screenshots talk to |

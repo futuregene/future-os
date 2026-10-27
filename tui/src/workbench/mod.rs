@@ -6422,7 +6422,7 @@ mod tests {
         for _ in 1..PALETTES.len() {
             seen.push(workbench.cycle_theme());
         }
-        assert_eq!(seen.len(), 6);
+        assert_eq!(seen.len(), PALETTES.len());
         assert_eq!(seen[1], "light");
         assert_eq!(workbench.cycle_theme(), FUTURE_DARK.id);
         // Setting by id accepts the shared catalogue's spelling and the one
@@ -6433,6 +6433,57 @@ mod tests {
         assert_eq!(workbench.palette.id, "light");
         assert!(!workbench.set_theme("nope"), "an unknown id is refused");
         assert_eq!(workbench.palette.id, FUTURE_DARK.id);
+    }
+
+    #[test]
+    fn the_theme_picker_scrolls_to_the_last_of_the_catalogue() {
+        // 22 palettes, more than a short terminal can show at once: the window
+        // follows the highlight, so the last entry has to be reachable and the
+        // `✓` has to stay on what the reader actually has.
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 20);
+        workbench.open_picker(PickerKind::Theme, &data);
+        for _ in 1..PALETTES.len() {
+            workbench.handle(WbEvent::Key("down".into()), &data);
+        }
+        assert_eq!(workbench.palette.id, "vesper");
+        let text = plain(&workbench.render(&data, 120, 20));
+        assert!(text.contains("Vesper"), "the last row: {text}");
+        assert!(
+            !text.contains("Dark"),
+            "the window scrolled past the first row: {text}"
+        );
+        assert_eq!(
+            workbench.committed_theme(),
+            "dark",
+            "still the reader's own"
+        );
+    }
+
+    #[test]
+    fn every_palette_paints_a_whole_frame() {
+        // A palette is data, and there are 22 of them now: one whose colours
+        // broke a row (a wrong width, a background that swallowed the padding)
+        // would otherwise only show up on the reader's own screen.
+        let data = demo::chat();
+        let mut workbench = workbench();
+        for palette in PALETTES {
+            assert!(
+                workbench.set_theme(palette.id),
+                "{} is not selectable",
+                palette.id
+            );
+            let rows = workbench.render(&data, 120, 38);
+            assert_eq!(rows.len(), 38, "{} row count", palette.id);
+            for (index, row) in rows.iter().enumerate() {
+                assert_eq!(
+                    crate::utils::visible_width(row),
+                    120,
+                    "{} row {index}: {row:?}",
+                    palette.id
+                );
+            }
+        }
     }
 
     #[test]
