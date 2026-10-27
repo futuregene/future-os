@@ -116,8 +116,10 @@ launchpad 是**正文**，不是盖在对话上的弹窗：没有会话时整块
 `zh` | `en`，与桌面端、手机端同一套词汇；缺这个键就是 `system`）。
 
 - `/lang` 打开选择器：**跟随系统**、**中文**、**English**。
-- 语言取 `LC_ALL`、`LC_MESSAGES`、`LANG` 中第一个有效的；Windows 上三者都没设时取
-  用户的界面语言。缺失或 `C` 都按英文。
+- 语言依次取 `LC_ALL`、`LC_MESSAGES`、系统自己的答案（macOS 的偏好语言
+  `AppleLanguages`、Windows 的界面语言）、`LANG`。`LANG` 放最后是因为 Mac 的 shell 从
+  `/etc/zprofile` 取 `LANG`，那是终端的习惯、不是这台机器的选择——否则系统是中文的 Mac
+  会画成英文。缺失或 `C` 都按英文。
 - `cargo run -p future-tui --example workbench_demo -- --lang en` 可以打一帧英文界面；
   截图流程把 `zh` 写进它自己的临时 home 固定下来，基线不因谁跑而变。
 

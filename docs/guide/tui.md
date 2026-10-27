@@ -146,9 +146,11 @@ It follows the system until the reader picks one, and the pick is remembered in
 vocabulary the desktop and the phone use; a missing key means `system`).
 
 - `/lang` opens the picker: **Follow system**, **中文**, **English**.
-- The locale comes from `LC_ALL`, then `LC_MESSAGES`, then `LANG`; on Windows,
-  from the user's UI language when none of them is set. A missing or `C` locale
-  is English.
+- The locale comes from `LC_ALL`, then `LC_MESSAGES`, then the system's own
+  answer — the macOS preferred language (`AppleLanguages`), the Windows UI
+  language — and `LANG` last: a Mac's shell takes `LANG` from `/etc/zprofile`,
+  so it describes the terminal rather than the Mac, and a Chinese Mac would
+  otherwise draw English. A missing or `C` locale is English.
 - `cargo run -p future-tui --example workbench_demo -- --lang en` prints a frame
   in either language; the screenshot capture pins `zh` by writing the settings
   file into its scratch home, so a baseline does not depend on who ran it.
