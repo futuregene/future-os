@@ -260,6 +260,11 @@ pub(crate) fn compose(
             paint_overlay(&mut rows, &palette, lines, columns);
             workbench.set_cursor(None);
         }
+        Some(Overlay::Git) => {
+            let lines = git_box(workbench, data, &palette, w, h);
+            paint_overlay(&mut rows, &palette, lines, columns);
+            workbench.set_cursor(None);
+        }
         Some(Overlay::Picker(kind)) => {
             let lines = picker_box(workbench, data, &palette, w, h, kind);
             paint_overlay(&mut rows, &palette, lines, columns);
@@ -1484,6 +1489,269 @@ fn diff_review_box(
         rows.push(fit("", columns));
     }
     indent(rows, left, w as usize)
+}
+
+fn git_box(
+    workbench: &mut Workbench,
+    data: &WorkbenchData,
+    palette: &Palette,
+    w: u16,
+    h: u16,
+) -> Vec<String> {
+    use crate::workbench::workflows;
+    let columns = (w as usize).clamp(1, 132);
+    let left = (w as usize).saturating_sub(columns) / 2;
+    // Claim the box before anything inside it, so a click on the title rule or
+    // a blank row belongs to the panel and not to the page behind it.
+    workbench.hit_map().push(
+        Rect::new(left as u16, 0, columns as u16, h),
+        "overlay.surface",
+    );
+    let lang = workbench.lang;
+    let title = match data.git.as_ref().map(|git| git.repo.as_str()) {
+        Some(repo) if !repo.is_empty() => format!(" git · {repo} "),
+        _ => " git ".to_string(),
+    };
+    let mut rows = vec![widgets::box_top(palette, columns, &title)];
+
+    // The tab strip. Its four labels are the four number keys, painted in the
+    // order `GitSection::ALL` lists them, so what a reader sees and what `3`
+    // selects are the same list.
+    let section = data.git.as_ref().map(|git| git.section);
+    let mut strip = String::new();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    for (index, candidate) in state::GitSection::ALL.iter().enumerate() {
+        if index > 0 {
+            strip.push_str("  ");
+        }
+        let label = format!("{}. {}", index + 1, t(lang, git_tab_key(*candidate)));
+        let start = width(&strip);
+        let painted = if section == Some(*candidate) {
+            palette.strong(palette.iris, &format!(" {label} "))
+        } else {
+            palette.dim(&format!(" {label} "))
+        };
+        strip.push_str(&painted);
+        spans.push((start, width(&label) + 2));
+    }
+    let y = rows.len() as u16;
+    rows.push(widgets::box_row(palette, &strip, columns));
+    for (index, (start, span)) in spans.iter().enumerate() {
+        workbench.hit_map().push(
+            Rect::new((left + 1 + start) as u16, y, *span as u16, 1),
+            format!("git.tab.{index}"),
+        );
+    }
+    rows.push(widgets::box_row(palette, t(lang, Key::GitHint), columns));
+    let available = (h as usize).saturating_sub(4);
+    if available == 0 {
+        rows.push(widgets::box_bottom(palette, columns));
+        return indent(rows, left, w as usize);
+    }
+    let Some(git) = &data.git else {
+        rows.push(widgets::box_row(palette, t(lang, Key::GitNoRepo), columns));
+        rows.push(widgets::box_bottom(palette, columns));
+        return indent(rows, left, w as usize);
+    };
+    if let Some(error) = &git.error {
+        for line in workflows::wrapped(
+            std::slice::from_ref(error),
+            columns.saturating_sub(4),
+            0,
+            available,
+        ) {
+            rows.push(widgets::box_row(palette, &line, columns));
+        }
+        rows.push(widgets::box_bottom(palette, columns));
+        return indent(rows, left, w as usize);
+    }
+
+    // The cursor is the reader's position and moves with the key; the detail
+    // catches up only once the driver has loaded it, so the arrow follows the
+    // cursor rather than the loaded row or `down` looks dead for a round trip.
+    let cursor = workbench
+        .workflow_index
+        .min(git.rows.len().saturating_sub(1));
+    // One painted row of the list at a given width. The width is the pane's, so
+    // a narrow box drops the tail of a field instead of letting `fit` cut a
+    // field in the middle (which reads as a different value).
+    let row_text = |index: usize, width: usize| -> String {
+        let Some(row) = git.rows.get(index) else {
+            return String::new();
+        };
+        if row.key.is_none() {
+            // The graph continuing through a column: painted in the gutter,
+            // never selectable, so it gets no arrow.
+            return fit(&format!("  {}", row.prefix), width);
+        }
+        let pieces: Vec<&str> = row.pieces.iter().map(String::as_str).collect();
+        workflows::record_line(index == cursor, &row.prefix, &pieces, width)
+    };
+    if git.rows.is_empty() {
+        rows.push(widgets::box_row(
+            palette,
+            t(lang, git_empty_key(git.section)),
+            columns,
+        ));
+        rows.push(widgets::box_bottom(palette, columns));
+        return indent(rows, left, w as usize);
+    }
+
+    let section_name = t(lang, git_tab_key(git.section)).to_string();
+    let mut list_title = if workbench.git_detail_focus {
+        format!("  {section_name}")
+    } else {
+        format!("› {section_name}")
+    };
+    if let Some(filter) = &git.filter {
+        list_title.push_str(&format!(" · {filter}"));
+    }
+    let detail_title = if workbench.git_detail_focus {
+        format!("› {}", t(lang, Key::GitDetail))
+    } else {
+        format!("  {}", t(lang, Key::GitDetail))
+    };
+    let split = columns >= 92;
+    let scroll = if workbench.git_detail_focus {
+        workbench.overlay_scroll_offset()
+    } else {
+        0
+    };
+    let detail_lines = if git.detail.is_empty() {
+        vec![t(lang, Key::GitNoSelection).to_string()]
+    } else {
+        git.detail.clone()
+    };
+
+    if split {
+        // The list is a third of the box (bounded): a ref name or a nested path
+        // needs room, and the patch is the part that wants the rest.
+        let inner = columns.saturating_sub(2);
+        let left_w = ((inner.saturating_sub(3)) / 3)
+            .clamp(24, 52)
+            .min(inner.saturating_sub(5));
+        // `│` plus one cell of air on either side, inside the border: the row's
+        // content must be exactly `inner` cells or `box_row` clips its tail.
+        let right_w = inner.saturating_sub(left_w + 4);
+        let body_rows = available.max(1);
+        workbench.set_list_page(body_rows.saturating_sub(1));
+        let first = cursor
+            .saturating_add(1)
+            .saturating_sub(body_rows.saturating_sub(1));
+        let detail = workflows::wrapped(
+            &detail_lines,
+            right_w.saturating_sub(2),
+            scroll,
+            body_rows.saturating_sub(1),
+        );
+        let detail_x = (left + 1 + left_w + 4) as u16;
+        for index in 0..body_rows {
+            let left_text = if index == 0 {
+                list_title.clone()
+            } else {
+                fit(&row_text(first + index - 1, left_w), left_w)
+            };
+            let right_text = if index == 0 {
+                detail_title.clone()
+            } else {
+                detail
+                    .get(index - 1)
+                    .map(|line| fit(line, right_w))
+                    .unwrap_or_default()
+            };
+            let y = rows.len() as u16;
+            rows.push(widgets::box_row(
+                palette,
+                &format!(
+                    " {} {} {}",
+                    fit(&left_text, left_w),
+                    palette.text(palette.border, "│"),
+                    fit(&right_text, right_w),
+                ),
+                columns,
+            ));
+            if index > 0 && first + index - 1 < git.rows.len() {
+                workbench.hit_map().push(
+                    Rect::new((left + 1) as u16, y, left_w as u16, 1),
+                    format!("git.row.{}", first + index - 1),
+                );
+            }
+            if index > 0 {
+                workbench
+                    .hit_map()
+                    .push(Rect::new(detail_x, y, right_w as u16, 1), "git.detail");
+            }
+        }
+    } else if workbench.git_detail_focus {
+        let body_rows = available.max(1);
+        workbench.set_list_page(body_rows);
+        let detail =
+            workflows::wrapped(&detail_lines, columns.saturating_sub(4), scroll, body_rows);
+        for (index, line) in detail.iter().enumerate() {
+            let y = rows.len() as u16;
+            rows.push(widgets::box_row(palette, line, columns));
+            if index == 0 {
+                workbench.hit_map().push(
+                    Rect::new((left + 1) as u16, y, columns.saturating_sub(2) as u16, 1),
+                    "git.detail",
+                );
+            }
+        }
+    } else {
+        let body_rows = available.saturating_sub(1).max(1);
+        workbench.set_list_page(body_rows);
+        let first = cursor.saturating_add(1).saturating_sub(body_rows);
+        let mut y = rows.len() as u16;
+        rows.push(widgets::box_row(palette, &list_title, columns));
+        y += 1;
+        for index in 0..body_rows {
+            if first + index >= git.rows.len() {
+                break;
+            }
+            let line = row_text(first + index, columns.saturating_sub(4));
+            rows.push(widgets::box_row(
+                palette,
+                &fit(&line, columns.saturating_sub(4)),
+                columns,
+            ));
+            workbench.hit_map().push(
+                Rect::new((left + 1) as u16, y, columns.saturating_sub(2) as u16, 1),
+                format!("git.row.{}", first + index),
+            );
+            y += 1;
+        }
+    }
+    // The box is the screen, not a window onto the rows: a list shorter than the
+    // box is padded inside it, so the bottom border stays on the last row and a
+    // short repository does not paint a half-height panel.
+    while rows.len() + 1 < h as usize {
+        rows.push(widgets::box_row(palette, "", columns));
+    }
+    rows.push(widgets::box_bottom(palette, columns));
+    indent(rows, left, w as usize)
+}
+
+/// The tab label of one section — the same string the tab strip, the pane title
+/// and the empty state print.
+fn git_tab_key(section: state::GitSection) -> Key {
+    match section {
+        state::GitSection::Commits => Key::GitTabCommits,
+        state::GitSection::Refs => Key::GitTabRefs,
+        state::GitSection::Status => Key::GitTabStatus,
+        state::GitSection::Stash => Key::GitTabStash,
+    }
+}
+
+/// What an empty section says: "nothing here" differs from "the tree is clean",
+/// and a reader who just staged everything must not read a clean tree as a
+/// failed read.
+fn git_empty_key(section: state::GitSection) -> Key {
+    match section {
+        state::GitSection::Commits => Key::GitEmptyCommits,
+        state::GitSection::Refs => Key::GitEmptyRefs,
+        state::GitSection::Status => Key::GitCleanStatus,
+        state::GitSection::Stash => Key::GitEmptyStash,
+    }
 }
 
 fn help_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec<String> {

@@ -131,9 +131,9 @@ No default shortcut is a function key: `F1`–`F12` need an `Fn` modifier on a
 laptop keyboard and are absent on a compact one, so the defaults are
 `ctrl+m` model, `ctrl+t` effort, `ctrl+s` approval mode, `ctrl+l` workspaces,
 `ctrl+1`/`ctrl+2` the rail's tabs, `alt+h` help, `alt+r` refresh, `alt+c` copy,
-`alt+m` mouse, `alt+a` reduced motion. Every one of them is rebindable in
-`/preferences`, and the help overlay lists them grouped by what they do rather
-than in one flat list.
+`alt+m` mouse, `alt+a` reduced motion, `alt+g` the git browser (`/git`). Every
+one of them is rebindable in `/preferences`, and the help overlay lists them
+grouped by what they do rather than in one flat list.
 
 Two breakpoints, both from the contract:
 
@@ -245,6 +245,7 @@ click on the rail's tab strip are the doors to the same places.
 | `ctrl+z` / `ctrl+shift+z` (or `alt+y`) | Undo / redo draft edits |
 | `pageUp` / `pageDown` or `ctrl+↑` / `ctrl+↓` | Scroll the conversation; `esc` returns to the latest output |
 | `alt+q` or `/queue` | List queued prompts; `x` cancels, `r` / `enter` cancels and recalls into the draft (`ctrl+x` stops the active run, not the queue) |
+| `alt+g` or `/git` | The repository browser: 提交 / 引用 / 改动 / 暂存 tabs, a graph log, and the selected row's patch. `1`–`4` pick a tab, `tab` switches list/detail, `y` copies the row |
 | `ctrl+m` | Model picker (`/model`): every model the agent offers, grouped by provider, with the reasoning slider on its first row |
 | `ctrl+1` / `ctrl+2` / `ctrl+3` | The rail's three tabs: 最近 (conversations by refresh time), 工作区 (filed by directory), 文件 (the workspace tree). The rail takes the keys and its cursor lands on the conversation on screen (or on the first row of the tree) |
 | `ctrl+v` | Read the clipboard: an image becomes a draft attachment, text is pasted. `/paste` does the same for terminals that bind the key themselves |
@@ -306,6 +307,7 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | File panel and preview | `alt+r` re-reads the tree; a directory is read when it opens (400 entries per level, said out loud when cut). A preview decodes an image to at most 1024 px on its long edge and draws it as half blocks; text is read bounded and cut on a character boundary |
 | Approvals | A parked request opens a full card with tool, kind, risk, action/paths, requested action and sandbox boundary. `y` / `n` allow once or deny; `a` first adds the agent-suggested **this-run** workspace rule, then approves. A rule failure leaves the request pending. Escape closes the card without deciding |
 | Diff review | `/diff` lists tracked and untracked changes from the session workspace and shows the selected real git patch. Wide terminals keep a fixed file navigator beside an independently scrolling patch. Narrow terminals switch between files and patch with `tab`; `up`/`down` operate the focused view and left/right choose a file. The arrow follows the cursor immediately, and `·` marks the file whose patch is already loaded while the reload is in flight. `r` refreshes. This is the current uncommitted working tree, not per-turn attribution; patches are preview-bounded |
+| Repository browser | `/git` (or `alt+g`) is a read-only tig-shaped panel with four tabs: 提交 (`git log --graph`, 200 commits, decorations), 引用 (local/remote branches and tags with upstream tracking), 改动 (the working tree, same porcelain read as `/diff`) and 暂存 (`git stash list`). Each row's detail loads on selection: a commit's stat and patch, a ref's upstream and tip, a file's patch, a stash's diff. `1`–`4` pick a tab, `tab` switches list/detail (the wide layout shows both), `enter` opens (a ref filters the log to it, a changed file opens in the preview box, a commit moves the keys to its patch), `y` copies the sha/ref/path, `backspace` clears the filter, `r` re-reads. Nothing here stages, commits, checks out or drops a stash, and every query is bounded and killed past its deadline |
 | History search and tree | `/history` filters the current `list_sessions` titles/first-message previews, workspaces and ids; `/tree` uses `parentSessionId`. Enter opens the selected session |
 | Overlay lists | One record is one row: `up`/`down` move the highlight exactly one row, and a long title is shortened in place rather than folded (a wrapped record made one keypress skip two rows). Fields that no longer fit are dropped whole — a workspace cut mid-path would read as a different directory — so a narrow box shows title, then title · workspace, then the id. `pageUp`/`pageDown` move the cursor by one screenful (a detail card scrolls instead, and the diff follows whichever pane has the keys) |
 | `/worktree` rows | `›` is the selection; `●` marks the worktree the session is already in, so choosing one is visible even when the first row is current |

@@ -29,6 +29,7 @@ pub mod diff_review;
 pub mod editor;
 pub mod files;
 pub mod git;
+pub mod git_panel;
 pub mod i18n;
 pub mod image_view;
 pub mod launchpad;
@@ -127,6 +128,8 @@ pub enum Overlay {
     Queue,
     Approval,
     Diff,
+    /// `/git`: the repository browser (log, refs, working tree, stashes).
+    Git,
     History,
     Tree,
     Fork,
@@ -250,6 +253,20 @@ pub enum WbAction {
     OpenQueue,
     OpenApproval,
     OpenDiff,
+    /// Open the repository browser (`/git`), reading the log afresh.
+    OpenGit,
+    /// The `/git` panel switched tab: the driver reads that section.
+    GitSection(state::GitSection),
+    /// Narrow the log to one revision (`enter` on a ref), or clear the filter
+    /// with `None`.
+    GitFilter(Option<String>),
+    /// `r` in the `/git` panel: re-read the current section.
+    GitRefresh,
+    /// The `/git` cursor moved: load that row's detail.
+    SelectGit(usize),
+    /// Put this text on the clipboard (`y` in the `/git` panel copies the
+    /// selected commit's sha, a ref's name or a file's path).
+    CopyText(String),
     OpenHistory,
     OpenTree,
     OpenFork,
@@ -481,6 +498,10 @@ pub struct Workbench {
     /// Diff navigator focus: files or the patch. The narrow layout uses the
     /// same distinction so file selection cannot eat the patch's scroll keys.
     pub diff_patch_focus: bool,
+    /// `/git` focus: the list or the detail pane. Same distinction as the diff's,
+    /// for the same reason — a detail pane that scrolls while the cursor moves
+    /// is two things on one key.
+    pub git_detail_focus: bool,
     pub history_query: String,
     session_key: String,
     pub mouse_capture: bool,
@@ -578,6 +599,7 @@ impl Workbench {
             workflow_index: 0,
             list_page: 10,
             diff_patch_focus: true,
+            git_detail_focus: false,
             history_query: String::new(),
             session_key: String::new(),
             mouse_capture: true,
@@ -1029,6 +1051,9 @@ impl Workbench {
                 let panel = self.panel.next();
                 return self.focus_panel_action(panel, data);
             }
+            // The repository browser: a key and `/git` are the same door, and the
+            // palette's own entry is what the key runs.
+            Some(preferences::Action::Git) => return vec![WbAction::OpenGit],
             // The clipboard: an image becomes an attachment, text is pasted.
             Some(preferences::Action::PasteImage) => return vec![WbAction::PasteClipboard],
             Some(preferences::Action::PreviewAttachment) => {
@@ -1612,6 +1637,9 @@ impl Workbench {
         key: &str,
         data: &WorkbenchData,
     ) -> Vec<WbAction> {
+        if overlay == Overlay::Git {
+            return self.handle_git_key(key, data);
+        }
         if matches!(
             overlay,
             Overlay::Approval
@@ -1919,6 +1947,7 @@ impl Workbench {
             },
             Overlay::Approval
             | Overlay::Diff
+            | Overlay::Git
             | Overlay::History
             | Overlay::Tree
             | Overlay::Fork
@@ -1966,6 +1995,134 @@ impl Workbench {
                 _ => Vec::new(),
             },
         }
+    }
+
+    /// The `/git` panel's keys. A tab switch and a cursor move both leave the
+    /// panel open; `esc`/`q` close it, the same two keys every other list
+    /// overlay answers to.
+    fn handle_git_key(&mut self, key: &str, data: &WorkbenchData) -> Vec<WbAction> {
+        let Some(git) = data.git.as_ref() else {
+            if matches!(key, "escape" | "q") {
+                self.overlay = None;
+            }
+            return vec![WbAction::Redraw];
+        };
+        let selected = git
+            .rows
+            .get(self.workflow_index)
+            .and_then(|row| row.key.clone());
+        match key {
+            "escape" | "q" => {
+                self.overlay = None;
+                self.overlay_scroll = 0;
+                self.git_detail_focus = false;
+                vec![WbAction::Redraw]
+            }
+            // The tabs are numbered in the order they are painted, so the hint
+            // row, the numbers and `GitSection::ALL` are one list.
+            "1" | "2" | "3" | "4" => {
+                let index = key.parse::<usize>().unwrap_or(1).saturating_sub(1);
+                let section = state::GitSection::ALL[index.min(state::GitSection::ALL.len() - 1)];
+                if section == git.section {
+                    return Vec::new();
+                }
+                self.overlay_scroll = 0;
+                vec![WbAction::GitSection(section)]
+            }
+            "tab" => {
+                self.git_detail_focus = !self.git_detail_focus;
+                vec![WbAction::Redraw]
+            }
+            "left" | "h" => {
+                self.git_detail_focus = false;
+                vec![WbAction::Redraw]
+            }
+            "right" | "l" => {
+                self.git_detail_focus = true;
+                vec![WbAction::Redraw]
+            }
+            "up" | "k" if !self.git_detail_focus => self.move_git(data, -1),
+            "down" | "j" if !self.git_detail_focus => self.move_git(data, 1),
+            "up" | "k" => {
+                self.overlay_scroll = self.overlay_scroll.saturating_sub(1);
+                vec![WbAction::Redraw]
+            }
+            "down" | "j" => {
+                self.overlay_scroll += 1;
+                vec![WbAction::Redraw]
+            }
+            "pageUp" | "pageDown" | "space" => {
+                let page = self.list_page.max(1);
+                let back = key == "pageUp";
+                if self.git_detail_focus {
+                    self.overlay_scroll = if back {
+                        self.overlay_scroll.saturating_sub(page)
+                    } else {
+                        self.overlay_scroll + page
+                    };
+                    return vec![WbAction::Redraw];
+                }
+                let next = git.page(self.workflow_index, page, !back);
+                self.workflow_index = next;
+                git.selectable(next)
+                    .then_some(vec![WbAction::SelectGit(next)])
+                    .unwrap_or_default()
+            }
+            "home" | "g" if !self.git_detail_focus => match git.first() {
+                Some(index) => {
+                    self.workflow_index = index;
+                    vec![WbAction::SelectGit(index)]
+                }
+                None => Vec::new(),
+            },
+            "end" | "G" if !self.git_detail_focus => match git.last() {
+                Some(index) => {
+                    self.workflow_index = index;
+                    vec![WbAction::SelectGit(index)]
+                }
+                None => Vec::new(),
+            },
+            "r" => vec![WbAction::GitRefresh],
+            "backspace" if git.filter.is_some() => {
+                self.overlay_scroll = 0;
+                vec![WbAction::GitFilter(None)]
+            }
+            "y" => selected
+                .map(|key| vec![WbAction::CopyText(git_panel::copy_text(git.section, &key))])
+                .unwrap_or_default(),
+            "enter" => match (git.section, selected) {
+                // A ref is a filter, not a page: `enter` on `feature` shows the
+                // commits on it, which is what a reader scrolling refs came to
+                // do (tig's `enter` on a ref, same verb).
+                (state::GitSection::Refs, Some(reference)) => {
+                    self.overlay_scroll = 0;
+                    vec![WbAction::GitFilter(Some(reference))]
+                }
+                // A working-tree file opens in the preview box — the one verb
+                // that turns "this file changed" into "this is what changed".
+                (state::GitSection::Status, Some(path)) => vec![WbAction::PreviewFile(path)],
+                // A commit or a stash has its detail already: `enter` moves the
+                // keys there so a long patch can be read without `tab`.
+                (_, Some(_)) => {
+                    self.git_detail_focus = true;
+                    vec![WbAction::Redraw]
+                }
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        }
+    }
+
+    /// Move the `/git` cursor one *selectable* row and ask for that row's detail.
+    fn move_git(&mut self, data: &WorkbenchData, direction: isize) -> Vec<WbAction> {
+        let Some(git) = data.git.as_ref() else {
+            return Vec::new();
+        };
+        let next = git.step(self.workflow_index, direction);
+        self.workflow_index = next;
+        git.selectable(next)
+            .then_some(vec![WbAction::SelectGit(next)])
+            .unwrap_or_default()
     }
 
     fn handle_workflow_key(
@@ -2470,6 +2627,33 @@ impl Workbench {
                         .unwrap_or_default();
                 }
                 if let Some(index) = id
+                    .strip_prefix("git.row.")
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
+                    // A graph continuation has nothing to select: a click that
+                    // moved the cursor onto it would make `enter` do nothing
+                    // and the detail pane go blank.
+                    if !data.git.as_ref().is_some_and(|git| git.selectable(index)) {
+                        return Vec::new();
+                    }
+                    self.workflow_index = index;
+                    self.git_detail_focus = false;
+                    return vec![WbAction::SelectGit(index)];
+                }
+                if let Some(index) = id
+                    .strip_prefix("git.tab.")
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
+                    // The tab strip is the number keys: one path, so the
+                    // pointer and the keyboard cannot disagree about what a
+                    // tab is.
+                    return self.handle_git_key(&(index + 1).to_string(), data);
+                }
+                if id == "git.detail" {
+                    self.git_detail_focus = true;
+                    return vec![WbAction::Redraw];
+                }
+                if let Some(index) = id
                     .strip_prefix("preferences.row.")
                     .and_then(|v| v.parse::<usize>().ok())
                 {
@@ -2754,7 +2938,9 @@ impl Workbench {
     pub fn surface_command(&mut self, command: &str, data: &WorkbenchData) -> VerbOutcome {
         let name = command.trim_start_matches('/').trim();
         match name {
-            "approval" | "diff" | "history" | "tree" | "fork" | "worktree" => VerbOutcome::Agent,
+            "approval" | "diff" | "git" | "history" | "tree" | "fork" | "worktree" => {
+                VerbOutcome::Agent
+            }
             "queue" => {
                 self.overlay = Some(Overlay::Queue);
                 self.queue_index = self.queue_index.min(data.queue.len().saturating_sub(1));
@@ -2991,7 +3177,7 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
 /// The command palette's entries: `(command, description)`. Kept here rather
 /// than in the app so the palette, the help overlay and the tests share one
 /// list.
-pub const COMMANDS: [(&str, Key); 29] = [
+pub const COMMANDS: [(&str, Key); 30] = [
     ("/new", Key::CmdNew),
     ("/delete", Key::CmdDelete),
     ("/queue", Key::CmdQueue),
@@ -2999,6 +3185,7 @@ pub const COMMANDS: [(&str, Key); 29] = [
     ("/paste", Key::CmdPaste),
     ("/mouse", Key::CmdMouse),
     ("/diff", Key::CmdDiff),
+    ("/git", Key::CmdGit),
     ("/approval", Key::CmdApproval),
     ("/history", Key::CmdHistory),
     ("/tree", Key::CmdTree),
@@ -4691,12 +4878,16 @@ mod tests {
 
     /// The painted palette says which rows are which, exactly once per kind, and
     /// a click still lands on the row it was painted on with the headings there.
+    ///
+    /// A tall frame, because the window at 38 rows holds only the commands: the
+    /// palette scrolls, and this case is about the headings and the click
+    /// geometry, not about what fits on one screen.
     #[test]
     fn the_palette_paints_a_heading_once_per_kind_and_keeps_clicks_aligned() {
         let data = demo::chat();
-        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let (mut workbench, _rows) = frame(&data, 120, 60);
         workbench.handle(WbEvent::Key("/".into()), &data);
-        let text = plain(&workbench.render(&data, 120, 38));
+        let text = plain(&workbench.render(&data, 120, 60));
         let headings = text.matches(" 命令").count() + text.matches(" 技能").count();
         assert!(headings >= 2, "both kinds are named: {text}");
         assert!(text.contains("/future-web"), "a skill is listed: {text}");
@@ -4709,7 +4900,7 @@ mod tests {
                 &mut workbench,
                 &data,
                 120,
-                38,
+                60,
                 &format!("palette.row.{last}")
             ),
             vec![WbAction::Command(expected)]
@@ -6047,6 +6238,7 @@ mod tests {
             Overlay::Tree,
             Overlay::Fork,
             Overlay::Worktree,
+            Overlay::Git,
             Overlay::Preferences,
         ] {
             let data = demo::chat();
@@ -6188,6 +6380,290 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The `/git` panel is a two-pane browser: tabs, a list whose arrow follows
+    /// the cursor, and the selected row's detail. Wide boxes split; a narrow one
+    /// switches panes with `tab`, the same way the diff review does.
+    #[test]
+    fn the_git_panel_paints_tabs_rows_and_the_detail() {
+        let mut data = demo::chat();
+        data.git = Some(demo::git());
+
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Git);
+        let rows = wb.render(&data, 120, 38);
+        for row in &rows {
+            assert_eq!(ansi::width(row), 120, "a row is the frame's width");
+        }
+        let ids: Vec<&str> = wb
+            .hits()
+            .regions()
+            .iter()
+            .map(|(_, id)| id.as_str())
+            .collect();
+        for tab in 0..4 {
+            assert!(ids.contains(&format!("git.tab.{tab}").as_str()), "{ids:?}");
+        }
+        assert!(ids.contains(&"git.row.0"), "{ids:?}");
+        assert!(
+            ids.contains(&"git.detail"),
+            "the wide layout splits: {ids:?}"
+        );
+        // The arrow is on the selected row and nowhere else.
+        let y = wb
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| *id == "git.row.0")
+            .map(|(rect, _)| rect.y)
+            .expect("row 0 is painted");
+        let painted = crate::utils::strip_ansi_codes(&rows[y as usize]);
+        assert!(
+            painted.contains('›'),
+            "the cursor row is marked: {painted:?}"
+        );
+        assert!(
+            painted.contains("9e4a47d2a"),
+            "the commit row names its sha: {painted:?}"
+        );
+        // The detail pane shows the selected commit.
+        assert!(plain(&rows).contains("commit 9e4a47d2a"));
+
+        // Narrow: the list owns the body, and `tab` gives the keys to the patch.
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Git);
+        wb.render(&data, 60, 20);
+        let ids: Vec<&str> = wb
+            .hits()
+            .regions()
+            .iter()
+            .map(|(_, id)| id.as_str())
+            .collect();
+        assert!(ids.contains(&"git.row.0"), "{ids:?}");
+        assert!(!ids.contains(&"git.detail"), "one pane at a time: {ids:?}");
+        assert_eq!(
+            wb.handle(WbEvent::Key("tab".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert!(wb.git_detail_focus);
+        let rows = wb.render(&data, 60, 20);
+        let ids: Vec<&str> = wb
+            .hits()
+            .regions()
+            .iter()
+            .map(|(_, id)| id.as_str())
+            .collect();
+        assert!(ids.contains(&"git.detail"), "{ids:?}");
+        assert!(!ids.contains(&"git.row.0"), "{ids:?}");
+        assert!(plain(&rows).contains("commit 9e4a47d2a"));
+        // …and the wheel/arrow keys scroll it rather than moving a cursor.
+        wb.handle(WbEvent::Key("down".into()), &data);
+        assert_eq!(wb.overlay_scroll, 1);
+    }
+
+    /// The log's graph continuation rows are painted but not selectable: the
+    /// cursor steps over them, so `enter` always has something to act on and the
+    /// detail pane never goes blank on a row that is only a drawing.
+    #[test]
+    fn the_git_cursor_steps_over_graph_only_rows() {
+        let mut data = demo::chat();
+        let mut git = demo::git();
+        // demo::git: commit, graph continuation, commit, … — the second row has
+        // no key.
+        assert!(git.rows[1].key.is_none());
+        git.selected = 0;
+        data.git = Some(git);
+
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Git);
+        wb.workflow_index = 0;
+        assert_eq!(
+            wb.handle(WbEvent::Key("down".into()), &data),
+            vec![WbAction::SelectGit(2)],
+            "row 1 is the graph continuing"
+        );
+        assert_eq!(wb.workflow_index, 2);
+        assert_eq!(
+            wb.handle(WbEvent::Key("up".into()), &data),
+            vec![WbAction::SelectGit(0)]
+        );
+        // The ends clamp instead of walking off.
+        wb.workflow_index = 0;
+        assert_eq!(
+            wb.handle(WbEvent::Key("up".into()), &data),
+            vec![WbAction::SelectGit(0)]
+        );
+        assert_eq!(
+            wb.handle(WbEvent::Key("end".into()), &data),
+            vec![WbAction::SelectGit(
+                data.git.as_ref().unwrap().rows.len() - 1
+            )]
+        );
+    }
+
+    /// Every verb the panel advertises: sections are number keys, `enter` means
+    /// "open this" by section (a ref filters the log, a file opens in the
+    /// preview box, a commit moves the keys to its patch), `y` copies the row,
+    /// `r` re-reads and `esc` closes.
+    #[test]
+    fn the_git_panel_speaks_each_verb_it_hints_at() {
+        let mut data = demo::chat();
+        data.git = Some(demo::git());
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Git);
+
+        assert_eq!(
+            wb.handle(WbEvent::Key("3".into()), &data),
+            vec![WbAction::GitSection(state::GitSection::Status)]
+        );
+        // The driver installs the section; the tab already showing is not a
+        // reload.
+        data.git.as_mut().unwrap().section = state::GitSection::Status;
+        assert_eq!(
+            wb.handle(WbEvent::Key("3".into()), &data),
+            Vec::<WbAction>::new(),
+            "the tab already showing is not a reload"
+        );
+        assert_eq!(
+            wb.handle(WbEvent::Key("r".into()), &data),
+            vec![WbAction::GitRefresh]
+        );
+        assert_eq!(
+            wb.handle(WbEvent::Key("1".into()), &data),
+            vec![WbAction::GitSection(state::GitSection::Commits)]
+        );
+        // The driver installs the section it read, so the following keys answer
+        // about the commits tab.
+        data.git.as_mut().unwrap().section = state::GitSection::Commits;
+        assert_eq!(
+            wb.handle(WbEvent::Key("y".into()), &data),
+            vec![WbAction::CopyText("9e4a47d2a".into())]
+        );
+        assert_eq!(
+            wb.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert!(wb.git_detail_focus, "enter on a commit opens its patch");
+        wb.git_detail_focus = false;
+        assert_eq!(
+            wb.handle(WbEvent::Key("escape".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(wb.overlay, None);
+
+        // A ref is a filter, a changed file opens in the preview box, and a tag
+        // copies without its `refs/tags/` prefix.
+        let mut refs = demo::git();
+        refs.section = state::GitSection::Refs;
+        refs.selected = 0;
+        refs.rows = vec![
+            state::GitRow {
+                key: Some("refs/heads/dev-huichen".into()),
+                prefix: "● ".into(),
+                pieces: vec!["dev-huichen".into()],
+            },
+            state::GitRow {
+                key: Some("refs/tags/v1".into()),
+                prefix: String::new(),
+                pieces: vec!["tag: v1".into()],
+            },
+        ];
+        let mut data = demo::chat();
+        data.git = Some(refs);
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Git);
+        assert_eq!(
+            wb.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::GitFilter(Some("refs/heads/dev-huichen".into()))]
+        );
+        assert_eq!(
+            wb.handle(WbEvent::Key("y".into()), &data),
+            vec![WbAction::CopyText("dev-huichen".into())]
+        );
+
+        let mut status = demo::git();
+        status.section = state::GitSection::Status;
+        status.selected = 0;
+        status.rows = vec![state::GitRow {
+            key: Some("tui/src/main.rs".into()),
+            prefix: "M ".into(),
+            pieces: vec!["tui/src/main.rs".into()],
+        }];
+        let mut data = demo::chat();
+        data.git = Some(status);
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Git);
+        assert_eq!(
+            wb.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::PreviewFile("tui/src/main.rs".into())]
+        );
+
+        // A filter in force is cleared with `backspace`, not with `esc` (which
+        // closes the panel).
+        let mut filtered = demo::git();
+        filtered.filter = Some("refs/heads/feature".into());
+        let mut data = demo::chat();
+        data.git = Some(filtered);
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Git);
+        assert_eq!(
+            wb.handle(WbEvent::Key("backspace".into()), &data),
+            vec![WbAction::GitFilter(None)]
+        );
+    }
+
+    /// The tabs and rows are clickable, and a click on a graph continuation does
+    /// nothing — a pointer must not be able to put the cursor where the keyboard
+    /// refuses to go.
+    #[test]
+    fn the_git_panel_answers_the_pointer() {
+        let mut data = demo::chat();
+        data.git = Some(demo::git());
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Git);
+        wb.render(&data, 120, 38);
+        let region = |wb: &Workbench, id: &str| -> (u16, u16) {
+            wb.hits()
+                .regions()
+                .iter()
+                .find(|(_, known)| *known == id)
+                .map(|(rect, _)| (rect.x + 1, rect.y))
+                .unwrap_or_else(|| panic!("no {id} region"))
+        };
+        let press = |x: u16, y: u16| mouse::MouseEvent {
+            kind: mouse::MouseKind::Press,
+            x,
+            y,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+
+        let (x, y) = region(&wb, "git.tab.3");
+        assert_eq!(
+            wb.handle(WbEvent::Mouse(press(x, y)), &data),
+            vec![WbAction::GitSection(state::GitSection::Stash)]
+        );
+        wb.overlay = Some(Overlay::Git);
+        let (x, y) = region(&wb, "git.row.2");
+        assert_eq!(
+            wb.handle(WbEvent::Mouse(press(x, y)), &data),
+            vec![WbAction::SelectGit(2)]
+        );
+        wb.overlay = Some(Overlay::Git);
+        let (x, y) = region(&wb, "git.row.1");
+        assert_eq!(
+            wb.handle(WbEvent::Mouse(press(x, y)), &data),
+            Vec::<WbAction>::new(),
+            "row 1 is the graph continuing"
+        );
+        let (x, y) = region(&wb, "git.detail");
+        assert_eq!(
+            wb.handle(WbEvent::Mouse(press(x, y)), &data),
+            vec![WbAction::Redraw]
+        );
+        assert!(wb.git_detail_focus);
     }
 
     /// A list longer than its box must page. `pageDown` used to add to

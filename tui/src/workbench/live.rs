@@ -76,7 +76,7 @@ struct Paging {
 /// ([`super::Workbench::surface_command`]) and this list have to account for
 /// every entry exactly once. That is the check whose absence let five entries
 /// advertise themselves and then answer `Unknown command`.
-pub const APP_COMMANDS: [&str; 16] = [
+pub const APP_COMMANDS: [&str; 17] = [
     "/new",
     "/reply-detail",
     "/export",
@@ -88,6 +88,7 @@ pub const APP_COMMANDS: [&str; 16] = [
     "/tools",
     "/providers",
     "/diff",
+    "/git",
     "/approval",
     "/history",
     "/tree",
@@ -113,6 +114,8 @@ pub struct Live {
     diff: Option<super::state::DiffView>,
     fork_points: Vec<super::state::ForkPoint>,
     worktrees: Vec<super::state::WorktreeView>,
+    /// The `/git` panel's content, once it has been read for this workspace.
+    git: Option<super::state::GitView>,
     /// A failed request or command, shown above the status bar until the next
     /// successful action replaces it.
     pub notice: Option<String>,
@@ -245,6 +248,7 @@ impl Live {
             diff: None,
             fork_points: Vec::new(),
             worktrees: Vec::new(),
+            git: None,
             notice: None,
             activity: Activity::default(),
             activity_start: None,
@@ -1105,6 +1109,7 @@ impl Live {
             diff: self.diff.clone(),
             fork_points: self.fork_points.clone(),
             worktrees: self.worktrees.clone(),
+            git: self.git.clone(),
         }
     }
 
@@ -1172,6 +1177,12 @@ impl Live {
             | WbAction::OpenQueue
             | WbAction::OpenApproval
             | WbAction::OpenDiff
+            | WbAction::OpenGit
+            | WbAction::GitSection(_)
+            | WbAction::GitFilter(_)
+            | WbAction::GitRefresh
+            | WbAction::SelectGit(_)
+            | WbAction::CopyText(_)
             | WbAction::OpenHistory
             | WbAction::OpenTree
             | WbAction::OpenFork
@@ -2071,6 +2082,18 @@ impl Live {
 
     pub fn set_diff(&mut self, diff: super::state::DiffView) {
         self.diff = Some(diff);
+    }
+
+    /// Install a freshly read `/git` panel. The view carries its own section and
+    /// selection, so the surface keeps painting what the driver last read while
+    /// a reload is in flight.
+    pub fn set_git(&mut self, git: Option<super::state::GitView>) {
+        self.git = git;
+    }
+
+    /// The `/git` view as the driver last read it.
+    pub fn git(&self) -> Option<&super::state::GitView> {
+        self.git.as_ref()
     }
 
     pub fn set_worktrees(&mut self, rows: Vec<crate::worktree::WorktreeInfo>) {

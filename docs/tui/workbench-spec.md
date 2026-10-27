@@ -283,7 +283,7 @@ not answer has no other teacher.
 No **default** is a function key: `F1`–`F12` need an `Fn` modifier on a laptop
 and are absent on a compact keyboard, so those actions default to `alt` + a
 letter (`alt+h` help, `alt+r` refresh, `alt+c` copy, `alt+m` mouse, `alt+a`
-reduced motion). Rebinding to an F key stays supported.
+reduced motion, `alt+g` the git browser). Rebinding to an F key stays supported.
 The help overlay lists `ACTIONS` **grouped** (chats / choices / panels /
 interface), then the non-rebindable inline keys, then the commands.
 
