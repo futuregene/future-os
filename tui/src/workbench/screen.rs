@@ -79,10 +79,6 @@ pub(crate) fn compose(
     if data.on_launchpad() {
         let lang = workbench.lang;
         let focused = workbench.launch_field.chip_id();
-        // The launchpad teaches the *bound* keys, and the hit map is a `&mut`
-        // borrow of the same struct that owns them: one clone of the (tiny)
-        // binding map buys both.
-        let keys = workbench.keys.clone();
         let (lines, cursor) = launchpad::render(
             data,
             &palette,
@@ -90,7 +86,6 @@ pub(crate) fn compose(
             workbench.hit_map(),
             lang,
             focused,
-            &keys,
         );
         paint(&mut rows, frame.body, lines);
         workbench.set_cursor(cursor);
@@ -533,6 +528,118 @@ fn header_right(palette: &Palette, data: &WorkbenchData, avail: usize) -> String
 
 // ─── conversation ──────────────────────────────────────────────────────────
 
+/// A picture the preview box wants on screen, in frame cells.
+///
+/// The frame is text and a bitmap is not: the terminal places it at a cell, out
+/// of band. So the box asks for one here and the driver writes it after the
+/// frame (`run::paint_image`), which is the only place that owns the terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageRequest {
+    /// A hash of the bytes that will be transmitted (the file, and the crop of
+    /// it): unchanged means the picture is already on screen and only its
+    /// placement has to be repeated.
+    pub source: u64,
+    /// Top-left cell of the picture, in frame coordinates.
+    pub x: u16,
+    pub y: u16,
+    /// How much room the picture takes, in cells.
+    pub columns: u16,
+    pub rows: u16,
+    /// The part of the image being shown, in pixels: the whole picture at 1x,
+    /// the window a zoomed picture has been panned to otherwise.
+    pub crop: (usize, usize, usize, usize),
+}
+
+/// The window of a picture that a zoomed, panned box shows, in pixels.
+fn crop_of(
+    pixels: &image_view::ImagePixels,
+    cells_w: usize,
+    cells_h: usize,
+    pan: (usize, usize),
+    shown_w: usize,
+    shown_h: usize,
+) -> (usize, usize, usize, usize) {
+    let whole = (0, 0, pixels.width, pixels.height);
+    if pixels.is_empty() || cells_w == 0 || cells_h == 0 {
+        return whole;
+    }
+    let scale_x = pixels.width as f64 / cells_w as f64;
+    let scale_y = pixels.height as f64 / cells_h as f64;
+    let x0 = ((pan.0 as f64) * scale_x).floor().max(0.0) as usize;
+    let y0 = ((pan.1 as f64) * scale_y).floor().max(0.0) as usize;
+    let x1 = (((pan.0 + shown_w) as f64) * scale_x).ceil() as usize;
+    let y1 = (((pan.1 + shown_h) as f64) * scale_y).ceil() as usize;
+    let x0 = x0.min(pixels.width.saturating_sub(1));
+    let y0 = y0.min(pixels.height.saturating_sub(1));
+    let x1 = x1.clamp(x0 + 1, pixels.width).max(x0 + 1);
+    let y1 = y1.clamp(y0 + 1, pixels.height).max(y0 + 1);
+    (x0, y0, x1, y1)
+}
+
+/// A hash of what will be transmitted: the file and the crop of it.
+fn image_source_key(
+    path: &str,
+    pixels: &image_view::ImagePixels,
+    crop: (usize, usize, usize, usize),
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    pixels.width.hash(&mut hasher);
+    pixels.height.hash(&mut hasher);
+    crop.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// What a terminal without an image protocol shows in place of a picture: the
+/// facts a reader can act on, on one screen, instead of a half-block mosaic.
+fn unsupported_picture(
+    palette: &Palette,
+    lang: Language,
+    name: &str,
+    pixels: &image_view::ImagePixels,
+    inner: usize,
+) -> Vec<String> {
+    let mut lines = vec![
+        String::new(),
+        palette.strong(palette.fg, &format!(" {name}")),
+        palette.dim(&format!(" {}", image_view::describe(pixels))),
+        String::new(),
+    ];
+    for line in wrap_words(
+        t(lang, Key::PreviewImageUnsupported),
+        inner.saturating_sub(2),
+    ) {
+        lines.push(palette.dim(&format!(" {line}")));
+    }
+    lines
+}
+
+/// Greedy word wrap by display cells (the picture's own sentence, which is a
+/// sentence and not a row of a table).
+fn wrap_words(text: &str, line_width: usize) -> Vec<String> {
+    let line_width = line_width.max(1);
+    let mut out: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let candidate = if line.is_empty() {
+            word.to_string()
+        } else {
+            format!("{line} {word}")
+        };
+        if width(&candidate) > line_width && !line.is_empty() {
+            out.push(std::mem::take(&mut line));
+            line = word.to_string();
+        } else {
+            line = candidate;
+        }
+    }
+    if !line.is_empty() {
+        out.push(line);
+    }
+    out
+}
+
 fn conversation(
     workbench: &mut Workbench,
     data: &WorkbenchData,
@@ -544,6 +651,11 @@ fn conversation(
     if rows == 0 || columns == 0 {
         return Vec::new();
     }
+    // One row of air between the last line and the composer's top rule: with
+    // the transcript filling its band, the newest line sat *on* the box, which
+    // reads as a clipped message rather than as a prompt waiting below it.
+    let gap = usize::from(rows > 1);
+    let visible = rows.saturating_sub(gap);
     // One definition of the conversation's text width, shared with the driver
     // that wraps the transcript — see `layout::chat_inner`.
     let padding = layout::chat_padding(area.w);
@@ -555,12 +667,12 @@ fn conversation(
     let mut offset = workbench.chat_scroll_offset().min(total);
     // Scrolling up costs one row to the "↑ 更早" badge, so the last reachable
     // offset is one short of the first message.
-    if total > rows && offset + rows >= total {
-        offset = total - rows + 1;
+    if total > visible && offset + visible >= total {
+        offset = total - visible + 1;
     }
     workbench.set_chat_scroll(offset);
     let end = total.saturating_sub(offset);
-    let start = end.saturating_sub(rows);
+    let start = end.saturating_sub(visible);
     let mut lines: Vec<String> = Vec::new();
     if start > 0 {
         lines.push(fit(
@@ -574,19 +686,28 @@ fn conversation(
     }
     // Bottom-anchored like a chat view: a short conversation sits on the input
     // box, not against the header.
-    let mut out = vec![fit("", columns); rows.saturating_sub(lines.len())];
+    let mut out = vec![fit("", columns); visible.saturating_sub(lines.len())];
     out.extend(lines);
-    out.truncate(rows);
+    out.truncate(visible);
     if workbench.has_new_output() && !out.is_empty() {
         let badge = palette.strong(palette.accent, t(workbench.lang, Key::ChatNewOutput));
         let pad = columns.saturating_sub(width(&badge) + 1);
         let last = out.len() - 1;
         out[last] = fit(&format!("{}{}{}", " ".repeat(pad), badge, " "), columns);
         workbench.hit_map().push(
-            Rect::new(area.x, area.bottom().saturating_sub(1), area.w, 1),
+            Rect::new(
+                area.x,
+                area.bottom().saturating_sub(1 + gap as u16),
+                area.w,
+                1,
+            ),
             "chat.latest",
         );
     }
+    // The air itself: blank rows in the conversation's own width, so the band
+    // is still filled exactly as tall as the layout says it is.
+    out.extend(vec![fit("", columns); gap]);
+    out.truncate(rows);
     out
 }
 
@@ -719,18 +840,14 @@ fn workflow_box(
             if sessions.is_empty() {
                 vec![t(workbench.lang, Key::HistoryEmpty).into()]
             } else {
-                sessions
-                    .iter()
-                    .enumerate()
-                    .map(|(index, row)| {
-                        workflows::record_line(
-                            index == workbench.workflow_index,
-                            "",
-                            &[&row.title, &row.workspace, &row.id],
-                            columns.saturating_sub(4),
-                        )
-                    })
-                    .collect()
+                // One table for the whole list, so the workspace and age
+                // columns line up down the rows instead of starting wherever
+                // each title ended (`#` read as ragged text before this).
+                workflows::session_table(
+                    &sessions,
+                    workbench.workflow_index,
+                    columns.saturating_sub(4),
+                )
             }
         }
         Overlay::Tree => workflows::tree_sessions(&data.sessions)
@@ -975,7 +1092,8 @@ fn sidebar_rows(
     };
     let lang = workbench.lang;
     let panel = workbench.panel;
-    let body = panels::render(
+    let folded = workbench.folded_workspaces.clone();
+    let body = panels::render_with(
         panel,
         data,
         palette,
@@ -983,6 +1101,7 @@ fn sidebar_rows(
         view,
         workbench.hit_map(),
         lang,
+        &folded,
     );
     lines.extend(body);
     if footer == 1 {
@@ -1708,20 +1827,53 @@ fn preview_box(
     let scroll = workbench.preview_scroll;
     let mut content: Vec<String> = Vec::new();
     let hint = match preview {
-        state::PreviewView::Image { pixels, .. } => {
-            // The box's own colour depth decides the renderer: a 256-colour
-            // terminal gets the cube, a truecolor one gets the pixels.
-            let true_color = crate::terminal_image::get_capabilities().true_color;
-            content = image_view::render(
-                pixels,
-                palette,
-                inner,
-                content_h,
-                zoom,
-                workbench.preview_pan,
-                true_color,
-            );
-            let _ = pixels;
+        state::PreviewView::Image { path, pixels } => {
+            // A picture is shown either at its own resolution, by the terminal's
+            // image protocol, or not at all.
+            //
+            // The half-block renderer this replaces drew a ▀ per cell pair: at a
+            // hundred columns that is a 200-pixel-wide thumbnail of a 2000-pixel
+            // photograph, which the reader opened the box to *see*, not to
+            // squint at. So a terminal that can place a bitmap gets the pixels
+            // (`ImageRequest`, painted by the driver after this frame), and a
+            // terminal that cannot gets the picture's facts and an honest
+            // sentence instead of a mosaic.
+            if crate::terminal_image::get_capabilities().images
+                == crate::terminal_image::ImageProtocol::Kitty
+            {
+                let (cells_w, cells_h) =
+                    image_view::fitted_cells(pixels.width, pixels.height, inner, content_h, zoom);
+                // Zoomed past the box, the window is what is on screen; it may
+                // not be panned beyond the picture's own edge.
+                let pan = image_view::clamp_pan(
+                    workbench.preview_pan,
+                    cells_w,
+                    cells_h,
+                    inner,
+                    content_h,
+                );
+                workbench.preview_pan = (pan.0 as i32, pan.1 as i32);
+                let shown_w = cells_w.min(inner).max(1);
+                let shown_h = cells_h.min(content_h).max(1);
+                let crop = crop_of(pixels, cells_w, cells_h, pan, shown_w, shown_h);
+                let left = (inner.saturating_sub(shown_w) / 2) as u16;
+                let top = (content_h.saturating_sub(shown_h) / 2) as u16;
+                workbench.image_request = Some(ImageRequest {
+                    // The *source* is what a repaint must not retransmit; the
+                    // placement is the part that is cheap to repeat.
+                    source: image_source_key(path, pixels, crop),
+                    x: geometry.left + 1 + left,
+                    y: geometry.top + 1 + top,
+                    columns: shown_w as u16,
+                    rows: shown_h as u16,
+                    crop,
+                });
+                // The box keeps its own background under the bitmap: the frame
+                // is text, and the picture is a layer above it.
+                content = vec![palette.panel_row("", inner); content_h];
+            } else {
+                content = unsupported_picture(palette, lang, preview.name(), pixels, inner);
+            }
             t(lang, Key::PreviewHintImage)
         }
         state::PreviewView::Markdown { text, .. } => {
@@ -2133,7 +2285,17 @@ fn panel_box(
         scroll: workbench.panel_scroll[index],
         selected: workbench.sidebar_index,
     };
-    let body = panels::render(panel, data, palette, area, view, workbench.hit_map(), lang);
+    let folded = workbench.folded_workspaces.clone();
+    let body = panels::render_with(
+        panel,
+        data,
+        palette,
+        area,
+        view,
+        workbench.hit_map(),
+        lang,
+        &folded,
+    );
     let geometry = box_geometry(w, h, PANEL_WIDTH, body.len());
     claim_box(workbench, &geometry);
     framed(palette, title, body, w, h, &geometry)
@@ -2185,6 +2347,25 @@ mod tests {
             connected: true,
             ..WorkbenchData::default()
         }
+    }
+
+    /// The transcript's last row is blank, so the newest line is not painted on
+    /// the composer's top rule.
+    #[test]
+    fn the_transcript_keeps_a_blank_row_above_the_prompt() {
+        let mut workbench = Workbench::new();
+        let mut data = crate::workbench::demo::chat();
+        data.messages = vec!["the only line".into()];
+        let rows = conversation(&mut workbench, &data, &FUTURE_DARK, Rect::new(0, 0, 60, 6));
+        assert_eq!(rows.len(), 6);
+        assert!(
+            plain(&rows[4]).contains("the only line"),
+            "the message sits on the last content row: {rows:?}"
+        );
+        assert!(
+            plain(&rows[5]).trim().is_empty(),
+            "the row under it is the air above the box: {rows:?}"
+        );
     }
 
     #[test]
