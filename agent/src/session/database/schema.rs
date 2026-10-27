@@ -8,6 +8,8 @@ pub(super) fn initialize_schema(
 ) -> Result<()> {
     cancellation.check()?;
     crate::session::content::install_functions(connection)?;
+    #[cfg(test)]
+    migration_fault(connection, "before-install")?;
     let tx = connection.transaction()?;
     let missing_projection: bool = tx.query_row(
         "SELECT count(*)!=2 FROM sqlite_schema WHERE type='table' AND name IN ('history_shapes','history_display')",
@@ -40,7 +42,33 @@ pub(super) fn initialize_schema(
     validate_core(&tx)?;
     tx.pragma_update(None, "user_version", super::CURRENT_SCHEMA_VERSION)?;
     cancellation.check()?;
+    #[cfg(test)]
+    migration_fault(&tx, "before-commit")?;
     tx.commit()?;
+    #[cfg(test)]
+    migration_fault(connection, "after-commit")?;
+    Ok(())
+}
+
+/// Child-process fault gates. No hook or environment lookup exists in a
+/// production build; the parent uses only temporary frozen-schema fixtures.
+#[cfg(test)]
+fn migration_fault(connection: &Connection, phase: &str) -> Result<()> {
+    let Ok(mode) = std::env::var("FUTURE_TEST_AGENT_MIGRATION_PHASE") else {
+        return Ok(());
+    };
+    if mode == "full" && phase == "before-install" {
+        let pages: i64 = connection.pragma_query_value(None, "page_count", |r| r.get(0))?;
+        connection.pragma_update(None, "max_page_count", pages + 4)?;
+        return Ok(());
+    }
+    if mode == phase {
+        use std::io::Write;
+        println!("MIGRATION_GATE={phase}");
+        std::io::stdout().flush()?;
+        let mut release = String::new();
+        std::io::stdin().read_line(&mut release)?;
+    }
     Ok(())
 }
 
