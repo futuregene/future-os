@@ -1,7 +1,7 @@
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredThread } from "../../integrations/storage/threadStore";
-import { modelLabel, modelSupportsThinking, modelThinkingLevel, resolveThinkingLevel } from "../../integrations/agent/agentClient";
+import { modelLabel, modelThinkingLevel, modelThinkingLevels, resolveThinkingLevel } from "../../integrations/agent/agentClient";
 import { updateCachedAgentState, useCachedAgentState } from "../../integrations/agent/agentStateCache";
 import { updateThreadModel, updateThreadThinkingLevel } from "../../integrations/storage/threads";
 
@@ -24,7 +24,10 @@ export interface VibeCellSettings {
   modelName: string;
   thinkingLevel: string;
   approvalTier: ApprovalTier;
-  /** Whether this model has a thinking level at all. */
+  /**
+   * Whether this model offers a choice of thinking level. A model whose effective
+   * list holds only the implicit `default` has none.
+   */
   supportsThinking: boolean;
 }
 
@@ -45,7 +48,7 @@ export function useVibeCellSettings(thread: StoredThread | null, fallback: {
 }): VibeCellSettings {
   const state = useCachedAgentState(thread?.id);
   const modelId = state?.model ?? fallback.modelId;
-  const supportsThinking = modelSupportsThinking(modelId, fallback.modelOptions);
+  const supportsThinking = modelThinkingLevels(modelId, fallback.modelOptions).length > 1;
   return {
     // The approval tier is an application setting, not a conversation's: the menu says
     // so where it is changed, or a reader will expect per-cell tiers that do not exist.

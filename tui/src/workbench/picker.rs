@@ -22,7 +22,10 @@
 use crate::approval_mode::ApprovalMode;
 use crate::workbench::ansi::{fit, width};
 use crate::workbench::i18n::{self, t, Key, Language, LanguagePreference};
-use crate::workbench::state::{thinking_index, ModelChoice, WorkbenchData, THINKING_LEVELS};
+use crate::workbench::state::{
+    fallback_thinking_levels, thinking_index_in, ModelChoice, WorkbenchData,
+    DEFAULT_THINKING_LEVEL_NAME,
+};
 use crate::workbench::theme::{self, Palette};
 
 /// Which picker is open. The id is what `Overlay::Picker` carries and what the
@@ -241,8 +244,15 @@ pub struct Picker {
     pub query: String,
     /// Highlighted selectable ordinal.
     pub index: usize,
-    /// Slider position, as an index into [`THINKING_LEVELS`].
+    /// Slider position, as an index into [`Self::levels`] — the highlighted
+    /// model's ring, never a crate-wide constant: two models can offer
+    /// different sets, and the slider must only stand on a level the model
+    /// actually accepts.
     pub effort: usize,
+    /// The level ring the slider walks: the highlighted model's declared
+    /// levels (default-first), or the legacy fallback for a model from an
+    /// agent that predates `thinkingLevels`.
+    levels: Vec<String>,
     /// The language this box's own chrome is read in, and which language is in
     /// force. Both are captured when the box opens, like `effort`, so the list a
     /// key moves through and the list that is painted agree on what is current.
@@ -260,17 +270,57 @@ impl Picker {
         lang: Language,
         language: LanguagePreference,
     ) -> Self {
+        // The slider opens where the session actually is. `effort` is the
+        // agent's own thinking level; with none reported (a fresh launchpad)
+        // the model's default level is the honest starting point.
+        let model = model_in_force(data, &listed_models(data, ""));
+        let levels = model
+            .map(ModelChoice::effective_thinking_levels)
+            .unwrap_or_else(fallback_thinking_levels);
+        let wanted = if data.effort.trim().is_empty() {
+            model
+                .and_then(|model| model.default_thinking_level.clone())
+                .unwrap_or_default()
+        } else {
+            data.effort.clone()
+        };
         let mut picker = Self {
             kind,
             query: String::new(),
             index: 0,
-            effort: thinking_index(&data.effort),
+            effort: thinking_index_in(&levels, &wanted),
+            levels,
             lang,
             language,
         };
         let view = picker.view(data, theme_id);
         picker.index = picker.current_ordinal(&view).unwrap_or(0);
+        // The highlight lands on the model in force — take that model's ring,
+        // not the one the slider opened on.
+        picker.sync_levels(data);
         picker
+    }
+
+    /// The levels of the model the highlight stands on: a model row is that
+    /// model, and the slider row is the model in force (the one above it).
+    fn highlighted_levels(&self, data: &WorkbenchData) -> Vec<String> {
+        let models = listed_models(data, &self.query);
+        let model = if self.index == 0 {
+            model_in_force(data, &models)
+        } else {
+            models.get(self.index - 1).copied()
+        };
+        model
+            .map(ModelChoice::effective_thinking_levels)
+            .unwrap_or_else(fallback_thinking_levels)
+    }
+
+    /// Re-ring the slider after the highlight moved: walk the newly highlighted
+    /// model's levels, and clamp the old position into them (a model with fewer
+    /// choices must not leave the slider past its last entry).
+    fn sync_levels(&mut self, data: &WorkbenchData) {
+        self.levels = self.highlighted_levels(data);
+        self.effort = self.effort.min(self.levels.len().saturating_sub(1));
     }
 
     /// The ordinal of the row matching what is in force — the `✓` row.
@@ -291,6 +341,7 @@ impl Picker {
             data,
             &self.query,
             self.effort,
+            &self.levels,
             theme_id,
             self.lang,
             self.language,
@@ -313,6 +364,7 @@ impl Picker {
         let last = view.selectable - 1;
         let next = self.index as i32 + delta;
         self.index = next.clamp(0, last as i32) as usize;
+        self.sync_levels(data);
     }
 
     /// `pageUp` / `pageDown`: a window's worth, clamped like a single step.
@@ -320,41 +372,57 @@ impl Picker {
         self.move_by(delta * 10, data);
     }
 
-    /// The slider moved by `delta` levels (clamped: `off` and `xhigh` are the
-    /// ends, wrapping there would be a mystery).
+    /// The slider moved by `delta` levels (clamped: the ends of the highlighted
+    /// model's ring, wrapping there would be a mystery).
     pub fn slide(&mut self, delta: i32) {
-        let last = THINKING_LEVELS.len() - 1;
+        if self.levels.is_empty() {
+            return;
+        }
+        let last = self.levels.len() - 1;
         let next = self.effort as i32 + delta;
         self.effort = next.clamp(0, last as i32) as usize;
     }
 
     /// The level the slider stands on — what `enter` applies beside the model.
-    pub fn level(&self) -> &'static str {
-        THINKING_LEVELS[self.effort.min(THINKING_LEVELS.len() - 1)]
+    pub fn level(&self) -> String {
+        if self.levels.is_empty() {
+            return DEFAULT_THINKING_LEVEL_NAME.to_string();
+        }
+        self.levels[self.effort.min(self.levels.len() - 1)].clone()
     }
 
     /// A printable character joins the incremental search and the highlight
     /// returns to the top of what is now listed.
-    pub fn push(&mut self, ch: char) {
+    pub fn push(&mut self, ch: char, data: &WorkbenchData) {
         self.query.push(ch);
         self.index = 0;
+        self.sync_levels(data);
     }
 
-    pub fn backspace(&mut self) {
+    pub fn backspace(&mut self, data: &WorkbenchData) {
         self.query.pop();
         self.index = 0;
+        self.sync_levels(data);
     }
 }
 
 /// Build one frame's rows for `kind`, applying the incremental search.
 ///
+/// `levels` is the slider's ring — the highlighted model's levels, decided by
+/// [`Picker`] (a model that declares none falls back to the legacy six).
+///
 /// A heading survives only while the group under it has a match, so filtering
 /// never leaves a provider title over an empty space.
+// `kind`/`data`/search/slider/chrome are genuinely independent inputs: the
+// picker passes its own state through, and the tests call it directly to check
+// one frame's rows without building a `Picker`.
+#[allow(clippy::too_many_arguments)]
 pub fn rows(
     kind: PickerKind,
     data: &WorkbenchData,
     query: &str,
     effort: usize,
+    levels: &[String],
     theme_id: &str,
     lang: Language,
     language: LanguagePreference,
@@ -370,14 +438,16 @@ pub fn rows(
     match kind {
         PickerKind::Model => {
             let ticks = current_models(&data.model, &data.models);
+            let current = levels
+                .get(effort.min(levels.len().saturating_sub(1)))
+                .cloned()
+                .unwrap_or_default();
             rows.push(PickerRow::Slider {
-                level: THINKING_LEVELS[effort.min(THINKING_LEVELS.len() - 1)].to_string(),
-                other: THINKING_LEVELS
+                level: current.clone(),
+                other: levels
                     .iter()
-                    .filter(|level| {
-                        **level != THINKING_LEVELS[effort.min(THINKING_LEVELS.len() - 1)]
-                    })
-                    .copied()
+                    .filter(|level| **level != current)
+                    .cloned()
                     .collect::<Vec<_>>()
                     .join(" · "),
             });
@@ -394,14 +464,7 @@ pub fn rows(
                     .models
                     .iter()
                     .filter(|model| model.provider == provider)
-                    .filter(|model| {
-                        matches(&[
-                            &model.id,
-                            &model.label,
-                            &model.provider,
-                            &model.thinking_level,
-                        ])
-                    })
+                    .filter(|model| model_matches(model, &needle))
                     .collect();
                 if group.is_empty() {
                     continue;
@@ -465,16 +528,28 @@ pub fn rows(
                 });
             }
         }
-        // The reasoning ladder, one row per level, `✓` where the session stands.
+        // The reasoning ladder, one row per level the session's model offers,
+        // `✓` where the session stands.
         PickerKind::Thinking => {
-            let here = thinking_index(&data.effort);
-            for (index, level) in THINKING_LEVELS.iter().enumerate() {
+            let current = current_models(&data.model, &data.models);
+            let levels = data
+                .models
+                .iter()
+                .find(|model| {
+                    current
+                        .iter()
+                        .any(|(id, provider)| *id == model.id && *provider == model.provider)
+                })
+                .map(ModelChoice::effective_thinking_levels)
+                .unwrap_or_else(fallback_thinking_levels);
+            let here = thinking_index_in(&levels, &data.effort);
+            for (index, level) in levels.iter().enumerate() {
                 if !matches(&[level]) {
                     continue;
                 }
                 rows.push(PickerRow::Item {
-                    key: (*level).to_string(),
-                    label: (*level).to_string(),
+                    key: level.clone(),
+                    label: level.clone(),
                     detail: String::new(),
                     current: index == here,
                 });
@@ -608,11 +683,14 @@ pub fn rows(
     view
 }
 
-/// `1.0M ctx · xhigh` — the capabilities that decide between two models.
+/// `1.0M ctx · off/low/high` — the capabilities that decide between two models.
 ///
 /// The window goes through [`crate::workbench::widgets::short_count`], the same
 /// compact form the status bar prints, so one model's size reads the same in
-/// both places.
+/// both places. The levels shown are the declared wire values with the implicit
+/// `default` left out: it says "send nothing", not a capability. A model that
+/// declares nothing is from an older agent, whose one useful fact is the level
+/// it starts at.
 fn model_detail(model: &ModelChoice) -> String {
     let mut parts: Vec<String> = Vec::new();
     if model.context_window > 0 {
@@ -621,10 +699,84 @@ fn model_detail(model: &ModelChoice) -> String {
             crate::workbench::widgets::short_count(model.context_window)
         ));
     }
-    if !model.thinking_level.trim().is_empty() {
-        parts.push(format!("thinking {}", model.thinking_level));
+    match &model.thinking_levels {
+        Some(levels) => {
+            let offered: Vec<&str> = levels
+                .iter()
+                .map(String::as_str)
+                .filter(|level| *level != DEFAULT_THINKING_LEVEL_NAME)
+                .collect();
+            if !offered.is_empty() {
+                parts.push(format!("thinking {}", offered.join("/")));
+            }
+        }
+        None if !model.thinking_level.trim().is_empty() => {
+            parts.push(format!("thinking {}", model.thinking_level));
+        }
+        None => {}
     }
     parts.join(" · ")
+}
+
+/// Whether an already-lowercased search `needle` matches this model: its id,
+/// label, provider, default level or any level it offers. Shared by the row
+/// builder and [`Picker::highlighted_levels`] so the slider and the list can
+/// never disagree about which rows are listed.
+fn model_matches(model: &ModelChoice, needle: &str) -> bool {
+    needle.is_empty()
+        || model.id.to_lowercase().contains(needle)
+        || model.label.to_lowercase().contains(needle)
+        || model.provider.to_lowercase().contains(needle)
+        || model.thinking_level.to_lowercase().contains(needle)
+        || model
+            .effective_thinking_levels()
+            .iter()
+            .any(|level| level.to_lowercase().contains(needle))
+}
+
+/// The models a picker currently lists, in the order the highlight steps
+/// through them.
+///
+/// That is *not* `data.models` order: the picker groups rows by provider, so a
+/// model whose provider first appears late is painted after every earlier
+/// provider's models. The highlight ordinals count those painted rows, and the
+/// slider reads its ring through the same sequence — one list, two readers, or
+/// the slider would describe a different model than the one highlighted.
+fn listed_models<'a>(data: &'a WorkbenchData, query: &str) -> Vec<&'a ModelChoice> {
+    let needle = query.trim().to_lowercase();
+    let mut providers: Vec<&str> = Vec::new();
+    for model in &data.models {
+        if !providers.contains(&model.provider.as_str()) {
+            providers.push(model.provider.as_str());
+        }
+    }
+    providers
+        .into_iter()
+        .flat_map(|provider| {
+            data.models
+                .iter()
+                .filter(move |model| model.provider == provider)
+        })
+        .filter(|model| model_matches(model, &needle))
+        .collect()
+}
+
+/// The model the surface is attached to, matched the same way the `✓` is (see
+/// [`current_models`]); the first listed model when nothing is in force.
+fn model_in_force<'a>(
+    data: &'a WorkbenchData,
+    listed: &[&'a ModelChoice],
+) -> Option<&'a ModelChoice> {
+    let current = current_models(&data.model, &data.models);
+    current
+        .iter()
+        .find_map(|(id, provider)| {
+            listed
+                .iter()
+                .find(|model| &model.id == id && &model.provider == provider)
+                .copied()
+        })
+        .or_else(|| listed.first().copied())
 }
 
 /// Which rows are the model in force, as `(id, provider)` pairs.
@@ -767,21 +919,39 @@ mod tests {
                 label: "deepseek-flash".into(),
                 provider: "westlakehpc".into(),
                 context_window: 1_000_000,
-                thinking_level: "medium".into(),
+                thinking_level: "default".into(),
+                thinking_levels: Some(
+                    ["default", "off", "low", "medium", "high", "xhigh"]
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                ),
+                default_thinking_level: Some("default".into()),
             },
             ModelChoice {
                 id: "gpt-6-astra".into(),
                 label: "gpt-6-astra".into(),
                 provider: "azure".into(),
                 context_window: 200_000,
-                thinking_level: "high".into(),
+                thinking_level: "default".into(),
+                thinking_levels: Some(
+                    ["default", "medium", "high"]
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                ),
+                default_thinking_level: Some("default".into()),
             },
+            // No declared list: an older agent's model, whose default level is
+            // the only thinking fact the list has.
             ModelChoice {
                 id: "Qwen".into(),
                 label: "Qwen 3.8".into(),
                 provider: "westlakehpc".into(),
                 context_window: 0,
                 thinking_level: String::new(),
+                thinking_levels: None,
+                default_thinking_level: None,
             },
         ];
         data.sessions = vec![
@@ -812,6 +982,7 @@ mod tests {
             &data(),
             "",
             1,
+            &fallback_thinking_levels(),
             "",
             LANG,
             LanguagePreference::System,
@@ -870,7 +1041,7 @@ mod tests {
             Some(PickerRow::Item {
                 key: "deepseek-flash".into(),
                 label: "deepseek-flash".into(),
-                detail: "1.0M ctx · thinking medium".into(),
+                detail: "1.0M ctx · thinking off/low/medium/high/xhigh".into(),
                 current: true,
             })
         );
@@ -987,6 +1158,7 @@ mod tests {
             &data,
             "gpt",
             1,
+            &fallback_thinking_levels(),
             "",
             LANG,
             LanguagePreference::System,
@@ -1009,6 +1181,7 @@ mod tests {
             &data,
             "QWEN 3.8",
             1,
+            &fallback_thinking_levels(),
             "",
             LANG,
             LanguagePreference::System,
@@ -1021,6 +1194,7 @@ mod tests {
                 &data,
                 "zzz",
                 1,
+                &fallback_thinking_levels(),
                 "",
                 LANG,
                 LanguagePreference::System
@@ -1054,7 +1228,7 @@ mod tests {
             Some(PickerRow::Item {
                 key: "gpt-6-astra".into(),
                 label: "gpt-6-astra".into(),
-                detail: "200.0k ctx · thinking high".into(),
+                detail: "200.0k ctx · thinking medium/high".into(),
                 current: false,
             })
         );
@@ -1072,7 +1246,7 @@ mod tests {
     }
 
     #[test]
-    fn the_slider_walks_six_levels_and_never_wraps() {
+    fn the_slider_walks_the_highlighted_models_levels_and_never_wraps() {
         let data = data();
         let mut picker = Picker::new(
             PickerKind::Model,
@@ -1081,23 +1255,68 @@ mod tests {
             LANG,
             LanguagePreference::System,
         );
+        // deepseek-flash declares default, off, low, medium, high, xhigh.
+        assert_eq!(picker.effort, 3, "the session's medium");
         picker.slide(1);
         assert_eq!(picker.level(), "high");
         picker.slide(10);
         assert_eq!(picker.level(), "xhigh");
         assert_eq!(picker.effort, 5);
         picker.slide(-10);
-        assert_eq!(picker.level(), "off");
+        assert_eq!(picker.level(), "default");
         // The row shows the level it stands on and the rest of the range.
         let view = picker.view(&data, "");
         match &view.rows[0] {
             PickerRow::Slider { level, other } => {
-                assert_eq!(level, "off");
-                assert!(other.starts_with("minimal"), "{other}");
-                assert!(!other.contains("off"), "{other}");
+                assert_eq!(level, "default");
+                assert!(other.starts_with("off"), "{other}");
+                assert!(!other.contains("default"), "{other}");
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// The slider is per-model: stepping onto a model with fewer levels clamps
+    /// the position into its list instead of leaving it past the end.
+    #[test]
+    fn the_slider_clamps_when_the_highlight_moves_to_another_model() {
+        let data = data();
+        let mut picker = Picker::new(
+            PickerKind::Model,
+            &data,
+            "dark",
+            LANG,
+            LanguagePreference::System,
+        );
+        // Walk deepseek-flash to its last level (index 5 of 6).
+        picker.slide(10);
+        assert_eq!(picker.level(), "xhigh");
+
+        // Qwen comes from an older agent and declares nothing: the legacy
+        // fallback ring (default followed by the six) stands in for it, so the
+        // index is still in range.
+        picker.move_by(1, &data);
+        assert!(matches!(
+            picker.selected(&data, ""),
+            Some(PickerRow::Item { ref key, .. }) if key == "Qwen"
+        ));
+        let fallback = fallback_thinking_levels();
+        assert_eq!(picker.level(), fallback[5]);
+
+        // gpt-6-astra declares only three levels: the stale index clamps to its
+        // last one.
+        picker.move_by(1, &data);
+        assert!(matches!(
+            picker.selected(&data, ""),
+            Some(PickerRow::Item { ref key, .. }) if key == "gpt-6-astra"
+        ));
+        assert_eq!(picker.effort, 2);
+        assert_eq!(picker.level(), "high");
+
+        // Back onto Qwen: the clamped index stays where it was (2 → minimal).
+        picker.move_by(-1, &data);
+        assert_eq!(picker.effort, 2);
+        assert_eq!(picker.level(), fallback[2]);
     }
 
     #[test]
@@ -1111,7 +1330,7 @@ mod tests {
             LanguagePreference::System,
         );
         for ch in "文档".chars() {
-            picker.push(ch);
+            picker.push(ch, &data);
         }
         assert_eq!(picker.query, "文档");
         assert_eq!(picker.index, 0, "a new query starts at the top");
@@ -1124,8 +1343,8 @@ mod tests {
             }),
             Some("s2".to_string())
         );
-        picker.backspace();
-        picker.backspace();
+        picker.backspace(&data);
+        picker.backspace(&data);
         assert_eq!(picker.view(&data, "").selectable, 2);
     }
 
@@ -1137,6 +1356,7 @@ mod tests {
             &data,
             "",
             3,
+            &fallback_thinking_levels(),
             "",
             LANG,
             LanguagePreference::System,
@@ -1155,7 +1375,16 @@ mod tests {
         }
         // And the same for the other two kinds.
         for kind in [PickerKind::Theme, PickerKind::Sessions] {
-            let view = rows(kind, &data, "", 0, "dark", LANG, LanguagePreference::System);
+            let view = rows(
+                kind,
+                &data,
+                "",
+                0,
+                &fallback_thinking_levels(),
+                "dark",
+                LANG,
+                LanguagePreference::System,
+            );
             for row in &view.rows {
                 assert_eq!(
                     crate::workbench::ansi::width(&row_line(&FUTURE_DARK, row, true, 40, LANG, 0)),
@@ -1171,13 +1400,33 @@ mod tests {
         assert_eq!(crate::workbench::widgets::short_count(1_000_000), "1.0M");
         assert_eq!(crate::workbench::widgets::short_count(200_000), "200.0k");
         assert_eq!(crate::workbench::widgets::short_count(4_096), "4.1k");
-        let with_window = ModelChoice {
+        // A declared list shows its wire values; the implicit `default` is not
+        // a capability and is left out.
+        let declared = ModelChoice {
             context_window: 1_000_000,
+            thinking_levels: Some(
+                ["default", "off", "low", "max"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+            ),
+            ..ModelChoice::default()
+        };
+        assert_eq!(model_detail(&declared), "1.0M ctx · thinking off/low/max");
+        // Only the implicit default: nothing to say.
+        let default_only = ModelChoice {
+            thinking_levels: Some(vec!["default".into()]),
+            ..ModelChoice::default()
+        };
+        assert_eq!(model_detail(&default_only), "");
+        // An older agent's model has no declaration; the level it starts at is
+        // the only thinking fact left.
+        let legacy = ModelChoice {
             thinking_level: "high".into(),
             ..ModelChoice::default()
         };
-        assert_eq!(model_detail(&with_window), "1.0M ctx · thinking high");
-        // A model with no window and no default level says nothing rather than
+        assert_eq!(model_detail(&legacy), "thinking high");
+        // A model with no window and no thinking facts says nothing rather than
         // printing ` · `.
         let bare = ModelChoice {
             id: "m".into(),
@@ -1185,6 +1434,8 @@ mod tests {
             provider: String::new(),
             context_window: 0,
             thinking_level: String::new(),
+            thinking_levels: None,
+            default_thinking_level: None,
         };
         assert_eq!(model_detail(&bare), "");
     }

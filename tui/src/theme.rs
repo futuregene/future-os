@@ -448,6 +448,10 @@ pub fn style(text: &str, fns: &[&dyn Fn(&str) -> String]) -> String {
 
 pub fn thinking_color(level: &str) -> u8 {
     match level {
+        // The reserved level means "send no thinking parameter": it is not a
+        // hue of its own, so it reads as the off state. Any level the product
+        // has no translation for (`max` included, until it gets one) does too.
+        "default" => C.thinking_off,
         "minimal" => C.thinking_minimal,
         "low" => C.thinking_low,
         "medium" => C.thinking_medium,
@@ -493,6 +497,8 @@ mod tests {
         assert_eq!(thinking_color("minimal"), C.thinking_minimal);
         assert_eq!(thinking_color("high"), C.thinking_high);
         assert_eq!(thinking_color("off"), C.thinking_off);
+        // The reserved "no thinking parameter" level reads as off.
+        assert_eq!(thinking_color("default"), C.thinking_off);
         assert_eq!(thinking_color("bogus"), C.thinking_off);
     }
 

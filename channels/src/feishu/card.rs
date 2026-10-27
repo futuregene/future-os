@@ -185,7 +185,7 @@ pub fn help_card() -> Value {
             {"tag": "div", "text": {"tag": "lark_md", "content": "/status — Show current session info"}},
             {"tag": "div", "text": {"tag": "lark_md", "content": "/model <provider/model> — Switch model"}},
             {"tag": "div", "text": {"tag": "lark_md", "content": "/models — List available models"}},
-            {"tag": "div", "text": {"tag": "lark_md", "content": "/effort <level> — Set thinking level (off/minimal/low/medium/high/xhigh)"}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": "/effort <level> — Set thinking level (default/off/minimal/low/medium/high/xhigh/max)"}},
             {"tag": "div", "text": {"tag": "lark_md", "content": "/stop — Stop current generation"}},
             {"tag": "div", "text": {"tag": "lark_md", "content": "/help — Show this help"}},
         ]

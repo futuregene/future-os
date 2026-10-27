@@ -1886,12 +1886,12 @@ impl Workbench {
                     vec![WbAction::Redraw]
                 }
                 "backspace" => {
-                    self.picker.backspace();
+                    self.picker.backspace(data);
                     vec![WbAction::Redraw]
                 }
                 other if other.chars().count() == 1 && !other.starts_with("ctrl+") => {
                     for ch in other.chars() {
-                        self.picker.push(ch);
+                        self.picker.push(ch, data);
                     }
                     self.preview_theme(data);
                     vec![WbAction::Redraw]
@@ -2152,7 +2152,7 @@ impl Workbench {
             (PickerKind::Model, Some(PickerRow::Item { key, .. })) => {
                 // The model and the level it runs at are one choice, so both
                 // are carried on either road.
-                let level = self.picker.level().to_string();
+                let level = self.picker.level();
                 if launchpad {
                     vec![
                         WbAction::SetPendingModel(key),

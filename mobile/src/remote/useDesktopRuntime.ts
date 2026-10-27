@@ -9,6 +9,7 @@ import { useDesktopManagement } from "./useDesktopManagement";
 import { usePromptOutbox } from "./usePromptOutbox";
 import { useSessionCatalog } from "./useSessionCatalog";
 import { useTimelineController } from "./useTimelineController";
+import { DEFAULT_THINKING_LEVEL } from "./types";
 import type {
   RemoteCredentials,
   RemoteSession,
@@ -147,7 +148,7 @@ export function useDesktopRuntime({
   const onSessionState = useCallback((sessionId: string, state: RemoteSessionState) => {
     settingsSink.current?.applySessionSettings(sessionId, {
       model: state.model ?? "",
-      thinkingLevel: state.thinkingLevel ?? "off",
+      thinkingLevel: state.thinkingLevel ?? DEFAULT_THINKING_LEVEL,
       usage: state.usage,
     });
   }, []);

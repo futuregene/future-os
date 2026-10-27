@@ -174,14 +174,16 @@
     "startAgentForModels": "Reopen FutureOS to load models.",
     "allModelsDisabled": "Models are loaded but all disabled. Enable one in Settings.",
     "thinkingLevel": "Thinking level",
-    "thinkingUnsupported": "This model is configured as not supporting thinking controls.",
+    "thinkingUnsupported": "This model offers no thinking-level choices.",
     "thinkingLevelLabels": {
+      "default": "Default",
       "off": "Off",
       "minimal": "Minimal",
       "low": "Low",
       "medium": "Medium",
       "high": "High",
-      "xhigh": "XHigh"
+      "xhigh": "XHigh",
+      "max": "Max"
     },
     "send": "Send",
     "stop": "Stop",

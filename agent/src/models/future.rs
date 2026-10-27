@@ -410,13 +410,11 @@ struct FutureModelEntry {
     architecture: Option<FutureArchitecture>,
     pricing: Option<FuturePricing>,
     supported_parameters: Option<Vec<String>>,
-    /// Server-declared `reasoning_effort` vocabulary (ascending string/number
-    /// list). Type validation happens later in
-    /// `parse_reasoning_effort_values` (via `ResolvedModelTarget::from_model`),
-    /// which reports provider/model-qualified errors — values are stored
-    /// verbatim here.
+    /// Server-declared wire values the access path accepts, in display order.
+    /// Stored verbatim after normalization; absent/empty means "only the
+    /// implicit default".
     #[serde(default)]
-    reasoning_effort_values: Option<Vec<serde_json::Value>>,
+    thinking_levels: Option<Vec<String>>,
     #[allow(dead_code)]
     knowledge_cutoff: Option<String>,
     #[allow(dead_code)]
@@ -496,20 +494,21 @@ fn fetch_future_models(api_key: &str, base_url: &str) -> Option<Vec<Model>> {
     .ok()?
 }
 
-/// Derive compat and thinking_level_map for a Future platform model from its
-/// supported_parameters list and tokenizer. This mirrors the manual compat_json /
-/// tlm_json entries in generated/mod.rs for the direct-provider case.
+/// Derive the protocol-shape compat for a Future platform model from its
+/// supported_parameters list and tokenizer.
+///
+/// Only the request *shape* is inferred here (which toggle/format to send).
+/// Which levels the model accepts is data: the catalogue's `thinking_levels`
+/// list, stored verbatim. The tokenizer no longer changes any wire value — a
+/// provider that needs a non-standard spelling for a level declares that
+/// spelling in the catalogue itself.
 pub(super) fn derive_thinking_compat(
     supported_params: &[String],
     tokenizer: Option<&str>,
-) -> (
-    HashMap<String, serde_json::Value>,
-    HashMap<String, serde_json::Value>,
-) {
+) -> HashMap<String, serde_json::Value> {
     use std::collections::HashMap;
 
     let mut compat: HashMap<String, serde_json::Value> = HashMap::new();
-    let mut tlm: HashMap<String, serde_json::Value> = HashMap::new();
 
     let has = |s: &str| supported_params.iter().any(|p| p == s);
     let is_glm = tokenizer
@@ -517,15 +516,12 @@ pub(super) fn derive_thinking_compat(
         .unwrap_or(false);
 
     if is_glm {
-        // GLM / Z.AI models: enable_thinking toggle.
+        // GLM / Z.AI models: enable_thinking toggle (+ reasoning_effort depth,
+        // now sent verbatim for every declared level).
         compat.insert("thinkingFormat".into(), serde_json::json!("zai"));
-        // GLM supports reasoning_effort alongside enable_thinking
-        compat.insert("supportsReasoningEffort".into(), serde_json::json!(true));
     } else if has("enable_thinking") {
         // Qwen family: enable_thinking + thinking_budget
         compat.insert("thinkingFormat".into(), serde_json::json!("qwen"));
-        // Qwen supports reasoning_effort alongside enable_thinking
-        compat.insert("supportsReasoningEffort".into(), serde_json::json!(true));
     } else if has("reasoning_split") {
         // MiniMax M3: reasoning_split only, no depth control
         compat.insert(
@@ -537,40 +533,9 @@ pub(super) fn derive_thinking_compat(
         || has("reasoning")
         || has("include_reasoning")
     {
-        // DeepSeek / Doubao / Kimi K2.6 / Anthropic Claude:
-        // thinking toggle + reasoning_effort for depth.
-        // 各 provider 对 reasoning_effort 的"最高档"取值不同：
-        //   DeepSeek → "max"
-        //   豆包(火山引擎) → 不认 max/xhigh，退化为 "high"
-        //   kimi(moonshot) → 枚举就是 none/minimal/low/medium/high/xhigh
+        // DeepSeek-shaped providers: thinking toggle + reasoning_effort for
+        // depth. The level values themselves come from the catalogue.
         compat.insert("thinkingFormat".into(), serde_json::json!("deepseek"));
-        match tokenizer.map(|t| t.to_ascii_lowercase()).as_deref() {
-            // 豆包 seed 2.x 始终思考：服务端明确拒绝关闭思考，并只接受
-            // low/high/max 三档。产品级的六档若原样发出，medium 会被 400 拒绝
-            // （`该模型始终思考，不支持关闭思考；请使用 low、high 或 max。`），
-            // off 还会发出 `thinking: {"type":"disabled"}` 同样被拒。
-            // 所以这里把每一档都映射进它的取值域，并声明"思考关不掉"。
-            Some("doubao") => {
-                compat.insert("thinkingRequired".into(), serde_json::json!(true));
-                for (level, value) in [
-                    ("minimal", "low"),
-                    ("low", "low"),
-                    ("medium", "high"),
-                    ("high", "high"),
-                    ("xhigh", "high"),
-                ] {
-                    tlm.insert(level.into(), serde_json::json!(value));
-                }
-            }
-            Some("kimi") => {
-                tlm.insert("high".into(), serde_json::json!("high"));
-                tlm.insert("xhigh".into(), serde_json::json!("xhigh"));
-            }
-            _ => {
-                tlm.insert("high".into(), serde_json::json!("high"));
-                tlm.insert("xhigh".into(), serde_json::json!("max"));
-            }
-        }
     }
     // else: no thinking parameters → empty compat (model doesn't support thinking)
 
@@ -591,7 +556,7 @@ pub(super) fn derive_thinking_compat(
         compat.insert("toolStream".into(), serde_json::json!(true));
     }
 
-    (compat, tlm)
+    compat
 }
 
 /// Convert Future server model entry to agent Model
@@ -611,32 +576,19 @@ fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
         )
     });
 
-    // Derive compat and thinking_level_map from supported_parameters.
+    // Derive the request shape from supported_parameters.
     let tokenizer = entry
         .architecture
         .as_ref()
         .and_then(|a| a.tokenizer.as_deref());
-    let (mut compat, mut thinking_level_map) = derive_thinking_compat(&supported_params, tokenizer);
-
-    // The server can declare the model's exact reasoning_effort vocabulary
-    // (wire key `reasoning_effort_values`, ascending string/number list).
-    // When present it is authoritative, and the tokenizer-derived
-    // thinking_level_map MUST be dropped:
-    // - resolve_effort consults the level map *before* the vocabulary, so a
-    //   surviving heuristic map (e.g. deepseek-family derives xhigh → "max")
-    //   would silently override the server-declared list;
-    // - an explicitly empty list means "never send reasoning_effort", and a
-    //   surviving map entry (e.g. high → "high") would keep the parameter
-    //   flowing, defeating the disable semantics.
-    // Values are not validated here: `parse_reasoning_effort_values` checks
-    // them at from_model time and reports provider/model-qualified errors.
-    if let Some(values) = entry.reasoning_effort_values {
-        compat.insert(
-            "reasoningEffortValues".to_string(),
-            serde_json::Value::Array(values),
-        );
-        thinking_level_map.clear();
-    }
+    let compat = derive_thinking_compat(&supported_params, tokenizer);
+    // The catalogue declares the exact wire values this access path accepts.
+    // They are stored verbatim (normalized) and are the only source of levels.
+    let thinking_levels = crate::llm::schema::normalize_thinking_levels(
+        "future",
+        &entry.id,
+        entry.thinking_levels.clone().unwrap_or_default(),
+    );
 
     let (input, output) = entry
         .architecture
@@ -733,11 +685,7 @@ fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
             cache_write: cost_cache_write,
         },
         compat,
-        thinking_level_map,
-        // The Future platform catalogue declares an effort *vocabulary*
-        // (`reasoningEffortValues`), not a product-level level list: this model
-        // keeps the full six levels.
-        thinking_levels: Vec::new(),
+        thinking_levels,
         headers: HashMap::new(),
         hide: false,
         description: entry.description,
@@ -1034,22 +982,17 @@ mod tests {
     #[test]
     fn glm_model_gets_zai_format() {
         let params: Vec<String> = vec![];
-        let (compat, tlm) = derive_thinking_compat(&params, Some("GLM"));
+        let compat = derive_thinking_compat(&params, Some("GLM"));
         assert_eq!(
             compat.get("thinkingFormat").unwrap(),
             &serde_json::json!("zai")
         );
-        assert_eq!(
-            compat.get("supportsReasoningEffort").unwrap(),
-            &serde_json::json!(true)
-        );
-        assert!(tlm.is_empty());
     }
 
     #[test]
     fn glm_case_insensitive() {
         let params: Vec<String> = vec![];
-        let (compat, _) = derive_thinking_compat(&params, Some("glm"));
+        let compat = derive_thinking_compat(&params, Some("glm"));
         assert_eq!(
             compat.get("thinkingFormat").unwrap(),
             &serde_json::json!("zai")
@@ -1059,44 +1002,37 @@ mod tests {
     #[test]
     fn qwen_model_gets_qwen_format() {
         let params: Vec<String> = vec!["enable_thinking".to_string()];
-        let (compat, _) = derive_thinking_compat(&params, None);
+        let compat = derive_thinking_compat(&params, None);
         assert_eq!(
             compat.get("thinkingFormat").unwrap(),
             &serde_json::json!("qwen")
-        );
-        assert_eq!(
-            compat.get("supportsReasoningEffort").unwrap(),
-            &serde_json::json!(true)
         );
     }
 
     #[test]
     fn reasoning_split_gets_split_format() {
         let params: Vec<String> = vec!["reasoning_split".to_string()];
-        let (compat, tlm) = derive_thinking_compat(&params, None);
+        let compat = derive_thinking_compat(&params, None);
         assert_eq!(
             compat.get("thinkingFormat").unwrap(),
             &serde_json::json!("reasoning-split")
         );
-        assert!(tlm.is_empty());
     }
 
     #[test]
     fn deepseek_thinking_params_get_deepseek_format() {
         let params: Vec<String> = vec!["thinking".to_string()];
-        let (compat, tlm) = derive_thinking_compat(&params, None);
+        let compat = derive_thinking_compat(&params, None);
         assert_eq!(
             compat.get("thinkingFormat").unwrap(),
             &serde_json::json!("deepseek")
         );
-        assert_eq!(tlm.get("high").unwrap(), &serde_json::json!("high"));
-        assert_eq!(tlm.get("xhigh").unwrap(), &serde_json::json!("max"));
     }
 
     #[test]
     fn reasoning_effort_alone_gets_deepseek() {
         let params: Vec<String> = vec!["reasoning_effort".to_string()];
-        let (compat, _) = derive_thinking_compat(&params, None);
+        let compat = derive_thinking_compat(&params, None);
         assert_eq!(
             compat.get("thinkingFormat").unwrap(),
             &serde_json::json!("deepseek")
@@ -1106,7 +1042,7 @@ mod tests {
     #[test]
     fn include_reasoning_gets_deepseek() {
         let params: Vec<String> = vec!["include_reasoning".to_string()];
-        let (compat, _) = derive_thinking_compat(&params, None);
+        let compat = derive_thinking_compat(&params, None);
         assert_eq!(
             compat.get("thinkingFormat").unwrap(),
             &serde_json::json!("deepseek")
@@ -1114,89 +1050,35 @@ mod tests {
     }
 
     #[test]
-    fn doubao_xhigh_maps_to_high_not_max() {
-        // 豆包支持 reasoning_effort 的 low/medium/high，但不认 "max"。
-        // xhigh 必须退化为 high，而不是 DeepSeek 的 max。
-        let params: Vec<String> = vec!["include_reasoning".to_string(), "reasoning".to_string()];
-        let (compat, tlm) = derive_thinking_compat(&params, Some("Doubao"));
-        assert_eq!(
-            compat.get("thinkingFormat").unwrap(),
-            &serde_json::json!("deepseek")
-        );
-        assert_eq!(tlm.get("high").unwrap(), &serde_json::json!("high"));
-        assert_eq!(tlm.get("xhigh").unwrap(), &serde_json::json!("high"));
-    }
-
-    #[test]
-    fn doubao_case_insensitive_xhigh_still_high() {
-        let params: Vec<String> = vec!["reasoning".to_string()];
-        let (_, tlm) = derive_thinking_compat(&params, Some("doubao"));
-        assert_eq!(tlm.get("xhigh").unwrap(), &serde_json::json!("high"));
-    }
-
-    /// 豆包 seed 2.x 只接受 low/high/max 三档，并且拒绝关闭思考。
-    ///
-    /// 实测故障（2026-10-25，会话 `20261025-200944`）：会话档位 `medium`，
-    /// derive 只映射了 high/xhigh，`medium` 于是原样当 `reasoning_effort` 发出，
-    /// 服务端 400：`该模型始终思考，不支持关闭思考；请使用 low、high 或 max。`
-    /// 所以每一档都得落在它认的取值里。
-    #[test]
-    fn doubao_maps_every_level_into_the_values_it_accepts() {
+    fn tokenizer_no_longer_changes_wire_values_or_disables() {
+        // Doubao/kimi/deepseek used to get different level maps and a
+        // "thinkingRequired" flag. The catalogue now carries the exact wire
+        // values, so the shape is all that is derived.
         let params: Vec<String> = vec!["reasoning".to_string(), "thinking".to_string()];
-        let (compat, tlm) = derive_thinking_compat(&params, Some("doubao"));
-        assert_eq!(
-            compat.get("thinkingRequired").unwrap(),
-            &serde_json::json!(true),
-            "豆包关不掉思考，请求不能发 disabled"
-        );
-        for (level, wire) in [
-            ("minimal", "low"),
-            ("low", "low"),
-            ("medium", "high"),
-            ("high", "high"),
-            ("xhigh", "high"),
-        ] {
+        for tokenizer in ["Doubao", "doubao", "Kimi", "DeepSeek", "anything"] {
+            let compat = derive_thinking_compat(&params, Some(tokenizer));
             assert_eq!(
-                tlm.get(level).unwrap(),
-                &serde_json::json!(wire),
-                "{level} must not reach the wire as itself"
+                compat.get("thinkingFormat").unwrap(),
+                &serde_json::json!("deepseek"),
+                "tokenizer {tokenizer} only affects shape"
             );
+            assert!(!compat.contains_key("thinkingRequired"));
+            assert!(!compat.contains_key("supportsReasoningEffort"));
+            assert!(!compat.contains_key("reasoningEffortValues"));
         }
-    }
-
-    #[test]
-    fn kimi_xhigh_maps_to_xhigh() {
-        // kimi(moonshot) 的 reasoning_effort 枚举是
-        // none/minimal/low/medium/high/xhigh，认 "xhigh" 字面值但不认 "max"。
-        let params: Vec<String> = vec!["thinking".to_string(), "reasoning".to_string()];
-        let (compat, tlm) = derive_thinking_compat(&params, Some("Kimi"));
-        assert_eq!(
-            compat.get("thinkingFormat").unwrap(),
-            &serde_json::json!("deepseek")
-        );
-        assert_eq!(tlm.get("xhigh").unwrap(), &serde_json::json!("xhigh"));
-    }
-
-    #[test]
-    fn deepseek_xhigh_maps_to_max() {
-        // DeepSeek 用 "max" 作为最高档，保持不变。
-        let params: Vec<String> = vec!["reasoning".to_string()];
-        let (_, tlm) = derive_thinking_compat(&params, Some("DeepSeek"));
-        assert_eq!(tlm.get("xhigh").unwrap(), &serde_json::json!("max"));
     }
 
     #[test]
     fn no_thinking_params_empty_compat() {
         let params: Vec<String> = vec!["temperature".to_string()];
-        let (compat, tlm) = derive_thinking_compat(&params, None);
+        let compat = derive_thinking_compat(&params, None);
         assert!(!compat.contains_key("thinkingFormat"));
-        assert!(tlm.is_empty());
     }
 
     #[test]
     fn max_completion_tokens_sets_field() {
         let params: Vec<String> = vec!["max_completion_tokens".to_string()];
-        let (compat, _) = derive_thinking_compat(&params, None);
+        let compat = derive_thinking_compat(&params, None);
         assert_eq!(
             compat.get("maxTokensField").unwrap(),
             &serde_json::json!("max_completion_tokens")
@@ -1206,14 +1088,14 @@ mod tests {
     #[test]
     fn empty_params_no_max_tokens_field() {
         let params: Vec<String> = vec![];
-        let (compat, _) = derive_thinking_compat(&params, None);
+        let compat = derive_thinking_compat(&params, None);
         assert!(!compat.contains_key("maxTokensField"));
     }
 
     #[test]
     fn tool_stream_param_sets_compat_flag() {
         let params: Vec<String> = vec!["tool_stream".to_string(), "temperature".to_string()];
-        let (compat, _) = derive_thinking_compat(&params, Some("GLM"));
+        let compat = derive_thinking_compat(&params, Some("GLM"));
         assert_eq!(
             compat.get("toolStream").and_then(|v| v.as_bool()),
             Some(true)
@@ -1223,7 +1105,7 @@ mod tests {
     #[test]
     fn no_tool_stream_param_leaves_compat_absent() {
         let params: Vec<String> = vec!["temperature".to_string()];
-        let (compat, _) = derive_thinking_compat(&params, Some("GLM"));
+        let compat = derive_thinking_compat(&params, Some("GLM"));
         assert!(!compat.contains_key("toolStream"));
     }
 
@@ -1341,7 +1223,7 @@ mod tests {
                 "thinking".to_string(),
                 "reasoning_effort".to_string(),
             ]),
-            reasoning_effort_values: None,
+            thinking_levels: None,
             knowledge_cutoff: None,
             provider: None,
             description: None,
@@ -1364,7 +1246,7 @@ mod tests {
             architecture: None,
             pricing: None,
             supported_parameters: Some(vec!["temperature".to_string()]),
-            reasoning_effort_values: None,
+            thinking_levels: None,
             knowledge_cutoff: None,
             provider: None,
             description: None,
@@ -1390,7 +1272,7 @@ mod tests {
             }),
             pricing: None,
             supported_parameters: None,
-            reasoning_effort_values: None,
+            thinking_levels: None,
             knowledge_cutoff: None,
             provider: None,
             description: None,
@@ -1425,7 +1307,7 @@ mod tests {
                 }]),
             }),
             supported_parameters: None,
-            reasoning_effort_values: None,
+            thinking_levels: None,
             knowledge_cutoff: None,
             provider: None,
             description: None,
@@ -1498,56 +1380,43 @@ mod tests {
     }
 
     #[test]
-    fn wire_reasoning_effort_values_land_in_compat_and_clear_derived_tlm() {
-        // DeepSeek tokenizer + "reasoning" derive a heuristic map
-        // (xhigh → "max"); the server-declared vocabulary is authoritative and
-        // must replace it (tlm outranks the vocabulary in resolve_effort).
+    fn catalogue_thinking_levels_are_stored_verbatim_and_sent_verbatim() {
+        // Doubao's catalogue now says exactly which values its endpoint
+        // accepts; no tokenizer heuristic and no "can't disable" flag.
         let entry: FutureModelEntry = serde_json::from_value(serde_json::json!({
-            "id": "vocab-model",
-            "supported_parameters": ["reasoning"],
-            "architecture": { "tokenizer": "DeepSeek" },
-            "reasoning_effort_values": ["low", "high", "xhigh", "max"]
+            "id": "doubao-wire",
+            "supported_parameters": ["reasoning", "thinking"],
+            "architecture": { "tokenizer": "Doubao" },
+            "thinking_levels": ["low", "high", "max"]
         }))
         .unwrap();
         let model = convert_future_model(entry, "https://api.example.com/v1");
         assert_eq!(
-            model.compat.get("reasoningEffortValues"),
-            Some(&serde_json::json!(["low", "high", "xhigh", "max"]))
+            model.thinking_levels,
+            vec!["low".to_string(), "high".to_string(), "max".to_string()]
         );
-        assert!(
-            model.thinking_level_map.is_empty(),
-            "derived level map must be cleared: {:?}",
-            model.thinking_level_map
-        );
-    }
+        assert!(!model.compat.contains_key("reasoningEffortValues"));
+        assert!(!model.compat.contains_key("thinkingRequired"));
 
-    #[test]
-    fn wire_empty_effort_vocabulary_disables_effort_but_keeps_thinking_toggle() {
-        // An explicitly empty list means "never send reasoning_effort"; the
-        // thinking toggle itself (deepseek format) stays independent.
-        let entry: FutureModelEntry = serde_json::from_value(serde_json::json!({
-            "id": "no-effort-model",
-            "supported_parameters": ["reasoning"],
-            "reasoning_effort_values": []
-        }))
-        .unwrap();
-        let model = convert_future_model(entry, "https://api.example.com/v1");
-        assert_eq!(
-            model.compat.get("reasoningEffortValues"),
-            Some(&serde_json::json!([]))
-        );
-        assert!(model.thinking_level_map.is_empty());
-
-        let body = future_request_body_at_level(&model, "high");
+        let body = future_request_body_at_level(&model, "max");
+        assert_eq!(body["reasoning_effort"], serde_json::json!("max"));
         assert_eq!(body["thinking"], serde_json::json!({"type": "enabled"}));
-        assert!(
-            body.get("reasoning_effort").is_none(),
-            "empty vocabulary must suppress reasoning_effort: {body}"
-        );
+
+        // A declared "off" is the explicit disable spelling.
+        let entry: FutureModelEntry = serde_json::from_value(serde_json::json!({
+            "id": "toggle-wire",
+            "supported_parameters": ["reasoning"],
+            "thinking_levels": ["off", "high"]
+        }))
+        .unwrap();
+        let model = convert_future_model(entry, "https://api.example.com/v1");
+        let body = future_request_body_at_level(&model, "off");
+        assert_eq!(body["thinking"], serde_json::json!({"type": "disabled"}));
+        assert!(body.get("reasoning_effort").is_none());
     }
 
     #[test]
-    fn absent_reasoning_effort_values_keep_derived_compat_and_tlm() {
+    fn absent_thinking_levels_offer_only_the_implicit_default() {
         let entry: FutureModelEntry = serde_json::from_value(serde_json::json!({
             "id": "legacy-model",
             "supported_parameters": ["reasoning"],
@@ -1555,31 +1424,28 @@ mod tests {
         }))
         .unwrap();
         let model = convert_future_model(entry, "https://api.example.com/v1");
-        assert!(!model.compat.contains_key("reasoningEffortValues"));
-        // Derived heuristic map survives untouched when the server says nothing.
-        assert_eq!(
-            model.thinking_level_map.get("high"),
-            Some(&serde_json::json!("high"))
-        );
-        assert_eq!(
-            model.thinking_level_map.get("xhigh"),
-            Some(&serde_json::json!("max"))
-        );
+        assert!(model.thinking_levels.is_empty());
+        assert!(model.compat.contains_key("thinkingFormat"));
+
+        // `default` sends nothing at all, not even the thinking toggle.
+        let body = future_request_body_at_level(&model, "default");
+        assert!(body.get("thinking").is_none());
+        assert!(body.get("reasoning_effort").is_none());
     }
 
     #[test]
-    fn future_model_vocabulary_snaps_medium_to_high_end_to_end() {
-        // End to end: a model declaring ["low","high","xhigh","max"] maps the
-        // internal "medium" onto the deeper of the two equidistant values.
+    fn catalogue_levels_are_normalized() {
         let entry: FutureModelEntry = serde_json::from_value(serde_json::json!({
-            "id": "vocab-e2e",
-            "supported_parameters": ["reasoning"],
-            "reasoning_effort_values": ["low", "high", "xhigh", "max"]
+            "id": "messy-levels",
+            "thinking_levels": ["high", " high ", "", "default", "low", "high"]
         }))
         .unwrap();
         let model = convert_future_model(entry, "https://api.example.com/v1");
-        let body = future_request_body_at_level(&model, "medium");
-        assert_eq!(body["reasoning_effort"], serde_json::json!("high"));
+        assert_eq!(
+            model.thinking_levels,
+            vec!["low".to_string(), "high".to_string()],
+            "catalogue order is normalized to the fixed display order"
+        );
     }
 
     // ─── fetch/cache/refresh against a mock server ─────────────────────────
@@ -1674,26 +1540,20 @@ mod tests {
     }
 
     #[test]
-    fn fetch_future_models_parses_reasoning_effort_values_in_both_shapes() {
+    fn fetch_future_models_parses_thinking_levels_in_both_shapes() {
         let _guard = future_test_lock();
-        let entry = r#"{"id":"vocab-wire","supported_parameters":["reasoning"],"reasoning_effort_values":["low","high","xhigh","max"]}"#;
-        let expected = serde_json::json!(["low", "high", "xhigh", "max"]);
+        let entry = r#"{"id":"level-wire","supported_parameters":["reasoning"],"thinking_levels":["low","high","max"]}"#;
+        let expected = vec!["low".to_string(), "high".to_string(), "max".to_string()];
         // {data:[...]} wrapped form…
         let base = mock_json_server(200, format!(r#"{{"data":[{entry}]}}"#));
         let models = fetch_future_models("k", &base).expect("data form parses");
         assert_eq!(models.len(), 1);
-        assert_eq!(
-            models[0].compat.get("reasoningEffortValues"),
-            Some(&expected)
-        );
+        assert_eq!(models[0].thinking_levels, expected);
         // …and the bare array form.
         let base = mock_json_server(200, format!("[{entry}]"));
         let models = fetch_future_models("k", &base).expect("array form parses");
         assert_eq!(models.len(), 1);
-        assert_eq!(
-            models[0].compat.get("reasoningEffortValues"),
-            Some(&expected)
-        );
+        assert_eq!(models[0].thinking_levels, expected);
     }
 
     #[tokio::test]

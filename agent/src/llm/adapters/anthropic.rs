@@ -88,15 +88,21 @@ impl ProtocolAdapter for AnthropicMessagesAdapter {
                     .collect(),
             );
         }
+        let level = target.generation.thinking_level.trim();
+        let level_is_thinking = !level.is_empty()
+            && level != crate::llm::schema::DEFAULT_THINKING_LEVEL
+            && level != "off";
+        // `default`/`off` derive a zero budget, so thinking stays unrequested
+        // (Anthropic has no explicit disable spelling: omission is the disable).
         let thinking_enabled = target.capabilities.reasoning.supported
+            && level_is_thinking
             && target.generation.thinking_budget >= MIN_THINKING_BUDGET_TOKENS;
         if thinking_enabled && config.thinking_mode == AnthropicThinkingMode::Adaptive {
             // Several current Claude models omit visible thinking by default.
             // FutureOS exposes thinking in the UI, so request the summary explicitly.
+            // The declared level is the effort value, verbatim.
             body["thinking"] = json!({"type": "adaptive", "display": "summarized"});
-            body["output_config"] = json!({
-                "effort": anthropic_effort(&target.generation.thinking_level),
-            });
+            body["output_config"] = json!({ "effort": level });
         } else if thinking_enabled {
             let thinking_budget = target
                 .generation
@@ -558,15 +564,6 @@ fn map_finish_reason(reason: &str) -> FinishReason {
     }
 }
 
-fn anthropic_effort(level: &str) -> &'static str {
-    match level {
-        "minimal" | "low" => "low",
-        "medium" => "medium",
-        "xhigh" => "max",
-        _ => "high",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,15 +580,13 @@ mod tests {
             },
             protocol: ProtocolConfig::AnthropicMessages(Default::default()),
             capabilities: crate::llm::schema::ModelCapabilities {
-                reasoning: crate::llm::schema::ReasoningCapabilities {
-                    supported: true,
-                    ..Default::default()
-                },
+                reasoning: crate::llm::schema::ReasoningCapabilities { supported: true },
                 ..Default::default()
             },
             generation: crate::llm::schema::GenerationConfig {
                 max_output_tokens: max_tokens,
                 thinking_budget,
+                thinking_level: "high".into(),
                 ..Default::default()
             },
         }
@@ -644,7 +639,8 @@ mod tests {
             .unwrap();
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["thinking"]["display"], "summarized");
-        assert_eq!(body["output_config"]["effort"], "max");
+        // Declared wire values travel verbatim (no client-side level mapping).
+        assert_eq!(body["output_config"]["effort"], "xhigh");
         assert!(body["thinking"].get("budget_tokens").is_none());
     }
 
@@ -1574,14 +1570,5 @@ mod tests {
             map_finish_reason("weird"),
             FinishReason::Unknown("weird".into())
         );
-    }
-
-    #[test]
-    fn anthropic_effort_maps_levels() {
-        assert_eq!(anthropic_effort("minimal"), "low");
-        assert_eq!(anthropic_effort("low"), "low");
-        assert_eq!(anthropic_effort("medium"), "medium");
-        assert_eq!(anthropic_effort("xhigh"), "max");
-        assert_eq!(anthropic_effort("whatever"), "high");
     }
 }

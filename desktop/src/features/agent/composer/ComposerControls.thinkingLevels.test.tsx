@@ -1,10 +1,11 @@
 /**
- * The composer's thinking picker offers the levels the *model* declares.
+ * The composer's thinking picker offers exactly the levels the *model* declares.
  *
- * `models.json` can narrow a model's vocabulary (`thinkingLevels`), and the agent
- * clamps every level outside it — so a menu that still listed all six would let
- * the user pick an effort the run immediately snaps away from. The keyboard ring
- * and the menu read one list (`modelThinkingLevels`), so both are checked here.
+ * A current agent publishes the model's effective list — always starting with
+ * the implicit `default`, arbitrary wire values included — and the agent clamps
+ * every level outside it. The keyboard ring and the menu read that one list
+ * (`modelThinkingLevels`), so both are checked here; a list with a single entry
+ * is the only case that has no choice to offer.
  */
 // @vitest-environment jsdom
 import { act } from "react";
@@ -44,8 +45,8 @@ const narrowModel = {
   id: "narrow",
   provider: "custom",
   label: "Narrow",
-  thinkingLevels: ["off", "low", "high"],
-  defaultThinkingLevel: "low",
+  thinkingLevels: ["default", "off", "low", "high"],
+  defaultThinkingLevel: "default",
 };
 
 function mount(modelOptions: Parameters<typeof ComposerControls>[0]["modelOptions"], thinkingLevel: string) {
@@ -68,10 +69,10 @@ function mount(modelOptions: Parameters<typeof ComposerControls>[0]["modelOption
   ));
 }
 
-/** The thinking trigger's visible label, then the rows its menu offers. */
-function thinkingTrigger(): HTMLElement {
-  const button = [...container.querySelectorAll<HTMLElement>("button")]
-    .find(candidate => candidate.getAttribute("title") === "Thinking level");
+/** The thinking trigger (its aria-label never changes, unlike its tooltip). */
+function thinkingTrigger(): HTMLButtonElement {
+  const button = [...container.querySelectorAll<HTMLButtonElement>("button")]
+    .find(candidate => candidate.getAttribute("aria-label") === "Thinking level");
   expect(button, "the thinking trigger").not.toBeNull();
   return button!;
 }
@@ -88,18 +89,36 @@ function menuRows(): string[] {
 it("lists only the levels the model declares", async () => {
   await mount([narrowModel], "low");
   await act(async () => thinkingTrigger().click());
-  expect(menuRows()).toEqual(["Off", "Low", "High"]);
+  expect(menuRows()).toEqual(["Default", "Off", "Low", "High"]);
+});
+
+it("offers arbitrary wire values verbatim, with a raw label fallback", async () => {
+  await mount([{ ...narrowModel, thinkingLevels: ["default", "max", "ultra"], defaultThinkingLevel: "default" }], "max");
+  await act(async () => thinkingTrigger().click());
+  // `max` ships a translation; `ultra` does not and falls back to its raw value.
+  expect(menuRows()).toEqual(["Default", "Max", "ultra"]);
 });
 
 it("shows the stored level only while the model offers it", async () => {
   // `xhigh` came from another model (or from before this one narrowed its list):
   // the trigger must not claim an effort this model cannot run at.
   await mount([narrowModel], "xhigh");
-  expect(thinkingTrigger().textContent).toContain("Low");
+  expect(thinkingTrigger().textContent).toContain("Default");
 });
 
 it("keeps all six when the model declares nothing", async () => {
   await mount([{ id: "narrow", provider: "custom", label: "Narrow" }], "medium");
   await act(async () => thinkingTrigger().click());
   expect(menuRows()).toEqual(["Off", "Minimal", "Low", "Medium", "High", "XHigh"]);
+});
+
+it("disables the picker when the model offers only the implicit default", async () => {
+  await mount([{ id: "narrow", provider: "custom", label: "Narrow", thinkingLevels: ["default"], defaultThinkingLevel: "default" }], "default");
+  expect(thinkingTrigger().disabled).toBe(true);
+  expect(thinkingTrigger().textContent).toContain("Default");
+});
+
+it("enables the picker as soon as there is a second option", async () => {
+  await mount([{ ...narrowModel, thinkingLevels: ["default", "off"], defaultThinkingLevel: "default" }], "default");
+  expect(thinkingTrigger().disabled).toBe(false);
 });

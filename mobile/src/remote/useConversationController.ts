@@ -14,7 +14,7 @@ import { requestReadPage } from "@future-os/remote-client/readPages";
 import { asToolKind, normalizeArgs, targetFromArgs } from "@future-os/thread-projection";
 import { loadLastModel, loadLastThinking, saveLastModel, saveLastThinking } from "./storage";
 import { markApprovalDecision } from "@future-os/remote-client/timeline";
-import { modelProviderFromReference, modelReference } from "./types";
+import { DEFAULT_THINKING_LEVEL, modelProviderFromReference, modelReference, resolveModelThinkingLevel } from "./types";
 import type {
   AvailableSkill,
   DownloadInfo,
@@ -90,7 +90,7 @@ export function useConversationController({
   closeConversation,
 }: ConversationControllerOptions) {
   const [modelId, setModelId] = useState("");
-  const [thinkingLevel, setThinkingLevelState] = useState<ThinkingLevel>("off");
+  const [thinkingLevel, setThinkingLevelState] = useState<ThinkingLevel>(DEFAULT_THINKING_LEVEL);
   // Session token usage + amount, refreshed by every get_state read (open,
   // run settle, reconnect). Null until the first read for this session.
   const [sessionUsage, setSessionUsage] = useState<RemoteSessionUsage | null>(null);
@@ -125,9 +125,10 @@ export function useConversationController({
       if (!data || typeof data !== "object") return;
       if (event.type === "model_changed" && "model" in data && typeof data.model === "string") {
         applySessionSettings(sessionId, { model: data.model });
-      } else if ("level" in data && typeof data.level === "string"
-        && ["off", "minimal", "low", "medium", "high", "xhigh"].includes(data.level)) {
-        applySessionSettings(sessionId, { thinkingLevel: data.level as ThinkingLevel });
+      } else if ("level" in data && typeof data.level === "string" && data.level.trim()) {
+        // The host declares the levels it accepts, so any non-empty value is a
+        // level it may legitimately run at (`default`, `max`, a provider token).
+        applySessionSettings(sessionId, { thinkingLevel: data.level });
       }
     } catch { /* Ignore malformed notifications; the next state read recovers. */ }
   }, [applySessionSettings]);
@@ -183,7 +184,7 @@ export function useConversationController({
         const currentModel = state.model ?? "";
         const matchingModel = models.find(model => modelReference(model) === currentModel);
         setModelId(matchingModel ? modelReference(matchingModel) : currentModel);
-        setThinkingLevelState(state.thinkingLevel ?? "off");
+        setThinkingLevelState(state.thinkingLevel ?? DEFAULT_THINKING_LEVEL);
         // A conversation opened from the list shows its running amount right
         // away, before any stream event arrives.
         setSessionUsage(state.usage ?? null);
@@ -229,7 +230,11 @@ export function useConversationController({
         (defaultOption ? modelReference(defaultOption) : null) ??
         (models[0] ? modelReference(models[0]) : "");
       setModelId(defaultModel);
-      setThinkingLevelState((lastThinking as ThinkingLevel | null) ?? "off");
+      const remembered = lastThinking ?? DEFAULT_THINKING_LEVEL;
+      setThinkingLevelState(
+        resolveModelThinkingLevel(remembered, models.find(model => modelReference(model) === defaultModel))
+          ?? remembered,
+      );
     },
     [
       conversationEpochRef,

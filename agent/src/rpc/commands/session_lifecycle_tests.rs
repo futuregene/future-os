@@ -750,10 +750,23 @@ fn new_session_generates_id_and_registers() {
 #[test]
 fn new_session_is_present_and_reloadable_before_its_first_prompt() {
     let state = make_app_state();
+    // The level is validated against the model's declared list: register one
+    // that offers `low` so this test exercises an explicit non-default level.
+    state
+        .model_registry
+        .write()
+        .test_insert(crate::models::Model {
+            id: "levels-ok".into(),
+            provider: "test".into(),
+            api: "openai-completions".into(),
+            thinking_levels: vec!["low".to_string()],
+            ..Default::default()
+        });
     let mut command = make_cmd_for("new_session", "first-hello");
     command.cwd = state.welcome_cwd.clone();
     command.created_by = "desktop".into();
     command.creator_id = "desktop-device".into();
+    command.model_id = "test/levels-ok".into();
     command.level = "low".into();
     command.system_prompt = "Keep answers brief.".into();
     let response = parse_response(&handle_command_internal(&state, command));

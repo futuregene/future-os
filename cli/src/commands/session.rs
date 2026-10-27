@@ -59,7 +59,8 @@ Recorded with the session:
                           depend on the app being open. A directory that does
                           not exist is reported as a note, after the change.
   --model <id>            Model ID
-  --thinking <level>      Thinking level: off, minimal, low, medium, high, xhigh
+  --thinking <level>      Thinking level: default (provider default), off, minimal,
+                          low, medium, high, xhigh, max
   --system-prompt <text>  Replace this session's system prompt: the text
                           becomes the prompt's opening section instead of the
                           built-in identity. Stored with the session, so it
