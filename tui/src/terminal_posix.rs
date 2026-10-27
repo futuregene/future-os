@@ -147,22 +147,37 @@ fn drain_signal_pipe(read_fd: RawFd) -> Option<libc::c_int> {
     }
 }
 
-fn install_signal_handlers() {
-    unsafe {
-        let mut sa: libc::sigaction = std::mem::zeroed();
-        sa.sa_sigaction = signal_handler as *const () as usize;
-        sa.sa_flags = libc::SA_RESTART;
-        libc::sigemptyset(&mut sa.sa_mask);
-        // sigaction with a valid signal + handler cannot fail (EINVAL needs a
-        // bad signal number, which the fixed lists below never contain).
-        for &sig in &TERM_SIGNALS {
-            debug_assert_eq!(libc::sigaction(sig, &sa, std::ptr::null_mut()), 0);
-        }
-        debug_assert_eq!(
-            libc::sigaction(libc::SIGWINCH, &sa, std::ptr::null_mut()),
-            0
-        );
+/// Point one signal at the self-pipe handler.
+///
+/// The `sigaction` call is the whole point of this function, so it must never
+/// sit inside an assertion: `debug_assert` compiles away in release, and a
+/// handler that only a debug build installs leaves the release binary with the
+/// default dispositions. Measured 2026-10-27 on the installed release `future`:
+/// no SIGWINCH reached the process, so a resized window kept painting the
+/// geometry it started with (and a SIGTERM would have skipped the terminal
+/// restore entirely). Every call here runs in every profile.
+fn install_signal_handler(sig: libc::c_int, sa: &libc::sigaction) -> io::Result<()> {
+    // SAFETY: `sa` was filled by the caller with a handler and an emptied mask;
+    // a null third argument is the documented "do not report the old action".
+    if unsafe { libc::sigaction(sig, sa, std::ptr::null_mut()) } != 0 {
+        return Err(io::Error::last_os_error());
     }
+    Ok(())
+}
+
+fn install_signal_handlers() -> io::Result<()> {
+    // sigaction with a valid signal + handler should not fail (EINVAL needs a
+    // bad signal number, which the fixed lists below never contain) — the
+    // error is propagated rather than asserted, so a failure surfaces as
+    // "terminal: …" instead of a process with no way to clean up.
+    let mut sa: libc::sigaction = unsafe { std::mem::zeroed() };
+    sa.sa_sigaction = signal_handler as *const () as usize;
+    sa.sa_flags = libc::SA_RESTART;
+    unsafe { libc::sigemptyset(&mut sa.sa_mask) };
+    for &sig in &TERM_SIGNALS {
+        install_signal_handler(sig, &sa)?;
+    }
+    install_signal_handler(libc::SIGWINCH, &sa)
 }
 
 fn restore_signal_handlers() {
@@ -230,7 +245,18 @@ impl Backend {
         };
         st.signal_pipe = Some((read_fd, write_fd));
         SIGNAL_PIPE_WRITE.store(write_fd, Ordering::SeqCst);
-        install_signal_handlers();
+        if let Err(err) = install_signal_handlers() {
+            // Roll back what this call has done: nothing would read the pipe,
+            // and raw mode without the restore path is the worst of both.
+            SIGNAL_PIPE_WRITE.store(-1, Ordering::SeqCst);
+            st.signal_pipe = None;
+            unsafe {
+                libc::close(read_fd);
+                libc::close(write_fd);
+            }
+            let _ = set_termios(STDIN_FD, &orig);
+            return Err(err);
+        }
         st.orig_termios = Some(orig);
         st.raw_enabled = true;
         *PANIC_TERMIOS.lock() = Some(orig);
@@ -638,11 +664,50 @@ mod tests {
         }
     }
 
+    /// What the kernel currently routes a signal to.
+    ///
+    /// Reading this back is the only way to tell "installed" from "the call
+    /// that installs it was compiled out": a handler set from inside a
+    /// `debug_assert` is missing here in a release build (`cargo test
+    /// --release -p future-tui` is what exercises that profile).
+    fn disposition(sig: libc::c_int) -> usize {
+        let mut old: libc::sigaction = unsafe { std::mem::zeroed() };
+        // SAFETY: a null `act` only asks for the current action.
+        assert_eq!(
+            unsafe { libc::sigaction(sig, std::ptr::null(), &mut old) },
+            0,
+            "sigaction({sig}) query failed"
+        );
+        old.sa_sigaction
+    }
+
+    fn every_managed_signal() -> impl Iterator<Item = libc::c_int> {
+        TERM_SIGNALS
+            .iter()
+            .copied()
+            .chain(std::iter::once(libc::SIGWINCH))
+    }
+
     #[test]
     fn signal_handlers_install_and_restore() {
         let _g = posix_test_lock();
-        install_signal_handlers();
+        install_signal_handlers().expect("handlers install");
+        let handler = signal_handler as *const () as usize;
+        for sig in every_managed_signal() {
+            assert_eq!(
+                disposition(sig),
+                handler,
+                "signal {sig} must reach the self-pipe handler"
+            );
+        }
         restore_signal_handlers();
+        for sig in every_managed_signal() {
+            assert_eq!(
+                disposition(sig),
+                libc::SIG_DFL,
+                "signal {sig} must be back to its default"
+            );
+        }
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //! for (or is measured with [`crate::workbench::ansi::width`]), so the screen
 //! composer can concatenate them without re-measuring.
 
-use crate::workbench::ansi::{align_right, fit, width};
+use crate::workbench::ansi::{align_right, clip, fit, width};
 use crate::workbench::i18n::{self, Key, Language};
 use crate::workbench::theme::Palette;
 
@@ -24,9 +24,18 @@ pub fn box_top(palette: &Palette, columns: usize, title: &str) -> String {
         return palette.text(palette.border, &format!("╭{rule}╮"));
     }
     // `─ title ` then as much rule as is left; a title too long for the box is
-    // clipped rather than allowed to push the corner off the row.
+    // clipped rather than allowed to push the corner off the row. The label is
+    // *clipped* to its room, never fitted to it: `fit` pads, so a padded label
+    // measured as wide as the box and the rule after the title was never drawn.
     let label = format!(" {title} ");
-    let label = fit(&label, inner.saturating_sub(1));
+    let room = inner.saturating_sub(1);
+    let label = if width(&label) > room {
+        let mut clipped = clip(&label, room.saturating_sub(1));
+        clipped.push('…');
+        clipped
+    } else {
+        label
+    };
     let used = width(&label);
     let rest = inner.saturating_sub(1 + used);
     fit(
@@ -356,6 +365,27 @@ mod tests {
         assert_eq!(width(&row), 6, "{row:?}");
         let plain = box_top(&P, 12, "");
         assert_eq!(width(&plain), 12);
+    }
+
+    /// The rule runs on after the title — `╭─ 输入 ─────╮`, not the title and
+    /// then blanks. The label is clipped to the room it has, never padded up to
+    /// it: a padded label measured as wide as the box, `rest` came out zero and
+    /// the composer's top rule disappeared the moment it was given a title.
+    #[test]
+    fn the_rule_runs_on_after_the_box_title() {
+        let row = crate::utils::strip_ansi_codes(&box_top(&P, 40, "输入"));
+        assert_eq!(width(&row), 40, "{row:?}");
+        assert!(row.starts_with("╭─ 输入 "), "{row:?}");
+        assert!(
+            row.trim_end_matches('╮').trim_end().ends_with("────────"),
+            "no rule after the title: {row:?}"
+        );
+        // A title wider than the box still spends its room on the title and
+        // keeps the corner on the row.
+        let narrow = crate::utils::strip_ansi_codes(&box_top(&P, 12, "输入 · enter 发送"));
+        assert_eq!(width(&narrow), 12, "{narrow:?}");
+        assert!(narrow.starts_with("╭─ 输入"), "{narrow:?}");
+        assert!(narrow.ends_with("…╮"), "{narrow:?}");
     }
 
     #[test]

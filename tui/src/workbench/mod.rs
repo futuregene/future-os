@@ -7641,6 +7641,73 @@ mod tests {
         }
     }
 
+    /// An empty section is still a panel. The 改动 and 储藏 tabs of a clean
+    /// checkout used to stop after their own four rows, so the conversation
+    /// underneath showed through the rest of the box's rectangle.
+    #[test]
+    fn an_empty_git_section_paints_the_whole_box() {
+        for section in [state::GitSection::Stash, state::GitSection::Status] {
+            let mut data = demo::chat();
+            let mut git = demo::git();
+            git.section = section;
+            git.rows.clear();
+            git.detail.clear();
+            data.git = Some(git);
+
+            let mut wb = workbench();
+            wb.overlay = Some(Overlay::Git);
+            let rows = wb.render(&data, 120, 38);
+            let painted: Vec<String> = rows
+                .iter()
+                .map(|row| crate::utils::strip_ansi_codes(row))
+                .collect();
+            assert!(
+                painted[37].trim_start().starts_with('╰'),
+                "{section:?}: the bottom rule owns the last row: {:?}",
+                painted[37]
+            );
+            assert!(
+                !painted.iter().any(|row| row.contains("41 个用例都过了")),
+                "{section:?}: the conversation shows through the panel"
+            );
+            for row in &painted {
+                assert_eq!(
+                    crate::workbench::ansi::width(row),
+                    120,
+                    "{section:?}: a row is the frame's width"
+                );
+            }
+        }
+    }
+
+    /// The review surface has the same rule: a clean working tree, or a failed
+    /// read, is a panel of the screen's height and not a strip over the chat.
+    #[test]
+    fn an_empty_diff_paints_the_whole_box() {
+        let mut data = demo::chat();
+        data.diff = Some(state::DiffView {
+            files: Vec::new(),
+            patch: String::new(),
+            ..state::DiffView::default()
+        });
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Diff);
+        let rows = wb.render(&data, 120, 38);
+        let painted: Vec<String> = rows
+            .iter()
+            .map(|row| crate::utils::strip_ansi_codes(row))
+            .collect();
+        assert!(
+            painted[37].trim_start().starts_with('╰'),
+            "the bottom rule owns the last row: {:?}",
+            painted[37]
+        );
+        assert!(
+            !painted.iter().any(|row| row.contains("41 个用例都过了")),
+            "the conversation shows through the panel"
+        );
+    }
+
     /// The `/git` panel is a two-pane browser: tabs, a list whose arrow follows
     /// the cursor, and the selected row's detail. Wide boxes split; a narrow one
     /// switches panes with `tab`, the same way the diff review does.
