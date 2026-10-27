@@ -1363,6 +1363,16 @@ fn key_events(data: &str) -> Vec<WbEvent> {
             return keys;
         }
     }
+    // An escape sequence this build does not understand is *dropped*, never
+    // typed. It used to fall through to the paste path, and the draft then held
+    // `ESC[65292;1:3u` — a key release the terminal sent for the full-width
+    // comma — which the frame wrote back out and the terminal executed: twelve
+    // columns of the composer row vanished, the draft's tail with them, and the
+    // caret was left past what the reader could see. Text arrives as text (no
+    // ESC); anything carrying one is a sequence for some other layer.
+    if data.contains('\x1b') {
+        return Vec::new();
+    }
     // Anything else is text, and belongs in the draft as it stands.
     vec![WbEvent::Paste(data.to_string())]
 }
@@ -1407,10 +1417,19 @@ fn split_escape_keys(data: &str) -> Option<Vec<WbEvent>> {
 /// The frame the surface is composed for right now, computed once per loop
 /// iteration and handed to both halves of it — the composer and the event path
 /// — so the width the transcript wraps to is the width it is drawn at.
+///
+/// The size is asked of the terminal (`fresh_size`) rather than read from the
+/// cache the resize notification fills: a `SIGWINCH` that never arrives leaves
+/// that cache on the previous size, and every frame composed from it is then
+/// the previous terminal's frame — a composer narrower than the window, with
+/// the frame before it still readable to the right of the draft. Asking costs
+/// one syscall per iteration and makes a missed notification a single stale
+/// frame instead of a permanent one.
 fn frame_of(terminal: &Terminal, workbench: &Workbench) -> Frame {
+    let (width, height) = terminal.fresh_size();
     Frame::new(
-        terminal.columns(),
-        terminal.rows(),
+        width,
+        height,
         if workbench.sidebar_visible {
             workbench.sidebar_w
         } else {
@@ -1829,6 +1848,14 @@ fn frame_bytes(rows: &[String], cursor: Option<(u16, u16)>) -> String {
         // `CSI row;1H` — absolute, 1-based. The reset first so a row's styling
         // cannot bleed into the positioning sequence.
         frame.push_str(&format!("\x1b[0m\x1b[{};1H", index + 1));
+        // Erase the row before writing it. A frame is exactly as wide as the
+        // terminal was when it was composed, and this half of the pair is the
+        // other way round from a row past the end: a terminal *wider* than the
+        // frame keeps whatever the previous frame left in the columns beyond
+        // it — the last line of the conversation beside the composer, a session
+        // row where the draft continues — and the reset makes `EL` erase with
+        // the canvas colour, so a short row leaves nothing legible behind.
+        frame.push_str("\x1b[K");
         frame.push_str(row);
     }
     frame.push_str("\x1b[0m");
@@ -2096,6 +2123,37 @@ mod tests {
         assert_eq!(key_events("\x1b[O"), vec![WbEvent::Focus(false)]);
     }
 
+    /// A key event the surface does not know is *dropped*, never typed.
+    ///
+    /// Kitty reports every key as `CSI codepoint;modifiers:kind u` once it is
+    /// asked to, and a terminal with an IME sends the full-width comma that way:
+    /// `ESC[65292;1:3u` (codepoint 65292, no modifiers, `:3` = release). That
+    /// chunk arrived while the draft was being typed, was not recognised as a
+    /// key, and fell through to the paste path — so the draft held those twelve
+    /// characters, the frame wrote the escape back out, and the terminal ate
+    /// twelve columns of the composer row: the reader's text lost its tail and
+    /// the caret sat past what they could see.
+    #[test]
+    fn an_unrecognised_key_event_is_dropped_rather_than_typed() {
+        // The release of a full-width comma: not a key press, nothing to insert.
+        assert!(key_events("\x1b[65292;1:3u").is_empty());
+        // Its press is that character, not an escape: with an IME the text and
+        // the key report arrive together, and the character is the one to keep.
+        assert_eq!(
+            key_events("\x1b[65292u"),
+            vec![WbEvent::Key("，".into())],
+            "a printable codepoint is the character itself"
+        );
+        // A sequence from some other layer (a terminal reply, a mouse dialect)
+        // is nobody's text: dropping it leaves the draft clean.
+        for seq in ["\x1b[999z", "\x1b[1;2;3Q", "\x1b]52;c;Zm9v\x07"] {
+            assert!(
+                key_events(seq).is_empty(),
+                "{seq:?} must not reach the draft"
+            );
+        }
+    }
+
     #[test]
     fn a_plain_key_becomes_one_key_event() {
         assert_eq!(events_of("a"), vec![WbEvent::Key("a".into())]);
@@ -2253,20 +2311,21 @@ mod tests {
     }
 
     /// An unfinished sequence is not guessed at: half an escape sequence must
-    /// wait for the rest of its bytes rather than becoming an `escape` key now.
+    /// not become an `escape` key, and its bytes must not be typed either. The
+    /// surface holds a partial chunk for the next read (`stdin_buffer`'s
+    /// deadline); what reaches the event path unfinished is dropped, because
+    /// typing `ESC[1;5` into the draft puts an escape in the frame, where the
+    /// terminal executes it instead of drawing it.
     #[test]
-    fn an_incomplete_sequence_is_not_split() {
-        // A lone trailing `\x1b` after a complete sequence: the next read
-        // finishes it, so this one stays whole.
-        assert_eq!(
-            events_of("\x1b[B\x1b"),
-            vec![WbEvent::Paste("\x1b[B\x1b".into())]
+    fn an_incomplete_sequence_is_dropped_rather_than_typed() {
+        // A lone trailing `\x1b` after a complete sequence.
+        assert!(
+            events_of("\x1b[B\x1b").is_empty(),
+            "{:?}",
+            events_of("\x1b[B\x1b")
         );
         // A truncated CSI likewise: it parses as nothing, so it is not a key.
-        assert_eq!(
-            events_of("\x1b[1;5"),
-            vec![WbEvent::Paste("\x1b[1;5".into())]
-        );
+        assert!(events_of("\x1b[1;5").is_empty());
     }
 
     /// The old shape wrote rows with `\r\n` and only kept the *last* one free
@@ -2289,8 +2348,26 @@ mod tests {
         let rows = vec!["a".to_string(), "b".to_string()];
         assert_eq!(
             frame_bytes(&rows, None),
-            "\x1b[?25l\x1b[0m\x1b[1;1Ha\x1b[0m\x1b[2;1Hb\x1b[0m"
+            "\x1b[?25l\x1b[0m\x1b[1;1H\x1b[Ka\x1b[0m\x1b[2;1H\x1b[Kb\x1b[0m"
         );
+    }
+
+    /// A row is erased before it is written, so a terminal wider than the frame
+    /// cannot keep the previous frame's cells in the columns beside it. That is
+    /// the state a resize leaves behind for a frame or two — a composer narrower
+    /// than the window, with the frame before it still legible to the right of
+    /// the draft — and stale text where the draft continues reads as if it were
+    /// typed.
+    #[test]
+    fn every_row_is_erased_before_it_is_painted() {
+        let rows: Vec<String> = (0..4).map(|row| format!("r{row}")).collect();
+        let frame = frame_bytes(&rows, None);
+        for index in 1..=rows.len() {
+            assert!(
+                frame.contains(&format!("\x1b[0m\x1b[{index};1H\x1b[K")),
+                "row {index} is not erased before its text: {frame:?}"
+            );
+        }
     }
 
     /// A first start — no `settings.json`, or one whose `sidebarVisible` an
