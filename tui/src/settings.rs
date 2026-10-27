@@ -35,10 +35,6 @@ pub struct TuiSettings {
     pub enabled_model_ids: Option<Vec<String>>,
     /// Palette id (`themeId`).
     pub theme_id: Option<String>,
-    /// Reading level of a settled reply (`replyDetail`: `default` | `detailed`).
-    /// Absent ⇒ `default`, which keeps a finished reply to its final answer plus
-    /// a count of the work above it.
-    pub reply_detail: Option<String>,
     /// Interface language (`language`: `system` | `zh` | `en`). Absent ⇒
     /// `system`, the same default the desktop and the phone use.
     pub language: Option<String>,
@@ -89,9 +85,6 @@ impl TuiSettings {
         }
         if let Some(theme) = &self.theme_id {
             obj.insert("themeId".into(), Value::String(theme.clone()));
-        }
-        if let Some(detail) = &self.reply_detail {
-            obj.insert("replyDetail".into(), Value::String(detail.clone()));
         }
         if let Some(language) = &self.language {
             obj.insert("language".into(), Value::String(language.clone()));
@@ -153,7 +146,6 @@ impl TuiSettings {
                         .collect()
                 }),
             theme_id: string("themeId"),
-            reply_detail: string("replyDetail"),
             language: string("language"),
             density: string("density"),
             sidebar_position: string("sidebarPosition"),
@@ -196,7 +188,6 @@ mod tests {
             default_approval_mode: Some("auto".into()),
             enabled_model_ids: Some(vec!["a".into(), "b".into()]),
             theme_id: Some("future-light".into()),
-            reply_detail: Some("detailed".into()),
             language: Some("system".into()),
             density: Some("focused".into()),
             sidebar_position: Some("left".into()),
@@ -220,7 +211,6 @@ mod tests {
         assert_eq!(back.default_approval_mode.as_deref(), Some("auto"));
         assert_eq!(back.enabled_model_ids, Some(vec!["a".into(), "b".into()]));
         assert_eq!(back.theme_id.as_deref(), Some("future-light"));
-        assert_eq!(back.reply_detail.as_deref(), Some("detailed"));
         assert_eq!(back.language.as_deref(), Some("system"));
         assert_eq!(back.density.as_deref(), Some("focused"));
         assert_eq!(back.sidebar_position.as_deref(), Some("left"));
@@ -260,12 +250,17 @@ mod tests {
         let settings = TuiSettings::from_json(&old);
         assert_eq!(settings.default_model.as_deref(), Some("m"));
         assert_eq!(settings.theme_id.as_deref(), Some("future-dark"));
-        assert_eq!(settings.reply_detail.as_deref(), Some("detailed"));
         // The notification object is honoured again; the retired independent
         // bell key remains ignored rather than overriding its channel choice.
         let written = settings.to_json();
         assert_eq!(written["notify"]["bell"], false);
         assert!(written.get("bellOnComplete").is_none());
+        // `replyDetail` is retired with the reading level itself: the TUI stops
+        // at the folded level every time now (see `ReplyDetail`), so a file
+        // that still asks for `detailed` loads fine and the key is dropped the
+        // next time the file is written — the toggle that used to store it must
+        // not keep a reader's transcript expanded on every start.
+        assert!(written.get("replyDetail").is_none());
     }
 
     #[test]

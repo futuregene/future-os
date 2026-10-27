@@ -12,12 +12,20 @@ vi.mock("../../integrations/tauri/invoke", () => ({
 }));
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
-it("disables thinking levels for a model configured off, and enables them after a capability refresh", async () => {
+it("disables the picker for a single-level model, and enables it once the agent publishes more", async () => {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
   const onThinkingLevelChange = vi.fn();
-  const model = { id: "m", provider: "custom", label: "Model", thinkingLevel: "high", reasoning: false };
+  // The agent's effective list for a model without thinking controls: just the
+  // implicit default. No client-side `reasoning` reading is involved.
+  const model = {
+    id: "m",
+    provider: "custom",
+    label: "Model",
+    thinkingLevels: ["default"],
+    defaultThinkingLevel: "default",
+  };
   const render = async () => {
     await act(async () => root.render(<Composer onSend={vi.fn()} modelId="custom/m" modelOptions={[{ ...model }]} thinkingLevel="high" onThinkingLevelChange={onThinkingLevelChange} />));
   };
@@ -26,11 +34,12 @@ it("disables thinking levels for a model configured off, and enables them after 
     const button = container.querySelector<HTMLButtonElement>("button[aria-label=\"Thinking level\"]")!;
     expect(button).not.toBeNull();
     expect(button.disabled).toBe(true);
-    expect(button.textContent).toContain("Off");
-    expect(button.title).toContain("configured as not supporting thinking controls");
+    expect(button.textContent).toContain("Default");
+    expect(button.title).toContain("no thinking-level choices");
     act(() => button.click());
     expect(onThinkingLevelChange).not.toHaveBeenCalled();
-    model.reasoning = true;
+
+    model.thinkingLevels = ["default", "off", "low", "high"];
     await render();
     expect(button.disabled).toBe(false);
     expect(button.textContent).toContain("High");

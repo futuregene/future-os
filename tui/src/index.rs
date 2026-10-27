@@ -10,6 +10,7 @@
 
 use crate::rpc::types::ModelInfo;
 use crate::version::VERSION;
+use crate::workbench::state::{is_valid_thinking_level, DEFAULT_THINKING_LEVEL_NAME};
 use future_rpc::proto::{RpcCommand, RpcResponse, StreamRequest};
 use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -116,9 +117,7 @@ pub fn parse_args(args: &[String]) -> ParseOutcome {
                     if let Some(colon_index) = model_arg.rfind(':') {
                         if colon_index > 0 {
                             let potential_thinking = &model_arg[colon_index + 1..];
-                            const LEVELS: [&str; 6] =
-                                ["off", "minimal", "low", "medium", "high", "xhigh"];
-                            if LEVELS.contains(&potential_thinking) {
+                            if is_valid_thinking_level(potential_thinking) {
                                 result.model = Some(model_arg[..colon_index].to_string());
                                 result.thinking = Some(potential_thinking.to_string());
                             } else {
@@ -808,6 +807,28 @@ async fn list_models(grpc_addr: &str, search: Option<&str>) -> Result<(), String
         });
     }
 
+    print!("{}", models_table(&models));
+    Ok(())
+}
+
+/// The thinking levels to show in the `thinking` column: the model's declared
+/// wire values with the implicit `default` left out (it means "send no thinking
+/// parameter", not a capability). `None` when there is nothing to say — a model
+/// declaring only `default`, or an older agent that sent no declaration.
+fn declared_levels_cell(levels: Option<&[String]>) -> Option<String> {
+    let levels = levels?;
+    let offered: Vec<&str> = levels
+        .iter()
+        .map(String::as_str)
+        .filter(|level| *level != DEFAULT_THINKING_LEVEL_NAME)
+        .collect();
+    (!offered.is_empty()).then(|| offered.join(","))
+}
+
+/// Render the `--list-models` table: one row per model (up to 100), then the
+/// count. Every model the agent offers gets a row; a model that declares no
+/// thinking levels simply leaves that column blank.
+fn models_table(models: &[ModelInfo]) -> String {
     // Compute column widths.
     let max_provider = models
         .iter()
@@ -822,39 +843,39 @@ async fn list_models(grpc_addr: &str, search: Option<&str>) -> Result<(), String
         .max()
         .unwrap_or(0);
     let ctx_w = "context".len();
-    let think_w = "thinking".len();
+    let thinking: Vec<String> = models
+        .iter()
+        .map(|m| declared_levels_cell(m.thinking_levels.as_deref()).unwrap_or_default())
+        .collect();
+    let think_w = thinking
+        .iter()
+        .map(String::len)
+        .chain(std::iter::once("thinking".len()))
+        .max()
+        .unwrap_or(0);
     let img_w = "images".len();
 
-    let header = format!(
-        "{}  {}  {}  {}  {}",
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{}  {}  {}  {}  {}\n",
         pad_end("provider", max_provider),
         pad_end("model", max_model),
         pad_start("context", ctx_w),
         pad_start("thinking", think_w),
         pad_start("images", img_w),
-    );
-    println!("{header}");
-
-    for model in models.iter().take(100) {
-        // Absent thinkingLevel means "off" (the agent always sends high/off).
-        let thinking = if model.thinking_level == "off" || model.thinking_level.is_empty() {
-            "no"
-        } else {
-            "yes"
-        };
-        let row = format!(
-            "{}  {}  {}  {}  {}",
+    ));
+    for (model, levels) in models.iter().take(100).zip(&thinking) {
+        out.push_str(&format!(
+            "{}  {}  {}  {}  {}\n",
             pad_end(&model.provider, max_provider),
             pad_end(&model.id, max_model),
             pad_start(&fmt_num(model.context_window as f64), ctx_w),
-            pad_start(thinking, think_w),
+            pad_start(levels, think_w),
             pad_start(if model.supports_images { "yes" } else { "no" }, img_w,),
-        );
-        println!("{row}");
+        ));
     }
-
-    println!("\n{} model(s)", models.len());
-    Ok(())
+    out.push_str(&format!("\n{} model(s)\n", models.len()));
+    out
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────
@@ -1260,6 +1281,21 @@ mod tests {
         let a = args(&["--model", "sonnet:high"]);
         assert_eq!(a.model.as_deref(), Some("sonnet"));
         assert_eq!(a.thinking.as_deref(), Some("high"));
+    }
+
+    /// `--thinking default` asks for the provider default; `max` is a wire value
+    /// a model may declare, so both split off a `--model id:level` too.
+    #[test]
+    fn parse_model_thinking_colon_split_accepts_default_and_max() {
+        for level in ["default", "max"] {
+            let a = args(&["--model", &format!("sonnet:{level}")]);
+            assert_eq!(a.model.as_deref(), Some("sonnet"), "{level}");
+            assert_eq!(a.thinking.as_deref(), Some(level), "{level}");
+        }
+        let a = args(&["--thinking", "default"]);
+        assert_eq!(a.thinking.as_deref(), Some("default"));
+        let a = args(&["--thinking", "max"]);
+        assert_eq!(a.thinking.as_deref(), Some("max"));
     }
 
     #[test]
@@ -1794,12 +1830,15 @@ mod tests {
         serde_json::json!({
             "models": [
                 {"provider": "openai", "id": "gpt-4o", "label": "GPT-4o",
-                 "supportsImages": true, "thinkingLevel": "off",
+                 "supportsImages": true, "thinkingLevel": "default",
+                 "thinkingLevels": ["default"], "defaultThinkingLevel": "default",
                  "contextWindow": 128000, "isDefault": false,
                  "reasoning": true, "description": null, "descriptionEn": null,
                  "recommended": false},
                 {"provider": "anthropic", "id": "claude-sonnet-4", "label": "Claude Sonnet 4",
-                 "supportsImages": false, "thinkingLevel": "high",
+                 "supportsImages": false, "thinkingLevel": "default",
+                 "thinkingLevels": ["default", "off", "low", "high"],
+                 "defaultThinkingLevel": "default",
                  "contextWindow": 200000, "isDefault": true,
                  "reasoning": true, "description": null, "descriptionEn": null,
                  "recommended": false}
@@ -1824,6 +1863,56 @@ mod tests {
         .await;
         list_models(&addr, None).await.unwrap();
         list_models(&addr, Some("gpt")).await.unwrap();
+    }
+
+    /// The `thinking` column is the model's own declaration: the implicit
+    /// `default` is not a capability and is left out, and a model that declares
+    /// nothing (only `default`, or an older agent) leaves the column blank
+    /// instead of a misleading yes/no.
+    #[test]
+    fn the_models_table_prints_the_declared_levels() {
+        let rows: Vec<ModelInfo> = serde_json::from_value(serde_json::json!([
+            {"id":"k3","label":"K3","provider":"future","thinkingLevel":"default",
+             "thinkingLevels":["default","off","low","max"],
+             "defaultThinkingLevel":"default","contextWindow":262144,"supportsImages":true},
+            {"id":"plain","label":"Plain","provider":"future","thinkingLevel":"default",
+             "thinkingLevels":["default"],"defaultThinkingLevel":"default",
+             "contextWindow":128000},
+            {"id":"old","label":"Old","provider":"legacy","thinkingLevel":"high",
+             "contextWindow":32000}
+        ]))
+        .expect("models");
+        let table = models_table(&rows);
+        assert!(table.contains("off,low,max"), "{table}");
+        assert!(
+            !table.contains("default"),
+            "the implicit default is not printed: {table}"
+        );
+        assert!(table.contains("3 model(s)"), "{table}");
+        // One line per model, and the undeclared ones say nothing in the column.
+        let plain = table
+            .lines()
+            .find(|line| line.contains("plain"))
+            .expect("plain row");
+        assert!(
+            !plain.contains("high") && !plain.contains("off"),
+            "{plain:?}"
+        );
+        let old = table
+            .lines()
+            .find(|line| line.contains("old"))
+            .expect("old row");
+        assert!(
+            !old.contains("high"),
+            "no fallback for an old agent: {old:?}"
+        );
+
+        assert_eq!(declared_levels_cell(Some(&["default".to_string()])), None);
+        assert_eq!(declared_levels_cell(None), None);
+        assert_eq!(
+            declared_levels_cell(Some(&["default".into(), "off".into(), "max".into()])),
+            Some("off,max".to_string())
+        );
     }
 
     #[tokio::test]

@@ -87,6 +87,22 @@ pub struct ProviderModelInput {
     pub cost_cache_read: f64,
     #[serde(default)]
     pub cost_cache_write: f64,
+    /// The thinking levels this model declares (`thinkingLevels` in
+    /// `models.json`), raw wire values in declaration order: `default` is
+    /// implicit and never part of the list.
+    ///
+    /// The read view omits the field for a model that declares nothing (the
+    /// common case for a persisted model that inherits a provider-level list);
+    /// the empty vector plus [`Self::replace_thinking_levels`] unset carries
+    /// that "not shown" state, so a rewrite does not clear the declaration.
+    #[serde(default)]
+    pub thinking_levels: Vec<String>,
+    /// Presence bit for [`Self::thinking_levels`] on the write wire: `None`
+    /// preserves whatever the agent has (an older client's write, or a
+    /// provider-level default); `Some(true)` replaces it with the list above —
+    /// an empty list is an explicit clear.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replace_thinking_levels: Option<bool>,
 }
 
 impl Default for ProviderModelInput {
@@ -102,6 +118,8 @@ impl Default for ProviderModelInput {
             cost_output: 0.0,
             cost_cache_read: 0.0,
             cost_cache_write: 0.0,
+            thinking_levels: Vec::new(),
+            replace_thinking_levels: None,
         }
     }
 }
@@ -157,6 +175,26 @@ impl ProviderModelInput {
             .unwrap_or(true);
         let max_tokens =
             positive_i32(map.get("maxTokens")).unwrap_or(context_window.min(DEFAULT_MAX_TOKENS));
+        // Presence matters: an omitted `thinkingLevels` is "not shown", and a
+        // rewrite must leave the agent's declaration (or a provider-level
+        // default) alone rather than shadowing it with an empty list.
+        let (thinking_levels, replace_thinking_levels) = match map.get("thinkingLevels") {
+            Some(value) => (
+                value
+                    .as_array()
+                    .map(|levels| {
+                        levels
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(|level| level.trim().to_string())
+                            .filter(|level| !level.is_empty())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default(),
+                Some(true),
+            ),
+            None => (Vec::new(), None),
+        };
         Some(Self {
             id,
             name,
@@ -168,6 +206,8 @@ impl ProviderModelInput {
             cost_output: number(map.get("outputCost")),
             cost_cache_read: number(map.get("cacheReadCost")),
             cost_cache_write: number(map.get("cacheWriteCost")),
+            thinking_levels,
+            replace_thinking_levels,
         })
     }
 
@@ -188,6 +228,8 @@ impl ProviderModelInput {
             cost_output: self.cost_output,
             cost_cache_read: self.cost_cache_read,
             cost_cache_write: self.cost_cache_write,
+            thinking_levels: self.thinking_levels.clone(),
+            replace_thinking_levels: self.replace_thinking_levels,
         }
     }
 
@@ -204,6 +246,8 @@ impl ProviderModelInput {
             cost_output: model.cost_output,
             cost_cache_read: model.cost_cache_read,
             cost_cache_write: model.cost_cache_write,
+            thinking_levels: model.thinking_levels.clone(),
+            replace_thinking_levels: model.replace_thinking_levels,
         }
     }
 }
@@ -581,7 +625,8 @@ mod tests {
                  "models": [{"id": "acme-large", "name": "Acme Large", "supportsImages": true,
                              "reasoning": false, "contextWindow": 200000, "maxTokens": 8192,
                              "inputCost": 1.5, "outputCost": 2.5, "cacheReadCost": 0.25,
-                             "cacheWriteCost": 0.5}]}
+                             "cacheWriteCost": 0.5,
+                             "thinkingLevels": ["off", "low", "max"]}]}
             ]
         });
         let providers = parse_providers_response(&payload);
@@ -605,6 +650,42 @@ mod tests {
         assert!(!model.thinking);
         assert_eq!(model.cost_input, 1.5);
         assert_eq!(model.cost_cache_write, 0.5);
+        // A declared list is carried with its presence bit, so an edit rewrites
+        // it instead of silently leaving the old one in place.
+        assert_eq!(model.thinking_levels, vec!["off", "low", "max"]);
+        assert_eq!(model.replace_thinking_levels, Some(true));
+    }
+
+    /// A hand-written `models.json` model: the read view only shows
+    /// `thinkingLevels` when the model declares its own list, and an omitted
+    /// field must survive a rewrite untouched (a provider-level default, or
+    /// another client's write).
+    #[test]
+    fn a_model_without_a_declared_list_is_not_given_an_empty_replacement() {
+        let undeclared = ProviderModelInput::from_value(&json!({
+            "id": "inherit", "reasoning": true, "contextWindow": 128000
+        }))
+        .expect("model");
+        assert!(undeclared.thinking_levels.is_empty());
+        assert_eq!(undeclared.replace_thinking_levels, None);
+        let spec = ProviderInput {
+            models: vec![undeclared],
+            ..provider()
+        }
+        .to_proto();
+        assert_eq!(spec.models[0].thinking_levels, Vec::<String>::new());
+        assert_eq!(
+            spec.models[0].replace_thinking_levels, None,
+            "no declaration shown means preserve"
+        );
+
+        // A declared empty list is an explicit clear.
+        let cleared = ProviderModelInput::from_value(&json!({
+            "id": "cleared", "thinkingLevels": []
+        }))
+        .expect("model");
+        assert_eq!(cleared.replace_thinking_levels, Some(true));
+        assert!(cleared.thinking_levels.is_empty());
     }
 
     #[test]
@@ -705,6 +786,8 @@ mod tests {
         input.models[0].context_window = 64_000;
         input.models[0].max_tokens = 4_000;
         input.models[0].cost_output = 3.5;
+        input.models[0].thinking_levels = vec!["off".into(), "max".into()];
+        input.models[0].replace_thinking_levels = Some(true);
         let spec = input.to_proto();
         assert_eq!(spec.id, "acme");
         assert_eq!(spec.api, "openai-completions");
@@ -717,6 +800,8 @@ mod tests {
         assert_eq!(spec.models[0].reasoning, Some(false));
         assert_eq!(spec.models[0].max_tokens, 4_000);
         assert_eq!(spec.models[0].cost_output, 3.5);
+        assert_eq!(spec.models[0].thinking_levels, vec!["off", "max"]);
+        assert_eq!(spec.models[0].replace_thinking_levels, Some(true));
         assert_eq!(ProviderInput::from_proto(&spec), input);
     }
 
@@ -774,6 +859,8 @@ mod tests {
         assert_eq!(value["createOnly"], true);
         assert_eq!(value["models"][0]["contextWindow"], DEFAULT_CONTEXT_WINDOW);
         assert_eq!(value["models"][0]["supportsImages"], false);
+        assert_eq!(value["models"][0]["thinkingLevels"], json!([]));
+        assert!(value["models"][0].get("replaceThinkingLevels").is_none());
         let back: ProviderInput = serde_json::from_value(value).expect("deserialise");
         assert_eq!(back, input);
     }
@@ -791,6 +878,8 @@ mod tests {
         assert!(model.thinking);
         assert!(!model.supports_images);
         assert_eq!(model.name, "");
+        assert!(model.thinking_levels.is_empty());
+        assert_eq!(model.replace_thinking_levels, None);
 
         // The same defaults apply when the model travels inside a provider.
         let input: ProviderInput = serde_json::from_value(json!({

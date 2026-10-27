@@ -725,11 +725,16 @@ impl Bridge {
             }
 
             "/effort" if !arg.is_empty() => {
-                let valid_levels = ["off", "minimal", "low", "medium", "high", "xhigh"];
+                // `default` asks for the provider default; `max` is a wire value
+                // a model may declare. Anything the model does not offer is
+                // clamped by the agent, and the reply names what actually ran.
+                let valid_levels = [
+                    "default", "off", "minimal", "low", "medium", "high", "xhigh", "max",
+                ];
                 let level = arg.to_lowercase();
                 if !valid_levels.contains(&level.as_str()) {
                     self.feishu.reply_message(message_id, "text",
-                        &serde_json::json!({"text": format!("Invalid level: {}. Use: off, minimal, low, medium, high, xhigh", arg)}).to_string()).await?;
+                        &serde_json::json!({"text": format!("Invalid level: {}. Use: {}", arg, valid_levels.join(", "))}).to_string()).await?;
                     return Ok(());
                 }
                 let sid = match self.ensure_session(chat_id, thread_id).await {
@@ -742,9 +747,11 @@ impl Bridge {
                 };
                 let mut agent = self.agent.write().await;
                 match agent.set_thinking_level(&sid, &level).await {
-                    Ok(()) => {
+                    // Echo the level the agent actually took: a level the model
+                    // does not offer is clamped to `default`.
+                    Ok(effective) => {
                         self.feishu.reply_message(message_id, "text",
-                            &serde_json::json!({"text": format!("Thinking level set to: {}", level)}).to_string()).await?;
+                            &serde_json::json!({"text": format!("Thinking level set to: {}", effective)}).to_string()).await?;
                     }
                     Err(e) => {
                         self.feishu.reply_message(message_id, "text",
@@ -2023,6 +2030,44 @@ mod tests {
         assert!(replies(&fx.http, "om_3")
             .iter()
             .any(|b| b.contains("Thinking level set to: high")));
+
+        // `default` (the provider default) and `max` (a wire value a model may
+        // declare) are accepted like the legacy six.
+        fx.bridge
+            .handle_event(slash_event("om_4", "/effort default"))
+            .await
+            .unwrap();
+        assert!(replies(&fx.http, "om_4")
+            .iter()
+            .any(|b| b.contains("Thinking level set to: default")));
+        fx.bridge
+            .handle_event(slash_event("om_5", "/effort max"))
+            .await
+            .unwrap();
+        assert!(replies(&fx.http, "om_5")
+            .iter()
+            .any(|b| b.contains("Thinking level set to: max")));
+        drop(fx);
+
+        // The reply echoes the level the agent actually took, not what was
+        // asked for: a model that clamps `max` says so.
+        let mut state = MockState::default();
+        state
+            .responses
+            .insert("set_thinking_level".into(), r#"{"level":"default"}"#.into());
+        let fx = make_bridge_routes(
+            "slash-effort-clamped",
+            state,
+            std_routes(&["om_1", "om_2", "om_3"]),
+        )
+        .await;
+        fx.bridge
+            .handle_event(slash_event("om_2", "/effort max"))
+            .await
+            .unwrap();
+        assert!(replies(&fx.http, "om_2")
+            .iter()
+            .any(|b| b.contains("Thinking level set to: default")));
         drop(fx);
 
         // set_thinking_level failure → error reply.

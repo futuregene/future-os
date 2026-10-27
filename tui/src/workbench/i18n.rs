@@ -90,16 +90,39 @@ impl LanguagePreference {
     }
 }
 
-/// The reader's locale: `LC_ALL`, then `LC_MESSAGES`, then `LANG`, and the
-/// Windows user UI language when none of them is set. A tag that names Chinese
-/// (Simplified or Traditional — the bundles ship one Chinese) picks Chinese;
-/// anything else, including `C`/`POSIX` and a missing locale, is English.
+/// The reader's locale: the per-process POSIX overrides (`LC_ALL`, then
+/// `LC_MESSAGES`), then the system's own default, then `LANG`. A tag that names
+/// Chinese (Simplified or Traditional — the bundles ship one Chinese) picks
+/// Chinese; anything else, including `C`/`POSIX` and a missing locale, is
+/// English.
+///
+/// `LANG` is last on purpose. It is the broad default a terminal *environment*
+/// carries, not a choice the reader made: a Mac takes it from `/etc/zprofile`
+/// (`C.UTF-8`, or whatever the shell profile exports), so a Mac whose language
+/// is Chinese would otherwise draw English, and the same happens on Windows
+/// under a shell that exports its own `LANG`. The system's answer is the macOS
+/// preferred-language list and the Windows UI language; on the other Unixes the
+/// variables already are the system's answer, so the platform step is empty and
+/// `LANG` decides as it always did.
 pub fn system_language() -> Language {
-    env_language().unwrap_or_else(platform_language)
+    explicit_locale_language()
+        .or_else(platform_language)
+        .or_else(lang_language)
+        .unwrap_or(Language::En)
 }
 
-fn env_language() -> Option<Language> {
-    for name in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+/// `LC_ALL` and `LC_MESSAGES` are set per process, by a shell or a launcher, so
+/// they mean what they say even where `LANG` is inherited noise.
+fn explicit_locale_language() -> Option<Language> {
+    locale_language(&["LC_ALL", "LC_MESSAGES"])
+}
+
+fn lang_language() -> Option<Language> {
+    locale_language(&["LANG"])
+}
+
+fn locale_language(names: &[&str]) -> Option<Language> {
+    for name in names {
         let Ok(value) = std::env::var(name) else {
             continue;
         };
@@ -133,20 +156,97 @@ fn is_chinese_tag(tag: &str) -> bool {
     )
 }
 
-/// The OS's own answer when no locale variable is set: on Windows the user's UI
-/// language, and elsewhere English (a POSIX terminal without `LANG` is C, and
-/// C is English).
-fn platform_language() -> Language {
+/// The OS's own answer when no locale variable is set: the user's UI language
+/// on Windows, the preferred-language list on macOS, and nothing elsewhere (a
+/// POSIX terminal's locale variables *are* its answer).
+fn platform_language() -> Option<Language> {
     #[cfg(windows)]
     {
         use windows_sys::Win32::Globalization::GetUserDefaultUILanguage;
         // A LANGID's language is its low ten bits; 0x04 is Chinese.
         let langid = unsafe { GetUserDefaultUILanguage() };
-        if langid & 0x3ff == 0x04 {
-            return Language::Zh;
+        Some(if langid & 0x3ff == 0x04 {
+            Language::Zh
+        } else {
+            Language::En
+        })
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::preferred_language()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        None
+    }
+}
+
+/// The system language as the Mac's own preferences report it.
+///
+/// macOS keeps it in `AppleLanguages` (`defaults read -g AppleLanguages`) and
+/// hands it out through CoreFoundation, which is what every other bundle on the
+/// machine reads; `LC_ALL`/`LANG` describe the terminal, not the Mac, which is
+/// why they only get the last word (see [`system_language`]).
+#[cfg(target_os = "macos")]
+mod macos {
+    use super::{is_chinese_tag, Language};
+    use std::ffi::{c_char, c_void, CStr};
+
+    // CoreFoundation's own types: an array is a plain `CFTypeRef` here, and the
+    // one element we read is a string, so no stronger typing buys anything.
+    type CFTypeRef = *const c_void;
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        /// The reader's ordered language preferences, e.g. `["zh-Hans-CN"]`;
+        /// owned, so the caller releases it.
+        fn CFLocaleCopyPreferredLanguages() -> CFTypeRef;
+        fn CFArrayGetCount(array: CFTypeRef) -> isize;
+        fn CFArrayGetValueAtIndex(array: CFTypeRef, index: isize) -> *const c_void;
+        fn CFStringGetCString(
+            string: CFTypeRef,
+            buffer: *mut c_char,
+            buffer_size: isize,
+            encoding: u32,
+        ) -> u8;
+        fn CFRelease(reference: CFTypeRef);
+    }
+
+    /// `kCFStringEncodingUTF8`, which is what the tags are.
+    const UTF8: u32 = 0x0800_0100;
+
+    /// The first preferred language, or `None` if the system does not answer.
+    pub(super) fn preferred_language() -> Option<Language> {
+        // A BCP-47 tag (`zh-Hans-CN`, `en-US`) is a handful of bytes; anything
+        // longer is not a language tag and is not worth a second allocation.
+        let mut buffer = [0i8; 64];
+        // SAFETY: every call is a plain CoreFoundation getter on an object we
+        // either just created (and release) or borrowed from the returned
+        // array, and the buffer handed to `CFStringGetCString` is ours.
+        unsafe {
+            let languages = CFLocaleCopyPreferredLanguages();
+            if languages.is_null() {
+                return None;
+            }
+            let mut answer = None;
+            if CFArrayGetCount(languages) > 0 {
+                let first = CFArrayGetValueAtIndex(languages, 0);
+                if !first.is_null()
+                    && CFStringGetCString(first, buffer.as_mut_ptr(), buffer.len() as isize, UTF8)
+                        != 0
+                {
+                    let tag = CStr::from_ptr(buffer.as_ptr()).to_string_lossy();
+                    answer = Some(if is_chinese_tag(&tag) {
+                        Language::Zh
+                    } else {
+                        Language::En
+                    });
+                }
+            }
+            CFRelease(languages);
+            answer
         }
     }
-    Language::En
 }
 
 /// One piece of chrome. Every variant is a row in [`pair`].
@@ -264,10 +364,6 @@ pub enum Key {
     ChipModel,
     ChipEffort,
     ChipApproval,
-    ShortcutCommands,
-    ShortcutHelp,
-    ShortcutNewChat,
-    ShortcutSidebar,
     LaunchpadTagline,
     LaunchpadNewChat,
     LaunchpadNewChatIn,
@@ -407,6 +503,7 @@ pub enum Key {
     PreviewHintImage,
     PreviewHintText,
     PreviewNothing,
+    PreviewImageUnsupported,
     PreviewTruncated,
     PreviewEmptyFile,
     AttachmentsInDraft,
@@ -414,6 +511,7 @@ pub enum Key {
     HelpKeyPreviewAttachment,
     NoticeClipboardEmpty,
     NoticeClipboardUnavailable,
+    NoticeSessionNotStarted,
     HelpGroupSessions,
     HelpGroupChoice,
     HelpGroupPanels,
@@ -617,10 +715,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ChipModel => ("模型", "Model"),
         ChipEffort => ("强度", "Effort"),
         ChipApproval => ("审批", "Approval"),
-        ShortcutCommands => ("命令", "Commands"),
-        ShortcutHelp => ("帮助", "Help"),
-        ShortcutNewChat => ("新会话", "New Chat"),
-        ShortcutSidebar => ("侧栏", "Sidebar"),
         LaunchpadTagline => (
             "一个 AI agent，终端、桌面、手机都在",
             "One AI agent — terminal, desktop, phone",
@@ -806,14 +900,22 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "↑↓ scroll · pageUp/pageDown page · esc closes",
         ),
         PreviewNothing => ("没有可预览的内容", "nothing to preview"),
+        PreviewImageUnsupported => (
+            "这个终端不能显示图片。在终端之外打开这个文件就能看到它。",
+            "This terminal cannot show pictures. Open the file outside the TUI to see it.",
+        ),
         PreviewTruncated => ("（只显示开头）", "(showing the beginning)"),
         PreviewEmptyFile => ("空文件", "empty file"),
-        AttachmentsInDraft => ("· 📎 {} 张图片", "· 📎 {} images"),
+        AttachmentsInDraft => (" · 📎 {} 张图片", " · 📎 {} images"),
         NoticeClipboardEmpty => (
             "剪贴板里没有图片也没有文本",
             "The clipboard has no image and no text",
         ),
         NoticeClipboardUnavailable => ("读不到剪贴板：{}", "Could not read the clipboard: {}"),
+        NoticeSessionNotStarted => (
+            "没能开启新会话：代理没有返回可用的会话（草稿还在，可以直接再发一次）",
+            "Could not start a session: the agent returned none (the draft is kept, try again)",
+        ),
         HelpGroupSessions => ("会话", "Chats"),
         HelpGroupChoice => ("选择", "Choices"),
         HelpGroupPanels => ("面板", "Panels"),
@@ -839,11 +941,12 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ),
 
         InputHintLaunchpad => (
-            // What the *draft* can hold that the box's own title does not say.
-            // `/ 命令` used to be here too, and then the title said it again one
-            // row above; the footer names the palette as well.
-            "描述你要做的事 · @ 文件 · # 会话",
-            "Describe the task · @ files · # sessions",
+            // What the *draft* can hold, in the order the reader types it: the
+            // task itself, then the three sigils the box answers. `/ 命令` is
+            // here rather than in a shortcut row under the box, because it is
+            // typed into the box — it is not a key binding to memorize.
+            "描述你要做的事 · / 命令 · @ 文件 · # 会话",
+            "Describe the task · / commands · @ files · # sessions",
         ),
         ApprovalWaiting => (
             "等待批准：{}{} — y 允许 · n 拒绝",
@@ -959,7 +1062,15 @@ mod tests {
 
     #[test]
     fn a_chinese_system_picks_chinese() {
-        for tag in ["zh_CN.UTF-8", "zh", "zh-Hans", "ZH_TW", "zh_SG.utf8"] {
+        // `zh-Hans-CN` is what macOS's `AppleLanguages` reports.
+        for tag in [
+            "zh_CN.UTF-8",
+            "zh",
+            "zh-Hans",
+            "zh-Hans-CN",
+            "ZH_TW",
+            "zh_SG.utf8",
+        ] {
             assert_eq!(
                 env_language_of(tag),
                 Some(Language::Zh),
@@ -970,7 +1081,7 @@ mod tests {
 
     #[test]
     fn anything_else_is_english() {
-        for tag in ["en_US.UTF-8", "de_DE.UTF-8", "en"] {
+        for tag in ["en_US.UTF-8", "de_DE.UTF-8", "en", "en-US"] {
             assert_eq!(env_language_of(tag), Some(Language::En), "{tag}");
         }
         // `C` and `POSIX` are "no locale chosen", not "English chosen": they
@@ -978,6 +1089,17 @@ mod tests {
         for tag in ["C", "POSIX", "c", "  "] {
             assert_eq!(env_language_of(tag), None, "{tag}");
         }
+    }
+
+    /// The macOS path asks CoreFoundation instead of the shell, so the call
+    /// itself has to work: a wrong signature is a crash or a garbage tag, and
+    /// the locale tests above would not notice either. *Which* language it
+    /// answers belongs to the machine running the test, not to the test.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_reads_the_system_language() {
+        let language = macos::preferred_language().expect("CoreFoundation answers");
+        assert!(matches!(language, Language::Zh | Language::En));
     }
 
     #[test]
@@ -1038,7 +1160,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 272] = {
+    const ALL_KEYS: [Key; 270] = {
         use Key::*;
         [
             TabTodo,
@@ -1145,10 +1267,6 @@ mod tests {
             ChipModel,
             ChipEffort,
             ChipApproval,
-            ShortcutCommands,
-            ShortcutHelp,
-            ShortcutNewChat,
-            ShortcutSidebar,
             LaunchpadTagline,
             LaunchpadNewChat,
             LaunchpadNewChatIn,
@@ -1287,11 +1405,13 @@ mod tests {
             PreviewHintImage,
             PreviewHintText,
             PreviewNothing,
+            PreviewImageUnsupported,
             PreviewTruncated,
             PreviewEmptyFile,
             AttachmentsInDraft,
             NoticeClipboardEmpty,
             NoticeClipboardUnavailable,
+            NoticeSessionNotStarted,
             HelpGroupSessions,
             HelpGroupChoice,
             HelpGroupPanels,

@@ -187,6 +187,22 @@ tokenizer 启发式、由 `resolve_effort` 按词表收敛。今天 `doubao-seed
 
 这是平台侧 / 目录契约的改动，**我没有动**，等用户决定。
 
+### 6.1 结论（2026-10-26，已拍板）
+
+采用了更彻底的方案：**`thinkingLevels` 本身就是 wire 值列表**，平台目录直接返回
+`thinking_levels`；`compat.reasoningEffortValues`、`thinkingLevelMap`、`thinkingRequired`
+以及客户端侧的 `resolve_effort` / tokenizer 启发式全部删除。
+
+因此 doubao 只需要在目录里声明：
+
+```yaml
+thinking_levels: ["low", "high", "max"]   # 没有 off：服务端拒绝关闭思考
+```
+
+不再需要"关不掉思考"的标志：`off` 不在列表里，界面就不会提供它；`default` 表示不发送任何
+参数，由服务端使用自己的默认值。`medium` 也不再被客户端映射成 `high`——它根本不在 doubao
+的列表里，选择器不会给出这个值；老会话里的存量 `medium` 会收敛为 `default`。
+
 ## 7. 复现步骤
 
 验证用的两个 worktree 在合入后已经按流程删掉了；照着下面重新建即可

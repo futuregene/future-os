@@ -11,6 +11,7 @@ import {
 } from "react-native";
 import type { TFunction } from "i18next";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { thinkingLevelLabel } from "../../../i18n/thinkingLevelLabel";
 import { useRemote } from "../../../remote/RemoteContext";
 import { modelReference, modelThinkingLevels, resolveModelThinkingLevel } from "../../../remote/types";
 import { layout, radius, spacing } from "../../../theme/tokens";
@@ -32,14 +33,16 @@ export function ModelSelectorSheet({
   const styles = useStyles();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
-  // The levels this conversation's model offers: the host's agent already
-  // resolved the list (and clamps anything outside it), so the sheet does not
-  // offer a level the run would silently snap away from.
+  // The levels this conversation's model offers, in the host's own order and
+  // wording: a current host declares them (always starting with "default"), an
+  // older one falls back to the legacy six. The host clamps anything outside the
+  // list, so the sheet does not offer a level the run would silently snap away
+  // from — and a value with no label yet is shown as its raw wire token.
   const selectedModel = remote.models.find(model => modelReference(model) === remote.modelId);
   const thinkingLevels = modelThinkingLevels(selectedModel);
   // A stored level this model no longer offers is shown as the model's own
   // starting level: leaving it unhighlighted would claim the conversation runs at
-  // an effort the host's agent clamps away.
+  // an effort the host clamps away.
   const thinkingLevel = resolveModelThinkingLevel(remote.thinkingLevel, selectedModel);
   // The composer keeps the IME up when the sheet opens (the picker is opened
   // from the composer toolbar, not from a dismiss-first panel), and a RN Modal
@@ -133,7 +136,7 @@ export function ModelSelectorSheet({
                             pressed && styles.selectorOptionPressed,
                           ]}
                         >
-                          <Text style={styles.selectorOptionLabel}>{t(`thinking.${level}`)}</Text>
+                          <Text style={styles.selectorOptionLabel}>{thinkingLevelLabel(t, level)}</Text>
                           {selected ? <Check color={colors.accent} size={18} /> : null}
                         </Pressable>
                       );

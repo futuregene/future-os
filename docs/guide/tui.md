@@ -45,8 +45,7 @@ conversations, to see the rail's window and its `↓ N more` row).
  comfortable header (optional 6 rows: wordmark and full identity)
  ──────────────────────────────────────────┬──────────────────────
  conversation (bottom-anchored, ↑ 更早)     │ rail: 最近 工作区
-                                            │ ▸ the conversation's name
-                                            │   ~/future-os · 2m
+                                            │ ▸ the conversation's name  ~/future-os · 2m
                                             │
  input box (❯ multiline draft, grows)      │  (the rail runs down beside it)
  activity: ⠋ 思考 … · 3s · 2 工具                   42 tok/s · 缓存 96%
@@ -105,15 +104,16 @@ the rail focused, `←`/`→` move between the two tabs.
 
 The launchpad is the *body*, not a dialog over the conversation: with no session
 attached the composer fills the surface (wordmark, box, workspace / model /
-effort / approval chips, shortcut entries) and there is no second input band.
-The block is centred in the body rather than pinned to its top, and the
-conversations are the rail's — the launchpad does not repeat them. `tab` walks
-the prompt and the chips, `enter` cycles the chip under the cursor, and typing
-(or `escape`) hands the keys back to the prompt. The shortcut entries carry the
-*effective* bindings, so a rebound key is shown rebound. The four chips are the
-desktop composer's own controls (model, thinking effort, approval mode) plus the
-workspace this TUI starts from; there is no separate permission level, because
-no other client offers one.
+effort / approval chips) and there is no second input band. The block is centred
+in the body rather than pinned to its top, and the conversations are the rail's —
+the launchpad does not repeat them. `tab` walks the prompt and the chips, `enter`
+cycles the chip under the cursor, and typing (or `escape`) hands the keys back to
+the prompt. The block teaches no key of its own: the footer's hint row already
+names them, and what the box takes beyond a sentence — `/` commands, `@` files,
+`#` sessions — is in the placeholder, where the reader is about to type it. The
+four chips are the desktop composer's own controls (model, thinking effort,
+approval mode) plus the workspace this TUI starts from; there is no separate
+permission level, because no other client offers one.
 
 No default shortcut is a function key: `F1`–`F12` need an `Fn` modifier on a
 laptop keyboard and are absent on a compact one, so the defaults are
@@ -146,9 +146,11 @@ It follows the system until the reader picks one, and the pick is remembered in
 vocabulary the desktop and the phone use; a missing key means `system`).
 
 - `/lang` opens the picker: **Follow system**, **中文**, **English**.
-- The locale comes from `LC_ALL`, then `LC_MESSAGES`, then `LANG`; on Windows,
-  from the user's UI language when none of them is set. A missing or `C` locale
-  is English.
+- The locale comes from `LC_ALL`, then `LC_MESSAGES`, then the system's own
+  answer — the macOS preferred language (`AppleLanguages`), the Windows UI
+  language — and `LANG` last: a Mac's shell takes `LANG` from `/etc/zprofile`,
+  so it describes the terminal rather than the Mac, and a Chinese Mac would
+  otherwise draw English. A missing or `C` locale is English.
 - `cargo run -p future-tui --example workbench_demo -- --lang en` prints a frame
   in either language; the screenshot capture pins `zh` by writing the settings
   file into its scratch home, so a baseline does not depend on who ran it.
@@ -168,6 +170,13 @@ Choices persist in `~/.future/tui/settings.json` as `density`, `sidebarPosition`
 `sidebarWidth`, `sidebarVisible`, `mouseCapture`, `notify`, `reducedMotion` and
 `linearReading`; incremental shortcut overrides live beside it in
 `keybindings.json`.
+
+With no stored `sidebarVisible` — a first start, or a file written before the
+key existed — the rail starts **hidden**: the conversation gets the whole
+width, and `ctrl+b` (or `ctrl+1`/`ctrl+2`/`ctrl+3`, which show the rail to reach
+their panel) brings it back. Once the reader has shown or hidden it, that choice
+is what the next start begins with, and `Restore defaults` lands back on the
+hidden layout.
 
 `/theme` retains the six-theme picker, including `high-contrast`; choosing a
 theme persists `themeId`. With no stored choice, the terminal's `COLORFGBG`
@@ -228,7 +237,7 @@ click on the rail's tab strip are the doors to the same places.
 | `ctrl+w`, `alt+d`, `ctrl+u`, `ctrl+k`, `ctrl+y` | Delete a word, kill to line start/end, yank |
 | `ctrl+z` / `ctrl+shift+z` (or `alt+y`) | Undo / redo draft edits |
 | `pageUp` / `pageDown` or `ctrl+↑` / `ctrl+↓` | Scroll the conversation; `esc` returns to the latest output |
-| `ctrl+g` or `/queue` | List queued prompts; `x` cancels, `r` / `enter` cancels and recalls into the draft (`ctrl+x` stops the active run, not the queue) |
+| `alt+q` or `/queue` | List queued prompts; `x` cancels, `r` / `enter` cancels and recalls into the draft (`ctrl+x` stops the active run, not the queue) |
 | `ctrl+m` | Model picker (`/model`): every model the agent offers, grouped by provider, with the reasoning slider on its first row |
 | `ctrl+1` / `ctrl+2` / `ctrl+3` | The rail's three tabs: 最近 (conversations by refresh time), 工作区 (filed by directory), 文件 (the workspace tree). The rail takes the keys and its cursor lands on the conversation on screen (or on the first row of the tree) |
 | `ctrl+v` | Read the clipboard: an image becomes a draft attachment, text is pasted. `/paste` does the same for terminals that bind the key themselves |
@@ -241,13 +250,13 @@ click on the rail's tab strip are the doors to the same places.
 | `ctrl+t` | Thinking effort: opens the six-level chooser (`/thinking`); on the launchpad the level is staged for the session the first message creates |
 | `ctrl+s` | Approval mode: opens the four-tier chooser (`/mode`), the desktop composer's own values — 手动审批 / 沙箱保护 / 自动审批 / 完全访问 |
 | `ctrl+l` | Workspaces: opens the workspace chooser (`/workspace`) — every directory this client has a conversation in, plus a row that creates one from the path typed into its search line |
-| `ctrl+b` | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal. The rail's own `›` edge button does the same hide/show with one click. The show/hide choice is written to `sidebarVisible` and is where the next start begins |
+| `ctrl+b` | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal. The rail's own `›` edge button does the same hide/show with one click. The show/hide choice is written to `sidebarVisible` and is where the next start begins (a first start begins hidden) |
 | `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run |
 | `ctrl+r` | Session picker (name, workspace and age of each conversation; the footer names the key) |
 | `ctrl+o` | Preferences and shortcut editor |
 | `alt+h` or `?` | Help overlay (effective keys, grouped by area, then the commands; `?` requires an empty draft) |
-| `/lang` | Interface language: follow the system, Chinese or English |
-| `ctrl+e` | Final-answer / full-process reading level: a settled reply folds its whole work — the calls and reasoning before *and* after its last prose — into one summary row |
+| `ctrl+g` or `/lang` | Interface language: opens the picker — follow the system, Chinese or English |
+| `ctrl+e` | Final-answer / full-process reading level: a settled reply folds its whole work — the calls and reasoning before *and* after its last prose — into one summary row. A view toggle for the run it is pressed in, not a preference: every start opens folded, so a peek at the process cannot leave the next terminal expanded |
 | `ctrl+c` | Quit |
 
 | Mouse | Action |
@@ -301,7 +310,7 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | Usage / context / cost | `get_state`'s usage block, refreshed on the same events |
 | `ctrl+n` / `/new`, `ctrl+x` stop, `alt+r` refresh | |
 | Launchpad chips | Click 工作区 / 模型 / 强度 / 审批 to cycle them. On the launchpad the workspace, model, effort and approval choices are staged for the session the first message creates (the agent has no session to set them on yet); with a session attached they go over the wire. 工作区 cycles the directories this client has conversations in, and the notice row names the full path it chose |
-| Theme, reading level | Persisted in `~/.future/tui/settings.json` (`tui/src/settings.rs`) |
+| Theme | Persisted in `~/.future/tui/settings.json` (`tui/src/settings.rs`); the reading level is deliberately not — `ctrl+e` is per run |
 
 ## What is not here yet
 

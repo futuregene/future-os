@@ -110,6 +110,13 @@ pub fn align_right(text: &str, columns: usize) -> String {
 
 /// Columns `[from, to)` of `text`, keeping the styling of the glyphs that are
 /// kept. Used to splice one band into a row beside another band.
+///
+/// A **wide glyph the window cuts through becomes spaces**, one per cell of it
+/// inside the window. Half a glyph cannot be drawn, and dropping it silently
+/// shortens the window by a cell: a band spliced at that offset then starts one
+/// column early, which is how a box whose left edge landed in the middle of a
+/// CJK character came out with its right border one cell off from every other
+/// row.
 pub fn slice_cols(text: &str, from: usize, to: usize) -> String {
     if from >= to {
         return String::new();
@@ -130,8 +137,14 @@ pub fn slice_cols(text: &str, from: usize, to: usize) -> String {
         };
         let glyph_width = width(grapheme);
         let next = column + glyph_width;
-        if next > from && column + glyph_width <= to {
-            out.push_str(grapheme);
+        let start = column.max(from);
+        let end = next.min(to);
+        if end > start {
+            if end - start == glyph_width {
+                out.push_str(grapheme);
+            } else {
+                out.push_str(&" ".repeat(end - start));
+            }
         }
         column = next;
         index += grapheme.len();
@@ -194,6 +207,25 @@ mod tests {
         let cjk = fit("中文中文中文", 5);
         assert_eq!(width(&cjk), 5);
         assert!(cjk.ends_with('…'), "{cjk:?}");
+    }
+
+    #[test]
+    fn a_window_keeps_its_width_when_it_cuts_through_a_wide_glyph() {
+        // `里` owns cells 0..2. A window that starts at 1 keeps the half of it
+        // inside the window as a space, so `[1, 5)` is four cells and not three:
+        // a band spliced at that offset stays where it was put.
+        assert_eq!(width(&slice_cols("里abc", 1, 5)), 4);
+        assert_eq!(slice_cols("里abc", 1, 5), " abc");
+        // …and the same at the far edge: `[0, 4)` ends inside the glyph, which
+        // leaves a space where its right half would have been.
+        assert_eq!(width(&slice_cols("abc里", 0, 4)), 4);
+        assert_eq!(slice_cols("abc里", 0, 4), "abc ");
+        // A window inside one glyph is all space, not nothing.
+        assert_eq!(slice_cols("里abc", 0, 1), " ");
+        // A window that holds the glyph whole keeps the glyph.
+        assert_eq!(slice_cols("里abc", 0, 3), "里a");
+        assert_eq!(width(&slice_cols("里abc", 0, 3)), 3);
+        assert_eq!(slice_cols("里abc", 2, 5), "abc");
     }
 
     #[test]

@@ -412,36 +412,38 @@ it("takes the first model when the host marks no default", async () => {
   await hook.unmount();
 });
 
-/** A model that takes no thinking controls is offered `off`, because that is what it runs. */
-it("offers a non-reasoning model no thinking level", async () => {
+/** A model with only the implicit `default` is offered exactly that. */
+it("offers a single-level model only the implicit default", async () => {
   requestMock.mockImplementation(async (name: string) =>
     (name === "list_models"
-      ? [{ id: "plain", provider: "openai", reasoning: false }]
+      ? [{ id: "plain", provider: "openai", thinkingLevels: ["default"], defaultThinkingLevel: "default" }]
       : undefined));
   const hook = await mountHook({ sessionId: "" });
-  expect(hook.current.thinkingLevel).toBe("off");
+  expect(hook.current.thinkingLevel).toBe("default");
   await hook.unmount();
 });
 
 /**
- * A draft starts on this app's default, not on the level the host's catalogue
- * declares for the model.
+ * A draft starts on the level the host's agent says a conversation starts at
+ * (`defaultThinkingLevel`), not on a legacy capability marker.
  *
- * That declared level is a capability marker, not a default: the agent reports
- * `high` for every reasoning model and `off` for the rest
- * (`agent/src/rpc/commands/providers.rs`), and this app's own composer ignores it
- * for exactly that reason (`modelThinkingLevel`). Seeding a draft from it made
- * every new remote conversation on a reasoning model run at high effort — the
- * level travels with the first prompt, so the host ran it at high — while the
- * same model started on this machine ran at medium.
+ * The level travels with the first prompt, so seeding from the old `thinkingLevel`
+ * field would run the host at an effort this app never chose. A current host
+ * sends `defaultThinkingLevel: "default"` with `default` first in the list, and
+ * the draft starts exactly there.
  */
-it("seeds a draft with this app's default, not the level the host declares", async () => {
+it("seeds a draft from the host's starting level", async () => {
   requestMock.mockImplementation(async (name: string) =>
     (name === "list_models"
-      ? [{ id: "thinker", provider: "openai", reasoning: true, thinkingLevel: "high" }]
+      ? [{
+          id: "thinker",
+          provider: "openai",
+          thinkingLevels: ["default", "low", "high"],
+          defaultThinkingLevel: "default",
+        }]
       : undefined));
   const hook = await mountHook({ sessionId: "" });
-  expect(hook.current.thinkingLevel).toBe("medium");
+  expect(hook.current.thinkingLevel).toBe("default");
   await hook.unmount();
 });
 
@@ -704,6 +706,40 @@ it("offers the thinking levels, and reports a choice", async () => {
   await view.unmount();
 });
 
+it("shows exactly the host-declared levels, arbitrary values included", async () => {
+  const models = [{
+    id: "gpt-5",
+    label: "GPT-5",
+    provider: "openai",
+    thinkingLevels: ["default", "off", "max"],
+    defaultThinkingLevel: "default",
+  }];
+  const settings = state({ models, model: "openai/gpt-5", thinkingLevel: "max" });
+  const view = await mountPicker(settings);
+
+  expect(view.thinkingLabel()).toContain("Max");
+  await view.open("Thinking level (on that computer)");
+  expect(view.menuItems().map(node => node.textContent)).toEqual(["Default", "Off", "Max"]);
+  await act(async () => view.menuItems()[1]!.click());
+  expect(settings.setThinkingLevel).toHaveBeenCalledWith("off");
+  await view.unmount();
+});
+
+it("disables the thinking picker when the model offers a single level", async () => {
+  const models = [{
+    id: "gpt-5",
+    label: "GPT-5",
+    provider: "openai",
+    thinkingLevels: ["default"],
+    defaultThinkingLevel: "default",
+  }];
+  const view = await mountPicker(state({ models, model: "openai/gpt-5", thinkingLevel: "default" }));
+
+  expect(view.thinking().disabled).toBe(true);
+  expect(view.thinkingLabel()).toContain("Default");
+  await view.unmount();
+});
+
 /**
  * The host can be using a model its own catalogue does not list — one it
  * resolves itself, or one removed there since. Keeping it on screen is what
@@ -812,18 +848,18 @@ it("keeps a draft's choices locally, and sends no setting to the host", async ()
   await hook.unmount();
 });
 
-/** And a model that takes no thinking controls turns the level off. */
-it("turns thinking off when a draft switches to a model without it", async () => {
+/** And switching to a single-level model moves the draft onto that level. */
+it("moves a draft onto the only level a model offers", async () => {
   requestMock.mockImplementation(async (name: string) =>
     (name === "list_models"
-      ? [{ id: "plain", provider: "openai", reasoning: false }]
+      ? [{ id: "plain", provider: "openai", thinkingLevels: ["default"], defaultThinkingLevel: "default" }]
       : undefined));
   const hook = await mountHook({ sessionId: "" });
 
   await act(async () => {
     await hook.current.setModel("openai/plain");
   });
-  expect(hook.current.thinkingLevel).toBe("off");
+  expect(hook.current.thinkingLevel).toBe("default");
   await hook.unmount();
 });
 

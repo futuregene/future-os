@@ -290,14 +290,18 @@ impl DingtalkBridge {
                         }
                     }
                     "/effort" if !arg.is_empty() => {
-                        let valid = ["off", "minimal", "low", "medium", "high", "xhigh"];
+                        let valid = [
+                            "default", "off", "minimal", "low", "medium", "high", "xhigh", "max",
+                        ];
                         if !valid.contains(&arg) {
                             reply_md(
                                 "Invalid",
                                 &format!("Invalid: `{}`\n\nUse: `{}`", arg, valid.join(", ")),
                             );
-                        } else if let Ok(()) = agent.set_thinking_level(&sid, arg).await {
-                            reply_md("Thinking", &format!("**Thinking:** `{}`", arg));
+                        } else if let Ok(effective) = agent.set_thinking_level(&sid, arg).await {
+                            // Echo what the agent actually took: a level the
+                            // model does not offer is clamped to `default`.
+                            reply_md("Thinking", &format!("**Thinking:** `{}`", effective));
                         }
                     }
                     "/cwd" if !arg.is_empty() => {
@@ -309,7 +313,7 @@ impl DingtalkBridge {
                 }
             }
             "/help" => {
-                reply_md("Help", "**Commands**\n\n`/new` — new session\n\n`/status` — session status\n\n`/stop` — abort prompt\n\n`/model <id>` — switch model\n\n`/models` — list models\n\n`/effort <level>` — thinking level\n\n`/compact` — compact context\n\n`/cwd <path>` — set working directory\n\n`/help` — this help");
+                reply_md("Help", "**Commands**\n\n`/new` — new session\n\n`/status` — session status\n\n`/stop` — abort prompt\n\n`/model <id>` — switch model\n\n`/models` — list models\n\n`/effort <level>` — thinking level (default/off/minimal/low/medium/high/xhigh/max)\n\n`/compact` — compact context\n\n`/cwd <path>` — set working directory\n\n`/help` — this help");
             }
             _ => {
                 self.process_prompt(text, webhook.clone(), conversation_key)
@@ -1167,6 +1171,18 @@ mod tests {
             .await
             .unwrap();
         assert!(wait_hook(&fx.http, "Thinking").await);
+        // `default` (provider default) and `max` (a wire value a model may
+        // declare) are accepted like the legacy six.
+        fx.bridge
+            .handle_event(event(&fx.base, "m6a", "/effort default"))
+            .await
+            .unwrap();
+        assert!(wait_hook(&fx.http, "**Thinking:** `default`").await);
+        fx.bridge
+            .handle_event(event(&fx.base, "m6b", "/effort max"))
+            .await
+            .unwrap();
+        assert!(wait_hook(&fx.http, "**Thinking:** `max`").await);
 
         fx.bridge
             .handle_event(event(&fx.base, "m7", "/cwd /work"))
@@ -1192,6 +1208,23 @@ mod tests {
         assert!(ts::recorded_of(&fx.grpc, "prompt")
             .iter()
             .any(|c| c.message.contains("/dance")));
+    }
+
+    /// The reply echoes the level the agent actually took, not what was asked
+    /// for: a model that clamps `max` says `default`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn slash_effort_echoes_the_agents_effective_level() {
+        let mut state = MockState::default();
+        state.events = done_events();
+        state
+            .responses
+            .insert("set_thinking_level".into(), r#"{"level":"default"}"#.into());
+        let fx = make_bridge("dt-effort-echo", state, vec![]).await;
+        fx.bridge
+            .handle_event(event(&fx.base, "m1", "/effort max"))
+            .await
+            .unwrap();
+        assert!(wait_hook(&fx.http, "**Thinking:** `default`").await);
     }
 
     #[tokio::test(flavor = "multi_thread")]

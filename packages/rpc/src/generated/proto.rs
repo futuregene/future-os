@@ -28,7 +28,9 @@ pub struct RpcCommand {
     /// is treated as the provider.  Example: "deepseek/deepseek-chat".
     #[prost(string, tag = "31")]
     pub model_id: ::prost::alloc::string::String,
-    /// Thinking level: "off", "minimal", "low", "medium", "high", "xhigh".
+    /// Thinking level. "default" means "send no thinking/effort parameter";
+    /// "off" explicitly disables thinking; any other value is a wire value sent
+    /// verbatim. The agent clamps an unknown value to "default".
     #[prost(string, tag = "40")]
     pub level: ::prost::alloc::string::String,
     /// Generic decision/rule mode. Fork accepts through_entry (legacy default),
@@ -380,6 +382,19 @@ pub struct ProviderModel {
     pub cost_cache_read: f64,
     #[prost(double, tag = "10")]
     pub cost_cache_write: f64,
+    /// The thinking levels this model accepts, in display order. Each entry is a
+    /// wire value: the level is sent verbatim to the provider (``off`` means
+    /// "explicitly disable thinking"; the implicit ``default`` means "send no
+    /// thinking/effort parameter at all"). Empty means the model offers only the
+    /// implicit ``default``. Older clients omit both fields.
+    #[prost(string, repeated, tag = "11")]
+    pub thinking_levels: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Presence bit for ``thinking_levels``: repeated fields cannot distinguish
+    /// "the client predates this field" from "the client cleared the list". When
+    /// false, the agent keeps the existing model's list on an edit; when true, the
+    /// list (possibly empty) replaces it.
+    #[prost(bool, optional, tag = "12")]
+    pub replace_thinking_levels: ::core::option::Option<bool>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ImageContent {
@@ -573,8 +588,9 @@ pub struct ModelEntry {
     pub provider: ::prost::alloc::string::String,
     #[prost(bool, tag = "4")]
     pub supports_images: bool,
-    /// Default thinking level for the model ("high" for reasoning models,
-    /// "off" otherwise).
+    /// The level a conversation starts at on this model. Always "default" for a
+    /// current agent (meaning "send no thinking parameter"); older agents sent
+    /// "high"/"off".
     #[prost(string, tag = "5")]
     pub thinking_level: ::prost::alloc::string::String,
     #[prost(int64, tag = "6")]
@@ -588,18 +604,20 @@ pub struct ModelEntry {
     pub description_en: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, tag = "10")]
     pub recommended: bool,
-    /// Whether the model accepts thinking controls; separate from the default level.
+    /// Deprecated: kept for older clients (they gate their picker on it). New
+    /// clients ignore it — `thinking_levels` already says whether the model has
+    /// thinking controls.
     #[prost(bool, optional, tag = "11")]
     pub reasoning: ::core::option::Option<bool>,
-    /// The thinking levels this model offers, in canonical order
-    /// (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`). Empty when the model
-    /// declares none — which is every model that predates `models.json`
-    /// `thinkingLevels`, and means the full six, i.e. unchanged behaviour. A model
-    /// without thinking controls lists `off` alone.
+    /// The thinking levels this model offers, in display order, always non-empty
+    /// and always starting with "default". Each entry is a wire value sent
+    /// verbatim; "off" means "explicitly disable". A model with no configured
+    /// levels lists "default" alone. An older agent omits the field entirely.
     #[prost(string, repeated, tag = "12")]
     pub thinking_levels: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// The level a conversation starts at on this model, already clamped to
-    /// `thinking_levels` by the agent. Unset when the model declares no list.
+    /// `thinking_levels` by the agent. "default" for a current agent; unset on an
+    /// older one.
     #[prost(string, optional, tag = "13")]
     pub default_thinking_level: ::core::option::Option<::prost::alloc::string::String>,
 }
@@ -1038,7 +1056,9 @@ pub struct SessionState {
     /// Currently active model ID (e.g. "deepseek-v4-pro").
     #[prost(string, tag = "1")]
     pub model: ::prost::alloc::string::String,
-    /// Thinking / effort level: "off", "minimal", "low", "medium", "high", "xhigh".
+    /// Thinking / effort level. "default" means the provider default (no
+    /// parameter sent); "off" means thinking is explicitly disabled; any other
+    /// value is the wire value the model accepts.
     #[prost(string, tag = "2")]
     pub thinking_level: ::prost::alloc::string::String,
     /// Whether the agent loop is currently processing a prompt.

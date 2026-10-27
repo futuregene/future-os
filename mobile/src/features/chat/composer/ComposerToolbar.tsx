@@ -1,6 +1,7 @@
 import { ChevronDown, Paperclip, Send, Slash, Square } from "lucide-react-native";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import type { TFunction } from "i18next";
+import { thinkingLevelLabel } from "../../../i18n/thinkingLevelLabel";
 import type { RemoteControls } from "../../../remote/RemoteContext";
 import { modelReference, resolveModelThinkingLevel } from "../../../remote/types";
 import { useTheme } from "../../../theme/ThemeContext";
@@ -34,6 +35,9 @@ export function ComposerToolbar({ remote, t, compactToolbar, compacting, activeM
     remote.thinkingLevel,
     remote.models.find(model => modelReference(model) === remote.modelId),
   ) ?? remote.thinkingLevel;
+  // The declared list carries values this build has no translation for (`max`,
+  // a provider's own token), so the label falls back to the wire value itself.
+  const thinkingLabel = thinkingLevelLabel(t, thinkingLevel);
   return (
     <View
       style={[
@@ -75,7 +79,7 @@ export function ComposerToolbar({ remote, t, compactToolbar, compacting, activeM
           <ChevronDown color={colors.inkMuted} size={14} />
         </Pressable>
         <Pressable
-          accessibilityLabel={`${t("chat.thinkingLevel")}: ${t(`thinking.${thinkingLevel}`)}`}
+          accessibilityLabel={`${t("chat.thinkingLevel")}: ${thinkingLabel}`}
           accessibilityRole="button"
           accessibilityState={{
             expanded: selector === "thinking",
@@ -97,7 +101,7 @@ export function ComposerToolbar({ remote, t, compactToolbar, compacting, activeM
           ]}
         >
           <Text numberOfLines={1} style={styles.selectorText}>
-            {t(`thinking.${thinkingLevel}`)}
+            {thinkingLabel}
           </Text>
           <ChevronDown color={colors.inkMuted} size={14} />
         </Pressable>

@@ -80,6 +80,56 @@ class CatalogTests(unittest.TestCase):
                     self.assertEqual(catalog.read_text(), '[{"id":"existing"}]')
                     wiki.assert_not_called()
 
+    def test_thinking_levels_follow_the_reasoning_flag_and_overrides(self):
+        self.assertEqual(
+            generator.thinking_levels_for("openai", "gpt-5", True),
+            ["minimal", "low", "medium", "high"],
+        )
+        self.assertEqual(generator.thinking_levels_for("openai", "gpt-4o", False), [])
+
+        with patch.dict(generator.PROVIDER_THINKING_LEVELS, {"fixture": ["low", "max"]}):
+            self.assertEqual(
+                generator.thinking_levels_for("fixture", "m", True), ["low", "max"]
+            )
+            with patch.dict(
+                generator.MODEL_THINKING_LEVELS, {"fixture/m": ["off", "high"]}
+            ):
+                self.assertEqual(
+                    generator.thinking_levels_for("fixture", "m", True), ["off", "high"]
+                )
+                # A model override still cannot resurrect a non-reasoning model.
+                self.assertEqual(generator.thinking_levels_for("fixture", "m", False), [])
+
+    def test_generated_catalog_only_carries_declared_thinking_levels(self):
+        reasoning = {"id": "r", "name": "R", "provider": "p", "reasoning": True,
+                     "context_window": 1000, "max_tokens": 100, "cost_input": 0,
+                     "cost_output": 0, "cost_cache_read": 0, "cost_cache_write": 0}
+        plain = dict(reasoning, id="p", name="P", reasoning=False)
+        generated = json.loads(generator.generate_models_json([reasoning, plain]))
+        by_id = {model["id"]: model for model in generated}
+        self.assertEqual(by_id["r"]["thinking_levels"], ["minimal", "low", "medium", "high"])
+        self.assertNotIn("thinking_levels", by_id["p"])
+        self.assertNotIn("tlm_json", by_id["r"])
+
+    def test_backfill_rewrites_only_the_thinking_columns(self):
+        with tempfile.TemporaryDirectory() as directory:
+            catalog = Path(directory) / "models.json"
+            catalog.write_text(json.dumps([
+                {"id": "r", "provider": "p", "reasoning": True, "tlm_json": "{}",
+                 "compat_json": "{}", "headers_json": "{}", "hide": False},
+                {"id": "p", "provider": "p", "reasoning": False, "tlm_json": "{}",
+                 "compat_json": "{}", "headers_json": "{}", "hide": False},
+            ]))
+            self.assertEqual(generator.backfill_thinking_levels(str(catalog)), 2)
+            first = json.loads(catalog.read_text())
+            self.assertEqual(first[0]["thinking_levels"], ["minimal", "low", "medium", "high"])
+            self.assertNotIn("thinking_levels", first[1])
+            self.assertNotIn("tlm_json", first[0])
+            self.assertEqual(first[0]["compat_json"], "{}")
+            # Idempotent.
+            generator.backfill_thinking_levels(str(catalog))
+            self.assertEqual(json.loads(catalog.read_text()), first)
+
 
 if __name__ == "__main__":
     unittest.main()

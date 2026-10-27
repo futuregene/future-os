@@ -223,7 +223,8 @@ What the flags are for:
   plus a query, without Enter), the sidebar panels `todo` / `usage` / `skills` /
   `sessions` (selected by clicking their tab — the workbench switches panels by
   click and has no key for it), the two palette verbs that name a panel
-  (`command-usage`, `command-skills`), `launchpad` (`/new`), `full-panel`
+  (`command-usage`, `command-skills`), `launchpad` (`/new`), `mention-sessions`
+  (`#` in the draft: the session-mention menu), `full-panel`
   (`ctrl+b` on a narrow terminal), `scrolled` (a click, then three wheel-ups),
   `light` (`/theme`, one row down, Enter — it persists, so it goes last) and
   `drag` (grab the divider and pull it six columns right). Every coordinate is

@@ -624,8 +624,8 @@ fn agent_resolves_custom_provider_model_config() {
               "api": "openai-completions",
               "baseUrl": "https://custom.example.com/v1",
               "apiKey": "sk-custom",
-              "thinkingLevelMap": {"high": 4096},
-              "compat": {"thinkingFormat": "deepseek", "supportsReasoningEffort": true},
+              "thinkingLevels": ["off", "low", "high"],
+              "compat": {"thinkingFormat": "deepseek"},
               "models": [{"id": "custom-model", "limit": {"context": 64000, "output": 4096}}]
             }
           }

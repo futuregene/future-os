@@ -20,6 +20,14 @@ pub(super) const API_KEY_MAX_LEN: usize = 512;
 pub(super) const MODEL_ID_MAX_LEN: usize = 100;
 pub(super) const MODEL_NAME_MAX_LEN: usize = 60;
 pub(super) const MAX_MODELS: usize = 100;
+/// Thinking levels one custom model may declare. The implicit `default` level
+/// does not count (it is never stored), so a model can offer these on top of it.
+pub(super) const MAX_THINKING_LEVELS: usize = 16;
+/// Longest single thinking-level wire value.
+pub(super) const MAX_THINKING_LEVEL_LEN: usize = 32;
+/// The implicit thinking level: "send no thinking/effort parameter at all".
+/// It is always offered, never stored, and a configured list must not name it.
+pub(super) const DEFAULT_THINKING_LEVEL: &str = "default";
 pub(super) const ALLOWED_APIS: [&str; 3] = ["openai-completions", "openai-responses", "anthropic"];
 
 /// A validated model entry of a custom provider. Serialized to the models.json
@@ -33,7 +41,12 @@ pub(super) struct ValidatedModel {
     pub(super) modalities: Vec<String>,
     pub(super) context_window: i32,
     pub(super) max_tokens: i32,
+    /// Legacy capability flag, round-tripped unchanged; nothing branches on it.
     pub(super) reasoning: bool,
+    /// The model's thinking levels, normalized (wire values in declared order,
+    /// the implicit `default` never listed). `None` = the client did not send a
+    /// list, so an edit keeps the stored one; `Some([])` clears it.
+    pub(super) thinking_levels: Option<Vec<String>>,
     /// Per-1M-token prices; all-zero means "unpriced" (inherit the catalog).
     pub(super) cost: ModelCost,
 }
@@ -61,8 +74,16 @@ impl ModelCost {
 }
 
 /// Serialize validated models to the models.json entry shape.
+///
+/// `existing` is the provider's stored `models` array, used only for entries
+/// whose request omitted `thinkingLevels` (`None`): their stored list is copied
+/// over so the local stand-in matches the agent, which preserves the list when
+/// the proto presence bit is absent.
 #[cfg(test)]
-pub(super) fn model_json_values(models: &[ValidatedModel]) -> Vec<Value> {
+pub(super) fn model_json_values(
+    models: &[ValidatedModel],
+    existing: Option<&[Value]>,
+) -> Vec<Value> {
     models
         .iter()
         .map(|model| {
@@ -74,6 +95,26 @@ pub(super) fn model_json_values(models: &[ValidatedModel]) -> Vec<Value> {
                 "maxTokens": model.max_tokens,
                 "reasoning": model.reasoning,
             });
+            match &model.thinking_levels {
+                Some(levels) if !levels.is_empty() => {
+                    entry["thinkingLevels"] = json!(levels);
+                }
+                Some(_) => {}
+                None => {
+                    let stored = existing
+                        .and_then(|entries| {
+                            entries.iter().find(|previous| {
+                                previous.get("id").and_then(Value::as_str)
+                                    == Some(model.id.as_str())
+                            })
+                        })
+                        .and_then(|previous| previous.get("thinkingLevels"))
+                        .cloned();
+                    if let Some(stored) = stored {
+                        entry["thinkingLevels"] = stored;
+                    }
+                }
+            }
             if !model.cost.is_unset() {
                 entry["cost"] = json!({
                     "input": model.cost.input,
@@ -85,6 +126,45 @@ pub(super) fn model_json_values(models: &[ValidatedModel]) -> Vec<Value> {
             entry
         })
         .collect()
+}
+
+/// Normalize one model's declared thinking levels.
+///
+/// `None` means "not supplied" and stays `None` so an edit preserves the stored
+/// list. Entries are trimmed, empties and the reserved `default` are dropped,
+/// duplicates collapse onto their first occurrence, and the order is preserved.
+/// Any other non-empty token is a valid wire value and travels verbatim.
+fn normalize_thinking_levels(
+    model_id: &str,
+    levels: Option<&[String]>,
+) -> Result<Option<Vec<String>>, crate::Error> {
+    let Some(levels) = levels else {
+        return Ok(None);
+    };
+    let mut normalized: Vec<String> = Vec::new();
+    for raw in levels {
+        let level = raw.trim();
+        if level.is_empty() || level == DEFAULT_THINKING_LEVEL {
+            continue;
+        }
+        if level.chars().count() > MAX_THINKING_LEVEL_LEN {
+            return Err(format!(
+                "Model `{model_id}` thinking level `{level}` is too long (max {MAX_THINKING_LEVEL_LEN})."
+            )
+            .into());
+        }
+        if normalized.iter().any(|known| known == level) {
+            continue;
+        }
+        if normalized.len() >= MAX_THINKING_LEVELS {
+            return Err(format!(
+                "Model `{model_id}` cannot offer more than {MAX_THINKING_LEVELS} thinking levels."
+            )
+            .into());
+        }
+        normalized.push(level.to_string());
+    }
+    Ok(Some(normalized))
 }
 
 /// A custom-provider request with every field validated and normalized, ready
@@ -280,6 +360,7 @@ pub(super) fn validate_custom_provider(
             context_window: model.context_window,
             max_tokens: model.max_tokens,
             reasoning: model.reasoning,
+            thinking_levels: normalize_thinking_levels(model_id, model.thinking_levels.as_deref())?,
             cost,
         });
     }

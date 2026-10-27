@@ -43,12 +43,13 @@ pub struct Model {
     pub cost: Cost,
     #[serde(rename = "Compat", default)]
     pub compat: HashMap<String, serde_json::Value>,
-    #[serde(rename = "ThinkingLevelMap", default)]
-    pub thinking_level_map: HashMap<String, serde_json::Value>,
-    /// Levels this model offers, as declared by the user in `models.json`
-    /// (`thinkingLevels`, provider-level default with a model-level override).
-    /// Stored in canonical order; empty means "not declared", which is every
-    /// built-in model and keeps the full six-level vocabulary.
+    /// The thinking levels this model accepts, in display order. Each entry is
+    /// a wire value sent verbatim; `default` is implicit (always first, never
+    /// stored) and means "send no thinking/effort parameter". Empty means the
+    /// model offers only the implicit `default`.
+    ///
+    /// Sources: `models.json` (model list overriding the provider list), the
+    /// Future catalogue's `thinking_levels`, and the built-in catalog.
     #[serde(rename = "ThinkingLevels", default)]
     pub thinking_levels: Vec<String>,
     #[serde(default)]
@@ -154,58 +155,33 @@ pub fn cache_hit_rate(prompt_tokens: i64, cache_read_tokens: i64) -> Option<f64>
 }
 
 impl Model {
-    /// The thinking levels this model offers to clients, in canonical order.
-    ///
-    /// Three cases, in this order:
-    /// - `reasoning: false` — the model has no thinking controls at all, so `off`
-    ///   is the only level it can be in. Anything else would be a choice the
-    ///   request path silently drops (see `apply_reasoning`). This is what the
-    ///   desktop picker already enforced; publishing it keeps every client's list
-    ///   on the same rule instead of each carrying its own `reasoning` check.
-    /// - nothing declared — every built-in and Future-platform model, and the
-    ///   shape every existing `models.json` has. The full six-level vocabulary,
-    ///   i.e. exactly what clients offered before `thinkingLevels` existed.
-    /// - declared — the user's list, normalized to canonical order at load.
+    /// The levels clients offer for this model, in display order: the implicit
+    /// `default` first, then the configured wire values.
     pub fn allowed_thinking_levels(&self) -> Vec<String> {
-        if !self.reasoning {
-            return vec!["off".to_string()];
-        }
-        self.cycling_thinking_levels()
+        let mut levels = Vec::with_capacity(self.thinking_levels.len() + 1);
+        levels.push(crate::llm::schema::DEFAULT_THINKING_LEVEL.to_string());
+        levels.extend(self.thinking_levels.iter().cloned());
+        levels
     }
 
-    /// The ring the cycle command walks: the declared list, or the full six when
-    /// nothing is declared — including a model that cannot think, whose level is
-    /// inert today (no thinking parameter is ever sent for it). Narrowing that
-    /// ring would change what cycling does on built-in non-reasoning models,
-    /// which this feature must not do.
+    /// The ring the cycle command walks. It is the same list clients offer:
+    /// `default` first, then the declared wire values.
     pub fn cycling_thinking_levels(&self) -> Vec<String> {
-        if self.thinking_levels.is_empty() {
-            return crate::llm::schema::THINKING_LEVELS
-                .iter()
-                .map(|level| level.to_string())
-                .collect();
-        }
-        self.thinking_levels.clone()
+        self.allowed_thinking_levels()
     }
 
-    /// Snap `level` onto what this model was *declared* to accept.
+    /// Whether the model offers any level beyond `default`/`off`.
     ///
-    /// Only a declaration snaps. A model that declares nothing accepts every
-    /// level unchanged, which is what keeps every existing model — built-in, the
-    /// Future catalogue, and any `models.json` written before `thinkingLevels`
-    /// existed — behaving byte for byte as it did: a stored `high` stays `high`
-    /// even on a model marked `reasoning: false`, exactly as today (the level is
-    /// inert there; `apply_reasoning` sends nothing).
-    ///
-    /// The clamp itself is [`crate::llm::schema::clamp_thinking_level`] — one
-    /// implementation, called from here so no caller has to remember the rule.
+    /// Only used for protocol capability decisions (e.g. whether to request
+    /// encrypted reasoning) — never for whether a level is offered, which the
+    /// list itself answers.
+    pub fn has_thinking_levels(&self) -> bool {
+        self.thinking_levels.iter().any(|level| level != "off")
+    }
+
+    /// Clamp a stored/requested level onto this model's list. `default` is
+    /// always allowed; anything the model does not offer becomes `default`.
     pub fn clamp_thinking_level(&self, level: &str) -> String {
-        if self.thinking_levels.is_empty() {
-            return level.to_string();
-        }
-        // Against the published list, not the raw declaration: a model marked
-        // `reasoning: false` publishes `off` alone whatever it declares, and the
-        // clamp must agree with what the pickers show.
         crate::llm::schema::clamp_thinking_level(level, &self.allowed_thinking_levels())
     }
 }
@@ -351,10 +327,9 @@ fn model_from_builtin(m: builtin::Model) -> Model {
             cache_write: m.cost_cache_write,
         },
         compat: serde_json::from_str(&m.compat_json).unwrap_or_default(),
-        thinking_level_map: serde_json::from_str(&m.tlm_json).unwrap_or_default(),
-        // Built-in catalog models never declare a level list: they keep the full
-        // six-level vocabulary.
-        thinking_levels: Vec::new(),
+        // The generated catalog declares the wire values the access path
+        // accepts; an empty list means the model offers only `default`.
+        thinking_levels: m.thinking_levels,
         headers: serde_json::from_str(&m.headers_json).unwrap_or_default(),
         hide: m.hide,
         description: None,
@@ -416,14 +391,14 @@ pub fn capped_output_tokens(declared: i32, context_window: i32) -> i32 {
 }
 
 /// Resolve the output token budget for a model: the catalog limit (bounded by
-/// [`capped_output_tokens`]), or the reasoning/non-reasoning fallback when the
+/// [`capped_output_tokens`]), or the thinking/non-thinking fallback when the
 /// model declares none. This is the single source of truth for both the
 /// `max_tokens` this agent sends and the output space its compaction budget
 /// reserves, so the two cannot drift apart.
 pub fn effective_max_tokens(model: &Model) -> i32 {
     let declared = if model.max_tokens > 0 {
         model.max_tokens
-    } else if model.reasoning {
+    } else if model.has_thinking_levels() {
         32000
     } else {
         16384
@@ -596,36 +571,22 @@ fn load_user_models_with_overrides(
             if let Some(ref compat) = provider.compat {
                 m.compat = compat.clone();
             }
-            // Thinking levels: the model-level list wins, the provider-level one
-            // is its default, and neither means "not declared" (all six). Both are
-            // a set, normalized to canonical order here so every consumer — the
-            // list payload, the clamp, the pickers — reads one ordering.
-            let declared: Vec<&str> = model
+            // Thinking levels: the model-level list wins the provider-level one;
+            // an absent list means "only the implicit default". Entries are wire
+            // values and are normalized into the fixed display order.
+            let declared = model
                 .thinking_levels
-                .as_ref()
-                .or(provider.thinking_levels.as_ref())
-                .map(|levels| levels.iter().map(String::as_str).collect())
+                .clone()
+                .or_else(|| provider.thinking_levels.clone())
                 .unwrap_or_default();
-            let (levels, unknown) = crate::llm::schema::normalize_declared_levels(declared);
-            if !unknown.is_empty() {
-                tracing::warn!(
-                    "[models] provider `{provider_name}` model `{}`: ignoring unknown thinkingLevels [{}]; expected any of {:?}",
-                    m.id,
-                    unknown.join(", "),
-                    crate::llm::schema::THINKING_LEVELS
-                );
-            }
-            m.thinking_levels = levels;
+            m.thinking_levels =
+                crate::llm::schema::normalize_thinking_levels(&provider_name, &m.id, declared);
             // Derive compat from supportedParameters (e.g. max_completion_tokens
             // → maxTokensField).  This mirrors what convert_future_model does for
             // Future platform models.
             if let Some(ref supported_params) = model.supported_parameters {
-                let (derived_compat, derived_tlm) = derive_thinking_compat(supported_params, None);
-                for (k, v) in derived_compat {
+                for (k, v) in derive_thinking_compat(supported_params, None) {
                     m.compat.insert(k, v);
-                }
-                if m.thinking_level_map.is_empty() {
-                    m.thinking_level_map = derived_tlm;
                 }
             }
             // Model-level compat overrides provider-level compat on a per-key basis
@@ -633,9 +594,6 @@ fn load_user_models_with_overrides(
                 for (k, v) in model_compat {
                     m.compat.insert(k.clone(), v.clone());
                 }
-            }
-            if let Some(ref tlm) = provider.thinking_level_map {
-                m.thinking_level_map = tlm.clone();
             }
             models.push(m);
         }
@@ -661,11 +619,9 @@ struct ProviderConfig {
     base_url: Option<String>,
     #[serde(rename = "compat", default)]
     compat: Option<HashMap<String, serde_json::Value>>,
-    #[serde(rename = "thinkingLevelMap", default)]
-    thinking_level_map: Option<HashMap<String, serde_json::Value>>,
     /// Provider-level default for every model under it (`thinkingLevels`): an
-    /// unlisted model in this `models[]` inherits it, an empty array means "no
-    /// declaration", i.e. all six levels.
+    /// unlisted model in this `models[]` inherits it. An empty array (or an
+    /// absent field) means "only the implicit default level".
     #[serde(rename = "thinkingLevels", default)]
     thinking_levels: Option<Vec<String>>,
     #[serde(rename = "models", default)]
@@ -698,7 +654,8 @@ struct ModelConfig {
     #[serde(rename = "compat", default)]
     compat: Option<HashMap<String, serde_json::Value>>,
     /// The thinking levels this model offers (`thinkingLevels`); overrides the
-    /// provider-level list. Absent or empty means all six levels.
+    /// provider-level list. Entries are wire values sent verbatim; absent or
+    /// empty means "only the implicit default level".
     #[serde(rename = "thinkingLevels", default)]
     thinking_levels: Option<Vec<String>>,
     /// Supported parameters, used to auto-derive compat (maxTokensField, thinkingFormat, etc.).
@@ -803,17 +760,17 @@ fn find_best_builtin_match<'a>(user_model: &Model, builtins: &'a [Model]) -> Opt
 /// Enrich user-provided models with missing parameters from the builtin catalog.
 ///
 /// When a user defines a custom model in models.json they often omit
-/// provider-specific parameters (thinking format, compat flags, thinking level
-/// map, cost, etc.).  This function matches each user model against the builtin
-/// catalog by model ID (with provider-similarity tie-breaking) and back-fills
-/// any fields the user didn't explicitly set.
+/// provider-specific parameters (thinking format, compat flags, cost, etc.).
+/// This function matches each user model against the builtin catalog by model
+/// ID (with provider-similarity tie-breaking) and back-fills any fields the
+/// user didn't explicitly set.
 ///
 /// Rules:
 /// - `compat` — empty map → take all from builtin; non-empty → merge key-by-key
-/// - `thinking_levels` — never back-filled: the vocabulary is the user's own
-///   choice, and no built-in model declares one
-/// - `thinking_level_map` — same as compat
-/// - `reasoning` — preserve the user's value (defaults to true at load time)
+/// - `thinking_levels` — never back-filled: absent means "only the implicit
+///   default", which is a real choice the user made, not a missing parameter
+/// - `reasoning` — preserve the user's value (defaults to true at load time);
+///   it is legacy metadata and does not affect any behavior
 /// - `input` — fill from builtin when empty
 /// - `context_window` — fill only when omitted (0); explicit 128000 is a real limit
 /// - `max_tokens` — fill when == 0
@@ -871,18 +828,6 @@ fn enrich_user_models(user_models: &mut [Model], builtins: &[Model]) {
             for (k, v) in &best.compat {
                 user_model
                     .compat
-                    .entry(k.clone())
-                    .or_insert_with(|| v.clone());
-            }
-        }
-
-        // thinking_level_map: same merge strategy
-        if user_model.thinking_level_map.is_empty() {
-            user_model.thinking_level_map = best.thinking_level_map.clone();
-        } else {
-            for (k, v) in &best.thinking_level_map {
-                user_model
-                    .thinking_level_map
                     .entry(k.clone())
                     .or_insert_with(|| v.clone());
             }
@@ -1002,7 +947,7 @@ impl Registry {
         };
 
         // Enrich user models with missing parameters from builtin catalog
-        // (e.g. compat, thinking_level_map, cost) based on model ID match.
+        // (e.g. compat, cost) based on model ID match.
         enrich_user_models(&mut user_models, &builtin);
 
         let mut final_overrides = overrides;
@@ -1508,7 +1453,7 @@ mod tests {
             "max_completion_tokens".to_string(),
         ];
 
-        let (compat, _) = derive_thinking_compat(&supported, Some("GPT"));
+        let compat = derive_thinking_compat(&supported, Some("GPT"));
 
         assert_eq!(
             compat
@@ -1522,7 +1467,7 @@ mod tests {
     fn keeps_default_max_tokens_field_when_not_advertised() {
         let supported = vec!["max_tokens".to_string()];
 
-        let (compat, _) = derive_thinking_compat(&supported, None);
+        let compat = derive_thinking_compat(&supported, None);
 
         assert!(!compat.contains_key("maxTokensField"));
     }
@@ -1621,12 +1566,12 @@ mod tests {
 
     #[test]
     fn effective_max_tokens_uses_fallback_only_when_missing() {
-        let reasoning = Model {
-            reasoning: true,
+        let thinking = Model {
+            thinking_levels: vec!["high".to_string()],
             ..Default::default()
         };
         let plain = Model::default();
-        assert_eq!(super::effective_max_tokens(&reasoning), 32000);
+        assert_eq!(super::effective_max_tokens(&thinking), 32000);
         assert_eq!(super::effective_max_tokens(&plain), 16384);
     }
 
@@ -1681,10 +1626,6 @@ mod tests {
             json!(true),
         );
 
-        let mut tlm = HashMap::new();
-        tlm.insert("high".to_string(), json!("high"));
-        tlm.insert("xhigh".to_string(), json!("max"));
-
         Model {
             id: "deepseek-v4-pro".to_string(),
             name: "DeepSeek V4 Pro".to_string(),
@@ -1700,7 +1641,7 @@ mod tests {
                 cache_write: 0.0,
             },
             compat,
-            thinking_level_map: tlm,
+            thinking_levels: vec!["off".to_string(), "low".to_string(), "high".to_string()],
             ..Default::default()
         }
     }
@@ -1725,13 +1666,10 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("deepseek")
         );
-        assert_eq!(
-            enriched
-                .thinking_level_map
-                .get("xhigh")
-                .and_then(|v| v.as_str()),
-            Some("max")
-        );
+        // Levels are the user's own choice and are never back-filled: the
+        // custom model above declared none, so it keeps only the implicit
+        // default.
+        assert!(enriched.thinking_levels.is_empty());
     }
 
     #[test]
@@ -1763,13 +1701,6 @@ mod tests {
         assert_eq!(
             user.compat.get("thinkingFormat").and_then(|v| v.as_str()),
             Some("deepseek")
-        );
-        // thinking_level_map was empty → full takeover from builtin
-        assert_eq!(
-            user.thinking_level_map
-                .get("xhigh")
-                .and_then(|v| v.as_str()),
-            Some("max")
         );
     }
 
@@ -1837,7 +1768,7 @@ mod tests {
     fn derive_max_tokens_field_from_only_max_completion_tokens() {
         // Exact gpt-5.5 scenario: only "max_completion_tokens" in supportedParameters
         let supported = vec!["max_completion_tokens".to_string()];
-        let (compat, _) = derive_thinking_compat(&supported, None);
+        let compat = derive_thinking_compat(&supported, None);
         assert_eq!(
             compat.get("maxTokensField").and_then(|v| v.as_str()),
             Some("max_completion_tokens"),
@@ -1855,12 +1786,7 @@ mod tests {
                 reasoning: true,
                 context_window: 272000,
                 max_tokens: 128000,
-                thinking_level_map: {
-                    let mut m = HashMap::new();
-                    m.insert("off".to_string(), json!(null));
-                    m.insert("xhigh".to_string(), json!("xhigh"));
-                    m
-                },
+                thinking_levels: vec!["off".to_string(), "xhigh".to_string()],
                 ..Default::default()
             },
             Model {
@@ -1878,8 +1804,7 @@ mod tests {
         // After load_user_models_with_overrides processing:
         let mut compat = HashMap::new();
         // derive_thinking_compat would have set this from supportedParameters
-        let (derived_compat, _) =
-            derive_thinking_compat(&["max_completion_tokens".to_string()], None);
+        let derived_compat = derive_thinking_compat(&["max_completion_tokens".to_string()], None);
         for (k, v) in derived_compat {
             compat.insert(k, v);
         }
@@ -1906,14 +1831,8 @@ mod tests {
         );
         // - the loader's reasoning value is preserved
         assert!(user.reasoning);
-        // - thinking_level_map filled from builtin
-        assert_eq!(
-            user.thinking_level_map
-                .get("xhigh")
-                .and_then(|v| v.as_str()),
-            Some("xhigh"),
-            "thinking_level_map should be filled from builtin"
-        );
+        // - levels are never back-filled from builtin: the user declared none
+        assert!(user.thinking_levels.is_empty());
     }
 
     #[test]
@@ -2384,13 +2303,13 @@ mod tests {
 
     #[test]
     fn derive_thinking_compat_none_reasoning() {
-        let (compat, _) = derive_thinking_compat(&[], None);
+        let compat = derive_thinking_compat(&[], None);
         assert!(compat.is_empty());
     }
 
     #[test]
     fn derive_thinking_compat_glm() {
-        let (compat, _) = derive_thinking_compat(&[], Some("GLM"));
+        let compat = derive_thinking_compat(&[], Some("GLM"));
         assert!(!compat.is_empty());
         assert_eq!(
             compat.get("thinkingFormat").and_then(|v| v.as_str()),
@@ -2401,19 +2320,18 @@ mod tests {
     #[test]
     fn derive_thinking_compat_with_reasoning_params() {
         let supported = vec!["reasoning_effort".to_string()];
-        let (compat, tlm) = derive_thinking_compat(&supported, None);
+        let compat = derive_thinking_compat(&supported, None);
         assert!(!compat.is_empty());
         assert_eq!(
             compat.get("thinkingFormat").and_then(|v| v.as_str()),
             Some("deepseek")
         );
-        assert!(tlm.contains_key("high"));
     }
 
     #[test]
     fn derive_thinking_compat_with_enable_thinking() {
         let supported = vec!["enable_thinking".to_string()];
-        let (compat, _) = derive_thinking_compat(&supported, None);
+        let compat = derive_thinking_compat(&supported, None);
         assert!(!compat.is_empty());
         assert_eq!(
             compat.get("thinkingFormat").and_then(|v| v.as_str()),
@@ -2424,7 +2342,7 @@ mod tests {
     #[test]
     fn derive_thinking_compat_with_reasoning_split() {
         let supported = vec!["reasoning_split".to_string()];
-        let (compat, _) = derive_thinking_compat(&supported, None);
+        let compat = derive_thinking_compat(&supported, None);
         assert!(!compat.is_empty());
         assert_eq!(
             compat.get("thinkingFormat").and_then(|v| v.as_str()),
@@ -2552,8 +2470,8 @@ mod tests {
                   "api": "openai-completions",
                   "baseUrl": "https://custom.example.com/v1",
                   "apiKey": "sk-custom",
-                  "compat": {"providerFlag": true, "reasoningEffortValues": ["low", "high", "xhigh", "max"]},
-                  "thinkingLevelMap": {"high": {"budget": 1234}},
+                  "compat": {"providerFlag": true},
+                  "thinkingLevels": ["off", "low", "high"],
                   "models": [
                     {
                       "id": "custom-model",
@@ -2588,16 +2506,12 @@ mod tests {
             m.compat.get("modelFlag").and_then(|v| v.as_str()),
             Some("on")
         );
-        // …and provider-level compat / thinking map filled the rest.
+        // …and provider-level compat / declared levels filled the rest.
         assert_eq!(m.compat.get("providerFlag"), Some(&json!(true)));
         assert_eq!(
-            m.compat.get("reasoningEffortValues"),
-            Some(&json!(["low", "high", "xhigh", "max"])),
-            "provider-level effort vocabulary propagates too"
-        );
-        assert_eq!(
-            m.thinking_level_map.get("high"),
-            Some(&json!({"budget": 1234}))
+            m.thinking_levels,
+            vec!["off".to_string(), "low".to_string(), "high".to_string()],
+            "provider-level thinkingLevels are inherited"
         );
 
         // Provider override rewrites the builtin model's endpoint + key.
@@ -2667,9 +2581,7 @@ mod tests {
             ..make_model("gpt-4", "openai")
         }];
         let mut user = vec![Model {
-            thinking_level_map: [("high".to_string(), json!({"budget": 5}))]
-                .into_iter()
-                .collect(),
+            thinking_levels: vec!["low".to_string()],
             ..make_model("gpt-4", "custom")
         }];
         enrich_user_models(&mut user, &builtins);
@@ -2678,44 +2590,9 @@ mod tests {
             user[0].headers.get("X-Custom").map(String::as_str),
             Some("v")
         );
-        // Existing thinking_level_map entries win; missing keys are merged.
-        assert_eq!(
-            user[0].thinking_level_map.get("high"),
-            Some(&json!({"budget": 5}))
-        );
-    }
-
-    #[test]
-    fn enrich_merges_thinking_level_map_key_by_key() {
-        let builtins = vec![make_builtin_deepseek_v4()];
-        // User already carries one thinking_level_map entry → merge (not
-        // takeover): builtin keys are added, user keys preserved.
-        let mut models = vec![Model {
-            id: "deepseek-v4-pro".to_string(),
-            provider: "custom-provider".to_string(),
-            thinking_level_map: {
-                let mut m = HashMap::new();
-                m.insert("high".to_string(), json!("user-high"));
-                m
-            },
-            ..Default::default()
-        }];
-
-        enrich_user_models(&mut models, &builtins);
-
-        let user = &models[0];
-        assert_eq!(
-            user.thinking_level_map.get("high").and_then(|v| v.as_str()),
-            Some("user-high"),
-            "user entry wins over builtin"
-        );
-        assert_eq!(
-            user.thinking_level_map
-                .get("xhigh")
-                .and_then(|v| v.as_str()),
-            Some("max"),
-            "builtin-only key is merged in"
-        );
+        // Levels are the user's own declaration and are never merged from the
+        // builtin catalog.
+        assert_eq!(user[0].thinking_levels, vec!["low".to_string()]);
     }
 
     #[test]

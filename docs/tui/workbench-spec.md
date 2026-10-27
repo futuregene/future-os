@@ -134,7 +134,7 @@ Content — a conversation, a session title, a path — is never translated.
 | Semantic | dark | light | one-dark | one-light | high-contrast | dracula | Use |
 |---|---|---|---|---|---|---|
 | bg | 233 | 254 | 236 | 231 | 16 | 236 | canvas |
-| panel | 235 | 252 | 237 | 254 | 17 | 237 | sidebar / input background |
+| panel | 235 | 252 | 237 | 254 | 17 | 237 | sidebar / menu background (the composer keeps the canvas) |
 | border | 238 | 246 | 240 | 250 | 250 | 239 | borders, dividers |
 | fg | 252 | 236 | 249 | 236 | 231 | 255 | body text |
 | muted | 245 | 243 | 243 | 245 | 246 | 243 | secondary notes |
