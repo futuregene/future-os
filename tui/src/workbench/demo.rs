@@ -12,8 +12,8 @@
 use crate::workbench::ansi::style;
 use crate::workbench::i18n::{t, Key};
 use crate::workbench::state::{
-    Activity, ActivityKind, GitRow, GitSection, GitView, InputView, ModelChoice, SessionMeta,
-    SessionRow, SkillRow, UsageData, WorkbenchData, WorkspaceGroup,
+    Activity, ActivityKind, GitKind, GitRow, GitSection, GitView, InputView, ModelChoice,
+    SessionMeta, SessionRow, SkillRow, UsageData, WorkbenchData, WorkspaceGroup,
 };
 use crate::workbench::theme::FUTURE_DARK;
 
@@ -210,12 +210,16 @@ pub fn git() -> GitView {
     let commits = vec![
         row(
             Some("9e4a47d2a"),
-            "* ",
+            "*   ",
             &[
-                "fix(mobile): stop folding code blocks",
-                "HEAD -> dev-huichen, origin/dev-huichen",
-                "2026-10-27",
-                "huichen",
+                ("feat(tui): a git panel for the workbench", GitKind::Plain),
+                (
+                    "HEAD -> dev-huichen, origin/dev-huichen",
+                    GitKind::Decoration,
+                ),
+                ("9e4a47d2a", GitKind::Sha),
+                ("2026-10-27", GitKind::Meta),
+                ("huichen", GitKind::Meta),
             ],
         ),
         row(None, "|\\", &[]),
@@ -223,36 +227,43 @@ pub fn git() -> GitView {
             Some("4c1b8f0e3"),
             "| * ",
             &[
-                "feat(tui): a git panel for the workbench",
-                "feat/tui-git-panel",
-                "2026-10-27",
-                "huichen",
+                ("fix(mobile): stop folding code blocks", GitKind::Plain),
+                ("fix/mobile-code-block", GitKind::Decoration),
+                ("4c1b8f0e3", GitKind::Sha),
+                ("2026-10-27", GitKind::Meta),
+                ("huichen", GitKind::Meta),
+            ],
+        ),
+        row(
+            Some("7cefc9cea"),
+            "| * ",
+            &[
+                ("docs: goal control plane notes", GitKind::Plain),
+                ("tag: v0.11.0", GitKind::Decoration),
+                ("7cefc9cea", GitKind::Sha),
+                ("2026-10-25", GitKind::Meta),
+                ("huichen", GitKind::Meta),
             ],
         ),
         row(None, "|/", &[]),
         row(
             Some("ae142f75a"),
             "* ",
-            &["fix(tui): one row per record", "", "2026-10-26", "huichen"],
-        ),
-        row(
-            Some("7cefc9cea"),
-            "* ",
             &[
-                "docs: goal control plane notes",
-                "tag: v0.11.0",
-                "2026-10-25",
-                "huichen",
+                ("fix(tui): one row per record", GitKind::Plain),
+                ("ae142f75a", GitKind::Sha),
+                ("2026-10-26", GitKind::Meta),
+                ("huichen", GitKind::Meta),
             ],
         ),
         row(
             Some("56ec934f6"),
             "* ",
             &[
-                "chore(deps): bump the rust toolchain",
-                "",
-                "2026-10-24",
-                "huichen",
+                ("chore(deps): bump the rust toolchain", GitKind::Plain),
+                ("56ec934f6", GitKind::Sha),
+                ("2026-10-24", GitKind::Meta),
+                ("huichen", GitKind::Meta),
             ],
         ),
     ];
@@ -271,16 +282,22 @@ pub fn git() -> GitView {
     }
 }
 
-/// One painted `/git` row: the gutter, then the fields that fit.
-fn row(key: Option<&str>, prefix: &str, pieces: &[&str]) -> GitRow {
+/// One painted `/git` row: the gutter, then the fields that fit, each with what
+/// it is so the frame paints it the way the real read would.
+fn row(key: Option<&str>, prefix: &str, pieces: &[(&str, GitKind)]) -> GitRow {
+    let pieces: Vec<(&str, GitKind)> = pieces
+        .iter()
+        .copied()
+        .filter(|(piece, _)| !piece.is_empty())
+        .collect();
     GitRow {
         key: key.map(str::to_string),
         prefix: prefix.to_string(),
         pieces: pieces
             .iter()
-            .filter(|piece| !piece.is_empty())
-            .map(|piece| (*piece).to_string())
+            .map(|(piece, _)| (*piece).to_string())
             .collect(),
+        kinds: pieces.iter().map(|(_, kind)| *kind).collect(),
     }
 }
 
@@ -394,6 +411,7 @@ fn demo_models() -> Vec<ModelChoice> {
             thinking_level: "default".into(),
             thinking_levels: declared(&["default", "off", "low", "medium", "high", "xhigh"]),
             default_thinking_level: Some("default".into()),
+            is_default: true,
         },
         ModelChoice {
             id: "Qwen".into(),
@@ -403,6 +421,7 @@ fn demo_models() -> Vec<ModelChoice> {
             thinking_level: "default".into(),
             thinking_levels: declared(&["default", "off", "low", "medium", "high"]),
             default_thinking_level: Some("default".into()),
+            is_default: false,
         },
         ModelChoice {
             id: "gpt-6-astra".into(),
@@ -412,6 +431,7 @@ fn demo_models() -> Vec<ModelChoice> {
             thinking_level: "default".into(),
             thinking_levels: declared(&["default", "medium", "high", "max"]),
             default_thinking_level: Some("default".into()),
+            is_default: false,
         },
         // Declares only the implicit default: the picker's slider has one stop.
         ModelChoice {
@@ -422,6 +442,7 @@ fn demo_models() -> Vec<ModelChoice> {
             thinking_level: "default".into(),
             thinking_levels: declared(&["default"]),
             default_thinking_level: Some("default".into()),
+            is_default: false,
         },
         // Same shapes as the real `/models` list, including a level the product
         // has no translation for (`max` is known, but it is still a wire value).
@@ -435,18 +456,29 @@ fn demo_models() -> Vec<ModelChoice> {
                 "default", "off", "minimal", "low", "medium", "high", "xhigh", "max",
             ]),
             default_thinking_level: Some("default".into()),
+            is_default: false,
         },
     ]
 }
 
 /// The launchpad: nothing attached yet, so the header has no session and the
 /// body is the composer.
+///
+/// It carries the product defaults a fresh screen starts from, not the values of
+/// the conversation `/new` left behind: the plain chat (no workspace), the
+/// agent's default model at the level it starts at, and 完全访问.
 pub fn launchpad() -> WorkbenchData {
     let mut data = base();
     data.input.text.clear();
     data.sessions[0].current = false;
     // The workspace chip names the directory the first message would run in.
-    data.session.cwd = "~/future-os".into();
+    data.session.cwd = "~/.future/agent/workspace".into();
+    data.session.chat = true;
+    // The agent's default model at the level it starts at, and 完全访问 — the
+    // other three product defaults a fresh screen opens on.
+    data.model = "westlakehpc/deepseek-flash".into();
+    data.effort = "default".into();
+    data.mode = "off".into();
     data
 }
 
@@ -458,6 +490,7 @@ pub fn chat() -> WorkbenchData {
         id: "s1".into(),
         title: "修复 parser 的 off-by-one".into(),
         cwd: "~/future-os".into(),
+        chat: false,
         branch: "dev-huichen".into(),
     };
     data.activity = Activity {

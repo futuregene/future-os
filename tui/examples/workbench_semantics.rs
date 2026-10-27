@@ -80,6 +80,10 @@ fn main() {
             divider_drag,
         ),
         ("launchpad chips cycle their own field", launchpad_chip),
+        (
+            "a conversation link opens from the cell that draws it",
+            chat_link_row,
+        ),
         ("typing a draft keeps every character", typing),
     ];
     let mut failures = 0;
@@ -705,6 +709,27 @@ fn launchpad_chip() -> Result<(), String> {
         return Err("the model chip did nothing".into());
     }
     Ok(())
+}
+
+/// The cell under the pointer opens the link it is drawn in — and it is the
+/// *second* one, so a click that landed on the row rather than the span would be
+/// caught saying so.
+fn chat_link_row() -> Result<(), String> {
+    let mut data = demo::chat();
+    let link = |href: &str, text: &str| format!("\x1b]8;;{href}\x1b\\{text}\x1b]8;;\x1b\\");
+    data.messages = vec![format!(
+        "{} then {}",
+        link("https://example.com/a", "the site"),
+        link("futureos://session/sess-002", "that chat"),
+    )];
+    let mut wb = wb();
+    wb.render(&data, 120, 38);
+    let target = region(&wb, "chat.link.1")?;
+    let (x, y) = centre(target);
+    match wb.handle(WbEvent::Mouse(press(x, y)), &data).as_slice() {
+        [WbAction::SwitchSession(id)] if id == "sess-002" => Ok(()),
+        other => Err(format!("the click answered {other:?}")),
+    }
 }
 
 fn typing() -> Result<(), String> {

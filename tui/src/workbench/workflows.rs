@@ -318,11 +318,26 @@ pub fn session_table(rows: &[&SessionRow], selected: usize, width: usize) -> Vec
 /// Soft-wrap by display cells and clamp the horizontal window to a byte
 /// boundary. Long JSON and diff lines stay readable instead of being clipped.
 pub fn wrapped(lines: &[String], width: usize, scroll: usize, height: usize) -> Vec<String> {
+    wrapped_indexed(lines, width)
+        .into_iter()
+        .skip(scroll)
+        .take(height)
+        .map(|(_, row)| row)
+        .collect()
+}
+
+/// Every row `lines` has at `width`, paired with the index of the line it was
+/// wrapped from.
+///
+/// The pairing is what lets a pane paint a *wrapped* row by what its source line
+/// is: a patch's `+` is not visible in the tail a wrap cut off, and the detail
+/// pane would colour that tail as ordinary text.
+pub fn wrapped_indexed(lines: &[String], width: usize) -> Vec<(usize, String)> {
     let width = width.max(1);
     let mut rows = Vec::new();
-    for line in lines {
+    for (source, line) in lines.iter().enumerate() {
         if line.is_empty() {
-            rows.push(String::new());
+            rows.push((source, String::new()));
             continue;
         }
         let mut current = String::new();
@@ -330,17 +345,17 @@ pub fn wrapped(lines: &[String], width: usize, scroll: usize, height: usize) -> 
         for grapheme in unicode_segmentation::UnicodeSegmentation::graphemes(line.as_str(), true) {
             let cells = crate::utils::grapheme_width(grapheme);
             if used + cells > width && !current.is_empty() {
-                rows.push(std::mem::take(&mut current));
+                rows.push((source, std::mem::take(&mut current)));
                 used = 0;
             }
             current.push_str(grapheme);
             used += cells;
         }
         if !current.is_empty() {
-            rows.push(current);
+            rows.push((source, current));
         }
     }
-    rows.into_iter().skip(scroll).take(height).collect()
+    rows
 }
 
 #[cfg(test)]

@@ -625,7 +625,28 @@ impl GrpcClient {
     /// `getState()` — typed `RpcSessionState`; updates the run bookkeeping
     /// and detects agent restarts (lost queued runs).
     pub async fn get_state(&self) -> Result<RpcSessionState, String> {
-        let resp = self.call("get_state", RpcCommand::default()).await?;
+        self.get_state_of("").await
+    }
+
+    /// `getState()` for one named session, whichever session this client is
+    /// currently pointed at.
+    ///
+    /// A switch reads the state of the conversation it is *about to* show, and
+    /// names it for the same reason it names the transcript page: the two reads
+    /// then go out together, instead of `switch_session` telling the agent
+    /// which session this is (an RPC of its own) and the reads following it.
+    /// The agent hydrates the named session on the way — the same
+    /// `try_get_session` `switch_session` performs — so nothing is skipped.
+    ///
+    /// Bookkeeping note: the run maps below are updated for `session_id`, so a
+    /// caller that asks about a session it then fails to open has to re-read
+    /// its own (`get_state`, i.e. the addressed-by-current form).
+    pub async fn get_state_of(&self, session_id: &str) -> Result<RpcSessionState, String> {
+        let command = RpcCommand {
+            session_id: session_id.to_string(),
+            ..Default::default()
+        };
+        let resp = self.call("get_state", command).await?;
         let state: RpcSessionState = serde_json::from_value(resp).map_err(|e| e.to_string())?;
 
         let mut st = self.inner.state.lock();
@@ -2092,7 +2113,7 @@ pub(crate) mod tests {
         status_errors: StdHashMap<String, tonic::Status>,
         pub(crate) seen: Arc<std::sync::Mutex<Vec<String>>>,
         /// (type, session_id) of every command, for routing assertions.
-        seen_sessions: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+        pub(crate) seen_sessions: Arc<std::sync::Mutex<Vec<(String, String)>>>,
         requests: Arc<std::sync::Mutex<Vec<RpcCommand>>>,
         /// Answer success=false with this error string for these types.
         fail_with: StdHashMap<String, String>,

@@ -12,6 +12,8 @@ use std::path::PathBuf;
 
 use serde_json::{Map, Value};
 
+use crate::workbench::layout::{SIDEBAR_MAX, SIDEBAR_MIN};
+
 /// `~/.future/tui/settings.json`, or `<FUTURE_HOME>/tui/settings.json` with the
 /// isolated-instance override — the same root every other component uses.
 pub fn path() -> PathBuf {
@@ -39,6 +41,10 @@ pub struct TuiSettings {
     /// `system`, the same default the desktop and the phone use.
     pub language: Option<String>,
     /// Sidebar position (`left` | `right`) and width in terminal columns.
+    ///
+    /// The width is clamped to the divider drag's own range, not to a narrower
+    /// one: a rail the reader dragged to 60 columns used to be written back as
+    /// 48, so the widest third of the drag was a width the next start forgot.
     pub sidebar_position: Option<String>,
     pub sidebar_width: Option<u16>,
     pub sidebar_visible: Option<bool>,
@@ -89,7 +95,10 @@ impl TuiSettings {
             obj.insert("sidebarPosition".into(), Value::String(position.clone()));
         }
         if let Some(width) = self.sidebar_width {
-            obj.insert("sidebarWidth".into(), Value::from(width.clamp(30, 48)));
+            obj.insert(
+                "sidebarWidth".into(),
+                Value::from(width.clamp(SIDEBAR_MIN, SIDEBAR_MAX)),
+            );
         }
         if let Some(visible) = self.sidebar_visible {
             obj.insert("sidebarVisible".into(), Value::Bool(visible));
@@ -142,7 +151,7 @@ impl TuiSettings {
                 .get("sidebarWidth")
                 .and_then(Value::as_u64)
                 .and_then(|width| u16::try_from(width).ok())
-                .map(|width| width.clamp(30, 48)),
+                .map(|width| width.clamp(SIDEBAR_MIN, SIDEBAR_MAX)),
             sidebar_visible: value.get("sidebarVisible").and_then(Value::as_bool),
             mouse_capture: value.get("mouseCapture").and_then(Value::as_bool),
             notify: value
@@ -258,5 +267,39 @@ mod tests {
         assert!(settings.default_model.is_none());
         assert_eq!(settings.theme_id.as_deref(), Some("future-light"));
         assert!(settings.enabled_model_ids.is_none());
+    }
+
+    /// The rail's width lives through a restart at every width the divider can
+    /// be dragged to. The file clamped it to 48 while the drag ran to 60, so the
+    /// widest third of the range was a width the next start quietly narrowed —
+    /// which is what "the sidebar width is not remembered" looked like.
+    #[test]
+    fn a_dragged_sidebar_width_is_written_back_as_it_was() {
+        // The drag's own range, whatever it is today: the point is that every
+        // width in it survives the file, and 48 used to be where it stopped.
+        for width in SIDEBAR_MIN..=SIDEBAR_MAX {
+            let settings = TuiSettings {
+                sidebar_width: Some(width),
+                ..TuiSettings::default()
+            };
+            let back = TuiSettings::from_json(&settings.to_json());
+            assert_eq!(back.sidebar_width, Some(width), "width {width}");
+        }
+    }
+
+    /// A width outside the range is pulled back to the edge the drag stops at,
+    /// not to some narrower edge of its own.
+    #[test]
+    fn an_out_of_range_width_lands_on_the_drags_own_ends() {
+        for (written, expected) in [(1, SIDEBAR_MIN), (u16::MAX, SIDEBAR_MAX)] {
+            let settings = TuiSettings {
+                sidebar_width: Some(written),
+                ..TuiSettings::default()
+            };
+            assert_eq!(
+                TuiSettings::from_json(&settings.to_json()).sidebar_width,
+                Some(expected)
+            );
+        }
     }
 }

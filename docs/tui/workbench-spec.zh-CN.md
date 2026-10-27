@@ -87,8 +87,9 @@ live 接入只允许改：`tui/src/workbench/live.rs`、`tui/src/workbench/state
 ## 3. 布局（单位：终端单元格）
 
 > **当前交互修订**：头部固定为两行（上下文 + 分隔线），不再有可选的品牌头部——
-> `/preferences`（`ctrl+o`）只保留侧栏左/右位置与宽度等选择；这些选择和显示状态
-> 持久化在 `settings.json`。默认快捷键新增 `ctrl+p` 命令面板、`ctrl+r` 会话、`alt+h` 帮助
+> `/preferences`（`ctrl+q`）列出这个终端记住的全部界面选择：侧栏位置 / 宽度 / 显示、
+> 鼠标、通知、动态、界面语言与配色主题（后两行打开的是 `/lang`、`/theme` 那两个选择器）；
+> 这些选择和显示状态持久化在 `settings.json`。默认快捷键新增 `ctrl+p` 命令面板、`ctrl+r` 会话、`alt+h` 帮助
 > （`?` 也可），`keybindings.json` 的动作 id 映射可重映射，帮助和提示行展示当前实际键位。
 > 帮助浮层按用途分组，默认里没有功能键。本文件下面画的是早期的六行品牌头部；
 > 现在头部只占两行（上下文 + 分隔线），其他分区不变。
@@ -163,6 +164,7 @@ TUI 不使用 logo 或图标。聊天页眉只有一行文字品牌 `FUTURE OS`�
 | 输入框点击 | 聚焦并把光标放到点击处（按显示宽度换算字节偏移） |
 | `⛶` 点击 | 打开全屏草稿编辑器（P1 可 stub） |
 | 工具卡标题点击 | 展开/折叠该卡片（复用 `ctrl+o` 的单项切换） |
+| 对话里的链接 / 图片点击 | 打开它：网址交给浏览器，`futureos://session/…` 切到那条会话，本地文件在预览框打开 |
 | Launchpad 参数段点击 | 打开对应选择器（工作区/模型/强度/审批） |
 | Launchpad 快捷入口点击 | 执行对应 `/command` |
 | 悬停 | 页签/行/按钮高亮；600ms 后显示 tooltip（窄终端截断时） |
@@ -175,7 +177,8 @@ TUI 不使用 logo 或图标。聊天页眉只有一行文字品牌 `FUTURE OS`�
 `ctrl+o` 模型选择器；`ctrl+t` 思考强度选择器；`ctrl+l` 界面语言；`ctrl+g` git 浏览；
 `ctrl+s` 侧栏开/聚焦/关（侧栏外沿的 `›` 按钮一键等效，收起后在**同一列**留一个 `‹` 把它叫回）；
 `ctrl+f` 刷新；`ctrl+q` 队列；`ctrl+v` 读剪贴板（图片成为草稿附件，文字粘进草稿）；
-`tab` 面板内焦点；`shift+tab` 反向；`/` 命令面板；`?` 帮助；`esc` 逐层关闭。
+`tab`/`shift+tab` 在对话里逐个选中链接与图片（`enter` 打开光标所在那个：浏览器 / 那条会话 /
+预览框），在 launchpad 上则在输入框与参数段之间移动；`/` 命令面板；`?` 帮助；`esc` 逐层关闭。
 
 默认键里没有 `alt`——macOS 上 Option 默认是组字而不是 `ESC` + 字母——字母在冲突之后也不够用，
 所以剩下的动作**没有键**：审批模式（`/mode`）、工作区（`/workspace`）、复制（`/copy`）、
@@ -194,7 +197,13 @@ TUI 不使用 logo 或图标。聊天页眉只有一行文字品牌 `FUTURE OS`�
 界面），然后是不可改键的行内键，最后是命令。
 
 按住 `shift+↑` / `shift+↓` 只换一次：按键返回 `WbAction::SessionStep(delta)`，驱动先读完整个输入
-突发，再用 `Workbench::step_session` 应用净步数。
+突发，再用 `Workbench::step_session` 应用净步数。侧栏光标每按一次就跟着走——那是读者眼睛盯着的东西——
+会话本身则等按键安静 80 ms（`run::OPEN_SETTLE`）后才打开，所以按住经过的那些不会被加载。
+
+适配器留着最近显示过的 8 条会话（连渲染好的行一起，见 `Live` 的缓存）。切到其中之一时，那些行**先**画上去、
+再去问 agent：一条 `get_state` + `get_session_entries`（两者都按 id 寻址，所以并发发出）用来校正。
+页没变就保留它对照的那些行，变了才按新页重建。这一对并发请求替换了原来串行的三次往返
+（`switch_session`、`get_state`、取页）——因为 `get_state` 本身就会 hydrate 它被问到的会话。
 
 ### 选择器（`/model`、`/thinking`、`/mode`、`/workspace`、`/theme`、`/sessions`、`/lang`）
 
@@ -221,6 +230,13 @@ TUI 不使用 logo 或图标。聊天页眉只有一行文字品牌 `FUTURE OS`�
 `/new` 回到启动台，而不是立刻建会话：头部自己的状态（连接点、版本）留着，对话清空，
 第一条消息才按启动台上显示的模型/强度建会话。
 
+什么都没暂存的启动台显示的是**产品默认值**，而不是 `/new` 刚离开的那个会话的值：**对话会话**
+（不绑工作区——agent 自己的 `agent/workspace`，也就是侧栏「对话会话」一节归的目录，用时才建）、
+agent 的默认模型以及它起步的那一档强度（都从 `list_models` 读：`isDefault` 与
+`defaultThinkingLevel`——和 `new_session` 自己用的是同一套解析）、以及 **完全访问**（`off`）。
+把上一个会话的目录、模型、审批带进下一个，会让 `/new` 变成前一间的副本而不是新开一间；默认审批
+不只是写在参数上，建会话后会真的下发，所以参数不会写着会话实际不走的值。
+
 还没有会话时（启动台，或 TUI 起来时 agent 手上没有会话），选择器里的 `enter` **只暂存**，
 不发请求：agent 在没有会话时对 `set_model`/`set_thinking_level` 一律回
 `session not found — pass a valid session_id`，所以这一对选择变成 `SetPending*`——头部与启动台
@@ -233,8 +249,11 @@ TUI 不使用 logo 或图标。聊天页眉只有一行文字品牌 `FUTURE OS`�
 `ctrl+l` 直接打开它们。`/thinking` 列六档强度；`/mode` 列桌面端输入框的那四档审批模式（手动 /
 沙箱 / 自动 / 完全访问），每行带一句解释；`/workspace` 列本客户端有会话的全部目录，并在最前面
 多一行「用搜索框里的路径新建工作区」——在那一行按 `enter` 就是 `set_cwd`，和选一个已有工作区
-同一个动作。审批模式就是桌面端自己的那四个值；没有单独的 TUI「权限级别」芯片，因为别的客户端
-都没有这个选择。
+同一个动作。那一行下面还有唯一一行不是目录的选项：**对话会话**，也就是「不选工作区」——在它上面
+按 `enter` 会把会话挪到 agent 自己的 `agent/workspace`（侧栏「对话会话」一节认的就是这个目录），
+或者给下一条消息要建的会话暂存下来；这个目录由 TUI 自己创建：读者输入的路径是读者的事，打错了
+该由 agent 报错，而这个路径没人会替他建。审批模式就是桌面端自己的那四个值；没有单独的 TUI
+「权限级别」芯片，因为别的客户端都没有这个选择。
 
 行的绘制与命中区域来自同一份列表和同一份几何（`screen::picker_box` 用 `box_geometry`），
 所以点击一定落在指针下面那一行，而不是旁边一行。
@@ -268,7 +287,7 @@ docstring 与 JavaScript 模板字符串）与声明；代价是每行一次向�
 pub struct WorkbenchData {
     pub app_name: String, pub version: String,
     pub connected: bool,
-    pub session: SessionMeta,          // id/title/cwd/branch
+    pub session: SessionMeta,          // id/title/cwd/chat/branch
     pub model: String, pub effort: String,
     pub mode: String,                  // manual|sandbox|auto|off（桌面端那四档）
     pub usage: UsageData,              // ctx_used/ctx_total/cost/cache/tps

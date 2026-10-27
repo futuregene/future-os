@@ -372,6 +372,8 @@ pub enum Key {
     LaunchpadNewChat,
     LaunchpadNewChatIn,
     WorkspaceChosen,
+    WorkspaceChat,
+    WorkspaceChatDetail,
     WorkspaceNone,
     // ── the palette's verbs ───────────────────────────────────────────
     CmdNew,
@@ -479,6 +481,7 @@ pub enum Key {
     CmdModel,
     CmdLanguage,
     CmdReplyDetail,
+    CmdToolOutput,
     CmdWorkspace,
     CmdTheme,
     CmdUsage,
@@ -495,6 +498,8 @@ pub enum Key {
     PrefNotifications,
     PrefNotificationBell,
     PrefMotion,
+    PrefSidebarVisible,
+    PrefTheme,
     PrefEnabled,
     PrefDisabled,
     PrefShortcuts,
@@ -563,6 +568,7 @@ pub enum Key {
     NoticeUnpinned,
     NoticePinUnavailable,
     NoticeModeUnknown,
+    NoticeOpenLinkFailed,
     // ── the adapter (`live`, `local`, `widgets`) ──────────────────────
     InputHintLaunchpad,
     ApprovalWaiting,
@@ -700,7 +706,10 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ActivityTool => ("工具", "Tool"),
         ActivityStreaming => ("生成", "Writing"),
         ActivityTools => (" · {}s · {} 工具", " · {}s · {} tools"),
-        HintBackToChat => ("回到聊天", "Back to chat"),
+        // `esc` walks back one level — a preview to the panel it was opened
+        // from, a panel to the chat — so the hint names the walk, not one of
+        // its stops.
+        HintBackToChat => ("返回上一级 / 回到聊天", "Back one level / to the chat"),
         HintSidebar => ("侧栏", "Sidebar"),
         HintSessions => ("会话", "Sessions"),
         HintFocus => ("焦点", "Focus"),
@@ -763,6 +772,12 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         LaunchpadNewChat => ("新会话", "New Chat"),
         LaunchpadNewChatIn => ("新会话 · {}", "New Chat · {}"),
         WorkspaceChosen => ("工作区 · {}", "Workspace · {}"),
+        // The one chooser row that is not a directory, and the name the rail's
+        // last section already gives such a conversation.
+        WorkspaceChat => ("对话会话", "Chat"),
+        // Beside it, where the workspaces print their paths: the sentence that
+        // makes the row a *choice* rather than a folder.
+        WorkspaceChatDetail => ("不绑工作区", "no workspace"),
         WorkspaceNone => (
             "没有其它工作区可切换",
             "No other workspace to switch to",
@@ -826,8 +841,8 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "Open this conversation's workspace files",
         ),
         GitHint => (
-            "1-4 视图 · ↑↓ 选择 · tab 列表/详情 · ⏎ 打开 · y 复制 · r 刷新 · esc 关闭",
-            "1-4 views · ↑↓ select · tab list/detail · enter opens · y copies · r refreshes · esc closes",
+            "1-4 视图 · ↑↓ 选择 · tab 列表/详情 · PgUp/PgDn 详情翻页 · ⏎ 打开 · y 复制 · r 刷新 · esc 关闭",
+            "1-4 views · ↑↓ select · tab list/detail · PgUp/PgDn pages the detail · enter opens · y copies · r refreshes · esc closes",
         ),
         GitTabCommits => ("提交", "commits"),
         GitTabRefs => ("引用", "refs"),
@@ -891,6 +906,7 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         CmdModel => ("选择模型", "Choose a model"),
         CmdLanguage => ("界面语言", "Interface language"),
         CmdReplyDetail => ("最终输出 / 完整过程", "Final answer / full process"),
+        CmdToolOutput => ("工具调用正文：展开 / 收起", "Tool call bodies: expand / collapse"),
         CmdWorkspace => ("workspace 目录", "Workspace directory"),
         CmdTheme => ("切换主题", "Switch theme"),
         CmdUsage => ("用量与成本", "Usage and cost"),
@@ -903,13 +919,15 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         CmdTranscript => ("完整记录", "The whole record"),
         CmdHelp => ("帮助与快捷键", "Help and shortcuts"),
         CmdQuit => ("退出 workbench", "Leave the workbench"),
-        CmdPreferences => ("布局、通知、可访问性和快捷键", "Layout, notifications, accessibility and shortcuts"),
+        CmdPreferences => ("布局、外观、通知、可访问性和快捷键", "Layout, appearance, notifications, accessibility and shortcuts"),
         PrefPosition => ("侧栏位置", "Sidebar position"),
         PrefWidth => ("侧栏宽度", "Sidebar width"),
         PrefMouse => ("启动与运行时使用鼠标", "Mouse capture"),
         PrefNotifications => ("完成时通知", "Completion notifications"),
         PrefNotificationBell => ("通知包含提示音", "Notification bell"),
         PrefMotion => ("减少动态", "Reduce motion"),
+        PrefSidebarVisible => ("显示侧栏", "Show sidebar"),
+        PrefTheme => ("配色主题", "Color theme"),
         PrefEnabled => ("开启", "On"),
         PrefDisabled => ("关闭", "Off"),
         PrefShortcuts => ("自定义快捷键", "Customize shortcuts"),
@@ -929,7 +947,10 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "Delete the selected conversation (asks first)",
         ),
         HelpKeySidebar => ("侧栏：打开 / 聚焦 / 收起", "Sidebar: show / focus / hide"),
-        HelpKeyFocus => ("在输入框与侧栏之间移动", "Move between the input and the sidebar"),
+        HelpKeyFocus => (
+            "在对话里逐个选中链接与图片，⏎ 打开",
+            "Step through the conversation's links and pictures, enter opens one",
+        ),
         HelpKeyScroll => ("滚动聊天，或侧栏列表", "Scroll the chat, or the sidebar's list"),
         HelpKeyPage => ("整页滚动聊天", "Scroll the chat a page at a time"),
         HelpKeyPalette => ("命令面板", "Command palette"),
@@ -1038,6 +1059,7 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "未知的审批模式：{}",
             "Unknown approval mode: {}",
         ),
+        NoticeOpenLinkFailed => ("打不开 {}：{}", "Could not open {}: {}"),
 
         InputHintLaunchpad => (
             // What the *draft* can hold, in the order the reader types it: the
@@ -1259,7 +1281,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 299] = {
+    const ALL_KEYS: [Key; 305] = {
         use Key::*;
         [
             TabTodo,
@@ -1371,6 +1393,8 @@ mod tests {
             LaunchpadNewChat,
             LaunchpadNewChatIn,
             WorkspaceChosen,
+            WorkspaceChat,
+            WorkspaceChatDetail,
             WorkspaceNone,
             CmdNew,
             CmdDiff,
@@ -1465,6 +1489,7 @@ mod tests {
             CmdModel,
             CmdLanguage,
             CmdReplyDetail,
+            CmdToolOutput,
             CmdWorkspace,
             CmdTheme,
             CmdUsage,
@@ -1481,6 +1506,8 @@ mod tests {
             PrefNotifications,
             PrefNotificationBell,
             PrefMotion,
+            PrefSidebarVisible,
+            PrefTheme,
             PrefEnabled,
             PrefDisabled,
             PrefShortcuts,
@@ -1545,6 +1572,7 @@ mod tests {
             NoticePinned,
             NoticeUnpinned,
             NoticePinUnavailable,
+            NoticeOpenLinkFailed,
             DeleteTitle,
             DeleteBody,
             DeleteWhere,

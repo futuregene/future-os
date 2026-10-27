@@ -156,7 +156,10 @@ python3 scripts/screenshots/capture.py tui tui-chat.png
   `full-panel`（窄终端上的 `ctrl+b`）、`scrolled`（点一下聊天再滚轮上滚三次）、
   `light`（`/theme` 后下移一行回车；它会持久化，所以放在最后）以及 `drag`
   （抓住分隔条往右拖六列）。所有坐标都在步骤执行时从当时屏幕上的帧算出来——点页签按
-  画出来的标签，拖拽按画出来的分隔条——所以跟着布局走，而不是写死列号。
+  画出来的标签，拖拽按画出来的分隔条——所以跟着布局走，而不是写死列号。`git`
+  （`ctrl+g`）是唯一一个**读当前 checkout** 而不是读脚本数据的场景，所以它需要一个
+  真实仓库：`FUTURE_DEMO_CWD=$PWD tui/scripts/shot.sh git`。不设的话脚本会话仍是虚构的
+  `/Users/you/future-os`，面板会如实说那个目录不存在。
 - `--addr <host:port>` 接到已在运行的 agent（也就是**真会话**），而不是启 `demo_agent`；
   并且不动调用方的 `FUTURE_HOME`。
 

@@ -12,13 +12,20 @@ use crate::workbench::i18n::{t, Key, Language};
 use crate::workbench::image_view::ImagePixels;
 use crate::workbench::syntax;
 
-/// Who the session is: the four facts the header and the launchpad print.
+/// Who the session is: the facts the header and the launchpad print.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionMeta {
     /// Empty means "no session yet" — which is exactly the launchpad state.
     pub id: String,
     pub title: String,
     pub cwd: String,
+    /// Is `cwd` one of the app's own scratch directories rather than a
+    /// workspace the reader chose — a plain chat, the one the rail files under
+    /// 对话会话? The workspace picker ticks its "no workspace" row with it and
+    /// the launchpad's chip names the chat instead of the directory's last
+    /// segment, because `agent/workspace` is not a name a reader would
+    /// recognise as theirs.
+    pub chat: bool,
     /// Short git branch name, or empty outside a repository.
     pub branch: String,
 }
@@ -125,6 +132,11 @@ pub struct ModelChoice {
     /// The level the agent starts a conversation at on this model, already
     /// clamped to [`Self::thinking_levels`]. `None` on an older agent.
     pub default_thinking_level: Option<String>,
+    /// Is this the agent's *default* model — the one a session created without
+    /// asking for a model gets (`isDefault` in `list_models`, resolved by the
+    /// same function `new_session` uses)? The launchpad names it while nothing
+    /// is staged, so the chip and the session agree.
+    pub is_default: bool,
 }
 
 impl ModelChoice {
@@ -675,6 +687,24 @@ impl GitSection {
     pub const ALL: [GitSection; 4] = [Self::Commits, Self::Refs, Self::Status, Self::Stash];
 }
 
+/// What one field of a `/git` row *is*, so the painter colours it by meaning
+/// instead of by position: an empty field is dropped from [`GitRow::pieces`],
+/// so `pieces[2]` is a sha only on the rows that happen to have a date.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum GitKind {
+    /// A subject, a path, a stash message: the row's body text.
+    #[default]
+    Plain,
+    /// A branch, remote or tag name.
+    Ref,
+    /// A commit's decorations — `HEAD -> main, origin/main, tag: v1`.
+    Decoration,
+    /// A short object id.
+    Sha,
+    /// A date, an author, upstream tracking counts: a note beside the body.
+    Meta,
+}
+
 /// One painted line of the `/git` list.
 ///
 /// `key` is what the row *is* (`abc1234`, `refs/heads/main`, `src/a.rs`,
@@ -690,6 +720,17 @@ pub struct GitRow {
     /// The row's fields, most important first — a narrow box drops the tail
     /// whole rather than cutting a field in half.
     pub pieces: Vec<String>,
+    /// What each of `pieces` is, in the same order. Shorter than `pieces` (or
+    /// empty) reads as [`GitKind::Plain`], which is what a caller that only has
+    /// text — a test, a demo — can honestly say.
+    pub kinds: Vec<GitKind>,
+}
+
+impl GitRow {
+    /// The kind of `pieces[index]`, [`GitKind::Plain`] past the end of `kinds`.
+    pub fn kind(&self, index: usize) -> GitKind {
+        self.kinds.get(index).copied().unwrap_or_default()
+    }
 }
 
 /// The `/git` panel's content: one section's rows plus the selected row's
@@ -814,6 +855,7 @@ mod tests {
             key: key.map(str::to_string),
             prefix: String::new(),
             pieces: Vec::new(),
+            kinds: Vec::new(),
         };
         let view = GitView {
             rows: vec![
