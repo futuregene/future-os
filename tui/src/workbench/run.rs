@@ -908,7 +908,7 @@ async fn quit(
                 "/preview" => {
                     if live.load_attachment() {
                         workbench.reset_preview();
-                        workbench.overlay = Some(super::Overlay::FilePreview);
+                        workbench.open_preview();
                     }
                     continue;
                 }
@@ -1005,13 +1005,15 @@ async fn quit(
             // folder with its own buttons — the reader opened a row, and the
             // rows around it are the neighbours they expect.
             workbench.set_preview_siblings(super::files::image_siblings(path));
-            workbench.overlay = Some(super::Overlay::FilePreview);
+            // Opened *over* the panel the row came from: `esc` from the box
+            // walks back to that panel (see `Workbench::open_preview`).
+            workbench.open_preview();
             continue;
         }
         if matches!(action, WbAction::PreviewAttachment) {
             if live.load_attachment() {
                 workbench.reset_preview();
-                workbench.overlay = Some(super::Overlay::FilePreview);
+                workbench.open_preview();
             }
             continue;
         }

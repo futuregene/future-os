@@ -571,6 +571,10 @@ pub struct Workbench {
     /// can step through a folder without a round trip through the panel.
     pub preview_siblings: Vec<String>,
     pub preview_index: usize,
+    /// What `esc` returns to when the preview box closes: the surface the file
+    /// was opened from (the files tree, the repository browser), or nothing for
+    /// a picture that came from the draft. See [`Workbench::open_preview`].
+    preview_return: Option<Overlay>,
     /// A pan in progress: the pointer's press cell and the pan it began at.
     preview_drag: Option<PreviewDrag>,
     /// The workspace headings the reader folded shut, by path (see
@@ -661,6 +665,7 @@ impl Workbench {
             preview_scroll: 0,
             preview_siblings: Vec::new(),
             preview_index: 0,
+            preview_return: None,
             preview_drag: None,
             folded_workspaces: panels::Folded::new(),
             image_request: None,
@@ -1142,7 +1147,11 @@ impl Workbench {
             // keeps `alt+q` and `/queue`. A literal arm here would fire for a
             // reader who moved the binding away, which is the one thing a
             // rebindable key must never do.
-            "?" if data.input.text.is_empty() => {
+            // Both question marks open the help: a Chinese IME, and the
+            // full-width key on a Chinese keyboard layout, type `？` — a surface
+            // that only answered the ASCII one looks broken to exactly the
+            // reader who wants the Chinese copy of it.
+            "?" | FULL_WIDTH_QUESTION if data.input.text.is_empty() => {
                 self.overlay = Some(Overlay::Help);
                 self.overlay_scroll = 0;
                 vec![WbAction::Redraw]
@@ -1584,7 +1593,9 @@ impl Workbench {
         let is_image = matches!(data.preview, Some(state::PreviewView::Image { .. }));
         match key {
             "escape" | "q" => {
-                self.overlay = None;
+                // Out one level: back to the panel the file was opened from,
+                // and only from there to the chat.
+                self.overlay = self.preview_return.take();
                 Some(vec![WbAction::Redraw])
             }
             "+" | "=" | ZOOM_IN => {
@@ -1696,6 +1707,22 @@ impl Workbench {
         self.preview_zoom = 1;
         self.preview_pan = (0, 0);
         self.preview_scroll = 0;
+    }
+
+    /// Put the preview box on screen, over whatever the reader was reading.
+    ///
+    /// The box is a *level*, not a replacement: a file opened from the files
+    /// tree comes back to that tree on `esc`, and one opened from the repository
+    /// browser comes back to the browser — `esc` walks out one level at a time
+    /// and only the last one lands on the chat. Whatever was on screen when the
+    /// box opened is what it returns to; a picture that came from the draft
+    /// itself (`/preview`, `ctrl+v` → preview) returns to the chat, because
+    /// there was nothing under it.
+    pub fn open_preview(&mut self) {
+        self.preview_return = self
+            .overlay
+            .filter(|overlay| *overlay != Overlay::FilePreview);
+        self.overlay = Some(Overlay::FilePreview);
     }
 
     fn handle_overlay_key(
@@ -1908,7 +1935,7 @@ impl Workbench {
             // this point; what is left is a key the box does not use.
             Overlay::FilePreview => Vec::new(),
             Overlay::Help => match key {
-                "escape" | "q" | "?" | "enter" => {
+                "escape" | "q" | "?" | FULL_WIDTH_QUESTION | "enter" => {
                     self.overlay = None;
                     vec![WbAction::Redraw]
                 }
@@ -3423,6 +3450,11 @@ fn known_command(text: &str) -> Option<TypedCommand> {
     })
 }
 
+/// The full-width question mark a Chinese IME types for the same key `?` sits
+/// on. Both open the help box; the ASCII one is what the help table and the
+/// footer spell, because it is the key a reader can see on their keyboard.
+const FULL_WIDTH_QUESTION: &str = "？"; // i18n: a key spelling, not copy — never drawn
+
 /// The help overlay's key table.
 /// The keys that are *not* configurable actions, for the help overlay: they are
 /// spelled inside the composer (`/`, `?`, `@`, `#`), or they are the pointer, or
@@ -4929,11 +4961,12 @@ mod tests {
         assert_eq!(workbench.overlay, None);
     }
 
-    /// The help table and the shortcut editor read the same map the keys do: an
-    /// action with no chord prints an em dash instead of an empty column, and no
-    /// row claims one of the numbered slots the ctrl-only map retired.
+    /// The help table and the shortcut editor read the same map the keys do: the
+    /// table lists only rows that *have* a chord (an action with none keeps its
+    /// typed door in the command list below), the editor lists every action, and
+    /// no row claims one of the numbered slots the ctrl-only map retired.
     #[test]
-    fn the_help_table_names_a_chordless_action_as_such() {
+    fn the_help_table_lists_chords_not_chordless_actions() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 60);
         workbench.overlay = Some(Overlay::Help);
@@ -4941,11 +4974,22 @@ mod tests {
         for gone in ["ctrl+1", "ctrl+2", "ctrl+3"] {
             assert!(!text.contains(gone), "the help table still lists {gone}");
         }
-        let row = text
-            .lines()
-            .find(|line| line.contains("切到「最近」面板"))
-            .expect("the 最近 row");
-        assert!(row.contains('—'), "no chord is drawn as a dash: {row}");
+        // A chordless action is not a row: a key table lists keys, and the
+        // verbs with none are spelled in the command list at the end of the
+        // same box.
+        for chordless in ["切到「最近」面板", "切到「工作区」面板", "界面语言"]
+        {
+            assert!(
+                !text.contains(chordless),
+                "the help table lists the chordless {chordless}"
+            );
+        }
+        assert!(!text.contains('\u{2014}'), "no empty key column: {text}");
+        // The verbs with no chord still have their typed door, in the command
+        // list at the *end* of the box — one clamped scroll away.
+        workbench.overlay_scroll = usize::MAX;
+        let tail = plain(&workbench.render(&data, 120, 60));
+        assert!(tail.contains("/lang"), "its typed door is listed: {tail}");
         let row = text
             .lines()
             .find(|line| line.contains("本会话的文件面板"))
@@ -4956,14 +5000,14 @@ mod tests {
         );
 
         // The shortcut editor agrees, and `enter` there is how a reader puts a
-        // chord back on one of these rows.
+        // chord back on one of these rows — so it does list them.
         workbench.overlay = Some(Overlay::Keybindings);
         let text = plain(&workbench.render(&data, 120, 60));
         let row = text
             .lines()
             .find(|line| line.contains("切到「工作区」面板"))
             .expect("the 工作区 row");
-        assert!(row.contains('—'), "{row}");
+        assert!(row.contains('\u{2014}'), "{row}");
     }
 
     /// The files panel is not a tab: the strip names two of them, no strip cell
@@ -5640,17 +5684,75 @@ mod tests {
         workbench.handle(WbEvent::Key("?".into()), &data);
         let text = plain(&workbench.render(&data, 120, 38));
         assert!(text.contains("帮助"), "{text}");
-        // The table is the ACTIONS map: a current chord stands for it, and an
-        // action with no chord prints an em dash in the same column.
+        // The table is the ACTIONS map, minus the actions with no chord: a key
+        // table lists keys, and those verbs keep their typed door in the
+        // command list below (they are listed as `/queue`, `/lang`, …).
         assert!(text.contains("ctrl+s"), "{text}");
         assert!(text.contains("ctrl+g"), "{text}");
-        assert!(text.contains('\u{2014}'), "a chordless row says so: {text}");
+        assert!(
+            !text.contains('\u{2014}'),
+            "a chordless action is not a row: {text}"
+        );
         // The frame behind it is still the frame: same size, no leftovers.
         assert_eq!(rows.len(), 38);
         workbench.handle(WbEvent::Key("down".into()), &data);
         assert!(workbench.overlay_scroll_offset() > 0);
         workbench.handle(WbEvent::Key("escape".into()), &data);
         assert_eq!(workbench.overlay, None);
+    }
+
+    /// The full-width question mark opens the same box: a reader typing with a
+    /// Chinese IME presses the key once and gets `？`, and a surface that only
+    /// answered the ASCII mark looked broken exactly there.
+    #[test]
+    fn both_question_marks_open_the_help() {
+        let data = demo::chat();
+        for key in ["?", "\u{ff1f}"] {
+            let (mut workbench, _rows) = frame(&data, 120, 38);
+            workbench.handle(WbEvent::Key(key.into()), &data);
+            assert_eq!(workbench.overlay, Some(Overlay::Help), "{key:?}");
+        }
+        // In the draft it is still text: only an empty box takes it as a verb.
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let mut editor = data.input.editor.clone();
+        editor.set("吗", 1);
+        let mut typed = data.clone();
+        typed.input = crate::workbench::state::InputView::from_editor(editor, String::new());
+        let actions = workbench.handle(WbEvent::Key("\u{ff1f}".into()), &typed);
+        assert_eq!(workbench.overlay, None, "{actions:?}");
+    }
+
+    /// `esc` in the preview box walks back one level: a file opened from the
+    /// files tree returns to that tree, and only the tree's own `esc` reaches
+    /// the chat. A picture opened from the draft had nothing under it, so it
+    /// still closes onto the chat.
+    #[test]
+    fn escape_in_the_preview_returns_to_the_panel_it_was_opened_from() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+
+        // Opened from the files tree.
+        workbench.overlay = Some(Overlay::Files);
+        workbench.open_preview();
+        assert_eq!(workbench.overlay, Some(Overlay::FilePreview));
+        workbench.handle(WbEvent::Key("escape".into()), &data);
+        assert_eq!(workbench.overlay, Some(Overlay::Files), "one level up");
+        workbench.handle(WbEvent::Key("escape".into()), &data);
+        assert_eq!(workbench.overlay, None, "and then the chat");
+
+        // Opened from the repository browser: the same walk.
+        workbench.overlay = Some(Overlay::Git);
+        workbench.open_preview();
+        workbench.handle(WbEvent::Key("escape".into()), &data);
+        assert_eq!(workbench.overlay, Some(Overlay::Git));
+
+        // Opened from the chat itself (`/preview`): nothing under the box.
+        workbench.overlay = None;
+        workbench.open_preview();
+        workbench.handle(WbEvent::Key("escape".into()), &data);
+        assert_eq!(workbench.overlay, None);
+        // …and a second escape is not a level: the return is consumed once.
+        assert_eq!(workbench.preview_return, None);
     }
 
     /// The rail's action cycles show → focus → hide, on `ctrl+d` (`d` for the

@@ -702,7 +702,10 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ActivityTool => ("工具", "Tool"),
         ActivityStreaming => ("生成", "Writing"),
         ActivityTools => (" · {}s · {} 工具", " · {}s · {} tools"),
-        HintBackToChat => ("回到聊天", "Back to chat"),
+        // `esc` walks back one level — a preview to the panel it was opened
+        // from, a panel to the chat — so the hint names the walk, not one of
+        // its stops.
+        HintBackToChat => ("返回上一级 / 回到聊天", "Back one level / to the chat"),
         HintSidebar => ("侧栏", "Sidebar"),
         HintSessions => ("会话", "Sessions"),
         HintFocus => ("焦点", "Focus"),
