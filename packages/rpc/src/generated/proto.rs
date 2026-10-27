@@ -1340,10 +1340,11 @@ pub struct SessionSummary {
     /// Whether the agent is streaming a response for this session right now.
     #[prost(bool, tag = "9")]
     pub is_streaming: bool,
-    /// When the session was created. Clients order their conversation lists by
-    /// this rather than `updated_at_ms`: an activity stamp moves whenever a run
-    /// touches the session (and a `session_info` snapshot rewrites it), so a list
-    /// sorted by it reshuffles under the reader.
+    /// When the session was created. A client that puts running conversations in
+    /// their own stretch (the TUI's 活跃 list) orders that stretch by this rather
+    /// than `updated_at_ms`: an activity stamp moves on every run event, and a
+    /// `session_info` snapshot rewrites it, so the rows would trade places while
+    /// the reader watches. The quiet list stays on `updated_at_ms`.
     #[prost(int64, tag = "11")]
     pub created_at_ms: i64,
 }

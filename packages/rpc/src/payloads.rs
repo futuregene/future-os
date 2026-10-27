@@ -145,8 +145,9 @@ pub struct SessionSummaryPayload {
     pub model: String,
     pub cwd: String,
     pub updated_at_ms: i64,
-    /// When the session was created. Clients order conversation lists by this;
-    /// `updated_at_ms` moves every time a run touches the session.
+    /// When the session was created. A client's running-conversation stretch is
+    /// ordered by this; `updated_at_ms` moves every time a run touches the
+    /// session, so it cannot hold a row still while a run streams.
     ///
     /// Defaults to 0 for a peer that predates the stamp (a cached page, or an
     /// older agent's JSON fallback): such a list still decodes, and the client

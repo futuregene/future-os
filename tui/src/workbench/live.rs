@@ -963,24 +963,20 @@ impl Live {
         let messages = self.chat.render_all(frame.inner);
         let activity = self.activity_snapshot();
         let input = self.draft.clone();
-        // Newest-created first: the rail's order is a chronology, not a
-        // leaderboard of who spoke last. `updated_at_ms` moves whenever a run
-        // touches a conversation — and a `session_info` snapshot rewrites it —
-        // so an activity-ordered rail reshuffles under the reader as they read
-        // it, and after a storage migration (which restamps every session once)
-        // it says nothing about any of them. Creation time only moves forward,
-        // so a conversation keeps its place for its whole life.
+        // The rail's list is the desktop's recent view: most recently spoken
+        // first. Only the `活跃` stretch is re-ordered after this, by when each
+        // conversation started (`panels::rows_with`) — an activity stamp moves
+        // every second while a run streams, so ordering *that* stretch by it
+        // would shuffle the rows under the reader, and a run would jump to the
+        // top of a list the reader is walking with the arrow keys.
         //
-        // An agent that predates `createdAtMs` sends 0 for every row: fall back
-        // to the activity stamp there, which is at least an order rather than a
-        // page of ties.
+        // `updated_at_ms` is not "when I was last here" — it is the newest
+        // entry's stamp, and a `session_info` snapshot is an entry, so a storage
+        // migration that rewrites every snapshot restamps the whole list at
+        // once. That is why the running stretch, the one a reader watches, does
+        // not depend on it.
         let mut sessions = self.sessions.clone();
-        sessions.sort_by_key(|session| {
-            std::cmp::Reverse(match session.created_at_ms {
-                0 => session.updated_at_ms,
-                created => created,
-            })
-        });
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at_ms));
         // On the launchpad there is no session, so no session's title: the
         // header must not keep naming the conversation `/new` left behind.
         let title = if self.launchpad {
@@ -1008,6 +1004,12 @@ impl Live {
                 workspace: session_workspace_label(&session.cwd),
                 parent_id: session.parent_session_id.clone(),
                 age: age(session.updated_at_ms),
+                // 0 from an agent that predates the stamp: the activity stamp
+                // stands in, so the 活跃 stretch is ordered rather than tied.
+                created_at_ms: match session.created_at_ms {
+                    0 => session.updated_at_ms,
+                    created => created,
+                },
                 // On the launchpad nothing is attached, so no row claims to be
                 // the current one.
                 current: !self.launchpad && session.id == current,
@@ -2445,15 +2447,11 @@ fn file_sessions(
     rows: &[SessionRow],
     pinned: &[String],
 ) -> (Vec<WorkspaceGroup>, Vec<String>) {
-    // A group is filed with the activity stamp of its freshest conversation:
-    // the heading's age is a fact about the workspace ("when was I last here"),
-    // which is a different clock from the one the rows are ordered by. The
-    // stamp is remembered beside the group because it must survive the whole
-    // scan, not just the row that opened it.
-    let mut groups: Vec<(WorkspaceGroup, i64)> = Vec::new();
+    let mut groups: Vec<WorkspaceGroup> = Vec::new();
     let mut chats: Vec<String> = Vec::new();
-    // `rows` is newest-created first, so a group keeps that order inside itself
-    // (the first time a path is seen is that workspace's newest conversation).
+    // `rows` is most recently spoken first, so a group keeps that order inside
+    // itself and the first time a path is seen is that workspace's newest
+    // activity.
     for row in rows {
         let Some(summary) = sessions.iter().find(|session| session.id == row.id) else {
             continue;
@@ -2465,35 +2463,22 @@ fn file_sessions(
         }
         match groups
             .iter_mut()
-            .find(|(group, _)| same_path(&group.path, &path))
+            .find(|group| same_path(&group.path, &path))
         {
-            Some((group, activity)) => {
-                group.session_ids.push(row.id.clone());
-                *activity = (*activity).max(summary.updated_at_ms);
-            }
-            None => groups.push((
-                WorkspaceGroup {
-                    name: workspace_name(&path),
-                    pinned: pinned.iter().any(|pin| same_path(pin, &path)),
-                    path,
-                    // Filled in once every conversation has been filed; the
-                    // heading does not know which one is fresh yet.
-                    age: String::new(),
-                    session_ids: vec![row.id.clone()],
-                },
-                summary.updated_at_ms,
-            )),
+            Some(group) => group.session_ids.push(row.id.clone()),
+            None => groups.push(WorkspaceGroup {
+                name: workspace_name(&path),
+                pinned: pinned.iter().any(|pin| same_path(pin, &path)),
+                path,
+                age: row.age.clone(),
+                session_ids: vec![row.id.clone()],
+            }),
         }
     }
-    for (group, activity) in groups.iter_mut() {
-        group.age = age(*activity);
-    }
-    // Pinned workspaces lead (the desktop's rail does the same); the rest stay
-    // in "most recently worked on" order. A heading names a directory, and
-    // "where was I working" is answered by its conversations' last activity —
-    // not by when they were started.
-    groups.sort_by_key(|(group, activity)| (!group.pinned, std::cmp::Reverse(*activity)));
-    (groups.into_iter().map(|(group, _)| group).collect(), chats)
+    // Pinned workspaces lead (the desktop's rail does the same); the rest keep
+    // the newest-activity order the rows already carry.
+    groups.sort_by_key(|group| !group.pinned);
+    (groups, chats)
 }
 
 /// The longest side a preview image is decoded to, in pixels.
@@ -3286,13 +3271,14 @@ mod tests {
         assert!(!data.sessions[0].streaming);
     }
 
-    /// The rail is a chronology, not a leaderboard: rows are ordered by when the
-    /// conversation was *created*, newest first. An activity-ordered rail
-    /// reshuffles under the reader (every reply moves a row), and a storage
-    /// migration that restamps every session destroys the order outright;
-    /// creation time never moves, so a conversation keeps its place for life.
+    /// `最近` carries two stretches on two clocks. 活跃 (a run in flight) is
+    /// ordered by when each conversation started — the one stamp a streaming run
+    /// does not rewrite, so a running row keeps its place instead of trading
+    /// with its neighbour every second. 更早 is ordered by when it last spoke,
+    /// the same fact the row's age shows, because that stretch is a list a
+    /// reader scans for "what did I just touch".
     #[tokio::test]
-    async fn the_rail_orders_conversations_by_creation_not_by_activity() {
+    async fn the_recent_panel_orders_active_rows_by_start_and_the_rest_by_activity() {
         let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
         let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
         let (mut live, _events) = Live::attach(&addr, None, false, None)
@@ -3303,18 +3289,26 @@ mod tests {
             .map(|elapsed| elapsed.as_millis() as i64)
             .unwrap_or(0);
         let minute = 60_000;
-        let mut newest = row("s-new", Some("started last"), "/work/alpha");
-        newest.created_at_ms = now - 2 * minute;
-        newest.updated_at_ms = now - 90 * minute;
-        let mut middle = row("s-mid", Some("started between"), "/work/alpha");
-        middle.created_at_ms = now - 60 * minute;
-        // Spoke last of the three: on an activity-ordered rail this row leads.
-        middle.updated_at_ms = now - minute;
-        let mut oldest = row("s-old", Some("started first"), "/work/alpha");
-        oldest.created_at_ms = now - 120 * minute;
-        oldest.updated_at_ms = now - 30 * minute;
-        // The list arrives in neither order: the rail does its own sorting.
-        live.sessions = vec![oldest, newest, middle];
+        // Two running conversations whose creation order is the reverse of their
+        // activity order: `s-speaking` moved a second ago, yet it started first.
+        let mut speaking = row("s-speaking", Some("spoke a second ago"), "/work/alpha");
+        speaking.created_at_ms = now - 300 * minute;
+        speaking.updated_at_ms = now - minute;
+        speaking.is_streaming = Some(true);
+        let mut started = row("s-started", Some("started last"), "/work/alpha");
+        started.created_at_ms = now - 30 * minute;
+        started.updated_at_ms = now - 20 * minute;
+        started.is_streaming = Some(true);
+        // Two quiet ones, in activity order — and in the opposite creation order,
+        // so the stretch cannot be passing this by accident.
+        let mut newer = row("s-newer", Some("spoke an hour ago"), "/work/alpha");
+        newer.created_at_ms = now - 900 * minute;
+        newer.updated_at_ms = now - 60 * minute;
+        let mut older = row("s-older", Some("spoke yesterday"), "/work/alpha");
+        older.created_at_ms = now - 10 * minute;
+        older.updated_at_ms = now - 24 * 60 * minute;
+        // The list arrives in neither order: the panel does the sorting.
+        live.sessions = vec![older, speaking, newer, started];
 
         let frame = crate::workbench::layout::Frame::new(
             120,
@@ -3323,40 +3317,38 @@ mod tests {
             crate::workbench::preferences::SidebarPosition::Right,
         );
         let data = live.data(&frame);
-        let order: Vec<&str> = data.sessions.iter().map(|row| row.id.as_str()).collect();
+        let painted: Vec<&str> =
+            crate::workbench::panels::rows(crate::workbench::state::PanelId::Recent, &data)
+                .iter()
+                .filter_map(|row| row.session())
+                .map(|index| data.sessions[index].id.as_str())
+                .collect();
         assert_eq!(
-            order,
-            ["s-new", "s-mid", "s-old"],
-            "newest-created first, whatever the activity stamps say"
+            painted,
+            ["s-started", "s-speaking", "s-newer", "s-older"],
+            "active rows newest-started first; the quiet ones by last activity"
         );
 
-        // A workspace heading answers a different question — where was I working
-        // — so its age is still the freshest activity under it, even though the
-        // conversations beneath it are filed by creation.
-        let alpha = data
-            .workspaces
-            .iter()
-            .find(|group| group.name == "alpha")
-            .expect("the conversations ran in /work/alpha");
-        assert_eq!(alpha.age, "1m", "the heading counts its last activity");
-        assert_eq!(
-            alpha.session_ids,
-            ["s-new", "s-mid", "s-old"],
-            "inside a workspace the conversations keep the rail's order"
-        );
-
-        // An agent that predates `createdAtMs` sends 0: fall back to the activity
-        // stamp rather than leaving the whole list tied.
-        let mut quiet = row("s-quiet", Some("old agent"), "/work/alpha");
-        quiet.updated_at_ms = now - 10 * minute;
-        let mut fresh = row("s-fresh", Some("old agent"), "/work/alpha");
-        fresh.updated_at_ms = now - minute;
-        live.sessions = vec![quiet, fresh];
+        // An agent that predates `createdAtMs` sends 0 for the running rows too:
+        // the activity stamp stands in, so the stretch is ordered rather than a
+        // page of ties.
+        let mut old_a = row("s-old-a", Some("old agent"), "/work/alpha");
+        old_a.is_streaming = Some(true);
+        old_a.updated_at_ms = now - 10 * minute;
+        let mut old_b = row("s-old-b", Some("old agent"), "/work/alpha");
+        old_b.is_streaming = Some(true);
+        old_b.updated_at_ms = now - minute;
+        live.sessions = vec![old_a, old_b];
         let data = live.data(&frame);
-        let order: Vec<&str> = data.sessions.iter().map(|row| row.id.as_str()).collect();
+        let painted: Vec<&str> =
+            crate::workbench::panels::rows(crate::workbench::state::PanelId::Recent, &data)
+                .iter()
+                .filter_map(|row| row.session())
+                .map(|index| data.sessions[index].id.as_str())
+                .collect();
         assert_eq!(
-            order,
-            ["s-fresh", "s-quiet"],
+            painted,
+            ["s-old-b", "s-old-a"],
             "no stamp: activity orders it"
         );
     }
@@ -3428,23 +3420,13 @@ mod tests {
             .join("abc")
             .display()
             .to_string();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_millis() as i64)
-            .unwrap_or(0);
-        let minute = 60_000;
-        let mut sessions = vec![
+        let sessions = vec![
             row("a", Some("newest in main"), "/work/future-os"),
             row("b", Some("older in main"), "/work/future-os/"),
             row("c", Some("a worktree"), "/work/future-os/.worktrees/rail"),
             row("d", Some("a sibling checkout"), "/other/future-os"),
             row("e", Some("scratch"), &scratch),
         ];
-        // Activity stamps: a group's age is the freshest one under it, which is
-        // a different clock from the one the conversations are ordered by.
-        for (index, session) in sessions.iter_mut().enumerate() {
-            session.updated_at_ms = now - (index as i64 + 1) * 10 * minute;
-        }
         let rows: Vec<SessionRow> = sessions
             .iter()
             .enumerate()
@@ -3465,14 +3447,13 @@ mod tests {
         assert_eq!(groups[0].session_ids, vec!["d".to_string()]);
 
         // A trailing slash is not a different workspace: `a` and `b` are one
-        // group, newest first, and the group's age is the freshest activity in
-        // it (ten minutes for `a`), not the row order's first entry.
+        // group, newest first, and the group's age is that newest one.
         let main = groups
             .iter()
             .find(|group| group.path == "/work/future-os")
             .expect("the main checkout");
         assert_eq!(main.session_ids, vec!["a".to_string(), "b".to_string()]);
-        assert_eq!(main.age, "10m");
+        assert_eq!(main.age, "0h");
         assert!(!main.pinned);
         assert_eq!(main.name, "future-os");
 
