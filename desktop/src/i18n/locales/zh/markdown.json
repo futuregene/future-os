@@ -39,7 +39,12 @@
     "unavailable": "无法预览 {{name}}，已改用默认程序打开。",
     "zoomIn": "放大",
     "zoomOut": "缩小",
-    "resetZoom": "重置缩放"
+    "resetZoom": "适应窗口",
+    "actualSize": "实际大小 1:1",
+    "prevImage": "上一张图片",
+    "nextImage": "下一张图片",
+    "zoomHint": "滚轮或双击放大；放大后按住拖动可平移",
+    "panHint": "按住拖动可平移"
   },
   "jsonPreview": {
     "truncated": "仅对小于 1 MB 的 JSON 进行格式化，当前显示可读取的原始内容。",

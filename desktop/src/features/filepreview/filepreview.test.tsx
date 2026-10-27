@@ -336,7 +336,7 @@ describe("imagePreview", () => {
     await flushAsync();
     expect(container.textContent).not.toContain("100%");
 
-    const resetButton = container.querySelector("button[aria-label='Reset zoom']")!;
+    const resetButton = container.querySelector("button[aria-label='Fit to window']")!;
     act(() => resetButton.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     await flushAsync();
     expect(container.textContent).toContain("100%");

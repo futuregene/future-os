@@ -39,7 +39,12 @@
     "unavailable": "Can't preview {{name}} — opening it with the default app instead.",
     "zoomIn": "Zoom in",
     "zoomOut": "Zoom out",
-    "resetZoom": "Reset zoom"
+    "resetZoom": "Fit to window",
+    "actualSize": "Actual size 1:1",
+    "prevImage": "Previous image",
+    "nextImage": "Next image",
+    "zoomHint": "Scroll or double-click to zoom — drag to pan once zoomed in",
+    "panHint": "Drag to pan"
   },
   "jsonPreview": {
     "truncated": "Rich formatting is limited to JSON files smaller than 1 MB. Showing the available source text instead.",
