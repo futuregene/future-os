@@ -57,9 +57,17 @@ pub struct SessionRow {
     /// group's identity rather than the row's label.
     pub workspace: String,
     pub parent_id: Option<String>,
-    /// How long ago it was last active (`5m`, `3h`). Not the row's sort key:
-    /// rows are ordered by creation, which does not move (see `Live::data`).
+    /// How long ago it was last active (`5m`, `3h`). The rail's list order is
+    /// this same fact numerically: `Live::data` hands the rows over most
+    /// recently spoken first (see `panels::rows_with` for the `活跃` stretch,
+    /// which is the one exception).
     pub age: String,
+    /// When the conversation was created, in ms — the `活跃` stretch's order.
+    ///
+    /// `Live::data` resolves it: an agent that predates `createdAtMs` sends 0,
+    /// and the activity stamp stands in so a stretch of running conversations
+    /// still has an order instead of being a page of ties.
+    pub created_at_ms: i64,
     /// The session the workbench is attached to.
     pub current: bool,
     /// The agent reports a run in flight in this conversation — the row draws
@@ -86,7 +94,7 @@ pub struct WorkspaceGroup {
     pub pinned: bool,
     /// How long ago anything in it was refreshed (`5m`, `3h`).
     pub age: String,
-    /// The conversations filed under it, newest-created first.
+    /// The conversations filed under it, most recently refreshed first.
     pub session_ids: Vec<String>,
 }
 

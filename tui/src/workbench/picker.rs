@@ -967,6 +967,7 @@ mod tests {
                 current: true,
                 parent_id: None,
                 streaming: false,
+                created_at_ms: 0,
             },
             SessionRow {
                 id: "s2".into(),
@@ -976,6 +977,7 @@ mod tests {
                 current: false,
                 parent_id: None,
                 streaming: false,
+                created_at_ms: 0,
             },
         ];
         data
