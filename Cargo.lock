@@ -2094,6 +2094,7 @@ dependencies = [
  "future-remote-protocol",
  "future-remote-server",
  "futures",
+ "image",
  "nkeys",
  "serde",
  "serde_json",
