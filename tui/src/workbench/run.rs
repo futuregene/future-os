@@ -264,7 +264,7 @@ async fn event_loop(
                 // Read the rest of the burst before doing anything with it. A
                 // held key arrives as one terminal event per repeat, and every
                 // repeat used to cost its own round trip, transcript load and
-                // full repaint — which is what made a held `shift+→` look stuck.
+                // full repaint — which is what made a held `shift+↓` look stuck.
                 // A batch is still handled in order; what changes is that the
                 // session steps in it collapse into one switch, and the frame is
                 // painted once at the end instead of once per keystroke.
@@ -456,8 +456,8 @@ const INPUT_BURST_LIMIT: usize = 64;
 
 /// The net step a *session* key asks for, if this event is one.
 ///
-/// The driver reads this before the key reaches `quit`, so a held `shift+←` /
-/// `shift+→` becomes one switch instead of one per repeat. The guards are the
+/// The driver reads this before the key reaches `quit`, so a held `shift+↑` /
+/// `shift+↓` becomes one switch instead of one per repeat. The guards are the
 /// same ones that decide whether any global shortcut fires: an overlay owns the
 /// keys it paints.
 fn session_step_of(workbench: &Workbench, event: &WbEvent) -> Option<i32> {

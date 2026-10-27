@@ -1028,10 +1028,12 @@ fn sidebar_rows(
         );
         x = x.saturating_add(tab_width + 1);
     }
-    // A focused rail says which keys it answers — the one place a reader who
-    // clicked a row (or pressed `tab`) finds out that `↑↓` walks the list and
-    // `⏎` opens the row. It costs one row of the list and saves the guesswork,
-    // so it is only shown while the rail actually owns the keys.
+    // A focused rail says which two keys walk it from here: `shift+←→` the
+    // tabs, `shift+↑↓` the conversations, with the chat following the cursor.
+    // `↑↓` alone only moves the list cursor and `⏎` only opens what it stands
+    // on, so a reader who guessed wrong learns the chords here. It costs the
+    // list one row and saves the guesswork, so it is only shown while the rail
+    // actually owns the keys.
     let footer = usize::from(workbench.sidebar_focus && area.h >= 4);
     let content = Rect::new(area.x, area.y + 1, area.w, area.h - 1 - footer as u16);
     let index = workbench.panel.index();

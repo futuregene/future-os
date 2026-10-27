@@ -299,7 +299,7 @@ pub enum WbAction {
     DeleteSession(String),
     /// Move the rail's cursor `delta` conversations and open the one it lands
     /// on. Resolved by the driver *after* the whole input burst, so a held
-    /// `shift+←`/`shift+→` pays for one switch instead of one per repeat.
+    /// `shift+↑`/`shift+↓` pays for one switch instead of one per repeat.
     SessionStep(i32),
     SwitchPanel(PanelId),
     /// The model picker chose a model: apply it to the agent.
@@ -1018,6 +1018,17 @@ impl Workbench {
             Some(preferences::Action::PanelFiles) => {
                 return self.focus_panel_action(PanelId::Files, data)
             }
+            // The rail's neighbouring tab, from anywhere — the same intent as
+            // `ctrl+1`…`ctrl+3` one step at a time, and the one way to reach the
+            // tabs while `←`/`→` belong to the tree on 文件.
+            Some(preferences::Action::PanelPrev) => {
+                let panel = self.panel.previous();
+                return self.focus_panel_action(panel, data);
+            }
+            Some(preferences::Action::PanelNext) => {
+                let panel = self.panel.next();
+                return self.focus_panel_action(panel, data);
+            }
             // The clipboard: an image becomes an attachment, text is pasted.
             Some(preferences::Action::PasteImage) => return vec![WbAction::PasteClipboard],
             Some(preferences::Action::PreviewAttachment) => {
@@ -1468,7 +1479,7 @@ impl Workbench {
     /// second call moves a second conversation.
     ///
     /// The driver calls this once per input burst with the *net* step a held
-    /// `shift+←`/`shift+→` accumulated: every step still moves the cursor, but
+    /// `shift+↑`/`shift+↓` accumulated: every step still moves the cursor, but
     /// the conversation is switched once — a switch is two round trips and a
     /// transcript load, and paying that per key repeat is what made the rail
     /// feel stuck.
@@ -1552,8 +1563,11 @@ impl Workbench {
             // of "further into the thing", decided by what is in the box.
             "left" | "shift+left" => Some(self.pan_preview(-2, 0)),
             "right" | "shift+right" => Some(self.pan_preview(2, 0)),
-            "up" => Some(self.pan_preview(0, -1)),
-            "down" => Some(self.pan_preview(0, 1)),
+            // The box keeps the shift arrows the rail uses for its chords: a
+            // preview that let `shift+↑↓` switch the conversation underneath it
+            // would repaint the workspace a picture was opened from.
+            "up" | "shift+up" => Some(self.pan_preview(0, -1)),
+            "down" | "shift+down" => Some(self.pan_preview(0, 1)),
             "pageUp" => Some(self.page_preview(-1)),
             "pageDown" => Some(self.page_preview(1)),
             _ => None,
@@ -3881,6 +3895,66 @@ mod tests {
         );
     }
 
+    /// The shift arrows are the documented way through the rail's three tabs:
+    /// they work from anywhere (a hidden rail is shown and takes the keys), they
+    /// wrap, and they land on the same tab the plain arrows reach inside the
+    /// rail.
+    #[test]
+    fn shift_left_and_right_walk_the_three_tabs() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let previous = workbench
+            .keys
+            .key(preferences::Action::PanelPrev)
+            .to_string();
+        let next = workbench
+            .keys
+            .key(preferences::Action::PanelNext)
+            .to_string();
+        assert_eq!(
+            (previous.as_str(), next.as_str()),
+            ("shift+left", "shift+right")
+        );
+
+        // From a rail the reader has hidden, with the keys in the draft: the
+        // verb names a tab, so showing the rail is the whole request.
+        workbench.sidebar_visible = false;
+        workbench.sidebar_focus = false;
+        assert_eq!(
+            workbench.handle(WbEvent::Key(next.clone()), &data),
+            vec![WbAction::SwitchPanel(PanelId::Workspaces)]
+        );
+        assert_eq!(workbench.panel, PanelId::Workspaces);
+        assert!(workbench.sidebar_visible && workbench.sidebar_focus);
+
+        // 最近 → 工作区 → 文件 → 最近, and back round.
+        assert_eq!(
+            workbench.handle(WbEvent::Key(next.clone()), &data),
+            vec![WbAction::SwitchPanel(PanelId::Files)]
+        );
+        assert_eq!(
+            workbench.handle(WbEvent::Key(next.clone()), &data),
+            vec![WbAction::SwitchPanel(PanelId::Recent)]
+        );
+        assert_eq!(
+            workbench.handle(WbEvent::Key(previous), &data),
+            vec![WbAction::SwitchPanel(PanelId::Files)]
+        );
+        // 文件 answers the plain arrows with its neighbouring tab as well (the
+        // tree keeps `enter`/`⌫`), so the shift pair and `←`/`→` agree there and
+        // the chord is the same one on all three tabs.
+        assert_eq!(workbench.panel, PanelId::Files);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("right".into()), &data),
+            vec![WbAction::SwitchPanel(PanelId::Recent)]
+        );
+        workbench.panel = PanelId::Files;
+        assert_eq!(
+            workbench.handle(WbEvent::Key("shift+right".into()), &data),
+            vec![WbAction::SwitchPanel(PanelId::Recent)]
+        );
+    }
+
     /// The previous/next keys switch the conversation *and* leave the cursor on
     /// it, so the chat and the rail never name different conversations.
     #[test]
@@ -3926,7 +4000,7 @@ mod tests {
         assert!(workbench.step_session(-1, &data).is_empty());
     }
 
-    /// A held `shift+→` is one switch: the driver accumulates the burst's steps
+    /// A held `shift+↓` is one switch: the driver accumulates the burst's steps
     /// and asks the surface to walk them in one go.
     #[test]
     fn a_burst_of_session_steps_is_one_switch() {
@@ -3936,7 +4010,7 @@ mod tests {
         data.workspaces.clear();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         for _ in 0..3 {
-            let actions = workbench.handle(WbEvent::Key("shift+right".into()), &data);
+            let actions = workbench.handle(WbEvent::Key("shift+down".into()), &data);
             assert_eq!(actions, vec![WbAction::SessionStep(1)]);
         }
         assert_eq!(
@@ -5065,18 +5139,22 @@ mod tests {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         let unfocused = plain(&workbench.render(&data, 120, 38));
-        assert!(!unfocused.contains("⏎ 打开"), "{unfocused}");
+        assert!(!unfocused.contains("shift+↑↓"), "{unfocused}");
         workbench.sidebar_focus = true;
         let rows = workbench.render(&data, 120, 38);
-        let text = plain(&rows);
-        // The footer is the rail's own last row, and it is not a click target:
-        // a reader aiming at a hint must not open the conversation that used to
+        // The footer is the rail's own last row and not a click target: a
+        // reader aiming at a hint must not open the conversation that used to
         // be painted there.
-        assert!(text.contains("↑↓ 选择"), "{text}");
+        //
+        // It names the two chords that walk the rail from here — `shift+←→` the
+        // tabs, `shift+↑↓` the conversations — because `↑↓` alone only moves
+        // the list cursor and `⏎` only opens what it stands on.
         let footer = rows
             .iter()
-            .position(|row| crate::utils::strip_ansi_codes(row).contains("页签"))
+            .position(|row| crate::utils::strip_ansi_codes(row).contains("shift+←→ 页签"))
             .expect("the rail's footer");
+        let hint = crate::utils::strip_ansi_codes(&rows[footer]);
+        assert!(hint.contains("shift+↑↓ 切换会话"), "{hint}");
         assert!(
             workbench
                 .hits()

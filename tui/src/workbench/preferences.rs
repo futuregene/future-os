@@ -89,6 +89,9 @@ pub enum Action {
     PanelRecent,
     PanelWorkspaces,
     PanelFiles,
+    /// The rail's neighbouring tab: `shift+←` / `shift+→`.
+    PanelPrev,
+    PanelNext,
     /// Read the clipboard into the draft: an image becomes an attachment.
     PasteImage,
     /// Show the image already attached to the draft.
@@ -131,7 +134,7 @@ impl Group {
 /// Every action, in the order the help overlay lists them: grouped, and inside
 /// a group from most to least used. `ACTIONS` is the one authority — the help
 /// table, the shortcut editor and the event dispatch all walk it.
-pub const ACTIONS: [Action; 27] = [
+pub const ACTIONS: [Action; 29] = [
     // Sessions
     Action::PrevSession,
     Action::NextSession,
@@ -152,6 +155,8 @@ pub const ACTIONS: [Action; 27] = [
     Action::PanelRecent,
     Action::PanelWorkspaces,
     Action::PanelFiles,
+    Action::PanelPrev,
+    Action::PanelNext,
     // Interface
     Action::Palette,
     Action::Help,
@@ -194,6 +199,8 @@ impl Action {
             Self::PanelRecent => "panelRecent",
             Self::PanelWorkspaces => "panelWorkspaces",
             Self::PanelFiles => "panelFiles",
+            Self::PanelPrev => "panelPrevious",
+            Self::PanelNext => "panelNext",
             Self::PasteImage => "pasteImage",
             Self::PreviewAttachment => "previewAttachment",
         }
@@ -215,9 +222,12 @@ impl Action {
             Self::Model | Self::Thinking | Self::Approval | Self::Workspaces | Self::Language => {
                 Group::Choice
             }
-            Self::Sidebar | Self::PanelRecent | Self::PanelWorkspaces | Self::PanelFiles => {
-                Group::Panels
-            }
+            Self::Sidebar
+            | Self::PanelRecent
+            | Self::PanelWorkspaces
+            | Self::PanelFiles
+            | Self::PanelPrev
+            | Self::PanelNext => Group::Panels,
             Self::Palette
             | Self::Help
             | Self::Preferences
@@ -257,6 +267,8 @@ impl Action {
             Self::PanelRecent => Key::HelpKeyPanelRecent,
             Self::PanelWorkspaces => Key::HelpKeyPanelWorkspaces,
             Self::PanelFiles => Key::HelpKeyPanelFiles,
+            Self::PanelPrev => Key::HelpKeyPrevPanel,
+            Self::PanelNext => Key::HelpKeyNextPanel,
             Self::PasteImage => Key::HelpKeyPasteImage,
             Self::PreviewAttachment => Key::HelpKeyPreviewAttachment,
         }
@@ -294,10 +306,12 @@ impl Action {
             Self::PanelRecent => "ctrl+1",
             Self::PanelWorkspaces => "ctrl+2",
             Self::PanelFiles => "ctrl+3",
+            Self::PanelPrev => "shift+left",
+            Self::PanelNext => "shift+right",
             Self::PasteImage => "ctrl+v",
             Self::PreviewAttachment => "alt+v",
-            Self::PrevSession => "shift+left",
-            Self::NextSession => "shift+right",
+            Self::PrevSession => "shift+up",
+            Self::NextSession => "shift+down",
             Self::DeleteSession => "ctrl+d",
         }
     }

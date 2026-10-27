@@ -1409,6 +1409,13 @@ mod tests {
     fn legacy_modified_sequences() {
         let _g = reset_kitty();
         assert_eq!(parse_key("\x1b[Z").as_deref(), Some("shift+tab"));
+        // The shift arrows are the rail's two chords (`shift+←→` tabs,
+        // `shift+↑↓` sessions), so the runtime spelling is pinned here, not only
+        // in `matches_key`.
+        assert_eq!(parse_key("\x1b[1;2A").as_deref(), Some("shift+up"));
+        assert_eq!(parse_key("\x1b[1;2B").as_deref(), Some("shift+down"));
+        assert_eq!(parse_key("\x1b[1;2C").as_deref(), Some("shift+right"));
+        assert_eq!(parse_key("\x1b[1;2D").as_deref(), Some("shift+left"));
         assert_eq!(parse_key("\x1b[3~").as_deref(), Some("delete"));
         assert_eq!(parse_key("\x1b[3^").as_deref(), Some("ctrl+delete"));
         assert_eq!(parse_key("\x1b[2~").as_deref(), Some("insert"));
@@ -2133,6 +2140,7 @@ mod tests {
         assert!(matches_key("\x1b[1;3A", "alt+up"));
         assert!(matches_key("\x1b[1;2A", "shift+up"));
         assert!(matches_key("\x1b[B", "down"));
+        assert!(matches_key("\x1b[1;2B", "shift+down"));
         assert!(matches_key("\x1bn", "alt+down"));
         assert!(matches_key("\x1b[1;3B", "alt+down"));
         assert!(matches_key("\x1b[1;5B", "ctrl+down"));

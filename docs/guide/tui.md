@@ -63,7 +63,7 @@ The activity row describes the conversation **on screen**: its kind (思考 / �
 生成), how long this client has been watching the run, and how many tool calls
 the run has made — one per call, though the agent announces every call twice
 while its arguments stream. Switching conversations — a click in the rail,
-`ctrl+r`, `shift+←`/`shift+→` — therefore starts the row over, and a conversation
+`ctrl+r`, `shift+↑`/`shift+↓` — therefore starts the row over, and a conversation
 whose run is still in flight (started here, by the desktop, by a queued run)
 takes the spinner back rather than showing `idle`.
 
@@ -234,9 +234,10 @@ click on the rail's tab strip are the doors to the same places.
 | Key | Action |
 |---|---|
 | `tab` / `shift+tab` | Launchpad: move between the prompt and the parameter chips (`enter` cycles the chip under the cursor; `escape` or typing goes back to the prompt). Conversation: take the keys into the rail (the cursor lands on the conversation on screen) and back |
-| `←` `→` | Move the draft cursor; in a focused rail, switch between its two tabs (最近 ↔ 工作区) |
-| `↑` `↓` | Move through draft lines / submission history; in a focused rail, move to the previous / next conversation (headings are skipped) and `enter` opens it |
-| `shift+←` / `shift+→` | Switch to the previous / next conversation in the rail's order, wherever the keys are: the transcript follows, and so does the rail's cursor. A held key switches once per burst, not once per repeat |
+| `←` `→` | Move the draft cursor; in a focused rail, switch to the neighbouring tab (最近 → 工作区 → 文件) — the same three `shift+←`/`shift+→` step through from anywhere |
+| `↑` `↓` | Move through draft lines / submission history; in a focused rail, move the list cursor (headings are skipped). `enter` opens the row under it; switching the conversation itself needs no `enter` — that is `shift+↑`/`shift+↓` |
+| `shift+←` / `shift+→` | The rail's three tabs (最近 / 工作区 / 文件), wherever the keys are: the rail is shown and takes the keys, and its cursor lands on the conversation on screen. Wraps |
+| `shift+↑` / `shift+↓` | Switch to the previous / next conversation in the rail's order, wherever the keys are: the transcript follows, and so does the rail's cursor. A held key switches once per burst, not once per repeat |
 | `p` | Rails: pin / unpin the workspace the selected conversation belongs to |
 | `ctrl+d` | Delete a conversation: the confirm box names the one that would go — the row under the rail's cursor when the rail has the keys, otherwise the one on screen — and `⏎` is what deletes it (`esc` keeps it). In a focused rail `delete` is the same door. The row that takes its place opens, and deleting the last one leaves the launchpad |
 | `ctrl+j` / `ctrl+enter` | Insert a newline. `ctrl+j` is the one every terminal delivers; `ctrl+enter` arrives when the terminal reports modifiers (kitty keyboard protocol, xterm `modifyOtherKeys`, or a Windows Terminal `sendInput` binding), and `shift+enter` needs one of those too. Windows Terminal keeps `alt+enter` for fullscreen and sends plain Enter for `ctrl+enter` unless the reader binds it, e.g. `{"keys": "ctrl+enter", "command": {"action": "sendInput", "input": "\u001b[13;5u"}}` |
