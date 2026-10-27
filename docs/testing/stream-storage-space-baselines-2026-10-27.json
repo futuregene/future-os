@@ -407,6 +407,13 @@
       "artifactSha256": "02475de59fdd346eb49aa4bee6217a20c46c5c94519ec846f6f513b8695566d3",
       "acceptanceArtifact": "docs/testing/first-history-load-acceptance-2026-10-27.json",
       "scope": "One real five-turn format2 conversation. Do not compare to different synthetic workloads or attribute shared core-table pages to this session."
+    },
+    {
+      "id": "B5-native-id-recheck-and-three-generation-comparison",
+      "status": "read-only audit and arithmetic over preserved measurements; Host identity unification remains incomplete",
+      "artifact": "docs/testing/storage-id-and-savings-review-2026-10-27.json",
+      "artifactSha256": "502fe8b07257bca98f7351136ad70eedaab7295cac2e077c9d48fe483fd28167",
+      "scope": "Latest five-prompt conversation verifies Agent native keys; compare identical synthetic workloads only, preserving original and previous measurements."
     }
   ]
 }
