@@ -194,7 +194,13 @@ TUI 不使用 logo 或图标。聊天页眉只有一行文字品牌 `FUTURE OS`�
 界面），然后是不可改键的行内键，最后是命令。
 
 按住 `shift+↑` / `shift+↓` 只换一次：按键返回 `WbAction::SessionStep(delta)`，驱动先读完整个输入
-突发，再用 `Workbench::step_session` 应用净步数。
+突发，再用 `Workbench::step_session` 应用净步数。侧栏光标每按一次就跟着走——那是读者眼睛盯着的东西——
+会话本身则等按键安静 80 ms（`run::OPEN_SETTLE`）后才打开，所以按住经过的那些不会被加载。
+
+适配器留着最近显示过的 8 条会话（连渲染好的行一起，见 `Live` 的缓存）。切到其中之一时，那些行**先**画上去、
+再去问 agent：一条 `get_state` + `get_session_entries`（两者都按 id 寻址，所以并发发出）用来校正。
+页没变就保留它对照的那些行，变了才按新页重建。这一对并发请求替换了原来串行的三次往返
+（`switch_session`、`get_state`、取页）——因为 `get_state` 本身就会 hydrate 它被问到的会话。
 
 ### 选择器（`/model`、`/thinking`、`/mode`、`/workspace`、`/theme`、`/sessions`、`/lang`）
 

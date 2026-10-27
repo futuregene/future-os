@@ -237,6 +237,9 @@ async fn event_loop(
     // rebuilding `WorkbenchData`, which asks the transcript for every row it
     // has rendered (see `Live::data`).
     let mut paint = true;
+    // A stepped conversation the reader has not stopped on yet (see
+    // [`OPEN_SETTLE`]).
+    let mut pending_open: Option<PendingOpen> = None;
 
     loop {
         // The frame's own metrics, computed once: the surface composes for
@@ -249,6 +252,7 @@ async fn event_loop(
             draw(terminal, workbench, live, &frame)?;
             clock.painted(workbench.spinner_frame(), Instant::now());
         }
+        let open_due = pending_open.as_ref().map(|open| open.due);
 
         // `paint` belongs to the *next* frame: every arm below assigns it — an
         // input or agent event paints, and the ticker asks the clock. Assign,
@@ -286,26 +290,50 @@ async fn event_loop(
                         continue;
                     }
                     // The rail's cursor moves now; the conversation it lands on
-                    // is opened once, after the burst, below.
+                    // is opened once the keys go quiet, below.
                     if let Some(delta) = session_step_of(workbench, &event) {
                         session_steps += delta;
                         continue;
+                    }
+                    // Anything else is the reader working *in* the conversation:
+                    // land the step first, or `enter` would submit to the one
+                    // they have already left. A step from this same burst counts
+                    // — the cursor is already on it.
+                    if let Some(open) = pending_open.take() {
+                        show_conversation(&open.id, terminal, workbench, live, &frame, &mut clock)
+                            .await?;
+                    } else if let Some(id) =
+                        resolve_step(&mut session_steps, workbench, live, &frame)
+                    {
+                        show_conversation(&id, terminal, workbench, live, &frame, &mut clock)
+                            .await?;
                     }
                     if quit(workbench, live, event, &frame, &mut InputIo { terminal, settings, settings_path, theme_explicit }).await? {
                         return Ok(());
                     }
                 }
-                if session_steps != 0 {
-                    // One switch for the whole burst. `step_session` moves the
-                    // surface's cursor the accumulated number of rows and names
-                    // the conversation it landed on; the app opens that one.
-                    let data = live.data(&frame);
-                    let target = workbench.step_session(session_steps, &data).into_iter().next();
-                    if let Some(WbAction::SwitchSession(id)) = target {
-                        let _ = live.apply(WbAction::SwitchSession(id)).await;
-                        let data = live.data(&frame);
-                        workbench.follow_current(&data);
+                if let Some(id) = resolve_step(&mut session_steps, workbench, live, &frame) {
+                    // A conversation the cache can paint goes up now — the
+                    // reader asked for it and it costs nothing to show. One the
+                    // client would have to fetch waits for the keys to go quiet
+                    // instead: a held `shift+↓` used to open every conversation
+                    // it passed through (see [`OPEN_SETTLE`]).
+                    if live.is_cached(&id) {
+                        pending_open = None;
+                        show_conversation(&id, terminal, workbench, live, &frame, &mut clock)
+                            .await?;
+                    } else {
+                        pending_open = Some(PendingOpen::stepped(id, Instant::now()));
                     }
+                }
+                paint = true;
+            }
+            _ = tokio::time::sleep_until(tokio::time::Instant::from_std(
+                    open_due.unwrap_or_else(Instant::now),
+                )), if open_due.is_some() => {
+                if let Some(open) = pending_open.take() {
+                    show_conversation(&open.id, terminal, workbench, live, &frame, &mut clock)
+                        .await?;
                 }
                 paint = true;
             }
@@ -455,6 +483,40 @@ const COALESCE_LIMIT: usize = 4096;
 /// starving the agent events that share this loop.
 const INPUT_BURST_LIMIT: usize = 64;
 
+/// How long a stepped conversation waits for the keys to go quiet.
+///
+/// A held `shift+↑/↓` arrives as one step per terminal repeat. Every repeat
+/// used to open the conversation it landed on — a round trip, a transcript page
+/// and a full repaint each, all replaced by the next repeat. Measured on a
+/// 180×50 terminal: eight repeats wrote 178 KB in six frames and took 412 ms to
+/// settle, so the transcript trailed the reader's fingers by a tenth of a second
+/// and every conversation in between was loaded only to be thrown away.
+///
+/// The window sits between the two costs it trades: shorter than a repeat
+/// interval, so a held key keeps deferring, and shorter than the pause a reader
+/// notices, so letting go lands the conversation at once. A conversation the
+/// cache can paint skips the wait entirely — there is nothing to fetch.
+const OPEN_SETTLE: Duration = Duration::from_millis(80);
+
+/// A conversation the rail's cursor has landed on whose rows are not on screen
+/// yet, and when to open it.
+struct PendingOpen {
+    id: String,
+    /// The last step's arrival plus [`OPEN_SETTLE`]: every repeat pushes it out.
+    due: Instant,
+}
+
+impl PendingOpen {
+    /// The reader stepped onto `id`: the window restarts from `now`, which is
+    /// what makes a held key one open instead of one per repeat.
+    fn stepped(id: String, now: Instant) -> Self {
+        Self {
+            id,
+            due: now + OPEN_SETTLE,
+        }
+    }
+}
+
 /// The net step a *session* key asks for, if this event is one.
 ///
 /// The driver reads this before the key reaches `quit`, so a held `shift+↑` /
@@ -473,6 +535,60 @@ fn session_step_of(workbench: &Workbench, event: &WbEvent) -> Option<i32> {
         Some(super::preferences::Action::NextSession) => Some(1),
         _ => None,
     }
+}
+
+/// The conversation a burst's accumulated steps land on, after moving the
+/// surface's cursor that many rows.
+///
+/// `step_session` owns both halves — the rail's cursor, which is what the reader
+/// watches move, and the conversation the cursor is now on. A step that finds
+/// nowhere to go (either end of the list) answers `None`, and nothing opens.
+fn resolve_step(
+    steps: &mut i32,
+    workbench: &mut Workbench,
+    live: &mut Live,
+    frame: &Frame,
+) -> Option<String> {
+    let wanted = std::mem::take(steps);
+    if wanted == 0 {
+        return None;
+    }
+    let data = live.data(frame);
+    workbench
+        .step_session(wanted, &data)
+        .into_iter()
+        .find_map(|action| match action {
+            WbAction::SwitchSession(id) => Some(id),
+            _ => None,
+        })
+}
+
+/// Open one conversation, painting what the cache can show of it before the
+/// round trip the agent still owes.
+///
+/// The mid-switch paint is the payoff of keeping cached rows: the reader sees
+/// the conversation they landed on immediately, and the reconcile that follows
+/// only replaces the rows when that conversation moved on while they were away
+/// (see `Live::finish_switch`).
+async fn show_conversation(
+    id: &str,
+    terminal: &mut Terminal,
+    workbench: &mut Workbench,
+    live: &mut Live,
+    frame: &Frame,
+    clock: &mut TickClock,
+) -> Result<(), String> {
+    if live.already_showing(id) {
+        return Ok(());
+    }
+    if live.begin_switch(id) {
+        draw(terminal, workbench, live, frame)?;
+        clock.painted(workbench.spinner_frame(), Instant::now());
+    }
+    live.finish_switch(id).await;
+    let data = live.data(frame);
+    workbench.follow_current(&data);
+    Ok(())
 }
 
 /// Apply every agent event that is already queued, stopping at
@@ -2003,5 +2119,45 @@ mod tests {
         assert!(layout_preferences(&shown, true).sidebar_visible);
         let hidden = TuiSettings::from_json(&serde_json::json!({"sidebarVisible": false}));
         assert!(!layout_preferences(&hidden, true).sidebar_visible);
+    }
+
+    /// A held `shift+↑/↓` opens one conversation, the one the reader stops on.
+    ///
+    /// Each repeat restarts the settle window, so nothing opens while the key
+    /// keeps producing steps — the conversations passed through are never
+    /// loaded at all (measured before this: eight repeats wrote 178 KB in six
+    /// frames and took 412 ms to settle, each frame a conversation that was
+    /// replaced 30 ms later). The two constants have to bracket a repeat
+    /// interval and stay under the pause a reader notices.
+    #[test]
+    fn a_held_session_key_opens_the_conversation_it_stops_on() {
+        let start = Instant::now();
+        let mut open = PendingOpen::stepped("s-1".into(), start);
+        assert_eq!(open.due, start + OPEN_SETTLE);
+
+        // Repeats at the fastest rate a terminal uses (~30/s): every one pushes
+        // the deadline past the next, so it never expires under the key.
+        let mut held = start;
+        for step in 1..=30u32 {
+            assert!(held < open.due, "the window expired under a held key");
+            held = start + Duration::from_millis(33) * step;
+            open = PendingOpen::stepped(format!("s-{step}"), held);
+        }
+        assert_eq!(open.id, "s-30", "the last step is the one that opens");
+        // Still pending at the moment of that last repeat…
+        assert!(held < open.due);
+        // …and due one settle after it.
+        assert_eq!(open.due, held + OPEN_SETTLE);
+    }
+
+    /// The settle window's own bounds, so a future tweak cannot quietly break
+    /// the property the test above relies on.
+    #[test]
+    fn the_settle_window_outlasts_a_repeat_and_beats_a_noticeable_pause() {
+        // Slower than a repeat interval (30–40 ms), or a held key would still
+        // open every conversation it passed through.
+        assert!(OPEN_SETTLE > Duration::from_millis(40));
+        // …and under the ~100 ms at which a pause reads as a delay.
+        assert!(OPEN_SETTLE <= Duration::from_millis(100));
     }
 }

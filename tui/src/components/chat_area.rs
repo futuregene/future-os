@@ -640,6 +640,24 @@ impl ChatArea {
         }
     }
 
+    /// An empty transcript that renders exactly like this one.
+    ///
+    /// A session switch swaps whole [`ChatArea`]s (the outgoing conversation's
+    /// rows are kept for the way back — see `Live::begin_switch`), so the
+    /// incoming side has to start empty *without* losing the settings the
+    /// transcript does not share with the conversation: the theme, `ctrl+e`'s
+    /// reading level, `ctrl+d`'s folding and `ctrl+g`'s expanded bodies belong
+    /// to the reader, not to the conversation they are leaving.
+    pub fn empty_like(&self) -> Self {
+        let mut fresh = Self::new(self.width.max(1), Some(self.theme));
+        fresh.reply_detail = self.reply_detail;
+        fresh.thinking_hidden = self.thinking_hidden;
+        fresh.tool_output_expanded = self.tool_output_expanded;
+        fresh.compact_activity = self.compact_activity;
+        fresh.viewport_height = self.viewport_height;
+        fresh
+    }
+
     /// Swap the palette (the `/theme` command) and rebuild the markdown
     /// renderers, which bake the colours in at construction time.
     pub fn set_theme(&mut self, theme: Theme) {

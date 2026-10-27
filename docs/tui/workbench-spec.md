@@ -320,7 +320,20 @@ interface), then the non-rebindable inline keys, then the commands.
 
 A held `shift+↑`/`shift+↓` is one switch, not one per key repeat: the key returns
 `WbAction::SessionStep(delta)`, the driver reads the whole input burst and
-applies the net step once through `Workbench::step_session`.
+applies the net step once through `Workbench::step_session`. The rail's cursor
+moves with every step — that is the thing the reader is watching — and the
+conversation is opened once the keys have been quiet for 80 ms
+(`run::OPEN_SETTLE`), so a held key never loads the conversations it passes
+through.
+
+The adapter keeps the last eight conversations it showed, rendered rows and all
+(`Live`'s cache). A switch to one of them paints those rows *before* it asks the
+agent anything, then reconciles with one `get_state` + `get_session_entries` pair
+(both addressed by name, so they go out together): a page that comes back
+unchanged keeps the rows it is compared against, and one that changed rebuilds
+the transcript. That pair replaces the three sequential round trips a switch used
+to take — `switch_session`, `get_state`, then the page — because `get_state`
+already hydrates the session it is asked about.
 
 ### Pictures in a text surface
 

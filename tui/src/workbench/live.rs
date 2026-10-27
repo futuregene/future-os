@@ -16,7 +16,7 @@
 //! * [`GrpcClient`] talks to the agent; this module never touches proto or a
 //!   socket directly.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -105,12 +105,60 @@ struct DraftSnapshot {
     pending: crate::components::input::PendingDraft,
 }
 
+/// How many conversations the adapter keeps ready to paint.
+///
+/// The rail is a list the reader walks with `shift+↑/↓`, so the conversation
+/// they come back to is almost always one of the last few. Eight covers a
+/// there-and-back over a window's worth of neighbours and costs one transcript's
+/// worth of rows each (a page is ten exchanges; the rendered lines dominate).
+const CACHED_SESSIONS: usize = 8;
+
+/// A conversation that has been on screen, kept so that coming back to it is a
+/// repaint instead of a round trip.
+///
+/// The rows are the expensive half of a switch and the half that does not
+/// change: a cached `ChatArea` holds what the reader last read, so a switch
+/// that hits one paints immediately and then reconciles in the background
+/// (`Live::finish_switch`). `page` is the tail page those rows were built from
+/// — the reconcile compares it against the page the agent returns and keeps the
+/// rows when nothing moved.
+struct CachedSession {
+    chat: ChatArea,
+    paging: Paging,
+    state: RpcSessionState,
+    page: SessionEntriesPage,
+}
+
+/// The tail page the rows on screen were built from, and the conversation it
+/// belongs to.
+///
+/// The id is not redundant with the header's: a client with no session (the
+/// launchpad, or a `future tui` that attached to nothing) loads an empty page for
+/// an empty id while `get_state` still names a session, and caching those rows
+/// under that name would bring the reader back to a blank transcript.
+#[derive(Clone)]
+struct ShownPage {
+    session_id: String,
+    page: SessionEntriesPage,
+}
+
 /// One attached session plus everything the surface needs to paint it.
 pub struct Live {
     client: Arc<GrpcClient>,
     chat: ChatArea,
     state: RpcSessionState,
     paging: Paging,
+    /// Conversations the reader has already been shown, oldest first (see
+    /// [`CachedSession`]).
+    cached: VecDeque<(String, CachedSession)>,
+    /// The tail page the transcript on screen was built from, if it is known.
+    ///
+    /// A switch fetches the same page again and compares: unchanged means the
+    /// rows on screen are still the conversation's, so they are kept (that is
+    /// what makes a cached conversation cost no re-render at all); changed means
+    /// the conversation moved on while the reader was away and the transcript is
+    /// rebuilt from the new page.
+    shown_page: Option<ShownPage>,
     sessions: Vec<SessionSummary>,
     models: Vec<ModelInfo>,
     approval: Option<ApprovalPrompt>,
@@ -245,6 +293,8 @@ impl Live {
             chat,
             state: RpcSessionState::default(),
             paging: Paging::default(),
+            cached: VecDeque::new(),
+            shown_page: None,
             sessions: Vec::new(),
             models: Vec::new(),
             approval: None,
@@ -310,6 +360,18 @@ impl Live {
         let Ok(state) = self.client.get_state().await else {
             return;
         };
+        self.install_state(state);
+    }
+
+    /// Put one `get_state` answer on screen, and point the client at the
+    /// session it names.
+    ///
+    /// Split from [`Self::refresh_state`] because a switch reads the state of
+    /// the conversation it is opening in the same round trip as that
+    /// conversation's page (see [`Self::finish_switch`]) and then installs it
+    /// here — one place that decides what a state answer means, so the two
+    /// paths cannot drift.
+    fn install_state(&mut self, state: RpcSessionState) {
         // A `get_state` naming a live approval is the reconnect path: the prompt
         // has to come back, or nothing but another client could free the parked
         // run.
@@ -439,20 +501,37 @@ impl Live {
     /// Load the newest page of the transcript, replacing what is on screen.
     pub async fn load_tail(&mut self) {
         let session_id = self.client.get_current_session_id();
-        self.chat.clear_messages();
-        self.reset_scroll_revision();
-        self.paging = Paging {
-            session_id: session_id.clone(),
-            has_more: false,
-            next_offset: 0,
-        };
         if session_id.is_empty() {
+            self.show_page(session_id, SessionEntriesPage::default());
             return;
         }
         match self.client.session_tail_page(&session_id).await {
-            Ok(page) => self.apply_page(page, false),
-            Err(error) => self.notice = Some(format!("Could not load the transcript: {error}")),
+            Ok(page) => self.show_page(session_id, page),
+            Err(error) => {
+                self.show_page(session_id, SessionEntriesPage::default());
+                self.notice = Some(format!("Could not load the transcript: {error}"));
+            }
         }
+    }
+
+    /// Put `page` on screen in place of whatever was there.
+    ///
+    /// The page is also remembered as the one these rows were built from, which
+    /// is what lets the next switch to this conversation tell "the same page,
+    /// keep the rows" from "it moved on while you were away, rebuild".
+    fn show_page(&mut self, session_id: String, page: SessionEntriesPage) {
+        self.chat.clear_messages();
+        self.reset_scroll_revision();
+        self.shown_page = Some(ShownPage {
+            session_id: session_id.clone(),
+            page: page.clone(),
+        });
+        self.paging = Paging {
+            session_id,
+            has_more: false,
+            next_offset: 0,
+        };
+        self.apply_page(page, false);
     }
 
     /// Fetch the page above what is loaded and prepend it, keeping the reader's
@@ -464,6 +543,10 @@ impl Live {
         let session_id = self.paging.session_id.clone();
         let before = self.paging.next_offset;
         match self.client.session_older_page(&session_id, before).await {
+            // Prepending does not change the *tail* page, which is why
+            // `shown_page` is left alone here: a switch back to this
+            // conversation that finds the same tail keeps the older rows the
+            // reader loaded as well.
             Ok(page) => self.apply_page(page, true),
             Err(error) => self.notice = Some(format!("Could not load older rows: {error}")),
         }
@@ -1521,24 +1604,184 @@ impl Live {
         Outcome::Continue
     }
 
+    /// Already on this conversation, and not on the launchpad?
+    ///
+    /// A click on the row the transcript is already showing, or a step that
+    /// found nowhere to go, must not re-read anything: the rows on screen are
+    /// this conversation's, and a rebuild would throw away the scroll position
+    /// and the older pages the reader loaded.
+    pub fn already_showing(&self, session_id: &str) -> bool {
+        !self.launchpad && session_id == self.state.session_id
+    }
+
+    /// Show one conversation: the synchronous half and the round trip.
+    ///
+    /// Kept as one call for every door that is not a held key (a click in the
+    /// rail, the launchpad's recents, `--continue`, a deleted row's
+    /// successor). Those doors paint once after this returns, so a cache hit's
+    /// rows and the reconcile's are one frame; `run::show_conversation` splits
+    /// the two only for `shift+↑/↓`, where painting the cache first is the
+    /// whole point.
     async fn switch(&mut self, session_id: &str) {
-        if !self.launchpad && session_id == self.state.session_id {
+        if self.already_showing(session_id) {
             return;
         }
+        self.begin_switch(session_id);
+        self.finish_switch(session_id).await;
+    }
+
+    /// Everything about a switch that costs no round trip.
+    ///
+    /// The draft is filed under the conversation being left, the cached
+    /// conversation (if any) is swapped onto the screen, and the rail's step is
+    /// forgotten. Returns whether cached rows are on screen *now*: `true` means
+    /// the caller may paint them before [`Self::finish_switch`] asks the agent
+    /// anything, which is the whole point of keeping them. A miss leaves the
+    /// transcript untouched — the rows are replaced when the page arrives, and
+    /// nothing paints in between — and returns `false`.
+    pub fn begin_switch(&mut self, session_id: &str) -> bool {
+        if self.already_showing(session_id) {
+            return false;
+        }
         self.save_draft();
-        match self.client.switch_session(session_id).await {
-            Ok(_) => {
-                self.launchpad = false;
-                self.notice = None;
-                self.refresh_state().await;
-                // The row is the session's: nothing of the one just left may
-                // stay on it (see [`Self::adopt_run`]).
-                self.adopt_run();
-                self.load_tail().await;
-                self.reset_scroll_revision();
-                self.restore_draft();
+        self.launchpad = false;
+        self.notice = None;
+        let cached = self.take_cached(session_id);
+        // The row is the session's: nothing of the one just left may stay on it
+        // (see [`Self::adopt_run`]). With cached rows this already uses the
+        // state that came in with them, so the frame painted from them is
+        // coherent; `finish_switch` re-runs it against the agent's answer.
+        self.adopt_run();
+        self.reset_scroll_revision();
+        cached
+    }
+
+    /// Point the client at `session_id` and reconcile what is on screen.
+    ///
+    /// The state and the tail page both address the session by name, so they go
+    /// out together — one round trip instead of the three a switch used to take
+    /// (`switch_session`, then `get_state`, then the page). `get_state` is what
+    /// hydrates the session on the agent's side as well, which is why the
+    /// `switch_session` RPC has no work left to do: it resolves the very same
+    /// `try_get_session`. A cached conversation whose page the agent answers
+    /// with unchanged keeps the rows it already has, so coming back to one is a
+    /// repaint and not a rebuild.
+    pub async fn finish_switch(&mut self, session_id: &str) {
+        let (state, page) = tokio::join!(
+            self.client.get_state_of(session_id),
+            self.client.session_tail_page(session_id)
+        );
+        match state {
+            Ok(state) => self.install_state(state),
+            // Nothing moved: the header and the transcript stay on the
+            // conversation that is still current, and the notice says why the
+            // one the reader picked did not open.
+            Err(error) => {
+                self.notice = Some(format!("Could not switch session: {error}"));
+                return;
             }
-            Err(error) => self.notice = Some(format!("Could not switch session: {error}")),
+        }
+        match page {
+            Ok(page) => {
+                // The rows on screen are worth keeping only when they are this
+                // conversation's and built from this very page.
+                let unchanged = self
+                    .shown_page
+                    .as_ref()
+                    .is_some_and(|shown| shown.session_id == session_id && shown.page == page);
+                if !unchanged {
+                    self.show_page(session_id.to_string(), page);
+                }
+            }
+            Err(error) => self.notice = Some(format!("Could not load the transcript: {error}")),
+        }
+        self.adopt_run();
+        self.restore_draft();
+    }
+
+    /// Is this conversation's transcript still in the cache — that is, can a
+    /// switch to it paint without asking the agent for anything?
+    pub fn is_cached(&self, session_id: &str) -> bool {
+        self.cached.iter().any(|(id, _)| id == session_id)
+    }
+
+    /// Swap the cached conversation for `session_id` onto the screen, keeping
+    /// what is there now for the way back.
+    fn take_cached(&mut self, session_id: &str) -> bool {
+        // What is on screen now, and everything needed to put it back.
+        let outgoing = (
+            self.state.session_id.clone(),
+            self.paging.clone(),
+            self.state.clone(),
+            self.shown_page.clone(),
+        );
+        match self.cached.iter().position(|(id, _)| id == session_id) {
+            Some(index) => {
+                let Some((_, cached)) = self.cached.remove(index) else {
+                    return false;
+                };
+                let CachedSession {
+                    chat,
+                    paging,
+                    state,
+                    page,
+                } = cached;
+                let previous = std::mem::replace(&mut self.chat, chat);
+                self.paging = paging;
+                self.state = state;
+                // The cached page stays the one these rows were built from, so
+                // the reconcile below can tell "unchanged, keep them" from
+                // "moved on, rebuild".
+                self.shown_page = Some(ShownPage {
+                    session_id: session_id.to_string(),
+                    page,
+                });
+                self.remember(outgoing, previous);
+                true
+            }
+            None => {
+                let fresh = self.chat.empty_like();
+                let previous = std::mem::replace(&mut self.chat, fresh);
+                self.paging = Paging::default();
+                self.shown_page = None;
+                self.remember(outgoing, previous);
+                false
+            }
+        }
+    }
+
+    /// Keep the conversation that was just on screen, so coming back to it is a
+    /// repaint.
+    ///
+    /// A conversation whose page this client cannot name — one it never finished
+    /// loading, or the launchpad — is dropped instead: the cache promises rows,
+    /// and rows it cannot check against the agent's page would be worse than a
+    /// round trip.
+    fn remember(
+        &mut self,
+        outgoing: (String, Paging, RpcSessionState, Option<ShownPage>),
+        chat: ChatArea,
+    ) {
+        let (id, paging, state, Some(shown)) = outgoing else {
+            return;
+        };
+        // Rows that belong to another conversation (or to none) are not this
+        // one's to keep.
+        if id.is_empty() || shown.session_id != id {
+            return;
+        }
+        self.cached.retain(|(known, _)| known != &id);
+        self.cached.push_back((
+            id,
+            CachedSession {
+                chat,
+                paging,
+                state,
+                page: shown.page,
+            },
+        ));
+        while self.cached.len() > CACHED_SESSIONS {
+            self.cached.pop_front();
         }
     }
 
@@ -1603,7 +1846,17 @@ impl Live {
     pub fn to_launchpad(&mut self) {
         self.save_draft();
         self.launchpad = true;
-        self.chat.clear_messages();
+        // The conversation being left keeps its rows for the way back: `/new`
+        // is not a reason to make the rail pay a round trip for it.
+        let outgoing = (
+            self.state.session_id.clone(),
+            self.paging.clone(),
+            self.state.clone(),
+            self.shown_page.take(),
+        );
+        let fresh = self.chat.empty_like();
+        let previous = std::mem::replace(&mut self.chat, fresh);
+        self.remember(outgoing, previous);
         self.paging = Paging::default();
         self.restore_draft();
         self.reset_scroll_revision();
@@ -3059,8 +3312,10 @@ mod tests {
     ///
     /// The transcript must never stay on a conversation the agent no longer
     /// has: `delete_session` reaches the agent, and the successor in the list is
-    /// opened in the same breath (`switch_session`), which is the observable
-    /// half of "the row that slid into its place opens".
+    /// opened in the same breath — which is the observable half of "the row that
+    /// slid into its place opens". Opening it is a read of *that* session's
+    /// state (the switch addresses both of its reads by name); it used to be a
+    /// `switch_session` RPC as well, one of the three round trips a switch took.
     #[tokio::test]
     async fn deleting_the_current_session_opens_its_successor() {
         let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
@@ -3075,6 +3330,7 @@ mod tests {
             ("delete_session", r#"{"sessionId":"s1"}"#),
             ("switch_session", r#"{"cancelled":false}"#),
         ]);
+        let asked = mock.seen_sessions.clone();
         let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
         let (mut live, _events) = Live::attach(&addr, None, false, None)
             .await
@@ -3088,9 +3344,12 @@ mod tests {
             commands.iter().any(|command| command == "delete_session"),
             "the delete must reach the agent, saw {commands:?}"
         );
+        let opened = asked.lock().unwrap().clone();
         assert!(
-            commands.iter().any(|command| command == "switch_session"),
-            "the successor must open, saw {commands:?}"
+            opened
+                .iter()
+                .any(|(command, session)| command == "get_state" && session == "s2"),
+            "the successor must open, saw {opened:?}"
         );
         // The reader is told what happened — and it has to survive the switch,
         // which clears the notice row when it opens a conversation.
@@ -3952,6 +4211,233 @@ mod tests {
         let activity = live.data(&frame()).activity;
         assert_eq!(activity.elapsed_secs, 0);
         assert_eq!(activity.tools, 0);
+    }
+
+    // ─── the session cache ────────────────────────────────────────────
+
+    /// One exchange of display history, shaped like the agent's page rows.
+    fn page_of(questions: &[&str]) -> String {
+        let rows: Vec<serde_json::Value> = questions
+            .iter()
+            .enumerate()
+            .map(|(index, question)| {
+                serde_json::json!({
+                    "id": format!("e{index}"),
+                    "role": "user",
+                    "blocks": [{"kind": "text", "text": question}],
+                })
+            })
+            .collect();
+        serde_json::json!({"entries": rows}).to_string()
+    }
+
+    /// How many transcript pages the mock agent has been asked for.
+    fn pages_fetched(seen: &std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> usize {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|kind| kind.as_str() == "get_session_entries")
+            .count()
+    }
+
+    fn rows_on_screen(live: &mut Live) -> Vec<String> {
+        live.data(&frame()).messages
+    }
+
+    /// A click on the row the transcript already shows reads nothing at all.
+    ///
+    /// The rows on screen are that conversation's, and the reader may have
+    /// scrolled and paged older turns into them: re-reading would rebuild the
+    /// transcript from the tail page and throw both away.
+    #[tokio::test]
+    async fn clicking_the_conversation_on_screen_reads_nothing() {
+        let answers =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
+                (
+                    "switch_session".to_string(),
+                    r#"{"success":true}"#.to_string(),
+                ),
+                (
+                    "get_state".to_string(),
+                    r#"{"sessionId":"s-a"}"#.to_string(),
+                ),
+                ("get_session_entries".to_string(), page_of(&["q1"])),
+            ])));
+        let mock = crate::rpc::grpc_client::tests::api_mock_with_table(answers);
+        let seen = mock.seen.clone();
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s-a"), false, None)
+            .await
+            .expect("attach to the test agent");
+        let before = seen.lock().unwrap().len();
+        let renders = live.chat.full_renders();
+
+        live.apply(WbAction::SwitchSession("s-a".into())).await;
+
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            before,
+            "the click reaches the agent with nothing"
+        );
+        assert_eq!(live.chat.full_renders(), renders, "and rebuilds nothing");
+    }
+
+    /// Coming back to a conversation the reader has already read is a repaint,
+    /// not a reload: the rows are still here, so a switch to them paints before
+    /// it asks the agent anything, and the reconcile that follows finds the same
+    /// page and keeps them.
+    ///
+    /// This is the `shift+↑/↓` case the rail is built around — a bounce to the
+    /// neighbour and back used to pay two round trips and a full re-render for
+    /// the conversation it had just left.
+    #[tokio::test]
+    async fn a_cached_conversation_comes_back_without_reloading_its_rows() {
+        let answers =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
+                (
+                    "switch_session".to_string(),
+                    r#"{"success":true}"#.to_string(),
+                ),
+                (
+                    "get_state".to_string(),
+                    r#"{"sessionId":"s-a"}"#.to_string(),
+                ),
+                ("get_session_entries".to_string(), page_of(&["q1"])),
+            ])));
+        let mock = crate::rpc::grpc_client::tests::api_mock_with_table(answers.clone());
+        let seen = mock.seen.clone();
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s-a"), false, None)
+            .await
+            .expect("attach to the test agent");
+        assert_eq!(pages_fetched(&seen), 1, "attach loads s-a's page");
+        let first = rows_on_screen(&mut live);
+        assert!(first.iter().any(|row| row.contains("q1")));
+        // `data()` has now rendered at the frame's width, so a rebuild is
+        // countable from here on.
+        let renders = live.chat.full_renders();
+
+        // To the neighbour, then straight back.
+        answers
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-b"}"#.into());
+        live.apply(WbAction::SwitchSession("s-b".into())).await;
+        assert_eq!(pages_fetched(&seen), 2, "s-b had to be fetched");
+        assert!(live.is_cached("s-a"), "the conversation just left is kept");
+
+        answers
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-a"}"#.into());
+        assert!(live.begin_switch("s-a"), "the cache has s-a's rows");
+        assert_eq!(
+            pages_fetched(&seen),
+            2,
+            "the switch paints before it asks the agent for anything"
+        );
+        assert_eq!(rows_on_screen(&mut live), first, "the rows came back");
+        assert_eq!(
+            live.chat.full_renders(),
+            renders,
+            "and they were not re-rendered"
+        );
+
+        // The reconcile still runs: it is what notices the conversation moving
+        // on while the reader was away.
+        live.finish_switch("s-a").await;
+        assert_eq!(pages_fetched(&seen), 3);
+        assert_eq!(
+            live.chat.full_renders(),
+            renders,
+            "the same page keeps the rows it was built from"
+        );
+    }
+
+    /// The other half of the cache: a conversation that gained turns while the
+    /// reader was elsewhere is rebuilt from the agent's page rather than having
+    /// that page *appended* to the rows the cache held — which would show the
+    /// last exchange twice.
+    #[tokio::test]
+    async fn a_cached_conversation_that_moved_on_is_rebuilt_not_appended() {
+        let answers =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
+                (
+                    "switch_session".to_string(),
+                    r#"{"success":true}"#.to_string(),
+                ),
+                (
+                    "get_state".to_string(),
+                    r#"{"sessionId":"s-a"}"#.to_string(),
+                ),
+                ("get_session_entries".to_string(), page_of(&["q1"])),
+            ])));
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(
+            crate::rpc::grpc_client::tests::api_mock_with_table(answers.clone()),
+        )
+        .await;
+        let (mut live, _events) = Live::attach(&addr, Some("s-a"), false, None)
+            .await
+            .expect("attach to the test agent");
+
+        answers
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-b"}"#.into());
+        live.apply(WbAction::SwitchSession("s-b".into())).await;
+
+        // s-a ran a turn while the reader was on s-b.
+        answers
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-a"}"#.into());
+        answers
+            .lock()
+            .unwrap()
+            .insert("get_session_entries".into(), page_of(&["q1", "q2"]));
+        assert!(live.begin_switch("s-a"), "the stale rows come back first");
+        live.finish_switch("s-a").await;
+
+        let screen = rows_on_screen(&mut live).join("\n");
+        assert!(screen.contains("q2"), "the new turn is on screen");
+        assert_eq!(
+            screen.matches("q1").count(),
+            1,
+            "and the cached rows were replaced, not appended to: {screen}"
+        );
+    }
+
+    /// `/new` is not a reason to make the way back cost a round trip: the
+    /// conversation being left keeps its rows.
+    #[tokio::test]
+    async fn the_launchpad_keeps_the_conversation_it_left() {
+        let answers =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
+                (
+                    "switch_session".to_string(),
+                    r#"{"success":true}"#.to_string(),
+                ),
+                (
+                    "get_state".to_string(),
+                    r#"{"sessionId":"s-a"}"#.to_string(),
+                ),
+                ("get_session_entries".to_string(), page_of(&["q1"])),
+            ])));
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(
+            crate::rpc::grpc_client::tests::api_mock_with_table(answers),
+        )
+        .await;
+        let (mut live, _events) = Live::attach(&addr, Some("s-a"), false, None)
+            .await
+            .expect("attach to the test agent");
+
+        live.to_launchpad();
+        assert!(
+            !rows_on_screen(&mut live).join("\n").contains("q1"),
+            "the transcript is gone"
+        );
+        assert!(live.is_cached("s-a"), "but its rows are kept");
+        assert!(live.begin_switch("s-a"), "and the way back is a repaint");
     }
 
     /// The two events that mean the agent knows more about the turn's spend than
