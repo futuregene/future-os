@@ -23,7 +23,7 @@ use crate::approval_mode::ApprovalMode;
 use crate::workbench::ansi::{fit, width};
 use crate::workbench::i18n::{self, t, Key, Language, LanguagePreference};
 use crate::workbench::state::{
-    fallback_thinking_levels, thinking_index_in, ModelChoice, WorkbenchData,
+    fallback_thinking_levels, model_reference, thinking_index_in, ModelChoice, WorkbenchData,
     DEFAULT_THINKING_LEVEL_NAME,
 };
 use crate::workbench::theme::{self, Palette};
@@ -186,8 +186,9 @@ pub enum PickerRow {
     /// A group heading — a provider's name. Not selectable: `↑`/`↓` step over
     /// it, and a click on it does nothing.
     Group { label: String, count: usize },
-    /// A choice. `key` is what the caller applies (a model id, a palette id, a
-    /// session id); `current` marks the row that is already in force.
+    /// A choice. `key` is what the caller applies (a model reference —
+    /// `provider/id`, so a row names exactly one model — a palette id, a session
+    /// id); `current` marks the row that is already in force.
     Item {
         key: String,
         label: String,
@@ -484,7 +485,10 @@ pub fn rows(
                         model.label.clone()
                     };
                     rows.push(PickerRow::Item {
-                        key: model.id.clone(),
+                        // The model and its provider travel together: two
+                        // providers may offer one id, and a bare id is what the
+                        // agent resolves to the wrong one of them.
+                        key: model_reference(&model.provider, &model.id),
                         label,
                         detail: model_detail(model),
                         current: ticks
@@ -1039,7 +1043,7 @@ mod tests {
         assert_eq!(
             picker.selected(&data, ""),
             Some(PickerRow::Item {
-                key: "deepseek-flash".into(),
+                key: "westlakehpc/deepseek-flash".into(),
                 label: "deepseek-flash".into(),
                 detail: "1.0M ctx · thinking off/low/medium/high/xhigh".into(),
                 current: true,
@@ -1109,6 +1113,49 @@ mod tests {
         assert_eq!(current_models("deepseek-flash", &models).len(), 2);
         assert!(current_models("", &models).is_empty());
         assert!(current_models("nope", &models).is_empty());
+    }
+
+    /// A row's key is what `enter` applies, so it has to name exactly one
+    /// model. Keyed by the bare id, two providers offering `deepseek-flash`
+    /// produced one key: the row that was picked and the model the agent set
+    /// were decided by the agent's own order, not by the row.
+    #[test]
+    fn every_model_row_is_keyed_by_its_provider_and_id() {
+        let mut data = data();
+        let mut shared = data.models[0].clone();
+        shared.provider = "future".into();
+        data.models.insert(0, shared);
+        // The session names its model with the provider, so exactly one of the
+        // two shared-id rows is the one in force.
+        data.model = "future/deepseek-flash".into();
+        let view = rows(
+            PickerKind::Model,
+            &data,
+            "",
+            1,
+            &fallback_thinking_levels(),
+            "",
+            LANG,
+            LanguagePreference::System,
+        );
+        let items: Vec<(String, bool)> = view
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                PickerRow::Item { key, current, .. } => Some((key.clone(), *current)),
+                _ => None,
+            })
+            .collect();
+        // Providers in the agent's order, each model under its own heading.
+        assert_eq!(
+            items,
+            vec![
+                ("future/deepseek-flash".to_string(), true),
+                ("westlakehpc/deepseek-flash".to_string(), false),
+                ("westlakehpc/Qwen".to_string(), false),
+                ("azure/gpt-6-astra".to_string(), false),
+            ]
+        );
     }
 
     #[test]
@@ -1226,7 +1273,7 @@ mod tests {
         assert_eq!(
             picker.selected(&data, ""),
             Some(PickerRow::Item {
-                key: "gpt-6-astra".into(),
+                key: "azure/gpt-6-astra".into(),
                 label: "gpt-6-astra".into(),
                 detail: "200.0k ctx · thinking medium/high".into(),
                 current: false,
@@ -1298,7 +1345,7 @@ mod tests {
         picker.move_by(1, &data);
         assert!(matches!(
             picker.selected(&data, ""),
-            Some(PickerRow::Item { ref key, .. }) if key == "Qwen"
+            Some(PickerRow::Item { ref key, .. }) if key == "westlakehpc/Qwen"
         ));
         let fallback = fallback_thinking_levels();
         assert_eq!(picker.level(), fallback[5]);
@@ -1308,7 +1355,7 @@ mod tests {
         picker.move_by(1, &data);
         assert!(matches!(
             picker.selected(&data, ""),
-            Some(PickerRow::Item { ref key, .. }) if key == "gpt-6-astra"
+            Some(PickerRow::Item { ref key, .. }) if key == "azure/gpt-6-astra"
         ));
         assert_eq!(picker.effort, 2);
         assert_eq!(picker.level(), "high");

@@ -33,9 +33,9 @@ use crate::rpc::GrpcClient;
 use super::i18n::{self, t, Key, Language, LanguagePreference};
 use super::layout::Frame;
 use super::state::{
-    effective_thinking_levels, legacy_wire_thinking_level, next_thinking_level, Activity,
-    ActivityKind, InputView, ModelChoice, PreviewView, QueuedPrompt, SessionMeta, SessionRow,
-    SkillRow, UsageData, WorkbenchData, WorkspaceGroup, DEFAULT_THINKING_LEVEL_NAME,
+    effective_thinking_levels, legacy_wire_thinking_level, model_reference, next_thinking_level,
+    Activity, ActivityKind, InputView, ModelChoice, PreviewView, QueuedPrompt, SessionMeta,
+    SessionRow, SkillRow, UsageData, WorkbenchData, WorkspaceGroup, DEFAULT_THINKING_LEVEL_NAME,
 };
 use super::WbAction;
 
@@ -1596,9 +1596,7 @@ impl Live {
         } else {
             self.state.model.as_deref()
         }?;
-        let tail = |name: &str| name.rsplit('/').next().unwrap_or(name).to_lowercase();
-        let needle = tail(id);
-        self.models.iter().find(|model| tail(&model.id) == needle)
+        find_model(&self.models, id)
     }
 
     /// The level to send over the wire.
@@ -1746,28 +1744,41 @@ impl Live {
 
     /// The next model in the agent's own order, staged for the next session.
     ///
-    /// Matched by id *tail* so a state that names the model with its provider
-    /// (`future/deepseek-flash`) still finds the row the list holds.
+    /// The list is walked as references (`future/deepseek-flash`), and the
+    /// current one is resolved the same way so a state naming its model with
+    /// the provider still finds its place in the list.
     fn cycle_pending_model(&mut self) {
-        let tail = |name: &str| name.rsplit('/').next().unwrap_or(name).to_lowercase();
-        let current = self
-            .pending_model
-            .clone()
-            .or_else(|| self.state.model.clone());
-        let ids: Vec<String> = self.models.iter().map(|model| model.id.clone()).collect();
-        if ids.is_empty() {
+        // The references, not the bare ids: two providers may offer one id, and
+        // staging the bare id would land the session on whichever of them the
+        // agent resolves first.
+        let references: Vec<String> = self
+            .models
+            .iter()
+            .map(|model| model_reference(&model.provider, &model.id))
+            .collect();
+        if references.is_empty() {
             // Not loaded yet (`refresh_models` runs after the first state):
             // say so rather than silently doing nothing.
             self.notice = Some("No models to choose from yet".into());
             return;
         }
-        let here = current.as_deref().map(tail).unwrap_or_default();
-        let index = ids
-            .iter()
-            .position(|id| tail(id) == here)
+        let current = self
+            .pending_model
+            .clone()
+            .or_else(|| self.state.model.clone());
+        let here = current
+            .as_deref()
+            .and_then(|current| find_model(&self.models, current))
+            .map(|model| model_reference(&model.provider, &model.id));
+        let index = here
+            .and_then(|reference| {
+                references
+                    .iter()
+                    .position(|candidate| *candidate == reference)
+            })
             .map(|index| index + 1)
             .unwrap_or(0);
-        let next = ids[index % ids.len()].clone();
+        let next = references[index % references.len()].clone();
         self.set_pending_model(&next);
     }
 
@@ -2721,14 +2732,39 @@ impl Live {
 /// list, or the legacy fallback when the id is unknown (not loaded yet, or from
 /// an older agent that never sent one).
 fn level_ring(models: &[ModelInfo], model_id: Option<&str>) -> Vec<String> {
-    let tail = |name: &str| name.rsplit('/').next().unwrap_or(name).to_lowercase();
-    let declared = model_id.map(tail).and_then(|needle| {
-        models
-            .iter()
-            .find(|model| tail(&model.id) == needle)
-            .and_then(|model| model.thinking_levels.as_deref())
-    });
+    let declared = model_id
+        .and_then(|id| find_model(models, id))
+        .and_then(|model| model.thinking_levels.as_deref());
     effective_thinking_levels(declared)
+}
+
+/// The model a reference names: `provider/id` exactly, and only then a bare id
+/// or an id tail for a session (or a saved setting) that names the model
+/// without its provider.
+///
+/// The order matters as much as the lookup: with two providers offering one
+/// id, a tail match can land on the other provider's model, which is how a
+/// picker row ended up describing a different model's thinking levels.
+fn find_model<'a>(models: &'a [ModelInfo], reference: &str) -> Option<&'a ModelInfo> {
+    let reference = reference.trim();
+    if reference.is_empty() {
+        return None;
+    }
+    let qualified = |model: &ModelInfo| {
+        !model.provider.is_empty()
+            && reference.eq_ignore_ascii_case(&model_reference(&model.provider, &model.id))
+    };
+    let tail = |name: &str| name.rsplit('/').next().unwrap_or(name).to_lowercase();
+    let needle = tail(reference);
+    models
+        .iter()
+        .find(|model| qualified(model))
+        .or_else(|| {
+            models
+                .iter()
+                .find(|model| reference.eq_ignore_ascii_case(&model.id))
+        })
+        .or_else(|| models.iter().find(|model| tail(&model.id) == needle))
 }
 
 #[cfg(test)]
@@ -3317,6 +3353,33 @@ mod tests {
         assert_eq!(
             next_thinking_level(&ring, DEFAULT_THINKING_LEVEL_NAME).as_deref(),
             Some("off")
+        );
+    }
+
+    /// Two providers may offer one id, and a reference says which one: the
+    /// lookup must not answer with the other provider's model, whose thinking
+    /// ring (and therefore the staged effort) is a different set.
+    #[test]
+    fn a_reference_names_one_model_when_two_providers_share_its_id() {
+        let mut westlake = model_info("deepseek-flash", Some(&["default", "off"]));
+        westlake.provider = "westlakehpc".into();
+        let mut future = model_info("deepseek-flash", Some(&["default", "low", "high"]));
+        future.provider = "future".into();
+        let models = vec![westlake, future];
+
+        assert_eq!(
+            find_model(&models, "future/deepseek-flash").map(|model| model.provider.as_str()),
+            Some("future")
+        );
+        assert_eq!(
+            level_ring(&models, Some("future/deepseek-flash")),
+            vec!["default", "low", "high"]
+        );
+        // A bare id (or a tail) is all an older surface gives us: it keeps the
+        // list's own order rather than failing.
+        assert_eq!(
+            find_model(&models, "deepseek-flash").map(|model| model.provider.as_str()),
+            Some("westlakehpc")
         );
     }
 
