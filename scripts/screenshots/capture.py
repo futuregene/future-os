@@ -1476,6 +1476,20 @@ TUI_SCENARIO_KEYS: dict[str, str] = {
     # checkout's own log — the same one `git log` would print — and the capture
     # needs `FUTURE_DEMO_CWD` for the scripted session to have one.
     "git": "\x07",
+    # The rail's own search: `ctrl+d` gives the rail the keys, `/` opens its
+    # search line, and the word narrows both panels to the conversations that
+    # answer it. `workbench` matches one of the demo agent's three sessions.
+    "rail-search": "\x04/workbench",
+    # A reply that is still arriving: the demo agent answers this prompt with a
+    # scripted turn (`STREAM_DELTAS`), one delta every 120 ms, and never ends it
+    # — so the frame shows the activity row and a transcript that stops
+    # mid-sentence, which is what "streaming" looks like and what a finished
+    # reply does not. Needs a capture long enough to reach the deltas
+    # (`--seconds 6` or more). The frame is reproducible run to run (measured:
+    # byte-identical PNGs) because the deltas are spaced by the demo agent's own
+    # clock and a frame is painted per batch; a machine much slower than this one
+    # may land one delta later, which is a different picture by one line.
+    "streaming": "解释一下这个 off-by-one，要具体一点\r",
 }
 # Each entry lists the label in every language the surface ships: the capture
 # pins one language (`--lang`), and a tab the frame spells differently is a

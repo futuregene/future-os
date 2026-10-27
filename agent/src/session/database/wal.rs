@@ -1,5 +1,6 @@
 //! PASSIVE checkpointing never runs inside an application's commit. The worker
-//! owns no session bodies and never requests RESTART/TRUNCATE during service.
+//! owns no session bodies. TRUNCATE is an explicit startup import command only;
+//! normal service and shutdown use PASSIVE.
 use super::metrics::Metrics;
 use anyhow::{ensure, Context, Result};
 use rusqlite::{Connection, OpenFlags};
@@ -13,6 +14,7 @@ const PERIOD: Duration = Duration::from_millis(250);
 type Observation = mpsc::SyncSender<std::result::Result<(i64, i64, i64), String>>;
 enum Command {
     Stop,
+    Truncate(Observation),
     #[cfg(test)]
     Observe(Observation),
 }
@@ -39,14 +41,16 @@ impl Checkpointer {
             if ready.send(Ok(())).is_err() {return;}
             let mut reported=false;
             loop {
-                let (finishing,observation):(bool,Option<Observation>)=match stopping.recv_timeout(PERIOD) {
-                    Ok(Command::Stop)|Err(mpsc::RecvTimeoutError::Disconnected)=>(true,None),
-                    Err(mpsc::RecvTimeoutError::Timeout)=>(false,None),
+                let (finishing,truncate,observation):(bool,bool,Option<Observation>)=match stopping.recv_timeout(PERIOD) {
+                    Ok(Command::Stop)|Err(mpsc::RecvTimeoutError::Disconnected)=>(true,false,None),
+                    Err(mpsc::RecvTimeoutError::Timeout)=>(false,false,None),
+                    Ok(Command::Truncate(ack))=>(false,true,Some(ack)),
                     #[cfg(test)]
-                    Ok(Command::Observe(ack))=>(false,Some(ack)),
+                    Ok(Command::Observe(ack))=>(false,false,Some(ack)),
                 };
                 let start=Instant::now();
-                let result=connection.query_row("PRAGMA wal_checkpoint(PASSIVE)",[],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?,row.get::<_,i64>(2)?)));
+                let sql=if truncate {"PRAGMA wal_checkpoint(TRUNCATE)"} else {"PRAGMA wal_checkpoint(PASSIVE)"};
+                let result=connection.query_row(sql,[],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?,row.get::<_,i64>(2)?)));
                 metrics.checkpoint.record(start.elapsed(),result.is_ok());
                 let observed=result.as_ref().copied().map_err(ToString::to_string);
                 match result {
@@ -56,7 +60,7 @@ impl Checkpointer {
                         metrics.checkpointed_frames.store(copied,Ordering::Relaxed);
                         reported=false;
                     },
-                    Err(error)=> {if !reported {tracing::warn!(%error,"passive WAL checkpoint failed; durable commits remain in WAL");reported=true;}},
+                    Err(error)=> {if !reported {tracing::warn!(%error,"WAL checkpoint failed; durable commits remain in WAL");reported=true;}},
                 }
                 observe_files(&path,&metrics);
                 if let Some(observation)=observation {let _=observation.send(observed);}
@@ -85,6 +89,19 @@ impl Checkpointer {
         }
         Ok(())
     }
+    fn truncate_after_import(&self) -> Result<(i64, i64, i64)> {
+        let (ack, result) = mpsc::sync_channel(1);
+        self.stop
+            .lock()
+            .as_ref()
+            .context("checkpoint worker is closed")?
+            .send(Command::Truncate(ack))
+            .context("checkpoint worker stopped")?;
+        result
+            .recv()
+            .context("import checkpoint observation stopped")?
+            .map_err(anyhow::Error::msg)
+    }
     #[cfg(test)]
     fn observe(&self) -> Result<(i64, i64, i64)> {
         let (ack, result) = mpsc::sync_channel(1);
@@ -98,6 +115,20 @@ impl Checkpointer {
             .recv()
             .context("checkpoint observation stopped")?
             .map_err(anyhow::Error::msg)
+    }
+}
+
+impl super::Database {
+    /// Startup-only reclamation, serialized with the periodic checkpoint so
+    /// SQLite's checkpoint lock cannot be held by our own PASSIVE worker.
+    pub(crate) fn checkpoint_after_import(&self) -> Result<()> {
+        let (busy, _, _) = self.inner.wal.truncate_after_import()?;
+        if busy != 0 {
+            tracing::warn!(
+                "legacy import checkpoint is busy; committed data remains durable in WAL"
+            );
+        }
+        Ok(())
     }
 }
 

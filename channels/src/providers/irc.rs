@@ -26,7 +26,7 @@
 //!   are remembered so a later send fails immediately instead of being retried
 //!   forever by the delivery queue.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use serde::Deserialize;
@@ -1200,14 +1200,25 @@ impl Irc {
             renames: 0,
             failures: Arc::new(Mutex::new(HashMap::new())),
         };
-        session.register(&config).await?;
+        let registration_error = || format!("{} never completed IRC registration", config.server);
+        session
+            .register(&config)
+            .await
+            .with_context(registration_error)?;
 
         let deadline = tokio::time::Instant::now() + budget;
-        while let Some(line) = read_within(&mut session, deadline).await? {
+        while let Some(line) = read_within(&mut session, deadline)
+            .await
+            .with_context(registration_error)?
+        {
             let Some(msg) = parse_line(&line) else {
                 continue;
             };
-            if let Step::Fatal(reason) = session.step(&msg, &config, 0).await? {
+            if let Step::Fatal(reason) = session
+                .step(&msg, &config, 0)
+                .await
+                .with_context(registration_error)?
+            {
                 return Err(FatalError(reason).into());
             }
             if msg.command == "001" {
