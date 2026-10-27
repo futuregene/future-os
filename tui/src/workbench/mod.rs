@@ -5089,11 +5089,42 @@ mod tests {
         assert_eq!(
             workbench.handle(WbEvent::Key("enter".into()), &data),
             vec![
-                WbAction::SetModel("Qwen".into()),
+                WbAction::SetModel("westlakehpc/Qwen".into()),
                 WbAction::SetThinking("high".into()),
             ]
         );
         assert_eq!(workbench.overlay, None, "applying closes the box");
+    }
+
+    /// The reported bug: `/model` listed `future/deepseek-flash` and
+    /// `westlakehpc/deepseek-flash`, and picking the first left the surface on
+    /// the second. The row's key was the bare id, and the agent resolves a bare
+    /// id against its own order — the user-defined `models.json` entry (the
+    /// `westlakehpc` one) before the built-in catalogue — so the row that was
+    /// picked and the model that was set were two different models.
+    #[test]
+    fn a_model_id_two_providers_share_is_applied_as_the_row_names_it() {
+        let mut data = demo::chat();
+        let mut shared = data.models[0].clone();
+        shared.provider = "future".into();
+        data.models.insert(0, shared);
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.open_picker(PickerKind::Model, &data);
+        // Ordinal 1 is the row in force: the slider takes 0, and the provider
+        // headings are not selectable.
+        assert_eq!(workbench.picker.index, 1);
+
+        // The other provider's model of the same id is a row of its own, and
+        // applying it names that provider — not whichever one the agent found
+        // first under the bare id.
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &data),
+            vec![
+                WbAction::SetModel("westlakehpc/deepseek-flash".into()),
+                WbAction::SetThinking("medium".into()),
+            ]
+        );
     }
 
     #[test]
@@ -5128,7 +5159,7 @@ mod tests {
         assert_eq!(
             actions,
             vec![
-                WbAction::SetPendingModel("Qwen".into()),
+                WbAction::SetPendingModel("westlakehpc/Qwen".into()),
                 WbAction::SetPendingThinking("medium".into()),
             ],
             "the row and the level it will run at, staged"
@@ -5169,7 +5200,7 @@ mod tests {
         assert_eq!(
             workbench.handle(WbEvent::Key("enter".into()), &chat),
             vec![
-                WbAction::SetModel("Qwen".into()),
+                WbAction::SetModel("westlakehpc/Qwen".into()),
                 WbAction::SetThinking("medium".into()),
             ]
         );
@@ -5287,7 +5318,7 @@ mod tests {
         assert_eq!(
             actions,
             vec![
-                WbAction::SetModel("Qwen".into()),
+                WbAction::SetModel("westlakehpc/Qwen".into()),
                 WbAction::SetThinking("medium".into()),
             ]
         );

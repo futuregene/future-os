@@ -139,6 +139,23 @@ impl ModelChoice {
     }
 }
 
+/// The stable reference for a model: `provider/id` where there is a provider.
+///
+/// A catalog id is provider-local even when it happens to contain a slash, so
+/// the provider is prefixed rather than inferred from the id. This is the
+/// spelling the desktop and phone clients send, and the one the picker applies:
+/// a bare id is ambiguous the moment two providers offer it — the agent
+/// resolves it against its own order (user-defined `models.json` entries before
+/// the built-in catalogue), so `deepseek-flash` picked from `future` silently
+/// became `westlakehpc/deepseek-flash`.
+pub fn model_reference(provider: &str, id: &str) -> String {
+    if provider.is_empty() {
+        id.to_string()
+    } else {
+        format!("{provider}/{id}")
+    }
+}
+
 /// The reserved level meaning "send no thinking/effort parameter at all".
 ///
 /// It is implicit on a current agent: every model's declared list starts with
