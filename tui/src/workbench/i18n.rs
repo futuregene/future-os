@@ -442,6 +442,7 @@ pub enum Key {
     CmdQueue,
     CmdCopy,
     CmdPaste,
+    CmdPreview,
     CmdMouse,
     CmdDelete,
     DeleteTitle,
@@ -848,6 +849,10 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "粘贴剪贴板（图片会变成附件）",
             "Paste the clipboard (an image becomes an attachment)",
         ),
+        CmdPreview => (
+            "预览草稿里最新的附件",
+            "Preview the newest attachment in the draft",
+        ),
         CmdMouse => ("切换鼠标捕获，便于选择复制", "Toggle mouse capture for native selection"),
         QueueTitle => ("排队消息", "Queued prompts"),
         QueueHint => ("↑↓ 选择 · x 取消 · r/⏎ 取消并取回草稿 · esc 关闭 · ctrl+x 停止当前运行", "↑↓ choose · x cancels · r/enter recalls to draft · esc closes · ctrl+x stops the active run"),
@@ -1236,7 +1241,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 294] = {
+    const ALL_KEYS: [Key; 295] = {
         use Key::*;
         [
             TabTodo,
@@ -1417,6 +1422,7 @@ mod tests {
             CmdDelete,
             CmdCopy,
             CmdPaste,
+            CmdPreview,
             CmdMouse,
             QueueTitle,
             QueueHint,

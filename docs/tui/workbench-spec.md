@@ -263,17 +263,26 @@ the row under the pointer rather than one beside it.
 
 ### Keyboard
 
-Keep the existing global bindings; add/override:
-`ctrl+m` model chooser; `ctrl+t` thinking-effort chooser; `ctrl+s` approval-mode
-chooser; `ctrl+l` workspace chooser; `ctrl+1` / `ctrl+2` the rail's two tabs;
-`ctrl+3` the files panel (the session's own workspace, not a tab);
-`ctrl+v` read the clipboard (an image becomes a draft attachment,
-text is pasted); `alt+v` preview the newest attached image;
-`ctrl+b` sidebar open/focus/close (the rail's own `›` edge button does the same
-with one click, and leaves a `‹` in the same column when the rail is closed);
-`tab` focus within a panel; `shift+tab`
-reverse; `ctrl+q` collapse todos; `alt+z` enlarge the sidebar; `/` command
-palette; `?` help; `esc` close one layer at a time. `shift+←` / `shift+→` walk
+**One prefix: `ctrl`.** Every global default is a `ctrl` chord (or an arrow with
+`shift`): `ctrl+o` model chooser; `ctrl+t` thinking-effort chooser; `ctrl+l`
+language chooser; `ctrl+g` the git browser; `ctrl+s` sidebar open/focus/close
+(the rail's own `›` edge button does the same with one click, and leaves a `‹` in
+the same column when the rail is closed); `ctrl+f` refresh; `ctrl+q` queue;
+`ctrl+v` read the clipboard (an image becomes a draft attachment, text is
+pasted); `tab` focus within a panel; `shift+tab` reverse; `/` command palette;
+`?` help; `esc` close one layer at a time.
+
+No default is `alt` — on macOS Option composes a character unless the reader
+turns on "Use Option as Meta" — and the letters left over after the collisions
+run out, so the remaining actions have **no chord**: approval mode (`/mode`),
+workspaces (`/workspace`), copy (`/copy`), mouse capture (`/mouse`), preferences
+(`/preferences`), the newest attachment (`/preview`), the files panel
+(`/files`), the three rail/files panels (a click, or `shift+←`/`shift+→`), and
+reduced motion (the preferences overlay). The help overlay prints `—` in the key
+column for those. The collisions are the reason: a terminal sends Backspace,
+Tab, `\n` and Enter for `ctrl+h`/`i`/`j`/`m`; `ctrl+a`/`ctrl+b` are the `screen`
+and `tmux` prefixes; `ctrl+z` is suspend; `ctrl+u`/`k`/`w`/`y` are the
+composer's own editing keys. `shift+←` / `shift+→` walk
 the rail's two tabs from anywhere — they show a hidden rail and take the keys —
 and `shift+↑` / `shift+↓` switch to the previous / next conversation. A focused
 rail spends its last row on exactly those two chords
@@ -284,9 +293,8 @@ panel is its own box and spends a row on its own set
 (`↑↓ 选择 · ⏎ 打开 · ⌫ 上一层 · r 刷新 · esc 关闭`).
 
 No **default** is a function key: `F1`–`F12` need an `Fn` modifier on a laptop
-and are absent on a compact keyboard, so those actions default to `alt` + a
-letter (`alt+h` help, `alt+r` refresh, `alt+c` copy, `alt+m` mouse, `alt+a`
-reduced motion, `alt+g` the git browser). Rebinding to an F key stays supported.
+and are absent on a compact keyboard. Rebinding to an F key or to `alt` stays
+supported — only the shipped defaults are `ctrl`.
 The help overlay lists `ACTIONS` **grouped** (chats / choices / panels /
 interface), then the non-rebindable inline keys, then the commands.
 

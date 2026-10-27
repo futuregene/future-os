@@ -3339,12 +3339,13 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
 /// The command palette's entries: `(command, description)`. Kept here rather
 /// than in the app so the palette, the help overlay and the tests share one
 /// list.
-pub const COMMANDS: [(&str, Key); 31] = [
+pub const COMMANDS: [(&str, Key); 32] = [
     ("/new", Key::CmdNew),
     ("/delete", Key::CmdDelete),
     ("/queue", Key::CmdQueue),
     ("/copy", Key::CmdCopy),
     ("/paste", Key::CmdPaste),
+    ("/preview", Key::CmdPreview),
     ("/mouse", Key::CmdMouse),
     ("/diff", Key::CmdDiff),
     ("/git", Key::CmdGit),
@@ -3943,9 +3944,9 @@ mod tests {
         let text = plain(&workbench.render(&data, 60, 20));
         assert!(text.contains("工作区"), "the panel takes the body: {text}");
         // The rail's own key still leaves it, which is what the hint row already
-        // names at this width (`ctrl+b 侧栏`), so the overlay is not a dead end
+        // names at this width (`ctrl+s 侧栏`), so the overlay is not a dead end
         // even though its title line carries no footer of its own.
-        assert!(text.contains("ctrl+b"));
+        assert!(text.contains("ctrl+s"));
     }
 
     /// The verbs that cannot be carried out here answer with what *is* true
@@ -4742,36 +4743,43 @@ mod tests {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         assert_eq!(
-            workbench.handle(WbEvent::Key("ctrl+g".into()), &data),
+            workbench.handle(WbEvent::Key("ctrl+l".into()), &data),
             vec![WbAction::Command("/lang".into())]
         );
         assert_eq!(
-            workbench.handle(WbEvent::Key("alt+q".into()), &data),
-            vec![WbAction::OpenQueue],
-            "the queue moved off ctrl+g"
+            workbench.handle(WbEvent::Key("ctrl+q".into()), &data),
+            vec![WbAction::OpenQueue]
         );
         // The binding is an action, so the help table and the shortcut editor
         // say the same thing the key does.
-        assert_eq!(workbench.keys.key(preferences::Action::Language), "ctrl+g");
-        assert_eq!(workbench.keys.key(preferences::Action::Queue), "alt+q");
+        assert_eq!(workbench.keys.key(preferences::Action::Language), "ctrl+l");
+        assert_eq!(workbench.keys.key(preferences::Action::Queue), "ctrl+q");
+        // …and the two chords the old scheme used are gone: `alt+q` resolves to
+        // nothing instead of opening the queue.
+        assert_eq!(workbench.keys.action("alt+q"), None);
     }
 
-    /// `ctrl+m` is the model picker, `ctrl+1`/`ctrl+2` the rail's two tabs — the
-    /// three keys the reader asked for so the pointer is never the only way.
+    /// `ctrl+o` is the model picker — `ctrl+m` cannot be one, because a terminal
+    /// without modifier reporting sends Enter for it — and `shift+←`/`shift+→`
+    /// step the rail's tabs, so the pointer is never the only way to a panel.
     #[test]
     fn the_model_and_panel_keys_reach_their_surfaces() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         assert_eq!(
-            workbench.handle(WbEvent::Key("ctrl+m".into()), &data),
+            workbench.handle(WbEvent::Key("ctrl+o".into()), &data),
             vec![WbAction::Command("/model".into())]
         );
         assert_eq!(
-            workbench.handle(WbEvent::Key("ctrl+1".into()), &data),
+            workbench.handle(WbEvent::Key("shift+right".into()), &data),
+            vec![WbAction::SwitchPanel(PanelId::Workspaces)]
+        );
+        assert_eq!(
+            workbench.handle(WbEvent::Key("shift+left".into()), &data),
             vec![WbAction::SwitchPanel(PanelId::Recent)]
         );
         assert_eq!(
-            workbench.handle(WbEvent::Key("ctrl+2".into()), &data),
+            workbench.handle(WbEvent::Key("shift+right".into()), &data),
             vec![WbAction::SwitchPanel(PanelId::Workspaces)]
         );
         // …and each one lands where a click on the tab strip does: the panel is
@@ -4782,12 +4790,12 @@ mod tests {
         let rows = workbench.render(&data, 120, 38);
         assert!(plain(&rows).contains("对话会话"), "{}", plain(&rows));
 
-        // `ctrl+3` opens the files panel — its own box, not a third tab: the
-        // rail keeps the tab it had, and the driver paints the tree.
-        assert_eq!(
-            workbench.handle(WbEvent::Key("ctrl+3".into()), &data),
-            vec![WbAction::OpenFiles]
-        );
+        // The files panel is its own box, not a third tab, and it has no chord
+        // in this scheme: `/files` (palette or typed) is its door.
+        assert!(workbench
+            .palette_rows(&data)
+            .iter()
+            .any(|row| row.command() == "/files"));
         assert_eq!(
             workbench.panel,
             PanelId::Workspaces,
@@ -4880,7 +4888,9 @@ mod tests {
         assert!(ids.contains(&"header.files"), "{ids:?}");
 
         // The region is the cells the button is *painted* on, not a rectangle
-        // beside it: the cells it names carry `[ctrl+3] 文件`.
+        // beside it: the cells it names carry `文件` (the panel has no chord in
+        // the ctrl-only scheme, so the label stands alone rather than printing
+        // an empty `[]`).
         let (rect, _) = workbench
             .hits()
             .regions()
@@ -4895,12 +4905,9 @@ mod tests {
         );
         assert_eq!(
             crate::utils::strip_ansi_codes(&painted).trim_end(),
-            format!(
-                "[{}] {}",
-                workbench.keys.key(preferences::Action::Files),
-                t(Language::Zh, Key::FilesTitle)
-            )
+            t(Language::Zh, Key::FilesTitle)
         );
+        assert!(workbench.keys.key(preferences::Action::Files).is_empty());
 
         // The header's button is the same verb as the key.
         assert_eq!(
@@ -5155,20 +5162,22 @@ mod tests {
         assert_eq!(workbench.preview_pan, (-5, -2));
     }
 
-    /// `ctrl+v` asks the adapter to read the clipboard; `alt+v` for the image
-    /// already in the draft.
+    /// `ctrl+v` asks the adapter to read the clipboard. Previewing the newest
+    /// attachment has no chord — the fifteen ctrl chords go to the actions
+    /// pressed while working — so `/preview` is its door.
     #[test]
-    fn the_clipboard_and_attachment_keys_ask_for_their_verbs() {
+    fn the_clipboard_key_and_the_preview_command_ask_for_their_verbs() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         assert_eq!(
             workbench.handle(WbEvent::Key("ctrl+v".into()), &data),
             vec![WbAction::PasteClipboard]
         );
-        assert_eq!(
-            workbench.handle(WbEvent::Key("alt+v".into()), &data),
-            vec![WbAction::PreviewAttachment]
-        );
+        assert!(workbench
+            .palette_rows(&data)
+            .iter()
+            .any(|row| row.command() == "/preview"));
+        assert_eq!(workbench.keys.action("alt+v"), None);
     }
 
     /// The palette is one list of two kinds of thing: a verb the surface answers
@@ -5497,7 +5506,11 @@ mod tests {
         workbench.handle(WbEvent::Key("?".into()), &data);
         let text = plain(&workbench.render(&data, 120, 38));
         assert!(text.contains("帮助"), "{text}");
-        assert!(text.contains("ctrl+b"), "{text}");
+        // The table is the ACTIONS map: a current chord stands for it, and an
+        // action with no chord prints an em dash in the same column.
+        assert!(text.contains("ctrl+s"), "{text}");
+        assert!(text.contains("ctrl+g"), "{text}");
+        assert!(text.contains('\u{2014}'), "a chordless row says so: {text}");
         // The frame behind it is still the frame: same size, no leftovers.
         assert_eq!(rows.len(), 38);
         workbench.handle(WbEvent::Key("down".into()), &data);
@@ -5514,13 +5527,13 @@ mod tests {
         assert!(plain(&rows).contains("最近"));
 
         // open → focus
-        workbench.handle(WbEvent::Key("ctrl+b".into()), &data);
+        workbench.handle(WbEvent::Key("ctrl+s".into()), &data);
         assert!(workbench.sidebar_visible && workbench.sidebar_focus);
 
         // focus → closed. Closing is a *preference*, not a transient view
         // state: the action asks the driver to write it, so the next start opens
         // the way the reader left it.
-        let actions = workbench.handle(WbEvent::Key("ctrl+b".into()), &data);
+        let actions = workbench.handle(WbEvent::Key("ctrl+s".into()), &data);
         assert!(actions.contains(&WbAction::SetPreferences), "{actions:?}");
         assert!(!workbench.sidebar_visible && !workbench.sidebar_focus);
         assert!(
@@ -5557,7 +5570,7 @@ mod tests {
         // closed → open (and focused). The width decides whether a rail can
         // exist — asking the *layout* with a hidden rail would answer "none" and
         // open the overlay on a 120-column terminal.
-        workbench.handle(WbEvent::Key("ctrl+b".into()), &data);
+        workbench.handle(WbEvent::Key("ctrl+s".into()), &data);
         assert!(workbench.sidebar_visible && workbench.sidebar_focus);
         assert!(
             workbench.overlay.is_none(),
@@ -5566,7 +5579,7 @@ mod tests {
 
         // A hidden rail cannot take the keys: focusing it would swallow
         // up/down with nothing on screen to show for it.
-        workbench.handle(WbEvent::Key("ctrl+b".into()), &data); // hide
+        workbench.handle(WbEvent::Key("ctrl+s".into()), &data); // hide
         assert!(!workbench.sidebar_visible);
         workbench.handle(WbEvent::Key("tab".into()), &data);
         assert!(!workbench.sidebar_focus);
@@ -5733,7 +5746,7 @@ mod tests {
             .iter()
             .all(|(_, id)| !id.starts_with("sidebar.")));
 
-        let actions = workbench.handle(WbEvent::Key("ctrl+b".into()), &data);
+        let actions = workbench.handle(WbEvent::Key("ctrl+s".into()), &data);
         assert_eq!(actions, vec![WbAction::Redraw]);
         // The full-screen panel is now the surface: it carries the same two
         // tabs the rail does, starting on 最近.
@@ -6539,9 +6552,17 @@ mod tests {
         let mut workbench = Workbench::new();
         let data = demo::chat();
         workbench.render(&data, 120, 38);
-        workbench.handle(WbEvent::Key("alt+a".into()), &data);
+        // The toggle has no chord in this scheme; the preferences overlay is
+        // its door (`/preferences` opens it, the row is `PreferenceRow::Motion`).
+        workbench.open_preferences();
+        workbench.preferences_index = preferences::PREFERENCE_ROWS
+            .iter()
+            .position(|row| *row == preferences::PreferenceRow::Motion)
+            .expect("the motion row exists");
+        workbench.handle(WbEvent::Key("enter".into()), &data);
+        workbench.overlay = None;
         assert!(workbench.reduced_motion && !workbench.motion_enabled());
-        workbench.handle(WbEvent::Key("ctrl+b".into()), &data);
+        workbench.handle(WbEvent::Key("ctrl+s".into()), &data);
         assert!(workbench.sidebar_visible && workbench.sidebar_focus);
         assert!(
             workbench.reduced_motion,
