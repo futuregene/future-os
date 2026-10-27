@@ -975,7 +975,8 @@ fn sidebar_rows(
     };
     let lang = workbench.lang;
     let panel = workbench.panel;
-    let body = panels::render(
+    let folded = workbench.folded_workspaces.clone();
+    let body = panels::render_with(
         panel,
         data,
         palette,
@@ -983,6 +984,7 @@ fn sidebar_rows(
         view,
         workbench.hit_map(),
         lang,
+        &folded,
     );
     lines.extend(body);
     if footer == 1 {
@@ -2133,7 +2135,17 @@ fn panel_box(
         scroll: workbench.panel_scroll[index],
         selected: workbench.sidebar_index,
     };
-    let body = panels::render(panel, data, palette, area, view, workbench.hit_map(), lang);
+    let folded = workbench.folded_workspaces.clone();
+    let body = panels::render_with(
+        panel,
+        data,
+        palette,
+        area,
+        view,
+        workbench.hit_map(),
+        lang,
+        &folded,
+    );
     let geometry = box_geometry(w, h, PANEL_WIDTH, body.len());
     claim_box(workbench, &geometry);
     framed(palette, title, body, w, h, &geometry)

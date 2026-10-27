@@ -484,6 +484,10 @@ pub struct Workbench {
     pub preview_zoom: u32,
     pub preview_pan: (i32, i32),
     pub preview_scroll: usize,
+    /// The workspace headings the reader folded shut, by path (see
+    /// [`panels::Folded`]). A rail with a long conversation list is scrolled a
+    /// group at a time once its workspaces are folded.
+    pub folded_workspaces: panels::Folded,
 }
 
 impl Default for Workbench {
@@ -555,6 +559,7 @@ impl Workbench {
             preview_zoom: 1,
             preview_pan: (0, 0),
             preview_scroll: 0,
+            folded_workspaces: panels::Folded::new(),
         }
     }
 
@@ -1203,7 +1208,23 @@ impl Workbench {
 
     /// The panel's rows, as the renderer paints them.
     fn panel_rows(&self, data: &WorkbenchData) -> Vec<panels::Row> {
-        panels::rows(self.panel, data)
+        panels::rows_with(self.panel, data, &self.folded_workspaces)
+    }
+
+    /// Fold a workspace's conversations away, or unfold them.
+    ///
+    /// The cursor stays on the heading it acted on, which is what lets `enter`
+    /// be pressed twice: the second one opens it again instead of the cursor
+    /// having moved to a conversation it never asked for.
+    fn toggle_workspace(&mut self, at: usize, data: &WorkbenchData) -> Vec<WbAction> {
+        let Some(workspace) = data.workspaces.get(at) else {
+            return Vec::new();
+        };
+        let path = workspace.path.clone();
+        if !self.folded_workspaces.remove(&path) {
+            self.folded_workspaces.insert(path);
+        }
+        vec![WbAction::Redraw]
     }
 
     /// The row the conversation on screen stands on, if the panel lists it.
@@ -1228,15 +1249,16 @@ impl Workbench {
 
     /// Move the cursor one row up or down, keeping the window on it.
     ///
-    /// In 最近 / 工作区 a row is a conversation, so the cursor skips the headings
-    /// (`step_session`); in 文件 every row is an entry of the tree and the cursor
-    /// walks all of them (`step_row`).
+    /// In 最近 a row is a conversation, so the cursor skips the headings
+    /// (`step_session`); in 文件 every row is an entry of the tree, and in 工作区
+    /// a workspace heading is a row the cursor can act on (it folds), so both
+    /// walk every selectable row (`step_row`).
     fn move_selection(&mut self, delta: i32, data: &WorkbenchData) -> Vec<WbAction> {
         let rows = self.panel_rows(data);
-        let next = if self.panel == PanelId::Files {
-            panels::step_row(&rows, self.sidebar_index, delta)
-        } else {
+        let next = if self.panel == PanelId::Recent {
             panels::step_session(&rows, self.sidebar_index, delta)
+        } else {
+            panels::step_row(&rows, self.sidebar_index, delta)
         };
         if let Some(next) = next {
             self.sidebar_index = next;
@@ -1257,6 +1279,9 @@ impl Workbench {
         let Some(row) = rows.get(self.sidebar_index) else {
             return Vec::new();
         };
+        if let panels::Row::Workspace(at) = row {
+            return self.toggle_workspace(*at, data);
+        }
         if let Some(index) = row.session() {
             return data
                 .sessions
@@ -2533,6 +2558,13 @@ impl Workbench {
                     self.sidebar_index = index;
                     self.open_selected(data)
                 }
+                // A workspace heading folds what is under it away, and opens it
+                // again on the next click: one click on a group is the quickest
+                // way to make a long rail scannable.
+                Some(panels::Row::Workspace(at)) => {
+                    self.sidebar_index = index;
+                    self.toggle_workspace(*at, data)
+                }
                 // A heading is not a verb: the click takes the keys and stops.
                 Some(_) => {
                     self.sidebar_index = index;
@@ -3582,8 +3614,9 @@ mod tests {
         assert_eq!(rows[workbench.sidebar_index].session(), Some(current));
     }
 
-    /// `up`/`down` walk the rail's conversations (never its headings) and
-    /// `enter` opens the one under the cursor.
+    /// `up`/`down` walk the rail's rows (a section heading is stepped over, a
+    /// workspace heading is not — it folds) and `enter` opens what is under the
+    /// cursor, or folds a group away when the cursor is on its heading.
     #[test]
     fn up_and_down_move_the_rail_cursor_and_enter_opens_it() {
         let data = demo::workspaces();
@@ -3592,17 +3625,40 @@ mod tests {
         workbench.panel = PanelId::Workspaces;
         workbench.sidebar_index = 0;
 
-        // The first rows are a section heading and a workspace heading, which
-        // `down` steps over.
+        // The first row is a section heading, which `down` steps over; the row
+        // it lands on is the first workspace heading and `enter` folds it.
         let rows = panels::rows(PanelId::Workspaces, &data);
         assert!(rows[0].session().is_none());
-        assert!(rows[1].session().is_none());
-        assert_eq!(rows[2].session(), Some(0));
+        assert!(matches!(rows[1], panels::Row::Workspace(_)));
         workbench.handle(WbEvent::Key("down".into()), &data);
-        assert_eq!(workbench.sidebar_index, 2, "the first conversation");
+        assert_eq!(workbench.sidebar_index, 1, "the first workspace heading");
+        let group = &data.workspaces[0];
+        let folded_rows =
+            panels::rows_with(PanelId::Workspaces, &data, &workbench.folded_workspaces).len();
+        workbench.handle(WbEvent::Key("enter".into()), &data);
+        assert!(
+            workbench.folded_workspaces.contains(&group.path),
+            "enter on a workspace heading folds it"
+        );
+        assert!(
+            panels::rows_with(PanelId::Workspaces, &data, &workbench.folded_workspaces).len()
+                < folded_rows,
+            "the folded group's conversations leave the list"
+        );
+        // The cursor stays on the heading, so `enter` again opens it: the fold
+        // is a toggle, not a one-way door.
+        assert_eq!(workbench.sidebar_index, 1);
+        workbench.handle(WbEvent::Key("enter".into()), &data);
+        assert!(
+            workbench.folded_workspaces.is_empty(),
+            "enter opens it again"
+        );
+
+        // A second press moves again, onto a conversation, and `enter` opens it.
         workbench.handle(WbEvent::Key("down".into()), &data);
         let index = workbench.sidebar_index;
-        assert_ne!(index, 2, "the second press moves again");
+        let rows = panels::rows(PanelId::Workspaces, &data);
+        assert!(index > 1, "the second press moves again");
         let session = rows[index].session().expect("a conversation row");
         assert_eq!(
             workbench.handle(WbEvent::Key("enter".into()), &data),
