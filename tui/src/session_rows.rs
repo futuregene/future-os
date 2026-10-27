@@ -16,6 +16,50 @@ use serde_json::Value;
 
 use crate::components::chat_area::{ChatMessage, ChatRole, ToolStatus};
 
+/// The pictures attached to a row: `(caption, path)`, with a caption safe to
+/// sit inside `![…]` and a path safe to sit inside `(…)`.
+fn image_attachments(row: &serde_json::Map<String, Value>) -> Vec<(String, String)> {
+    let Some(list) = row
+        .get("metadata")
+        .and_then(|meta| meta.get("attachments"))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter(|attachment| attachment["kind"].as_str() == Some("image"))
+        .filter_map(|attachment| {
+            let path = attachment["path"]
+                .as_str()
+                .filter(|path| !path.is_empty())?;
+            let name = attachment["name"]
+                .as_str()
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| {
+                    std::path::Path::new(path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or(path)
+                });
+            // The caption is markdown text and the path is a link destination;
+            // a bracket or parenthesis in either would break the row the
+            // renderer is handed.
+            let caption = name.replace(['[', ']', '\n', '\r'], " ");
+            let path: String = path
+                .chars()
+                .filter_map(|c| match c {
+                    ' ' => Some("%20".to_string()),
+                    '(' => Some("%28".to_string()),
+                    ')' => Some("%29".to_string()),
+                    '\n' | '\r' => None,
+                    other => Some(other.to_string()),
+                })
+                .collect();
+            Some((caption, path))
+        })
+        .collect()
+}
+
 /// `crypto.randomUUID()` — the id a row without one gets.
 pub fn random_id() -> String {
     uuid::Uuid::new_v4().to_string()
@@ -96,12 +140,21 @@ pub fn rows_to_messages(rows: &[Value]) -> Vec<ChatMessage> {
             .and_then(Value::as_array)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let content = blocks
+        let mut content = blocks
             .iter()
             .filter(|b| matches!(b["kind"].as_str(), Some("text" | "tool_result")))
             .filter_map(|b| b["text"].as_str())
             .collect::<Vec<_>>()
             .join("");
+        // A picture the reader attached travels as a *path* in the entry's
+        // metadata (the JSONL keeps no bytes), so a message that carried one
+        // renders as its file name, linked to that path: the caption says a
+        // picture came with the message, and the workbench's link cursor can
+        // open it in the preview box. Markdown syntax rather than a sentence
+        // because this mapping is shared by both TUIs and has no language.
+        for (label, path) in image_attachments(obj) {
+            content.push_str(&format!("\n\n![{label}]({path})"));
+        }
         let thinking = blocks
             .iter()
             .filter(|b| b["kind"] == "reasoning")
@@ -167,4 +220,48 @@ pub fn rows_to_messages(rows: &[Value]) -> Vec<ChatMessage> {
         messages.push(cm);
     }
     messages
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_user_messages_pictures_become_linked_captions() {
+        let rows = vec![json!({
+            "id": "m1",
+            "role": "user",
+            "blocks": [{"kind": "text", "text": "look at this"}],
+            "metadata": {"attachments": [
+                {"kind": "image", "path": "/tmp/a b.png", "name": "a b.png"},
+                {"kind": "file", "path": "/tmp/notes.txt", "name": "notes.txt"},
+            ]},
+        })];
+        let messages = rows_to_messages(&rows);
+        assert_eq!(messages.len(), 1);
+        let content = &messages[0].content;
+        assert!(content.starts_with("look at this"), "{content}");
+        // A picture is a caption linked to its path — an image block with a
+        // space in its name still has to survive the markdown.
+        assert!(content.contains("![a b.png](/tmp/a%20b.png)"), "{content}");
+        // A file attachment is not a picture and is not dressed as one.
+        assert!(!content.contains("notes.txt"), "{content}");
+    }
+
+    #[test]
+    fn a_caption_cannot_close_its_own_markdown() {
+        let rows = vec![json!({
+            "id": "m2",
+            "role": "user",
+            "blocks": [{"kind": "text", "text": "x"}],
+            "metadata": {"attachments": [
+                {"kind": "image", "path": "/tmp/a(b).png", "name": "a](b).png"},
+            ]},
+        })];
+        let content = rows_to_messages(&rows)[0].content.clone();
+        assert!(content.contains("/tmp/a%28b%29.png"), "{content}");
+        // One `](` — the one the image syntax itself uses.
+        assert_eq!(content.matches("](").count(), 1, "{content}");
+    }
 }

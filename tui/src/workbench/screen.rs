@@ -81,6 +81,11 @@ pub(crate) fn compose(
         paint(&mut rows, frame.body, lines);
         workbench.set_cursor(cursor);
     } else {
+        // The band is claimed *before* it is painted: a link inside the
+        // conversation registers its own cells while painting, and a region
+        // claimed later would sit on top of them and answer every click with
+        // "the chat" instead of with the link that was clicked.
+        workbench.hit_map().push(frame.body, "chat");
         let lines = conversation(
             workbench,
             data,
@@ -102,7 +107,6 @@ pub(crate) fn compose(
             ),
             lines,
         );
-        workbench.hit_map().push(frame.body, "chat");
     }
 
     if let (Some(sidebar), Some(divider)) = (frame.sidebar, frame.divider) {
@@ -733,6 +737,9 @@ fn conversation(
     // that wraps the transcript — see `layout::chat_inner`.
     let padding = layout::chat_padding(area.w);
     let inner = layout::chat_inner(area.w);
+    // The span cache is keyed by the width the transcript was wrapped at, and
+    // this is that width.
+    workbench.chat_inner = inner;
     let messages = &data.messages;
     let total = messages.len();
     // `chat_scroll` counts rows up from the tail; it is clamped so a stale
@@ -743,9 +750,53 @@ fn conversation(
     if total > visible && offset + visible >= total {
         offset = total - visible + 1;
     }
+    // The rows the reader can actually read at `offset`: the window, less the
+    // row the badge takes off its bottom.
+    let shown_window = |offset: usize| -> (usize, usize) {
+        let end = total.saturating_sub(offset);
+        let start = end.saturating_sub(visible);
+        let end = if start > 0 {
+            end.saturating_sub(1)
+        } else {
+            end
+        };
+        (start, end)
+    };
+    // `tab` can walk the cursor to a span far above or below the window, and a
+    // highlight nobody can see is not a cursor: the transcript follows it, the
+    // way a search result brings itself into view.
+    if let Some(row) = workbench.selected_link(data).map(|(_, span)| span.row) {
+        let row = row.min(total.saturating_sub(1));
+        let (start, end) = shown_window(offset);
+        if row < start || row >= end {
+            // Two rows of room below it: one is the badge's, one is the row
+            // itself, so the selection is never the line that gets dropped.
+            offset = total.saturating_sub((row + 2).min(total));
+            workbench.set_chat_scroll(offset);
+        }
+    }
     workbench.set_chat_scroll(offset);
     let end = total.saturating_sub(offset);
     let start = end.saturating_sub(visible);
+    // The span the cursor is on, cloned: the paint below needs `workbench` for
+    // its hit regions, and the list it came from borrows it.
+    let selected = workbench.selected_link(data);
+    // Every span on a painted row answers a click, not just the one the cursor
+    // is on: the pointer names its own target, and a link a reader can see but
+    // not click is the one thing a terminal hyperlink cannot express (the
+    // terminal's own `cmd+click` opens in the *browser*, which is no help for a
+    // picture or another conversation).
+    let visible_links: Vec<(usize, super::links::LinkSpan)> = {
+        let spans = workbench.link_spans(data);
+        spans
+            .iter()
+            .enumerate()
+            .filter(|(_, span)| span.row >= start && span.row < end)
+            .map(|(index, span)| (index, span.clone()))
+            .collect()
+    };
+    let badge = usize::from(start > 0);
+    let shown = end.saturating_sub(start);
     let mut lines: Vec<String> = Vec::new();
     if start > 0 {
         lines.push(fit(
@@ -753,9 +804,40 @@ fn conversation(
             columns,
         ));
     }
-    for line in messages.get(start..end).unwrap_or(&[]) {
-        let row = format!("{}{}", " ".repeat(padding), fit(line, inner));
+    let pad = visible.saturating_sub(badge + shown);
+    let mut marked: Option<String>;
+    for (index, line) in messages.iter().enumerate().skip(start).take(shown) {
+        let mut text = line.as_str();
+        if let Some((_, span)) = &selected {
+            if span.row == index {
+                marked = Some(super::links::highlight(line, span.start, span.end));
+                text = marked.as_deref().unwrap_or(line);
+            }
+        }
+        let row = format!("{}{}", " ".repeat(padding), fit(text, inner));
         lines.push(fit(&row, columns));
+        let y = area
+            .y
+            .saturating_add(pad as u16)
+            .saturating_add(badge as u16)
+            .saturating_add((index - start) as u16);
+        for (span_index, span) in visible_links.iter().filter(|(_, span)| span.row == index) {
+            let from = span.start.min(inner);
+            let to = span.end.min(inner);
+            if to > from {
+                workbench.hit_map().push(
+                    Rect::new(
+                        area.x
+                            .saturating_add(padding as u16)
+                            .saturating_add(from as u16),
+                        y,
+                        (to - from) as u16,
+                        1,
+                    ),
+                    format!("chat.link.{span_index}"),
+                );
+            }
+        }
     }
     // Bottom-anchored like a chat view: a short conversation sits on the input
     // box, not against the header.

@@ -240,6 +240,7 @@ pins it.
 | Input box click | focus and put the cursor where clicked (byte offset from display width) |
 | `⛶` click | open the full-screen draft editor (may be a stub in P1) |
 | Tool-card title click | expand/collapse that card (reusing `ctrl+o`'s per-item toggle) |
+| Chat link / picture click | open it: a URL in the browser, a `futureos://session/…` link switches conversation, a local file opens in the preview box |
 | Launchpad parameter click | open the matching picker (workspace / model / effort / approval) |
 | Launchpad shortcut click | run the matching `/command` |
 | Hover | highlight tabs/rows/buttons; tooltip after 600ms (when truncated at narrow widths) |
@@ -328,9 +329,11 @@ the row under the pointer rather than one beside it.
 `shift`): `ctrl+o` model chooser; `ctrl+t` thinking-effort chooser; `ctrl+s`
 approval-mode chooser; `ctrl+l` workspace chooser; `ctrl+f` the files panel
 (this session's own workspace); `ctrl+g` the git browser; `ctrl+d` the rail's
-open/focus/hide; `ctrl+q` preferences; `ctrl+v` read the clipboard (an image becomes a draft attachment, text is pasted); `tab` focus
-within a panel; `shift+tab` reverse; `/` command palette; `?` help; `esc` close
-one layer at a time. `shift+←`/`shift+→` walk the rail's two tabs and do the
+open/focus/hide; `ctrl+q` preferences; `ctrl+v` read the clipboard (an image becomes a draft attachment, text is pasted); `tab`/`shift+tab` step
+the conversation's links and pictures (`enter` opens the one under the cursor —
+browser, that conversation, or the preview box), and on the launchpad move between
+the prompt and its chips; `/` command palette; `?` help; `esc` close one layer at
+a time. `shift+←`/`shift+→` walk the rail's two tabs and do the
 sidebar's open/focus/hide job when the rail is closed.
 
 No default is `alt` — on macOS Option composes a character unless the reader
