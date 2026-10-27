@@ -1547,9 +1547,84 @@ fn draw(
 ) -> Result<(), String> {
     let data = live.data(frame);
     let rows = workbench.render(&data, frame.width, frame.height);
-    terminal.write(&frame_bytes(&rows, workbench.cursor()));
+    let canvas = canvas_rows(
+        &rows,
+        usize::from(frame.width),
+        workbench.palette.fg,
+        workbench.palette.bg,
+    );
+    terminal.write(&frame_bytes(&canvas, workbench.cursor()));
     paint_image(terminal, workbench, &data);
     Ok(())
+}
+
+/// Paint the surface's own canvas onto every row — and its own default text
+/// colour onto the rows that do not paint a surface of their own.
+///
+/// The surface owns its colours instead of borrowing the terminal profile's.
+/// A workbench row is a string of styled spans and `styled` closes each span
+/// with a reset (`\x1b[m`), which clears both colours — so setting them once per
+/// row is not enough: every reset is followed by the palette's pair again, and
+/// the row is padded out to the frame's width with them.
+///
+/// Without the background the canvas was whatever the reader's terminal painted,
+/// which on a profile whose default is a mid slate (Ghostty ships `#282c34`)
+/// washed the frozen palette out and dropped secondary text under 4.5:1 —
+/// measured at 120x38, 98.6% of the cells carried no background of ours.
+///
+/// The foreground is applied only where the row left it to the terminal: a row
+/// that paints a surface of its own (the user bubble, a tool block) chose its
+/// colours, and a reader's own background pair is the one that reads on it. On
+/// the canvas, though, the pair has to be ours: leaving plain text to the
+/// profile is what put white-on-white light palettes and black-on-black dark ones
+/// in front of readers whose profile is the other way round.
+fn canvas_rows(rows: &[String], width: usize, fg: u8, bg: u8) -> Vec<String> {
+    let background = format!("\x1b[48;5;{bg}m");
+    rows.iter()
+        .map(|row| {
+            let paint = if row.contains("\x1b[48;5;") {
+                background.clone()
+            } else {
+                format!("\x1b[38;5;{fg}m{background}")
+            };
+            let padding = width.saturating_sub(crate::utils::visible_width(
+                &crate::utils::strip_ansi_codes(row),
+            ));
+            format!(
+                "{paint}{}\x1b[0m{paint}{}\x1b[0m",
+                repaint_after_resets(row, &paint),
+                " ".repeat(padding)
+            )
+        })
+        .collect()
+}
+
+/// Replace every `\x1b[m` / `\x1b[0m` with `\x1b[0m` + `paint`, so a span
+/// boundary cannot drop the canvas.
+fn repaint_after_resets(line: &str, paint: &str) -> String {
+    let mut out = String::with_capacity(line.len() + 16);
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b && i + 2 < bytes.len() && bytes[i + 1] == b'[' {
+            if bytes[i + 2] == b'm' {
+                out.push_str("\x1b[0m");
+                out.push_str(paint);
+                i += 3;
+                continue;
+            }
+            if bytes[i + 2] == b'0' && i + 3 < bytes.len() && bytes[i + 3] == b'm' {
+                out.push_str("\x1b[0m");
+                out.push_str(paint);
+                i += 4;
+                continue;
+            }
+        }
+        let ch = line[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
 }
 
 /// Paint (or remove) the picture the frame asked for.
@@ -1874,6 +1949,80 @@ mod tests {
         // …and the rest is still there for the next iteration, not dropped.
         assert_eq!(drain(&mut rx, |_| count += 1), 7);
         assert_eq!(count, COALESCE_LIMIT + 7);
+    }
+
+    /// The canvas is the palette's, not the reader's terminal profile.
+    ///
+    /// Every row is filled to the frame's width with `bg` and survives the resets
+    /// `styled` writes at the end of each span — otherwise the colours are cleared
+    /// mid-row and the terminal's own show through. That was the "background not
+    /// black enough" state this replaced (98.6% of the cells carried no colour of
+    /// ours, measured at 120x38 on Ghostty's `#282c34`).
+    ///
+    /// A row that paints a surface of its own keeps its colours and only gets the
+    /// canvas as the *fallback* background; a row on the canvas gets the palette's
+    /// text colour too, so neither a white-on-white light palette nor a
+    /// black-on-black dark one depends on the reader's profile.
+    #[test]
+    fn canvas_rows_fill_every_column_and_survive_resets() {
+        // A row of two spans, a plain row (no colour of its own) and an empty
+        // row: the three shapes the compositor produces.
+        let rows = vec![
+            format!(
+                "\x1b[38;5;252mgreeting\x1b[m{}hello\x1b[m",
+                crate::theme::bold(" ")
+            ),
+            "short".to_string(),
+            String::new(),
+        ];
+        let width = 20;
+        let canvas = canvas_rows(&rows, width, 252, 232);
+        for (index, row) in canvas.iter().enumerate() {
+            assert!(
+                row.starts_with("\x1b[38;5;252m\x1b[48;5;232m"),
+                "row {index} must open on the palette's pair: {row:?}"
+            );
+            assert_eq!(
+                crate::utils::visible_width(row),
+                width,
+                "row {index} must be filled to the frame width: {row:?}"
+            );
+            // A reset must never leave the terminal painting its own colours:
+            // every piece after a reset re-opens with the palette's pair, and
+            // only the row's own final reset may stand alone.
+            let pieces: Vec<&str> = row.split("\x1b[0m").collect();
+            for (piece, text) in pieces.iter().enumerate().skip(1) {
+                if text.is_empty() && piece == pieces.len() - 1 {
+                    continue;
+                }
+                assert!(
+                    text.starts_with("\x1b[38;5;252m\x1b[48;5;232m"),
+                    "row {index} drops the palette after a reset: {row:?}"
+                );
+            }
+        }
+        // Painting is a fill, not a rewrite: the text is still there.
+        assert!(canvas[0].contains("hello"));
+        assert!(canvas[1].contains("short"));
+
+        // A row with a surface of its own keeps it: the bubble's background is
+        // written over the canvas, and its text keeps the reader's own colour.
+        let bubble = canvas_rows(
+            &["\x1b[48;5;59m a message \x1b[0m".to_string()],
+            20,
+            252,
+            232,
+        );
+        assert!(
+            bubble[0].starts_with("\x1b[48;5;232m\x1b[48;5;59m"),
+            "the bubble's own background wins: {:?}",
+            bubble[0]
+        );
+        assert!(
+            !bubble[0].contains("38;5;252"),
+            "a row that paints a surface decides its own text colour: {:?}",
+            bubble[0]
+        );
     }
 
     /// A frame must never advance with a line feed: on a terminal shorter than

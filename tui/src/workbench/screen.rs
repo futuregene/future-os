@@ -3988,8 +3988,11 @@ mod tests {
         };
         let selected = git_row_line(&palette, &row, 100, true);
         assert_eq!(width(&selected), 100, "the band fills the pane");
+        // The band is *derived* from the panel (`selection_band` steps away from
+        // it), not taken from `border`: pinning it to a literal or to another
+        // palette field pins the derivation's arithmetic instead of the intent.
         assert!(
-            selected.contains(&format!("\x1b[48;5;{}m", palette.border)),
+            selected.contains(&format!("\x1b[48;5;{}m", selection_band(&palette))),
             "the selection is a background, not just an arrow: {selected:?}"
         );
         let marked = plain(&selected);

@@ -57,6 +57,10 @@ FONT_SIZE = 14
 LINE_H = 18
 PAD = 16
 DEFAULT_FG = "#d8dee9"
+# The terminal's own colours: what a cell without an SGR colour inherits. The
+# workbench paints its palette canvas on every row, so for its frames these two
+# only show up where a cell is genuinely unwritten — the shadow column of a wide
+# glyph. They still matter for a third-party TUI captured through this model.
 DEFAULT_BG = "#1b1d23"
 
 
