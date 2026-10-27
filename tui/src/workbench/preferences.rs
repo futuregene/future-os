@@ -317,17 +317,17 @@ impl Action {
     /// The fourteen go to what is pressed *while working*: the commands, the
     /// sessions, the three answers that decide what runs next (model, effort,
     /// approval), the two places a reader keeps going back to (the workspace
-    /// list and the files of this session's workspace), the repository, the run
-    /// under them, and leaving. Switching the interface language, refreshing the
-    /// view, and the queue of prompts sent mid-run are things a reader does once
-    /// in a while, so they keep commands instead of taking a letter from
-    /// something pressed every minute.
+    /// list and the files of this session's workspace), the rail, the
+    /// repository, the run under them, and leaving. Switching the interface
+    /// language, refreshing the view, the queue of prompts sent mid-run, and
+    /// deleting a conversation are things a reader does once in a while, so they
+    /// keep commands instead of taking a letter from something pressed every
+    /// minute.
     pub fn default_key(self) -> &'static str {
         match self {
             Self::Quit => "ctrl+c",
             Self::NewSession => "ctrl+n",
             Self::Sessions => "ctrl+r",
-            Self::DeleteSession => "ctrl+d",
             Self::Stop => "ctrl+x",
             Self::ReplyDetail => "ctrl+e",
             Self::Palette => "ctrl+p",
@@ -341,18 +341,24 @@ impl Action {
             // The workspace chooser: `l` is the list of directories it opens.
             Self::Workspaces => "ctrl+l",
             Self::Git => "ctrl+g",
+            // The rail: `d` is the dock it slides in and out of, and it is the
+            // letter the destructive verb gave up (a conversation is deleted
+            // with `/delete` or the rail's own `delete` key, both of which ask
+            // first).
+            Self::Sidebar => "ctrl+d",
             // The session workspace's own tree — the panel a reader opens to
             // find the file the agent just mentioned.
             Self::Files => "ctrl+f",
             Self::PasteImage => "ctrl+v",
-            // No chord: a typed door and a visible control instead. The rail is
-            // the one that hurts: `b` belongs to tmux and `s` to the approval
-            // chooser, so its doors are the `›` edge button, `tab` and
-            // `shift+←`/`shift+→` (which also brings a hidden rail back).
+            // No chord: a typed door and a visible control instead.
             Self::Copy => "",
             Self::Help => "",
             Self::Preferences => "",
-            Self::Sidebar => "",
+            // Deleting a conversation is the one destructive verb on the
+            // surface; it asks first, and it is rare enough that its doors are
+            // `/delete` and the rail's own `delete` key rather than a chord that
+            // something pressed every minute could take.
+            Self::DeleteSession => "",
             Self::Language => "",
             Self::Refresh => "",
             Self::Mouse => "",
@@ -557,16 +563,15 @@ mod tests {
         let mut keys = Keybindings::default();
         keys.bind(Action::Palette, "ctrl+j").unwrap();
         keys.bind(Action::Sidebar, "ctrl+j").unwrap();
-        // The chord's previous owner trades places with the new one. The rail
-        // has no default chord, so Palette inherits "none" — not a duplicate.
-        assert_eq!(keys.key(Action::Palette), "");
+        // The chord's previous owner trades places with the new one: the rail's
+        // own chord (`ctrl+d`) is now the palette's, so nothing is claimed twice.
+        assert_eq!(keys.key(Action::Palette), "ctrl+d");
         assert_eq!(keys.key(Action::Sidebar), "ctrl+j");
         assert_eq!(keys.action("ctrl+j"), Some(Action::Sidebar));
-        assert_eq!(keys.action(""), None, "an empty key resolves to nothing");
         let dir = tempfile::tempdir().unwrap();
         keys.save(&dir.path().join("keys.json")).unwrap();
         let restored = Keybindings::load(&dir.path().join("keys.json"));
-        assert_eq!(restored.key(Action::Palette), "");
+        assert_eq!(restored.key(Action::Palette), "ctrl+d");
         assert_eq!(restored.key(Action::Sidebar), "ctrl+j");
     }
 

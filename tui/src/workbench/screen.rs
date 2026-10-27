@@ -3408,7 +3408,7 @@ mod tests {
             .last()
             .is_some_and(|c| c.is_ascii_alphabetic()));
         let narrow = plain(&hint_row(&Workbench::new(), &FUTURE_DARK, 40, true)[0]);
-        assert!(narrow.contains("ctrl+r"), "{narrow:?}");
+        assert!(narrow.contains("ctrl+d"), "{narrow:?}");
         assert!(narrow.contains("tab"), "{narrow:?}");
         assert!(!narrow.contains("ctrl+p"), "whole hints are dropped");
     }

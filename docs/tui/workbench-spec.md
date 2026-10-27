@@ -278,20 +278,21 @@ the row under the pointer rather than one beside it.
 **One prefix: `ctrl`.** Every global default is a `ctrl` chord (or an arrow with
 `shift`): `ctrl+o` model chooser; `ctrl+t` thinking-effort chooser; `ctrl+s`
 approval-mode chooser; `ctrl+l` workspace chooser; `ctrl+f` the files panel
-(this session's own workspace); `ctrl+g` the git browser; `ctrl+v` read the
-clipboard (an image becomes a draft attachment, text is pasted); `tab` focus
+(this session's own workspace); `ctrl+g` the git browser; `ctrl+d` the rail's
+open/focus/hide; `ctrl+v` read the clipboard (an image becomes a draft attachment, text is pasted); `tab` focus
 within a panel; `shift+tab` reverse; `/` command palette; `?` help; `esc` close
 one layer at a time. `shift+←`/`shift+→` walk the rail's two tabs and do the
 sidebar's open/focus/hide job when the rail is closed.
 
 No default is `alt` — on macOS Option composes a character unless the reader
 turns on "Use Option as Meta" — and the letters left over after the collisions
-run out, so the remaining actions have **no chord**: the queue (`/queue` — the
-prompts sent while a run was in flight), the interface language (`/lang`), a
-refresh (`/refresh`), copy (`/copy`), mouse capture (`/mouse`), preferences
+run out, so the remaining actions have **no chord**: deleting a conversation (`/delete`, or
+`delete` in the rail — it asks first), the queue (`/queue` — the prompts sent
+while a run was in flight), the interface language (`/lang`), a refresh
+(`/refresh`), copy (`/copy`), mouse capture (`/mouse`), preferences
 (`/preferences`), the newest attachment (`/preview`), the rail's two panels
-(a click, or `shift+←`/`shift+→`), the sidebar itself (the `›` edge button,
-`tab`, `shift+←`/`shift+→`), and reduced motion (the preferences overlay). The
+(a click, or `shift+←`/`shift+→`), and reduced motion (the preferences
+overlay). The
 help overlay prints `—` in the key column for those. The collisions are the
 reason: a terminal sends Backspace, Tab, `\n` and Enter for `ctrl+h`/`i`/`j`/`m`;
 `ctrl+a`/`ctrl+b` are the `screen` and `tmux` prefixes; `ctrl+z` is suspend;
