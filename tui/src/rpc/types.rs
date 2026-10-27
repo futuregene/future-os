@@ -291,7 +291,10 @@ pub struct RunTerminalState {
 // ============================================================================
 
 /// `SessionSummary` from `rpc/types.ts`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Comparable, so the rail can tell a poll that changed nothing (no repaint)
+/// from one that moved a row, an age or a run's state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSummary {
     pub id: String,

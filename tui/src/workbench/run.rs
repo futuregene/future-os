@@ -295,6 +295,9 @@ async fn event_loop(
     // not followed by a burst.
     ticker.tick().await;
     let mut clock = TickClock::new(workbench.spinner_frame(), Instant::now());
+    // The rail's list is re-read on its own clock (see `SESSIONS_POLL`), starting
+    // now: the first frame paints what the attach already read.
+    let mut sessions_poll = Instant::now();
     // Something is on screen to paint from the first iteration — and after
     // that only when an event or the clock changed what the frame shows. A
     // ticker that repaints an unchanged frame is not free: composing it means
@@ -323,7 +326,11 @@ async fn event_loop(
         }
 
         // `paint` belongs to the *next* frame: every arm below assigns it — an
-        // input or agent event paints, and the ticker asks the clock.
+        // input or agent event paints, and the ticker asks the clock. Assign,
+        // never OR into it: the value it holds on entry is the frame that was
+        // just drawn, so `paint |= …` keeps a frame owed forever and repaints
+        // every tick (measured: an animating rail went from two frames a second
+        // to eight before this was an assignment).
         tokio::select! {
             Some(input) = input_rx.recv() => {
                 let mut events = match &input {
@@ -485,23 +492,35 @@ async fn event_loop(
                 linear_dirty = workbench.linear_reading;
             }
             _ = ticker.tick() => {
-                // The spinner is the only animation a tick owns; it advances
-                // with the ticker and owes a frame when its drawn frame
-                // changes. Nothing else in the frame is finer than a minute.
+                // The two spinners are the only animation a tick owns — the
+                // activity row's, and the one a streaming conversation draws in
+                // the rail. They turn on the same frame, so one counter drives
+                // both. Nothing else in the frame is finer than a minute.
                 // A short terminal lays out no activity row at all
-                // (`compact`), so there is nothing on screen to animate.
-                let animating = workbench.motion_enabled()
-                    && live.activity_animating()
-                    && frame.layout.activity.is_some();
+                // (`compact`), and the rail can be closed, so each side only
+                // animates while it is on screen to draw it.
+                let activity_moving =
+                    live.activity_animating() && frame.layout.activity.is_some();
+                let rail_moving = live.sessions_streaming() && frame.layout.sidebar.is_some();
+                let animating = workbench.motion_enabled() && (activity_moving || rail_moving);
                 if animating {
                     workbench.advance_tick();
+                }
+                // A run in another conversation is only visible here through
+                // `list_sessions`, and the agent tells no push channel about
+                // it: the list is re-read on this clock or the row's spinner
+                // would freeze and its 活跃 stretch never empty.
+                let mut changed = false;
+                if frame.layout.sidebar.is_some() && sessions_poll.elapsed() >= SESSIONS_POLL {
+                    sessions_poll = Instant::now();
+                    changed = live.refresh_sessions().await;
                 }
                 paint = clock.tick(
                     animating,
                     workbench.spinner_frame(),
                     ages_on_screen(&frame),
                     Instant::now(),
-                );
+                ) || changed;
             }
         }
     }
@@ -530,6 +549,20 @@ const TICK: Duration = Duration::from_millis(120);
 /// tick instead would re-compose a frame eight times a second to draw the same
 /// bytes.
 const IDLE_REFRESH: Duration = Duration::from_secs(60);
+
+/// How often the rail's conversation list is re-read while it is on screen.
+///
+/// The list is the only view of *other* conversations this surface has: the
+/// agent pushes events for the session attached here and nothing about the rest,
+/// so a run another client started, and the moment it ends, reach the rail only
+/// by asking (`list_sessions`). Without this clock a row's spinner would freeze
+/// mid-turn and 最近's 活跃 stretch would never empty.
+///
+/// Five seconds is the trade the two uses agree on: a run that starts elsewhere
+/// shows up in the time it takes to look at the rail, and an idle terminal pays
+/// one cheap local call every five seconds — none of them a repaint (the poll
+/// repaints only when the list it read differs from the one on screen).
+const SESSIONS_POLL: Duration = Duration::from_secs(5);
 
 /// How many already-queued agent events one iteration applies before painting.
 ///

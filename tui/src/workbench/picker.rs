@@ -966,6 +966,7 @@ mod tests {
                 age: "5m".into(),
                 current: true,
                 parent_id: None,
+                streaming: false,
             },
             SessionRow {
                 id: "s2".into(),
@@ -974,6 +975,7 @@ mod tests {
                 age: "3h".into(),
                 current: false,
                 parent_id: None,
+                streaming: false,
             },
         ];
         data

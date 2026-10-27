@@ -80,6 +80,7 @@ fn base() -> WorkbenchData {
                 age: "2m".into(),
                 current: true,
                 parent_id: None,
+                streaming: false,
             },
             SessionRow {
                 id: "s2".into(),
@@ -88,6 +89,7 @@ fn base() -> WorkbenchData {
                 age: "1h".into(),
                 current: false,
                 parent_id: None,
+                streaming: false,
             },
             SessionRow {
                 id: "s3".into(),
@@ -96,6 +98,7 @@ fn base() -> WorkbenchData {
                 age: "3h".into(),
                 current: false,
                 parent_id: None,
+                streaming: false,
             },
             SessionRow {
                 id: "s4".into(),
@@ -104,6 +107,7 @@ fn base() -> WorkbenchData {
                 age: "2d".into(),
                 current: false,
                 parent_id: None,
+                streaming: false,
             },
             SessionRow {
                 id: "s5".into(),
@@ -112,6 +116,7 @@ fn base() -> WorkbenchData {
                 age: "4d".into(),
                 current: false,
                 parent_id: None,
+                streaming: false,
             },
         ],
         workspaces: vec![
@@ -421,6 +426,7 @@ pub fn workspaces() -> WorkbenchData {
             age: format!("{}h", index + 1),
             current: index == 0,
             parent_id: None,
+            streaming: false,
         });
         data.workspaces.push(WorkspaceGroup {
             name: (*name).to_string(),

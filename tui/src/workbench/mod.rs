@@ -5006,6 +5006,7 @@ mod tests {
             age: "4d".into(),
             current: false,
             parent_id: None,
+            streaming: false,
         });
         let (mut workbench, _rows) = frame(&data, 120, 38);
         workbench.panel = PanelId::Recent;

@@ -1093,6 +1093,7 @@ fn sidebar_rows(
     let lang = workbench.lang;
     let panel = workbench.panel;
     let folded = workbench.folded_workspaces.clone();
+    let frame = workbench.spinner_frame();
     let body = panels::render_with(
         panel,
         data,
@@ -1101,6 +1102,7 @@ fn sidebar_rows(
         view,
         workbench.hit_map(),
         lang,
+        frame,
         &folded,
     );
     lines.extend(body);
@@ -2347,6 +2349,7 @@ fn panel_box(
         selected: workbench.sidebar_index,
     };
     let folded = workbench.folded_workspaces.clone();
+    let frame = workbench.spinner_frame();
     let body = panels::render_with(
         panel,
         data,
@@ -2355,6 +2358,7 @@ fn panel_box(
         view,
         workbench.hit_map(),
         lang,
+        frame,
         &folded,
     );
     let geometry = box_geometry(w, h, PANEL_WIDTH, body.len());

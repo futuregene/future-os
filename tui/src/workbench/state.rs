@@ -60,6 +60,15 @@ pub struct SessionRow {
     pub age: String,
     /// The session the workbench is attached to.
     pub current: bool,
+    /// The agent reports a run in flight in this conversation — the row draws
+    /// the spinner, and `最近` files it under 活跃.
+    ///
+    /// The desktop's rail shows the same fact from its own run ledger; the TUI
+    /// has only what `list_sessions` reports, which is a live per-session flag
+    /// on the agent (`is_streaming`), so a run another client started shows up
+    /// here too — as long as the list is re-read while it runs (see
+    /// `run::SESSIONS_POLL`).
+    pub streaming: bool,
 }
 
 /// One workspace in the 工作区 tab: a directory several conversations are filed
