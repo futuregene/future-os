@@ -125,11 +125,11 @@ Content — a conversation, a session title, a path — is never translated.
 ├───────────────────────────────────────────────┴──────────────────────────────┤
 │ row h-3        ACTIVITY: ⠋ 思考 3s · 2 工具 · 42 tok/s · 缓存 96%            │
 │ row h-2        STATUS: model · effort · 审批模式 · ctx bar · ≈¥0.01          │
-│ row h-1        HINT: Esc 聊天 · ctrl+s 侧栏 · / 命令 · ? 帮助                │
+│ row h-1        HINT: Esc 聊天 · ctrl+r 会话 · / 命令 · ? 帮助                │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Width < 88: the sidebar collapses to 0; `ctrl+s` opens a full-screen overlay
+- Width < 88: the sidebar collapses to 0; `/recent` opens a full-screen overlay
   panel; the divider column becomes a 2-column timeline rail.
 - Height < 24: HEADER is squeezed to 1 row (wordmark inline), INPUT to 2 rows,
   ACTIVITY is hidden.
@@ -276,25 +276,26 @@ the row under the pointer rather than one beside it.
 ### Keyboard
 
 **One prefix: `ctrl`.** Every global default is a `ctrl` chord (or an arrow with
-`shift`): `ctrl+o` model chooser; `ctrl+t` thinking-effort chooser; `ctrl+l`
-language chooser; `ctrl+g` the git browser; `ctrl+s` sidebar open/focus/close
-(the rail's own `›` edge button does the same with one click, and leaves a `‹` in
-the same column when the rail is closed); `ctrl+f` refresh; `ctrl+q` queue;
-`ctrl+v` read the clipboard (an image becomes a draft attachment, text is
-pasted); `tab` focus within a panel; `shift+tab` reverse; `/` command palette;
-`?` help; `esc` close one layer at a time.
+`shift`): `ctrl+o` model chooser; `ctrl+t` thinking-effort chooser; `ctrl+s`
+approval-mode chooser; `ctrl+l` workspace chooser; `ctrl+f` the files panel
+(this session's own workspace); `ctrl+g` the git browser; `ctrl+v` read the
+clipboard (an image becomes a draft attachment, text is pasted); `tab` focus
+within a panel; `shift+tab` reverse; `/` command palette; `?` help; `esc` close
+one layer at a time. `shift+←`/`shift+→` walk the rail's two tabs and do the
+sidebar's open/focus/hide job when the rail is closed.
 
 No default is `alt` — on macOS Option composes a character unless the reader
 turns on "Use Option as Meta" — and the letters left over after the collisions
-run out, so the remaining actions have **no chord**: approval mode (`/mode`),
-workspaces (`/workspace`), copy (`/copy`), mouse capture (`/mouse`), preferences
-(`/preferences`), the newest attachment (`/preview`), the files panel
-(`/files`), the three rail/files panels (a click, or `shift+←`/`shift+→`), and
-reduced motion (the preferences overlay). The help overlay prints `—` in the key
-column for those. The collisions are the reason: a terminal sends Backspace,
-Tab, `\n` and Enter for `ctrl+h`/`i`/`j`/`m`; `ctrl+a`/`ctrl+b` are the `screen`
-and `tmux` prefixes; `ctrl+z` is suspend; `ctrl+u`/`k`/`w`/`y` are the
-composer's own editing keys. `shift+←` / `shift+→` walk
+run out, so the remaining actions have **no chord**: the queue (`/queue` — the
+prompts sent while a run was in flight), the interface language (`/lang`), a
+refresh (`/refresh`), copy (`/copy`), mouse capture (`/mouse`), preferences
+(`/preferences`), the newest attachment (`/preview`), the rail's two panels
+(a click, or `shift+←`/`shift+→`), the sidebar itself (the `›` edge button,
+`tab`, `shift+←`/`shift+→`), and reduced motion (the preferences overlay). The
+help overlay prints `—` in the key column for those. The collisions are the
+reason: a terminal sends Backspace, Tab, `\n` and Enter for `ctrl+h`/`i`/`j`/`m`;
+`ctrl+a`/`ctrl+b` are the `screen` and `tmux` prefixes; `ctrl+z` is suspend;
+`ctrl+u`/`k`/`w`/`y` are the composer's own editing keys. `shift+←` / `shift+→` walk
 the rail's two tabs from anywhere — they show a hidden rail and take the keys —
 and `shift+↑` / `shift+↓` switch to the previous / next conversation. A focused
 rail spends its last row on exactly those two chords

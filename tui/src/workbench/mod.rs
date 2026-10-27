@@ -3339,13 +3339,14 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
 /// The command palette's entries: `(command, description)`. Kept here rather
 /// than in the app so the palette, the help overlay and the tests share one
 /// list.
-pub const COMMANDS: [(&str, Key); 32] = [
+pub const COMMANDS: [(&str, Key); 33] = [
     ("/new", Key::CmdNew),
     ("/delete", Key::CmdDelete),
     ("/queue", Key::CmdQueue),
     ("/copy", Key::CmdCopy),
     ("/paste", Key::CmdPaste),
     ("/preview", Key::CmdPreview),
+    ("/refresh", Key::CmdRefresh),
     ("/mouse", Key::CmdMouse),
     ("/diff", Key::CmdDiff),
     ("/git", Key::CmdGit),
@@ -3943,10 +3944,10 @@ mod tests {
         assert_eq!(workbench.overlay, Some(Overlay::PanelFull));
         let text = plain(&workbench.render(&data, 60, 20));
         assert!(text.contains("工作区"), "the panel takes the body: {text}");
-        // The rail's own key still leaves it, which is what the hint row already
-        // names at this width (`ctrl+s 侧栏`), so the overlay is not a dead end
-        // even though its title line carries no footer of its own.
-        assert!(text.contains("ctrl+s"));
+        // `esc` leaves it — the overlay is not a dead end even though its title
+        // line carries no footer of its own.
+        workbench.handle(WbEvent::Key("escape".into()), &data);
+        assert_eq!(workbench.overlay, None);
     }
 
     /// The verbs that cannot be carried out here answer with what *is* true
@@ -4735,26 +4736,35 @@ mod tests {
         assert_eq!(workbench.overlay, None);
     }
 
-    /// `ctrl+g` is the interface-language chooser — the same box `/lang` opens,
-    /// so a key cannot drift from the command it names. The queue keeps `alt+q`
-    /// and `/queue`.
+    /// The queue of prompts sent mid-run and the interface language are both
+    /// commands now (`/queue`, `/lang`): neither is pressed while working, so
+    /// neither takes a letter from something that is. The files panel took one.
     #[test]
-    fn ctrl_g_opens_the_language_chooser_and_the_queue_keeps_alt_q() {
+    fn the_queue_and_language_are_commands_and_the_files_panel_has_a_key() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
+        for action in [preferences::Action::Queue, preferences::Action::Language] {
+            assert!(
+                workbench.keys.key(action).is_empty(),
+                "{action:?} still claims a chord"
+            );
+        }
+        for command in ["/queue", "/lang"] {
+            assert!(
+                workbench
+                    .palette_rows(&data)
+                    .iter()
+                    .any(|row| row.command() == command),
+                "{command} is not in the palette"
+            );
+        }
+        // The files panel is the one that earned a chord.
         assert_eq!(
-            workbench.handle(WbEvent::Key("ctrl+l".into()), &data),
-            vec![WbAction::Command("/lang".into())]
+            workbench.handle(WbEvent::Key("ctrl+f".into()), &data),
+            vec![WbAction::OpenFiles]
         );
-        assert_eq!(
-            workbench.handle(WbEvent::Key("ctrl+q".into()), &data),
-            vec![WbAction::OpenQueue]
-        );
-        // The binding is an action, so the help table and the shortcut editor
-        // say the same thing the key does.
-        assert_eq!(workbench.keys.key(preferences::Action::Language), "ctrl+l");
-        assert_eq!(workbench.keys.key(preferences::Action::Queue), "ctrl+q");
-        // …and the two chords the old scheme used are gone: `alt+q` resolves to
+        assert_eq!(workbench.keys.key(preferences::Action::Files), "ctrl+f");
+        // …and the chords the old scheme used are gone: `alt+q` resolves to
         // nothing instead of opening the queue.
         assert_eq!(workbench.keys.action("alt+q"), None);
     }
@@ -4888,7 +4898,10 @@ mod tests {
             .lines()
             .find(|line| line.contains("本会话的文件面板"))
             .expect("the files row");
-        assert!(row.contains('—'), "the files panel has no chord: {row}");
+        assert!(
+            row.contains("ctrl+f"),
+            "the files panel is one of the fourteen: {row}"
+        );
 
         // The shortcut editor agrees, and `enter` there is how a reader puts a
         // chord back on one of these rows.
@@ -4938,9 +4951,13 @@ mod tests {
         );
         assert_eq!(
             crate::utils::strip_ansi_codes(&painted).trim_end(),
-            t(Language::Zh, Key::FilesTitle)
+            format!(
+                "[{}] {}",
+                workbench.keys.key(preferences::Action::Files),
+                t(Language::Zh, Key::FilesTitle)
+            )
         );
-        assert!(workbench.keys.key(preferences::Action::Files).is_empty());
+        assert_eq!(workbench.keys.key(preferences::Action::Files), "ctrl+f");
 
         // The header's button is the same verb as the key.
         assert_eq!(
@@ -5561,21 +5578,26 @@ mod tests {
         assert_eq!(workbench.overlay, None);
     }
 
+    /// The rail's action cycles show → focus → hide. It has no default chord in
+    /// this scheme (`b` belongs to tmux, `s` to the approval chooser), so the
+    /// test drives the action itself; a reader who wants the key back binds one
+    /// in the shortcut editor, and the two doors that remain — the `›` edge
+    /// button and `shift+←`/`shift+→` — have their own tests.
     #[test]
-    fn ctrl_b_cycles_open_focus_closed_on_a_wide_terminal() {
+    fn the_rail_cycles_show_focus_hide() {
         let data = demo::chat();
         let (mut workbench, rows) = frame(&data, 120, 38);
         assert!(workbench.sidebar_visible && !workbench.sidebar_focus);
         assert!(plain(&rows).contains("最近"));
 
         // open → focus
-        workbench.handle(WbEvent::Key("ctrl+s".into()), &data);
+        workbench.toggle_sidebar();
         assert!(workbench.sidebar_visible && workbench.sidebar_focus);
 
         // focus → closed. Closing is a *preference*, not a transient view
         // state: the action asks the driver to write it, so the next start opens
         // the way the reader left it.
-        let actions = workbench.handle(WbEvent::Key("ctrl+s".into()), &data);
+        let actions = workbench.toggle_sidebar();
         assert!(actions.contains(&WbAction::SetPreferences), "{actions:?}");
         assert!(!workbench.sidebar_visible && !workbench.sidebar_focus);
         assert!(
@@ -5612,7 +5634,7 @@ mod tests {
         // closed → open (and focused). The width decides whether a rail can
         // exist — asking the *layout* with a hidden rail would answer "none" and
         // open the overlay on a 120-column terminal.
-        workbench.handle(WbEvent::Key("ctrl+s".into()), &data);
+        workbench.toggle_sidebar();
         assert!(workbench.sidebar_visible && workbench.sidebar_focus);
         assert!(
             workbench.overlay.is_none(),
@@ -5621,7 +5643,7 @@ mod tests {
 
         // A hidden rail cannot take the keys: focusing it would swallow
         // up/down with nothing on screen to show for it.
-        workbench.handle(WbEvent::Key("ctrl+s".into()), &data); // hide
+        workbench.toggle_sidebar(); // hide
         assert!(!workbench.sidebar_visible);
         workbench.handle(WbEvent::Key("tab".into()), &data);
         assert!(!workbench.sidebar_focus);
@@ -5777,7 +5799,7 @@ mod tests {
     }
 
     #[test]
-    fn a_narrow_terminal_has_no_sidebar_but_ctrl_b_still_reaches_the_panel() {
+    fn a_narrow_terminal_has_no_sidebar_but_the_panel_command_reaches_it() {
         let data = demo::workspaces();
         let (mut workbench, rows) = frame(&data, 70, 24);
         let text = plain(&rows);
@@ -5788,8 +5810,8 @@ mod tests {
             .iter()
             .all(|(_, id)| !id.starts_with("sidebar.")));
 
-        let actions = workbench.handle(WbEvent::Key("ctrl+s".into()), &data);
-        assert_eq!(actions, vec![WbAction::Redraw]);
+        let outcome = workbench.surface_command("/recent", &data);
+        assert_eq!(outcome, VerbOutcome::Done { notice: None });
         // The full-screen panel is now the surface: it carries the same two
         // tabs the rail does, starting on 最近.
         let text = plain(&workbench.render(&data, 70, 24));
@@ -6657,7 +6679,7 @@ mod tests {
         workbench.handle(WbEvent::Key("enter".into()), &data);
         workbench.overlay = None;
         assert!(workbench.reduced_motion && !workbench.motion_enabled());
-        workbench.handle(WbEvent::Key("ctrl+s".into()), &data);
+        workbench.handle(WbEvent::Key("tab".into()), &data);
         assert!(workbench.sidebar_visible && workbench.sidebar_focus);
         assert!(
             workbench.reduced_motion,

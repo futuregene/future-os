@@ -49,7 +49,7 @@ conversations, to see the rail's window and its `↓ N more` row).
  input box (❯ multiline draft, grows)      │  (the rail runs down beside it)
  activity: ⠋ 思考 … · 3s · 2 工具                   42 tok/s · 缓存 96%
  status:   model · effort · approval   ░░ ctx 6.9k/1.0M 0.7% · ≈¥0.01
- hint:     Esc 回到聊天 · ctrl+s 侧栏 · tab 焦点 · ctrl+r 会话 · ctrl+p 命令
+ hint:     Esc 回到聊天 · tab 焦点 · ctrl+r 会话 · ctrl+p 命令 · ctrl+n 新会话
 ```
 
 The rail is a *column*, not a panel that stops one band early: it (and its
@@ -141,25 +141,28 @@ shortcut is one that silently does nothing on the terminal this surface is
 developed against — and no default is a function key (`F1`–`F12` need `Fn` on a
 laptop and are absent on a compact keyboard).
 
-The fifteen chords are `ctrl+c` quit, `ctrl+n` new chat, `ctrl+r` sessions,
-`ctrl+d` delete, `ctrl+x` stop, `ctrl+q` queue, `ctrl+e` fold/unfold the process,
-`ctrl+p` commands, `ctrl+o` model, `ctrl+t` effort, `ctrl+l` language,
-`ctrl+g` the git browser, `ctrl+s` the rail, `ctrl+f` refresh, `ctrl+v` paste.
-Everything else is a typed verb or a pointer target: `/mode` (approval),
-`/workspace`, `/copy`, `/mouse`, `/preferences`, `/preview`, `/files`, and `?`
-for help — the help overlay prints `—` in the key column for those, and its
-command list names the door.
+The fourteen chords are `ctrl+c` quit, `ctrl+n` new chat, `ctrl+r` sessions,
+`ctrl+d` delete, `ctrl+x` stop, `ctrl+e` fold/unfold the process, `ctrl+p`
+commands, `ctrl+o` model, `ctrl+t` effort (thinking), `ctrl+s` approval mode,
+`ctrl+l` workspaces, `ctrl+f` the files panel, `ctrl+g` the git browser,
+`ctrl+v` paste. Everything else is a typed verb or a pointer target: `/queue`,
+`/copy`, `/mouse`, `/preferences`, `/preview`, `/refresh`, `/lang`, and `?` for
+help — the help overlay prints `—` in the key column for those, and its command
+list names the door.
 
 The map stops there because the letters do: a terminal sends Backspace, Tab,
 `\n` and Enter for `ctrl+h`/`i`/`j`/`m`; `ctrl+a` and `ctrl+b` are the default
 prefixes of `screen` and `tmux`; `ctrl+z` is suspend everywhere else; and
-`ctrl+u`/`k`/`w`/`y` are the composer's own editing keys. Every chord is
-rebindable in `/preferences`, and the help overlay lists them grouped by what
-they do rather than in one flat list.
+`ctrl+u`/`k`/`w`/`y` are the composer's own editing keys. The rail has no chord
+either: `b` is tmux's and `s` is the approval chooser's, and its three doors —
+the `›` edge button, `tab`, and `shift+←`/`shift+→` (which also brings a hidden
+rail back) — are all on screen. Every chord is rebindable in `/preferences`, and
+the help overlay lists them grouped by what they do rather than in one flat
+list.
 
 Two breakpoints, both from the contract:
 
-- **width < 88**: the sidebar is dropped; `ctrl+s` opens the current panel
+- **width < 88**: the sidebar is dropped; `/recent` (or `shift+←`) opens the current panel
   full-screen instead.
 - **height < 24**: the header collapses to one row, the input box keeps only its
   top rule, and the activity row is hidden.
@@ -207,7 +210,7 @@ incremental shortcut overrides live beside it in
 
 With no stored `sidebarVisible` — a first start, or a file written before the
 key existed — the rail starts **hidden**: the conversation gets the whole
-width, and `ctrl+s` (or `shift+←`/`shift+→`, which show the rail to reach
+width, and `shift+←`/`shift+→` (which show the rail to reach
 their panel) brings it back. Once the reader has shown or hidden it, that choice
 is what the next start begins with, and `Restore defaults` lands back on the
 hidden layout.
@@ -268,11 +271,11 @@ click on the rail's tab strip are the doors to the same places.
 | `ctrl+w`, `alt+d`, `ctrl+u`, `ctrl+k`, `ctrl+y` | Delete a word, kill to line start/end, yank |
 | `ctrl+z` / `ctrl+shift+z` (or `alt+y`) | Undo / redo draft edits |
 | `pageUp` / `pageDown` or `ctrl+↑` / `ctrl+↓` | Scroll the conversation; `esc` returns to the latest output |
-| `ctrl+q` or `/queue` | List queued prompts; `x` cancels, `r` / `enter` cancels and recalls into the draft (`ctrl+x` stops the active run, not the queue) |
+| `/queue` | List queued prompts — the ones sent while a run was in flight; `x` cancels, `r` / `enter` cancels and recalls into the draft (`ctrl+x` stops the active run, not the queue) |
 | `ctrl+g` or `/git` | The repository browser: 提交 / 引用 / 改动 / 暂存 tabs, a graph log, and the selected row's patch. `1`–`4` pick a tab, `tab` switches list/detail, `y` copies the row |
 | `ctrl+o` | Model picker (`/model`): every model the agent offers, grouped by provider, with the reasoning slider on its first row |
 | `shift+left` / `shift+right` | The rail's two tabs, one step at a time: 最近 (conversations by refresh time) and 工作区 (filed by directory). The rail takes the keys and its cursor lands on the conversation on screen; clicking a tab is the same switch |
-| `/files` | The **files panel**: this conversation's workspace as a tree, in a box over the frame — the same session scope as `/git`. `↑`/`↓` walk it, `⏎`/`→` open, `⌫`/`←` go up a level, `r` re-reads the directory, `esc` closes. The header's 文件 button is the pointer's door to it |
+| `ctrl+f` or `/files` | The **files panel**: this conversation's workspace as a tree, in a box over the frame — the same session scope as `/git`. `↑`/`↓` walk it, `⏎`/`→` open, `⌫`/`←` go up a level, `r` re-reads the directory, `esc` closes. The header's `[ctrl+f] 文件` button is the pointer's door to it |
 | `ctrl+v` | Read the clipboard: an image becomes a draft attachment, text is pasted. `/paste` does the same for terminals that bind the key themselves |
 | `/preview` | Preview the newest image attached to the draft (no chord: the fifteen go to the actions pressed while working) |
 | `+` / `-` / `0`, arrows, drag, wheel | In the preview box: zoom a picture (up to 6×), pan it, reset; scroll a document |
@@ -281,21 +284,21 @@ click on the rail's tab strip are the doors to the same places.
 | `/mouse` | Toggle and persist mouse capture off/on for native terminal selection |
 | 偏好设置 → 动态 | Toggle reduced motion (persisted; no chord) |
 | `ctrl+t` | Thinking effort: opens the six-level chooser (`/thinking`); on the launchpad the level is staged for the session the first message creates |
-| `/mode` | Approval mode: opens the four-tier chooser, the desktop composer's own values — 手动审批 / 沙箱保护 / 自动审批 / 完全访问 |
-| `/workspace` | Workspaces: opens the workspace chooser — every directory this client has a conversation in, plus a row that creates one from the path typed into its search line |
-| `ctrl+s` | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal. The rail's own `›` edge button does the same hide/show with one click. The show/hide choice is written to `sidebarVisible` and is where the next start begins (a first start begins hidden) |
+| `ctrl+s` | Approval mode: opens the four-tier chooser, the desktop composer's own values — 手动审批 / 沙箱保护 / 自动审批 / 完全访问 |
+| `ctrl+l` | Workspaces: opens the workspace chooser — every directory this client has a conversation in, plus a row that creates one from the path typed into its search line |
+| `/recent`, `shift+←`/`shift+→` or the `›` edge | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal. The rail's own `›` edge button does the same hide/show with one click. The show/hide choice is written to `sidebarVisible` and is where the next start begins (a first start begins hidden) |
 | `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run |
 | `ctrl+r` | Session picker (name, workspace and age of each conversation; the footer names the key) |
 | `/preferences` | Preferences and shortcut editor (no chord) |
 | `?` | Help overlay (effective keys, grouped by area, then the commands; `?` requires an empty draft) |
-| `ctrl+l` or `/lang` | Interface language: opens the picker — follow the system, Chinese or English |
+| `/lang` | Interface language: opens the picker — follow the system, Chinese or English |
 | `ctrl+e` | Final-answer / full-process reading level: a settled reply folds its whole work — the calls and reasoning before *and* after its last prose — into one summary row, and reasoning is collapsed to a `▸ thinking` row at the default level (the way the desktop and the phone show it) while the full-process level prints its text. A view toggle for the run it is pressed in, not a preference: every start opens folded, so a peek at the process cannot leave the next terminal expanded |
 | `ctrl+c` | Quit |
 
 | Mouse | Action |
 |---|---|
 | Click a sidebar tab | Switch panel (`←`/`→` do the same while the rail has the keys) |
-| Click the rail's `›` edge (or the `‹` it leaves behind) | Hide the rail / bring it back. `ctrl+s` does the same from the keyboard |
+| Click the rail's `›` edge (or the `‹` it leaves behind) | Hide the rail / bring it back. `shift+←`/`shift+→` do the same from the keyboard |
 | Click a session row | Open that conversation (a workspace heading only takes the keys) |
 | Click a tree row | A file previews, a directory opens — the same two verbs `enter` runs |
 | Drag the divider | Resize the sidebar (30–60 columns), persisted on release |
@@ -342,7 +345,7 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | Existing settings | `/mode` (or `/sandbox`) opens the approval-mode chooser, `/thinking` the reasoning chooser, `/compact [instructions]`, `/tools a,b` or `/tools off`, `/providers`; `/skills` and `/model` retain their existing surfaces |
 | Sessions panel | `list_sessions`, newest first: 最近 split into a 活跃 stretch (a run still in flight, spinner in the row's state slot) and 更早, the headings drawn only while both are non-empty. The list is re-read every five seconds while the rail is on screen, because another client's run reaches this surface no other way. 工作区 filed by directory with the pinned ones leading. Pins persist in `settings.json` (`pinnedWorkspaces`) |
 | Usage / context / cost | `get_state`'s usage block, refreshed on the same events |
-| `ctrl+n` / `/new`, `ctrl+x` stop, `ctrl+f` refresh | |
+| `ctrl+n` / `/new`, `ctrl+x` stop, `/refresh` | |
 | Delete a conversation (`ctrl+d`, `/delete`, or `delete` in the rail) | One confirm box, then `delete_session` for the id it named. The successor in the list opens, so the transcript never stays on a conversation that is gone; deleting the last one detaches to the launchpad. A refusal (the agent keeps a session a compaction holds) leaves everything as it was and says so in the notice row |
 | Launchpad chips | Click 工作区 / 模型 / 强度 / 审批 to cycle them. On the launchpad the workspace, model, effort and approval choices are staged for the session the first message creates (the agent has no session to set them on yet); with a session attached they go over the wire. 工作区 cycles the directories this client has conversations in, and the notice row names the full path it chose |
 | Theme | Persisted in `~/.future/tui/settings.json` (`tui/src/settings.rs`); the reading level is deliberately not — `ctrl+e` is per run |

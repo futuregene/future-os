@@ -777,6 +777,15 @@ async fn quit(
                     live.paste_clipboard().await;
                     continue;
                 }
+                // Refreshing the view has no chord any more: it is a
+                // once-in-a-while verb, so the palette (and this line) is its
+                // door. Same three reads the action does.
+                "/refresh" => {
+                    live.refresh_sessions().await;
+                    live.refresh_state().await;
+                    live.refresh_tree();
+                    continue;
+                }
                 // Previewing the newest attachment has no chord (the surface's
                 // chords are reserved for the actions pressed while working), so
                 // this verb is its door.
