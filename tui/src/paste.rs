@@ -70,9 +70,22 @@ pub fn over_limit_message(resulting_chars: usize) -> Option<String> {
 /// Line endings and tabs, normalised the way the input box has always
 /// normalised them (`\r\n` and `\r` → `\n`, a tab → four spaces).
 pub fn normalize(text: &str) -> String {
-    text.replace("\r\n", "\n")
+    // Escape sequences go first, as sequences: dropping only their `ESC` byte
+    // would leave `[31m` in the draft as literal characters.
+    crate::utils::strip_ansi_codes(text)
+        .replace("\r\n", "\n")
         .replace('\r', "\n")
         .replace('\t', "    ")
+        // Control bytes belong to the terminal, not to the draft. Whatever
+        // puts an `ESC` in the value — a paste of coloured text, a terminal
+        // reply that reached the wrong layer — the frame writes it back out,
+        // and the terminal *executes* it there instead of drawing it: a leaked
+        // key event (`ESC[65292;1:3u`) swallowed twelve columns of the composer
+        // row, so the draft's tail was gone and the caret sat past what the
+        // reader could see. Text is text: newlines stay, the rest goes.
+        .chars()
+        .filter(|ch| *ch == '\n' || !ch.is_control())
+        .collect()
 }
 
 // ─── Folded pastes ─────────────────────────────────────────────────────────
@@ -1004,6 +1017,21 @@ mod tests {
     #[test]
     fn normalize_folds_line_endings_and_tabs() {
         assert_eq!(normalize("a\r\nb\rc\td"), "a\nb\nc    d");
+    }
+
+    /// A control byte in the draft is a byte the *terminal* executes once the
+    /// frame carries it back out: an `ESC` that came from a paste (or from a
+    /// key report that reached the wrong layer) swallowed columns of the
+    /// composer row, so the text after it was drawn in the wrong cells and the
+    /// caret landed past what the reader could see.
+    #[test]
+    fn normalize_strips_control_bytes_and_keeps_newlines() {
+        // A whole escape sequence goes, not just its `ESC`: pasting coloured
+        // text must not leave `[31m` behind as characters.
+        assert_eq!(normalize("a\x1b[65292;1:3ub"), "ab");
+        assert_eq!(normalize("红色\x1b[31m文字\x1b[0m"), "红色文字");
+        assert_eq!(normalize("line\nnext\x07"), "line\nnext");
+        assert_eq!(normalize("\x1b]52;c;Zm9v\x07"), "");
     }
 
     // ─── placeholder naming ────────────────────────────────────────────

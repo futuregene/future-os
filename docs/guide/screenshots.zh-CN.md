@@ -154,6 +154,8 @@ python3 scripts/screenshots/capture.py tui tui-chat.png
   两条指面板的命令 `command-usage` / `command-skills`、`launchpad`（`/new`）、
   `mention-sessions`（草稿里敲 `#`：会话提及菜单）、
   `full-panel`（窄终端上的 `ctrl+b`）、`scrolled`（点一下聊天再滚轮上滚三次）、
+  `rail-search`（`ctrl+d` 把按键交给侧栏，再按 `/` 和一个词：两个页签同时收窄到
+  命中的会话）、
   `light`（`/theme` 后下移一行回车；它会持久化，所以放在最后）以及 `drag`
   （抓住分隔条往右拖六列）。所有坐标都在步骤执行时从当时屏幕上的帧算出来——点页签按
   画出来的标签，拖拽按画出来的分隔条——所以跟着布局走，而不是写死列号。`git`

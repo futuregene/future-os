@@ -38,6 +38,22 @@ pub(super) fn initialize_schema(
         "CREATE UNIQUE INDEX IF NOT EXISTS run_events_custom_id
          ON run_events(session_id,event_id) WHERE event_id IS NOT NULL;",
     )?;
+    // One-time recovery of the activity stamps older builds let a metadata
+    // snapshot push forward (see `entry_records::repair_activity_stamps`). The
+    // marker keeps it off the startup path after the first pass: the pass
+    // itself reads the whole transcript, which on a large history is seconds.
+    let stamps_repaired: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM storage_meta WHERE key='activity_stamps_repaired')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !stamps_repaired {
+        crate::session::entry_records::repair_activity_stamps(&tx)?;
+        tx.execute(
+            "INSERT OR REPLACE INTO storage_meta(key,value) VALUES ('activity_stamps_repaired','1')",
+            [],
+        )?;
+    }
     cancellation.check()?;
     validate_core(&tx)?;
     tx.pragma_update(None, "user_version", super::CURRENT_SCHEMA_VERSION)?;

@@ -4,6 +4,46 @@ use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection};
 use serde_json::Value;
 
+use crate::session::entry::{ENTRY_TYPE_ASSISTANT, ENTRY_TYPE_TOOL, ENTRY_TYPE_USER};
+
+/// Does an entry of this kind count as conversation activity — the fact
+/// `sessions.updated_at_ms` records? See [`insert_entry_record`].
+fn advances_activity(kind: Option<&str>) -> bool {
+    matches!(
+        kind,
+        Some(ENTRY_TYPE_USER | ENTRY_TYPE_ASSISTANT | ENTRY_TYPE_TOOL)
+    )
+}
+
+/// The entry kinds [`advances_activity`] accepts, as a SQL list.
+fn activity_kinds_sql() -> String {
+    format!("'{ENTRY_TYPE_USER}','{ENTRY_TYPE_ASSISTANT}','{ENTRY_TYPE_TOOL}'")
+}
+
+/// Recompute every stored activity stamp as the session's newest message.
+///
+/// Recovery for older databases: until 2026-10-27 a metadata snapshot moved
+/// `updated_at_ms` forward, so one bulk rewrite restamped hundreds of
+/// conversations at once and their age became "when their metadata was
+/// written" (a week-idle conversation read "5h"). The entries were never
+/// touched, so the true stamp is still in the transcript.
+///
+/// Idempotent, and a no-op for a database written by the current rule: the
+/// stamp can no longer exceed the newest message.
+pub(crate) fn repair_activity_stamps(db: &Connection) -> Result<()> {
+    db.execute_batch(&format!(
+        "WITH activity(session_id,ts) AS (
+             SELECT session_id,max(timestamp_ms) FROM entries
+              WHERE entry_type IN ({}) GROUP BY session_id
+         )
+         UPDATE sessions
+            SET updated_at_ms=(SELECT ts FROM activity a WHERE a.session_id=sessions.id)
+          WHERE updated_at_ms > (SELECT ts FROM activity a WHERE a.session_id=sessions.id);",
+        activity_kinds_sql()
+    ))?;
+    Ok(())
+}
+
 pub(crate) fn normalize_entry(mut value: Value) -> Value {
     if !matches!(
         value["type"].as_str(),
@@ -133,7 +173,35 @@ pub(crate) fn insert_entry_record(
     }
     let blocks = content.as_ref().and_then(Value::as_array);
     if let Some(timestamp_ms) = timestamp_ms {
-        db.execute("UPDATE sessions SET created_at_ms=CASE WHEN created_at_ms IS NULL THEN ?2 ELSE min(created_at_ms,?2) END,updated_at_ms=CASE WHEN updated_at_ms IS NULL THEN ?2 ELSE max(updated_at_ms,?2) END WHERE id=?1",params![&stored_session,timestamp_ms])?;
+        // `updated_at_ms` answers "when did this conversation last move", which
+        // every client shows as the session's age (`list_sessions` →
+        // `updatedAtMs`, and the rail's `5m` / `3h` next to the title).
+        //
+        // Only a message moves it. `user`, `assistant` and `tool` entries are
+        // the conversation; `session_info` is a metadata snapshot (a rename, a
+        // cwd change, a model reconcile) and the run markers / compaction
+        // records are bookkeeping written around it. Counting bookkeeping as
+        // activity is not a rounded-off detail: one bulk model reconcile on
+        // 2026-10-27 wrote 311 sessions' snapshots inside three seconds, and
+        // conversations untouched for a week began reporting "5h" — the list
+        // said every conversation had been used that afternoon. Those entries
+        // therefore only *seed* an empty stamp (so a session whose only row is
+        // a snapshot still has a time) and never move one forward.
+        //
+        // `created_at_ms` stays the earliest entry of any kind: the snapshot
+        // written when a session is created is that moment.
+        let stamp = if advances_activity(kind.as_str()) {
+            "updated_at_ms=CASE WHEN updated_at_ms IS NULL THEN ?2 ELSE max(updated_at_ms,?2) END"
+        } else {
+            "updated_at_ms=CASE WHEN updated_at_ms IS NULL THEN ?2 ELSE updated_at_ms END"
+        };
+        db.execute(
+            &format!(
+                "UPDATE sessions SET created_at_ms=CASE WHEN created_at_ms IS NULL THEN ?2 \
+                 ELSE min(created_at_ms,?2) END,{stamp} WHERE id=?1"
+            ),
+            params![&stored_session, timestamp_ms],
+        )?;
     }
     if kind == "session_info" {
         if segmented {
@@ -397,6 +465,177 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    /// The stamp the session list shows as "how long ago was this used".
+    fn activity_stamp(store: &super::super::sqlite_store::SqliteStore, id: &str) -> i64 {
+        let id = id.to_owned();
+        store
+            .db
+            .call(move |db| {
+                let id = super::super::identity::session_key(db, &id)?;
+                Ok(db.query_row(
+                    "SELECT updated_at_ms FROM sessions WHERE id=?1",
+                    [id],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            })
+            .unwrap()
+    }
+
+    fn at(rfc3339: &str) -> i64 {
+        chrono::DateTime::parse_from_rfc3339(rfc3339)
+            .unwrap()
+            .timestamp_millis()
+    }
+
+    /// A rename, a cwd change or a model reconcile writes a `session_info`
+    /// snapshot. That is bookkeeping, not use — letting it move the stamp made
+    /// every session a bulk reconcile touched read "5h" while its last message
+    /// was a week old.
+    #[test]
+    fn a_metadata_snapshot_seeds_the_activity_stamp_without_moving_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            super::super::sqlite_store::SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+        store
+            .replace(
+                "s",
+                vec![json!({"id":"u","type":"user","role":"user","timestamp":"2026-01-01T00:00:00Z","content":"question"})],
+            )
+            .unwrap();
+        assert_eq!(activity_stamp(&store, "s"), at("2026-01-01T00:00:00Z"));
+        store
+            .append(
+                "s",
+                vec![json!({"id":"i","type":"session_info","timestamp":"2026-01-05T00:00:00Z","content":{"session_name":"renamed"}})],
+            )
+            .unwrap();
+        assert_eq!(
+            activity_stamp(&store, "s"),
+            at("2026-01-01T00:00:00Z"),
+            "a snapshot must leave the activity stamp where the last message put it"
+        );
+        // A real message still moves it, forwards only.
+        store
+            .append(
+                "s",
+                vec![json!({"id":"a","type":"assistant","role":"assistant","timestamp":"2026-01-06T00:00:00Z","content":"answer"})],
+            )
+            .unwrap();
+        assert_eq!(activity_stamp(&store, "s"), at("2026-01-06T00:00:00Z"));
+    }
+
+    #[test]
+    fn native_uuid_metadata_refresh_preserves_message_activity_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            super::super::sqlite_store::SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+        let session = uuid::Uuid::new_v4().to_string();
+        store.reserve_segmented(&session).unwrap();
+        store
+            .replace(
+                &session,
+                vec![json!({
+                    "id":uuid::Uuid::new_v4().to_string(),"type":"session_info",
+                    "timestamp":"2026-01-01T00:00:00Z","content":{"model":"mock"}
+                })],
+            )
+            .unwrap();
+        store
+            .append(
+                &session,
+                vec![json!({
+                    "id":uuid::Uuid::new_v4().to_string(),"type":"user","role":"user",
+                    "timestamp":"2026-01-02T00:00:00Z","content":"message"
+                })],
+            )
+            .unwrap();
+        let message_stamp = at("2026-01-02T00:00:00Z");
+        assert_eq!(activity_stamp(&store, &session), message_stamp);
+        store
+            .patch_segmented_metadata(
+                &session,
+                serde_json::from_value(json!({"session_name":"renamed"})).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(activity_stamp(&store, &session), message_stamp);
+    }
+
+    /// A session whose only entry is its creation snapshot still needs a
+    /// stamp: the list would otherwise have nothing to show.
+    #[test]
+    fn the_first_snapshot_seeds_an_empty_activity_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            super::super::sqlite_store::SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+        store
+            .replace(
+                "s",
+                vec![json!({"id":"i","type":"session_info","timestamp":"2026-01-02T00:00:00Z","content":{"cwd":"/tmp"}})],
+            )
+            .unwrap();
+        assert_eq!(activity_stamp(&store, "s"), at("2026-01-02T00:00:00Z"));
+        assert_eq!(activity_stamp(&store, "s"), at("2026-01-02T00:00:00Z"));
+    }
+
+    /// Databases written before the rule above carry snapshots as their
+    /// activity stamp. The transcript still holds the answer, so the repair
+    /// recovers it — and leaves a session with no messages alone.
+    #[test]
+    fn the_repair_recovers_a_stamp_pushed_forward_by_a_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            super::super::sqlite_store::SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+        store
+            .replace(
+                "restamped",
+                vec![
+                    json!({"id":"u","type":"user","role":"user","timestamp":"2026-01-01T00:00:00Z","content":"question"}),
+                    json!({"id":"a","type":"assistant","role":"assistant","timestamp":"2026-01-01T00:05:00Z","content":"answer"}),
+                    json!({"id":"i","type":"session_info","timestamp":"2026-01-09T00:00:00Z","content":{"session_name":"renamed"}}),
+                ],
+            )
+            .unwrap();
+        store
+            .replace(
+                "snapshot-only",
+                vec![json!({"id":"i","type":"session_info","timestamp":"2026-01-03T00:00:00Z","content":{"cwd":"/tmp"}})],
+            )
+            .unwrap();
+        // The old writer let the snapshot set the stamp.
+        store
+            .db
+            .call(|db: &mut rusqlite::Connection| {
+                db.execute(
+                    "UPDATE sessions SET updated_at_ms=?1 WHERE id='restamped'",
+                    [at("2026-01-09T00:00:00Z")],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        store
+            .db
+            .call(|db| super::repair_activity_stamps(db))
+            .unwrap();
+        assert_eq!(
+            activity_stamp(&store, "restamped"),
+            at("2026-01-01T00:05:00Z")
+        );
+        assert_eq!(
+            activity_stamp(&store, "snapshot-only"),
+            at("2026-01-03T00:00:00Z"),
+            "a session with no message keeps the stamp only its snapshot can give it"
+        );
+        // Idempotent: a second pass changes nothing.
+        store
+            .db
+            .call(|db| super::repair_activity_stamps(db))
+            .unwrap();
+        assert_eq!(
+            activity_stamp(&store, "restamped"),
+            at("2026-01-01T00:05:00Z")
+        );
     }
 
     #[test]

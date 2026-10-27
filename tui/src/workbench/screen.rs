@@ -180,8 +180,11 @@ pub(crate) fn compose(
             // The box is drawn at `frame.input.x`; the cursor has to be offset
             // by the same column or it lands in the rail's cells (the bug that
             // only showed once the rail was on the left, where `x` is not 0).
+            // `- 2`, not `- 1`: the last column of a framed row is its right
+            // border, and a caret parked on the border of a full line reads as
+            // a stray block in the rail's gutter.
             let column =
-                (cursor_column as usize).min(frame.input.w.saturating_sub(1) as usize) as u16;
+                (cursor_column as usize).min(frame.input.w.saturating_sub(2) as usize) as u16;
             // The cursor's row is the box's own (it counts the title rule), not
             // "the last row the box grew to": a cursor above the draft's last
             // line sits above the box's bottom, and the two only coincide when
@@ -1263,12 +1266,13 @@ fn sidebar_rows(
         );
         x = x.saturating_add(tab_width + 1);
     }
-    // A focused rail says which two keys walk it from here: `shift+←→` the
-    // tabs, `shift+↑↓` the conversations, with the chat following the cursor.
-    // `↑↓` alone only moves the list cursor and `⏎` only opens what it stands
-    // on, so a reader who guessed wrong learns the chords here. It costs the
-    // list one row and saves the guesswork, so it is only shown while the rail
-    // actually owns the keys.
+    // A focused rail says which keys work from here: `shift+←→` the tabs,
+    // `shift+↑↓` the conversations, with the chat following the cursor. `↑↓`
+    // alone only moves the list cursor and `⏎` only opens what it stands on, so
+    // a reader who guessed wrong learns the chords here. It costs the list one
+    // row and saves the guesswork, so it is only shown while the rail actually
+    // owns the keys — and while the search line is open it names that surface's
+    // keys instead, because the chords above are not what the next key does.
     let footer = usize::from(workbench.sidebar_focus && area.h >= 4);
     let content = Rect::new(area.x, area.y + 1, area.w, area.h - 1 - footer as u16);
     let index = workbench.panel.index();
@@ -1278,8 +1282,12 @@ fn sidebar_rows(
     };
     let lang = workbench.lang;
     let panel = workbench.panel;
-    let folded = workbench.folded_workspaces.clone();
-    let frame = workbench.spinner_frame();
+    let filter = workbench.rail.clone();
+    // The search line lives in the row the panel already spends under its tabs,
+    // so it costs the list nothing: it is drawn while the rail has the keys (as
+    // the one thing that names `/`), and whenever a filter is in force.
+    let search_row = workbench.sidebar_focus || filter.open || !filter.query.is_empty();
+    let frame = workbench.row_spinner();
     let body = panels::render_with(
         panel,
         data,
@@ -1289,12 +1297,18 @@ fn sidebar_rows(
         workbench.hit_map(),
         lang,
         frame,
-        &folded,
+        &filter,
+        search_row,
         "sidebar.row.",
     );
     lines.extend(body);
     if footer == 1 {
-        let hint = fit(t(lang, Key::RailHint), columns);
+        let key = if workbench.rail.open {
+            Key::RailSearchHint
+        } else {
+            Key::RailHint
+        };
+        let hint = fit(t(lang, key), columns);
         lines.push(fit(&palette.dim(&hint), columns));
     }
     lines.truncate(area.h as usize);
@@ -1924,7 +1938,12 @@ fn git_box(
     h: u16,
 ) -> Vec<String> {
     use crate::workbench::workflows;
-    let columns = (w as usize).clamp(1, 132);
+    // The panel is the screen. A git browser reads two long documents side by
+    // side — a graph whose subjects run past the divider, and a patch whose
+    // lines are source code — and the old 132-column cap left the widest
+    // terminals with a narrow window in the middle of an empty page. The
+    // split's balance is the reader's, by dragging the divider.
+    let columns = (w as usize).max(1);
     let left = (w as usize).saturating_sub(columns) / 2;
     // Claim the box before anything inside it, so a click on the title rule or
     // a blank row belongs to the panel and not to the page behind it.
@@ -1939,17 +1958,34 @@ fn git_box(
     };
     let mut rows = vec![widgets::box_top(palette, columns, &title)];
 
-    // The tab strip. Its four labels are the four number keys, painted in the
-    // order `GitSection::ALL` lists them, so what a reader sees and what `3`
-    // selects are the same list.
+    // The tab strip. Its labels are the number keys, painted in the order
+    // `GitSection::ALL` lists them, so what a reader sees and what `5` selects
+    // are the same list. The numbers are dropped rather than the tabs when the
+    // box is too narrow to spell both: six sections at 60 columns would
+    // otherwise hide the last two, and a hidden tab is a key nobody presses.
     let section = data.git.as_ref().map(|git| git.section);
+    let labels: Vec<(state::GitSection, String)> = state::GitSection::ALL
+        .iter()
+        .map(|candidate| (*candidate, t(lang, git_tab_key(*candidate)).to_string()))
+        .collect();
+    let numbered: usize = labels
+        .iter()
+        .enumerate()
+        .map(|(index, (_, label))| width(&format!("{}. {label}", index + 1)) + 2)
+        .sum::<usize>()
+        + 2 * labels.len().saturating_sub(1);
+    let numbered = numbered <= columns.saturating_sub(2);
     let mut strip = String::new();
     let mut spans: Vec<(usize, usize)> = Vec::new();
-    for (index, candidate) in state::GitSection::ALL.iter().enumerate() {
+    for (index, (candidate, text)) in labels.iter().enumerate() {
         if index > 0 {
             strip.push_str("  ");
         }
-        let label = format!("{}. {}", index + 1, t(lang, git_tab_key(*candidate)));
+        let label = if numbered {
+            format!("{}. {text}", index + 1)
+        } else {
+            text.clone()
+        };
         let start = width(&strip);
         let painted = if section == Some(*candidate) {
             palette.strong(palette.iris, &format!(" {label} "))
@@ -2000,11 +2036,11 @@ fn git_box(
     // One painted row of the list at a given width. The width is the pane's, so
     // a narrow box drops the tail of a field instead of letting `fit` cut a
     // field in the middle (which reads as a different value).
-    let row_text = |index: usize, width: usize| -> String {
+    let row_text = |index: usize, offset: usize, width: usize| -> String {
         let Some(row) = git.rows.get(index) else {
             return String::new();
         };
-        git_row_line(palette, row, width, index == cursor)
+        git_row_line(palette, row, offset, width, index == cursor)
     };
     if git.rows.is_empty() {
         rows.push(widgets::box_row(
@@ -2045,15 +2081,13 @@ fn git_box(
 
     if split {
         let inner = columns.saturating_sub(2);
-        // The list gets a little under half the box: the graph, a subject and
-        // its refs need the room, and the patch beside it wraps instead of being
-        // cut — so a narrower detail costs a line break, not a value.
-        let left_w = (inner * 44 / 100)
-            .clamp(28, 64)
-            .min(inner.saturating_sub(12));
+        // The list's share is the reader's, dragged on the divider; both panes
+        // keep a floor so neither can be squeezed to nothing.
+        let left_w = workbench.git_list_width(inner);
         // `│` plus one cell of air on either side, inside the border: the row's
         // content must be exactly `inner` cells or `box_row` clips its tail.
         let right_w = inner.saturating_sub(left_w + 4);
+        workbench.set_git_geometry(inner, left_w);
         let body_rows = available.max(1);
         workbench.set_list_page(body_rows.saturating_sub(1));
         let first = cursor
@@ -2062,6 +2096,7 @@ fn git_box(
         let detail = git_detail_pane(
             palette,
             &detail_lines,
+            workbench.git_detail_x,
             right_w.saturating_sub(2),
             scroll,
             body_rows.saturating_sub(1),
@@ -2075,11 +2110,17 @@ fn git_box(
             body_rows.saturating_sub(1),
         );
         let detail_x = (left + 1 + left_w + 4) as u16;
+        // The divider is a handle, not a rule: it is where the width ratio is
+        // set, so it gets a hit region of its own on every body row.
+        let divider_x = detail_x.saturating_sub(2);
         for index in 0..body_rows {
             let left_text = if index == 0 {
                 list_title.clone()
             } else {
-                fit(&row_text(first + index - 1, left_w), left_w)
+                fit(
+                    &row_text(first + index - 1, workbench.git_list_x, left_w),
+                    left_w,
+                )
             };
             let right_text = if index == 0 {
                 detail_title.clone()
@@ -2101,6 +2142,9 @@ fn git_box(
                 ),
                 columns,
             ));
+            workbench
+                .hit_map()
+                .push(Rect::new(divider_x, y, 1, 1), "git.divider");
             if index > 0 && first + index - 1 < git.rows.len() {
                 workbench.hit_map().push(
                     Rect::new((left + 1) as u16, y, left_w as u16, 1),
@@ -2119,6 +2163,7 @@ fn git_box(
         let detail = git_detail_pane(
             palette,
             &detail_lines,
+            workbench.git_detail_x,
             columns.saturating_sub(4),
             scroll,
             body_rows,
@@ -2153,12 +2198,12 @@ fn git_box(
             if first + index >= git.rows.len() {
                 break;
             }
-            let line = row_text(first + index, columns.saturating_sub(4));
-            rows.push(widgets::box_row(
-                palette,
-                &fit(&line, columns.saturating_sub(4)),
-                columns,
-            ));
+            let line = row_text(
+                first + index,
+                workbench.git_list_x,
+                columns.saturating_sub(4),
+            );
+            rows.push(widgets::box_row(palette, &line, columns));
             workbench.hit_map().push(
                 Rect::new((left + 1) as u16, y, columns.saturating_sub(2) as u16, 1),
                 format!("git.row.{}", first + index),
@@ -2175,11 +2220,10 @@ fn git_box(
 
 /// When the `/git` box splits into list and detail.
 ///
-/// Higher than the diff review's 92 on purpose: the list needs the graph (four
-/// to eight cells) beside a subject, and a patch wrapped narrower than about
-/// fifty cells breaks nearly every line. Below this the panel shows one pane at
-/// a time and `tab` gives the patch the whole width, which reads better than two
-/// cramped halves.
+/// Nothing wraps in either pane any more — overlong rows pan with `←`/`→` —
+/// so the gate is about reading two documents at once: below about a hundred
+/// columns each half is narrower than a commit subject plus its graph, and one
+/// pane at a time with `tab` is the better use of the cells.
 const GIT_SPLIT_COLUMNS: usize = 108;
 
 /// The tab label of one section — the same string the tab strip, the pane title
@@ -2190,6 +2234,8 @@ fn git_tab_key(section: state::GitSection) -> Key {
         state::GitSection::Refs => Key::GitTabRefs,
         state::GitSection::Status => Key::GitTabStatus,
         state::GitSection::Stash => Key::GitTabStash,
+        state::GitSection::Worktrees => Key::GitTabWorktrees,
+        state::GitSection::Branches => Key::GitTabBranches,
     }
 }
 
@@ -2202,6 +2248,8 @@ fn git_empty_key(section: state::GitSection) -> Key {
         state::GitSection::Refs => Key::GitEmptyRefs,
         state::GitSection::Status => Key::GitCleanStatus,
         state::GitSection::Stash => Key::GitEmptyStash,
+        state::GitSection::Worktrees => Key::GitEmptyWorktrees,
+        state::GitSection::Branches => Key::GitEmptyBranches,
     }
 }
 
@@ -2313,62 +2361,85 @@ fn paint_decorations(palette: &Palette, text: &str) -> String {
     out
 }
 
+/// `columns` cells of `text` starting at `offset` — the horizontal scroll of a
+/// pane that does not wrap.
+///
+/// The window is the pane's whole width: [`slice_cols`] keeps the styling of
+/// what it keeps and turns a wide glyph cut by the window into spaces, so the
+/// row still measures exactly `columns` and the two panes cannot drift apart.
+fn pane_window(text: &str, offset: usize, columns: usize) -> String {
+    if columns == 0 {
+        return String::new();
+    }
+    let end = offset.saturating_add(columns);
+    crate::workbench::ansi::pad(
+        &crate::workbench::ansi::slice_cols(text, offset, end),
+        columns,
+    )
+}
+
 /// One line of the `/git` list: the marker, the graph in its lanes, then the
 /// row's fields each in the colour its kind earns. The selected row is a band
 /// across the whole pane, so the eye finds it without reading the marker — and
 /// the band keeps every field's own colour (a reset inside the row is re-opened
 /// on the band, not left to the panel's background).
-fn git_row_line(palette: &Palette, row: &GitRow, columns: usize, selected: bool) -> String {
+///
+/// The row is composed whole and then panned to `offset`: nothing is dropped
+/// for being too wide, so `→` reaches the tail of a subject that runs past the
+/// divider instead of finding it cut off.
+fn git_row_line(
+    palette: &Palette,
+    row: &GitRow,
+    offset: usize,
+    columns: usize,
+    selected: bool,
+) -> String {
     let columns = columns.max(1);
     let graph = paint_graph(palette, &row.prefix);
-    if row.key.is_none() {
+    let full = if row.key.is_none() {
         // The graph continuing through a column: painted in the gutter, never
         // selectable, so it gets no arrow.
-        return fit(&format!("  {graph}"), columns);
-    }
-    let marker = if selected {
-        palette.strong(palette.accent, "› ")
+        format!("  {graph}")
     } else {
-        "  ".to_string()
-    };
-    let lead = row
-        .pieces
-        .first()
-        .map(|piece| piece.replace('\n', " ↵ "))
-        .unwrap_or_default();
-    let head = format!(
-        "{marker}{graph}{}",
-        paint_kind(palette, row.kind(0), &lead, selected)
-    );
-    let band = |line: &str| {
-        if selected {
-            palette.on(selection_band(palette), line, columns)
+        let marker = if selected {
+            palette.strong(palette.accent, "› ")
         } else {
-            line.to_string()
+            "  ".to_string()
+        };
+        let lead = row
+            .pieces
+            .first()
+            .map(|piece| piece.replace('\n', " ↵ "))
+            .unwrap_or_default();
+        let mut line = format!(
+            "{marker}{graph}{}",
+            paint_kind(palette, row.kind(0), &lead, selected)
+        );
+        for (index, piece) in row.pieces.iter().enumerate().skip(1) {
+            line.push_str(&palette.dim(" · "));
+            line.push_str(&paint_kind(palette, row.kind(index), piece, selected));
         }
+        line
     };
-    if width(&head) > columns {
-        // The lead field alone is too wide: shorten it, and keep the marker and
-        // the graph inside the row.
-        return band(&fit(&head, columns));
+    let visible = pane_window(&full, offset, columns);
+    if selected {
+        palette.on(selection_band(palette), &visible, columns)
+    } else {
+        visible
     }
-    let mut line = head;
-    for (index, piece) in row.pieces.iter().enumerate().skip(1) {
-        let plain = format!(" · {piece}");
-        if width(&line) + width(&plain) > columns {
-            break;
-        }
-        line.push_str(&palette.dim(" · "));
-        line.push_str(&paint_kind(palette, row.kind(index), piece, selected));
-    }
-    band(&line)
 }
 
-/// The detail pane's window onto its body: the body wrapped to `width`,
-/// scrolled to `scroll` and coloured row by row.
+/// The detail pane's window onto its body: the body panned to `offset` and
+/// scrolled to `scroll`, one row per line of the patch.
+///
+/// Nothing wraps: a patch line is source, and folding it at the divider turns
+/// one logical row into two rows that a difference highlight and a `+`/`-` run
+/// both read as separate changes. The pane pans instead, so an overlong line
+/// is complete once the reader presses `→`.
 struct GitDetailPane {
     rows: Vec<String>,
-    /// How many painted rows the whole body is at this width.
+    /// How many painted rows the whole body is: one per line, since the lines
+    /// are not folded.
     total: usize,
     /// The body row the window starts on — `scroll` clamped, so scrolling never
     /// runs past the end into a blank pane.
@@ -2378,19 +2449,19 @@ struct GitDetailPane {
 fn git_detail_pane(
     palette: &Palette,
     body: &[String],
+    offset: usize,
     width: usize,
     scroll: usize,
     height: usize,
 ) -> GitDetailPane {
     let height = height.max(1);
-    let wrapped = crate::workbench::workflows::wrapped_indexed(body, width.max(1));
-    let total = wrapped.len();
+    let total = body.len();
     let first = scroll.min(total.saturating_sub(height));
-    let rows = wrapped
-        .into_iter()
+    let rows = body
+        .iter()
         .skip(first)
         .take(height)
-        .map(|(source, chunk)| git_detail_line(palette, &body[source], chunk))
+        .map(|source| pane_window(&git_detail_line(palette, source), offset, width.max(1)))
         .collect();
     GitDetailPane { rows, total, first }
 }
@@ -2416,12 +2487,12 @@ fn git_detail_title(
 
 /// One painted row of the detail pane.
 ///
-/// `source` is the body line this row was wrapped from, not the row itself: a
-/// patch row is classified by what its whole line is, and the tail a wrap cut
-/// off keeps the colour of the line it belongs to. The order of the tests is the
-/// format's own precedence — `---`/`+++` are file headers before they are
-/// removed and added lines.
-fn git_detail_line(palette: &Palette, source: &str, chunk: String) -> String {
+/// The row is painted whole and panned by its caller, so the classification
+/// below sees the *entire* source line: the format's own precedence puts
+/// `---`/`+++` file headers before removed and added lines, and a difference
+/// header never changes meaning because the reader scrolled sideways.
+fn git_detail_line(palette: &Palette, source: &str) -> String {
+    let chunk = source.to_string();
     if source.starts_with("commit ") {
         return palette.strong(palette.amber, &chunk);
     }
@@ -2577,7 +2648,7 @@ fn files_box(
                 .files_index
                 .min(data.tree.rows().len().saturating_sub(1)),
         };
-        let frame = workbench.spinner_frame();
+        let frame = workbench.row_spinner();
         panels::render_with(
             PanelId::Files,
             data,
@@ -2587,7 +2658,10 @@ fn files_box(
             workbench.hit_map(),
             lang,
             frame,
-            &panels::Folded::new(),
+            // A tree is filtered by nothing but its own expansion: the rail's
+            // search belongs to its two conversation panels.
+            &panels::Filter::default(),
+            false,
             "files.row.",
         )
     };
@@ -3469,8 +3543,8 @@ fn panel_box(
         scroll: workbench.panel_scroll[index],
         selected: workbench.sidebar_index,
     };
-    let folded = workbench.folded_workspaces.clone();
-    let frame = workbench.spinner_frame();
+    let filter = workbench.rail.clone();
+    let frame = workbench.row_spinner();
     let body = panels::render_with(
         panel,
         data,
@@ -3480,7 +3554,11 @@ fn panel_box(
         workbench.hit_map(),
         lang,
         frame,
-        &folded,
+        &filter,
+        // The box is where the search is reachable on a terminal too narrow for
+        // a rail, so its line is always on screen: the box has the room, and one
+        // row spent naming the key is what teaches it.
+        true,
         "sidebar.row.",
     );
     let geometry = box_geometry(w, h, PANEL_WIDTH, body.len());
@@ -4076,7 +4154,7 @@ mod tests {
                 state::GitKind::Meta,
             ],
         };
-        let selected = git_row_line(&palette, &row, 100, true);
+        let selected = git_row_line(&palette, &row, 0, 100, true);
         assert_eq!(width(&selected), 100, "the band fills the pane");
         // The band is *derived* from the panel (`selection_band` steps away from
         // it), not taken from `border`: pinning it to a literal or to another
@@ -4097,7 +4175,7 @@ mod tests {
                 "{what} keep their colour inside the band: {selected:?}"
             );
         }
-        let idle = git_row_line(&palette, &row, 100, false);
+        let idle = git_row_line(&palette, &row, 0, 100, false);
         assert!(
             !idle.contains("\x1b[48;5;"),
             "an unselected row paints no background: {idle:?}"
@@ -4173,7 +4251,7 @@ mod tests {
         .iter()
         .map(|line| line.to_string())
         .collect();
-        let pane = git_detail_pane(&palette, &body, 60, 0, 20);
+        let pane = git_detail_pane(&palette, &body, 0, 60, 0, 20);
         assert_eq!(pane.total, body.len(), "nothing wraps at 60 cells");
         assert_eq!(pane.first, 0);
         let colour_of = |row: &str| {
@@ -4203,23 +4281,27 @@ mod tests {
 
         // The offset stops at the last screenful — the whole body is visible
         // from there, and the title says which rows are on screen.
-        let last = git_detail_pane(&palette, &body, 60, 999, 4);
+        let last = git_detail_pane(&palette, &body, 0, 60, 999, 4);
         assert_eq!(last.first, body.len() - 4);
         assert_eq!(last.rows.len(), 4);
         let title = git_detail_title(&palette, true, "Detail", &last, 4);
         assert_eq!(plain(&title), "› Detail · 6-9/9", "{title:?}");
 
-        // A narrow pane wraps, and every tail keeps its line's colour.
-        let wrapped = git_detail_pane(
-            &palette,
-            &["+one two three four five six".into()],
-            10,
-            0,
-            10,
+        // A narrow pane does not wrap: one body line is one row, the row is
+        // exactly the pane's width, and `→` moves the window along the line
+        // while every column of it keeps the line's own colour.
+        let line = "+one two three four five six".to_string();
+        let narrow = git_detail_pane(&palette, std::slice::from_ref(&line), 0, 10, 0, 4);
+        assert_eq!(narrow.total, 1, "a long line is one row, not a stack");
+        assert_eq!(width(&narrow.rows[0]), 10);
+        assert_eq!(colour_of(&narrow.rows[0]), Some("green"));
+        assert_eq!(plain(&narrow.rows[0]), "+one two t");
+        let panned = git_detail_pane(&palette, &[line], 10, 10, 0, 4);
+        assert_eq!(plain(&panned.rows[0]), "hree four ");
+        assert_eq!(
+            colour_of(&panned.rows[0]),
+            Some("green"),
+            "green after a pan"
         );
-        assert!(wrapped.total > 1, "it wraps: {}", wrapped.total);
-        for row in &wrapped.rows {
-            assert_eq!(colour_of(row), Some("green"), "a tail stays green: {row:?}");
-        }
     }
 }
