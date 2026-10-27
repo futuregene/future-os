@@ -71,7 +71,7 @@ struct DriverIo<'a> {
 /// touched a setting (a first start, or a `settings.json` written by an older
 /// build) gets the same layout every time. The rail starts hidden — the body
 /// is the conversation, and the rail is a thing the reader opens on purpose
-/// (`ctrl+b`, or `ctrl+1`/`ctrl+2`/`ctrl+3` to name a panel) rather than
+/// (`ctrl+s`, or `shift+←`/`shift+→` to step its tabs) rather than
 /// something to close before typing.
 fn layout_preferences(
     settings: &TuiSettings,
