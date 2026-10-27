@@ -6,7 +6,7 @@ use std::sync::Arc;
 use super::prompt_helpers::build_user_message;
 use super::prompt_helpers::{
     approve_tool_path_if_present, build_user_message_with_model_context, prepare_session_tool_call,
-    run_event_to_sse,
+    run_event_to_sse_for_storage,
 };
 use super::ServerSession;
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +36,47 @@ struct ScheduledSettingsSnapshot {
 pub(super) struct AcceptedRunSnapshot {
     run_loop: crate::agent::Loop,
     settings: ScheduledSettingsSnapshot,
+}
+
+/// O(1) admission identity for the session cache. Later queued inputs must not
+/// change which message prefix a background run snapshots for its first turn.
+struct RunInputBoundary {
+    length: usize,
+    tail: Option<String>,
+}
+impl RunInputBoundary {
+    fn capture(messages: &[crate::types::AgentMessage]) -> Self {
+        Self {
+            length: messages.len(),
+            tail: messages
+                .last()
+                .and_then(|message| message.journal_entry_id())
+                .map(str::to_owned),
+        }
+    }
+    fn snapshot(
+        &self,
+        messages: &[crate::types::AgentMessage],
+        interrupt: &std::sync::atomic::AtomicBool,
+    ) -> Result<Vec<crate::types::AgentMessage>> {
+        anyhow::ensure!(
+            messages.len() == self.length
+                && messages
+                    .last()
+                    .and_then(|message| message.journal_entry_id())
+                    == self.tail.as_deref(),
+            "accepted run input changed before its model snapshot was prepared"
+        );
+        let mut snapshot = Vec::with_capacity(messages.len());
+        for message in messages {
+            anyhow::ensure!(
+                !interrupt.load(std::sync::atomic::Ordering::Relaxed),
+                "run cancelled while preparing its input context"
+            );
+            snapshot.push(message.clone());
+        }
+        Ok(snapshot)
+    }
 }
 
 /// Textual parts of one user turn. `message` is the exact user-authored text;
@@ -204,6 +245,12 @@ impl ServerSession {
         if self.deleting {
             return Err(crate::runtime::RunQueueError::Deleting.into());
         }
+        if self
+            .history_reset_in_progress
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            anyhow::bail!("session history reset is in progress");
+        }
         let receipt_fingerprint = crate::session::compaction_ops::canonical_hash(
             &serde_json::json!({
                 "message":prompt.message,"modelContext":prompt.model_context,"images":images,"attachments":attachments
@@ -240,20 +287,27 @@ impl ServerSession {
                     .map_err(persistence_unavailable)?
                     .has_events(&self.session_id, run_id)
                     .map_err(persistence_unavailable)?;
-                let transcript_exists = self
-                    .session_manager
-                    .load(&self.session_id)
-                    .ok()
-                    .is_some_and(|session| {
-                        session.entries.iter().any(|entry| {
-                            entry
-                                .content
-                                .as_ref()
-                                .and_then(|content| content.get("run_id"))
-                                .and_then(serde_json::Value::as_str)
-                                == Some(run_id)
+                let transcript_exists = if self.broadcaster.uses_segmented_storage() {
+                    self.session_manager
+                        .storage()
+                        .map_err(persistence_unavailable)?
+                        .has_transcript_run(&self.session_id, run_id)
+                        .map_err(persistence_unavailable)?
+                } else {
+                    self.session_manager
+                        .load(&self.session_id)
+                        .ok()
+                        .is_some_and(|session| {
+                            session.entries.iter().any(|entry| {
+                                entry
+                                    .content
+                                    .as_ref()
+                                    .and_then(|content| content.get("run_id"))
+                                    .and_then(serde_json::Value::as_str)
+                                    == Some(run_id)
+                            })
                         })
-                    });
+                };
                 let admitted = self
                     .session_manager
                     .has_queued_receipt_run(&self.session_id, run_id)
@@ -871,8 +925,9 @@ impl ServerSession {
 
         // Clone shared state for the background task
         let messages_arc = self.messages.clone();
-        let initial_messages = messages_arc.read().clone();
+        let input_boundary = RunInputBoundary::capture(&messages_arc.read());
         let broadcaster = self.broadcaster.clone();
+        let segmented_storage = broadcaster.uses_segmented_storage();
         let runtime = self.runtime.clone();
         let task_lease = run_lease.clone();
         let session_manager = self.session_manager.clone();
@@ -899,10 +954,22 @@ impl ServerSession {
         let session_name = self.session_name.clone();
         let created_by = self.created_by.clone();
         let creator_id = self.creator_id.clone();
-        let source_meta = self.source_meta.clone();
+        let source_meta = if segmented_storage {
+            serde_json::Value::Null
+        } else {
+            self.source_meta.clone()
+        };
         let auto_compaction = self.auto_compaction;
-        let append_system_prompt = self.append_system_prompt.clone();
-        let custom_system_prompt = self.custom_system_prompt.clone();
+        let append_system_prompt = if segmented_storage {
+            String::new()
+        } else {
+            self.append_system_prompt.clone()
+        };
+        let custom_system_prompt = if segmented_storage {
+            String::new()
+        } else {
+            self.custom_system_prompt.clone()
+        };
         run_loop.clear_interrupt();
         let mut approval_gate = self.approval_gate.clone();
         let is_ephemeral = self.ephemeral;
@@ -926,6 +993,7 @@ impl ServerSession {
 
         // Auto is an approval reviewer, never a new OS sandbox tier. A failed
         // sandbox probe always retains the existing human Manual flow.
+        let mut review_initializer = None;
         if run_sandbox_policy
             .as_ref()
             .is_some_and(|policy| policy.model_reviewer)
@@ -933,29 +1001,55 @@ impl ServerSession {
         {
             run_loop.tool_review_annotations =
                 Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
-            let (review_request, review_history, review_source) = (
+            let (review_request, review_source) = (
                 prompt.message.to_string(),
-                &initial_messages[..initial_messages.len() - 1],
                 user_entry_id.as_deref().unwrap_or_default(),
             );
             approval_gate = approval_gate.for_run(
                 review_request,
-                review_history,
+                &[],
                 review_source,
                 run_loop.interrupt_flag(),
                 run_loop.tool_review_annotations.clone(),
             );
+            review_initializer = Some(approval_gate.clone());
         }
 
         // Build per-session StreamContext (callbacks) — these are session-
         // specific closures and must NOT be stored on the shared Loop.
         let save_messages = messages_arc.clone();
         let save_persistence = self.persistence.clone();
+        let save_broadcaster = broadcaster.clone();
         let persisted_run_id = run_lease.run_id.clone();
+        let persisted_epoch = run_lease.epoch;
         let persisted_execution_cwd = session_cwd.clone();
         let review_gate = approval_gate.clone();
         let save_closure: crate::agent::PersistCallback =
             Arc::new(move |msg: &mut crate::types::AgentMessage| {
+                if save_broadcaster.uses_segmented_storage()
+                    && save_broadcaster.persistence_error().is_some()
+                {
+                    // Recovery owns the committed prefix. A failed stream must
+                    // not publish a whole in-memory body past that watermark.
+                    return;
+                }
+                if msg.role == "tool" && msg.journal_entry_id().is_none() {
+                    if let Some(tool) = msg.content.iter().find_map(|block| match block {
+                        crate::types::ContentBlock::ToolResult { tool_call_id, .. } => {
+                            Some(tool_call_id.as_str())
+                        }
+                        _ => None,
+                    }) {
+                        if let Some(entry_id) = save_broadcaster.take_tool_result_entry_id(tool) {
+                            msg.metadata
+                                .get_or_insert_with(serde_json::Map::new)
+                                .insert(
+                                    crate::types::AgentMessage::JOURNAL_ENTRY_ID_KEY.into(),
+                                    serde_json::json!(entry_id),
+                                );
+                        }
+                    }
+                }
                 msg.ensure_journal_entry_id();
                 review_gate.observe_review_message(msg);
                 if is_ephemeral {
@@ -972,6 +1066,29 @@ impl ServerSession {
                 metadata
                     .entry("execution_cwd".to_string())
                     .or_insert_with(|| serde_json::Value::String(persisted_execution_cwd.clone()));
+                if metadata.contains_key(crate::types::AgentMessage::STREAM_BLOCKS_KEY) {
+                    metadata.insert(
+                        crate::types::AgentMessage::STREAM_EPOCH_KEY.into(),
+                        serde_json::json!(persisted_epoch),
+                    );
+                }
+                if save_broadcaster.uses_segmented_storage() {
+                    let result = if msg.role == "assistant" {
+                        crate::session::content::stream_entry::StreamEntry::from_assistant(
+                            msg,
+                            &persisted_run_id,
+                            persisted_epoch,
+                        )
+                        .and_then(|entry| save_persistence.append_stream(entry))
+                    } else {
+                        save_persistence
+                            .append(vec![crate::session::agent_message_to_compact_entry(msg)])
+                    };
+                    if let Err(error) = result {
+                        save_broadcaster.fail_persistence(error);
+                    }
+                    return;
+                }
                 let persisted = msg.clone();
                 save_messages.write().push(persisted.clone());
                 let entry = crate::session::agent_message_to_entry(&persisted);
@@ -987,7 +1104,40 @@ impl ServerSession {
             });
         #[cfg(test)]
         let checkpoint_callback_for_test = checkpoint_callback.clone();
+        let barrier_broadcaster = broadcaster.clone();
+        let barrier_persistence = self.persistence.clone();
+        let durability_barrier: crate::agent::DurabilityCallback = Arc::new(move || {
+            let broadcaster = barrier_broadcaster.clone();
+            let persistence = barrier_persistence.clone();
+            Box::pin(async move {
+                broadcaster.flush_journal_async().await?;
+                let result = tokio::task::spawn_blocking(move || persistence.barrier())
+                    .await
+                    .map_err(anyhow::Error::from)
+                    .and_then(|result| result);
+                if let Err(error) = &result {
+                    broadcaster.fail_persistence(error);
+                }
+                result
+            })
+        });
+        let failure_messages = messages_arc.clone();
+        let failure_broadcaster = broadcaster.clone();
+        let on_failure_messages: crate::agent::FailureMessagesCallback =
+            Arc::new(move |messages| {
+                if failure_broadcaster.persistence_error().is_none() {
+                    let previous = {
+                        let mut current = failure_messages.write();
+                        std::mem::replace(&mut *current, messages)
+                    };
+                    drop(previous);
+                }
+            });
         let stream_ctx = crate::agent::StreamContext {
+            segmented_storage: broadcaster.uses_segmented_storage(),
+            on_failure_messages:broadcaster.uses_segmented_storage().then_some(on_failure_messages),
+            durability_barrier: broadcaster.uses_segmented_storage().then_some(durability_barrier),
+            durability_failed: Default::default(),
             // Use the bare model ID from the Loop — the LLM API expects just
             // the model name, not the "provider/model" display format stored
             // on ServerSession.
@@ -1148,15 +1298,39 @@ impl ServerSession {
                     on_sandboxed: Some(on_sandboxed),
                 },
                 async {
+                    // The accepted input's identity is frozen above, but its
+                    // owned model snapshot is prepared after releasing the
+                    // ServerSession command lock and off Tokio's worker threads.
+                    let source = messages_arc.clone();
+                    let interrupt = run_loop.interrupt_flag();
+                    let child_work = crate::service::work::process_child_work();
+                    let initial_messages = tokio::task::spawn_blocking(move || {
+                        let _child_work = child_work;
+                        let messages = input_boundary.snapshot(&source.read(), &interrupt)?;
+                        if let Some(gate) = review_initializer {
+                            gate.initialize_review_history(
+                                &messages[..messages.len().saturating_sub(1)],
+                            );
+                        }
+                        anyhow::Ok(messages)
+                    })
+                    .await
+                    .map_err(|error| anyhow::anyhow!("run input preparation failed: {error}"))??;
                     let be = broadcaster.clone();
+                    let segmented = be.uses_segmented_storage();
                     run_loop
                         .run_streaming_with_messages(
                             initial_messages,
                             &stream_ctx,
                             |_| {},
                             move |event| {
-                                if let Some(event) = run_event_to_sse(event) {
-                                    be.broadcast(event);
+                                if let Some(event) = run_event_to_sse_for_storage(event, segmented)
+                                {
+                                    if segmented {
+                                        be.broadcast_deferred(event);
+                                    } else {
+                                        be.broadcast(event);
+                                    }
                                 }
                             },
                             Some(interrupt_rx),
@@ -1177,6 +1351,12 @@ impl ServerSession {
             // stream cut off) — surfaced on `run_terminal` / `agent_end` when
             // the run ended incomplete.
             let stream_truncation = run_loop.stream_truncation.lock().clone();
+            if !is_ephemeral && broadcaster.uses_segmented_storage() {
+                if let Err(error) = broadcaster.flush_journal_async().await {
+                    let _ = runtime.mark_persistence_degraded(&task_lease, &format!("{error:#}"));
+                    return;
+                }
+            }
             if let Some(error) = broadcaster.persistence_error() {
                 let _ = runtime.mark_persistence_degraded(&task_lease, &error);
                 return;
@@ -1195,7 +1375,11 @@ impl ServerSession {
                 Ok(mut final_messages) => {
                     reconcile_run_identity(&mut final_messages, &task_lease.run_id);
                     // Update shared messages so next prompt includes the full context
-                    *messages_arc.write() = final_messages;
+                    let previous = {
+                        let mut current = messages_arc.write();
+                        std::mem::replace(&mut *current, final_messages)
+                    };
+                    drop(previous);
                     None
                 }
                 Err(error) => Some(format!("{error:#}")),
@@ -1237,8 +1421,6 @@ impl ServerSession {
                     .map(|value| value.error_message())
             });
             let commit_truncation = stream_truncation.clone();
-            let maintenance_manager = session_manager.clone();
-            let maintenance_session_id = session_id.clone();
             let child_work = crate::service::work::process_child_work();
             // Test-only seam, read before the closure takes the writer (see
             // `SessionPersistence::cancel_next_commit`): a cancelled blocking join
@@ -1253,15 +1435,17 @@ impl ServerSession {
 
                 // Preserve parent_session_id from the existing session on disk.
                 let parent_session_id = session_manager
-                    .load(&session_id)
-                    .map(|s| s.parent_session_id)
+                    .parent_session_id(&session_id)
+                    .ok()
+                    .flatten()
                     .unwrap_or_default();
 
                 // Build the authoritative session_info snapshot that records the
                 // session's cumulative metadata at this run boundary. Auto-
                 // generate session_name from the first user message when not set
                 // explicitly (matches first_message in list_sessions).
-                let resolved_name = if session_name.is_empty() {
+                let automatic_name = session_name.is_empty();
+                let resolved_name = if automatic_name {
                     messages_arc
                         .read()
                         .iter()
@@ -1274,7 +1458,6 @@ impl ServerSession {
                 };
                 let total_cost = *cumulative_cost.lock();
                 let mut info = serde_json::json!({
-                    "cwd": persisted_session_cwd,
                     "tokens_in": tokens_in.load(Ordering::Relaxed),
                     "tokens_out": tokens_out.load(Ordering::Relaxed),
                     "tokens_cache_r": tokens_cache_r.load(Ordering::Relaxed),
@@ -1288,21 +1471,33 @@ impl ServerSession {
                     "cost_split_complete": cost_split_complete
                         .load(std::sync::atomic::Ordering::Relaxed),
                     "session_name": resolved_name,
-                    "auto_compaction": auto_compaction,
-                    "append_system_prompt": append_system_prompt,
-                    "system_prompt": custom_system_prompt,
-                    "parent_session_id": parent_session_id,
-                    "thinking_level": session_thinking,
-                    "model": session_model,
                 });
-                if !created_by.is_empty() {
-                    info["created_by"] = serde_json::Value::String(created_by);
+                if segmented_storage && !automatic_name {
+                    // A frozen explicit title is not a run-owned counter. A
+                    // mid-run rename/clear must retain the control-plane value.
+                    info.as_object_mut()
+                        .expect("run metadata object")
+                        .remove("session_name");
                 }
-                if !creator_id.is_empty() {
-                    info["creator_id"] = serde_json::Value::String(creator_id);
-                }
-                if !source_meta.is_null() {
-                    info["source_meta"] = source_meta;
+                if !segmented_storage {
+                    if let serde_json::Value::Object(controls) = serde_json::json!({
+                        "cwd":persisted_session_cwd,"auto_compaction":auto_compaction,
+                        "append_system_prompt":append_system_prompt,"system_prompt":custom_system_prompt,
+                        "parent_session_id":parent_session_id,"thinking_level":session_thinking,"model":session_model,
+                    }) {
+                        info.as_object_mut()
+                            .expect("run metadata object")
+                            .extend(controls);
+                    }
+                    if !created_by.is_empty() {
+                        info["created_by"] = serde_json::Value::String(created_by);
+                    }
+                    if !creator_id.is_empty() {
+                        info["creator_id"] = serde_json::Value::String(creator_id);
+                    }
+                    if !source_meta.is_null() {
+                        info["source_meta"] = source_meta;
+                    }
                 }
                 let info_entry = crate::session::SessionEntry::session_info(
                     info,
@@ -1364,6 +1559,11 @@ impl ServerSession {
                 match session_persistence.commit_run(vec![info_entry.clone(), terminal.clone()]) {
                     Ok(()) => anyhow::Ok(()),
                     Err(commit_error) => {
+                        if session_manager.storage()?.storage_format(&session_id)?
+                            == crate::session::content::FORMAT_VERSION
+                        {
+                            return Err(commit_error.context("canonical run commit failed; committed prefix retained without full-history rewrite"));
+                        }
                         tracing::warn!(
                             run_id = %commit_run_id,
                             "append-only run commit refused ({commit_error}); healing with full rewrite"
@@ -1416,7 +1616,7 @@ impl ServerSession {
                          {}",
                         terminal_state
                     );
-                    broadcaster.broadcast(crate::rpc::SseEvent {
+                    broadcaster.broadcast_deferred(crate::rpc::SseEvent {
                         event_type: "agent_end".to_string(),
                         data: serde_json::json!({
                             "type": "agent_end",
@@ -1441,12 +1641,12 @@ impl ServerSession {
                     run_id = %task_lease.run_id,
                     "Session persistence commit failed: {error}"
                 );
-                broadcaster.broadcast(crate::rpc::SseEvent {
+                broadcaster.broadcast_deferred(crate::rpc::SseEvent {
                     event_type: "persistence_error".to_string(),
                     data: serde_json::json!({"error": &error}).to_string(),
                     ..Default::default()
                 });
-                broadcaster.broadcast(crate::rpc::SseEvent {
+                broadcaster.broadcast_deferred(crate::rpc::SseEvent {
                     event_type: "agent_end".to_string(),
                     data: serde_json::json!({
                         "type": "agent_end",
@@ -1458,6 +1658,14 @@ impl ServerSession {
                     .to_string(),
                     ..Default::default()
                 });
+                return;
+            }
+
+            if !is_ephemeral && broadcaster.uses_segmented_storage() {
+                if let Err(error) = broadcaster.publish_committed_terminal().await {
+                    let _ = runtime.mark_persistence_degraded(&task_lease, &format!("{error:#}"));
+                    tracing::error!(%error, "could not publish the durably committed terminal");
+                }
                 return;
             }
 
@@ -1490,7 +1698,7 @@ impl ServerSession {
                             "detected_by": t.detected_by,
                         });
                     }
-                    broadcaster.broadcast(crate::rpc::SseEvent {
+                    broadcaster.broadcast_deferred(crate::rpc::SseEvent {
                         event_type: "agent_end".to_string(),
                         data: data.to_string(),
                         ..Default::default()
@@ -1498,12 +1706,12 @@ impl ServerSession {
                 }
                 Some(full_error) => {
                     tracing::error!("Agent loop error: {}", full_error);
-                    broadcaster.broadcast(crate::rpc::SseEvent {
+                    broadcaster.broadcast_deferred(crate::rpc::SseEvent {
                         event_type: "error".to_string(),
                         data: serde_json::json!({"error": &full_error}).to_string(),
                         ..Default::default()
                     });
-                    broadcaster.broadcast(crate::rpc::SseEvent {
+                    broadcaster.broadcast_deferred(crate::rpc::SseEvent {
                         event_type: "agent_end".to_string(),
                         data: serde_json::json!({
                             "type": "agent_end",
@@ -1517,18 +1725,12 @@ impl ServerSession {
                     });
                 }
             }
-            // The transcript terminal and agent_end event are now durable, but
-            // buffered deltas for this run may still be queued. Compaction
-            // publishes a snapshot and retires the run's raw rows, which makes
-            // those late deltas unappendable, so drain first.
-            // This completion is the only trigger. Missed or failed attempts
-            // keep the raw journal; startup and idle work never retry them.
+            // Persist the admitted tail, with no completion-time snapshot,
+            // body scan, token deletion or background compaction request.
             if !is_ephemeral && broadcaster.persistence_error().is_none() {
-                if let Err(error) = broadcaster.flush_journal() {
-                    tracing::warn!(%error, "could not drain the event journal before compaction");
+                if let Err(error) = broadcaster.flush_journal_async().await {
+                    tracing::warn!(%error,"could not drain the event journal at completion");
                 }
-                maintenance_manager
-                    .request_journal_compaction(&maintenance_session_id, &task_lease.run_id);
             }
         };
         #[cfg(test)]

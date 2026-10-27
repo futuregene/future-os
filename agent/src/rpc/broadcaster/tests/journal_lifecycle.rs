@@ -8,7 +8,8 @@ fn a_failed_batch_commit_is_reported_and_blocks_the_read_path() {
     let directory = tempfile::tempdir().unwrap();
     let manager = crate::session::Manager::new(directory.path().to_path_buf());
     let b = SseBroadcaster::new();
-    b.configure_journal("session-broken", &manager).unwrap();
+    b.configure_legacy_journal("session-broken", &manager)
+        .unwrap();
     b.start_run("run-broken".to_string(), 1);
     b.broadcast(SseEvent::new("agent_end", serde_json::json!({})));
     assert_eq!(b.journal_commit_count(), 1, "the healthy commit must land");
@@ -46,7 +47,7 @@ fn a_failed_batch_commit_is_reported_and_blocks_the_read_path() {
 fn closed_journal_rejects_late_broadcast_without_recreating_files() {
     let directory = tempfile::tempdir().unwrap();
     let b = SseBroadcaster::new();
-    b.configure_journal(
+    b.configure_legacy_journal(
         "session-delete",
         &crate::session::Manager::new(directory.path().to_path_buf()),
     )
@@ -70,7 +71,8 @@ fn closing_journal_flushes_pending_deltas() {
     let directory = tempfile::tempdir().unwrap();
     let manager = crate::session::Manager::new(directory.path().to_path_buf());
     let b = SseBroadcaster::new();
-    b.configure_journal("session-close", &manager).unwrap();
+    b.configure_legacy_journal("session-close", &manager)
+        .unwrap();
     b.start_run("run-close".to_string(), 1);
     b.broadcast(SseEvent::new(
         "text_chunk",
@@ -96,7 +98,7 @@ fn journal_failpoints_cover_append_flush_and_sync_boundaries() {
     ] {
         let directory = tempfile::tempdir().unwrap();
         let b = SseBroadcaster::new();
-        b.configure_journal(
+        b.configure_legacy_journal(
             "session-1",
             &crate::session::Manager::new(directory.path().to_path_buf()),
         )
@@ -119,7 +121,7 @@ fn configure_journal_resumes_session_idx_sequence() {
     // Pre-existing session journal with events at session_idx 0 and 1.
     let first = SseBroadcaster::new();
     first
-        .configure_journal(
+        .configure_legacy_journal(
             "s1".to_string(),
             &crate::session::Manager::new(dir.path().to_path_buf()),
         )
@@ -129,7 +131,7 @@ fn configure_journal_resumes_session_idx_sequence() {
 
     let second = SseBroadcaster::new();
     second
-        .configure_journal(
+        .configure_legacy_journal(
             "s1".to_string(),
             &crate::session::Manager::new(dir.path().to_path_buf()),
         )
@@ -145,10 +147,12 @@ fn configured_journal_cannot_be_rebound_to_another_session() {
     let dir = tempfile::tempdir().unwrap();
     let manager = crate::session::Manager::new(dir.path().to_path_buf());
     let broadcaster = SseBroadcaster::new();
-    broadcaster.configure_journal("parent", &manager).unwrap();
+    broadcaster
+        .configure_legacy_journal("parent", &manager)
+        .unwrap();
 
     let error = broadcaster
-        .configure_journal("child", &manager)
+        .configure_legacy_journal("child", &manager)
         .expect_err("journal ownership must be immutable");
     assert!(error.to_string().contains("cannot rebind"));
     broadcaster.broadcast(SseEvent::new("model_changed", serde_json::json!({})));
@@ -181,7 +185,7 @@ fn start_run_recovers_from_corrupt_journal() {
     let manager = crate::session::Manager::new(dir.path().to_path_buf());
     let broadcaster = SseBroadcaster::new();
     broadcaster
-        .configure_journal("s1".to_string(), &manager)
+        .configure_legacy_journal("s1".to_string(), &manager)
         .unwrap();
     manager.test_execute("DROP TABLE run_events");
     broadcaster.start_run("run-x".to_string(), 1);
@@ -211,7 +215,8 @@ fn an_event_the_journal_refuses_is_dropped_without_taking_the_session_down() {
     let directory = tempfile::tempdir().unwrap();
     let manager = crate::session::Manager::new(directory.path().to_path_buf());
     let b = SseBroadcaster::new();
-    b.configure_journal("session-refused", &manager).unwrap();
+    b.configure_legacy_journal("session-refused", &manager)
+        .unwrap();
 
     b.start_run("run-settled".to_string(), 1);
     b.broadcast(SseEvent::new("agent_end", serde_json::json!({"n": 1})));
@@ -273,7 +278,7 @@ fn a_refused_durable_event_does_not_wedge_the_session() {
     let directory = tempfile::tempdir().unwrap();
     let manager = crate::session::Manager::new(directory.path().to_path_buf());
     let b = SseBroadcaster::new();
-    b.configure_journal("session-refused-durable", &manager)
+    b.configure_legacy_journal("session-refused-durable", &manager)
         .unwrap();
 
     b.start_run("run-settled".to_string(), 1);
@@ -319,7 +324,8 @@ fn the_recover_path_is_not_blocked_by_a_refused_event() {
     let directory = tempfile::tempdir().unwrap();
     let manager = crate::session::Manager::new(directory.path().to_path_buf());
     let b = SseBroadcaster::new();
-    b.configure_journal("session-recover", &manager).unwrap();
+    b.configure_legacy_journal("session-recover", &manager)
+        .unwrap();
 
     b.start_run("run-settled".to_string(), 1);
     b.broadcast(SseEvent::new("agent_end", serde_json::json!({"n": 1})));
@@ -350,7 +356,8 @@ fn flush_journal_puts_the_buffered_batch_in_the_store() {
     let directory = tempfile::tempdir().unwrap();
     let manager = crate::session::Manager::new(directory.path().to_path_buf());
     let b = SseBroadcaster::new();
-    b.configure_journal("session-flush", &manager).unwrap();
+    b.configure_legacy_journal("session-flush", &manager)
+        .unwrap();
     b.start_run("run-flush".to_string(), 1);
 
     // A delta is buffered, not durable: nothing is committed yet.

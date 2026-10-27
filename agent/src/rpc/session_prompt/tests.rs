@@ -11,6 +11,40 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
+#[test]
+fn deferred_context_preparation_checks_the_admitted_prefix_and_cancellation() {
+    let mut user = AgentMessage::new_user("user", serde_json::json!("accepted input"));
+    user.ensure_journal_entry_id();
+    let messages = vec![user];
+    let boundary = RunInputBoundary::capture(&messages);
+    let interrupt = std::sync::atomic::AtomicBool::new(false);
+    let prepared = boundary.snapshot(&messages, &interrupt).unwrap();
+    assert_eq!(prepared[0].display_text(), "accepted input");
+    let mut replaced = messages.clone();
+    replaced[0].metadata.as_mut().unwrap().insert(
+        AgentMessage::JOURNAL_ENTRY_ID_KEY.into(),
+        serde_json::json!("different accepted source"),
+    );
+    assert!(boundary
+        .snapshot(&replaced, &interrupt)
+        .unwrap_err()
+        .to_string()
+        .contains("input changed"));
+    replaced = messages.clone();
+    replaced.push(AgentMessage::new_user(
+        "user",
+        serde_json::json!("later queued input"),
+    ));
+    assert!(boundary.snapshot(&replaced, &interrupt).is_err());
+    interrupt.store(true, Ordering::Relaxed);
+    assert!(boundary
+        .snapshot(&messages, &interrupt)
+        .unwrap_err()
+        .to_string()
+        .contains("cancelled"));
+    assert_eq!(messages[0].display_text(), "accepted input");
+}
+
 struct MockWriteProvider {
     calls: AtomicUsize,
     outside_path: String,
@@ -657,16 +691,21 @@ async fn prompt_projects_typed_model_and_tool_events_end_to_end() {
         vec![
             "user_message",
             "agent_start",
+            "message_start",
             "thinking_start",
             "thinking_delta",
             "thinking_end",
             "tool_start",
             "tool_delta",
+            "tool_input_end",
             "usage",
+            "message_end",
             "tool_start",
             "tool_end",
+            "message_start",
             "text_chunk",
             "usage",
+            "message_end",
             "agent_end",
         ]
     );
@@ -788,7 +827,7 @@ async fn prompt_provider_failure_records_error_terminal() {
 async fn prompt_ephemeral_session_skips_persistence() {
     let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("hi")]), "ephemeral");
     let mut session = fixture.session;
-    session.set_ephemeral(true);
+    session.set_ephemeral(true).unwrap();
     session.prompt("hello", &[], &[], None, None).unwrap();
     wait_for_run_end(&session).await;
     assert_eq!(session.messages.read().len(), 2);
@@ -2186,64 +2225,57 @@ async fn prompt_journal_loss_marks_run_persistence_degraded() {
 /// pending batch, and a drain that fails must not stop the run from finishing or
 /// from asking for compaction — its failure is reported instead.
 ///
-/// The guard that decides this reads the journal's *health*, so reaching the
-/// warning needs a drain that fails **while the journal is still healthy**. That
-/// combination cannot be provoked from the outside: every way a live drain fails
-/// (a dead worker, a store that cannot commit the batch) makes an *append* fail
-/// first, and an append failure marks the journal unhealthy — which takes the
-/// guard's other branch and never reaches the warning. So the drain error is
-/// armed through the broadcaster's test-only fail point, exactly as the existing
-/// append-failure tests arm theirs, and what this test asserts is the behaviour
-/// around the warning: the run finishes, the transcript is intact, the journal is
-/// not marked unhealthy by a drain failure, and compaction is still requested.
+/// A failed durability fence cannot be advertised as a completed run or
+/// repaired by scheduling a full-history compaction.
 #[tokio::test(flavor = "current_thread")]
-async fn a_failed_journal_drain_before_compaction_still_finishes_the_run() {
+async fn a_failed_durability_fence_marks_run_degraded_without_compaction() {
     let fixture = run_fixture(
         ScriptedProvider::new(vec![text_turn("drained late")]),
         "drain-failure",
     );
     let mut session = fixture.session;
-    // Armed before the run: it is consumed by the completion-time drain, which
-    // happens once per run, after every append has already succeeded.
     session.broadcaster.fail_next_flush();
     session.prompt("hi", &[], &[], None, None).unwrap();
-    wait_for_run_end(&session).await;
-
-    // The run finished with its reply, and the failed drain did not mark the
-    // journal unhealthy — the difference between a drain failure and a storage
-    // failure, and the reason the guard let the drain run at all.
-    assert_eq!(
-        session.messages.read().last().unwrap().text(),
-        "drained late"
-    );
+    wait_for_degraded_run(&session).await;
     assert!(
-        session.runtime.snapshot().is_none(),
-        "a failed drain must not leave the run active"
+        session.scheduler.recent_terminal_acks().is_empty(),
+        "a failed fence must not acknowledge completion"
     );
-    assert!(
-        session.broadcaster.persistence_error().is_none(),
-        "an injected drain failure is not reported as a journal health failure"
-    );
-
-    // The drain's failure did not skip the compaction that follows it: the run's
-    // journal is compacted into a snapshot, which is what the request produces.
     let store = session.session_manager.storage().unwrap();
-    let run_id = session.broadcaster.current_run_id();
-    let mut compacted = false;
-    for _ in 0..300 {
-        if store
-            .replay_page("s1", &run_id, -1, false, None)
-            .is_ok_and(|page| page.snapshot.is_some())
-        {
-            compacted = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert!(
-        compacted,
-        "compaction must still be requested after a failed drain"
+    let counts: (i64, i64) = store
+        .db
+        .read(|db| {
+            Ok((
+                db.query_row("SELECT count(*) FROM run_snapshots", [], |row| row.get(0))?,
+                db.query_row(
+                    "SELECT count(*) FROM entries WHERE entry_type='run_terminal'",
+                    [],
+                    |row| row.get(0),
+                )?,
+            ))
+        })
+        .unwrap();
+    assert_eq!(
+        counts,
+        (0, 0),
+        "no snapshot or false terminal is written after a failed fence"
     );
+}
+
+async fn wait_for_degraded_run(session: &crate::rpc::ServerSession) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if session.runtime.snapshot().is_some_and(|snapshot| {
+                snapshot.phase == crate::runtime::RunPhase::PersistenceDegraded
+            }) && !session.runtime.has_owned_task()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("durability failure must settle as persistence_degraded");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2731,17 +2763,31 @@ async fn scheduled_run_empty_dequeue_reports_error() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn prompt_append_failure_logs_session_entry_error() {
-    let fixture = run_fixture(
-        ScriptedProvider::new(vec![text_turn("hello")]),
-        "append-fail",
-    );
+async fn prompt_terminal_worker_spawn_failure_marks_degraded_without_completion() {
+    let provider = ScriptedProvider::new(vec![text_turn("hello")]);
+    let fixture = run_fixture(provider.clone(), "append-fail");
     let mut session = fixture.session;
-    // Both worker-spawn attempts fail, so the mid-run save_closure append
-    // observes an unavailable worker and logs (rather than failing the run).
     session.persistence.fail_spawns_for_test(2);
     session.prompt("hi", &[], &[], None, None).unwrap();
-    wait_for_run_end(&session).await;
+    wait_for_degraded_run(&session).await;
+    assert_eq!(
+        provider.requests.lock().unwrap().len(),
+        1,
+        "the canonical writer accepts the user independently of the terminal worker"
+    );
+    let loaded = session.session_manager.load(&session.session_id).unwrap();
+    assert!(loaded
+        .entries
+        .iter()
+        .any(|entry| entry.entry_type == crate::session::ENTRY_TYPE_USER));
+    assert!(
+        !loaded
+            .entries
+            .iter()
+            .any(|entry| entry.entry_type == crate::session::ENTRY_TYPE_RUN_TERMINAL),
+        "an unavailable terminal worker must not publish a completed run"
+    );
+    assert!(session.scheduler.recent_terminal_acks().is_empty());
 }
 
 #[tokio::test(flavor = "current_thread")]

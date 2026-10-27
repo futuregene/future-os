@@ -125,6 +125,9 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "shutdown" => return session_lifecycle::cmd_shutdown(state, id),
         "list_sessions" => return session_lifecycle::cmd_list_sessions(state, &cmd, id),
         "get_session_presence" => return session_lifecycle::cmd_session_presence(state, &cmd, id),
+        "get_session_storage_format" => {
+            return session_lifecycle::cmd_session_storage_format(state, &cmd, id)
+        }
         "get_storage_health" => return session_lifecycle::cmd_storage_health(state, id),
         // Journal maintenance spans every session: neither answers a question
         // about one conversation, and both must work with no session loaded.
@@ -162,6 +165,33 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         _ => {}
     }
 
+    if cmd_type == "get_event_content_range" {
+        // A live reference can arrive before its batch commits. Capture the
+        // existing journal handle, release every state/session guard, then
+        // fence its FIFO before resolving the immutable durable range.
+        let broadcaster = {
+            let sessions = state.sessions.read();
+            sessions
+                .get(&cmd.session_id)
+                .map(|session| session.read().broadcaster.clone())
+        };
+        if let Some(broadcaster) = broadcaster {
+            if let Err(error) = broadcaster.flush_journal() {
+                return RpcResponse::build_fail(id, cmd_type, &error.to_string());
+            }
+        }
+        let Some(request) = cmd.content_request.clone() else {
+            return RpcResponse::build_fail(id, cmd_type, "contentRequest is required");
+        };
+        return match state.session_manager.event_content_range(
+            &cmd.session_id,
+            &cmd.run_id,
+            request,
+        ) {
+            Ok(data) => RpcResponse::ok(id, cmd_type, data),
+            Err(error) => RpcResponse::build_fail(id, cmd_type, &error.to_string()),
+        };
+    }
     // ── Session-scoped commands: resolve the target session or fail.
     if matches!(
         cmd_type.as_str(),
@@ -339,6 +369,20 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "set_tools",
         "shell",
     ];
+    if COMPACTION_CONFLICTS.contains(&cmd_type.as_str())
+        && session
+            .read()
+            .history_reset_in_progress
+            .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return RpcResponse::build_fail_code(
+            id,
+            cmd_type,
+            "session_busy",
+            "session history reset is in progress",
+            serde_json::json!({"busy_reason":"history_reset","retryable":true}),
+        );
+    }
     if COMPACTION_CONFLICTS.contains(&cmd_type.as_str())
         && session
             .read()

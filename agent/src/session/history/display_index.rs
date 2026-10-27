@@ -106,9 +106,10 @@ pub(crate) fn insert_entry_shape(
     position: i64,
     value: &Value,
 ) -> Result<()> {
+    let stored_session = crate::session::identity::session_key(db, session)?;
     db.execute(
         "INSERT INTO history_shapes(session_id,position,payload) VALUES (?1,?2,?3)",
-        params![session, position, entry_shape(value).to_string()],
+        params![&stored_session, position, entry_shape(value).to_string()],
     )?;
     Ok(())
 }
@@ -117,13 +118,14 @@ pub(crate) fn insert_entry_shape(
 /// boundary. Repairs can move late results and replace old placeholders, so a
 /// simple "last N rows" update would leave stale historical projections.
 fn affected_history_start(db: &Connection, session: &str, mut start: i64) -> Result<i64> {
+    let stored_session = crate::session::identity::session_key(db, session)?;
     loop {
         let run: Option<i64> = db.query_row(
             "SELECT min((SELECT min(position) FROM entries old WHERE old.session_id=?1
              AND old.run_id=tail.run_id AND old.position<?2))
              FROM (SELECT run_id FROM entries WHERE session_id=?1 AND position>=?2
                    ) tail",
-            params![session, start],
+            params![&stored_session, start],
             |r| r.get(0),
         )?;
         let tool: Option<i64> = db.query_row(
@@ -133,7 +135,7 @@ fn affected_history_start(db: &Connection, session: &str, mut start: i64) -> Res
              FROM (SELECT tool_call_id FROM message_blocks WHERE session_id=?1
                    AND entry_position>=?2 AND kind IN ('tool_call','tool_result')
                    ) tail",
-            params![session, start],
+            params![&stored_session, start],
             |r| r.get(0),
         )?;
         let expanded = run.into_iter().chain(tool).fold(start, i64::min);
@@ -142,7 +144,7 @@ fn affected_history_start(db: &Connection, session: &str, mut start: i64) -> Res
         let boundary: i64 = db.query_row(
             "SELECT coalesce(max(position),0) FROM entries
              WHERE session_id=?1 AND entry_type='user' AND position<=?2",
-            params![session, expanded],
+            params![&stored_session, expanded],
             |r| r.get(0),
         )?;
         if boundary == start {
@@ -153,12 +155,13 @@ fn affected_history_start(db: &Connection, session: &str, mut start: i64) -> Res
 }
 
 pub(crate) fn refresh_session_metadata(db: &Connection, session: &str) -> Result<()> {
+    let stored_session = crate::session::identity::session_key(db, session)?;
     let row: Option<(i64, String)> = db
         .query_row(
             "SELECT h.position,h.payload FROM history_shapes h JOIN entries e
          ON e.session_id=h.session_id AND e.position=h.position
          WHERE e.session_id=?1 AND e.entry_type='session_info' ORDER BY e.position LIMIT 1",
-            [session],
+            [&stored_session],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
@@ -167,7 +170,7 @@ pub(crate) fn refresh_session_metadata(db: &Connection, session: &str) -> Result
         if let Some(payload) = project_entries(&[entry]).pop() {
             db.execute(
                 "UPDATE history_display SET payload=?3 WHERE session_id=?1 AND source_position=?2",
-                params![session, position, payload.to_string()],
+                params![&stored_session, position, payload.to_string()],
             )?;
         }
     }
@@ -179,6 +182,10 @@ pub(crate) fn update_display_index_from(
     session: &str,
     changed_position: i64,
 ) -> Result<()> {
+    let stored_session = crate::session::identity::session_key(db, session)?;
+    if crate::session::content::format(db, session)? == crate::session::content::FORMAT_VERSION {
+        return append_segmented_index(db, session, changed_position);
+    }
     let start = affected_history_start(db, session, changed_position)?;
     let ordinal: i64 = if start == 0 {
         0
@@ -187,7 +194,7 @@ pub(crate) fn update_display_index_from(
             "SELECT coalesce((SELECT min(ordinal) FROM history_display
             WHERE session_id=?1 AND source_position>=?2),
             (SELECT max(ordinal)+1 FROM history_display WHERE session_id=?1),0)",
-            params![session, start],
+            params![&stored_session, start],
             |r| r.get(0),
         )?
     };
@@ -196,7 +203,7 @@ pub(crate) fn update_display_index_from(
         "SELECT position,payload FROM history_shapes WHERE session_id=?1 AND position>=?2 ORDER BY position",
     )?;
     let rows = stmt
-        .query_map(params![session, start], |r| {
+        .query_map(params![&stored_session, start], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -220,7 +227,7 @@ pub(crate) fn update_display_index_from(
             .and_then(|id| positions.get(id))
             .copied();
         upsert.execute(params![
-            session,
+            &stored_session,
             ordinal + index as i64,
             source,
             payload["role"] == "user",
@@ -229,8 +236,41 @@ pub(crate) fn update_display_index_from(
     }
     db.execute(
         "DELETE FROM history_display WHERE session_id=?1 AND ordinal>=?2",
-        params![session, ordinal + projected.len() as i64],
+        params![&stored_session, ordinal + projected.len() as i64],
     )?;
+    Ok(())
+}
+
+/// Canonical entries are already normalized and have stable tool/run identity.
+/// Append only their body-free shapes. Terminal annotations are joined from
+/// `runs` on bounded page reads, so closing a long run does no suffix rebuild.
+fn append_segmented_index(db: &Connection, session: &str, start: i64) -> Result<()> {
+    let stored_session = crate::session::identity::session_key(db, session)?;
+    let mut ordinal: i64 = db.query_row(
+        "SELECT coalesce(max(ordinal)+1,0) FROM history_display WHERE session_id=?1",
+        [&stored_session],
+        |row| row.get(0),
+    )?;
+    let mut query=db.prepare("SELECT h.position,h.payload FROM history_shapes h WHERE h.session_id=?1 AND h.position>=?2 AND NOT EXISTS(SELECT 1 FROM history_display d WHERE d.session_id=h.session_id AND d.source_position=h.position) ORDER BY h.position")?;
+    let rows = query
+        .query_map(params![&stored_session, start], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut insert=db.prepare("INSERT INTO history_display(session_id,ordinal,source_position,is_user,payload) VALUES (?1,?2,?3,?4,?5)")?;
+    for (position, raw) in rows {
+        let entry: SessionEntry = serde_json::from_str(&raw)?;
+        if let Some(payload) = project_entries(&[entry]).pop() {
+            insert.execute(params![
+                &stored_session,
+                ordinal,
+                position,
+                payload["role"] == "user",
+                payload.to_string()
+            ])?;
+            ordinal += 1;
+        }
+    }
     Ok(())
 }
 

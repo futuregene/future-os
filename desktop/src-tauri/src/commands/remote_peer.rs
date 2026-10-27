@@ -143,11 +143,28 @@ pub async fn remote_peer_workspaces(desktop_id: String) -> Result<Value, crate::
 /// otherwise). The Frontend does not build subjects — that stays here, where
 /// the host's routing contract lives.
 #[tauri::command]
-pub async fn remote_peer_request(
+pub async fn remote_peer_request<R: tauri::Runtime>(
+    window: tauri::WebviewWindow<R>,
     desktop_id: String,
     command: Value,
     lane: Option<String>,
 ) -> Result<Value, crate::AppError> {
+    if matches!(
+        command["type"].as_str(),
+        Some(
+            "get_session_entries"
+                | "get_event_content_range"
+                | "get_events_since"
+                | "get_messages"
+                | "get_tool_call_args"
+        )
+    ) {
+        let lease = super::history_transfer::admit().await?;
+        let value =
+            runtime::request(&desktop_id, command, lane.as_deref().unwrap_or("list")).await?;
+        return super::history_transfer::remote_reply(window.label().to_owned(), value, lease)
+            .await;
+    }
     runtime::request(&desktop_id, command, lane.as_deref().unwrap_or("list")).await
 }
 
@@ -535,6 +552,10 @@ mod tests {
     #[tokio::test]
     async fn labels_and_catalogues_flow_through_the_commands() {
         let (_home, fx) = start("peer-cmd-catalog").await;
+        let app = mock_app();
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
         let desktop_id = fx.paired.creds.desktop_id.clone();
         crate::store::create_thread(crate::store::CreateThreadInput {
             mode: "chat".into(),
@@ -575,6 +596,7 @@ mod tests {
         // `remote_peer_request` is the general escape hatch; the lane defaults
         // to a catalogue read when the caller does not name one.
         let requested = remote_peer_request(
+            window.clone(),
             desktop_id.clone(),
             serde_json::json!({ "type": "list_workspaces" }),
             None,
@@ -584,6 +606,7 @@ mod tests {
         assert!(requested["workspaces"].is_array());
 
         let routed = remote_peer_request(
+            window,
             desktop_id,
             serde_json::json!({ "type": "list_sessions" }),
             Some("list".into()),

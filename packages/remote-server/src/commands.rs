@@ -115,6 +115,7 @@ pub struct HandshakeState {
     /// declared shape describes. An undeclared client keeps the base64 page it
     /// has always received.
     pub binary_pages: Arc<AtomicBool>,
+    pub segmented_content: Arc<AtomicBool>,
 }
 
 /// Capability a client declares on `secure_ready` to accept gzip-compressed
@@ -177,6 +178,16 @@ pub fn apply_declared_features(handshake: &HandshakeState, pair_id: &str, featur
     // the handshake (what the command path reads) and on the pairing's shared
     // runtime (what the event publisher reads, since events go to the device in
     // control). This machine serves several clients, so neither may be global.
+    let segmented = features
+        .iter()
+        .any(|feature| feature == future_remote_protocol::SEGMENTED_CONTENT_FEATURE);
+    handshake
+        .segmented_content
+        .store(segmented, Ordering::Release);
+    handshake
+        .runtime
+        .segmented_content(pair_id)
+        .store(segmented, Ordering::Release);
     let lean = crate::lean::feature_declared(features);
     handshake.lean_events.store(lean, Ordering::Release);
     handshake
@@ -236,6 +247,7 @@ impl HandshakeState {
             gzip_replies: Arc::new(AtomicBool::new(false)),
             lean_events: Arc::new(AtomicBool::new(false)),
             binary_pages: Arc::new(AtomicBool::new(false)),
+            segmented_content: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -624,9 +636,13 @@ async fn handle_command(
     // measured on a 4 MiB page, one chunk of twenty-two was gzipped and the
     // other twenty-one went out at 262 KB of base64 each instead of ~90 KB.
     let gzip = handshake.gzip_replies.load(Ordering::Acquire);
-    crate::lean::in_request(
-        lean,
-        REPLY_GZIP.scope(gzip, handle_command_inner(client, msg, handshake)),
+    let segmented = handshake.segmented_content.load(Ordering::Acquire);
+    crate::content_capability::in_request(
+        segmented,
+        crate::lean::in_request(
+            lean,
+            REPLY_GZIP.scope(gzip, handle_command_inner(client, msg, handshake)),
+        ),
     )
     .await;
 }
@@ -1108,7 +1124,7 @@ async fn handle_pair_handshake_confirm(
             "bridgeInstanceId": state.bridge_instance_id,
             "deviceId": cmd.device_id,
             "desktopNonce": cmd.desktop_nonce,
-            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1", "selective_events_v1", "workspace_pinning_v1", "workspace_create_v1", "desktop_settings_v1", "skill_management_v1", "compaction_v1", "provider_management_v1", "fork_v1", "tasks_v1", "task_deps_v1", future_remote_protocol::READ_BINARY_FEATURE],
+            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1", "selective_events_v1", "workspace_pinning_v1", "workspace_create_v1", "desktop_settings_v1", "skill_management_v1", "compaction_v1", "provider_management_v1", "fork_v1", "tasks_v1", "task_deps_v1", future_remote_protocol::READ_BINARY_FEATURE, future_remote_protocol::SEGMENTED_CONTENT_FEATURE],
             // A device that is not in control gets its own liveness and nothing
             // else: the conversation list belongs to the machine, and this reply
             // is also what a replayed handshake receives. `control` and `holder`
@@ -1319,6 +1335,9 @@ pub(crate) trait CommandRuntime: crate::secure::HandshakeHost {
     fn coalesce_events(&self, pair: &str) -> Arc<AtomicBool>;
     fn catalog_activity(&self, pair: &str) -> Arc<AtomicBool>;
     fn lean_events(&self, pair: &str) -> Arc<AtomicBool>;
+    fn segmented_content(&self, _pair: &str) -> Arc<AtomicBool> {
+        Arc::new(AtomicBool::new(false))
+    }
     fn in_control(&self, pair: &str) -> bool;
     /// Nobody holds the machine and `pair`'s client is the only one here — the
     /// one case a reconnect may take control (see `Supervisor::alone_and_unowned`).

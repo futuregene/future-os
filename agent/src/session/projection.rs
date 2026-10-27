@@ -128,6 +128,25 @@ pub fn entries_to_agent_messages(
                 false,
             ));
         }
+        if entry
+            .meta
+            .as_ref()
+            .is_some_and(|meta| meta["recovered_partial"] == true)
+        {
+            for block in &mut content {
+                if let ContentBlock::Reasoning {
+                    text,
+                    provider_metadata,
+                } = block
+                {
+                    if provider_metadata.is_empty() {
+                        *block = ContentBlock::text(format!(
+                            "[Reasoning interrupted by agent restart]\n{text}"
+                        ));
+                    }
+                }
+            }
+        }
         let mut metadata = entry.meta.as_ref().and_then(|m| m.as_object().cloned());
         metadata.get_or_insert_with(serde_json::Map::new).insert(
             crate::types::AgentMessage::JOURNAL_ENTRY_ID_KEY.to_string(),
@@ -252,6 +271,40 @@ pub fn agent_message_to_entry(msg: &crate::types::AgentMessage) -> SessionEntry 
     }
 }
 
+/// Canonical non-streamed entries do not repeat derived thinking/tool fields.
+/// Their ordered content is serialized once; readers restore legacy projections.
+pub(crate) fn agent_message_to_compact_entry(msg: &crate::types::AgentMessage) -> SessionEntry {
+    let mut metadata = msg.metadata.clone().unwrap_or_default();
+    for key in [
+        crate::types::AgentMessage::JOURNAL_ENTRY_ID_KEY,
+        crate::types::AgentMessage::STREAM_BLOCKS_KEY,
+        crate::types::AgentMessage::STREAM_EPOCH_KEY,
+    ] {
+        metadata.remove(key);
+    }
+    SessionEntry {
+        id: msg
+            .journal_entry_id()
+            .map(str::to_owned)
+            .unwrap_or_else(generate_entry_id),
+        entry_type: msg.role.clone(),
+        role: msg.role.clone(),
+        content: Some(serde_json::Value::Array(
+            msg.content
+                .iter()
+                .map(|block| serde_json::to_value(block).expect("content block serializes"))
+                .collect(),
+        )),
+        tool_calls: Vec::new(),
+        timestamp: Local::now(),
+        tool_call_id: String::new(),
+        name: msg.name.clone(),
+        tool_args: String::new(),
+        thinking: String::new(),
+        meta: (!metadata.is_empty()).then_some(serde_json::Value::Object(metadata)),
+    }
+}
+
 pub(crate) fn hydrate_entry_projections(entry: &mut SessionEntry) {
     let Some(serde_json::Value::Array(values)) = entry.content.as_ref() else {
         return;
@@ -305,7 +358,7 @@ pub(crate) fn hydrate_entry_projections(entry: &mut SessionEntry) {
 /// [`future_rpc::title::plain_title_text`]), trimmed to the ~40 visible columns
 /// the session list previews.
 pub fn first_message_title(text: &str) -> String {
-    truncate_visible(&future_rpc::title::plain_title_text(text), 40)
+    super::title_preview::from_str(text)
 }
 
 /// Truncate a string to max_vis visible columns using Unicode scalar widths.

@@ -23,6 +23,8 @@ use tokio_stream::StreamExt;
 // sites keep their `proto::...` paths.
 pub use future_rpc::proto;
 
+mod read_admission;
+
 #[allow(clippy::result_large_err)]
 fn validate_expected_instance(
     metadata: &tonic::metadata::MetadataMap,
@@ -225,6 +227,7 @@ fn nonempty(value: String) -> Option<String> {
 const BACKGROUND_COMMANDS: &[&str] = &[
     // Cursor replays and health probes.
     "get_events_since",
+    "get_event_content_range",
     "get_run_snapshot",
     "get_session_events_since",
     "list_streaming_sessions",
@@ -376,6 +379,8 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             limit: cmd.limit,
             before: cmd.before,
             fragment_offset: cmd.fragment_offset,
+            content_request: cmd.content_request.map(Into::into),
+            replay_until_idx: cmd.replay_until_idx,
             max_sessions: cmd.max_sessions,
             name: cmd.name,
             system_prompt: cmd.system_prompt,
@@ -471,19 +476,25 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         // The command dispatcher still contains legacy synchronous JSONL and
         // shell paths. Keep those off tonic's async workers while the per-
         // session ordered persistence worker is introduced incrementally.
+        let read_admitted = read_admission::command(&internal_cmd.cmd_type)
+            .await
+            .map_err(|status| *status)?;
         let admitted = self
             .state
             .service_work
             .enter()
             .map_err(|error| tonic::Status::unavailable(error.to_string()))?;
         let command_state = self.state.clone();
-        let resp_str = tokio::task::spawn_blocking(move || {
+        let (resp_str, _read_admitted) = tokio::task::spawn_blocking(move || {
             let _admitted = admitted;
             #[cfg(test)]
             if let Some(override_resp) = execute_command_test_override(&internal_cmd.cmd_type) {
-                return override_resp;
+                return (override_resp, read_admitted);
             }
-            handle_command_internal(&command_state, internal_cmd)
+            (
+                handle_command_internal(&command_state, internal_cmd),
+                read_admitted,
+            )
         })
         .await
         .map_err(|error| tonic::Status::internal(format!("command task failed: {error}")))?;
@@ -628,97 +639,91 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                 )));
             }
         };
-        let (rx, mut initial_events, lag_broadcaster) = {
-            let sess = session.read();
-            if self.state.verbose {
-                tracing::debug!(
-                    "[stream] subscribe session={} has_msgs={}",
-                    session_id,
-                    sess.messages.read().len()
-                );
+        let broadcaster = session.read().broadcaster.clone();
+        let (rx, mut initial_events, backfill) = if atomic_attach {
+            let source = broadcaster.clone();
+            let run_id = requested_run_id.clone();
+            let attachment = tokio::task::spawn_blocking(move || source.attach(&run_id, after_idx))
+                .await
+                .map_err(|error| {
+                    tonic::Status::internal(format!("attachment worker failed: {error}"))
+                })?
+                .map_err(|error| tonic::Status::failed_precondition(error.to_string()))?;
+            let mut initial = Vec::new();
+            if let Some(projection) = attachment.projection {
+                initial.push(proto::StreamEvent {
+                    r#type: "run_snapshot".to_string(),
+                    data: String::new(),
+                    run_id: projection.run_id,
+                    idx: projection.cursor,
+                    projection_snapshot: true,
+                    snapshot_events: projection
+                        .events
+                        .into_iter()
+                        .map(|event| {
+                            let payload =
+                                future_rpc::encode::event_payload(&event.event_type, &event.data);
+                            proto::ProjectedRunEvent {
+                                r#type: event.event_type,
+                                data: event.data,
+                                idx: event.idx,
+                                payload,
+                            }
+                        })
+                        .collect(),
+                    snapshot_cursor: projection.cursor,
+                    session_id: session_id.clone(),
+                    epoch: projection.epoch,
+                    event_id: String::new(),
+                    timestamp: String::new(),
+                    session_idx: -1,
+                    run_sequence: projection.run_sequence,
+                    payload: None,
+                });
             }
-            if atomic_attach {
-                let attachment = sess
-                    .broadcaster
-                    .attach(&requested_run_id, after_idx)
-                    .map_err(|error| tonic::Status::failed_precondition(error.to_string()))?;
-                let mut initial = Vec::new();
-                if let Some(projection) = attachment.projection {
-                    initial.push(proto::StreamEvent {
-                        r#type: "run_snapshot".to_string(),
-                        data: String::new(),
-                        run_id: projection.run_id,
-                        idx: projection.cursor,
-                        projection_snapshot: true,
-                        snapshot_events: projection
-                            .events
-                            .into_iter()
-                            .map(|event| {
-                                let payload = future_rpc::encode::event_payload(
-                                    &event.event_type,
-                                    &event.data,
-                                );
-                                proto::ProjectedRunEvent {
-                                    r#type: event.event_type,
-                                    data: event.data,
-                                    idx: event.idx,
-                                    payload,
-                                }
-                            })
-                            .collect(),
-                        snapshot_cursor: projection.cursor,
-                        session_id: session_id.clone(),
-                        epoch: projection.epoch,
-                        event_id: String::new(),
-                        timestamp: String::new(),
-                        session_idx: -1,
-                        run_sequence: projection.run_sequence,
-                        payload: None,
-                    });
+            initial.extend(attachment.events.into_iter().map(|event| {
+                let payload = future_rpc::encode::event_payload(&event.event_type, &event.data);
+                proto::StreamEvent {
+                    r#type: event.event_type,
+                    data: event.data,
+                    run_id: event.run_id,
+                    idx: event.idx,
+                    projection_snapshot: false,
+                    snapshot_events: Vec::new(),
+                    snapshot_cursor: 0,
+                    session_id: session_id.clone(),
+                    epoch: event.epoch,
+                    event_id: event.event_id,
+                    timestamp: event.timestamp,
+                    session_idx: event.session_idx,
+                    run_sequence: event.run_sequence,
+                    payload,
                 }
-                initial.extend(attachment.events.into_iter().map(|event| {
-                    let payload = future_rpc::encode::event_payload(&event.event_type, &event.data);
-                    proto::StreamEvent {
-                        r#type: event.event_type,
-                        data: event.data,
-                        run_id: event.run_id,
-                        idx: event.idx,
-                        projection_snapshot: false,
-                        snapshot_events: Vec::new(),
-                        snapshot_cursor: 0,
-                        session_id: session_id.clone(),
-                        epoch: event.epoch,
-                        event_id: event.event_id,
-                        timestamp: event.timestamp,
-                        session_idx: event.session_idx,
-                        run_sequence: event.run_sequence,
-                        payload,
-                    }
-                }));
-                (attachment.receiver, initial, sess.broadcaster.clone())
-            } else {
-                (
-                    sess.broadcaster.subscribe(),
-                    vec![proto::StreamEvent {
-                        r#type: "ping".to_string(),
-                        data: r#"{"type":"ping"}"#.to_string(),
-                        run_id: String::new(),
-                        idx: 0,
-                        projection_snapshot: false,
-                        snapshot_events: Vec::new(),
-                        snapshot_cursor: 0,
-                        session_id: session_id.clone(),
-                        epoch: 0,
-                        event_id: String::new(),
-                        timestamp: String::new(),
-                        session_idx: -1,
-                        run_sequence: -1,
-                        payload: None,
-                    }],
-                    sess.broadcaster.clone(),
-                )
-            }
+            }));
+            (attachment.receiver, initial, attachment.backfill)
+        } else {
+            (
+                broadcaster.subscribe(),
+                vec![proto::StreamEvent {
+                    r#type: "ping".to_string(),
+                    data: r#"{"type":"ping"}"#.to_string(),
+                    run_id: String::new(),
+                    idx: 0,
+                    projection_snapshot: false,
+                    snapshot_events: Vec::new(),
+                    snapshot_cursor: 0,
+                    session_id: session_id.clone(),
+                    epoch: 0,
+                    event_id: String::new(),
+                    timestamp: String::new(),
+                    session_idx: -1,
+                    run_sequence: -1,
+                    payload: None,
+                }],
+                None,
+            )
         };
+        let lag_broadcaster = broadcaster.clone();
 
         if filter_enabled {
             initial_events.retain(|event| {
@@ -732,9 +737,89 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         // into the `ping` stream and can't be borrowed across the chain.
         let lag_session_id = session_id.clone();
 
-        let snapshot = tokio_stream::iter(initial_events.into_iter().map(Ok));
+        // Backfill remains on the normal event wire. The prefix is paged at
+        // its source, with one bounded blocking job in flight; live delivery
+        // was registered before any disk wait. A coalesced range can extend
+        // the cutoff, and the receiver's duplicate source events are skipped.
+        let live_cutoff = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(after_idx));
+        let backfill_epoch = backfill.as_ref().map(|window| window.epoch);
+        let prefix_cutoff = live_cutoff.clone();
+        let prefix_filter = event_types.clone();
+        let prefix_session = session_id.clone();
+        let snapshot = futures::stream::try_unfold(
+            (
+                std::collections::VecDeque::from(initial_events),
+                backfill,
+                after_idx,
+                None::<tokio::sync::OwnedSemaphorePermit>,
+            ),
+            move |(mut pending, mut window, mut cursor, mut page_admission)| {
+                let broadcaster = broadcaster.clone();
+                let filter = prefix_filter.clone();
+                let session_id = prefix_session.clone();
+                let cutoff = prefix_cutoff.clone();
+                async move {
+                    loop {
+                        if let Some(event) = pending.pop_front() {
+                            return Ok::<_, tonic::Status>(Some((
+                                event,
+                                (pending, window, cursor, page_admission),
+                            )));
+                        }
+                        // A slow subscriber retains its own bounded page;
+                        // release the permit only after that page is drained.
+                        page_admission.take();
+                        let Some(boundary) = window.clone() else {
+                            return Ok(None);
+                        };
+                        if cursor >= boundary.until_idx {
+                            window = None;
+                            continue;
+                        }
+                        let source = broadcaster.clone();
+                        let read_admitted =
+                            read_admission::replay().await.map_err(|status| *status)?;
+                        let (page, read_admitted) = tokio::task::spawn_blocking(move || {
+                            (source.attachment_page(&boundary, cursor), read_admitted)
+                        })
+                        .await
+                        .map_err(|error| {
+                            tonic::Status::internal(format!("replay worker failed: {error}"))
+                        })?;
+                        let page = page.map_err(|error| {
+                            tonic::Status::data_loss(format!("attachment replay failed: {error:#}"))
+                        })?;
+                        page_admission = Some(read_admitted);
+                        cursor = page
+                            .last()
+                            .ok_or_else(|| {
+                                tonic::Status::data_loss("attachment replay did not advance")
+                            })?
+                            .idx;
+                        cutoff.store(cursor, std::sync::atomic::Ordering::Release);
+                        for event in page {
+                            if !filter_enabled || filter.contains(&event.event_type) {
+                                pending.push_back(map_broadcast_event(
+                                    Ok(event),
+                                    &broadcaster,
+                                    &session_id,
+                                )?);
+                            }
+                        }
+                    }
+                }
+            },
+        );
         let events = BroadcastStream::new(rx)
             .filter(move |r| {
+                if let Ok(event) = r {
+                    if backfill_epoch == Some(event.epoch)
+                        && event.run_id == requested_run_id
+                        && event.idx <= live_cutoff.load(std::sync::atomic::Ordering::Acquire)
+                    {
+                        return false;
+                    }
+                }
                 if !filter_enabled {
                     return true;
                 }
@@ -879,6 +964,71 @@ mod tests {
             service_work: Arc::new(crate::service::work::ServiceWork::default()),
             model_registry,
             loop_template: Arc::new(crate::agent::Loop::new(Arc::new(NoopProvider), "mock")),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_atomic_stream_pages_a_large_prefix_before_the_registered_live_tail() {
+        let state = grpc_app_state(false);
+        let store = state.session_manager.storage().unwrap();
+        store.reserve_segmented("paged").unwrap();
+        store.replace("paged",vec![serde_json::json!({"id":"info","type":"session_info","timestamp":"2026-10-26T00:00:00Z","content":{"cwd":".","model":"mock"}})]).unwrap();
+        let staged = store.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut writer = crate::session::content::journal::Writer::default();
+            let text = "x".repeat(crate::session::content::WRITE_BYTES);
+            for idx in 0..140 {
+                writer.persist(&staged,"paged",&[serde_json::json!({"session_id":"paged","run_id":"r","epoch":1,"idx":idx,"session_idx":-1,"run_sequence":1,
+                    "event_type":"text_chunk","timestamp":"2026-10-26T00:00:00Z","data":serde_json::json!({"text":text,"content_key":"b","content_offset":idx*text.len(),"content_bytes":text.len(),"content_first_idx":idx}).to_string()})]).unwrap();
+            }
+        }).await.unwrap();
+        let broadcaster = Arc::new(SseBroadcaster::new());
+        let session = crate::rpc::ServerSession::new_with_queue_budget(
+            "paged".into(),
+            Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
+                Arc::new(NoopProvider),
+                "mock",
+            ))),
+            state.session_manager.clone(),
+            &state.welcome_cwd,
+            broadcaster.clone(),
+            state.approval_gate.clone(),
+            state.model_registry.clone(),
+            state.queue_budget.clone(),
+        );
+        state
+            .sessions
+            .write()
+            .insert("paged".into(), Arc::new(parking_lot::RwLock::new(session)));
+        broadcaster.start_run_with_sequence("r".into(), 1, Some(1));
+        let service = FutureAgentService { state };
+        let mut stream = service
+            .stream_events(business_request(proto::StreamRequest {
+                session_id: "paged".into(),
+                run_id: "r".into(),
+                atomic_attach: true,
+                after_idx: -1,
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        // This event is published AFTER registration and BEFORE any backfill
+        // page is polled. It must follow the entire original prefix exactly once.
+        broadcaster.broadcast(SseEvent::new(
+            "usage",
+            serde_json::json!({"input_tokens":1}),
+        ));
+        for expected in 0..=140 {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(20), stream.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(event.idx, expected);
+            assert!(!event.projection_snapshot);
+            assert_eq!(event.epoch, 1);
+            assert!(event.data.len() < 128 * 1024);
         }
     }
 

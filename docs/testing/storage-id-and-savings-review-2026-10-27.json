@@ -1,0 +1,100 @@
+{
+  "dateLocal": "2026-10-27",
+  "agentLatest": {
+    "messageIdsBlob16Uuid4": 42,
+    "entryRunReferencesBlob16Uuid4": 41,
+    "runIdsBlob16Uuid4": 5,
+    "bodyOwnerIdsBlob16Uuid4": 49,
+    "allRunsCompleted": true,
+    "ownerAndRunReferencesValid": true,
+    "integrity": "ok",
+    "foreignKeyErrors": 0,
+    "bodyAudit": {
+      "objects": 54,
+      "bodyBytes": 37431,
+      "segments": 751,
+      "declaredLengthsAndAvailableSealedDigestsValid": true
+    }
+  },
+  "hostLatest": {
+    "matchingRunIds": 5,
+    "runStorage": "TEXT36 canonical UUID matching Agent BLOB16",
+    "threadIdStillTimestampPrefixed": true,
+    "threadIdStorage": "TEXT29",
+    "allSelfGeneratedIdsUnifiedAcrossDatabases": false
+  },
+  "longBodyComparison": [
+    {
+      "bodyBytes": 1048630,
+      "originalAllocatedBytes": 8282112,
+      "previousAllocatedBytes": 1736704,
+      "currentAllocatedBytes": 1757184,
+      "reductionVsOriginalPercent": 78.78338278931751,
+      "reductionVsPreviousPercent": -1.1792452830188704
+    },
+    {
+      "bodyBytes": 10485805,
+      "originalAllocatedBytes": 79757312,
+      "previousAllocatedBytes": 13897728,
+      "currentAllocatedBytes": 13697024,
+      "reductionVsOriginalPercent": 82.8266228430567,
+      "reductionVsPreviousPercent": 1.4441497200117892
+    }
+  ],
+  "realisticToolComparison": [
+    {
+      "toolCalls": 20,
+      "repetitions": 3,
+      "old": {
+        "allocatedBytes": 1712128,
+        "logicalWalPageBytes": 104177664
+      },
+      "new": {
+        "allocatedBytes": 1032192,
+        "logicalWalPageBytes": 95350784
+      },
+      "allocatedReductionPercent": 39.71291866028708,
+      "logicalWalReductionPercent": 8.472910277581192
+    },
+    {
+      "toolCalls": 150,
+      "repetitions": 3,
+      "old": {
+        "allocatedBytes": 10522624,
+        "logicalWalPageBytes": 795967488
+      },
+      "new": {
+        "allocatedBytes": 4972544,
+        "logicalWalPageBytes": 728698880
+      },
+      "allocatedReductionPercent": 52.744258466329306,
+      "logicalWalReductionPercent": 8.451175332427653
+    }
+  ],
+  "comparisonScope": "Allocated B-tree pages including indices, not WAL file length. Long-body and multi-tool workloads are distinct; their reductions cannot be multiplied or added. Previous measurements remain unchanged.",
+  "privacy": "Aggregate counts only; no conversation content, business IDs, provider IDs or credentials retained.",
+  "observedApplicationVersion": "80bea897",
+  "sampleDescription": "Latest native-format five-prompt conversation, distinct from the preceding five-prompt audit; physical sizes across different conversations are not a controlled saving comparison.",
+  "observedWholeAgentDatabaseBytes": 102359040,
+  "formula": "reduction_percent = (1 - current_bytes / baseline_bytes) * 100; a negative value means growth.",
+  "sources": [
+    {
+      "artifact": "docs/testing/compact-storage-acceptance-2026-10-27.json",
+      "sha256": "0c0f91363074a1636341f7d6b56e66de3a4440de8907379361544a5e6c34da33"
+    },
+    {
+      "artifact": "docs/testing/compact-storage-candidate-5-2026-10-27.json",
+      "sha256": "982b798310fccbe2a094f6551c150efe7bc14d9ae22b30a8506ecefa9737c1c2"
+    }
+  ],
+  "measurementNotes": [
+    "This records the preceding read-only audit; it does not mutate or migrate any IDs.",
+    "Long-body data use final-space-old format1 as the original baseline, final-space-old format2 as the previous segmented baseline, and final-space-new format2 as the current baseline in the preserved C6 artifact.",
+    "Each allocation total sums allocatedBytes across every recorded dbstat structure, including indices, SQLite schema and fixed empty pages. It is not just body bytes or WAL file length.",
+    "Tool workloads use the medians of three paired old/new runs in C5; logical content digests match.",
+    "WAL logicalPageBytes are SQLite cache-write page counters, not physical I/O or temporary WAL file length.",
+    "Storage encoding is unchanged by the subsequent first-page snapshot fix. Synthetic native UUID tests already use the representation now confirmed in actual runs.",
+    "Historical TEXT IDs are intentionally retained. Provider opaque IDs, integer technical keys and the auxiliary empty run key are not UUID conversion targets.",
+    "Host app.db still stores new run UUIDs as TEXT36 and generates timestamp-prefixed thread IDs. The claim that every self-generated ID in every database is unified is false."
+  ]
+}

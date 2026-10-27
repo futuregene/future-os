@@ -66,13 +66,14 @@ fn text_block_mut<'a>(
     blocks.last_mut().expect("text block was just inserted")
 }
 
-fn assemble_assistant_content(
+fn assemble_assistant_parts(
     order: &[AssistantBlockOrder],
     reasoning_blocks: &[AccumulatedReasoningBlock],
     text_blocks: &[AccumulatedTextBlock],
     tool_calls: &[AgentToolCall],
-) -> Vec<ContentBlock> {
+) -> (Vec<ContentBlock>, Vec<Option<String>>) {
     let mut content = Vec::new();
+    let mut keys = Vec::new();
     let mut emitted_reasoning = vec![false; reasoning_blocks.len()];
     let mut emitted_text = vec![false; text_blocks.len()];
     let mut emitted_tools = vec![false; tool_calls.len()];
@@ -87,6 +88,7 @@ fn assemble_assistant_content(
                 {
                     emitted_reasoning[index] = true;
                     if !reasoning.text.is_empty() || !reasoning.provider_metadata.is_empty() {
+                        keys.push(Some(format!("thinking:{}", reasoning.id)));
                         content.push(ContentBlock::reasoning(
                             &reasoning.text,
                             reasoning.provider_metadata.clone(),
@@ -102,6 +104,7 @@ fn assemble_assistant_content(
                 {
                     emitted_text[index] = true;
                     if !text.text.is_empty() {
+                        keys.push(Some(format!("text:{}", text.id)));
                         content.push(ContentBlock::text(&text.text));
                     }
                 }
@@ -109,6 +112,7 @@ fn assemble_assistant_content(
             AssistantBlockOrder::Tool(index) => {
                 if let Some(tool) = tool_calls.get(*index) {
                     emitted_tools[*index] = true;
+                    keys.push(None);
                     content.push(ContentBlock::tool_call(
                         tool.id.clone(),
                         tool.name.clone(),
@@ -126,6 +130,7 @@ fn assemble_assistant_content(
         if !emitted_reasoning[index]
             && (!reasoning.text.is_empty() || !reasoning.provider_metadata.is_empty())
         {
+            keys.push(Some(format!("thinking:{}", reasoning.id)));
             content.push(ContentBlock::reasoning(
                 &reasoning.text,
                 reasoning.provider_metadata.clone(),
@@ -134,11 +139,13 @@ fn assemble_assistant_content(
     }
     for (index, text) in text_blocks.iter().enumerate() {
         if !emitted_text[index] && !text.text.is_empty() {
+            keys.push(Some(format!("text:{}", text.id)));
             content.push(ContentBlock::text(&text.text));
         }
     }
     for (index, tool) in tool_calls.iter().enumerate() {
         if !emitted_tools[index] {
+            keys.push(None);
             content.push(ContentBlock::tool_call(
                 tool.id.clone(),
                 tool.name.clone(),
@@ -147,7 +154,31 @@ fn assemble_assistant_content(
             ));
         }
     }
-    content
+    (content, keys)
+}
+#[cfg(test)]
+fn assemble_assistant_content(
+    order: &[AssistantBlockOrder],
+    reasoning: &[AccumulatedReasoningBlock],
+    text: &[AccumulatedTextBlock],
+    tools: &[AgentToolCall],
+) -> Vec<ContentBlock> {
+    assemble_assistant_parts(order, reasoning, text, tools).0
+}
+
+fn bind_stream_message(message: &mut AgentMessage, entry_id: &str, keys: Vec<Option<String>>) {
+    let metadata = message.metadata.get_or_insert_with(serde_json::Map::new);
+    metadata.insert(
+        AgentMessage::JOURNAL_ENTRY_ID_KEY.into(),
+        serde_json::json!(entry_id),
+    );
+    metadata.insert(
+        AgentMessage::STREAM_BLOCKS_KEY.into(),
+        serde_json::json!(keys
+            .into_iter()
+            .map(|key| key.map(|key| format!("{entry_id}:{key}")))
+            .collect::<Vec<_>>()),
+    );
 }
 
 fn clear_unfinished_provider_identity(tool: &mut AgentToolCall) {
@@ -178,12 +209,34 @@ impl Loop {
         ctx: &super::StreamContext,
         on_text: impl Fn(String) + Send + 'static,
         on_event: impl Fn(RunEvent) + Send + Sync + 'static,
-        mut interrupt_rx: Option<tokio::sync::mpsc::Receiver<()>>,
+        interrupt_rx: Option<tokio::sync::mpsc::Receiver<()>>,
     ) -> Result<(String, Vec<AgentMessage>)> {
+        match self
+            .run_streaming_inner(&mut messages, ctx, on_text, on_event, interrupt_rx)
+            .await
+        {
+            Ok(text) => Ok((text, messages)),
+            Err(error) => {
+                if let Some(callback) = &ctx.on_failure_messages {
+                    callback(messages);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    async fn run_streaming_inner(
+        &self,
+        messages: &mut Vec<AgentMessage>,
+        ctx: &super::StreamContext,
+        on_text: impl Fn(String) + Send + 'static,
+        on_event: impl Fn(RunEvent) + Send + Sync + 'static,
+        mut interrupt_rx: Option<tokio::sync::mpsc::Receiver<()>>,
+    ) -> Result<String> {
         // Every model-visible message is bound to a stable journal identity.
         // Loaded messages already carry it; fresh/ephemeral callers receive one
         // here so compaction provenance never depends on vector indices.
-        for message in &mut messages {
+        for message in messages.iter_mut() {
             message.ensure_journal_entry_id();
         }
         let mut active_checkpoint = self.active_checkpoint.lock().clone();
@@ -255,7 +308,7 @@ impl Loop {
             // Cancellation always terminates this run. A later user submission
             // is a distinct scheduler-owned run and can never be injected here.
             if self.is_interrupted() {
-                return Ok((String::new(), messages));
+                return Ok(String::new());
             }
 
             // Emit turn_start
@@ -291,7 +344,7 @@ impl Loop {
             // Ephemeral/direct Loop users may have no persistence callback.
             // New assistant/tool messages still need stable in-memory IDs for
             // checkpoint ranges across subsequent turns.
-            for message in &mut messages {
+            for message in messages.iter_mut() {
                 if message.journal_entry_id().is_none() {
                     message.ensure_journal_entry_id();
                 }
@@ -310,7 +363,7 @@ impl Loop {
                 .ok()
                 .filter(|tokens: &u64| *tokens > 0);
             let mut projected = crate::compaction::project_prompt_context(
-                &messages,
+                messages,
                 active_checkpoint.as_ref(),
                 reported_input,
                 context_window,
@@ -343,7 +396,7 @@ impl Loop {
             } else {
                 crate::compaction::CompactionTrigger::Automatic
             };
-            let automatic_operation_id = format!("cmp_{}", crate::utils::generate_entry_id());
+            let automatic_operation_id = crate::utils::generate_entry_id();
             let emit_automatic_started = || {
                 on_event(RunEvent::CompactionStarted {
                     operation_id: automatic_operation_id.clone(),
@@ -388,7 +441,7 @@ impl Loop {
                     crate::compaction::prepare_with_journal_and_summary(
                         manager,
                         projected.clone(),
-                        &messages,
+                        messages,
                         automatic_trigger,
                         automatic_phase,
                         None,
@@ -517,9 +570,8 @@ impl Loop {
             // Emit message_start
 
             // Convert to LLM format
-            let llm_messages: Vec<Message> = ConvertToLLM(&work_messages);
-
             if self.verbose {
+                let llm_messages: Vec<Message> = ConvertToLLM(&work_messages);
                 tracing::info!("[agent] turn={} calling LLM model={} msgs={} tools={} sys_prompt_len={} msg_chars={}",
                     turn,
                     ctx.model,
@@ -543,7 +595,7 @@ impl Loop {
                     self.provider
                         .stream_model(crate::llm::schema::ModelRequest {
                             model: ctx.model.clone(),
-                            messages: work_messages.clone(),
+                            messages: work_messages,
                             tools: tool_defs.clone(),
                             system_prompt: request_system_prompt.to_string(),
                         }),
@@ -553,7 +605,7 @@ impl Loop {
             {
                 Some(r) => r,
                 None => {
-                    return Ok((String::new(), messages));
+                    return Ok(String::new());
                 }
             };
 
@@ -591,8 +643,7 @@ impl Loop {
                             } else {
                                 crate::compaction::CompactionPhase::MidTurn
                             };
-                            let provider_limit_operation_id =
-                                format!("cmp_{}", crate::utils::generate_entry_id());
+                            let provider_limit_operation_id = crate::utils::generate_entry_id();
                             let Some(manager) = &context_manager else {
                                 let error = anyhow!(
                                     "context compaction is unavailable for provider-limit recovery"
@@ -613,7 +664,7 @@ impl Loop {
                                 return Err(error);
                             };
                             let mut projected = crate::compaction::project_prompt_context(
-                                &messages,
+                                messages,
                                 active_checkpoint.as_ref(),
                                 None,
                                 manager.context_window.max(1) as u64,
@@ -636,7 +687,7 @@ impl Loop {
                             match crate::compaction::prepare_with_journal_and_summary(
                                 manager,
                                 projected,
-                                &messages,
+                                messages,
                                 crate::compaction::CompactionTrigger::ProviderContextLimit,
                                 provider_limit_phase,
                                 None,
@@ -725,7 +776,7 @@ impl Loop {
                         // Don't burn a retry (and its backoff) if the user
                         // already asked to stop.
                         if self.is_interrupted() {
-                            return Ok((String::new(), messages));
+                            return Ok(String::new());
                         }
                         retry_attempt += 1;
                         let delay_ms = 2000 * (1 << (retry_attempt - 1));
@@ -739,7 +790,7 @@ impl Loop {
                             )
                             .await
                         {
-                            return Ok((String::new(), messages));
+                            return Ok(String::new());
                         }
                         continue;
                     }
@@ -754,6 +805,12 @@ impl Loop {
                 retry_attempt = 0;
             }
 
+            let stream_entry_id = crate::utils::generate_entry_id();
+            if ctx.segmented_storage {
+                on_event(RunEvent::MessageStart {
+                    entry_id: stream_entry_id.clone(),
+                });
+            }
             // Process stream events
             let mut assistant_text = retry_text.clone();
             let mut reasoning_blocks: Vec<AccumulatedReasoningBlock> = Vec::new();
@@ -832,6 +889,29 @@ impl Loop {
                 {
                     reconnecting = false;
                     on_event(RunEvent::StreamResumed);
+                }
+                let mut model_event = model_event;
+                if ctx.segmented_storage {
+                    match &mut model_event {
+                        ModelStreamEvent::ToolInputStart { id, .. } if id.is_empty() => {
+                            *id = crate::utils::generate_entry_id();
+                        }
+                        ModelStreamEvent::ToolInputDelta { index, id, .. }
+                        | ModelStreamEvent::ToolInputEnd { index, id, .. }
+                            if id.is_empty() =>
+                        {
+                            *id = current_tool_calls
+                                .get(*index)
+                                .and_then(Option::as_ref)
+                                .map(|tool| tool.id.clone())
+                                .filter(|id| !id.is_empty())
+                                .unwrap_or_else(crate::utils::generate_entry_id);
+                        }
+                        _ => {}
+                    }
+                    if let ModelStreamEvent::ToolInputEnd { arguments, .. } = &mut model_event {
+                        repair_partial_tool_args(arguments);
+                    }
                 }
                 // Clients treat `error` as terminal. Do not stop their stream
                 // for a disconnect that will be recovered below.
@@ -1168,6 +1248,15 @@ impl Loop {
             // placeholder tool-result messages, otherwise the LLM API rejects
             // the conversation on resume (HTTP 400: "assistant message with
             // tool_calls must be followed by tool messages").
+            if ctx.segmented_storage {
+                on_event(RunEvent::MessageEnd {
+                    entry_id: stream_entry_id.clone(),
+                    complete: !interrupted_during_stream
+                        && !model_stream_failed
+                        && !stream_truncated,
+                });
+            }
+            ctx.await_durability().await?;
             let build_partial_assistant = |messages: &mut Vec<AgentMessage>,
                                            assistant_block_order: &[AssistantBlockOrder],
                                            reasoning_blocks: &[AccumulatedReasoningBlock],
@@ -1175,16 +1264,20 @@ impl Loop {
                                            tool_calls: &[AgentToolCall],
                                            reason: &str| {
                 let first_new_message = messages.len();
-                let msg = AgentMessage {
-                    role: "assistant".to_string(),
-                    content: assemble_assistant_content(
-                        assistant_block_order,
-                        reasoning_blocks,
-                        text_blocks,
-                        tool_calls,
-                    ),
+                let (content, keys) = assemble_assistant_parts(
+                    assistant_block_order,
+                    reasoning_blocks,
+                    text_blocks,
+                    tool_calls,
+                );
+                let mut msg = AgentMessage {
+                    role: "assistant".into(),
+                    content,
                     ..Default::default()
                 };
+                if ctx.segmented_storage {
+                    bind_stream_message(&mut msg, &stream_entry_id, keys);
+                }
                 // Don't push an empty assistant — the LLM API rejects
                 // messages with neither content nor tool_calls.
                 if !msg.content.is_empty() {
@@ -1238,7 +1331,7 @@ impl Loop {
                 // run. This step's tools have not executed: pair even partial
                 // calls with skipped results before sending history upstream.
                 build_partial_assistant(
-                    &mut messages,
+                    messages,
                     &assistant_block_order,
                     &reasoning_blocks,
                     &text_blocks,
@@ -1290,7 +1383,7 @@ impl Loop {
                     .sleep_or_interrupt(Duration::from_millis(delay_ms), interrupt_rx.as_mut())
                     .await
                 {
-                    return Ok((String::new(), messages));
+                    return Ok(String::new());
                 }
                 // Opening another HTTP stream is not success: only a complete
                 // model step resets this budget. Retries do not consume turns.
@@ -1305,7 +1398,7 @@ impl Loop {
                     "provider stream error"
                 };
                 build_partial_assistant(
-                    &mut messages,
+                    messages,
                     &assistant_block_order,
                     &reasoning_blocks,
                     &text_blocks,
@@ -1340,7 +1433,7 @@ impl Loop {
                             .to_string(),
                     });
                 }
-                return Ok((String::new(), messages));
+                return Ok(String::new());
             }
 
             // Close any open output block (text_end may not have been emitted).
@@ -1351,16 +1444,20 @@ impl Loop {
             // Emit message_end
 
             // Build assistant message
-            let assistant_msg = AgentMessage {
-                role: "assistant".to_string(),
-                content: assemble_assistant_content(
-                    &assistant_block_order,
-                    &reasoning_blocks,
-                    &text_blocks,
-                    &agent_tool_calls,
-                ),
+            let (content, keys) = assemble_assistant_parts(
+                &assistant_block_order,
+                &reasoning_blocks,
+                &text_blocks,
+                &agent_tool_calls,
+            );
+            let mut assistant_msg = AgentMessage {
+                role: "assistant".into(),
+                content,
                 ..Default::default()
             };
+            if ctx.segmented_storage {
+                bind_stream_message(&mut assistant_msg, &stream_entry_id, keys);
+            }
 
             // Skip truly empty assistant messages — the LLM API rejects them
             // ("content or tool_calls must be set"). Reasoning and tool calls
@@ -1411,12 +1508,12 @@ impl Loop {
                     );
                 }
                 append_skipped_tool_placeholders(
-                    &mut messages,
+                    messages,
                     &agent_tool_calls,
                     "the stream was truncated",
                     ctx.save_callback.as_ref(),
                 );
-                return Ok((assistant_text, messages));
+                return Ok(assistant_text);
             }
 
             stream_retry_attempt = 0;
@@ -1426,7 +1523,7 @@ impl Loop {
             // edge branchless (a nested if's closing brace here collected a
             // phantom zero-count coverage region).
             let stop_hit = self.config.stop_condition.as_ref().is_some_and(|stop_fn| {
-                let llm_msgs: Vec<Message> = ConvertToLLM(&messages);
+                let llm_msgs: Vec<Message> = ConvertToLLM(messages);
                 stop_fn(llm_msgs, &assistant_text)
             });
             if stop_hit {
@@ -1434,12 +1531,12 @@ impl Loop {
                 // calls; they are never executed, so append placeholder
                 // results to keep the conversation API-valid for the next run.
                 append_skipped_tool_placeholders(
-                    &mut messages,
+                    messages,
                     &agent_tool_calls,
                     "the stop condition fired",
                     ctx.save_callback.as_ref(),
                 );
-                return Ok((assistant_text, messages));
+                return Ok(assistant_text);
             }
 
             // No tool calls means this run is complete. Follow-up submissions
@@ -1465,7 +1562,7 @@ impl Loop {
                         cum_cost,
                     );
                 }
-                return Ok((assistant_text, messages));
+                return Ok(assistant_text);
             }
 
             // Execute tools
@@ -1481,14 +1578,8 @@ impl Loop {
                         .join(", ")
                 );
             }
-            self.execute_tools(
-                turn,
-                &tool_calls,
-                &mut messages,
-                &on_event,
-                &ctx.on_tool_result,
-            )
-            .await;
+            self.execute_tools(turn, &tool_calls, messages, &on_event, ctx)
+                .await?;
 
             // Log per-turn usage: tokens and cost.
             if let Some(ref u) = total_usage {
@@ -1809,64 +1900,17 @@ fn agent_tool_call_to_tool_call(tool_call: AgentToolCall) -> ToolCall {
 }
 
 fn repair_partial_tool_args(args: &mut serde_json::Value) {
-    let serde_json::Value::String(raw) = args else {
-        return;
-    };
-    // Empty string is never valid tool-call arguments — treat as empty object
-    // so the tool handler gets a proper "missing field" error instead of
-    // "invalid type: string \"\", expected struct ShellParams".
-    if raw.is_empty() {
-        *raw = String::from("{}");
-        return;
-    }
-    if serde_json::from_str::<serde_json::Value>(raw).is_ok() {
-        return;
-    }
-    let Some(repaired) = repair_partial_json_object(raw) else {
-        return;
-    };
-    if serde_json::from_str::<serde_json::Value>(&repaired).is_ok() {
-        *raw = repaired;
-    }
+    future_rpc::tool_arguments::repair_string_v1(args);
 }
 
+#[cfg(test)]
 fn repair_partial_json_object(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    if !trimmed.starts_with('{') {
-        return None;
-    }
-
-    let mut repaired = trimmed.to_string();
-    if has_unclosed_string(&repaired) {
-        repaired.push('"');
-    }
-
-    let open_braces = repaired.chars().filter(|c| *c == '{').count();
-    let close_braces = repaired.chars().filter(|c| *c == '}').count();
-    if open_braces > close_braces {
-        for _ in 0..(open_braces - close_braces) {
-            repaired.push('}');
-        }
-    }
-
-    Some(repaired)
+    future_rpc::tool_arguments::repair_partial_json_object(raw)
 }
 
+#[cfg(test)]
 fn has_unclosed_string(value: &str) -> bool {
-    let mut in_string = false;
-    let mut escaped = false;
-    for ch in value.chars() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match ch {
-            '\\' if in_string => escaped = true,
-            '"' => in_string = !in_string,
-            _ => {}
-        }
-    }
-    in_string
+    future_rpc::tool_arguments::has_unclosed_string(value)
 }
 
 /// Append placeholder tool-result messages for tool calls that were never

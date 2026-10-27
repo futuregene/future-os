@@ -3,21 +3,16 @@
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
-/// GenerateID creates a time-prefixed ID with a UUID-strength random suffix.
-/// The former 24-bit suffix had a meaningful birthday-collision risk during
-/// bursty imports/forks; 122 random UUID bits make identity independent of
-/// process timing and safe across machines.
+/// Standard UUID v4 for new application-owned identities. Time is stored in
+/// record metadata, not embedded in the identity. All 122 random bits remain.
 pub fn generate_id() -> String {
-    let now = chrono::Local::now();
-    let ts = now.format("%Y%m%d-%H%M%S").to_string();
-    format!("{}-{}", ts, uuid::Uuid::new_v4().simple())
+    uuid::Uuid::new_v4().to_string()
 }
 
-/// GenerateEntryID creates a time-prefixed, globally strong journal identity.
+/// Public journal/operation identity uses the same canonical 36-character UUID
+/// as database inspection. The storage adapter owns the 16-byte representation.
 pub fn generate_entry_id() -> String {
-    let now = chrono::Local::now();
-    let ts = now.format("%Y%m%d-%H%M%S").to_string();
-    format!("{}-{}", ts, uuid::Uuid::new_v4().simple())
+    generate_id()
 }
 
 /// encode_cwd converts a filesystem path into a safe directory name using base32.
@@ -539,8 +534,8 @@ mod util_tests {
         let id1 = generate_id();
         let id2 = generate_id();
         assert_ne!(id1, id2);
-        assert!(id1.contains('-'));
-        assert!(id1.len() > 12);
+        assert_eq!(id1.len(), 36);
+        assert_eq!(uuid::Uuid::parse_str(&id1).unwrap().to_string(), id1);
     }
 
     #[test]
@@ -672,10 +667,11 @@ mod util_tests {
     #[test]
     fn generate_entry_id_format() {
         let id = generate_entry_id();
-        // Format: YYYYMMDD-HHMMSS-hex
-        assert_eq!(id.len(), 48);
-        let parts: Vec<&str> = id.split('-').collect();
-        assert_eq!(parts.len(), 3);
+        assert_eq!(id.len(), 36);
+        let uuid = uuid::Uuid::parse_str(&id).unwrap();
+        assert_eq!(uuid.get_version_num(), 4);
+        assert_eq!(uuid.get_variant(), uuid::Variant::RFC4122);
+        assert_eq!(uuid.to_string(), id);
     }
 
     #[test]

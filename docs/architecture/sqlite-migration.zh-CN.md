@@ -80,9 +80,12 @@ future agent --retry-session-import 会话ID --migration-source /绝对路径/�
 
 ## 数据库准入与升级契约
 
-Desktop 使用 application_id `0x46554150`、user_version `3`。已知旧版 Desktop
+Desktop 使用 application_id `0x46554150`、user_version `4`。已知旧版 Desktop
 布局以及 CLI 先创建的设置/工作区数据库，通过原有发布迁移链接入。
 `app_schema_migrations` 记录新契约的校验和；`app_database_identity` 保存数据库身份与恢复代次。
+契约 4 以事务删除已无生产读写的 `workspace_files`、`reference_targets`、
+`object_references`，以及与唯一约束重复的 `idx_review_snapshots_run`；保留对象链接解析、
+磁盘文件搜索、review 数据和旧会话归档。此迁移不执行历史压缩或 `VACUUM`。
 历史迁移标识保持不变。已接入的数据库在服务前校验核心列、外键目标和会话绑定唯一索引，
 不再重放历史破坏性清理。行级孤立 run 仍可被发现、对账及终止。
 

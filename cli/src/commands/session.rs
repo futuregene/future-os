@@ -2090,8 +2090,8 @@ mod tests {
     async fn info_session_not_found() {
         let _guard = crate::test_env::lock_env().await;
         let agent = crate::test_server::MockAgent::respond(
-            "list_sessions",
-            "{\"sessions\":[{\"id\":\"other\"}]}",
+            "get_session_entries",
+            r#"{"entries":[],"hasMore":false,"nextOffset":0}"#,
         );
         let (_agent, _env) = mock_env(agent).await;
         let (out, cap) = Output::memory();

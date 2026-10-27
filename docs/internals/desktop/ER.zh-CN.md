@@ -632,9 +632,6 @@ GUI 数据库（`~/.future/app/app.db`）包含以下业务对象表：
 - `review_file_changes`
 - `review_snapshots`
 - `artifacts`
-- `workspace_files`
-- `reference_targets`
-- `object_references`
 - `app_settings`（应用级设置键值表；缺键时取以下默认值，默认值定义在 `packages/app-settings/src/lib.rs:424-440` 的 `defaults()` 与 `:462-500` 的 `read()`）：`approval_tier`（默认 `off`，另可 `manual`/`sandbox`/`auto`；未知值收敛为 `off`）、`hidden_models`、`title_language`（`en`/`zh`，默认 `en`，由 Desktop UI 镜像给后台标题生成）、`auto_compact_first_turn`（保留的存储键名，用于「首个回答后生成标题」；默认 true，从不触发压缩）、`auto_upgrade_skills`（true）、`auto_connect_remote`（true——Remote 页自己的开关，存在这里使重启后仍对已配对设备提供服务；`host/src/remote/mod.rs` 的 `remember_switch`）、`bell_on_complete`（true）、`skill_recommend`（false，用户主动开启才生效）、`skill_guide_dismissed` / `skill_intro_dismissed`（false）、`community_edition`（false，仅呈现层）、`auto_resume_interrupted`（true，写穿到 Agent 的 `resume_interrupted_on_start`，见 `store/app_settings.rs` 的 `write_agent_resume_policy`）以及内部 `device_id`。全部走既有键值表与缺键默认，无需结构性迁移。已退役的 `show_thinking` 键允许留在旧数据库中，但不再读取、写入或通过设置 API 返回，无需破坏性迁移；旧 `remote_enabled` / `remote_nats_url` 键同样不再读取，运行状态驻内存、地址由平台环境派生。
 - `agent_delete_outbox`（删除 Thread 时登记的 Agent 会话删除投递队列，后台重试直至 Agent 确认，见 `store/deletions.rs`）
 - `skill_reco_events`（每次真正展示给用户的技能推荐一行：`day`、`skill_id`、`message_hash`——回答「今天推荐了几次 / 该技能今天是否展示过 / 该消息是否已产生过推荐」；没有可推荐项的调用不写行，见 `store/skill_reco.rs` 与 `store/schema.rs:262-268` 的 DDL）

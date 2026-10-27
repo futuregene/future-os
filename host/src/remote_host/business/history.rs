@@ -35,6 +35,33 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
     // never call this helper.
     let _ = crate::agent_bridge::ensure_observer_for_session(&cmd.session_id);
     match cmd.cmd_type.as_str() {
+        "get_event_content_range" => {
+            let parsed = cmd
+                .content_request
+                .clone()
+                .ok_or_else(|| "contentRequest is required".to_owned())
+                .and_then(|value| {
+                    serde_json::from_value::<future_rpc::content_range::ContentRequest>(value)
+                        .map_err(|error| format!("invalid contentRequest: {error}"))
+                });
+            let request = match parsed {
+                Ok(request) => request,
+                Err(error) => {
+                    reply(sink, false, Value::Null, Some(&error)).await;
+                    return;
+                }
+            };
+            match crate::agent_bridge::get_event_content_range(
+                cmd.session_id.clone(),
+                cmd.run_id.clone(),
+                request,
+            )
+            .await
+            {
+                Ok(data) => reply(sink, true, data, None).await,
+                Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+            }
+        }
         "get_messages" => {
             // Serve history from the agent (source of truth for all sessions).
             // The GUI store only has message rows for GUI-native threads —
@@ -226,12 +253,13 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             } else {
                 DEFAULT_MESSAGE_PAGE_LIMIT
             };
-            let data = if cmd.replay_until_idx.is_some() && offset == 0 {
-                crate::agent_bridge::get_events_since_page(
+            let data = if cmd.chunked_read && offset == 0 {
+                crate::agent_bridge::get_events_since_page_until(
                     cmd.session_id.clone(),
                     cmd.run_id.clone(),
                     cmd.since_idx,
                     limit,
+                    cmd.replay_until_idx,
                 )
                 .await
             } else {
@@ -244,14 +272,16 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             };
             match data {
                 Ok(mut data) => {
-                    let source_watermark = data["events"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|event| event["idx"].as_i64())
-                        .max()
-                        .unwrap_or(cmd.since_idx)
-                        .max(data["projection"]["cursor"].as_i64().unwrap_or(-1));
+                    let source_watermark = data["watermark"].as_i64().unwrap_or_else(|| {
+                        data["events"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|event| event["idx"].as_i64())
+                            .max()
+                            .unwrap_or(cmd.since_idx)
+                            .max(data["projection"]["cursor"].as_i64().unwrap_or(-1))
+                    });
                     let watermark = cmd.replay_until_idx.unwrap_or(source_watermark);
                     if data["projection"]["cursor"]
                         .as_i64()
@@ -275,6 +305,17 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                         .cloned()
                         .unwrap_or(json!(cmd.since_idx));
                     let next = page["nextSinceIdx"].as_i64().unwrap_or(cmd.since_idx);
+                    if page["events"].as_array().is_some_and(|events| {
+                        events.iter().any(|event| {
+                            event["data"].as_str().is_some_and(|raw| {
+                                serde_json::from_str::<Value>(raw)
+                                    .ok()
+                                    .is_some_and(|data| data.get("content_key").is_some())
+                            })
+                        })
+                    }) {
+                        page["rawEvents"] = json!(next.saturating_sub(cmd.since_idx));
+                    }
                     page["hasMore"] = json!(
                         next < watermark
                             && (agent_has_more || page["hasMore"].as_bool().unwrap_or(false))

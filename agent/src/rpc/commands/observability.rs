@@ -12,11 +12,13 @@ use crate::rpc::{
 /// event crosses the wire about three times (JSON `data` dual-write, typed
 /// `ReplayEvent.data`, typed `EventPayload`), so this much journal-serialized
 /// content stays well under the 32 MiB gRPC message cap.
-pub(crate) const EVENTS_PAGE_BYTE_BUDGET: usize = 8 * 1024 * 1024;
+pub(crate) const EVENTS_PAGE_BYTE_BUDGET: usize =
+    crate::session::content::transport::REPLAY_PAGE_BYTES;
 
 /// Per-event wire size beyond the `data` payload (type, run/event ids,
 /// timestamp, idx…), approximating the journal line.
-pub(crate) const EVENT_WIRE_OVERHEAD: usize = 320;
+pub(crate) const EVENT_WIRE_OVERHEAD: usize =
+    crate::session::content::transport::EVENT_WIRE_OVERHEAD;
 
 /// Cut `events` to one page for a paging caller (`max_events > 0`): at most
 /// `max_events` entries, and at most [`EVENTS_PAGE_BYTE_BUDGET`] of estimated
@@ -168,23 +170,40 @@ pub(crate) fn handle_get_events_since(
     cmd: &RpcCommand,
     id: &str,
 ) -> String {
-    // P1: backfill current-run events with idx > since_idx (Bridge reconnect).
-    let replay = {
-        let sess = session.read();
-        let limit = (cmd.max_events > 0).then(|| {
-            usize::try_from(cmd.max_events)
-                .unwrap_or(usize::MAX)
-                .saturating_add(1)
-        });
-        sess.broadcaster
-            .events_page(&cmd.run_id, cmd.since_idx, limit)
+    let broadcaster = session.read().broadcaster.clone();
+    let available = match broadcaster.replay_watermark(&cmd.run_id) {
+        Ok(cursor) => cursor,
+        Err(error) => return RpcResponse::build_fail(id, "get_events_since", &error.to_string()),
     };
+    if cmd
+        .replay_until_idx
+        .is_some_and(|until| until < -1 || available.is_some_and(|available| until > available))
+    {
+        return RpcResponse::build_fail(id, "get_events_since", "replay_window_changed");
+    }
+    let watermark = cmd.replay_until_idx.or(available);
+    let limit = (cmd.max_events > 0).then(|| {
+        usize::try_from(cmd.max_events)
+            .unwrap_or(usize::MAX)
+            .saturating_add(1)
+    });
+    let replay = broadcaster.events_page(&cmd.run_id, cmd.since_idx, limit);
     let (run_id, events, _min_idx, projection) = match replay {
         Ok(replay) => replay,
         Err(error) => {
             return RpcResponse::build_fail(id, "get_events_since", &error.to_string());
         }
     };
+    let events = events
+        .into_iter()
+        .filter(|event| watermark.is_none_or(|until| event.idx <= until))
+        .collect();
+    if projection
+        .as_ref()
+        .is_some_and(|projection| watermark.is_some_and(|until| projection.cursor > until))
+    {
+        return RpcResponse::build_fail(id, "get_events_since", "replay_window_changed");
+    }
     // A cursor older than the replay ring returns a complete compressed
     // projection instead of a knowingly incomplete event tail.
     let truncated = projection.is_some();
@@ -213,6 +232,7 @@ pub(crate) fn handle_get_events_since(
         truncated,
         projection,
         has_more,
+        watermark,
     };
     RpcResponse::ok(
         id,
@@ -232,6 +252,35 @@ pub(crate) fn handle_get_run_snapshot(
     let broadcaster = session.read().broadcaster.clone();
     let snapshot = match broadcaster.run_snapshot(&cmd.run_id) {
         Ok(snapshot) => snapshot,
+        Err(error)
+            if matches!(
+                error.to_string().as_str(),
+                "run snapshot exceeds memory budget"
+                    | "run replay exceeds memory budget; use paged get_events_since"
+            ) =>
+        {
+            return RpcResponse::build_fail_code(
+                id,
+                "get_run_snapshot",
+                "run_snapshot_too_large",
+                &error.to_string(),
+                serde_json::json!({}),
+            )
+        }
+        Err(error)
+            if matches!(
+                error.to_string().as_str(),
+                "run snapshot prefix is incomplete" | "run snapshot is empty"
+            ) =>
+        {
+            return RpcResponse::build_fail_code(
+                id,
+                "get_run_snapshot",
+                "run_snapshot_unavailable",
+                &error.to_string(),
+                serde_json::json!({}),
+            );
+        }
         Err(error) => return RpcResponse::build_fail(id, "get_run_snapshot", &error.to_string()),
     };
     // No visible semantic events yet: the legacy raw read is small and handles

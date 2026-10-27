@@ -22,6 +22,10 @@ const C_MAGENTA: &str = "\x1b[35m";
 pub const DEFAULT_MAX_TURNS: i32 = 0; // 0 = unlimited
 
 pub type PersistCallback = Arc<dyn Fn(&mut crate::types::AgentMessage) + Send + Sync>;
+pub type FailureMessagesCallback = Arc<dyn Fn(Vec<AgentMessage>) + Send + Sync>;
+pub type DurabilityCallback =
+    Arc<dyn Fn() -> futures::future::BoxFuture<'static, Result<()>> + Send + Sync>;
+
 pub type CheckpointCallback =
     Arc<dyn Fn(&crate::compaction::ContextCheckpoint) -> Result<()> + Send + Sync>;
 
@@ -67,15 +71,40 @@ impl StreamTruncation {
 /// overwrite each other's persistence and event streams.
 #[derive(Default)]
 pub struct StreamContext {
+    /// New conversations bind stream blocks to their eventual durable entry.
+    pub segmented_storage: bool,
     pub model: String,
     pub system_prompt: String,
     #[allow(clippy::type_complexity)]
     pub on_tool_result: Option<PersistCallback>,
     pub save_callback: Option<PersistCallback>,
+    /// Return the owned model context on an error, without per-save body clones.
+    pub on_failure_messages: Option<FailureMessagesCallback>,
+    /// Async journal fence before transcript publication or external tool effects.
+    pub durability_barrier: Option<DurabilityCallback>,
+    /// A failed durability boundary is fatal for this run, even if a caller's
+    /// callback later recovers. An uncertain approval/result requires recovery.
+    pub durability_failed: AtomicBool,
     /// Durable checkpoint commit. A successful return means the checkpoint
     /// journal entry was fsync'd and a committed event may be emitted.
     pub on_checkpoint: Option<CheckpointCallback>,
     pub compaction_journal: Option<crate::compaction::CompactionJournal>,
+}
+
+impl StreamContext {
+    async fn await_durability(&self) -> Result<()> {
+        anyhow::ensure!(
+            !self.durability_failed.load(Ordering::Acquire),
+            "a durable boundary previously failed in this run"
+        );
+        if let Some(barrier) = &self.durability_barrier {
+            if let Err(error) = barrier().await {
+                self.durability_failed.store(true, Ordering::Release);
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
 }
 
 pub struct Loop {
@@ -242,8 +271,9 @@ impl Loop {
         tool_calls: &[ToolCall],
         messages: &mut Vec<AgentMessage>,
         on_event: &F,
-        on_tool_result: &Option<PersistCallback>,
-    ) where
+        ctx: &StreamContext,
+    ) -> Result<()>
+    where
         F: Fn(RunEvent) + Send + Sync,
     {
         // `parallel_tools` and `tools_execution_mode` remain readable only for
@@ -251,8 +281,8 @@ impl Loop {
         // execution, so the runtime exposes one honest deterministic behavior.
         // A future parallel executor must return as a new capability together
         // with explicit same-workspace write-conflict semantics.
-        self.execute_tools_sequential(turn, tool_calls, messages, on_event, on_tool_result)
-            .await;
+        self.execute_tools_sequential(turn, tool_calls, messages, on_event, ctx)
+            .await
     }
 
     async fn execute_tools_sequential<F>(
@@ -261,8 +291,9 @@ impl Loop {
         tool_calls: &[ToolCall],
         messages: &mut Vec<AgentMessage>,
         on_event: &F,
-        on_tool_result: &Option<PersistCallback>,
-    ) where
+        ctx: &StreamContext,
+    ) -> Result<()>
+    where
         F: Fn(RunEvent) + Send + Sync,
     {
         let tools = &self.tools;
@@ -284,9 +315,22 @@ impl Loop {
                 arguments: tc.function.arguments.clone(),
             });
 
+            // An intent visible in the UI is not yet permission to create an
+            // external effect. Fence it, then recheck user cancellation.
+            ctx.await_durability().await?;
+            if self.is_interrupted() {
+                interrupted = true;
+                break;
+            }
             let ((result, err_str, tool_name), mut shell_result) =
-                crate::tools::shell::capture(Self::execute_one_tool_impl_static(tc, tools, config))
-                    .await;
+                crate::tools::shell::capture(Self::execute_one_tool_with_context(
+                    tc,
+                    tools,
+                    config,
+                    Some(ctx),
+                    Some(&self.interrupt_flag),
+                ))
+                .await;
             let duration = start.elapsed().as_millis() as u64;
             // Finalization hooks can fail after a successful process. Preserve
             // that process's exit code while keeping live/history verdicts equal.
@@ -342,6 +386,8 @@ impl Loop {
                 shell_result: shell_result.clone(),
             });
 
+            ctx.await_durability().await?;
+
             let tool_args_str = match &tc.function.arguments {
                 serde_json::Value::String(s) => s.clone(),
                 other => serde_json::to_string(other).unwrap_or_default(),
@@ -373,7 +419,7 @@ impl Loop {
                     );
             }
             messages.push(tool_msg);
-            if let Some(ref cb) = on_tool_result {
+            if let Some(ref cb) = ctx.on_tool_result {
                 cb(messages.last_mut().unwrap());
             }
             executed += 1;
@@ -406,17 +452,28 @@ impl Loop {
                 // leaves a call with no result at all: on the next load that
                 // reads as "the process died mid-call", which fences the whole
                 // session for a stop the user asked for.
-                if let Some(ref cb) = on_tool_result {
+                if let Some(ref cb) = ctx.on_tool_result {
                     cb(messages.last_mut().unwrap());
                 }
             }
         }
+        Ok(())
     }
-
+    #[cfg(test)]
     async fn execute_one_tool_impl_static(
         tc: &ToolCall,
         tools: &[AgentTool],
         config: &crate::types::AgentConfig,
+    ) -> (String, Option<String>, String) {
+        Self::execute_one_tool_with_context(tc, tools, config, None, None).await
+    }
+
+    async fn execute_one_tool_with_context(
+        tc: &ToolCall,
+        tools: &[AgentTool],
+        config: &crate::types::AgentConfig,
+        ctx: Option<&StreamContext>,
+        interrupt: Option<&Arc<AtomicBool>>,
     ) -> (String, Option<String>, String) {
         let tool_name = tc.function.name.clone();
         let tool_id = tc.id.clone();
@@ -443,7 +500,18 @@ impl Loop {
         }
         // Approval and other pre-execution gates receive the prepared action.
         if let Some(hook) = config.before_tool_call.as_ref() {
-            if let Some(result_val) = hook(&tool_name, &tool_id, &effective_args) {
+            // This compatibility hook may wait for a human, reviewer or disk.
+            // Retain tool task-locals while releasing the Tokio worker to serve
+            // cancellation and other sessions. New journal fences below await.
+            let invoke = || hook(&tool_name, &tool_id, &effective_args);
+            let result_val = if tokio::runtime::Handle::try_current().is_ok_and(|handle| {
+                handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
+            }) {
+                tokio::task::block_in_place(invoke)
+            } else {
+                invoke()
+            };
+            if let Some(result_val) = result_val {
                 if tool_name == "shell" {
                     crate::tools::shell::record_gated(&effective_args, &result_val.result);
                 }
@@ -457,6 +525,19 @@ impl Loop {
                     return (result_val.result.clone(), None, tool_name);
                 }
             }
+        }
+
+        // An approval decision can fail to commit, or a stop can arrive while
+        // the gate is open. Neither may fall through to an external effect.
+        if let Some(ctx) = ctx {
+            if let Err(error) = ctx.await_durability().await {
+                let message = format!("Tool execution prevented: {error:#}");
+                return (message.clone(), Some(message), tool_name);
+            }
+        }
+        if interrupt.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+            let message = "Tool execution cancelled before starting".to_string();
+            return (message.clone(), Some(message), tool_name);
         }
 
         // Execute the tool
@@ -1148,6 +1229,119 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_run_transfers_its_owned_context_without_cloning_message_bodies() {
+        let agent = make_loop();
+        // Invalid initial shape fails before any provider call. The same outer
+        // ownership path handles later provider/tool errors with partial state.
+        let mut message = AgentMessage::new_user("assistant", serde_json::json!("kept body"));
+        message.role = "assistant".into();
+        let address = match &message.content[0] {
+            ContentBlock::Text { text } => text.as_ptr() as usize,
+            _ => unreachable!(),
+        };
+        let saved = Arc::new(Mutex::new(None));
+        let capture = saved.clone();
+        let ctx = StreamContext {
+            on_failure_messages: Some(Arc::new(move |messages| {
+                *capture.lock() = Some(messages);
+            })),
+            ..Default::default()
+        };
+        assert!(agent
+            .run_streaming_with_messages(vec![message], &ctx, |_| {}, |_| {}, None)
+            .await
+            .is_err());
+        let messages = saved.lock().take().unwrap();
+        match &messages[0].content[0] {
+            ContentBlock::Text { text } => {
+                assert_eq!(text, "kept body");
+                assert_eq!(text.as_ptr() as usize, address);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn effect_fixture(
+        args: serde_json::Value,
+    ) -> futures::future::BoxFuture<'static, Result<String>> {
+        Box::pin(async move {
+            std::fs::write(args["path"].as_str().unwrap(), "executed")?;
+            Ok("done".into())
+        })
+    }
+
+    #[tokio::test]
+    async fn failed_intent_or_approval_fence_prevents_external_effects() {
+        for fail_at in [1, 2] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("effect");
+            let mut agent = make_loop();
+            let mut tool = cov_tool("effect", true);
+            tool.handler = effect_fixture;
+            agent.tools = vec![tool];
+            let calls = [cov_tool_call(
+                "c",
+                "effect",
+                serde_json::json!({"path":path}),
+            )];
+            let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let ctx = StreamContext {
+                durability_barrier: Some(Arc::new(move || {
+                    let fail = count.fetch_add(1, Ordering::SeqCst) + 1 == fail_at;
+                    Box::pin(async move {
+                        if fail {
+                            anyhow::bail!("injected durable boundary failure");
+                        }
+                        Ok(())
+                    })
+                })),
+                ..Default::default()
+            };
+            let mut messages = Vec::new();
+            let result = agent
+                .execute_tools_sequential(0, &calls, &mut messages, &|_| {}, &ctx)
+                .await;
+            assert!(result.is_err());
+            assert!(!path.exists(), "boundary {fail_at} must precede the effect");
+            assert!(
+                messages.is_empty(),
+                "an uncommitted result is recovery-owned"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_during_the_intent_fence_prevents_starting_the_tool() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("effect");
+        let mut agent = make_loop();
+        let mut tool = cov_tool("effect", true);
+        tool.handler = effect_fixture;
+        agent.tools = vec![tool];
+        let interrupt = agent.interrupt_flag();
+        let ctx = StreamContext {
+            durability_barrier: Some(Arc::new(move || {
+                interrupt.store(true, Ordering::SeqCst);
+                Box::pin(async { Ok(()) })
+            })),
+            ..Default::default()
+        };
+        let calls = [cov_tool_call(
+            "c",
+            "effect",
+            serde_json::json!({"path":path}),
+        )];
+        let mut messages = Vec::new();
+        agent
+            .execute_tools_sequential(0, &calls, &mut messages, &|_| {}, &ctx)
+            .await
+            .unwrap();
+        assert!(!path.exists());
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].text().contains("cancelled"));
+    }
+
+    #[tokio::test]
     async fn execute_one_tool_finalize_hook_sees_error_arm() {
         let config = crate::types::AgentConfig {
             finalize_tool_call: Some(std::sync::Arc::new(|name, _result, err| {
@@ -1178,8 +1372,9 @@ mod tests {
         ];
         let mut messages = Vec::new();
         loop_
-            .execute_tools_sequential(0, &calls, &mut messages, &|_| {}, &None)
-            .await;
+            .execute_tools_sequential(0, &calls, &mut messages, &|_| {}, &StreamContext::default())
+            .await
+            .unwrap();
         assert_eq!(messages.len(), 2);
         assert!(messages[0].text().contains("SKILL.md"));
         assert!(messages[1].text().contains("fixture failure"));
@@ -1203,8 +1398,9 @@ mod tests {
         )];
         let mut messages = Vec::new();
         loop_
-            .execute_tools_sequential(0, &calls, &mut messages, &|_| {}, &None)
-            .await;
+            .execute_tools_sequential(0, &calls, &mut messages, &|_| {}, &StreamContext::default())
+            .await
+            .unwrap();
         assert_eq!(messages.len(), 1);
         let annotations = messages[0]
             .metadata
@@ -1232,8 +1428,9 @@ mod tests {
         ];
         let mut messages = Vec::new();
         loop_
-            .execute_tools_sequential(0, &calls, &mut messages, &|_| {}, &None)
-            .await;
+            .execute_tools_sequential(0, &calls, &mut messages, &|_| {}, &StreamContext::default())
+            .await
+            .unwrap();
         assert_eq!(messages.len(), 2);
         assert!(messages[0].text().contains("cancelled"));
         assert!(messages[1].text().contains("cancelled"));
@@ -1257,10 +1454,11 @@ mod tests {
                 &[call],
                 &mut messages,
                 &|event| events.lock().push(event),
-                &None,
+                &StreamContext::default(),
             ),
         )
-        .await;
+        .await
+        .unwrap();
         let persisted = messages[0]
             .metadata
             .as_ref()

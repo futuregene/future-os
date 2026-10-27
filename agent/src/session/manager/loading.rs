@@ -8,6 +8,32 @@ use crate::session::{Session, SessionEntry, ENTRY_TYPE_MODEL_CHANGE, ENTRY_TYPE_
 use anyhow::{anyhow, Context, Result};
 
 impl Manager {
+    /// Frequent state polling needs only counts and lineage. It must not reload
+    /// configuration bodies or walk every historical message header each time.
+    pub(crate) fn state_metadata(&self, id: &str) -> Result<(usize, String)> {
+        let session = id.to_owned();
+        let canonical=self.storage()?.db.read(move |db| {
+            let tx=db.transaction()?;
+            let session=crate::session::identity::BoundIdentity::session(&tx,&session)?;
+            if crate::session::content::format(&tx,&session)?!=crate::session::content::FORMAT_VERSION {return Ok(None);}
+            let parent:Option<String>=tx.query_row("SELECT CASE WHEN json_type(current_metadata_json,'$.parent_session_id')='text' THEN json_extract(current_metadata_json,'$.parent_session_id') END FROM sessions WHERE id=?1 AND revision>=0",[&session],|row|row.get(0))?;
+            let count:i64=tx.query_row("SELECT count(*) FROM entries WHERE session_id=?1 AND entry_type='user'",[&session],|row|row.get(0))?;
+            tx.commit()?;Ok(Some((usize::try_from(count)?,parent.unwrap_or_default())))
+        })?;
+        if let Some(metadata) = canonical {
+            return Ok(metadata);
+        }
+        let session = self.load_metadata(id)?;
+        Ok((
+            session
+                .entries
+                .iter()
+                .filter(|entry| entry.role == "user")
+                .count(),
+            session.parent_session_id,
+        ))
+    }
+
     pub(crate) fn serialize_entry(entry: &SessionEntry) -> Result<String> {
         let value = serde_json::to_value(entry).context("serialize entry")?;
         serde_json::to_string(&crate::session::entry_records::normalize_entry(value))
@@ -38,8 +64,31 @@ impl Manager {
         self.restore_session_times(Self::session_from_entries(id, entries)?)
     }
 
-    /// Runtime metadata and identities only; never opens historical bodies.
+    /// Runtime configuration and identities; no historical message bodies.
     pub(crate) fn load_metadata(&self, id: &str) -> Result<Session> {
+        let store = self.storage()?;
+        if store.storage_format(id)? == crate::session::content::FORMAT_VERSION {
+            let scope = crate::session::content::reader::Snapshot::capture(store, id)?;
+            let mut entries = Vec::new();
+            let mut after = -1;
+            loop {
+                let page = scope.page(store, after)?;
+                if page.is_empty() {
+                    break;
+                }
+                for locator in page {
+                    after = locator.position;
+                    let mut value = scope.header(store, &locator)?;
+                    // Configuration is runtime input (system prompts,
+                    // provenance, account state), not a display placeholder.
+                    if value["type"] == ENTRY_TYPE_SESSION_INFO {
+                        value = scope.entry(store, &locator)?;
+                    }
+                    entries.push(serde_json::from_value(value)?);
+                }
+            }
+            return self.restore_session_times(Self::session_from_entries(id, entries)?);
+        }
         let session_id = id.to_owned();
         let rows = self.storage()?.db.call(move |db| {
             crate::session::history::with_history_index(db, &session_id, |connection| {
@@ -65,7 +114,8 @@ impl Manager {
     ) -> Result<Session> {
         let id = session.id.clone();
         let (created, updated): (Option<i64>, Option<i64>) =
-            self.storage()?.db.call(move |db| {
+            self.storage()?.db.read(move |db| {
+                let id = crate::session::identity::BoundIdentity::session(db, &id)?;
                 Ok(db.query_row(
                     "SELECT created_at_ms,updated_at_ms FROM sessions WHERE id=?1",
                     [id],

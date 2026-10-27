@@ -92,7 +92,7 @@ fn committed_data_survives_reopen_and_failed_transaction_rolls_back() {
 }
 
 #[test]
-fn connection_bounds_wal_growth() {
+fn connection_moves_checkpoints_off_commit_and_retains_the_reuse_limit() {
     let dir = tempfile::tempdir().unwrap();
     let db = Database::open(&dir.path().join("agent.db")).unwrap();
     let settings = db
@@ -105,7 +105,7 @@ fn connection_bounds_wal_growth() {
             ))
         })
         .unwrap();
-    assert_eq!(settings, (1_000, 8 * 1024 * 1024));
+    assert_eq!(settings, (0, 8 * 1024 * 1024));
 }
 
 #[test]

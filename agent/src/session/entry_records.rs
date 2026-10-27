@@ -113,6 +113,9 @@ pub(crate) fn insert_entry_record(
     position: i64,
     value: &Value,
 ) -> Result<()> {
+    let stored_session = crate::session::identity::session_key(db, session)?;
+    let segmented =
+        crate::session::content::format(db, session)? == crate::session::content::FORMAT_VERSION;
     let mut metadata = value
         .as_object()
         .cloned()
@@ -197,13 +200,19 @@ pub(crate) fn insert_entry_record(
                 "UPDATE sessions SET created_at_ms=CASE WHEN created_at_ms IS NULL THEN ?2 \
                  ELSE min(created_at_ms,?2) END,{stamp} WHERE id=?1"
             ),
-            params![session, timestamp_ms],
+            params![&stored_session, timestamp_ms],
         )?;
     }
     if kind == "session_info" {
+        if segmented {
+            crate::session::content::metadata::validate_thin(
+                content.as_ref().unwrap_or(&Value::Null),
+            )?;
+            crate::session::content::metadata::advance_generation(db, session)?;
+        }
         db.execute(
             "UPDATE sessions SET current_metadata_json=?2 WHERE id=?1",
-            params![session, content.as_ref().map(Value::to_string)],
+            params![&stored_session, content.as_ref().map(Value::to_string)],
         )?;
     }
     if kind == "model_change" {
@@ -212,12 +221,26 @@ pub(crate) fn insert_entry_record(
             .and_then(|c| c.get("model"))
             .and_then(Value::as_str)
         {
-            db.execute("UPDATE sessions SET current_metadata_json=json_set(COALESCE(current_metadata_json,'{}'),'$.model',?2) WHERE id=?1",params![session,model])?;
-            db.execute("UPDATE history_shapes SET payload=json_set(payload,'$.content.model',?2) WHERE session_id=?1 AND position IN (SELECT position FROM entries WHERE session_id=?1 AND entry_type='session_info')",params![session,model])?;
+            if segmented {
+                crate::session::content::metadata::validate_model(model)?;
+                crate::session::content::metadata::advance_generation(db, session)?;
+            }
+            db.execute("UPDATE sessions SET current_metadata_json=json_set(COALESCE(current_metadata_json,'{}'),'$.model',?2) WHERE id=?1",params![&stored_session,model])?;
+            db.execute("UPDATE history_shapes SET payload=json_set(payload,'$.content.model',?2) WHERE session_id=?1 AND position IN (SELECT position FROM entries WHERE session_id=?1 AND entry_type='session_info')",params![&stored_session,model])?;
         }
     }
+    let stored_id = super::identity::BoundIdentity::entry(
+        db,
+        session,
+        id.as_str()
+            .ok_or_else(|| anyhow!("entry identity is not a string"))?,
+    )?;
+    let stored_run = run_id
+        .as_deref()
+        .map(|id| super::identity::BoundIdentity::run(db, session, id))
+        .transpose()?;
     db.execute("INSERT INTO entries(session_id,position,entry_id,entry_type,role,run_id,timestamp_ms,metadata_json,content_json) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-        params![session,position,id.as_str(),kind.as_str(),role.as_ref().and_then(Value::as_str),run_id,timestamp_ms,
+        params![&stored_session,position,stored_id,kind.as_str(),role.as_ref().and_then(Value::as_str),stored_run,timestamp_ms,
             Value::Object(metadata.clone()).to_string(),content.as_ref().filter(|_| blocks.is_none() && kind != "session_info").map(Value::to_string)])?;
     if let Some(blocks) = blocks {
         for (ordinal, block) in blocks.iter().enumerate() {
@@ -232,7 +255,7 @@ pub(crate) fn insert_entry_record(
             } else {
                 "text"
             };
-            let text = extra
+            let mut text = extra
                 .get(text_key)
                 .and_then(Value::as_str)
                 .map(str::to_owned);
@@ -260,7 +283,7 @@ pub(crate) fn insert_entry_record(
             if name.is_some() {
                 extra.remove("name");
             }
-            let args = if block_kind == Some("tool_call") {
+            let mut args = if block_kind == Some("tool_call") {
                 extra.remove("args")
             } else {
                 None
@@ -273,14 +296,42 @@ pub(crate) fn insert_entry_record(
             if error.is_some() {
                 extra.remove("is_error");
             }
+            // Prepared new-format headers carry no body. The scoped reference
+            // is authoritative; retain NULL in legacy columns for the read view.
+            let field = format!("/content/{ordinal}/{text_key}");
+            if segmented
+                && crate::session::content::resolve(
+                    db,
+                    session,
+                    "entry",
+                    id.as_str().unwrap_or_default(),
+                    &field,
+                )?
+                .is_some()
+            {
+                text = None;
+            }
+            let field = format!("/content/{ordinal}/args");
+            if segmented
+                && crate::session::content::resolve(
+                    db,
+                    session,
+                    "entry",
+                    id.as_str().unwrap_or_default(),
+                    &field,
+                )?
+                .is_some()
+            {
+                args = None;
+            }
             db.execute("INSERT INTO message_blocks(session_id,entry_position,ordinal,kind,text,tool_call_id,tool_name,arguments_json,is_error,metadata_json) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-                params![session,position,ordinal as i64,block_kind,text,call.as_ref().and_then(Value::as_str),name.as_ref().and_then(Value::as_str),args.map(|v|v.to_string()),error.as_ref().and_then(Value::as_bool),
+                params![&stored_session,position,ordinal as i64,block_kind,text,call.as_ref().and_then(Value::as_str),name.as_ref().and_then(Value::as_str),args.map(|v|v.to_string()),error.as_ref().and_then(Value::as_bool),
                 if block.is_object() { Value::Object(extra).to_string() } else { block.to_string() }])?;
         }
         // Distinguish an explicitly empty block array from absent content.
         db.execute(
             "UPDATE entries SET content_json='[]' WHERE session_id=?1 AND position=?2",
-            params![session, position],
+            params![&stored_session, position],
         )?;
     }
     Ok(())
@@ -290,7 +341,7 @@ pub(crate) const ENTRY_RECORD_VIEWS_SQL: &str = "
 DROP VIEW IF EXISTS entry_records;
 DROP VIEW IF EXISTS block_records;
 CREATE VIEW block_records AS
-WITH b0 AS (SELECT *,CASE WHEN kind IS NULL THEN metadata_json ELSE json_set(metadata_json,'$.' || 'type',kind) END AS j0 FROM message_blocks),
+WITH b0 AS (SELECT *,CASE WHEN kind IS NULL THEN metadata_json ELSE json_set(metadata_json,'$.' || 'type',kind) END AS j0 FROM resolved_message_blocks),
 b1 AS (SELECT *,CASE WHEN text IS NULL THEN j0 ELSE json_set(j0,'$.' || CASE WHEN kind='tool_result' THEN 'content' ELSE 'text' END,text) END AS j1 FROM b0),
 b2 AS (SELECT *,CASE WHEN tool_call_id IS NULL THEN j1 ELSE json_set(j1,'$.' || CASE WHEN kind='tool_result' THEN 'tool_call_id' ELSE 'id' END,tool_call_id) END AS j2 FROM b1),
 b3 AS (SELECT *,CASE WHEN tool_name IS NULL THEN j2 ELSE json_set(j2,'$.' || 'name',tool_name) END AS j3 FROM b2),
@@ -304,15 +355,47 @@ WITH headers AS (
  SELECT *,CASE WHEN role IS NULL THEN header ELSE json_set(header,'$.role',role) END AS with_role FROM headers
 ), ownership AS (
  SELECT *,CASE WHEN run_id IS NULL OR entry_type IN ('run_started','run_terminal') THEN with_role ELSE json_set(with_role,'$.meta.run_id',run_id) END AS envelope FROM roles
-)
+), assembled AS (
 SELECT e.session_id,e.position,e.entry_id,e.entry_type,
 CASE WHEN e.entry_type='session_info' THEN json_set(envelope,'$.content',json((SELECT current_metadata_json FROM sessions WHERE id=e.session_id)))
  WHEN e.content_json IS NULL THEN envelope ELSE json_set(envelope,'$.content',json(
  CASE WHEN e.content_json='[]' THEN COALESCE((SELECT json_group_array(json(payload)) FROM
  (SELECT payload FROM block_records b WHERE b.session_id=e.session_id AND b.entry_position=e.position ORDER BY ordinal)),'[]')
  ELSE e.content_json END)) END AS payload
-FROM ownership e;
+FROM ownership e
+)
+SELECT a.session_id,a.position,a.entry_id,a.entry_type,
+CASE WHEN EXISTS(SELECT 1 FROM content_references r WHERE r.session_id=a.session_id AND r.owner_kind='entry' AND r.owner_id=a.entry_id
+ AND NOT EXISTS(SELECT 1 FROM message_blocks b WHERE b.session_id=a.session_id AND b.entry_position=a.position AND r.field LIKE printf('/content/%d/%%',b.ordinal)))
+THEN future_restore_content_json(a.payload,(SELECT json_group_array(json_object('field',r.field,'encoding',r.encoding,'body',r.body))
+ FROM resolved_content_references r WHERE r.session_id=a.session_id AND r.owner_kind='entry' AND r.owner_id=a.entry_id
+ AND NOT EXISTS(SELECT 1 FROM message_blocks b WHERE b.session_id=a.session_id AND b.entry_position=a.position AND r.field LIKE printf('/content/%d/%%',b.ordinal))))
+ELSE a.payload END AS payload
+FROM assembled a;
 ";
+
+/// Keep public envelope identities textual even when authoritative keys use
+/// UUID bytes. Legacy TEXT is returned exactly as it was originally stored.
+pub(super) fn render_id_expressions(sql: &str) -> String {
+    sql.replace(
+        "json_set(metadata_json,'$.id',entry_id,",
+        &format!(
+            "json_set(metadata_json,'$.id',{},",
+            super::identity::inspection_expression("entry_id")
+        ),
+    )
+    .replace(
+        "json_set(with_role,'$.meta.run_id',run_id)",
+        &format!(
+            "json_set(with_role,'$.meta.run_id',{})",
+            super::identity::inspection_expression("run_id")
+        ),
+    )
+}
+
+pub(crate) fn entry_record_views_sql() -> String {
+    render_id_expressions(ENTRY_RECORD_VIEWS_SQL)
+}
 
 #[cfg(test)]
 mod tests {
@@ -390,6 +473,7 @@ mod tests {
         store
             .db
             .call(move |db| {
+                let id = super::super::identity::session_key(db, &id)?;
                 Ok(db.query_row(
                     "SELECT updated_at_ms FROM sessions WHERE id=?1",
                     [id],
@@ -440,6 +524,42 @@ mod tests {
             )
             .unwrap();
         assert_eq!(activity_stamp(&store, "s"), at("2026-01-06T00:00:00Z"));
+    }
+
+    #[test]
+    fn native_uuid_metadata_refresh_preserves_message_activity_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            super::super::sqlite_store::SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+        let session = uuid::Uuid::new_v4().to_string();
+        store.reserve_segmented(&session).unwrap();
+        store
+            .replace(
+                &session,
+                vec![json!({
+                    "id":uuid::Uuid::new_v4().to_string(),"type":"session_info",
+                    "timestamp":"2026-01-01T00:00:00Z","content":{"model":"mock"}
+                })],
+            )
+            .unwrap();
+        store
+            .append(
+                &session,
+                vec![json!({
+                    "id":uuid::Uuid::new_v4().to_string(),"type":"user","role":"user",
+                    "timestamp":"2026-01-02T00:00:00Z","content":"message"
+                })],
+            )
+            .unwrap();
+        let message_stamp = at("2026-01-02T00:00:00Z");
+        assert_eq!(activity_stamp(&store, &session), message_stamp);
+        store
+            .patch_segmented_metadata(
+                &session,
+                serde_json::from_value(json!({"session_name":"renamed"})).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(activity_stamp(&store, &session), message_stamp);
     }
 
     /// A session whose only entry is its creation snapshot still needs a

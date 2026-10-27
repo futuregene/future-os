@@ -233,6 +233,9 @@ export function useThreadMessages({
         targetThreadId,
         activeRunRef.current.runId,
         activeRunRef.current.startedAt,
+        null,
+        undefined,
+        () => aliveRef.current && request === tailRequestRef.current && sourceRef.current.sourceRevision === source.sourceRevision,
       );
       if (!aliveRef.current || request !== tailRequestRef.current || sourceRef.current.sourceRevision !== source.sourceRevision)
         return;
@@ -305,7 +308,8 @@ export function useThreadMessages({
           null,
           null,
           before,
-          ...(historyStatusRef.current?.sourceKey ? [historyStatusRef.current.sourceKey] as [string] : []),
+          historyStatusRef.current?.sourceKey,
+          () => aliveRef.current && epoch === historyEpochRef.current && sourceRef.current.sourceRevision === source.sourceRevision,
         );
         if (epoch !== historyEpochRef.current)
           return;

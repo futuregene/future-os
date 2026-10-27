@@ -8,6 +8,7 @@ export type {
   StreamRetryState,
 } from "./model";
 export type { RunEvent, SessionEntry } from "./events";
+export { copyEventPayload, eventPayload, hasEventPayload, withEventPayload } from "./eventPayload";
 export type {
   AssistantRunProjection,
   RunProjector,
@@ -75,4 +76,9 @@ export type {
 export { HISTORY_PAGE_USER_EXCHANGES, HISTORY_TAIL_CURSOR } from "./historyPage";
 
 export { shellResult } from "./shellResult";
+export { decodeJsonBytes, parseJsonText } from "./cooperativeJson";
+export type { JsonDecodeOptions } from "./cooperativeJson";
 export type { ShellResult, ShellAttempt, ShellStatus } from "./shellResult";
+export { readContentPages, readContentField, needsContentHydration, hydrateRequiredContent } from "./contentBody";
+export type { ContentRequest, ContentPage, ContentReader } from "./contentBody";
+export { createContentEventLane } from "./contentBody";

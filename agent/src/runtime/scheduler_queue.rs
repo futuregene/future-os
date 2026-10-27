@@ -617,6 +617,11 @@ impl InMemoryRunQueue {
         self.state.lock().active.clone()
     }
 
+    pub fn has_pending(&self) -> bool {
+        let state = self.state.lock();
+        state.active.is_some() || !state.queued.is_empty()
+    }
+
     pub fn release_active_payload(&self, run_id: &str) {
         let mut state = self.state.lock();
         if let Some((active, _)) = state

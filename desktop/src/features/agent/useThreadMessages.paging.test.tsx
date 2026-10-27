@@ -66,7 +66,7 @@ describe("on-demand history", () => {
     expect(current.historyStatus).toEqual(recovered);
     page.mockResolvedValueOnce({ ...history(["u1"], 0, false), history: recovered });
     await act(async () => current.loadOlderHistory());
-    expect(page).toHaveBeenLastCalledWith("synthetic", 10, 10, recovered.sourceKey);
+    expect(page).toHaveBeenLastCalledWith("synthetic", 10, 10, recovered.sourceKey, expect.any(Function));
     expect(current.messages.map(message => message.content)).toEqual(["u1", "u2"]);
     act(() => root.unmount());
   });
@@ -306,7 +306,7 @@ describe("on-demand history", () => {
     await act(async () => {
       await current.loadOlderHistory();
     });
-    expect(page).toHaveBeenLastCalledWith("synthetic", 10);
+    expect(page).toHaveBeenLastCalledWith("synthetic", 10, 10, undefined, expect.any(Function));
     expect(current.messages.map(message => message.content)).toEqual([
       "u1",
       "u2",
@@ -325,7 +325,7 @@ describe("on-demand history", () => {
       root.render(<Harness />);
     });
     expect(page).toHaveBeenCalledTimes(1);
-    expect(page).toHaveBeenLastCalledWith("synthetic", null);
+    expect(page).toHaveBeenLastCalledWith("synthetic", null, 10, undefined, expect.any(Function));
     expect(current.messages.map(message => message.content)).toEqual([
       "u3",
       "u4",
@@ -344,7 +344,7 @@ describe("on-demand history", () => {
       await older;
     });
     expect(page).toHaveBeenCalledTimes(2);
-    expect(page).toHaveBeenLastCalledWith("synthetic", 20);
+    expect(page).toHaveBeenLastCalledWith("synthetic", 20, 10, undefined, expect.any(Function));
     expect(current.messages.map(message => message.content)).toEqual([
       "u1",
       "u2",
@@ -386,7 +386,7 @@ describe("on-demand history", () => {
     await act(async () => {
       await current.loadOlderHistory();
     });
-    expect(page).toHaveBeenLastCalledWith("synthetic", 20);
+    expect(page).toHaveBeenLastCalledWith("synthetic", 20, 10, undefined, expect.any(Function));
     expect(current.messages.map(message => message.content)).toEqual([
       "u2",
       "u3",

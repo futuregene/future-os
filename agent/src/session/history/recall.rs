@@ -1,4 +1,5 @@
 //! Bounded, session-scoped reads of original journal text (not display/summary projections).
+use crate::session::identity::BoundIdentity;
 use crate::session::Manager;
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -12,7 +13,13 @@ pub const HISTORY_MAX_MATCHES: i64 = 20;
 pub const HISTORY_DEFAULT_SESSIONS: i64 = 50;
 pub const HISTORY_MAX_SESSIONS: i64 = 500;
 
-type EntryMetadata = (i64, String, Option<String>, Option<String>, Option<i64>);
+type EntryMetadata = (
+    i64,
+    String,
+    Option<String>,
+    Option<BoundIdentity>,
+    Option<i64>,
+);
 
 /// SQLite slices the snippet with `substr(CAST(body AS BLOB), ...)`, which is a
 /// *byte* window and therefore can begin or end inside a multi-byte character.
@@ -35,9 +42,10 @@ fn trim_partial_characters(bytes: &[u8]) -> &[u8] {
 }
 
 fn require_session(db: &Connection, session: &str) -> Result<()> {
+    let stored_session = crate::session::identity::session_key(db, session)?;
     let exists: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1 AND revision>=0) AND NOT EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='skipped')",
-        [session], |row| row.get(0),
+        [&stored_session], |row| row.get(0),
     )?;
     if !exists {
         bail!("session not found or history unavailable");
@@ -72,11 +80,12 @@ fn search_session_matches(
     query: &str,
     limit: i64,
 ) -> Result<Vec<Value>> {
+    let session = BoundIdentity::session(db, session)?;
     let mut stmt = db.prepare(
         "WITH hits AS (
             SELECT e.entry_id,e.position,e.role,e.run_id,e.timestamp_ms,b.ordinal,b.kind,b.tool_call_id,b.tool_name,
             coalesce(CASE WHEN b.kind='tool_call' THEN b.arguments_json ELSE b.text END,'') AS body
-            FROM entries e JOIN message_blocks b ON b.session_id=e.session_id AND b.entry_position=e.position
+            FROM entries e JOIN resolved_message_blocks b ON b.session_id=e.session_id AND b.entry_position=e.position
             WHERE e.session_id=?1 AND e.entry_type IN ('user','assistant','tool')
             AND b.kind IN ('text','tool_call','tool_result')
         ), matches AS (
@@ -86,17 +95,17 @@ fn search_session_matches(
             substr(CAST(body AS BLOB),max(1,hit-120),480),
             (hit-1) +
             COALESCE((SELECT sum(length(CAST(CASE WHEN prior.kind='tool_call' THEN prior.arguments_json ELSE prior.text END AS BLOB)))
-                FROM message_blocks prior WHERE prior.session_id=?1 AND prior.entry_position=matches.position
+                FROM resolved_message_blocks prior WHERE prior.session_id=?1 AND prior.entry_position=matches.position
                 AND prior.ordinal<matches.ordinal AND prior.kind IN ('text','tool_call','tool_result')),0)
         FROM matches WHERE hit>0 ORDER BY position DESC,ordinal LIMIT ?3"
     )?;
     let mut rows = stmt.query(params![session, query, limit + 1])?;
     let mut matches = Vec::new();
     while let Some(row) = rows.next()? {
-        let snippet = row.get::<_, Vec<u8>>(9)?;
+        let snippet = row.get::<_, Option<Vec<u8>>>(9)?.unwrap_or_default();
         matches.push(json!({
-            "entryId":row.get::<_,String>(0)?,"entryPosition":row.get::<_,i64>(1)?,
-            "role":row.get::<_,Option<String>>(2)?,"runId":row.get::<_,Option<String>>(3)?,
+            "entryId":row.get::<_,BoundIdentity>(0)?,"entryPosition":row.get::<_,i64>(1)?,
+            "role":row.get::<_,Option<String>>(2)?,"runId":row.get::<_,Option<BoundIdentity>>(3)?,
             "timestampMs":row.get::<_,Option<i64>>(4)?,"blockIndex":row.get::<_,i64>(5)?,
             "kind":row.get::<_,String>(6)?,"toolCallId":row.get::<_,Option<String>>(7)?,
             "toolName":row.get::<_,Option<String>>(8)?,
@@ -117,8 +126,18 @@ impl Manager {
             bail!("sessionId and nonempty query are required");
         }
         let query = validate_history_query(query, limit)?;
+        let store = self.storage()?;
+        if store.storage_format(session)? == crate::session::content::FORMAT_VERSION {
+            let mut matches =
+                crate::session::content::reader::Snapshot::search(store, session, &query, limit)?;
+            let has_more = matches.len() > limit as usize;
+            matches.truncate(limit as usize);
+            return Ok(
+                json!({"sessionId":session,"query":query,"matches":matches,"hasMore":has_more}),
+            );
+        }
         let (session, query) = (session.to_owned(), query);
-        self.storage()?.db.call(move |db| {
+        self.storage()?.db.read(move |db| {
             let tx = db.transaction()?;
             require_session(&tx, &session)?;
             let mut matches = search_session_matches(&tx, &session, &query, limit)?;
@@ -146,53 +165,60 @@ impl Manager {
         if !(1..=HISTORY_MAX_SESSIONS).contains(&max_sessions) {
             bail!("session scan bound must be between 1 and {HISTORY_MAX_SESSIONS}");
         }
-        self.storage()?.db.call(move |db| {
-            let tx = db.transaction()?;
-            // One row beyond the cap: its presence is how we know older
-            // sessions were left out, without a second COUNT query.
-            let mut stmt = tx.prepare(
-                "SELECT s.id, s.title FROM sessions s
-                 WHERE s.revision>=0
-                 AND NOT EXISTS(SELECT 1 FROM legacy_imports li WHERE li.session_id=s.id AND li.status='skipped')
-                 ORDER BY s.updated_at_ms DESC, s.id DESC LIMIT ?1",
-            )?;
-            let mut sessions: Vec<(String, Option<String>)> = stmt
-                .query_map([max_sessions + 1], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect::<rusqlite::Result<_>>()?;
-            let truncated = sessions.len() as i64 > max_sessions;
-            sessions.truncate(max_sessions as usize);
-
-            let mut matches = Vec::new();
-            let mut any_session_more = false;
-            for (session, title) in &sessions {
-                let mut found = search_session_matches(&tx, session, &query, limit)?;
-                if found.len() > limit as usize {
-                    any_session_more = true;
-                    found.truncate(limit as usize);
-                }
-                for entry in found.iter_mut() {
-                    if let Value::Object(fields) = entry {
-                        fields.insert("sessionId".into(), Value::String(session.clone()));
-                        if let Some(title) = title {
-                            fields.insert("sessionName".into(), Value::String(title.clone()));
-                        }
-                    }
-                }
-                matches.append(&mut found);
+        let store = self.storage()?;
+        let mut sessions: Vec<(String, Option<String>, i64)> = store.db.read(move |db| {
+            let mut stmt=db.prepare("SELECT s.id,s.title,coalesce(f.format,1) FROM sessions s
+                LEFT JOIN session_formats f ON f.session_id=s.id
+                WHERE s.revision>=0 AND NOT EXISTS(SELECT 1 FROM legacy_imports li WHERE li.session_id=s.id AND li.status='skipped')
+                ORDER BY s.updated_at_ms DESC,s.id DESC LIMIT ?1")?;
+            let rows=stmt.query_map([max_sessions+1],|row|Ok((row.get::<_,BoundIdentity>(0)?.to_string(),row.get(1)?,row.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
+            Ok(rows)
+        })?;
+        let truncated = sessions.len() as i64 > max_sessions;
+        sessions.truncate(max_sessions as usize);
+        let mut matches = Vec::new();
+        let mut any_session_more = false;
+        for (session, title, format) in &sessions {
+            let mut found = if *format == crate::session::content::FORMAT_VERSION {
+                crate::session::content::reader::Snapshot::search(store, session, &query, limit)?
+            } else {
+                let (session, query) = (session.clone(), query.clone());
+                store.db.read(move |db| {
+                    let tx = db.transaction()?;
+                    require_session(&tx, &session)?;
+                    let rows = search_session_matches(&tx, &session, &query, limit)?;
+                    tx.commit()?;
+                    Ok(rows)
+                })?
+            };
+            if found.len() > limit as usize {
+                any_session_more = true;
+                found.truncate(limit as usize);
             }
-            // Stable sort: entries with no timestamp keep the per-session
-            // newest-first order they were collected in.
+            for entry in &mut found {
+                entry["sessionId"] = json!(session);
+                if let Some(title) = title {
+                    entry["sessionName"] = json!(title);
+                }
+            }
+            matches.append(&mut found);
+            // Keep only the best candidates between sessions. Stable ties
+            // preserve newest-session/entry order without growing limit*N RAM.
             matches.sort_by(|a, b| {
-                let ts = |value: &Value| value["timestampMs"].as_i64().unwrap_or(0);
-                ts(b).cmp(&ts(a))
+                b["timestampMs"]
+                    .as_i64()
+                    .unwrap_or(0)
+                    .cmp(&a["timestampMs"].as_i64().unwrap_or(0))
             });
-            let has_more = any_session_more || matches.len() > limit as usize;
-            matches.truncate(limit as usize);
-            Ok(json!({
-                "query":query,"matches":matches,"hasMore":has_more,
-                "scannedSessions":sessions.len(),"truncated":truncated
-            }))
-        })
+            if matches.len() > limit as usize {
+                any_session_more = true;
+                matches.truncate(limit as usize);
+            }
+        }
+        Ok(
+            json!({"query":query,"matches":matches,"hasMore":any_session_more,
+            "scannedSessions":sessions.len(),"truncated":truncated}),
+        )
     }
 
     /// Read an indexed entry without hydrating the session. SQLite slices the
@@ -212,8 +238,14 @@ impl Manager {
         if offset < 0 || !(4..=HISTORY_MAX_BYTES).contains(&limit) {
             bail!("offset must be nonnegative; read limit must be between 4 and {HISTORY_MAX_BYTES} UTF-8 bytes");
         }
+        let store = self.storage()?;
+        if store.storage_format(session)? == crate::session::content::FORMAT_VERSION {
+            return crate::session::content::reader::Snapshot::recall(
+                store, session, entry, offset, limit,
+            );
+        }
         let (session, entry) = (session.to_owned(), entry.to_owned());
-        self.storage()?.db.call(move |db| {
+        store.db.read(move |db| {
             let tx = db.transaction()?;
             require_session(&tx,&session)?;
             let meta: Option<EntryMetadata> = tx.query_row(
@@ -222,12 +254,12 @@ impl Manager {
             ).optional()?;
             let (position,kind,role,run,time) = meta.context("entry not found in this session's conversation history")?;
             let total: i64 = tx.query_row(
-                "SELECT coalesce(sum(length(CAST(CASE WHEN kind='tool_call' THEN arguments_json ELSE text END AS BLOB))),0) FROM message_blocks WHERE session_id=?1 AND entry_position=?2 AND kind IN ('text','tool_call','tool_result')",
+                "SELECT coalesce(sum(length(CAST(CASE WHEN kind='tool_call' THEN arguments_json ELSE text END AS BLOB))),0) FROM resolved_message_blocks WHERE session_id=?1 AND entry_position=?2 AND kind IN ('text','tool_call','tool_result')",
                 params![session,position], |r| r.get(0),
             )?;
             if offset > total { bail!("offset is beyond the entry's {total} readable bytes"); }
             let mut stmt = tx.prepare(
-                "SELECT ordinal,kind,tool_call_id,tool_name,is_error,length(CAST(CASE WHEN kind='tool_call' THEN arguments_json ELSE text END AS BLOB)) FROM message_blocks WHERE session_id=?1 AND entry_position=?2 AND kind IN ('text','tool_call','tool_result') ORDER BY ordinal"
+                "SELECT ordinal,kind,tool_call_id,tool_name,is_error,length(CAST(CASE WHEN kind='tool_call' THEN arguments_json ELSE text END AS BLOB)) FROM resolved_message_blocks WHERE session_id=?1 AND entry_position=?2 AND kind IN ('text','tool_call','tool_result') ORDER BY ordinal"
             )?;
             let mut rows = stmt.query(params![session,position])?;
             let mut base = 0_i64;
@@ -242,7 +274,7 @@ impl Manager {
                 let remaining = limit-consumed;
                 if remaining == 0 { break; }
                 let bytes: Vec<u8> = tx.query_row(
-                    "SELECT substr(CAST(CASE WHEN kind='tool_call' THEN arguments_json ELSE text END AS BLOB),?4+1,?5) FROM message_blocks WHERE session_id=?1 AND entry_position=?2 AND ordinal=?3",
+                    "SELECT substr(CAST(CASE WHEN kind='tool_call' THEN arguments_json ELSE text END AS BLOB),?4+1,?5) FROM resolved_message_blocks WHERE session_id=?1 AND entry_position=?2 AND ordinal=?3",
                     params![session,position,ordinal,start,remaining], |r| r.get(0),
                 )?;
                 let text = match std::str::from_utf8(&bytes) {
@@ -261,7 +293,7 @@ impl Manager {
             }
             let next=offset+consumed;
             if next<total && consumed==0 { bail!("offset must be on a UTF-8 character boundary"); }
-            let omitted: Vec<String> = tx.prepare("SELECT DISTINCT kind FROM message_blocks WHERE session_id=?1 AND entry_position=?2 AND kind NOT IN ('text','tool_call','tool_result') ORDER BY kind")?
+            let omitted: Vec<String> = tx.prepare("SELECT DISTINCT kind FROM resolved_message_blocks WHERE session_id=?1 AND entry_position=?2 AND kind NOT IN ('text','tool_call','tool_result') ORDER BY kind")?
                 .query_map(params![session,position],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
             Ok(json!({"sessionId":session,"entryId":entry,"entryPosition":position,"entryType":kind,
                 "role":role,"runId":run,"timestampMs":time,"offset":offset,"maxBytes":limit,

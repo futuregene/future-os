@@ -920,9 +920,6 @@ The GUI database (`~/.future/app/app.db`) holds these business-object tables:
 - `review_file_changes`
 - `review_snapshots`
 - `artifacts`
-- `workspace_files`
-- `reference_targets`
-- `object_references`
 - `app_settings` (app-level settings key-value table; absent keys take these
   defaults — `packages/app-settings/src/lib.rs`): `approval_tier` (`off`
   default / `manual` / `sandbox` / `auto`; unknown values clamp to `off`),

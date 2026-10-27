@@ -8,13 +8,11 @@
 //!   payload bytes, the largest run and the durable reclaim/skip counters.
 //!   Before this existed, "no reclamation happened" was a silent `Ok(0)` and the
 //!   only way to notice was to count rows in `run_events` by hand.
-//! * **how does a database that already grew recover?** Two entries, on purpose:
-//!   [`SqliteStore::catch_up_settled_journals`] is the bounded startup sweep —
-//!   the few runs a crash, a stop or an older build left behind — and
-//!   [`SqliteStore::reclaim_settled_journals`] is the explicit, larger one an
-//!   operator asks for. Neither runs on a timer and neither runs on a request
-//!   path: the startup one is queued to the compactor thread and logged, the
-//!   explicit one is only ever a maintenance RPC.
+//! * **how do I explicitly reclaim an old raw journal?**
+//!   [`SqliteStore::reclaim_settled_journals`] retains the operator-invoked,
+//!   resumable legacy command. Normal startup/completion never schedules it.
+//!   Canonical conversations are excluded; upgrades never sweep old bodies.
+
 use super::journal_compaction::{bump_meta, delete_raw_rows, RETIRE_CHUNK_ROWS};
 use super::sqlite_store::SqliteStore;
 use anyhow::Result;
@@ -34,10 +32,12 @@ const SWEEP_BATCH_RUNS: i64 = 64;
 /// handles the normal case, so this only mops up what a crash or a stop left
 /// behind; a bound keeps a large backlog from turning startup into a long
 /// maintenance job. Whatever it does not reach, the next start takes.
+#[cfg(test)]
 pub(crate) const CATCH_UP_MAX_RUNS: usize = 16;
 /// How long one startup catch-up may hold the shared SQLite worker. Both bounds
 /// apply: the run count caps the plan, this caps the time, and the smaller one
 /// wins.
+#[cfg(test)]
 pub(crate) const CATCH_UP_BUDGET: Duration = Duration::from_secs(10);
 
 /// The settled statuses whose journal can never be appended to again.
@@ -47,6 +47,7 @@ const SETTLED: &str = "('completed','failed','cancelled','interrupted')";
 /// logged once because "it did nothing" and "it never ran" look identical in a
 /// database that stops shrinking — that ambiguity is what let 135 settled runs
 /// sit unreclaimed.
+#[cfg(test)]
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct CatchUpReport {
     /// Candidates actually attempted (folds plus refusals).
@@ -65,6 +66,7 @@ pub(crate) struct CatchUpReport {
     pub elapsed: Duration,
 }
 
+#[cfg(test)]
 impl CatchUpReport {
     /// One line, whatever the outcome: how many were folded, how many were kept
     /// and why, and how long it took. `folded: 0` with a non-empty `refused`
@@ -236,8 +238,9 @@ impl SqliteStore {
     /// left is the next start's work, and the explicit sweep remains for a
     /// backlog too large to grind through a few starts.
     ///
-    /// Never runs on a request path: the Agent queues this to the compactor
-    /// thread at startup, so it competes with nothing but the store's own reads.
+    /// Compatibility-only helper for the legacy maintenance tests. Production
+    /// startup never queues this pass or scans historical journals.
+    #[cfg(test)]
     pub(crate) fn catch_up_settled_journals(
         &self,
         max_runs: usize,

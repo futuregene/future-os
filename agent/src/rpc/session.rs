@@ -109,6 +109,8 @@ pub struct ServerSession {
     /// is asynchronous, so the session itself must reject duplicate requests
     /// until the accepted operation reaches a terminal lifecycle event.
     pub compaction_in_progress: Arc<std::sync::atomic::AtomicBool>,
+    /// Blocks new prompt/maintenance admission while a reset is planned and published.
+    pub history_reset_in_progress: Arc<std::sync::atomic::AtomicBool>,
     /// Last accepted manual-compaction request and its stable operation id.
     /// Retrying the same RPC request id returns the original acknowledgement
     /// instead of starting a second summary operation.
@@ -153,7 +155,8 @@ pub struct ServerSession {
     /// receives a clone of the receiver.  Private per-session so events for
     /// one session never leak to another.
     pub broadcaster: Arc<SseBroadcaster>,
-    /// When true, the session is never persisted to disk.
+    /// When true, subsequent conversation bodies/events stay in memory. The
+    /// storage mode must be selected before any prompt is admitted.
     pub ephemeral: bool,
     /// Cumulative token counters (Arc<AtomicI64> — read lock-free without agent_loop lock)
     pub tokens_in: Arc<std::sync::atomic::AtomicI64>,
@@ -299,6 +302,7 @@ impl ServerSession {
             custom_system_prompt: String::new(),
             append_system_prompt: String::new(),
             compaction_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            history_reset_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             compaction_request: Arc::new(parking_lot::Mutex::new(None)),
             session_manager: manager,
             persistence,
@@ -920,10 +924,7 @@ impl ServerSession {
     }
 
     pub fn compact(&self, instructions: &str) -> Result<serde_json::Value> {
-        self.compact_with_operation_id(
-            instructions,
-            format!("cmp_{}", crate::utils::generate_entry_id()),
-        )
+        self.compact_with_operation_id(instructions, crate::utils::generate_entry_id())
     }
 
     /// Manual compaction. Runs on a plain thread (the RPC worker or a test), so a
@@ -1424,8 +1425,25 @@ impl ServerSession {
         }
     }
 
-    pub fn set_ephemeral(&mut self, ephemeral: bool) {
+    pub fn set_ephemeral(&mut self, ephemeral: bool) -> Result<()> {
+        if self.ephemeral == ephemeral {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            self.runtime.snapshot().is_none()
+                && !self.runtime.has_owned_task()
+                && !self.scheduler.has_pending()
+                && !self.broadcaster.has_started_run(),
+            "persistence mode must be selected before a prompt is admitted"
+        );
+        if ephemeral {
+            self.broadcaster.use_memory_journal()?;
+        } else {
+            self.broadcaster
+                .configure_journal(self.session_id.clone(), &self.session_manager)?;
+        }
         self.ephemeral = ephemeral;
+        Ok(())
     }
 
     pub fn execute_shell(
@@ -1600,6 +1618,7 @@ impl ServerSession {
             "queuedBytes": self.scheduler.queued_bytes(),
             "eventJournalHealthy": self.broadcaster.persistence_error().is_none(),
             "eventJournalError": self.broadcaster.persistence_error(),
+            "eventJournal": self.broadcaster.journal_metrics(),
         })
     }
 
@@ -2196,14 +2215,26 @@ mod tests {
     // ─── Helper to build a test session ─────────────────────────────────────
 
     fn make_test_session(id: &str) -> ServerSession {
+        make_test_session_with_format(id, false)
+    }
+
+    fn make_legacy_test_session(id: &str) -> ServerSession {
+        make_test_session_with_format(id, true)
+    }
+
+    fn make_test_session_with_format(id: &str, legacy: bool) -> ServerSession {
         let cwd = test_workspace();
+        let manager = Arc::new(Manager::new(test_session_dir()));
+        if legacy {
+            manager.storage().unwrap().bind_legacy_events(id).unwrap();
+        }
         ServerSession::new(
             id.to_string(),
             Arc::new(tokio::sync::RwLock::new(Loop::new(
                 Arc::new(EmptyProvider),
                 "mock",
             ))),
-            Arc::new(Manager::new(test_session_dir())),
+            manager,
             &cwd,
             Arc::new(SseBroadcaster::new()),
             ApprovalGate::default(),
@@ -2212,15 +2243,23 @@ mod tests {
     }
 
     fn make_persistent_test_session(id: &str) -> ServerSession {
+        make_persistent_test_session_with_format(id, false)
+    }
+
+    fn make_persistent_test_session_with_format(id: &str, legacy: bool) -> ServerSession {
         let cwd = test_workspace();
         let session_dir = std::path::Path::new(&cwd).join("sessions");
+        let manager = Arc::new(Manager::new(session_dir));
+        if legacy {
+            manager.storage().unwrap().bind_legacy_events(id).unwrap();
+        }
         ServerSession::new(
             id.to_string(),
             Arc::new(tokio::sync::RwLock::new(Loop::new(
                 Arc::new(EmptyProvider),
                 "mock",
             ))),
-            Arc::new(Manager::new(session_dir)),
+            manager,
             &cwd,
             Arc::new(SseBroadcaster::new()),
             ApprovalGate::default(),
@@ -2379,10 +2418,32 @@ mod tests {
     #[test]
     fn set_ephemeral() {
         let mut session = make_test_session("s1");
-        session.set_ephemeral(true);
+        session.set_ephemeral(true).unwrap();
         assert!(session.ephemeral);
-        session.set_ephemeral(false);
+        session.set_ephemeral(false).unwrap();
         assert!(!session.ephemeral);
+    }
+
+    #[test]
+    fn persistence_mode_does_not_change_after_prompt_admission() {
+        let mut session = make_test_session("mode-boundary");
+        session.runtime.begin(Some("run"), Some("request")).unwrap();
+        assert!(session.set_ephemeral(true).is_err());
+        assert!(!session.ephemeral);
+    }
+
+    #[test]
+    fn ephemeral_event_cursors_cannot_be_reused_as_durable_cursors() {
+        let mut session = make_test_session("mode-cursors");
+        session.set_ephemeral(true).unwrap();
+        session
+            .broadcaster
+            .broadcast_session(crate::rpc::SseEvent::new(
+                "cwd_changed",
+                serde_json::json!({"cwd":"volatile"}),
+            ));
+        assert!(session.set_ephemeral(false).is_err());
+        assert!(session.ephemeral);
     }
 
     #[test]
@@ -3102,7 +3163,7 @@ mod tests {
             ApprovalGate::default(),
             Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
         );
-        session.set_ephemeral(true);
+        session.set_ephemeral(true).unwrap();
 
         let lease = session
             .prompt("hold", &[], &[], Some("run-snapshot"), None)
@@ -3254,7 +3315,7 @@ mod tests {
             ApprovalGate::default(),
             Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
         )));
-        session.write().set_ephemeral(true);
+        session.write().set_ephemeral(true).unwrap();
         ServerSession::ensure_scheduler_worker(&session);
 
         let first = session
@@ -3466,7 +3527,7 @@ mod tests {
 
     #[tokio::test]
     async fn healing_rewrite_preserves_run_markers() {
-        let mut session = make_persistent_test_session("rewrite-markers");
+        let mut session = make_persistent_test_session_with_format("rewrite-markers", true);
         std::fs::create_dir_all(&session.cwd).unwrap();
         session.set_auto_retry(false);
         // Refuse the append-only commit once. The fallback rewrite must heal
@@ -3869,7 +3930,7 @@ mod tests {
 
         use crate::rpc::SseEvent;
 
-        let mut session = make_test_session("compact-keeps-journal");
+        let mut session = make_legacy_test_session("compact-keeps-journal");
 
         // History to compact, so the manual compaction takes its real path
         // (the summary request degrades to the evidence index offline).
@@ -4281,7 +4342,7 @@ mod tests {
     /// charge, and retrying would pay for the same history twice.
     #[test]
     fn a_usage_write_that_cannot_land_fails_the_compaction_receipt() {
-        let mut session = make_test_session("compact-usage-persist-fail");
+        let mut session = make_legacy_test_session("compact-usage-persist-fail");
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         session.agent_loop.try_write().unwrap().provider =
             Arc::new(CountingUsageSummaryProvider(calls.clone()));
@@ -4573,7 +4634,7 @@ mod tests {
     #[test]
     fn ephemeral_session_checkpoint_commit_failure_is_reported() {
         let mut session = make_test_session("ephemeral-checkpoint-fail");
-        session.set_ephemeral(true);
+        session.set_ephemeral(true).unwrap();
         session.agent_loop.try_write().unwrap().provider = Arc::new(SummaryProvider);
         session.model = "glm-4.5v".to_string();
         session
@@ -5363,7 +5424,7 @@ mod tests {
         // an unreadable row must be skipped rather than abort the whole replay:
         // one malformed event must not turn a session with real spend into a
         // session reported as free.
-        let mut session = make_test_session("noisy-cost-journal");
+        let mut session = make_legacy_test_session("noisy-cost-journal");
         session.model = "test/cheap".to_string();
         session.model_registry = two_priced_models();
         session
@@ -5491,7 +5552,7 @@ mod tests {
         // Caching the replayed split is an optimisation: a session whose store
         // cannot take the cache row must still open with the correct split, and
         // must not be left claiming a cache it never wrote.
-        let mut session = make_test_session("replay-persist-failure");
+        let mut session = make_legacy_test_session("replay-persist-failure");
         session.model = "test/cheap".to_string();
         session.model_registry = two_priced_models();
         session
@@ -5535,7 +5596,7 @@ mod tests {
         // The live session must not be blocked by a store it cannot update, but a
         // failed durable write must not be reported as success either: the value
         // stays changed in memory and the disk keeps what it had.
-        let mut session = make_test_session("auto-compaction-persist-failure");
+        let mut session = make_legacy_test_session("auto-compaction-persist-failure");
         let info = crate::session::SessionEntry::session_info(
             serde_json::json!("not an object"),
             session.model.clone(),
@@ -5579,7 +5640,7 @@ mod tests {
         // it happens to run now would bill the cheap request's million tokens at
         // the expensive model's rate; the journal says which model served each
         // request, so replaying it costs ¥101 rather than ¥200.
-        let mut session = make_test_session("legacy-cost-split");
+        let mut session = make_legacy_test_session("legacy-cost-split");
         session.model = "test/cheap".to_string();
         session.model_registry = two_priced_models();
         session
@@ -5624,7 +5685,7 @@ mod tests {
         // session's earlier spend is missing from it. Trusting it understates the
         // session (a real one reported ¥0.91 of rows against a ¥9.32 total), so
         // the journal decides instead.
-        let mut session = make_test_session("partial-cost-split");
+        let mut session = make_legacy_test_session("partial-cost-split");
         session.model = "test/cheap".to_string();
         session.model_registry = two_priced_models();
         session
@@ -5671,7 +5732,7 @@ mod tests {
     fn a_recorded_cost_split_is_kept_as_is() {
         // Sessions written by the current agent carry their own split; loading
         // one must not overwrite it with a replay.
-        let mut session = make_test_session("recorded-cost-split");
+        let mut session = make_legacy_test_session("recorded-cost-split");
         session.model = "test/cheap".to_string();
         session.model_registry = two_priced_models();
         session
@@ -6545,7 +6606,7 @@ mod tests {
     /// client could be shown.
     #[test]
     fn a_session_whose_pricing_journal_is_unreadable_opens_with_a_default_split() {
-        let mut session = make_test_session("cost-unreadable");
+        let mut session = make_legacy_test_session("cost-unreadable");
         session.model = "test/cheap".to_string();
         session.model_registry = two_priced_models();
         // A record with no cached split puts the load on the *replay* path: a
@@ -6604,7 +6665,7 @@ mod tests {
     /// (skipped, not mistaken for a usage row).
     #[test]
     fn the_replay_reads_object_style_data_and_ignores_unpriced_event_types() {
-        let mut session = make_test_session("object-style-cost-journal");
+        let mut session = make_legacy_test_session("object-style-cost-journal");
         session.model = "test/cheap".to_string();
         session.model_registry = two_priced_models();
         session
@@ -6680,7 +6741,7 @@ mod tests {
             ApprovalGate::default(),
             Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
         );
-        session.set_ephemeral(ephemeral);
+        session.set_ephemeral(ephemeral).unwrap();
         std::fs::create_dir_all(&session.cwd).unwrap();
         session
             .runtime

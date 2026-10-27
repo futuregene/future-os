@@ -27,6 +27,18 @@ pub(crate) fn handle_prompt(
     // dispatcher — re-fetching it here can never fail, so the old
     // "session does not exist" arm was unreachable dead code.
     let mut sess = session.write();
+    if sess
+        .history_reset_in_progress
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return RpcResponse::build_fail_code(
+            id,
+            "prompt",
+            "session_busy",
+            "session history reset is in progress",
+            serde_json::json!({"busy_reason":"history_reset","retryable":true}),
+        );
+    }
     let busy_policy = match crate::runtime::BusyPolicy::parse(&cmd.busy_policy) {
         Ok(policy) => policy,
         Err(error) => {

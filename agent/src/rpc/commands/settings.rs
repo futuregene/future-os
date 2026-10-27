@@ -262,7 +262,7 @@ pub(crate) fn handle_compact(
         return RpcResponse::build_fail(id, "compact", "context compaction is already running");
     }
 
-    let operation_id = format!("cmp_{}", crate::utils::generate_entry_id());
+    let operation_id = crate::utils::generate_entry_id();
     *session.read().compaction_request.lock() = Some((cmd.id.clone(), operation_id.clone()));
     let worker_operation_id = operation_id.clone();
     let instructions = cmd.custom_instructions.clone();
@@ -448,7 +448,9 @@ pub(crate) fn handle_set_ephemeral(
     cmd: &RpcCommand,
     id: &str,
 ) -> String {
-    session.write().set_ephemeral(cmd.ephemeral);
+    if let Err(error) = session.write().set_ephemeral(cmd.ephemeral) {
+        return RpcResponse::build_fail(id, "set_ephemeral", &error.to_string());
+    }
     RpcResponse::ok(
         id,
         "set_ephemeral",

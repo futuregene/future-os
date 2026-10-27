@@ -79,6 +79,28 @@ pub(crate) fn cmd_storage_health(state: &AppState, id: &str) -> String {
     }
 }
 
+/// Metadata-only capability preflight; do not load or create a conversation.
+pub(crate) fn cmd_session_storage_format(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
+    let result = (|| -> anyhow::Result<serde_json::Value> {
+        let store = state.session_manager.storage()?;
+        let session = cmd.session_id.clone();
+        let (exists, format) = store.db.read(move |db| {
+            let tx = db.transaction()?;
+            let session=crate::session::identity::BoundIdentity::session(&tx,&session)?;
+            let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sessions s WHERE s.id=?1 AND NOT EXISTS(SELECT 1 FROM session_tombstones t WHERE t.session_id=s.id))", [&session], |row| row.get(0))?;
+            let format = crate::session::content::format(&tx, &session)?;
+            tx.commit()?;
+            Ok((exists, format))
+        })?;
+        Ok(serde_json::json!({"exists":exists,"format":format,
+            "new_session_format":crate::session::content::NEW_SESSION_FORMAT}))
+    })();
+    match result {
+        Ok(data) => RpcResponse::ok(id, "get_session_storage_format", data),
+        Err(error) => RpcResponse::build_fail(id, "get_session_storage_format", &error.to_string()),
+    }
+}
+
 /// Database-wide run-journal cost and reclamation evidence. Sessionless on
 /// purpose: the journal spans every session, and the question it answers ("is
 /// this database growing?") is not about one conversation.
@@ -419,6 +441,17 @@ fn prepare_session_delete(
         }
         let (active, cancelled_count) = {
             let mut session = session.write();
+            if session
+                .history_reset_in_progress
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return Some(deletion_failure(
+                    session_id,
+                    "session_busy",
+                    "session history reset is in progress".to_owned(),
+                    serde_json::json!({"busy_reason":"history_reset","retryable":true}),
+                ));
+            }
             session.deleting = true;
             let cancelled = session
                 .cancel_all_queued_runs(crate::runtime::QueuedCancellationReason::SessionDeleted);
@@ -811,6 +844,14 @@ pub(crate) fn cmd_read_session_entries(
             serde_json::json!({"entries": []}),
         );
     }
+    match session_manager.storage().and_then(|store|store.storage_format(session_id)) {
+        Ok(crate::session::content::FORMAT_VERSION)=>return RpcResponse::build_fail_code(
+            id,"get_session_entries","history_paging_required",
+            "Canonical history requires an explicit offset or before cursor; assemble its bounded pages for a full transcript.",
+            serde_json::json!({"sessionId":session_id})),
+        Err(error)=>return RpcResponse::build_fail_code(id,"get_session_entries","session_history_unreadable",&error.to_string(),serde_json::json!({"sessionId":session_id})),
+        _=>{},
+    }
     let revision_before = session_manager.session_revision(session_id).ok();
     let cached = revision_before
         .as_ref()
@@ -882,7 +923,7 @@ pub(crate) fn cmd_fork(
         cmd.client_request_id.clone()
     };
     let request_id = format!("fork:{request_key}");
-    let result = match session_manager.create_fork(crate::session::ForkRequest {
+    let result = match session_manager.create_fork_identity(crate::session::ForkRequest {
         request_id,
         parent_session_id: parent_id,
         point,
@@ -892,7 +933,7 @@ pub(crate) fn cmd_fork(
         Ok(result) => result,
         Err(error) => return RpcResponse::build_fail(id, "fork", &error.to_string()),
     };
-    let forked_id = result.session.id.clone();
+    let forked_id = result.session_id;
     if let Err(error) = state.activate_persisted_session(&forked_id) {
         return RpcResponse::build_fail(
             id,
@@ -933,7 +974,7 @@ pub(crate) fn cmd_clone(
         cmd.client_request_id.clone()
     };
     let request_id = format!("clone:{request_key}");
-    let result = match session_manager.create_fork(crate::session::ForkRequest {
+    let result = match session_manager.create_fork_identity(crate::session::ForkRequest {
         request_id,
         parent_session_id: session_id,
         point: crate::session::ForkPoint::LatestSettled,
@@ -943,7 +984,7 @@ pub(crate) fn cmd_clone(
         Ok(result) => result,
         Err(error) => return RpcResponse::build_fail(id, "clone", &error.to_string()),
     };
-    let forked_id = result.session.id.clone();
+    let forked_id = result.session_id;
     if let Err(error) = state.activate_persisted_session(&forked_id) {
         return RpcResponse::build_fail(
             id,

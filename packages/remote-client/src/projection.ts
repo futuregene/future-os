@@ -1,5 +1,7 @@
 import {
   compactionCheckpoints,
+  copyEventPayload,
+  eventPayload,
   normalizeReplayEvents as normalizeSharedReplayEvents,
   createRunProjector,
   entriesToMessages,
@@ -358,7 +360,7 @@ export type { ReplayEventWire } from "@future-os/thread-projection";
  * is left here is the narrowing to the fields this lane reads.
  */
 export function normalizeReplayEvents(events: ReplayEventWire[] | undefined | null): StreamEvent[] {
-  return normalizeSharedReplayEvents(events).map(event => ({
+  return normalizeSharedReplayEvents(events).map(event => copyEventPayload(event, {
     type: event.type,
     data: event.data,
     runId: event.runId,
@@ -368,11 +370,9 @@ export function normalizeReplayEvents(events: ReplayEventWire[] | undefined | nu
 }
 
 function eventData(event: StreamEvent): Record<string, unknown> {
-  try {
-    return JSON.parse(event.data) as Record<string, unknown>;
-  } catch {
-    return {};
-  }
+  const value = eventPayload(event, event.data);
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : {};
 }
 
 function textValue(value: unknown): string {
@@ -792,14 +792,14 @@ function toRunEvent(
   sequence: number;
   createdAt: number;
 } {
-  return {
+  return copyEventPayload(event, {
     id: `${runId}:${event.idx ?? 0}`,
     runId,
     eventType: event.type,
     payload: event.data,
     sequence: event.idx ?? 0,
     createdAt: 0,
-  };
+  });
 }
 
 function buildLiveAssistantItem(

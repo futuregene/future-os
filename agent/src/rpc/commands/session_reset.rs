@@ -12,6 +12,18 @@ use std::sync::Arc;
 use crate::rpc::{AppState, HistoryResetCommand, RpcCommand, RpcResponse, ServerSession};
 use crate::session::reset::{DropKind, ResetSelectors, HISTORY_CHANGED};
 
+struct ResetAdmission {
+    flag: Arc<std::sync::atomic::AtomicBool>,
+    active: bool,
+}
+impl Drop for ResetAdmission {
+    fn drop(&mut self) {
+        if self.active {
+            self.flag.store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
+}
+
 fn fail(id: &str, code: &str, error: &str, data: serde_json::Value) -> String {
     RpcResponse::build_fail_code(id, "reset_session_history", code, error, data)
 }
@@ -95,16 +107,29 @@ pub(crate) fn handle_reset_session_history(
         let sess = session.read();
         (sess.session_manager.clone(), sess.session_id.clone())
     };
-    {
-        let sess = session.read();
+    let reset_admission = {
+        // The write guard serializes this check/flag transition with prompt
+        // acceptance. The expensive plan/backup/store work holds no session lock.
+        let sess = session.write();
         // Same admission rule as manual compaction: never rewrite the history a
         // run is reading, and never race a compaction that is projecting it.
-        if sess.runtime.snapshot().is_some() || sess.is_streaming.load(Ordering::Acquire) {
+        if sess.runtime.snapshot().is_some()
+            || sess.is_streaming.load(Ordering::Acquire)
+            || !sess.scheduler.queued().is_empty()
+        {
             return fail(
                 id,
                 "session_busy",
                 "finish or stop the active run before resetting session history",
                 serde_json::json!({"busy_reason": "run", "retryable": true}),
+            );
+        }
+        if sess.history_reset_in_progress.load(Ordering::Acquire) {
+            return fail(
+                id,
+                "session_busy",
+                "session history reset is in progress",
+                serde_json::json!({"busy_reason":"history_reset","retryable":true}),
             );
         }
         if sess.compaction_in_progress.load(Ordering::Acquire) {
@@ -113,6 +138,32 @@ pub(crate) fn handle_reset_session_history(
                 "session_busy",
                 "session context compaction is in progress",
                 serde_json::json!({"busy_reason": "compaction", "retryable": true}),
+            );
+        }
+        if apply {
+            sess.history_reset_in_progress
+                .store(true, Ordering::Release);
+        }
+        ResetAdmission {
+            flag: sess.history_reset_in_progress.clone(),
+            active: apply,
+        }
+    };
+    let _reset_admission = reset_admission;
+    if apply {
+        let (persistence, broadcaster) = {
+            let session = session.read();
+            (session.persistence.clone(), session.broadcaster.clone())
+        };
+        if let Err(error) = persistence
+            .barrier()
+            .and_then(|()| broadcaster.flush_journal())
+        {
+            return fail(
+                id,
+                "reset_failed",
+                &format!("could not fence prior session writes: {error:#}"),
+                serde_json::json!({"retryable":true}),
             );
         }
     }
@@ -162,6 +213,7 @@ pub(crate) fn handle_reset_session_history(
         // history in the same breath as the store: re-read rather than reuse,
         // because the store ran the same selection and load-time repair.
         let mut sess = session.write();
+        sess.broadcaster.forget_idle_replay();
         sess.history_loaded = false;
         if let Err(error) = sess.ensure_history_loaded() {
             return fail(

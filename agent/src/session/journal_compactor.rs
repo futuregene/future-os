@@ -1,12 +1,12 @@
-//! Bounded completion notifications for optional run-journal compaction.
-//! No startup sweep and no retries after a failed snapshot publication.
+//! Test-only legacy compactor compatibility. Production never constructs this
+//! worker or schedules startup/completion compression.
 use super::sqlite_store::SqliteStore;
 use anyhow::Result;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
 
-// Completion notifications are the only trigger. No startup/history sweep and
-// no automatic retries: failures keep raw replay available. Drop cancels an
+// Test helpers exercise the former startup/completion behavior without enabling
+// it in production. Failures keep raw replay available. Drop cancels an
 // uncommitted build between pages and joins before releasing the store.
 enum CompactionRequest {
     Compact(String, String, PendingCompaction),
@@ -87,17 +87,6 @@ impl CompletedRunCompactor {
         receiver.recv().unwrap();
     }
 
-    pub(crate) fn shutdown(mut self) -> Result<()> {
-        self.stop.store(true, Ordering::Release);
-        let _ = self.sender.send(CompactionRequest::Stop);
-        if let Some(thread) = self.thread.take() {
-            thread
-                .join()
-                .map_err(|_| anyhow::anyhow!("journal compactor panicked during shutdown"))?;
-        }
-        Ok(())
-    }
-
     pub(crate) fn request(&self, session: &str, run: &str) {
         self.pending.fetch_add(1, Ordering::AcqRel);
         let _ = self.sender.try_send(CompactionRequest::Compact(
@@ -105,10 +94,6 @@ impl CompletedRunCompactor {
             run.to_owned(),
             PendingCompaction(self.pending.clone()),
         ));
-    }
-
-    pub(crate) fn pending_count(&self) -> usize {
-        self.pending.load(Ordering::Acquire)
     }
 }
 

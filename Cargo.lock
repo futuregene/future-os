@@ -1838,6 +1838,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "clap",
+ "crossbeam-channel",
  "dhat",
  "dirs",
  "fd-lock",
@@ -2049,6 +2050,7 @@ dependencies = [
  "tokio-rustls",
  "tonic",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

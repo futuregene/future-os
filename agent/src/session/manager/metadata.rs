@@ -18,29 +18,12 @@ impl Manager {
     /// sub-session cost O(history) per level.
     pub fn parent_session_id(&self, id: &str) -> Result<Option<String>> {
         let id = id.to_owned();
-        self.storage()?.db.call(move |db| {
-            let raw: Option<Option<String>> = db
-                .query_row(
-                    "SELECT current_metadata_json FROM sessions WHERE id=?1",
-                    [&id],
-                    |row| row.get(0),
-                )
-                .optional()
-                .context("session metadata could not be read")?;
-            let Some(Some(raw)) = raw else {
-                return Ok(None);
-            };
-            let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
-                // Corrupt metadata is not a lineage fact. Reporting "no parent"
-                // keeps an unrelated corruption from blocking session creation.
-                return Ok(None);
-            };
-            Ok(value
-                .get("parent_session_id")
-                .and_then(|parent| parent.as_str())
-                .map(str::trim)
-                .filter(|parent| !parent.is_empty())
-                .map(str::to_owned))
+        self.storage()?.db.read(move |db| {
+            let id=crate::session::identity::BoundIdentity::session(db,&id)?;
+            let parent:Option<Option<String>>=db.query_row(
+                "SELECT CASE WHEN json_valid(current_metadata_json) THEN CASE WHEN json_type(current_metadata_json,'$.parent_session_id')='text' THEN json_extract(current_metadata_json,'$.parent_session_id') END END FROM sessions WHERE id=?1",
+                [&id],|row|row.get(0)).optional().context("session metadata could not be read")?;
+            Ok(parent.flatten().map(|parent|parent.trim().to_owned()).filter(|parent|!parent.is_empty()))
         })
     }
 
@@ -56,6 +39,12 @@ impl Manager {
         id: &str,
         fields: serde_json::Map<String, serde_json::Value>,
     ) -> Result<()> {
+        let store = self.storage()?;
+        if store.storage_format(id)? == crate::session::content::FORMAT_VERSION {
+            store.patch_segmented_metadata(id, fields)?;
+            self.invalidate_display_projection(id);
+            return Ok(());
+        }
         let id = id.to_owned();
         self.storage()?.db.call(move |db| {
             // Reads the current metadata before it writes: take the write lock

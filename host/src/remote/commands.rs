@@ -658,7 +658,8 @@ mod bridge_tests {
                 "task_deps_v1",
                 // Advertised, not merely honoured: a client only declares the
                 // frame carrier after finding it here.
-                "read_binary_v1"
+                "read_binary_v1",
+                "segmented_content_v1"
             ])
         );
         assert!(bridge.handshake.active_flag().load(Ordering::Acquire));
@@ -1980,7 +1981,7 @@ mod bridge_tests {
         let first = bridge
             .call(json!({
                 "id": unique("cmd"), "type": "get_events_since", "sessionId": session,
-                "runId": "r", "sinceIdx": -1, "limit": 2
+                "chunkedRead": true, "runId": "r", "sinceIdx": -1, "limit": 2
             }))
             .await;
         assert_eq!(first["success"], true);
@@ -1998,7 +1999,7 @@ mod bridge_tests {
         let middle = bridge
             .call(json!({
                 "id": unique("cmd"), "type": "get_events_since", "sessionId": session,
-                "runId": "r", "sinceIdx": 1, "limit": 2, "replayUntilIdx": 4
+                "chunkedRead": true, "runId": "r", "sinceIdx": 1, "limit": 2, "replayUntilIdx": 4
             }))
             .await;
         assert_eq!(middle["success"], true);
@@ -2021,7 +2022,7 @@ mod bridge_tests {
         let last = bridge
             .call(json!({
                 "id": unique("cmd"), "type": "get_events_since", "sessionId": session,
-                "runId": "r", "sinceIdx": 3, "limit": 2, "replayUntilIdx": 4
+                "chunkedRead": true, "runId": "r", "sinceIdx": 3, "limit": 2, "replayUntilIdx": 4
             }))
             .await;
         assert_eq!(last["success"], true);

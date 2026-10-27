@@ -4,7 +4,7 @@
 use super::sqlite_store::{insert_event_record, insert_transcript_entries, SqliteStore};
 use anyhow::{bail, Context, Result};
 use chrono::TimeZone;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -170,6 +170,16 @@ pub struct ImportRecord {
     pub warnings: i64,
 }
 
+fn import_status(db: &Connection, id: &str) -> Result<Option<String>> {
+    let key = crate::session::identity::BoundIdentity::session(db, id)?;
+    Ok(db.query_row("SELECT CASE WHEN EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1) THEN 'deleted'
+        WHEN EXISTS(SELECT 1 FROM sessions s JOIN session_formats f ON f.session_id=s.id WHERE s.id=?1 AND f.format=2) THEN 'existing_canonical'
+        ELSE (SELECT status FROM legacy_imports WHERE session_id=?1) END
+        WHERE EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1) OR EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1)
+        OR EXISTS(SELECT 1 FROM sessions s JOIN session_formats f ON f.session_id=s.id WHERE s.id=?1 AND f.format=2)",
+        [&key],|row|row.get(0)).optional()?)
+}
+
 impl SqliteStore {
     pub fn import_records(&self) -> Result<Vec<ImportRecord>> {
         self.db.call(|db| {
@@ -200,15 +210,7 @@ impl SqliteStore {
         cancellation.check()?;
         let retry = retry.map(str::to_owned);
         if let Some(id) = retry.clone() {
-            let status = self.db.call(move |db| {
-                Ok(db
-                    .query_row(
-                        "SELECT CASE WHEN EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1) THEN 'deleted' ELSE (SELECT status FROM legacy_imports WHERE session_id=?1) END WHERE EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1) OR EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1)",
-                        [id],
-                        |r| r.get::<_, String>(0),
-                    )
-                    .optional()?)
-            })?;
+            let status = self.db.call(move |db| import_status(db, &id))?;
             if status.as_deref() != Some("skipped") {
                 bail!("only a skipped legacy session can be retried");
             }
@@ -257,15 +259,7 @@ impl SqliteStore {
                 continue;
             }
             let key = id.clone();
-            let status = self.db.call(move |db| {
-                Ok(db
-                    .query_row(
-                        "SELECT CASE WHEN EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1) THEN 'deleted' ELSE (SELECT status FROM legacy_imports WHERE session_id=?1) END WHERE EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1) OR EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1)",
-                        [key],
-                        |r| r.get::<_, String>(0),
-                    )
-                    .optional()?)
-            })?;
+            let status = self.db.call(move |db| import_status(db, &key))?;
             if status
                 .as_deref()
                 .is_some_and(|s| s != "skipped" || retry.is_none())
@@ -349,7 +343,16 @@ impl SqliteStore {
                 cancellation.check()?;
                 let tx = crate::session::database::begin_write_transaction(db)?;
                 cancellation.check()?;
-                let parsed = if tx.query_row("SELECT id FROM sessions WHERE id=?1", [&id], |r| r.get::<_, String>(0)).optional()?.is_some() {
+                if matches!(import_status(&tx,&id)?.as_deref(),Some("deleted"|"existing_canonical")) {
+                    // A restored legacy source cannot acquire a second TEXT
+                    // identity or block an already-authoritative native owner.
+                    // Recheck under the writer lock in case admission raced the
+                    // initial source scan. The source itself is left untouched.
+                    tx.commit()?;return Ok(());
+                }
+                let destination=crate::session::identity::BoundIdentity::session(&tx,&id)?;
+                let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)",[&destination],|row|row.get(0))?;
+                let parsed = if exists {
                     Err(InvalidSource { file: "transcript".into(), line: 0, kind: "existing_sqlite_session" })
                 } else { parsed };
                 match parsed {
@@ -385,13 +388,12 @@ impl SqliteStore {
                 "INSERT OR IGNORE INTO storage_meta VALUES ('legacy_complete','1')",
                 [],
             )?;
-            // A first import can temporarily grow the WAL to the size of the
-            // complete legacy event journal. The import is fully committed at
-            // this point, so reset and truncate that high-water allocation
-            // before the Agent begins serving requests.
-            db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
             Ok(())
-        })
+        })?;
+        // The import is committed before asking the sole checkpoint worker to
+        // reclaim its high-water allocation. Running TRUNCATE on the writer
+        // raced the worker's PASSIVE checkpoint and silently ignored SQLITE_BUSY.
+        self.db.checkpoint_after_import()
     }
 }
 

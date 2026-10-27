@@ -1,6 +1,6 @@
 import type { RemoteClient } from "./client";
 import type { ReplayPage, RunReplay } from "@future-os/thread-projection";
-import { readRunReplay } from "@future-os/thread-projection";
+import { hasEventPayload, hydrateRequiredContent, needsContentHydration, parseJsonText, readRunReplay, withEventPayload, type ContentPage } from "@future-os/thread-projection";
 import { requestReadPage } from "./readPages";
 
 /**
@@ -38,11 +38,38 @@ export async function fetchEventsSince(
   sinceIdx: number,
   isCurrent: () => boolean = () => true,
 ): Promise<EventsData> {
-  return readRunReplay({
+  const replay = await readRunReplay({
     readPage: async (command) => (await requestReadPage<EventsPage>(client, command, sessionId, isCurrent)).data,
     sessionId,
     runId,
     sinceIdx,
     isCurrent,
   });
+  replay.events = await hydrateReplayEvents(replay.events);
+  if (replay.projection) replay.projection.events = await hydrateReplayEvents(replay.projection.events);
+  return replay;
+  async function hydrateReplayEvents<T extends { type: string; data: string; runId?: string }>(events: T[]): Promise<T[]> {
+    const result: T[] = [];
+    for (const event of events) result.push(await hydrateRemoteEvent(client, sessionId, event, isCurrent, runId));
+    return result;
+  }
+}
+
+/** Required fields are loaded within the session's serial lane; optional tool
+ * facts remain lazy. Generation checks fence every page before application. */
+export async function hydrateRemoteEvent<T extends { type: string; data: string; runId?: string }>(
+  client: RemoteClient, sessionId: string, event: T, isCurrent: () => boolean = () => true,
+  fallbackRunId = "",
+): Promise<T> {
+  if (hasEventPayload(event) || (!event.data.includes('"content_refs"') && event.data.length <= 32 * 1024)) return event;
+  const data = await parseJsonText<Record<string, unknown>>(event.data, { isCurrent });
+  if (!needsContentHydration(event.type, data)) return withEventPayload(event, data);
+  const hydrated = await hydrateRequiredContent(event.type, data, async contentRequest => {
+    const reply = await requestReadPage<ContentPage>(client, {
+      type: "get_event_content_range", sessionId, runId: event.runId || fallbackRunId, contentRequest,
+    }, sessionId, isCurrent);
+    if (!reply.success) throw new Error(reply.error || "event_content_read_failed");
+    return reply.data;
+  }, isCurrent);
+  return withEventPayload(event, hydrated);
 }

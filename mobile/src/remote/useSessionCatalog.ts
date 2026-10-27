@@ -1,3 +1,4 @@
+import { eventPayload } from "@future-os/thread-projection";
 import { CatalogVersionGate } from "@future-os/remote-client/catalogVersion";
 import type {
   SnapshotVersion,
@@ -104,7 +105,7 @@ export function useSessionCatalog(
     }
     if (event.type !== "agent_end") return;
     let data: { state?: string; reason?: string; error?: unknown };
-    try { data = JSON.parse(event.data) as typeof data; } catch { return; }
+    try { data = eventPayload(event, event.data) as typeof data; } catch { return; }
     if (!data || typeof data !== "object" || Array.isArray(data)) return;
     rememberRun(key);
     liveRuns.current.set(sessionId, key);

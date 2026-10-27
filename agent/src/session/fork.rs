@@ -59,6 +59,12 @@ pub struct ForkResult {
     pub created: bool,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ForkIdentity {
+    pub session_id: String,
+    pub created: bool,
+}
+
 #[cfg(test)]
 fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
     build_fork_session(parent, &ForkPoint::ThroughEntry(from_entry_id.to_string()))
@@ -66,6 +72,13 @@ fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
 }
 
 pub fn build_fork_session(parent: &Session, point: &ForkPoint) -> Result<Session> {
+    build_fork_session_with_mapping(parent, point).map(|(session, _)| session)
+}
+
+pub(crate) fn build_fork_session_with_mapping(
+    parent: &Session,
+    point: &ForkPoint,
+) -> Result<(Session, std::collections::HashMap<String, String>)> {
     let cutoff = resolve_cutoff(&parent.entries, point)?;
     if parent.entries[..=cutoff]
         .iter()
@@ -282,18 +295,21 @@ pub fn build_fork_session(parent: &Session, point: &ForkPoint) -> Result<Session
         },
     );
     let now = Local::now();
-    Ok(Session {
-        id: generate_id(),
-        version: CURRENT_SESSION_VERSION,
-        cwd: parent.cwd.clone(),
-        model: parent_model.clone(),
-        name: fork_name,
-        parent_session_id: parent.id.clone(),
-        leaf_id: String::new(),
-        entries,
-        created_at: now,
-        updated_at: now,
-    })
+    Ok((
+        Session {
+            id: generate_id(),
+            version: CURRENT_SESSION_VERSION,
+            cwd: parent.cwd.clone(),
+            model: parent_model.clone(),
+            name: fork_name,
+            parent_session_id: parent.id.clone(),
+            leaf_id: String::new(),
+            entries,
+            created_at: now,
+            updated_at: now,
+        },
+        id_map,
+    ))
 }
 
 /// Replace the inherited provenance snapshot on a freshly forked session.
@@ -324,7 +340,7 @@ pub fn set_creation_provenance(session: &mut Session, created_by: &str, creator_
     }
 }
 
-fn resolve_cutoff(entries: &[SessionEntry], point: &ForkPoint) -> Result<usize> {
+pub(crate) fn resolve_cutoff(entries: &[SessionEntry], point: &ForkPoint) -> Result<usize> {
     match point {
         ForkPoint::ThroughEntry(entry_id) => entries
             .iter()

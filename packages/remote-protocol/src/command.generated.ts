@@ -90,6 +90,8 @@ export interface RemoteCommand {
   features?: string[];
   /** Additive. client_disconnect: why the client is leaving. `disconnected` is the user's own stop — the device gives up the machine and a device that is actually there may take it. `background` only says the client is off screen (a suspended app), so the device keeps the machine and is presumed back when it speaks again. An older host ignores the command (it names no reply, and an unhandled type only reaches its business dispatcher), so a new client on an old host keeps the old reading. */
   reason?: string;
+  /** get_event_content_range: session/run scoped immutable event field and UTF-8 page coordinates. */
+  contentRequest?: { databaseId: string; restoreGeneration: string; epoch: number; cursor: number; field: string; offset?: number; maxBytes?: number };
 }
 
 export interface UploadReference {

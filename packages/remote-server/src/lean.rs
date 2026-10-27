@@ -395,6 +395,14 @@ fn blank_folded_text(event: &mut Value) {
         return;
     };
     fields.insert("text".into(), Value::String(String::new()));
+    for key in [
+        "content_key",
+        "content_offset",
+        "content_bytes",
+        "content_first_idx",
+    ] {
+        fields.remove(key);
+    }
     if let Ok(blanked) = serde_json::to_string(&Value::Object(fields)) {
         event["data"] = Value::String(blanked);
     }
@@ -427,7 +435,9 @@ pub fn lean_replay_page(page: &mut Value, lean: bool) {
     // that once holes are expected. The count is what keeps that check exact
     // instead of relaxing it to "whatever arrived is enough".
     if let Some(count) = page.get("events").and_then(Value::as_array).map(Vec::len) {
-        page["rawEvents"] = json!(count);
+        if page.get("rawEvents").is_none() {
+            page["rawEvents"] = json!(count);
+        }
     }
     if let Some(events) = page.get_mut("events").and_then(Value::as_array_mut) {
         events.retain_mut(|event| {

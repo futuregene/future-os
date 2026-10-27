@@ -604,6 +604,7 @@ fn bind_run(session_id: &str, canonical_run_id: &str, local_run_id: &str) {
 struct ObserverState {
     source: Option<(String, String, String)>,
     cursors: HashMap<String, i64>,
+    content_cursors: future_rpc::content_range::ContentCursors,
     session_cursor: i64,
     active_run: Option<String>,
     last_settled_run: Option<String>,
@@ -615,6 +616,7 @@ impl Default for ObserverState {
         Self {
             source: None,
             cursors: HashMap::new(),
+            content_cursors: Default::default(),
             session_cursor: -1,
             active_run: None,
             last_settled_run: None,
@@ -1022,6 +1024,21 @@ async fn handle_event_from(
     event: future_rpc::proto::StreamEvent,
     origin: EventOrigin,
 ) -> bool {
+    let mirror_data = future_rpc::decode::event_data_json(&event);
+    let mirror_snapshot_events = event.snapshot_events.clone();
+    let mut event = event;
+    if future_rpc::content_body::stream_needs_hydration(&event) {
+        let Ok(mut client) = connect_agent().await else {
+            return false;
+        };
+        if let Err(error) =
+            future_rpc::content_body::hydrate_stream_event(&mut client, session_id, &mut event)
+                .await
+        {
+            tracing::warn!(session_id, %error, "required event content could not be read");
+            return false;
+        }
+    }
     let event_type = event.r#type.as_str();
     let run_id = event.run_id.as_str();
 
@@ -1058,7 +1075,7 @@ async fn handle_event_from(
         crate::agent_events::publish_event(
             session_id,
             event_type,
-            &event_data,
+            &mirror_data,
             run_id,
             event.idx,
             event.epoch,
@@ -1074,6 +1091,21 @@ async fn handle_event_from(
     // snapshot IS the healing mechanism, so it bypasses the continuity check:
     // its cursor is the new position, locally and on the mirror.
     if event.projection_snapshot {
+        state.content_cursors.clear();
+        for projected in &event.snapshot_events {
+            let Ok(mut data) = serde_json::from_str::<serde_json::Value>(
+                &future_rpc::decode::projected_event_data_json(projected),
+            ) else {
+                return false;
+            };
+            if state
+                .content_cursors
+                .apply(run_id, event.epoch, &projected.r#type, &mut data)
+                .is_err()
+            {
+                return false;
+            }
+        }
         state
             .cursors
             .insert(run_id.to_string(), event.snapshot_cursor);
@@ -1119,7 +1151,7 @@ async fn handle_event_from(
             session_id,
             run_id,
             event.snapshot_cursor,
-            &event.snapshot_events,
+            &mirror_snapshot_events,
             event.run_sequence,
         );
         return true;
@@ -1128,12 +1160,19 @@ async fn handle_event_from(
     // Run-scoped event: validate ordering first. Replays (idx <= cursor) and
     // gaps (idx skips ahead) are settled here — neither may reach the stores,
     // the webview, or the mirror.
+    let mut range_data: serde_json::Value =
+        serde_json::from_str(&future_rpc::decode::event_data_json(&event))
+            .unwrap_or(serde_json::Value::Null);
     match state.cursors.get(run_id).copied() {
         Some(last) => {
             if event.idx <= last {
                 return true; // replay overlap — already persisted and mirrored
             }
-            if event.idx != last.saturating_add(1) {
+            if !future_rpc::content_range::covers_next(
+                &range_data,
+                last.saturating_add(1),
+                event.idx,
+            ) {
                 return false; // mid-run hole — re-attach for replay/snapshot healing
             }
         }
@@ -1178,13 +1217,20 @@ async fn handle_event_from(
             }
         }
     }
+    if state
+        .content_cursors
+        .apply(run_id, event.epoch, event_type, &mut range_data)
+        .is_err()
+    {
+        return false;
+    }
     state.cursors.insert(run_id.to_string(), event.idx);
     note_run_active(shared, state, run_id);
 
     // Canonical event payload (byte-stable while the agent dual-writes `data`;
     // the typed reconstruction takes over once `data` is retired). Persistence,
     // terminal detection, forwarding and the NATS mirror all read it.
-    let event_data = future_rpc::decode::event_data_json(&event);
+    let event_data = range_data.to_string();
 
     // Terminal bookkeeping applies regardless of ownership — otherwise a
     // pipeline-owned run's end would wedge has_active_run forever.
@@ -1236,7 +1282,7 @@ async fn handle_event_from(
     crate::agent_events::publish_event(
         session_id,
         event_type,
-        &event_data,
+        &mirror_data,
         run_id,
         event.idx,
         event.epoch,
@@ -2849,7 +2895,7 @@ mod tests {
             snapshot_cursor: 5,
             snapshot_events: vec![future_rpc::proto::ProjectedRunEvent {
                 r#type: "text_chunk".to_string(),
-                data: "hello".to_string(),
+                data: serde_json::json!({"text":"hello"}).to_string(),
                 idx: 0,
                 ..Default::default()
             }],
@@ -2884,7 +2930,7 @@ mod tests {
             snapshot_cursor: 9,
             snapshot_events: vec![future_rpc::proto::ProjectedRunEvent {
                 r#type: "text_chunk".to_string(),
-                data: "hi".to_string(),
+                data: serde_json::json!({"text":"hi"}).to_string(),
                 idx: 0,
                 ..Default::default()
             }],

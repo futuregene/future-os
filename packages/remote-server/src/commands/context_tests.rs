@@ -8,6 +8,7 @@ struct MemoryRuntime {
     coalesce: Arc<AtomicBool>,
     activity: Arc<AtomicBool>,
     lean: Arc<AtomicBool>,
+    segmented: Arc<AtomicBool>,
     identity: Arc<Mutex<Option<crate::types::ClientIdentity>>>,
     link: Arc<crate::supervisor::ClientLink>,
     gzip: bool,
@@ -39,6 +40,9 @@ impl CommandRuntime for MemoryRuntime {
     }
     fn lean_events(&self, _: &str) -> Arc<AtomicBool> {
         self.lean.clone()
+    }
+    fn segmented_content(&self, _: &str) -> Arc<AtomicBool> {
+        self.segmented.clone()
     }
     fn in_control(&self, _: &str) -> bool {
         true
@@ -123,6 +127,7 @@ fn runtime_instances_isolate_access_identity_and_declared_capabilities() {
             future_remote_protocol::EVENT_COALESCING_FEATURE.into(),
             future_remote_protocol::CATALOG_ACTIVITY_FEATURE.into(),
             future_remote_protocol::LEAN_EVENTS_FEATURE.into(),
+            future_remote_protocol::SEGMENTED_CONTENT_FEATURE.into(),
             REPLY_GZIP_FEATURE.into(),
             "future_unknown_capability".into(),
         ],
@@ -130,6 +135,10 @@ fn runtime_instances_isolate_access_identity_and_declared_capabilities() {
     assert!(first.coalesce.load(Ordering::Acquire));
     assert!(first.activity.load(Ordering::Acquire));
     assert!(first.lean.load(Ordering::Acquire));
+    assert!(first.segmented.load(Ordering::Acquire));
+    assert!(a.segmented_content.load(Ordering::Acquire));
+    assert!(!second.segmented.load(Ordering::Acquire));
+    assert!(!b.segmented_content.load(Ordering::Acquire));
     assert!(a.gzip_replies.load(Ordering::Acquire));
     assert!(!second.coalesce.load(Ordering::Acquire));
     assert!(!second.activity.load(Ordering::Acquire));
@@ -153,6 +162,8 @@ fn runtime_instances_isolate_access_identity_and_declared_capabilities() {
     assert!(!first.coalesce.load(Ordering::Acquire));
     assert!(!first.activity.load(Ordering::Acquire));
     assert!(!first.lean.load(Ordering::Acquire));
+    assert!(!first.segmented.load(Ordering::Acquire));
+    assert!(!a.segmented_content.load(Ordering::Acquire));
     assert!(!a.gzip_replies.load(Ordering::Acquire));
     first.access.invalidate(|| {});
     assert!(!a.access_current());

@@ -113,6 +113,9 @@ pub(crate) enum SkipReason {
     /// Agent shutdown interrupted the build. Not evidence: the next completion
     /// (or an explicit sweep) retries the run.
     Cancelled,
+    /// Canonical conversations already store one segmented body and must never
+    /// be rewritten by the explicitly invoked legacy reclamation command.
+    CanonicalFormat,
 }
 
 impl SkipReason {
@@ -126,6 +129,7 @@ impl SkipReason {
             SkipReason::ProviderDelta => "provider_delta",
             SkipReason::NotTerminal => "not_terminal",
             SkipReason::Cancelled => "cancelled",
+            SkipReason::CanonicalFormat => "canonical_format",
         }
     }
 
@@ -135,7 +139,10 @@ impl SkipReason {
     fn is_leftover(self) -> bool {
         !matches!(
             self,
-            SkipReason::AlreadyCompacted | SkipReason::Empty | SkipReason::Cancelled
+            SkipReason::AlreadyCompacted
+                | SkipReason::Empty
+                | SkipReason::Cancelled
+                | SkipReason::CanonicalFormat
         )
     }
 }
@@ -275,9 +282,12 @@ impl SqliteStore {
         session_scope: bool,
         limit: Option<usize>,
     ) -> Result<RunReplayPage> {
+        if self.storage_format(session)? == super::content::FORMAT_VERSION {
+            return self.segmented_replay(session, run, since, session_scope, limit);
+        }
         let (session, run) = (session.to_owned(), run.to_owned());
         let decode_run = run.clone();
-        let (known,rows,snapshot)=self.db.call(move |db| {
+        let (known,rows,snapshot)=self.db.read(move |db| {
             let tx=db.transaction()?;
             let snapshot: Option<(i64,Option<String>)> = if run.is_empty() { None } else {
                 tx.query_row("SELECT cursor,CASE WHEN cursor>?3 THEN payload END FROM run_snapshots WHERE session_id=?1 AND run_id=?2 AND version=1",
@@ -326,6 +336,12 @@ impl SqliteStore {
         run: &str,
         stop: &AtomicBool,
     ) -> Result<CompactionOutcome> {
+        if self.storage_format(session)? == super::content::FORMAT_VERSION {
+            return Ok(CompactionOutcome {
+                skip: Some(SkipReason::CanonicalFormat),
+                ..Default::default()
+            });
+        }
         let (owned_session, owned_run) = (session.to_owned(), run.to_owned());
         let read = self
             .db
