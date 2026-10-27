@@ -19,16 +19,26 @@
 //! Two rules decide the numbers, and `text_roles_clear_aa_on_their_own_canvas`
 //! pins them:
 //!
-//! * **The canvas is ours, and it is black.** Every dark palette paints `bg`
-//!   (`232`, `#080808`) on every row, with `panel` one step above it. The canvas
-//!   used to be whatever the reader's terminal profile painted — Ghostty ships
-//!   `#282c34`, a mid slate — which made every dark theme look washed and
-//!   dropped secondary text under 4.5:1. A theme's identity lives in its hues,
-//!   not in a lighter canvas.
+//! * **The canvas is ours, and it is the theme's own.** Every palette paints
+//!   its own `bg` on every row, with `panel` the first 256-colour step that
+//!   reads as raised. The canvas used to be whatever the reader's terminal
+//!   profile painted — Ghostty ships `#282c34`, a mid slate — which made every
+//!   dark theme look washed and dropped secondary text under 4.5:1. It then
+//!   became one shared near-black for all twenty-two palettes, which made a
+//!   catalogue of themes read as one theme with different accents. Each entry
+//!   now carries the nearest 256-colour step to its own background, the same
+//!   one the desktop app paints for that theme: `#121212`–`#303030` charcoal for
+//!   the dark palettes, cream/tan/off-white for the light ones, near-black for
+//!   `dark` itself and true black for `high-contrast`. A 256-colour terminal
+//!   cannot express a *tinted* dark background — the cube's dark entries are
+//!   saturated primaries (`#00005f`, `#005f5f`), not theme backgrounds — so the
+//!   variation the table can carry is lightness and temperature.
 //! * **Every text role clears WCAG AA (4.5:1)** against both the canvas and the
 //!   panel it can sit on, and body text clears 7:1 on the canvas. `muted` is the
 //!   role this bit hardest: at 2.9–3.8:1 several palettes' secondary text was
-//!   decoration rather than text.
+//!   decoration rather than text. Moving a canvas up the ramp costs contrast,
+//!   so the palette that did so lifted the roles that no longer cleared the
+//!   floor on it — the note beside each value records whose hue it is.
 //!
 //! The light palettes keep their hues: those numbers are shared with the desktop
 //! app's palette table, so only `fg`/`muted` — the two purely neutral roles —
@@ -47,14 +57,15 @@ use crate::workbench::syntax;
 pub struct Palette {
     /// Identifier persisted by `/theme`; the same id the inline TUI knows.
     pub id: &'static str,
-    /// Canvas behind everything, painted on every row (`workbench::run`). Every
-    /// dark palette uses the same near-black `232`: a lighter canvas is what
-    /// washed secondary text out, and the canvas is not left to the reader's
-    /// terminal profile any more.
+    /// Canvas behind everything, painted on every row (`workbench::run`). Each
+    /// palette carries its own — the nearest 256-colour step to the theme's real
+    /// background (see the module note) — and every row is painted with it, so
+    /// the reader's terminal profile cannot show through.
     pub bg: u8,
-    /// Sidebar, menu and overlay background — one step above [`Palette::bg`], so
-    /// a raised surface reads as raised. Not the composer's: that box sits on
-    /// the canvas like the chat around it, and its cursor is the focus signal.
+    /// Sidebar, menu and overlay background — the first 256-colour step above
+    /// [`Palette::bg`] that reads as raised (> 1.1:1 against the canvas). Not
+    /// the composer's: that box sits on the canvas like the chat around it, and
+    /// its cursor is the focus signal.
     pub panel: u8,
     /// Borders, dividers, box rules.
     pub border: u8,
@@ -80,7 +91,7 @@ pub struct Palette {
 /// The default palette: near-black canvas, teal accent, blue links.
 pub const FUTURE_DARK: Palette = Palette {
     id: "dark",
-    bg: 232, // #080808 — the canvas: the same near-black in every dark palette
+    bg: 232, // #080808 — the brand canvas; the only palette left near-black
     panel: 234,
     border: 238,
     fg: 252,
@@ -96,7 +107,7 @@ pub const FUTURE_DARK: Palette = Palette {
 /// The light canvas the dark palette was re-tuned onto.
 pub const FUTURE_LIGHT: Palette = Palette {
     id: "light",
-    bg: 254,
+    bg: 254, // #e4e4e4 ≈ #f6f7f9 — a cool off-white, not pure white
     panel: 252,
     border: 246,
     fg: 236,
@@ -112,31 +123,31 @@ pub const FUTURE_LIGHT: Palette = Palette {
 /// Atom's One Dark: a neutral charcoal canvas, blue accent, cyan links.
 ///
 /// Its hues mirror `crate::themes`' palette so the two surfaces read as one
-/// product; `bg`/`panel` are the workbench's own near-black pair, because the
-/// inline `one-dark` inherits `#282c34` and this surface paints its canvas.
+/// product; `bg`/`panel` take the theme's own `#21252b` charcoal, because the
+/// inline `one-dark` inherits the terminal and this surface paints its canvas.
 pub const ONE_DARK: Palette = Palette {
     id: "one-dark",
-    bg: 232, // #080808 — the canvas: the same near-black in every dark palette
-    panel: 234,
+    bg: 235, // #262626 ≈ #21252b — the theme's own charcoal
+    panel: 236,
     border: 240,
     fg: 249,
-    muted: 245, // #8a8a8a — 4.5:1 here (243 was 4.3:1)
+    muted: 247, // #9e9e9e — 4.9:1 on the panel (245 was 3.8:1 on the raised canvas)
     accent: 75,
     iris: 73,
     amber: 180,
     green: 108,
-    red: 168,
+    red: 174, // #d78787 — 4.8:1 on the panel (168 was 3.7:1)
     purple: 176,
 };
 
-/// One Light: the same hues on white.
+/// One Light: the same hues on a soft off-white.
 pub const ONE_LIGHT: Palette = Palette {
     id: "one-light",
-    bg: 231,
-    panel: 254,
+    bg: 255, // #eeeeee ≈ #f0f0f1 — the theme's own canvas, one step off white
+    panel: 231,
     border: 250,
     fg: 236,
-    muted: 241, // #626262 — 4.5:1 on white (245 was 3.9:1)
+    muted: 241, // #626262 — 6.1:1 on the panel (245 was 3.9:1 on white)
     accent: 25,
     iris: 30,
     amber: 130,
@@ -148,8 +159,8 @@ pub const ONE_LIGHT: Palette = Palette {
 /// Black canvas, saturated foregrounds: bright rooms, projectors, bad panels.
 pub const HIGH_CONTRAST: Palette = Palette {
     id: "high-contrast",
-    bg: 16,
-    panel: 17,
+    bg: 16,     // #000000 — the one palette that goes to true black
+    panel: 233, // #121212 — the first step that reads as raised on true black (17 is the cube's navy)
     border: 250,
     fg: 231,
     muted: 246,
@@ -164,27 +175,27 @@ pub const HIGH_CONTRAST: Palette = Palette {
 /// Dracula: purple accent, cyan links, warm chroma.
 pub const DRACULA: Palette = Palette {
     id: "dracula",
-    bg: 232, // #080808 — the canvas: the same near-black in every dark palette
-    panel: 234,
+    bg: 235, // #262626 ≈ #21222c — the theme's own charcoal
+    panel: 236,
     border: 239,
     fg: 255,
-    muted: 245, // #8a8a8a — 4.5:1 here (243 was 4.3:1)
+    muted: 247, // #9e9e9e — 4.9:1 on the panel (245 was 3.8:1 on the raised canvas)
     accent: 141,
     iris: 117,
     amber: 228,
     green: 84,
-    red: 203,
+    red: 204, // #ff5f87 — 4.6:1 on the panel (203 was 4.4:1)
     purple: 212,
 };
 
 /// Ayu, by Dmitri Voronianski.
 pub const AYU: Palette = Palette {
     id: "ayu",
-    bg: 232, // #080808 — the canvas: the same near-black in every dark palette
-    panel: 234,
+    bg: 235, // #262626 ≈ #1f2430 — the theme's own charcoal
+    panel: 236,
     border: 240, // #585858 ≈ #505664
     fg: 251,     // #c6c6c6 ≈ #cbccc6
-    muted: 245,  // #8a8a8a ≈ #7f8899
+    muted: 247,  // #9e9e9e — 4.9:1 on the panel (245 was 3.8:1 on the raised canvas)
     accent: 221, // #ffd75f ≈ #ffcc66
     iris: 81,    // #5fd7ff ≈ #73d0ff
     amber: 222,  // #ffd787 ≈ #ffd580
@@ -196,11 +207,11 @@ pub const AYU: Palette = Palette {
 /// Catppuccin — Mocha.
 pub const CATPPUCCIN: Palette = Palette {
     id: "catppuccin",
-    bg: 232, // #080808 — the canvas: the same near-black in every dark palette
-    panel: 234,
+    bg: 233, // #121212 ≈ #11111b — the theme's own near-black
+    panel: 235,
     border: 239, // #4e4e4e ≈ #45475a
     fg: 189,     // #d7d7ff ≈ #cdd6f4
-    muted: 103,  // #8787af ≈ #7f849c
+    muted: 246,  // #949494 — 5.0:1 on the panel (103 was 4.4:1)
     accent: 111, // #87afff ≈ #89b4fa
     iris: 117,   // #87d7ff
     amber: 223,  // #ffd7af ≈ #f9e2af
@@ -228,27 +239,27 @@ pub const CATPPUCCIN_LIGHT: Palette = Palette {
 /// Everforest, by sainnhe.
 pub const EVERFOREST: Palette = Palette {
     id: "everforest",
-    bg: 232, // #080808 — the canvas: the same near-black in every dark palette
-    panel: 234,
+    bg: 236, // #303030 ≈ #2b3339 — the theme's own warm charcoal
+    panel: 237,
     border: 59,  // #5f5f5f ≈ #586260
     fg: 188,     // #d7d7d7 ≈ #e2dbcb
-    muted: 245,  // #8a8a8a ≈ #87948b
+    muted: 248,  // #a8a8a8 — 4.8:1 on the panel (245 was 3.3:1 on the raised canvas)
     accent: 109, // #87afaf
     iris: 108,   // #87af87
     amber: 180,  // #d7af87 ≈ #dbbc7f
     green: 144,  // #afaf87 ≈ #a7c080
-    red: 174,    // #d78787 ≈ #e88a8c
-    purple: 175, // #d787af ≈ #d699b6
+    red: 210,    // #ff8787 — 4.9:1 on the panel (174 was 4.2:1)
+    purple: 176, // #d787d7 — 4.5:1 on the panel (175 was 4.3:1)
 };
 
 /// Everforest — Light.
 pub const EVERFOREST_LIGHT: Palette = Palette {
     id: "everforest-light",
-    bg: 255,     // #eeeeee ≈ #f3efdf
-    panel: 230,  // #ffffd7 ≈ #fdf6e3
+    bg: 230,     // #ffffd7 ≈ #f3efdf — the theme's own cream
+    panel: 254,  // #e4e4e4 — a grey step below the cream canvas
     border: 188, // #d7d7d7 ≈ #e0dccc
     fg: 239,     // #4e4e4e ≈ #414c51
-    muted: 242,  // #6c6c6c — 4.5:1 on the canvas (244 was 3.9:1)
+    muted: 241,  // #626262 — 4.8:1 on the panel (242 was 4.1:1)
     accent: 58,  // #5f5f00 ≈ #627300
     iris: 66,    // #5f8787 ≈ #377483
     amber: 94,   // #875f00 ≈ #8e6506
@@ -260,8 +271,8 @@ pub const EVERFOREST_LIGHT: Palette = Palette {
 /// Gruvbox, by Pavel Pertsev.
 pub const GRUVBOX: Palette = Palette {
     id: "gruvbox",
-    bg: 232, // #080808 — the canvas: the same near-black in every dark palette
-    panel: 234,
+    bg: 234, // #1c1c1c ≈ #1d2021 — the theme's own near-black
+    panel: 235,
     border: 239, // #4e4e4e ≈ #504945
     fg: 187,     // #d7d7af ≈ #ebdbb2
     muted: 138,  // #af8787 ≈ #a89984
@@ -292,27 +303,27 @@ pub const GRUVBOX_LIGHT: Palette = Palette {
 /// Kanagawa, by rebelot.
 pub const KANAGAWA: Palette = Palette {
     id: "kanagawa",
-    bg: 232, // #080808 — the canvas: the same near-black in every dark palette
-    panel: 234,
+    bg: 234, // #1c1c1c ≈ #1f1f28 — the theme's own near-black
+    panel: 235,
     border: 240, // #585858 ≈ #585653
     fg: 187,     // #d7d7af ≈ #dcd7ba
-    muted: 245,  // #8a8a8a — 4.5:1 here (244 was 4.3:1)
+    muted: 246,  // #949494 — 5.0:1 on the panel (245 was 4.4:1)
     accent: 110, // #87afd7 ≈ #7e9cd8
     iris: 116,   // #87d7d7
     amber: 180,  // #d7af87 ≈ #e6c384
     green: 107,  // #87af5f ≈ #98bb6c
-    red: 168,    // #d75f87 ≈ #e56e7b
-    purple: 103, // #8787af ≈ #957fb8
+    red: 174,    // #d78787 — 5.6:1 on the panel (168 was 4.2:1)
+    purple: 140, // #af87d7 — 5.2:1 on the panel (103 was 4.4:1)
 };
 
 /// Nightfox, by EdenEast.
 pub const NIGHTFOX: Palette = Palette {
     id: "nightfox",
-    bg: 232, // #080808 — the canvas: the same near-black in every dark palette
-    panel: 234,
+    bg: 235, // #262626 ≈ #192330 — the theme's own slate charcoal
+    panel: 236,
     border: 59,  // #5f5f5f ≈ #4e5a67
     fg: 252,     // #d0d0d0 ≈ #cdcecf
-    muted: 245,  // #8a8a8a ≈ #7d8b98
+    muted: 247,  // #9e9e9e — 4.9:1 on the panel (245 was 3.8:1)
     accent: 74,  // #5fafd7 ≈ #719cd6
     iris: 81,    // #5fd7ff
     amber: 180,  // #d7af87 ≈ #dbc074
@@ -324,8 +335,8 @@ pub const NIGHTFOX: Palette = Palette {
 /// Nord, by Arctic Ice Studio.
 pub const NORD: Palette = Palette {
     id: "nord",
-    bg: 232, // #080808 — the canvas: the same near-black in every dark palette
-    panel: 234,
+    bg: 236, // #303030 ≈ #2e3440 — the theme's own slate charcoal
+    panel: 237,
     border: 240, // #585858 ≈ #4c566a
     fg: 255,     // #eeeeee ≈ #eceff4
     muted: 109,  // #87afaf ≈ #9aa6bb
@@ -333,23 +344,23 @@ pub const NORD: Palette = Palette {
     iris: 146,   // #afafd7 ≈ #a3c0dd
     amber: 186,  // #d7d787 ≈ #ebcb8b
     green: 144,  // #afaf87 ≈ #a3be8c
-    red: 138,    // #af8787, lifted to 4.5:1 (131 = #af5f5f was 3.3:1)
-    purple: 139, // #af87af ≈ #b48ead
+    red: 210,    // #ff8787 — 4.9:1 on the panel (138 was 3.6:1)
+    purple: 182, // #d7afd7 — 5.7:1 on the panel (139 was 3.7:1)
 };
 
 /// Rosé Pine — Main.
 pub const ROSE_PINE: Palette = Palette {
     id: "rose-pine",
-    bg: 232, // #080808 — the canvas: the same near-black in every dark palette
-    panel: 234,
+    bg: 234, // #1c1c1c ≈ #191724 — the theme's own near-black
+    panel: 235,
     border: 238, // #444444 ≈ #393552
     fg: 189,     // #d7d7ff ≈ #e0def4
-    muted: 103,  // #8787af ≈ #8f8aa8
+    muted: 146,  // #afafd7 — 6.9:1 on the panel (103 was 4.4:1)
     accent: 182, // #d7afd7 ≈ #c4a7e7
     iris: 74,    // #5fafd7 ≈ #6cb2cc
     amber: 216,  // #ffaf87 ≈ #f6c177
     green: 152,  // #afd7d7 ≈ #9ccfd8
-    red: 168,    // #d75f87 ≈ #eb6f92
+    red: 174,    // #d78787 — 5.6:1 on the panel (168 was 4.2:1)
     purple: 141, // #af87ff
 };
 
@@ -372,8 +383,8 @@ pub const ROSE_PINE_LIGHT: Palette = Palette {
 /// Solarized — Dark.
 pub const SOLARIZED: Palette = Palette {
     id: "solarized",
-    bg: 232, // #080808 — the canvas: the same near-black in every dark palette
-    panel: 234,
+    bg: 234, // #1c1c1c ≈ #002b36 — the theme's own near-black (the cube has no dark teal)
+    panel: 235,
     border: 23,  // #005f5f ≈ #12505f
     fg: 254,     // #e4e4e4 ≈ #eee8d5
     muted: 247,  // #9e9e9e ≈ #8ba09c
@@ -382,7 +393,7 @@ pub const SOLARIZED: Palette = Palette {
     amber: 179,  // #d7af5f ≈ #e2c261
     green: 143,  // #afaf5f ≈ #b5bb63
     red: 210,    // #ff8787 ≈ #f08a7f
-    purple: 103, // #8787af, lifted to 4.5:1 (61 = #5f5faf was 2.7:1)
+    purple: 104, // #8787d7 — 4.7:1 on the panel (103 was 4.4:1)
 };
 
 /// Solarized — Light.
@@ -404,11 +415,11 @@ pub const SOLARIZED_LIGHT: Palette = Palette {
 /// Tokyo Night, by enkia.
 pub const TOKYO_NIGHT: Palette = Palette {
     id: "tokyo-night",
-    bg: 232, // #080808 — the canvas: the same near-black in every dark palette
-    panel: 234,
+    bg: 234, // #1c1c1c ≈ #1a1b26 — the theme's own near-black
+    panel: 235,
     border: 59,  // #5f5f5f ≈ #4f546f
     fg: 153,     // #afd7ff ≈ #c0caf5
-    muted: 103,  // #8787af ≈ #7f87ad
+    muted: 146,  // #afafd7 — 6.9:1 on the panel (103 was 4.4:1)
     accent: 111, // #87afff ≈ #88acf8
     iris: 117,   // #87d7ff
     amber: 179,  // #d7af5f ≈ #e0af68
@@ -420,11 +431,11 @@ pub const TOKYO_NIGHT: Palette = Palette {
 /// Vesper, by Rauno Freiberg.
 pub const VESPER: Palette = Palette {
     id: "vesper",
-    bg: 232, // #080808 — the canvas: the same near-black in every dark palette
-    panel: 234,
+    bg: 233, // #121212 ≈ #101010 — the theme's own near-black
+    panel: 235,
     border: 239, // #4e4e4e ≈ #4e4e4e
     fg: 188,     // #d7d7d7 ≈ #d7d7d7
-    muted: 245,  // #8a8a8a — 4.5:1 here (244 was 4.3:1)
+    muted: 246,  // #949494 — 5.0:1 on the panel (245 was 4.4:1)
     accent: 222, // #ffd787 ≈ #ffc799
     iris: 116,   // #87d7d7 ≈ #8fc8e0
     amber: 215,  // #ffaf5f
@@ -856,30 +867,52 @@ mod tests {
         (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
     }
 
-    /// The dark canvases are all the same near-black, with the panel a visible
-    /// step above. This is the fix for "every theme's background is not black
-    /// enough": the canvas used to be the terminal's (`#282c34` on Ghostty),
-    /// which no palette value could make black.
+    /// Each palette paints its own canvas, and the catalogue is not flattened
+    /// onto one near-black.
+    ///
+    /// The canvas used to be a single `232` for every dark palette — the fix for
+    /// "every theme's background is not black enough", since before that it was
+    /// the terminal's (`#282c34` on Ghostty), which no palette value could make
+    /// black. Twenty-two palettes on one canvas then made the catalogue read as
+    /// one theme with different accents, so each entry now carries the nearest
+    /// 256-colour step to its own background (module note). This pins the
+    /// spread: a palette added later brings its own canvas or fails here.
     #[test]
-    fn every_dark_canvas_is_the_same_near_black() {
+    fn every_palette_paints_its_own_canvas() {
+        let mut dark: Vec<u8> = PALETTES
+            .iter()
+            .filter(|palette| !is_light(palette))
+            .map(|palette| palette.bg)
+            .collect();
+        dark.sort_unstable();
+        dark.dedup();
+        assert!(
+            dark.len() >= 5,
+            "the dark palettes share one canvas again: {dark:?}"
+        );
+        let spread = i32::from(luma(*dark.last().unwrap())) - i32::from(luma(dark[0]));
+        assert!(
+            spread >= 32,
+            "the dark canvases span only {spread} luma steps: {dark:?}"
+        );
         for palette in PALETTES.iter() {
-            let light = palette.id == "light" || palette.id.ends_with("-light");
-            if light {
-                continue;
+            if palette.id != FUTURE_DARK.id {
+                assert_ne!(
+                    palette.bg, FUTURE_DARK.bg,
+                    "{} borrows the default palette's canvas",
+                    palette.id
+                );
             }
-            if palette.id == "high-contrast" {
-                // The one palette that deliberately goes to true black.
-                assert_eq!((palette.bg, palette.panel), (16, 17));
-                continue;
-            }
-            assert_eq!(palette.bg, 232, "{}: canvas", palette.id);
-            assert_eq!(palette.panel, 234, "{}: panel", palette.id);
             assert!(
                 contrast_ratio(palette.bg, palette.panel) > 1.1,
                 "{}: the panel must be a visible step above the canvas",
                 palette.id
             );
         }
+        // The one palette that is deliberately true black, on a neutral panel:
+        // `17` is the cube's navy, not a dark grey.
+        assert_eq!(HIGH_CONTRAST.bg, 16);
+        assert!(contrast_ratio(HIGH_CONTRAST.bg, HIGH_CONTRAST.panel) > 1.1);
     }
 
     /// Every text role has to be readable on both backgrounds it can sit on.
