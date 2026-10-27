@@ -83,7 +83,6 @@ with `t(lang, …)`, deleting its row and lowering `BUDGET` by one.
 | `components/chat_area.rs:2010` | `tool call` | the reply summary counts tools in English, pluralised inline |
 | `components/chat_area.rs:2010` | `tool calls` | the plural half of the same count |
 | `components/chat_area.rs:2080` | `  … {hidden} more line{plural} · {hint}` | the folded-output footer: pluralised inline and cut to width |
-| `components/chat_area.rs:2085` | `ctrl+g to expand` | the footer's hint half (the other half is `truncated`, one word, so the rule  does not reach it) |
 | `workbench/live.rs:309` | `Could not load the transcript: {error}` | notice: the transcript failed to load |
 | `workbench/live.rs:323` | `Could not load older rows: {error}` | notice: the page above the transcript failed to load |
 | `workbench/live.rs:440, 1167` | `Approve tool execution` | notice: the approval card's title |

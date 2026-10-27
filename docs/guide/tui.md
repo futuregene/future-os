@@ -287,6 +287,7 @@ click on the rail's tab strip are the doors to the same places.
 | `[` / `]` | In the preview box: previous/next picture in the same folder (the same action as its step buttons) |
 | `esc` (in the preview box) | Back one level, not out of the tree: a file opened from the files panel or the `/git` browser returns to that panel, and only its own `esc` reaches the chat. A picture opened from the draft had nothing under it, so it closes onto the chat |
 | `/copy` | Copy the last assistant answer as clean content, without terminal chrome |
+| `/tool-output` | Tool call bodies: every call's output underneath its row (up to 200 rows per call), or folded away again. Collapsed, a call is one row (a *failed* one keeps its body either way), and the `… N more lines` marker under a long body names this verb — it had no chord, and `ctrl+g` answers the git browser |
 | `/mouse` | Toggle and persist mouse capture off/on for native terminal selection |
 | 偏好设置 → 动态 | Toggle reduced motion (persisted; no chord) |
 | `ctrl+t` | Thinking effort: opens the six-level chooser (`/thinking`); on the launchpad the level is staged for the session the first message creates |
