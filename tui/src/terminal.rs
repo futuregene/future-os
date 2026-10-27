@@ -757,6 +757,25 @@ impl Terminal {
         }
     }
 
+    /// The size to compose a frame for *right now*: the terminal's own, read
+    /// fresh.
+    ///
+    /// [`Self::columns`]/[`Self::rows`] answer from the cached size — the one
+    /// taken at construction and at the last `SIGWINCH`. A resize that never
+    /// reaches this process (a pane resized while nothing was draining the
+    /// signal pipe, a font zoom, a multiplexer that applies the new size to the
+    /// pty under an attached client) leaves that cache describing the
+    /// *previous* terminal, and every frame composed from it is that older
+    /// terminal's frame: the composer stops short of the window's right edge and
+    /// the cells beside it still hold the frame before — text the reader never
+    /// typed, sitting exactly where the draft continues. One `TIOCGWINSZ` per
+    /// frame is what keeps the two the same size; a terminal that reports no
+    /// size at all keeps the cached one (see [`Self::refresh_size`]).
+    pub fn fresh_size(&self) -> (u16, u16) {
+        self.refresh_size();
+        (self.columns(), self.rows())
+    }
+
     pub fn move_by(&self, lines: i32) {
         if lines > 0 {
             write_str(&self.write_lock, &format!("\x1b[{lines}B"));
@@ -1459,6 +1478,53 @@ mod tests {
             // the surface is composed for the terminal that exists.
             t.refresh_size();
             assert_eq!((t.columns(), t.rows()), (120, 37));
+
+            libc::dup2(saved1, 1);
+            drain_stop.store(true, Ordering::SeqCst);
+            drainer.join().unwrap();
+            libc::close(saved1);
+            libc::close(slave);
+            libc::close(master);
+        }
+    }
+
+    /// Every frame asks the terminal for its size, so a resize the process was
+    /// never notified about costs one frame at most: the next one is composed
+    /// for the terminal that exists. Composing from the cached size instead is
+    /// how a window that grew kept a composer as narrow as the old one, with
+    /// the previous frame's cells still readable beside the draft.
+    #[cfg(unix)]
+    #[test]
+    fn every_frame_asks_for_the_size_rather_than_trusting_the_cache() {
+        let _guard = crate::test_env::lock();
+        unsafe {
+            let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+            assert!(master >= 0);
+            assert_eq!(libc::grantpt(master), 0);
+            assert_eq!(libc::unlockpt(master), 0);
+            let slave = libc::open(libc::ptsname(master), libc::O_RDWR | libc::O_NOCTTY);
+            assert!(slave >= 0);
+            let mut ws: libc::winsize = std::mem::zeroed();
+            ws.ws_col = 73;
+            ws.ws_row = 24;
+            assert_eq!(libc::ioctl(slave, libc::TIOCSWINSZ, &mut ws), 0);
+            let saved1 = libc::dup(1);
+            assert_ne!(libc::dup2(slave, 1), -1);
+            let drain_stop = Arc::new(AtomicBool::new(false));
+            let drainer = drain_pty_master(master, Arc::clone(&drain_stop));
+
+            let t = Terminal::new().unwrap();
+            assert_eq!((t.columns(), t.rows()), (73, 24));
+
+            // The window grows and nothing tells the process: no signal, no
+            // self-pipe byte — exactly a missed notification.
+            ws.ws_col = 112;
+            ws.ws_row = 30;
+            assert_eq!(libc::ioctl(slave, libc::TIOCSWINSZ, &mut ws), 0);
+            assert_eq!((t.columns(), t.rows()), (73, 24), "the cache is stale");
+
+            // The frame for this iteration is the terminal's own size.
+            assert_eq!(t.fresh_size(), (112, 30));
 
             libc::dup2(saved1, 1);
             drain_stop.store(true, Ordering::SeqCst);

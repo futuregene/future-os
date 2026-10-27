@@ -507,6 +507,17 @@ fn format_parsed_key(
         char::from_u32(effective_codepoint as u32).map(|c| c.to_string())
     } else if SYMBOL_KEYS.contains(&char::from_u32(effective_codepoint as u32).unwrap_or('\0')) {
         char::from_u32(effective_codepoint as u32).map(|c| c.to_string())
+    } else if (0x20..=0x10ffff).contains(&effective_codepoint) && effective_codepoint != 0x7f {
+        // Any other printable character is *that character*. Kitty reports
+        // every key as `CSI codepoint u` once it is asked to, and a terminal
+        // with an IME commits text through it — the full-width comma arrives as
+        // `CSI 65292;1:3u` (with `:3` for a key *release*). Refusing to name a
+        // codepoint outside the letter/digit/symbol tables meant the sequence
+        // parsed as nothing, and the reader's own input fell through to the
+        // "unrecognised, keep it as text" path: `ESC[65292;1:3u` was typed into
+        // the draft as twelve literal characters, which the frame then re-emitted
+        // for the terminal to eat as an escape.
+        char::from_u32(effective_codepoint as u32).map(|c| c.to_string())
     } else {
         None
     };
@@ -1781,9 +1792,20 @@ mod tests {
         assert_eq!(format_parsed_key(53, 0, None).as_deref(), Some("5"));
         assert_eq!(format_parsed_key(122, 0, None).as_deref(), Some("z"));
         assert_eq!(format_parsed_key(33, 0, None).as_deref(), Some("!"));
-        // Unknown codepoint without a base layout key → None.
-        assert_eq!(format_parsed_key(0x2603, 0, None), None);
-        // …but a base layout key rescues it.
+        // Any other printable codepoint is itself: kitty reports every key as a
+        // codepoint, and a terminal with an IME sends text that way (the
+        // full-width comma of `ESC[65292;1:3u`). Naming it keeps that text out
+        // of the draft's *escape* path.
+        assert_eq!(format_parsed_key(0x2603, 0, None).as_deref(), Some("☃"));
+        assert_eq!(format_parsed_key(65292, 0, None).as_deref(), Some("，"));
+        assert_eq!(format_parsed_key(20320, 0, None).as_deref(), Some("你"));
+        // Control codepoints are still only the keys named above.
+        assert_eq!(
+            format_parsed_key(0x7f, 0, None).as_deref(),
+            Some("backspace")
+        );
+        assert_eq!(format_parsed_key(1, 0, None), None);
+        // …and a base layout key rescues an unnamed one.
         assert_eq!(format_parsed_key(0x2603, 0, Some(99)).as_deref(), Some("c"));
         // Modifiers: super joins the list; unsupported bits reject.
         assert_eq!(
