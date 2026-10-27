@@ -839,8 +839,8 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "Open this conversation's workspace files",
         ),
         GitHint => (
-            "1-4 视图 · ↑↓ 选择 · tab 列表/详情 · ⏎ 打开 · y 复制 · r 刷新 · esc 关闭",
-            "1-4 views · ↑↓ select · tab list/detail · enter opens · y copies · r refreshes · esc closes",
+            "1-4 视图 · ↑↓ 选择 · tab 列表/详情 · PgUp/PgDn 详情翻页 · ⏎ 打开 · y 复制 · r 刷新 · esc 关闭",
+            "1-4 views · ↑↓ select · tab list/detail · PgUp/PgDn pages the detail · enter opens · y copies · r refreshes · esc closes",
         ),
         GitTabCommits => ("提交", "commits"),
         GitTabRefs => ("引用", "refs"),

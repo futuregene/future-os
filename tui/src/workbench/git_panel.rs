@@ -28,7 +28,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use super::i18n::{t, Key, Language};
-use super::state::{GitRow, GitSection, GitView};
+use super::state::{GitKind, GitRow, GitSection, GitView};
 
 /// How many commits one log read asks for. A page, not the history: the reader
 /// scrolls a screen at a time, and `--graph` on a repository with 10⁵ commits is
@@ -110,6 +110,11 @@ pub fn rows(cwd: &Path, section: GitSection, filter: Option<&str>) -> Result<Vec
 }
 
 /// `git log --graph`, parsed into rows.
+///
+/// With no filter this is every branch, remote branch and tag as one timeline
+/// — the graph is the panel's point, and a graph of one branch is a straight
+/// line with no branch in it. A filter is one line of work and is read on its
+/// own.
 fn commits(cwd: &Path, filter: Option<&str>) -> Result<Vec<GitRow>, String> {
     // `%x1e` / `%x1f` are git's own escapes for RS and US: a subject is free
     // text, so the field separator has to be a byte a subject cannot contain.
@@ -123,8 +128,18 @@ fn commits(cwd: &Path, filter: Option<&str>) -> Result<Vec<GitRow>, String> {
         limit.as_str(),
         pretty,
     ];
-    if let Some(reference) = filter {
-        args.push(reference);
+    match filter {
+        Some(reference) => args.push(reference),
+        // Every branch, tag and remote-tracking branch — the three groups the
+        // refs tab lists, so the log and that tab describe the same repository.
+        // `--all` would also pull in `refs/stash` (a stash is a commit tree), and
+        // a stash entry sitting in the log as if it were a branch is noise the
+        // refs tab does not have. `--date-order` keeps a parent above its child,
+        // which is what makes the lanes readable when several lines of work are
+        // interleaved. Naming `HEAD` as well would be the obvious way to cover a
+        // detached checkout, but on an unborn branch it is a fatal error — and
+        // that error takes the other branches' commits down with it.
+        None => args.extend_from_slice(&["--branches", "--remotes", "--tags", "--date-order"]),
     }
     // `--` ends revision parsing: a branch name that also names a path (a
     // `release` *file* beside a `release` branch) would otherwise be resolved
@@ -145,6 +160,7 @@ fn commits(cwd: &Path, filter: Option<&str>) -> Result<Vec<GitRow>, String> {
 /// continuation (`|\`, `|/`) and stays a non-selectable row so the drawing keeps
 /// its shape.
 pub fn parse_log(text: &str) -> Vec<GitRow> {
+    use GitKind::{Decoration, Meta, Plain, Sha};
     text.lines()
         .map(|line| match line.find(RECORD) {
             Some(at) => {
@@ -156,22 +172,35 @@ pub fn parse_log(text: &str) -> Vec<GitRow> {
                 let decorations = fields.get(3).copied().unwrap_or("");
                 let subject = fields.get(4).copied().unwrap_or("");
                 // The subject leads — it is what a reader scans — and the rest
-                // are whole pieces a narrow box drops one at a time.
-                let pieces = [subject, decorations, &sha, date, author]
-                    .into_iter()
-                    .filter(|piece| !piece.is_empty())
-                    .map(str::to_string)
-                    .collect();
+                // are whole pieces a narrow box drops one at a time. Each one
+                // travels with what it is, so the painter colours a field by
+                // meaning and not by where it happened to land.
+                let mut pieces = Vec::new();
+                let mut kinds = Vec::new();
+                for (piece, kind) in [
+                    (subject, Plain),
+                    (decorations, Decoration),
+                    (sha.as_str(), Sha),
+                    (date, Meta),
+                    (author, Meta),
+                ] {
+                    if !piece.is_empty() {
+                        pieces.push(piece.to_string());
+                        kinds.push(kind);
+                    }
+                }
                 GitRow {
                     key: Some(sha),
                     prefix,
                     pieces,
+                    kinds,
                 }
             }
             None => GitRow {
                 key: None,
                 prefix: line.trim_end().to_string(),
                 pieces: Vec::new(),
+                kinds: Vec::new(),
             },
         })
         .collect()
@@ -226,11 +255,21 @@ pub fn parse_refs(text: &str) -> Vec<GitRow> {
             } else {
                 short.to_string()
             };
-            let pieces = [name.as_str(), track, upstream, sha, date, subject]
-                .into_iter()
-                .filter(|piece| !piece.is_empty())
-                .map(str::to_string)
-                .collect();
+            let mut pieces = Vec::new();
+            let mut kinds = Vec::new();
+            for (piece, kind) in [
+                (name.as_str(), GitKind::Ref),
+                (track, GitKind::Meta),
+                (upstream, GitKind::Meta),
+                (sha, GitKind::Sha),
+                (date, GitKind::Meta),
+                (subject, GitKind::Plain),
+            ] {
+                if !piece.is_empty() {
+                    pieces.push(piece.to_string());
+                    kinds.push(kind);
+                }
+            }
             GitRow {
                 key: Some(full),
                 // `●` marks the branch this checkout is on, the same badge
@@ -241,6 +280,7 @@ pub fn parse_refs(text: &str) -> Vec<GitRow> {
                     String::new()
                 },
                 pieces,
+                kinds,
             }
         })
         .collect()
@@ -256,6 +296,7 @@ fn status(cwd: &Path) -> Result<Vec<GitRow>, String> {
             key: Some(file.path.clone()),
             prefix: format!("{} ", file.status),
             pieces: vec![file.path],
+            kinds: vec![GitKind::Plain],
         })
         .collect())
 }
@@ -289,15 +330,19 @@ pub fn parse_stashes(text: &str) -> Vec<GitRow> {
         let reference = fields.first().copied().unwrap_or("").to_string();
         let date = fields.get(1).copied().unwrap_or("");
         let message = fields.get(2).copied().unwrap_or("").trim();
-        let pieces = [message, date]
-            .into_iter()
-            .filter(|piece| !piece.is_empty())
-            .map(str::to_string)
-            .collect();
+        let mut pieces = Vec::new();
+        let mut kinds = Vec::new();
+        for (piece, kind) in [(message, GitKind::Plain), (date, GitKind::Meta)] {
+            if !piece.is_empty() {
+                pieces.push(piece.to_string());
+                kinds.push(kind);
+            }
+        }
         rows.push(GitRow {
             key: Some(reference),
             prefix: format!("#{index} "),
             pieces,
+            kinds,
         });
     }
     rows

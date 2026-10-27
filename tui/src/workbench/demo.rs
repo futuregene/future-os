@@ -12,8 +12,8 @@
 use crate::workbench::ansi::style;
 use crate::workbench::i18n::{t, Key};
 use crate::workbench::state::{
-    Activity, ActivityKind, GitRow, GitSection, GitView, InputView, ModelChoice, SessionMeta,
-    SessionRow, SkillRow, UsageData, WorkbenchData, WorkspaceGroup,
+    Activity, ActivityKind, GitKind, GitRow, GitSection, GitView, InputView, ModelChoice,
+    SessionMeta, SessionRow, SkillRow, UsageData, WorkbenchData, WorkspaceGroup,
 };
 use crate::workbench::theme::FUTURE_DARK;
 
@@ -205,12 +205,16 @@ pub fn git() -> GitView {
     let commits = vec![
         row(
             Some("9e4a47d2a"),
-            "* ",
+            "*   ",
             &[
-                "fix(mobile): stop folding code blocks",
-                "HEAD -> dev-huichen, origin/dev-huichen",
-                "2026-10-27",
-                "huichen",
+                ("feat(tui): a git panel for the workbench", GitKind::Plain),
+                (
+                    "HEAD -> dev-huichen, origin/dev-huichen",
+                    GitKind::Decoration,
+                ),
+                ("9e4a47d2a", GitKind::Sha),
+                ("2026-10-27", GitKind::Meta),
+                ("huichen", GitKind::Meta),
             ],
         ),
         row(None, "|\\", &[]),
@@ -218,36 +222,43 @@ pub fn git() -> GitView {
             Some("4c1b8f0e3"),
             "| * ",
             &[
-                "feat(tui): a git panel for the workbench",
-                "feat/tui-git-panel",
-                "2026-10-27",
-                "huichen",
+                ("fix(mobile): stop folding code blocks", GitKind::Plain),
+                ("fix/mobile-code-block", GitKind::Decoration),
+                ("4c1b8f0e3", GitKind::Sha),
+                ("2026-10-27", GitKind::Meta),
+                ("huichen", GitKind::Meta),
+            ],
+        ),
+        row(
+            Some("7cefc9cea"),
+            "| * ",
+            &[
+                ("docs: goal control plane notes", GitKind::Plain),
+                ("tag: v0.11.0", GitKind::Decoration),
+                ("7cefc9cea", GitKind::Sha),
+                ("2026-10-25", GitKind::Meta),
+                ("huichen", GitKind::Meta),
             ],
         ),
         row(None, "|/", &[]),
         row(
             Some("ae142f75a"),
             "* ",
-            &["fix(tui): one row per record", "", "2026-10-26", "huichen"],
-        ),
-        row(
-            Some("7cefc9cea"),
-            "* ",
             &[
-                "docs: goal control plane notes",
-                "tag: v0.11.0",
-                "2026-10-25",
-                "huichen",
+                ("fix(tui): one row per record", GitKind::Plain),
+                ("ae142f75a", GitKind::Sha),
+                ("2026-10-26", GitKind::Meta),
+                ("huichen", GitKind::Meta),
             ],
         ),
         row(
             Some("56ec934f6"),
             "* ",
             &[
-                "chore(deps): bump the rust toolchain",
-                "",
-                "2026-10-24",
-                "huichen",
+                ("chore(deps): bump the rust toolchain", GitKind::Plain),
+                ("56ec934f6", GitKind::Sha),
+                ("2026-10-24", GitKind::Meta),
+                ("huichen", GitKind::Meta),
             ],
         ),
     ];
@@ -266,16 +277,22 @@ pub fn git() -> GitView {
     }
 }
 
-/// One painted `/git` row: the gutter, then the fields that fit.
-fn row(key: Option<&str>, prefix: &str, pieces: &[&str]) -> GitRow {
+/// One painted `/git` row: the gutter, then the fields that fit, each with what
+/// it is so the frame paints it the way the real read would.
+fn row(key: Option<&str>, prefix: &str, pieces: &[(&str, GitKind)]) -> GitRow {
+    let pieces: Vec<(&str, GitKind)> = pieces
+        .iter()
+        .copied()
+        .filter(|(piece, _)| !piece.is_empty())
+        .collect();
     GitRow {
         key: key.map(str::to_string),
         prefix: prefix.to_string(),
         pieces: pieces
             .iter()
-            .filter(|piece| !piece.is_empty())
-            .map(|piece| (*piece).to_string())
+            .map(|(piece, _)| (*piece).to_string())
             .collect(),
+        kinds: pieces.iter().map(|(_, kind)| *kind).collect(),
     }
 }
 

@@ -678,6 +678,24 @@ impl GitSection {
     pub const ALL: [GitSection; 4] = [Self::Commits, Self::Refs, Self::Status, Self::Stash];
 }
 
+/// What one field of a `/git` row *is*, so the painter colours it by meaning
+/// instead of by position: an empty field is dropped from [`GitRow::pieces`],
+/// so `pieces[2]` is a sha only on the rows that happen to have a date.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum GitKind {
+    /// A subject, a path, a stash message: the row's body text.
+    #[default]
+    Plain,
+    /// A branch, remote or tag name.
+    Ref,
+    /// A commit's decorations — `HEAD -> main, origin/main, tag: v1`.
+    Decoration,
+    /// A short object id.
+    Sha,
+    /// A date, an author, upstream tracking counts: a note beside the body.
+    Meta,
+}
+
 /// One painted line of the `/git` list.
 ///
 /// `key` is what the row *is* (`abc1234`, `refs/heads/main`, `src/a.rs`,
@@ -693,6 +711,17 @@ pub struct GitRow {
     /// The row's fields, most important first — a narrow box drops the tail
     /// whole rather than cutting a field in half.
     pub pieces: Vec<String>,
+    /// What each of `pieces` is, in the same order. Shorter than `pieces` (or
+    /// empty) reads as [`GitKind::Plain`], which is what a caller that only has
+    /// text — a test, a demo — can honestly say.
+    pub kinds: Vec<GitKind>,
+}
+
+impl GitRow {
+    /// The kind of `pieces[index]`, [`GitKind::Plain`] past the end of `kinds`.
+    pub fn kind(&self, index: usize) -> GitKind {
+        self.kinds.get(index).copied().unwrap_or_default()
+    }
 }
 
 /// The `/git` panel's content: one section's rows plus the selected row's
@@ -817,6 +846,7 @@ mod tests {
             key: key.map(str::to_string),
             prefix: String::new(),
             pieces: Vec::new(),
+            kinds: Vec::new(),
         };
         let view = GitView {
             rows: vec![
