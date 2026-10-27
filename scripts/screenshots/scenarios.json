@@ -834,6 +834,35 @@
           }
         ]
       },
+      "user-bubble-border-variants": {
+        "note": "Variant sheet: the user's own message with and without the accent hairline around its soft fill. The window is narrower than the default and the frame is the first user message, because two 1280 panels halve a 2x capture and a 1px hairline then becomes a judgement about a blur. The frame is scrolled last — the fixture's approval card settles after boot and would move the bubble under an earlier scroll — and it is asserted to be fully on screen, so a sheet that framed something else fails instead of looking plausible.",
+        "width": 900,
+        "variantsTitle": "会话历史 · 用户输入气泡：有边框 / 无边框",
+        "variants": [
+          {
+            "label": "A · 有边框（现在的样子）",
+            "inject": "injects/user-bubble-border-on.js"
+          },
+          {
+            "label": "B · 无边框（只剩浅底色）",
+            "inject": "injects/user-bubble-border-off.js"
+          }
+        ],
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          { "wait": 2500 },
+          {
+            "eval": "(() => { const el = document.querySelector('[data-message-id=\"m_e1\"] > div:nth-child(2)'); if (!el) throw new Error('the conversation has no user bubble to frame'); el.scrollIntoView({ block: 'center' }); })()"
+          },
+          { "wait": 900 },
+          {
+            "eval": "(() => { const el = document.querySelector('[data-message-id=\"m_e1\"] > div:nth-child(2)'); const r = el.getBoundingClientRect(); if (r.top < 80 || r.bottom > innerHeight - 80) throw new Error('the user bubble is not framed: ' + JSON.stringify([r.top, r.bottom, innerHeight])); if (r.width < 200) throw new Error('the framed element is not a bubble: width ' + r.width); return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]; })()"
+          },
+          { "inject": "{variantInject}" },
+          { "wait": 400 },
+          { "shot": "d-user-bubble-border.png" }
+        ]
+      },
       "compare-baseline": {
         "note": "Left/right pair for `compare-desktop`; the variants sheet is the other side.",
         "steps": [
