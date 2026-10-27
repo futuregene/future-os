@@ -192,7 +192,7 @@ pub fn render(
         title.push_str(&i18n::render(lang, Key::AttachmentsInDraft, &[&images]));
     }
     let (box_rows, cursor_column, cursor_row) =
-        widgets::input_lines(palette, content_width, &data.input, &title, true);
+        widgets::input_lines(palette, content_width, &data.input, &title);
     let box_top_row = lines.len();
     for (index, row) in box_rows.iter().enumerate() {
         push(&mut lines, row.clone());
@@ -551,6 +551,23 @@ mod tests {
             rows[prompt - 1]
         );
         assert!(cursor.is_some(), "{text}");
+    }
+
+    #[test]
+    fn the_launchpad_is_one_canvas_behind_its_prompt() {
+        // The prompt box is the focus of this screen because it carries the
+        // cursor and the wordmark above it, not because it was filled with the
+        // panel colour — a filled box read as a second surface inside the
+        // canvas (the reader asked for one background on both composers).
+        let data = demo::launchpad();
+        let mut hit = HitMap::new();
+        let (lines, _) = render(&data, &P, Rect::new(0, 0, 120, 38), &mut hit, LANG, None);
+        for line in &lines {
+            assert!(
+                !line.contains("\x1b[48;5;"),
+                "the launchpad paints a background: {line:?}"
+            );
+        }
     }
 
     #[test]

@@ -164,7 +164,6 @@ pub(crate) fn compose(
             frame.input.w as usize,
             &data.input,
             &title,
-            true,
             frame.compact,
         );
         let input_lines = input_lines
