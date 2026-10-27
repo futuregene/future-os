@@ -545,6 +545,15 @@ pub struct Workbench {
     /// for the same reason — a detail pane that scrolls while the cursor moves
     /// is two things on one key.
     pub git_detail_focus: bool,
+    /// Is the last painted `/git` frame the wide layout, with the detail beside
+    /// the list? Only the renderer knows, and it decides what `pageUp`/
+    /// `pageDown` page: a detail that is on screen gets the keys even while the
+    /// list holds the cursor.
+    pub git_split: bool,
+    /// How many rows the painted `/git` detail body is at the pane's width —
+    /// again the renderer's number, and the one that stops a scroll at the end
+    /// instead of running past it into a blank pane.
+    pub git_detail_rows: usize,
     pub history_query: String,
     session_key: String,
     pub mouse_capture: bool,
@@ -656,6 +665,8 @@ impl Workbench {
             list_page: 10,
             diff_patch_focus: true,
             git_detail_focus: false,
+            git_split: false,
+            git_detail_rows: 0,
             history_query: String::new(),
             session_key: String::new(),
             mouse_capture: true,
@@ -2252,25 +2263,34 @@ impl Workbench {
             "down" | "j" if !self.git_detail_focus => self.move_git(data, 1),
             "up" | "k" => {
                 self.overlay_scroll = self.overlay_scroll.saturating_sub(1);
+                self.clamp_git_scroll(1);
                 vec![WbAction::Redraw]
             }
             "down" | "j" => {
                 self.overlay_scroll += 1;
+                self.clamp_git_scroll(1);
+                vec![WbAction::Redraw]
+            }
+            "pageUp" | "pageDown" if self.git_split || self.git_detail_focus => {
+                // The detail is the pane with a body longer than the box, and in
+                // the wide layout it is on screen beside the list whatever owns
+                // the cursor — so the page keys page it, which is what a reader
+                // scanning a long patch reaches for.
+                let page = self.list_page.max(1);
+                self.overlay_scroll = if key == "pageUp" {
+                    self.overlay_scroll.saturating_sub(page)
+                } else {
+                    self.overlay_scroll + page
+                };
+                self.clamp_git_scroll(page);
                 vec![WbAction::Redraw]
             }
             "pageUp" | "pageDown" | "space" => {
                 let page = self.list_page.max(1);
                 let back = key == "pageUp";
-                if self.git_detail_focus {
-                    self.overlay_scroll = if back {
-                        self.overlay_scroll.saturating_sub(page)
-                    } else {
-                        self.overlay_scroll + page
-                    };
-                    return vec![WbAction::Redraw];
-                }
                 let next = git.page(self.workflow_index, page, !back);
                 self.workflow_index = next;
+                self.overlay_scroll = 0;
                 git.selectable(next)
                     .then_some(vec![WbAction::SelectGit(next)])
                     .unwrap_or_default()
@@ -2278,6 +2298,7 @@ impl Workbench {
             "home" | "g" if !self.git_detail_focus => match git.first() {
                 Some(index) => {
                     self.workflow_index = index;
+                    self.overlay_scroll = 0;
                     vec![WbAction::SelectGit(index)]
                 }
                 None => Vec::new(),
@@ -2285,6 +2306,7 @@ impl Workbench {
             "end" | "G" if !self.git_detail_focus => match git.last() {
                 Some(index) => {
                     self.workflow_index = index;
+                    self.overlay_scroll = 0;
                     vec![WbAction::SelectGit(index)]
                 }
                 None => Vec::new(),
@@ -2327,6 +2349,9 @@ impl Workbench {
         };
         let next = git.step(self.workflow_index, direction);
         self.workflow_index = next;
+        // Another row is another document: a patch left half-read must not carry
+        // its scroll onto one the reader has not seen.
+        self.overlay_scroll = 0;
         git.selectable(next)
             .then_some(vec![WbAction::SelectGit(next)])
             .unwrap_or_default()
@@ -2929,6 +2954,7 @@ impl Workbench {
                     }
                     self.workflow_index = index;
                     self.git_detail_focus = false;
+                    self.overlay_scroll = 0;
                     return vec![WbAction::SelectGit(index)];
                 }
                 if let Some(index) = id
@@ -3293,6 +3319,28 @@ impl Workbench {
     /// cursor by exactly that many.
     pub(crate) fn set_list_page(&mut self, rows: usize) {
         self.list_page = rows.max(1);
+    }
+
+    /// The painted `/git` layout, set by the compositor for the same reason as
+    /// [`Self::set_list_page`]: whether the detail pane is on screen decides who
+    /// owns the page keys.
+    pub(crate) fn set_git_split(&mut self, split: bool) {
+        self.git_split = split;
+    }
+
+    /// How many rows the painted `/git` detail body is, so a scroll can stop at
+    /// its end.
+    pub(crate) fn set_git_detail_rows(&mut self, rows: usize) {
+        self.git_detail_rows = rows;
+    }
+
+    /// Keep the `/git` detail's offset inside its body: the last screenful is
+    /// the last position, so paging up from the end never needs two presses
+    /// (the painter would clamp the same way, but the offset it clamped would
+    /// stay in the state and swallow the next `pageUp`).
+    fn clamp_git_scroll(&mut self, page: usize) {
+        let limit = self.git_detail_rows.saturating_sub(page.max(1));
+        self.overlay_scroll = self.overlay_scroll.min(limit);
     }
 
     /// The first region this frame's overlay painted — set by the compositor so
@@ -7427,6 +7475,72 @@ mod tests {
         );
     }
 
+    /// The page keys page the detail pane, not the cursor: in the wide layout the
+    /// patch is on screen beside the list, so `pageDown` moves through it while
+    /// the arrow stays on its commit, and a scroll never runs past the last
+    /// screenful. The narrow layout shows one pane at a time, so the pane holding
+    /// the keys is the one that pages.
+    #[test]
+    fn the_git_page_keys_page_the_detail_pane() {
+        let mut data = demo::chat();
+        let mut git = demo::git();
+        // The demo's own detail fits in the pane; a real commit's does not.
+        git.detail = (0..120).map(|line| format!("+line {line}")).collect();
+        data.git = Some(git);
+
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Git);
+        wb.render(&data, 120, 38);
+        assert!(wb.git_split, "120 columns is the split layout");
+        let row = wb.workflow_index;
+        let page = wb.list_page.max(1);
+
+        assert_eq!(
+            wb.handle(WbEvent::Key("pageDown".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(wb.overlay_scroll, page, "one screenful of the patch");
+        assert_eq!(wb.workflow_index, row, "the cursor stays on its commit");
+        wb.handle(WbEvent::Key("pageUp".into()), &data);
+        assert_eq!(wb.overlay_scroll, 0);
+
+        // The last screenful is the end: paging down there goes nowhere, and one
+        // `pageUp` from it comes back a page (a clamped offset that stayed in
+        // the state would swallow that press).
+        for _ in 0..40 {
+            wb.handle(WbEvent::Key("pageDown".into()), &data);
+        }
+        let end = wb.git_detail_rows - page;
+        assert_eq!(
+            wb.overlay_scroll, end,
+            "the end is one screenful, not blank"
+        );
+        wb.handle(WbEvent::Key("pageUp".into()), &data);
+        assert_eq!(wb.overlay_scroll, end - page);
+
+        // Another row is another document.
+        wb.handle(WbEvent::Key("down".into()), &data);
+        assert_eq!(wb.overlay_scroll, 0);
+
+        // Narrow: one pane at a time, so the list keeps the page keys while it
+        // holds the cursor…
+        let mut narrow = workbench();
+        narrow.overlay = Some(Overlay::Git);
+        narrow.render(&data, 60, 20);
+        assert!(!narrow.git_split);
+        let action = narrow.handle(WbEvent::Key("pageDown".into()), &data);
+        assert!(
+            matches!(action.as_slice(), [WbAction::SelectGit(_)]),
+            "the list pages, not the patch: {action:?}"
+        );
+        assert_eq!(narrow.overlay_scroll, 0);
+        // …and gives them to the detail once `tab` hands them over.
+        narrow.handle(WbEvent::Key("tab".into()), &data);
+        narrow.render(&data, 60, 20);
+        narrow.handle(WbEvent::Key("pageDown".into()), &data);
+        assert!(narrow.overlay_scroll > 0, "the patch pages now");
+    }
+
     /// Every verb the panel advertises: sections are number keys, `enter` means
     /// "open this" by section (a ref filters the log, a file opens in the
     /// preview box, a commit moves the keys to its patch), `y` copies the row,
@@ -7487,11 +7601,13 @@ mod tests {
                 key: Some("refs/heads/dev-huichen".into()),
                 prefix: "● ".into(),
                 pieces: vec!["dev-huichen".into()],
+                kinds: vec![state::GitKind::Ref],
             },
             state::GitRow {
                 key: Some("refs/tags/v1".into()),
                 prefix: String::new(),
                 pieces: vec!["tag: v1".into()],
+                kinds: vec![state::GitKind::Ref],
             },
         ];
         let mut data = demo::chat();
@@ -7514,6 +7630,7 @@ mod tests {
             key: Some("tui/src/main.rs".into()),
             prefix: "M ".into(),
             pieces: vec!["tui/src/main.rs".into()],
+            kinds: vec![state::GitKind::Plain],
         }];
         let mut data = demo::chat();
         data.git = Some(status);

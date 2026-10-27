@@ -33,6 +33,17 @@ const SESSION_ID: &str = "demo-session";
 const SESSION_CWD: &str = "/Users/you/future-os";
 const MODEL: &str = "future/deepseek-flash";
 
+/// The checkout the scripted session claims to sit in.
+///
+/// The fictional path is the default because a frame that names the machine it
+/// was captured on is not a baseline. A surface that *reads* the checkout — the
+/// git panel is the one — needs a real repository, so a capture can name one:
+/// `FUTURE_DEMO_CWD=$PWD tui/scripts/shot.sh git`. Nothing changes unless it is
+/// set, so every other scenario stays byte-identical across machines.
+fn session_cwd() -> String {
+    std::env::var("FUTURE_DEMO_CWD").unwrap_or_else(|_| SESSION_CWD.to_string())
+}
+
 /// The scripted conversation: one exchange that reasons, reads a file, runs the
 /// tests and answers. Written in the display projection's shape (`blocks`), so
 /// it travels the same mapper a real session's journal does.
@@ -81,7 +92,7 @@ fn state() -> Value {
     json!({
         "sessionId": SESSION_ID,
         "sessionName": "parser 的 off-by-one",
-        "cwd": SESSION_CWD,
+        "cwd": session_cwd(),
         "model": MODEL,
         "thinkingLevel": "medium",
         "sandboxTier": "manual",
@@ -103,7 +114,7 @@ fn state() -> Value {
 
 fn sessions() -> Value {
     json!({"sessions": [
-        {"id": SESSION_ID, "sessionName": "parser 的 off-by-one", "cwd": SESSION_CWD,
+        {"id": SESSION_ID, "sessionName": "parser 的 off-by-one", "cwd": session_cwd(),
          "model": MODEL, "updatedAtMs": now_ms(), "queryCount": 1, "isStreaming": false},
         {"id": "demo-older", "sessionName": "workbench 布局草图",
          "cwd": "/Users/you/future-os/.worktrees/ui", "model": MODEL,

@@ -230,7 +230,11 @@ What the flags are for:
   `drag` (grab the divider and pull it six columns right). Every coordinate is
   resolved from the frame on screen when the step runs — the tab click from the
   painted label, the drag from the painted seam — so they follow the layout
-  instead of a hard-coded column.
+  instead of a hard-coded column. `git` (`ctrl+g`) is the one scenario that
+  *reads the checkout* rather than the scripted payload, so it needs a real
+  repository to look at: `FUTURE_DEMO_CWD=$PWD tui/scripts/shot.sh git`. Unset,
+  the scripted session keeps its fictional `/Users/you/future-os` and the panel
+  says the directory is not there.
 - `--addr <host:port>` attaches to an agent that is already running (a *real*
   session) instead of starting `demo_agent`, and leaves the caller's
   `FUTURE_HOME` alone.

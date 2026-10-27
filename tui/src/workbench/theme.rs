@@ -440,6 +440,66 @@ pub const PALETTES: [Palette; 22] = [
 /// the same two palettes under their old spelling.
 const LEGACY_IDS: [(&str, &str); 2] = [("future-dark", "dark"), ("future-light", "light")];
 
+/// The RGB a 256-colour index paints.
+///
+/// The table is not a number line: `0..16` are the named colours, `16..232` a
+/// 6×6×6 cube whose levels jump by forty, and `232..256` a grey ramp of ten-RGB
+/// steps. Stepping from one index to the next therefore changes brightness by
+/// anything from nothing to eighty, which is why anything that has to reason
+/// about *lightness* (a selection band, a shadow) converts through here first.
+pub fn rgb(index: u8) -> (u8, u8, u8) {
+    /// The sixteen named colours, in the xterm order.
+    const NAMED: [(u8, u8, u8); 16] = [
+        (0, 0, 0),
+        (128, 0, 0),
+        (0, 128, 0),
+        (128, 128, 0),
+        (0, 0, 128),
+        (128, 0, 128),
+        (0, 128, 128),
+        (192, 192, 192),
+        (128, 128, 128),
+        (255, 0, 0),
+        (0, 255, 0),
+        (255, 255, 0),
+        (0, 0, 255),
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 255, 255),
+    ];
+    /// The cube's six levels.
+    const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+    match index {
+        0..=15 => NAMED[index as usize],
+        232..=255 => {
+            let grey = 8 + 10 * (index - 232);
+            (grey, grey, grey)
+        }
+        cube => {
+            let cube = cube - 16;
+            (
+                LEVELS[(cube / 36) as usize],
+                LEVELS[((cube % 36) / 6) as usize],
+                LEVELS[(cube % 6) as usize],
+            )
+        }
+    }
+}
+
+/// Perceived brightness of a colour, 0–255 (Rec. 601 weights).
+pub fn luma(index: u8) -> u8 {
+    let (r, g, b) = rgb(index);
+    ((r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000) as u8
+}
+
+/// Is this a light canvas — text dark on light?
+///
+/// Read off the canvas's brightness rather than its id, so a palette added
+/// later is classified without being named here.
+pub fn is_light(palette: &Palette) -> bool {
+    luma(palette.bg) > 127
+}
+
 /// Canonicalise a persisted id: trim, lower-case, `_` → `-`, then follow a
 /// legacy alias. The two surfaces read one `themeId`, so a value an older build
 /// (or the inline TUI's `One_Dark`) wrote has to resolve to the palette it meant.
@@ -578,6 +638,41 @@ impl Palette {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The 256-colour table's three stretches: the named colours, a cube whose
+    /// levels jump by forty, and a grey ramp of tens. Reading a palette's
+    /// *brightness* off its indices is only possible through this conversion.
+    #[test]
+    fn the_256_colour_table_converts_back_to_rgb() {
+        assert_eq!(rgb(0), (0, 0, 0));
+        assert_eq!(rgb(15), (255, 255, 255));
+        assert_eq!(rgb(232), (8, 8, 8), "the ramp starts just above black");
+        assert_eq!(rgb(255), (238, 238, 238), "twenty-three ten-step greys");
+        assert_eq!(rgb(231), (255, 255, 255), "the cube's white corner");
+        assert_eq!(rgb(196), (255, 0, 0), "the cube's saturated red");
+        assert_eq!(rgb(59), (95, 95, 95), "a cube grey");
+        assert_eq!(luma(15), 255);
+        assert_eq!(luma(0), 0);
+    }
+
+    /// A canvas is light or dark by its own brightness, not by its name: the
+    /// near-white palettes sit on the cube (231) as well as on the ramp (254),
+    /// and index arithmetic would misclassify one of the two.
+    #[test]
+    fn every_palette_is_classified_by_its_canvas() {
+        for palette in PALETTES {
+            assert_eq!(
+                is_light(&palette),
+                palette.id.contains("light"),
+                "{} ({:?}, luma {})",
+                palette.id,
+                rgb(palette.bg),
+                luma(palette.bg)
+            );
+        }
+        assert!(!is_light(&FUTURE_DARK));
+        assert!(!is_light(&HIGH_CONTRAST));
+    }
 
     #[test]
     fn the_catalogue_is_exactly_the_themes_the_inline_ui_offers() {

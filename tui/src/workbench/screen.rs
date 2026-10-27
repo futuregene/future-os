@@ -15,7 +15,7 @@ use crate::workbench::image_view;
 use crate::workbench::layout::{self, Layout, Rect};
 use crate::workbench::picker::{self, PickerKind};
 use crate::workbench::preferences;
-use crate::workbench::state::{self, ActivityKind, PanelId, WorkbenchData};
+use crate::workbench::state::{self, ActivityKind, GitRow, PanelId, WorkbenchData};
 use crate::workbench::syntax;
 use crate::workbench::theme::Palette;
 use crate::workbench::widgets;
@@ -1911,13 +1911,7 @@ fn git_box(
         let Some(row) = git.rows.get(index) else {
             return String::new();
         };
-        if row.key.is_none() {
-            // The graph continuing through a column: painted in the gutter,
-            // never selectable, so it gets no arrow.
-            return fit(&format!("  {}", row.prefix), width);
-        }
-        let pieces: Vec<&str> = row.pieces.iter().map(String::as_str).collect();
-        workflows::record_line(index == cursor, &row.prefix, &pieces, width)
+        git_row_line(palette, row, width, index == cursor)
     };
     if git.rows.is_empty() {
         rows.push(widgets::box_row(
@@ -1938,30 +1932,32 @@ fn git_box(
     if let Some(filter) = &git.filter {
         list_title.push_str(&format!(" · {filter}"));
     }
-    let detail_title = if workbench.git_detail_focus {
-        format!("› {}", t(lang, Key::GitDetail))
-    } else {
-        format!("  {}", t(lang, Key::GitDetail))
-    };
-    let split = columns >= 92;
-    let scroll = if workbench.git_detail_focus {
-        workbench.overlay_scroll_offset()
-    } else {
-        0
-    };
+    let split = columns >= GIT_SPLIT_COLUMNS;
+    // The page keys belong to the detail pane whenever it is on screen beside
+    // the list, so the surface has to know which layout is painted.
+    workbench.set_git_split(split);
     let detail_lines = if git.detail.is_empty() {
         vec![t(lang, Key::GitNoSelection).to_string()]
     } else {
         git.detail.clone()
     };
+    // The detail is the pane with a body longer than the box, so it is the one
+    // that scrolls: its offset is honoured whether or not it holds the keys,
+    // which is what makes `pageDown` page it in the wide layout.
+    let scroll = if split || workbench.git_detail_focus {
+        workbench.overlay_scroll_offset()
+    } else {
+        0
+    };
 
     if split {
-        // The list is a third of the box (bounded): a ref name or a nested path
-        // needs room, and the patch is the part that wants the rest.
         let inner = columns.saturating_sub(2);
-        let left_w = ((inner.saturating_sub(3)) / 3)
-            .clamp(24, 52)
-            .min(inner.saturating_sub(5));
+        // The list gets a little under half the box: the graph, a subject and
+        // its refs need the room, and the patch beside it wraps instead of being
+        // cut — so a narrower detail costs a line break, not a value.
+        let left_w = (inner * 44 / 100)
+            .clamp(28, 64)
+            .min(inner.saturating_sub(12));
         // `│` plus one cell of air on either side, inside the border: the row's
         // content must be exactly `inner` cells or `box_row` clips its tail.
         let right_w = inner.saturating_sub(left_w + 4);
@@ -1970,10 +1966,19 @@ fn git_box(
         let first = cursor
             .saturating_add(1)
             .saturating_sub(body_rows.saturating_sub(1));
-        let detail = workflows::wrapped(
+        let detail = git_detail_pane(
+            palette,
             &detail_lines,
             right_w.saturating_sub(2),
             scroll,
+            body_rows.saturating_sub(1),
+        );
+        workbench.set_git_detail_rows(detail.total);
+        let detail_title = git_detail_title(
+            palette,
+            workbench.git_detail_focus,
+            t(lang, Key::GitDetail),
+            &detail,
             body_rows.saturating_sub(1),
         );
         let detail_x = (left + 1 + left_w + 4) as u16;
@@ -1987,6 +1992,7 @@ fn git_box(
                 detail_title.clone()
             } else {
                 detail
+                    .rows
                     .get(index - 1)
                     .map(|line| fit(line, right_w))
                     .unwrap_or_default()
@@ -2017,17 +2023,31 @@ fn git_box(
     } else if workbench.git_detail_focus {
         let body_rows = available.max(1);
         workbench.set_list_page(body_rows);
-        let detail =
-            workflows::wrapped(&detail_lines, columns.saturating_sub(4), scroll, body_rows);
-        for (index, line) in detail.iter().enumerate() {
-            let y = rows.len() as u16;
-            rows.push(widgets::box_row(palette, line, columns));
-            if index == 0 {
-                workbench.hit_map().push(
-                    Rect::new((left + 1) as u16, y, columns.saturating_sub(2) as u16, 1),
-                    "git.detail",
-                );
-            }
+        let detail = git_detail_pane(
+            palette,
+            &detail_lines,
+            columns.saturating_sub(4),
+            scroll,
+            body_rows,
+        );
+        workbench.set_git_detail_rows(detail.total);
+        let title = git_detail_title(palette, true, t(lang, Key::GitDetail), &detail, body_rows);
+        rows.push(widgets::box_row(palette, &title, columns));
+        let top = rows.len() as u16;
+        for detail_row in detail.rows.iter().take(body_rows.saturating_sub(1)) {
+            rows.push(widgets::box_row(palette, detail_row, columns));
+        }
+        let painted = rows.len() as u16 - top;
+        if painted > 0 {
+            workbench.hit_map().push(
+                Rect::new(
+                    (left + 1) as u16,
+                    top,
+                    columns.saturating_sub(2) as u16,
+                    painted,
+                ),
+                "git.detail",
+            );
         }
     } else {
         let body_rows = available.saturating_sub(1).max(1);
@@ -2063,6 +2083,15 @@ fn git_box(
     indent(rows, left, w as usize)
 }
 
+/// When the `/git` box splits into list and detail.
+///
+/// Higher than the diff review's 92 on purpose: the list needs the graph (four
+/// to eight cells) beside a subject, and a patch wrapped narrower than about
+/// fifty cells breaks nearly every line. Below this the panel shows one pane at
+/// a time and `tab` gives the patch the whole width, which reads better than two
+/// cramped halves.
+const GIT_SPLIT_COLUMNS: usize = 108;
+
 /// The tab label of one section — the same string the tab strip, the pane title
 /// and the empty state print.
 fn git_tab_key(section: state::GitSection) -> Key {
@@ -2084,6 +2113,311 @@ fn git_empty_key(section: state::GitSection) -> Key {
         state::GitSection::Status => Key::GitCleanStatus,
         state::GitSection::Stash => Key::GitEmptyStash,
     }
+}
+
+/// The colour the selected row is banded with.
+///
+/// The palette has no "selection" colour, so the band is the panel's own
+/// brightness stepped twenty-eight RGB units *towards the text* and then read
+/// back onto the grey ramp (232–255, the one ordered stretch of the 256-colour
+/// table). Towards the text rather than away from it: a darker band on a dark
+/// panel reads as a hole, and the step is small enough that the row's own
+/// colours keep their contrast — measured on the default palette it is the
+/// `#262626` panel with a `#444444` band.
+fn selection_band(palette: &Palette) -> u8 {
+    let towards: i32 = if crate::workbench::theme::is_light(palette) {
+        -28
+    } else {
+        28
+    };
+    let target = crate::workbench::theme::luma(palette.panel) as i32 + towards;
+    let target = target.clamp(0, 255);
+    let step = (((target - 8) as f32) / 10.0).round().clamp(0.0, 23.0) as u8;
+    232 + step
+}
+
+/// The colours lanes cycle through. Adjacent lanes never share one, so two
+/// branches running side by side stay distinguishable at a glance — which is
+/// what the graph is for.
+fn lane_colour(palette: &Palette, lane: usize) -> u8 {
+    [
+        palette.iris,
+        palette.green,
+        palette.amber,
+        palette.purple,
+        palette.accent,
+        palette.red,
+    ][lane % 6]
+}
+
+/// Paint the log's graph gutter, one colour per lane.
+///
+/// `git log --graph` puts lane `n` at column `2n` — a glyph and a cell of air —
+/// so a glyph's lane is its column divided by two, and a branch keeps one colour
+/// for as long as it keeps one column. The glyphs are swapped for box-drawing
+/// twins (`●`, `│`, `╱`, `╲`) so a run of verticals reads as one line instead of
+/// a dotted column of `|`. Counting *characters* is counting cells here because
+/// the prefix is git's own graph vocabulary (`* | / \ _` and spaces): the
+/// subject travels after the record separator in `parse_log`, so no free text
+/// ever reaches this string.
+fn paint_graph(palette: &Palette, prefix: &str) -> String {
+    let mut out = String::new();
+    for (column, glyph) in prefix.chars().enumerate() {
+        let colour = lane_colour(palette, column / 2);
+        let painted = match glyph {
+            '*' => palette.strong(colour, "●"),
+            '|' => palette.text(colour, "│"),
+            '/' => palette.text(colour, "╱"),
+            '\\' => palette.text(colour, "╲"),
+            // git's horizontal filler: an empty slot where two lanes meet.
+            '_' => palette.text(colour, "─"),
+            // The lane separator and anything git adds later: left as it is, so
+            // an unknown glyph is visible rather than silently dropped.
+            other => other.to_string(),
+        };
+        out.push_str(&painted);
+    }
+    out
+}
+
+/// One field of a row in the colour its meaning earns: a ref is a name a reader
+/// types, an id is what they copy, a date is a note beside the subject.
+fn paint_kind(palette: &Palette, kind: state::GitKind, text: &str, selected: bool) -> String {
+    match kind {
+        state::GitKind::Ref => palette.text(palette.iris, text),
+        state::GitKind::Decoration => paint_decorations(palette, text),
+        state::GitKind::Sha => palette.text(palette.amber, text),
+        state::GitKind::Meta => palette.dim(text),
+        state::GitKind::Plain => {
+            if selected {
+                palette.strong(palette.fg, text)
+            } else {
+                palette.body(text)
+            }
+        }
+    }
+}
+
+/// A commit's decorations, split so the three kinds inside one field read
+/// apart: `HEAD -> …` is where the reader is, `tag:` keeps its own colour, and
+/// every other ref is a branch.
+fn paint_decorations(palette: &Palette, text: &str) -> String {
+    let mut out = String::new();
+    for (index, decoration) in text.split(", ").enumerate() {
+        if index > 0 {
+            out.push_str(", ");
+        }
+        let painted = if let Some(name) = decoration.strip_prefix("tag: ") {
+            format!(
+                "{} {}",
+                palette.dim("tag:"),
+                palette.text(palette.amber, name)
+            )
+        } else if decoration.starts_with("HEAD") {
+            palette.strong(palette.green, decoration)
+        } else {
+            palette.text(palette.green, decoration)
+        };
+        out.push_str(&painted);
+    }
+    out
+}
+
+/// One line of the `/git` list: the marker, the graph in its lanes, then the
+/// row's fields each in the colour its kind earns. The selected row is a band
+/// across the whole pane, so the eye finds it without reading the marker — and
+/// the band keeps every field's own colour (a reset inside the row is re-opened
+/// on the band, not left to the panel's background).
+fn git_row_line(palette: &Palette, row: &GitRow, columns: usize, selected: bool) -> String {
+    let columns = columns.max(1);
+    let graph = paint_graph(palette, &row.prefix);
+    if row.key.is_none() {
+        // The graph continuing through a column: painted in the gutter, never
+        // selectable, so it gets no arrow.
+        return fit(&format!("  {graph}"), columns);
+    }
+    let marker = if selected {
+        palette.strong(palette.accent, "› ")
+    } else {
+        "  ".to_string()
+    };
+    let lead = row
+        .pieces
+        .first()
+        .map(|piece| piece.replace('\n', " ↵ "))
+        .unwrap_or_default();
+    let head = format!(
+        "{marker}{graph}{}",
+        paint_kind(palette, row.kind(0), &lead, selected)
+    );
+    let band = |line: &str| {
+        if selected {
+            palette.on(selection_band(palette), line, columns)
+        } else {
+            line.to_string()
+        }
+    };
+    if width(&head) > columns {
+        // The lead field alone is too wide: shorten it, and keep the marker and
+        // the graph inside the row.
+        return band(&fit(&head, columns));
+    }
+    let mut line = head;
+    for (index, piece) in row.pieces.iter().enumerate().skip(1) {
+        let plain = format!(" · {piece}");
+        if width(&line) + width(&plain) > columns {
+            break;
+        }
+        line.push_str(&palette.dim(" · "));
+        line.push_str(&paint_kind(palette, row.kind(index), piece, selected));
+    }
+    band(&line)
+}
+
+/// The detail pane's window onto its body: the body wrapped to `width`,
+/// scrolled to `scroll` and coloured row by row.
+struct GitDetailPane {
+    rows: Vec<String>,
+    /// How many painted rows the whole body is at this width.
+    total: usize,
+    /// The body row the window starts on — `scroll` clamped, so scrolling never
+    /// runs past the end into a blank pane.
+    first: usize,
+}
+
+fn git_detail_pane(
+    palette: &Palette,
+    body: &[String],
+    width: usize,
+    scroll: usize,
+    height: usize,
+) -> GitDetailPane {
+    let height = height.max(1);
+    let wrapped = crate::workbench::workflows::wrapped_indexed(body, width.max(1));
+    let total = wrapped.len();
+    let first = scroll.min(total.saturating_sub(height));
+    let rows = wrapped
+        .into_iter()
+        .skip(first)
+        .take(height)
+        .map(|(source, chunk)| git_detail_line(palette, &body[source], chunk))
+        .collect();
+    GitDetailPane { rows, total, first }
+}
+
+/// The detail pane's title row: which pane owns the keys (`›`) and, when the
+/// body is longer than the pane, which rows of it are on screen — the reader
+/// paging a long patch needs to know where they are in it.
+fn git_detail_title(
+    palette: &Palette,
+    focused: bool,
+    label: &str,
+    pane: &GitDetailPane,
+    height: usize,
+) -> String {
+    let mut title = format!("{}{label}", if focused { "› " } else { "  " });
+    if pane.total > height.max(1) {
+        let last = (pane.first + height).min(pane.total);
+        let position = format!("{}-{}/{}", pane.first + 1, last, pane.total);
+        title.push_str(&palette.dim(&format!(" · {position}")));
+    }
+    title
+}
+
+/// One painted row of the detail pane.
+///
+/// `source` is the body line this row was wrapped from, not the row itself: a
+/// patch row is classified by what its whole line is, and the tail a wrap cut
+/// off keeps the colour of the line it belongs to. The order of the tests is the
+/// format's own precedence — `---`/`+++` are file headers before they are
+/// removed and added lines.
+fn git_detail_line(palette: &Palette, source: &str, chunk: String) -> String {
+    if source.starts_with("commit ") {
+        return palette.strong(palette.amber, &chunk);
+    }
+    for label in ["Author:", "Date:", "Merge:"] {
+        if let Some(rest) = chunk.strip_prefix(label) {
+            return format!("{}{}", palette.dim(label), palette.body(rest));
+        }
+    }
+    if source.starts_with("diff --git") || source.starts_with("@@") {
+        return palette.text(palette.iris, &chunk);
+    }
+    if source.starts_with("+++") {
+        return palette.text(palette.green, &chunk);
+    }
+    if source.starts_with("---") {
+        return palette.text(palette.red, &chunk);
+    }
+    if source.starts_with('+') {
+        return palette.text(palette.green, &chunk);
+    }
+    if source.starts_with('-') {
+        return palette.text(palette.red, &chunk);
+    }
+    // A diffstat row — ` file | 24 ++++----` — keeps its bar in patch colours:
+    // the width of the run is how a reader compares two files at a glance.
+    if source.contains(" | ") {
+        return paint_diffstat(palette, &chunk);
+    }
+    // The metadata lines a read produces: `index 1a2b3c4..`, mode changes, the
+    // file summary under a stat, and the `\ No newline` marker a patch ends on.
+    for dim in [
+        "index ",
+        "new file mode",
+        "deleted file mode",
+        "similarity index",
+        "rename from ",
+        "rename to ",
+        "old mode ",
+        "new mode ",
+        "\\ No newline",
+    ] {
+        if source.starts_with(dim) {
+            return palette.dim(&chunk);
+        }
+    }
+    if let Some(rest) = chunk.strip_prefix("ref  ") {
+        return format!(
+            "{}  {}",
+            palette.dim("ref"),
+            palette.text(palette.iris, rest)
+        );
+    }
+    palette.body(&chunk)
+}
+
+/// A diffstat row's bar: `+` runs green, `-` runs red, everything else in the
+/// body colour. Runs are painted together so a bar of forty characters is one
+/// escape pair rather than forty.
+fn paint_diffstat(palette: &Palette, chunk: &str) -> String {
+    let mut out = String::new();
+    let mut run = String::new();
+    let mut run_colour: Option<u8> = None;
+    let flush = |out: &mut String, run: &mut String, colour: Option<u8>| {
+        if run.is_empty() {
+            return;
+        }
+        out.push_str(&match colour {
+            Some(colour) => palette.text(colour, run),
+            None => palette.body(run),
+        });
+        run.clear();
+    };
+    for glyph in chunk.chars() {
+        let colour = match glyph {
+            '+' => Some(palette.green),
+            '-' => Some(palette.red),
+            _ => None,
+        };
+        if colour != run_colour {
+            flush(&mut out, &mut run, run_colour);
+            run_colour = colour;
+        }
+        run.push(glyph);
+    }
+    flush(&mut out, &mut run, run_colour);
+    out
 }
 
 /// Width the files panel asks for: a column of paths and their sizes needs
@@ -3589,5 +3923,210 @@ mod tests {
             !body.contains("FUTURE OS"),
             "the name is drawn once, in the launchpad's lighter type"
         );
+    }
+
+    /// The graph gutter is a picture, not a column of punctuation: every lane
+    /// carries a colour of its own, and the glyphs are the box-drawing ones that
+    /// let a run of verticals read as one line.
+    #[test]
+    fn the_graph_paints_one_colour_per_lane() {
+        let palette = FUTURE_DARK;
+        let graph = paint_graph(&palette, "| * ");
+        assert_eq!(plain(&graph), "│ ● ", "the glyphs are the drawing ones");
+        assert_eq!(width(&graph), 4, "a repainted gutter is as wide as git's");
+        assert_ne!(
+            lane_colour(&palette, 0),
+            lane_colour(&palette, 1),
+            "two lanes in one row must not share a colour"
+        );
+        assert_eq!(
+            lane_colour(&palette, 6),
+            lane_colour(&palette, 0),
+            "the cycle closes after six lanes"
+        );
+        for lane in [0, 1] {
+            assert!(
+                graph.contains(&format!("\x1b[38;5;{}m", lane_colour(&palette, lane))),
+                "lane {lane} keeps its colour: {graph:?}"
+            );
+        }
+        assert!(
+            graph.contains("\x1b[1m"),
+            "the commit glyph is bold, so a tip stands out from its lane"
+        );
+        assert_eq!(
+            plain(&paint_graph(&palette, "|\\ ")),
+            "│╲ ",
+            "a merge's fork is drawn, not typed"
+        );
+    }
+
+    /// A selected row is a band across the whole pane, and the band keeps every
+    /// field's own colour — a reset inside the row is re-opened on the band
+    /// rather than leaving a hole in it. An unselected row paints no background
+    /// at all, so the list is not a stack of boxes.
+    #[test]
+    fn the_selected_git_row_is_a_band_that_keeps_its_colours() {
+        let palette = FUTURE_DARK;
+        let row = GitRow {
+            key: Some("abc1234".into()),
+            prefix: "* ".into(),
+            pieces: vec![
+                "fix(tui): one row".into(),
+                "HEAD -> main, tag: v1".into(),
+                "abc1234".into(),
+                "2026-10-27".into(),
+                "Ada".into(),
+            ],
+            kinds: vec![
+                state::GitKind::Plain,
+                state::GitKind::Decoration,
+                state::GitKind::Sha,
+                state::GitKind::Meta,
+                state::GitKind::Meta,
+            ],
+        };
+        let selected = git_row_line(&palette, &row, 100, true);
+        assert_eq!(width(&selected), 100, "the band fills the pane");
+        assert!(
+            selected.contains(&format!("\x1b[48;5;{}m", palette.border)),
+            "the selection is a background, not just an arrow: {selected:?}"
+        );
+        let marked = plain(&selected);
+        assert!(marked.starts_with("› ● fix(tui): one row"), "{marked:?}");
+        for (colour, what) in [
+            (palette.amber, "the sha"),
+            (palette.green, "the decorations"),
+            (palette.muted, "the date"),
+        ] {
+            assert!(
+                selected.contains(&format!("\x1b[38;5;{colour}m")),
+                "{what} keep their colour inside the band: {selected:?}"
+            );
+        }
+        let idle = git_row_line(&palette, &row, 100, false);
+        assert!(
+            !idle.contains("\x1b[48;5;"),
+            "an unselected row paints no background: {idle:?}"
+        );
+        assert!(
+            plain(&idle).starts_with("  ● fix(tui): one row"),
+            "{idle:?}"
+        );
+    }
+
+    /// The band has to exist in every palette: it is a member of the one ordered
+    /// ramp in the 256-colour table, a clear step away from the panel, and on the
+    /// side the text is not. The high-contrast palette is the case that catches
+    /// this — its border is near-white, so a band taken from `border` painted
+    /// white text on white.
+    #[test]
+    fn the_selection_band_is_visible_in_every_palette() {
+        // Grey `n` of the ramp is `8 + 10 * (n - 232)` in RGB.
+        let grey = |index: u8| 8 + 10 * (index as i32 - 232);
+        for palette in crate::workbench::theme::PALETTES {
+            let band = selection_band(&palette);
+            assert!(
+                (232..=255).contains(&band),
+                "{}: {band} is outside the grey ramp",
+                palette.id
+            );
+            assert_ne!(band, palette.panel, "{}: an invisible band", palette.id);
+            assert_ne!(band, palette.fg, "{}: the text would vanish", palette.id);
+            if (232..=255).contains(&palette.panel) {
+                assert!(
+                    (grey(band) - grey(palette.panel)).abs() >= 20,
+                    "{}: {band} is one RGB step from {}",
+                    palette.id,
+                    palette.panel
+                );
+            }
+            if crate::workbench::theme::is_light(&palette) {
+                assert!(
+                    crate::workbench::theme::luma(band)
+                        < crate::workbench::theme::luma(palette.panel),
+                    "{}: a light theme darkens the band",
+                    palette.id
+                );
+            } else {
+                assert!(
+                    crate::workbench::theme::luma(band)
+                        > crate::workbench::theme::luma(palette.panel),
+                    "{}: a dark theme lightens the band",
+                    palette.id
+                );
+            }
+        }
+    }
+
+    /// The detail pane paints by what each *source* line is — a patch's removed
+    /// and added lines, its hunk header, the commit's own header — and a wrapped
+    /// tail keeps the colour of the line it came from. Scrolling stops at the
+    /// last page instead of running past the end into a blank pane.
+    #[test]
+    fn the_detail_pane_paints_a_patch_and_stops_at_its_last_page() {
+        let palette = FUTURE_DARK;
+        let body: Vec<String> = [
+            "commit abc1234",
+            "Author: Ada <ada@example.invalid>",
+            "",
+            "--- a/x.rs",
+            "+++ b/x.rs",
+            "@@ -1 +1 @@",
+            "-let old = 1;",
+            "+let new = 2;",
+            " x.rs | 4 ++--",
+        ]
+        .iter()
+        .map(|line| line.to_string())
+        .collect();
+        let pane = git_detail_pane(&palette, &body, 60, 0, 20);
+        assert_eq!(pane.total, body.len(), "nothing wraps at 60 cells");
+        assert_eq!(pane.first, 0);
+        let colour_of = |row: &str| {
+            [
+                (palette.red, "red"),
+                (palette.green, "green"),
+                (palette.iris, "iris"),
+                (palette.amber, "amber"),
+                (palette.muted, "muted"),
+            ]
+            .into_iter()
+            .find(|(colour, _)| row.contains(&format!("\x1b[38;5;{colour}m")))
+            .map(|(_, name)| name)
+        };
+        assert_eq!(colour_of(&pane.rows[0]), Some("amber"), "the commit header");
+        assert_eq!(colour_of(&pane.rows[3]), Some("red"), "`---` is a header");
+        assert_eq!(colour_of(&pane.rows[4]), Some("green"), "`+++` too");
+        assert_eq!(colour_of(&pane.rows[5]), Some("iris"), "the hunk header");
+        assert_eq!(colour_of(&pane.rows[6]), Some("red"), "an removed line");
+        assert_eq!(colour_of(&pane.rows[7]), Some("green"), "an added line");
+        assert!(
+            pane.rows[8].contains(&format!("\x1b[38;5;{}m", palette.green))
+                && pane.rows[8].contains(&format!("\x1b[38;5;{}m", palette.red)),
+            "a diffstat bar is drawn in patch colours: {:?}",
+            pane.rows[8]
+        );
+
+        // The offset stops at the last screenful — the whole body is visible
+        // from there, and the title says which rows are on screen.
+        let last = git_detail_pane(&palette, &body, 60, 999, 4);
+        assert_eq!(last.first, body.len() - 4);
+        assert_eq!(last.rows.len(), 4);
+        let title = git_detail_title(&palette, true, "Detail", &last, 4);
+        assert_eq!(plain(&title), "› Detail · 6-9/9", "{title:?}");
+
+        // A narrow pane wraps, and every tail keeps its line's colour.
+        let wrapped = git_detail_pane(
+            &palette,
+            &["+one two three four five six".into()],
+            10,
+            0,
+            10,
+        );
+        assert!(wrapped.total > 1, "it wraps: {}", wrapped.total);
+        for row in &wrapped.rows {
+            assert_eq!(colour_of(row), Some("green"), "a tail stays green: {row:?}");
+        }
     }
 }
