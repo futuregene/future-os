@@ -1,28 +1,68 @@
 import { Channel } from "@tauri-apps/api/core";
 import { invokeCommand } from "../tauri/invoke";
 
-export const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
-export type ThinkingLevel = typeof thinkingLevels[number];
+/**
+ * The legacy six-level vocabulary: what every client offered before the agent
+ * sent a per-model `thinkingLevels` list.
+ *
+ * It is now only a fallback for an agent that omits the field (an older agent,
+ * or an older remote host) — a current agent sends the model's own list, and
+ * that list's implicit `default` entry means "send no parameter at all".
+ */
+export const legacyThinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+
+/**
+ * A thinking level: any non-empty string the wire understands.
+ *
+ * `default` is the implicit level ("send no thinking/effort parameter"), `off`
+ * explicitly disables thinking, and every other value is the provider's own
+ * wire value, sent verbatim. Widened from a fixed union on purpose: the agent
+ * publishes arbitrary `models.json` values (e.g. `max`), and a client-side
+ * whitelist would drop them.
+ */
+export type ThinkingLevel = string;
+
+/**
+ * The implicit level a conversation starts at when nothing else is chosen: the
+ * provider's own default, with no thinking/effort parameter on the wire.
+ *
+ * For an older agent (no `thinkingLevels`), `modelThinkingLevel` instead
+ * returns its historical `medium` — never the literal `default`, which an old
+ * agent would not understand.
+ */
+export const defaultThinkingLevel: ThinkingLevel = "default";
+
+/**
+ * Level names the product ships a translation for. This is **not** a wire
+ * vocabulary — the custom-provider editor offers these as toggle chips, but a
+ * model's list may hold any other token and it is sent verbatim.
+ */
+export const knownThinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 export interface AgentModelOption {
   id: string;
   label: string;
   provider: string;
   supportsImages?: boolean;
-  /** Whether the model accepts thinking controls, independent of the chosen level. */
+  /**
+   * Deprecated capability flag. Nothing branches on it anymore: whether a model
+   * has thinking controls is `thinkingLevels` alone.
+   */
   reasoning?: boolean | null;
+  /** Historical single default level; superseded by `defaultThinkingLevel`. */
   thinkingLevel?: ThinkingLevel | string | null;
   /**
-   * The levels this model offers, canonical order. The agent sends it already
-   * resolved: `off` alone for a model without thinking controls, all six for one
-   * that declares nothing (`models.json` `thinkingLevels`). Absent on an older
-   * agent, which means "this model constrains nothing".
+   * The model's effective levels, in display order. A current agent sends a
+   * non-empty list that always starts with the implicit `default`; every other
+   * entry is a wire value sent verbatim (`off` = explicitly disable). Absent on
+   * an older agent, where the client falls back to {@link legacyThinkingLevels}.
    */
   thinkingLevels?: string[] | null;
   /**
    * The level a conversation starts at on this model, already clamped by the
    * agent — so seeding the picker from it cannot land on a level the model would
-   * snap away. Absent on an older agent; `defaultThinkingLevel` then stands.
+   * snap away. `"default"` for a current agent; absent on an older one, where
+   * the desktop's historical `medium` stands.
    */
   defaultThinkingLevel?: ThinkingLevel | string | null;
   contextWindow?: number | null;
@@ -77,15 +117,6 @@ interface AgentPromptResponse {
 }
 
 export const defaultAgentModelId = "";
-/**
- * Thinking level a session gets when it names none.
- *
- * Mirrors `DEFAULT_THINKING_LEVEL` in `agent/src/rpc/session.rs` — the agent
- * applies the same value to a session created without an explicit level (TUI,
- * channels, tasks), so "the app default" cannot mean two different efforts
- * depending on which client asked. Change both together.
- */
-export const defaultThinkingLevel: ThinkingLevel = "medium";
 
 export interface AgentPromptInput {
   message: string;
@@ -304,15 +335,13 @@ export function readLastUsedThinkingLevel(): string | null {
 
 /**
  * Pick the thinking level for a fresh draft. Priority: the last user-picked
- * level (if this model still offers a level) → the model's own starting level.
+ * level (if this model still offers it) → the model's own starting level.
  */
 export function resolveInitialThinkingLevel(modelId: string, models: AgentModelOption[]): ThinkingLevel {
-  if (!modelSupportsThinking(modelId, models))
-    return "off";
   const allowed = modelThinkingLevels(modelId, models);
   const lastUsed = readLastUsedThinkingLevel();
-  if (lastUsed && allowed.includes(lastUsed as ThinkingLevel))
-    return lastUsed as ThinkingLevel;
+  if (lastUsed && allowed.includes(lastUsed))
+    return lastUsed;
   return modelThinkingLevel(modelId, models);
 }
 
@@ -325,43 +354,45 @@ export function modelLabel(modelId: string, models: AgentModelOption[]): string 
   return modelOption(modelId, models)?.label ?? (modelId || undefined);
 }
 
-export function modelSupportsThinking(modelId: string, models: AgentModelOption[]): boolean {
-  return modelOption(modelId, models)?.reasoning !== false;
+/**
+ * The thinking levels a model offers, in display order, exactly as the agent
+ * published them.
+ *
+ * A current agent sends the model's effective list: non-empty, starting with
+ * the implicit `default`, every other entry a wire value sent verbatim. The
+ * list is passed through untouched — no client-side vocabulary — so a model
+ * declaring `max` (or any other token) shows it, and `default` alone means the
+ * model has no thinking controls to choose from.
+ *
+ * No list — an agent older than the field, or an older remote host — keeps the
+ * legacy six, which is what every client offered before this field existed.
+ */
+export function modelThinkingLevels(modelId: string, models: AgentModelOption[]): readonly ThinkingLevel[] {
+  const declared = modelOption(modelId, models)?.thinkingLevels;
+  if (declared && declared.length > 0)
+    return declared;
+  return legacyThinkingLevels;
 }
 
 /**
- * The thinking levels a model offers, canonical order.
+ * The level a conversation starts at on this model.
  *
- * The agent already resolved `thinkingLevels` (a declared subset, or `off` alone
- * for a model with no thinking controls), so filtering here and nowhere else is
- * enough to keep every picker, the keyboard ring and the task form on the same
- * set. No list — an older agent — keeps all six, which is what every client
- * offered before this field existed.
+ * The agent sends the level already clamped to the model's list, so it is
+ * preferred whenever it is offered. A current agent sends `default`, whose
+ * position in the list is the implicit first entry. An older agent (no list)
+ * keeps the desktop's historical `medium` — the literal `default` is never sent
+ * to it, because it predates the value.
  */
-export function modelThinkingLevels(modelId: string, models: AgentModelOption[]): readonly ThinkingLevel[] {
-  const option = modelOption(modelId, models);
-  if (!modelSupportsThinking(modelId, models))
-    return ["off"];
-  const declared = option?.thinkingLevels;
-  if (!declared || declared.length === 0)
-    return thinkingLevels;
-  return thinkingLevels.filter(level => declared.includes(level));
-}
-
 export function modelThinkingLevel(modelId: string, models: AgentModelOption[]): ThinkingLevel {
-  if (!modelSupportsThinking(modelId, models))
-    return "off";
-  // Desktop defaults to medium rather than inheriting the agent catalog's high
-  // default. Saved user choices and existing session levels win elsewhere.
-  //
-  // For a model that offers a subset, the agent sends `defaultThinkingLevel`
-  // (its own clamp of this same default), so the picker starts on a level the
-  // model has instead of on one that would be snapped away. The clamp itself is
-  // not re-implemented here: one implementation, in the agent.
-  const declared = modelOption(modelId, models)?.defaultThinkingLevel;
-  return thinkingLevels.includes(declared as ThinkingLevel)
-    ? declared as ThinkingLevel
-    : defaultThinkingLevel;
+  const option = modelOption(modelId, models);
+  const allowed = modelThinkingLevels(modelId, models);
+  const starting = option?.defaultThinkingLevel;
+  if (starting && allowed.includes(starting))
+    return starting;
+  // A declared list is a current agent; its first entry is the implicit default.
+  if (option?.thinkingLevels && option.thinkingLevels.length > 0)
+    return allowed[0]!;
+  return "medium";
 }
 
 /**
@@ -371,17 +402,26 @@ export function modelThinkingLevel(modelId: string, models: AgentModelOption[]):
  * model narrowed its list, a task written on a different machine) is not shown as
  * the current effort, because it is not one this model can run at. The
  * replacement is the model's own starting level — the agent's clamp of the
- * desktop default — rather than a client-side "nearest level" rule.
+ * implicit default — rather than a client-side "nearest level" rule.
  */
 export function resolveThinkingLevel(level: string | null | undefined, modelId: string, models: AgentModelOption[]): ThinkingLevel {
   const allowed = modelThinkingLevels(modelId, models);
-  if (level && allowed.includes(level as ThinkingLevel))
-    return level as ThinkingLevel;
+  if (level && allowed.includes(level))
+    return level;
   return modelThinkingLevel(modelId, models);
 }
 
+/**
+ * Coerce a level from outside this module (agent state, a stored thread, an
+ * emitted event) into a safe wire value.
+ *
+ * Any non-empty string is a legal level now, so only emptiness falls back to
+ * the implicit default. Whether the model offers the value is a separate
+ * question — `resolveThinkingLevel` answers that.
+ */
 export function normalizeThinkingLevel(level?: string | null): ThinkingLevel {
-  return thinkingLevels.includes(level as ThinkingLevel) ? level as ThinkingLevel : defaultThinkingLevel;
+  const trimmed = level?.trim();
+  return trimmed || defaultThinkingLevel;
 }
 
 export function modelOption(modelId: string, models: AgentModelOption[]) {

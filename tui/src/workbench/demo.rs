@@ -289,41 +289,59 @@ fn demo_tree() -> crate::workbench::files::FileTree {
 /// with two models, a context window of 1M and a small one — enough shapes for
 /// the grouping, the capability column and the `✓` to be reviewed on screen.
 fn demo_models() -> Vec<ModelChoice> {
+    fn declared(levels: &[&str]) -> Option<Vec<String>> {
+        Some(levels.iter().map(|level| level.to_string()).collect())
+    }
     vec![
         ModelChoice {
             id: "deepseek-flash".into(),
             label: "deepseek-flash".into(),
             provider: "westlakehpc".into(),
             context_window: 1_000_000,
-            thinking_level: "medium".into(),
+            thinking_level: "default".into(),
+            thinking_levels: declared(&["default", "off", "low", "medium", "high", "xhigh"]),
+            default_thinking_level: Some("default".into()),
         },
         ModelChoice {
             id: "Qwen".into(),
             label: "Qwen 3.8 27B".into(),
             provider: "westlakehpc".into(),
             context_window: 262_144,
-            thinking_level: "low".into(),
+            thinking_level: "default".into(),
+            thinking_levels: declared(&["default", "off", "low", "medium", "high"]),
+            default_thinking_level: Some("default".into()),
         },
         ModelChoice {
             id: "gpt-6-astra".into(),
             label: "gpt-6-astra".into(),
             provider: "azure".into(),
             context_window: 1_000_000,
-            thinking_level: "high".into(),
+            thinking_level: "default".into(),
+            thinking_levels: declared(&["default", "medium", "high", "max"]),
+            default_thinking_level: Some("default".into()),
         },
+        // Declares only the implicit default: the picker's slider has one stop.
         ModelChoice {
             id: "glm-flash".into(),
             label: "glm-flash".into(),
             provider: "westlakehpc".into(),
             context_window: 200_000,
-            thinking_level: "off".into(),
+            thinking_level: "default".into(),
+            thinking_levels: declared(&["default"]),
+            default_thinking_level: Some("default".into()),
         },
+        // Same shapes as the real `/models` list, including a level the product
+        // has no translation for (`max` is known, but it is still a wire value).
         ModelChoice {
             id: "omlx-local".into(),
             label: "omlx (local)".into(),
             provider: "omlx".into(),
             context_window: 131_072,
-            thinking_level: "xhigh".into(),
+            thinking_level: "default".into(),
+            thinking_levels: declared(&[
+                "default", "off", "minimal", "low", "medium", "high", "xhigh", "max",
+            ]),
+            default_thinking_level: Some("default".into()),
         },
     ]
 }

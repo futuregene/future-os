@@ -843,8 +843,9 @@ export const resources = {
         modelMaxTokensExceedsContext: "Model `{{id}}`'s output limit cannot exceed its context window.",
         modelSupportsImages: "Accepts images",
         modelSupportsImagesHint: "Send image attachments to this model.",
-        modelReasoning: "Reasoning controls",
-        modelReasoningHint: "Show the thinking-level control for this model.",
+        modelThinkingLevels: "Thinking levels",
+        modelThinkingLevelsHint: "The extra levels this model accepts. Default is always available.",
+        modelThinkingLevelsMax: "Model `{{id}}` can offer at most 16 thinking levels.",
         modelPrices: "Prices (per 1M tokens)",
         modelPriceInput: "Input",
         modelPriceOutput: "Output",
@@ -875,12 +876,14 @@ export const resources = {
         version: "Version {{version}}",
       },
       thinking: {
+        default: "Default",
         off: "Off",
         minimal: "Minimal",
         low: "Low",
         medium: "Medium",
         high: "High",
         xhigh: "XHigh",
+        max: "Max",
       },
       update: {
         check: "Check for updates",
@@ -924,7 +927,7 @@ export const resources = {
         confidence: "confidence {{value}}%",
         colModel: "Model",
         colThinking: "Thinking",
-        thinkingLabels: { off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "XHigh" },
+        thinkingLabels: { default: "Default", off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "XHigh", max: "Max" },
         trigger: {
           manual: "Manual",
 
@@ -1790,8 +1793,9 @@ export const resources = {
         modelMaxTokensExceedsContext: "模型「{{id}}」的单次最大输出不能超过上下文窗口。",
         modelSupportsImages: "支持图片",
         modelSupportsImagesHint: "可以向该模型发送图片附件。",
-        modelReasoning: "思考开关",
-        modelReasoningHint: "为该模型显示思考强度选项。",
+        modelThinkingLevels: "思考等级",
+        modelThinkingLevelsHint: "该模型额外支持的思考等级；默认等级始终可选。",
+        modelThinkingLevelsMax: "模型「{{id}}」最多支持 16 个思考等级。",
         modelPrices: "价格（每 100 万 token）",
         modelPriceInput: "输入",
         modelPriceOutput: "输出",
@@ -1822,12 +1826,14 @@ export const resources = {
         version: "版本 {{version}}",
       },
       thinking: {
+        default: "默认",
         off: "关闭",
         minimal: "最简",
         low: "低",
         medium: "中",
         high: "高",
         xhigh: "极高",
+        max: "最高",
       },
       update: {
         check: "检查更新",
@@ -1871,7 +1877,7 @@ export const resources = {
         confidence: "置信度 {{value}}%",
         colModel: "模型",
         colThinking: "思考等级",
-        thinkingLabels: { off: "关闭", minimal: "最简", low: "低", medium: "中", high: "高", xhigh: "极高" },
+        thinkingLabels: { default: "默认", off: "关闭", minimal: "最简", low: "低", medium: "中", high: "高", xhigh: "极高", max: "最高" },
         trigger: {
           manual: "手动",
 

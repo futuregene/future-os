@@ -393,11 +393,33 @@ describe("desktop session setting synchronization", () => {
     await act(async () => {
       current(h).handleSessionSettingsEvent({ type: "model_changed", data: '{"model":"background"}' }, "other");
       current(h).handleSessionSettingsEvent({ type: "model_changed", data: 'not-json' }, "s1");
-      current(h).handleSessionSettingsEvent({ type: "thinking_level_changed", data: '{"level":"invalid"}' }, "s1");
+      // An empty level is not a level: the host always declares a non-empty one.
+      current(h).handleSessionSettingsEvent({ type: "thinking_level_changed", data: '{"level":""}' }, "s1");
+      current(h).handleSessionSettingsEvent({ type: "thinking_level_changed", data: '{"level":7}' }, "s1");
     });
     expect(current(h).modelId).toBe("p/org/new");
     expect(current(h).thinkingLevel).toBe("high");
     expect(h.request).not.toHaveBeenCalled();
+    act(() => h.renderer.unmount());
+  });
+
+  test("accepts any level the host declares instead of a client-side whitelist", async () => {
+    const h = await mountController({ selected: "s1" });
+    // The host owns the vocabulary: "default" is implicit, "max" and a
+    // provider's own token are wire values it may legitimately run at.
+    for (const level of ["default", "max", "turbo"]) {
+      act(() => current(h).handleSessionSettingsEvent(
+        { type: "thinking_level_changed", data: JSON.stringify({ level }) }, "s1",
+      ));
+      expect(current(h).thinkingLevel).toBe(level);
+    }
+    expect(h.request).not.toHaveBeenCalled();
+    act(() => h.renderer.unmount());
+  });
+
+  test("starts a phone with no open conversation on the implicit default level", async () => {
+    const h = await mountController();
+    expect(current(h).thinkingLevel).toBe("default");
     act(() => h.renderer.unmount());
   });
 
@@ -544,7 +566,8 @@ describe("selectSession", () => {
       await current(h).selectSession("s1");
     });
     expect(current(h).modelId).toBe("custom/model");
-    expect(current(h).thinkingLevel).toBe("off");
+    // No level in the state: the current host's own implicit starting level.
+    expect(current(h).thinkingLevel).toBe("default");
   });
 
   it("clears a session from the unread set only when present", async () => {
@@ -689,6 +712,28 @@ describe("newConversation", () => {
     expect(h.setDraftMode).toHaveBeenCalledWith("workspace");
     expect(h.setDraftWorkspaceId).toHaveBeenCalledWith("ws-1");
     expect(h.setSelectedSessionId).toHaveBeenCalledWith("");
+  });
+
+  it("starts a draft on the model's declared default level", async () => {
+    const h = await mountController({
+      models: [model("m", "p", { thinkingLevels: ["default", "off", "high"], defaultThinkingLevel: "default" })],
+    });
+    await act(async () => {
+      await current(h).newConversation();
+    });
+    expect(current(h).thinkingLevel).toBe("default");
+  });
+
+  it("never carries a remembered default level onto an older host", async () => {
+    // A host that predates `thinkingLevels` never offered "default": its
+    // conversations start at the legacy "medium", so a remembered "default"
+    // from a newer host must be clamped before it is sent back.
+    mockedLoadLastThinking.mockResolvedValue("default");
+    const h = await mountController({ models: [model("m", "p")] });
+    await act(async () => {
+      await current(h).newConversation();
+    });
+    expect(current(h).thinkingLevel).toBe("medium");
   });
 });
 

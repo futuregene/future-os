@@ -1,7 +1,7 @@
 import type { AgentConnectionState } from "../../components/layout/AppShell";
 import type { ContextTab } from "../../components/layout/ContextPanel";
 import type { ThreadRunInfo } from "../../components/layout/hooks/useThreadStore";
-import type { AgentModelOption, ThinkingLevel } from "../../integrations/agent/agentClient";
+import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { AgentThreadChrome } from "../agent/AgentThread";
@@ -868,7 +868,7 @@ export function VibeStage({
                 onRun: () => {},
                 onAdjust: (delta: -1 | 1) => {
                   const levels = modelThinkingLevels(focusedSettings.modelId, view.modelOptions);
-                  const at = levels.indexOf(focusedSettings.thinkingLevel as ThinkingLevel);
+                  const at = levels.indexOf(focusedSettings.thinkingLevel);
                   const next = levels[((at === -1 ? 0 : at) + delta + levels.length) % levels.length]!;
                   void setVibeCellThinkingLevel(focusedLocal.id, next);
                 },

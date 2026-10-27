@@ -71,9 +71,23 @@ vi.mock("./composerDraft", async original => ({
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 const MODELS = [
-  { id: "m1", label: "Model One", provider: "future", supportsImages: true, supportsThinkingLevels: ["off", "high"] },
-  { id: "m2", label: "Model Two", provider: "openai", supportsImages: false, supportsThinkingLevels: ["off"] },
-] as unknown as AgentModelOption[];
+  {
+    id: "m1",
+    label: "Model One",
+    provider: "future",
+    supportsImages: true,
+    thinkingLevels: ["default", "off", "high"],
+    defaultThinkingLevel: "default",
+  },
+  {
+    id: "m2",
+    label: "Model Two",
+    provider: "openai",
+    supportsImages: false,
+    thinkingLevels: ["default"],
+    defaultThinkingLevel: "default",
+  },
+] as AgentModelOption[];
 
 let container: HTMLDivElement;
 let root: Root;
@@ -719,12 +733,13 @@ describe("the composer's pickers from the keyboard", () => {
     const onThinkingLevelChange = vi.fn();
     render({ onThinkingLevelChange, thinkingLevel: "high" });
     await flush();
+    // The ring is the model's own list, so it wraps back to the implicit default.
     press("KeyT", "t");
-    expect(onThinkingLevelChange).toHaveBeenLastCalledWith("xhigh");
+    expect(onThinkingLevelChange).toHaveBeenLastCalledWith("default");
 
     render({ onThinkingLevelChange, thinkingLevel: "high" });
     press("KeyT", "t", { shiftKey: true });
-    expect(onThinkingLevelChange).toHaveBeenLastCalledWith("medium");
+    expect(onThinkingLevelChange).toHaveBeenLastCalledWith("off");
   });
 
   it("steps the access level forward and back", async () => {

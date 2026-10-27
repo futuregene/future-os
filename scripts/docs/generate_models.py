@@ -18,6 +18,7 @@ image-only, embedding and other non-text output models.
 """
 
 import json
+import sys
 import urllib.request
 import urllib.error
 from datetime import datetime
@@ -223,6 +224,53 @@ def process_vercel_ai(data: Dict) -> List[Dict]:
     return models
 
 
+# ─── thinking levels ───────────────────────────────────────────────────────
+#
+# `thinking_levels` is the list of wire values the access path accepts, in
+# display order (the reserved `default` is implicit and never stored). The
+# sources below do not expose a per-model effort vocabulary, so the catalog
+# declares the values the client has always sent for reasoning models and keeps
+# two override tables for providers whose vocabulary is known to differ.
+#
+# Runtime never reads `reasoning`; it stays in the catalog as metadata (and as
+# the build-time input for this rule).
+
+DEFAULT_REASONING_THINKING_LEVELS = ["minimal", "low", "medium", "high"]
+
+# provider id -> wire values for every reasoning model of that provider.
+PROVIDER_THINKING_LEVELS: Dict[str, List[str]] = {
+    # Values are added here only once the provider's accepted spelling is known.
+}
+
+# "provider/model-id" -> wire values for one model.
+MODEL_THINKING_LEVELS: Dict[str, List[str]] = {}
+
+
+def thinking_levels_for(provider: str, model_id: str, reasoning: bool) -> List[str]:
+    """The declared wire values for one catalog entry (empty = only default)."""
+    if not reasoning:
+        return []
+    override = MODEL_THINKING_LEVELS.get(f"{provider}/{model_id}")
+    if override is not None:
+        return list(override)
+    provider_levels = PROVIDER_THINKING_LEVELS.get(provider)
+    if provider_levels is not None:
+        return list(provider_levels)
+    return list(DEFAULT_REASONING_THINKING_LEVELS)
+
+
+def apply_thinking_levels(models: List[Dict]) -> None:
+    """Attach/normalize `thinking_levels` on an in-memory catalog."""
+    for model in models:
+        levels = thinking_levels_for(
+            model.get("provider", ""), model.get("id", ""), model.get("reasoning", False)
+        )
+        if levels:
+            model["thinking_levels"] = levels
+        else:
+            model.pop("thinking_levels", None)
+
+
 def generate_models_json(models: List[Dict]) -> str:
     """Generate JSON model catalog (replaces the old generate_rust_code).
 
@@ -235,7 +283,7 @@ def generate_models_json(models: List[Dict]) -> str:
     # Strip internal fields not needed by the agent runtime.
     out = []
     for m in models:
-        out.append({
+        entry = {
             "id": m["id"],
             "name": m["name"],
             "provider": m["provider"],
@@ -251,11 +299,36 @@ def generate_models_json(models: List[Dict]) -> str:
             "cost_cache_read": m["cost_cache_read"],
             "cost_cache_write": m["cost_cache_write"],
             "compat_json": "{}",
-            "tlm_json": "{}",
             "headers_json": "{}",
             "hide": False,
+        }
+        out.append(entry)
+    apply_thinking_levels(out)
+    # Keep the same key order the embedded catalog uses (thinking_levels rides
+    # next to compat_json), so a regenerated file diffs only where it changed.
+    ordered = []
+    for entry in out:
+        ordered.append({
+            "id": entry["id"],
+            "name": entry["name"],
+            "provider": entry["provider"],
+            "api": entry["api"],
+            "base_url": entry["base_url"],
+            "reasoning": entry["reasoning"],
+            "input": entry["input"],
+            "output": entry["output"],
+            "context_window": entry["context_window"],
+            "max_tokens": entry["max_tokens"],
+            "cost_input": entry["cost_input"],
+            "cost_output": entry["cost_output"],
+            "cost_cache_read": entry["cost_cache_read"],
+            "cost_cache_write": entry["cost_cache_write"],
+            "compat_json": entry["compat_json"],
+            **({"thinking_levels": entry["thinking_levels"]} if "thinking_levels" in entry else {}),
+            "headers_json": entry["headers_json"],
+            "hide": entry["hide"],
         })
-    return json.dumps(out, ensure_ascii=False, indent=2)
+    return json.dumps(ordered, ensure_ascii=False, indent=2)
 
 
 def generate_wiki_docs(models: List[Dict], timestamp: str):
@@ -365,7 +438,68 @@ def generate_wiki_docs(models: List[Dict], timestamp: str):
         print(f"  Written {path} ({len(content):,} bytes)")
 
 
+def backfill_thinking_levels(path: str) -> int:
+    """Offline rewrite of only the thinking-level columns of an existing catalog.
+
+    Used when the network must not be touched: `make generate-models` (network)
+    produces the same values through `apply_thinking_levels`, while this pass
+    updates the checked-in file without re-fetching upstream data.
+    """
+    with open(path, encoding="utf-8") as handle:
+        catalog = json.load(handle)
+    if not isinstance(catalog, list):
+        raise RuntimeError(f"{path}: expected a JSON array")
+    for entry in catalog:
+        entry.pop("tlm_json", None)
+        levels = thinking_levels_for(
+            entry.get("provider", ""), entry.get("id", ""), entry.get("reasoning", False)
+        )
+        if levels:
+            entry["thinking_levels"] = levels
+        else:
+            entry.pop("thinking_levels", None)
+    ordered = []
+    for entry in catalog:
+        rebuilt = {}
+        for key in (
+            "id",
+            "name",
+            "provider",
+            "api",
+            "base_url",
+            "reasoning",
+            "input",
+            "output",
+            "context_window",
+            "max_tokens",
+            "cost_input",
+            "cost_output",
+            "cost_cache_read",
+            "cost_cache_write",
+            "compat_json",
+        ):
+            if key in entry:
+                rebuilt[key] = entry[key]
+        if "thinking_levels" in entry:
+            rebuilt["thinking_levels"] = entry["thinking_levels"]
+        for key in ("headers_json", "hide"):
+            if key in entry:
+                rebuilt[key] = entry[key]
+        for key, value in entry.items():
+            if key not in rebuilt:
+                rebuilt[key] = value
+        ordered.append(rebuilt)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(ordered, ensure_ascii=False, indent=2))
+    return len(catalog)
+
+
 def main():
+    if "--backfill-thinking-levels" in sys.argv:
+        path = repo_path("agent/src/models/builtin/models.json")
+        count = backfill_thinking_levels(path)
+        print(f"  Backfilled thinking levels for {count} models in {path}")
+        return
     print("Fetching models from external APIs...")
     
     all_models = []

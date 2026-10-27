@@ -25,12 +25,31 @@ struct Model {
     label: String,
     provider: String,
     supports_images: bool,
-    thinking_level: String,
+    /// The levels the model offers, as declared by the agent: `default` first
+    /// (it means "send no thinking parameter"), then wire values sent verbatim.
+    /// Empty for an agent that predates the field.
+    thinking_levels: Vec<String>,
     context_window: i64,
 }
 
+/// The reserved level meaning "send no thinking/effort parameter at all".
+const DEFAULT_THINKING_LEVEL: &str = "default";
+
+/// The declared levels worth printing: the implicit `default` is not a
+/// capability, so only the wire values after it are shown. Empty when the model
+/// declares nothing else (a model with only `default`, or an older agent), in
+/// which case the row says nothing.
+fn declared_levels_label(levels: &[String]) -> String {
+    levels
+        .iter()
+        .map(String::as_str)
+        .filter(|level| *level != DEFAULT_THINKING_LEVEL)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// JSON row — field order matches the TS object literal `{id, label,
-/// contextWindow, supportsImages, thinkingLevel, isDefault}` (serde structs
+/// contextWindow, supportsImages, thinkingLevels, isDefault}` (serde structs
 /// serialize fields in declaration order; `serde_json::Map` would sort).
 #[derive(serde::Serialize)]
 struct ModelRowJson {
@@ -40,8 +59,8 @@ struct ModelRowJson {
     context_window: i64,
     #[serde(rename = "supportsImages")]
     supports_images: bool,
-    #[serde(rename = "thinkingLevel")]
-    thinking_level: String,
+    #[serde(rename = "thinkingLevels")]
+    thinking_levels: Vec<String>,
     #[serde(rename = "isDefault")]
     is_default: bool,
 }
@@ -137,11 +156,17 @@ pub async fn models(args: &[String], out: &Output) -> Result<(), String> {
                             .get("supportsImages")
                             .and_then(Value::as_bool)
                             .unwrap_or(false),
-                        thinking_level: m
-                            .get("thinkingLevel")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .to_string(),
+                        thinking_levels: m
+                            .get("thinkingLevels")
+                            .and_then(Value::as_array)
+                            .map(|levels| {
+                                levels
+                                    .iter()
+                                    .filter_map(Value::as_str)
+                                    .map(str::to_string)
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
                         context_window: m.get("contextWindow").and_then(Value::as_i64).unwrap_or(0),
                     })
                 })
@@ -175,7 +200,7 @@ pub async fn models(args: &[String], out: &Output) -> Result<(), String> {
                     label: m.label.clone(),
                     context_window: m.context_window,
                     supports_images: m.supports_images,
-                    thinking_level: m.thinking_level.clone(),
+                    thinking_levels: m.thinking_levels.clone(),
                     is_default: m.id == default_model,
                 })
                 .collect();
@@ -207,10 +232,13 @@ pub async fn models(args: &[String], out: &Output) -> Result<(), String> {
             let is_default = m.id == default_model;
             let ctx_win = human_context_window(m.context_window);
             let img = if m.supports_images { "  image" } else { "" };
-            let thinking = if m.thinking_level != "off" {
-                format!("  thinking:{}", m.thinking_level)
-            } else {
+            // The implicit `default` is not a capability: a model that declares
+            // nothing else gets no segment at all.
+            let offered = declared_levels_label(&m.thinking_levels);
+            let thinking = if offered.is_empty() {
                 String::new()
+            } else {
+                format!("  thinking:{offered}")
             };
             let def = if is_default { "  [default]" } else { "" };
             // `m.id.padEnd(28)` / `ctxWin.padStart(5)` — min-width padding,
@@ -411,9 +439,9 @@ mod tests {
         let agent = crate::test_server::MockAgent::respond(
             "list_models",
             "{\"models\":[\
-                {\"id\":\"k3\",\"label\":\"Kimi K3\",\"provider\":\"future\",\"supportsImages\":true,\"thinkingLevel\":\"xhigh\",\"contextWindow\":262144},\
+                {\"id\":\"k3\",\"label\":\"Kimi K3\",\"provider\":\"future\",\"supportsImages\":true,\"thinkingLevel\":\"default\",\"thinkingLevels\":[\"default\",\"off\",\"low\",\"high\",\"max\"],\"contextWindow\":262144},\
                 {\"id\":\"k2\",\"label\":\"Kimi K2\",\"provider\":\"future\",\"contextWindow\":131072},\
-                {\"id\":\"gpt-5\",\"label\":\"GPT-5\",\"provider\":\"openai\",\"supportsImages\":false,\"thinkingLevel\":\"off\",\"contextWindow\":400000}\
+                {\"id\":\"gpt-5\",\"label\":\"GPT-5\",\"provider\":\"openai\",\"supportsImages\":false,\"thinkingLevel\":\"default\",\"thinkingLevels\":[\"default\"],\"contextWindow\":400000}\
             ],\"defaultModel\":\"k3\"}",
         );
         let addr = crate::test_server::spawn_mock(agent.clone()).await;
@@ -439,10 +467,15 @@ mod tests {
         assert!(stdout.contains("Model: k3"), "stdout: {stdout}");
         assert!(stdout.contains("ctx: 262K"), "stdout: {stdout}");
         assert!(stdout.contains("  image"), "stdout: {stdout}");
-        assert!(stdout.contains("  thinking:xhigh"), "stdout: {stdout}");
+        // The declared levels, with the implicit default left out.
+        assert!(
+            stdout.contains("  thinking:off,low,high,max"),
+            "stdout: {stdout}"
+        );
         assert!(stdout.contains("  [default]"), "stdout: {stdout}");
-        // thinking:off renders no thinking segment.
-        assert!(!stdout.contains("thinking:off"), "stdout: {stdout}");
+        // A model that declares only `default`, and an agent that declares
+        // nothing, render no thinking segment.
+        assert!(!stdout.contains("thinking:default"), "stdout: {stdout}");
         assert!(stdout.contains("3 models, 2 providers.  Default model: k3"));
     }
 
@@ -464,7 +497,16 @@ mod tests {
         assert_eq!(future_rows[1]["isDefault"], true);
         assert_eq!(future_rows[1]["contextWindow"], 262144);
         assert_eq!(future_rows[1]["supportsImages"], true);
-        assert_eq!(future_rows[1]["thinkingLevel"], "xhigh");
+        assert_eq!(
+            future_rows[1]["thinkingLevels"],
+            json!(["default", "off", "low", "high", "max"])
+        );
+        // The agent's declaration is echoed as-is; a model that declares only
+        // the implicit default carries just that.
+        assert_eq!(
+            parsed["models"]["openai"][0]["thinkingLevels"],
+            json!(["default"])
+        );
         assert_eq!(parsed["models"]["openai"][0]["isDefault"], false);
     }
 
@@ -634,7 +676,7 @@ mod tests {
         let parsed: Value = serde_json::from_str(&stdout).expect("json");
         assert_eq!(parsed["totalModels"], 1);
         // Missing optional fields default.
-        assert_eq!(parsed["models"]["p"][0]["thinkingLevel"], "");
+        assert_eq!(parsed["models"]["p"][0]["thinkingLevels"], json!([]));
         assert_eq!(parsed["models"]["p"][0]["supportsImages"], false);
         assert_eq!(parsed["defaultModel"], "");
 

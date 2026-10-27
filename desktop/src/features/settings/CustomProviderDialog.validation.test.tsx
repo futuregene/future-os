@@ -12,6 +12,7 @@ const BLANK_MODEL: CustomProviderModel = {
   name: "",
   supportsImages: false,
   reasoning: true,
+  thinkingLevels: ["off", "low", "medium", "high"],
   contextWindow: 128000,
   maxTokens: 16384,
   inputCost: 0,
@@ -136,11 +137,10 @@ function setInput(input: HTMLInputElement | HTMLSelectElement, value: string) {
   });
 }
 
-function clickCheckbox(container: HTMLElement, row: number, name: "reasoning" | "image") {
+function clickImageCheckbox(container: HTMLElement, row: number) {
   const boxes = [...container.querySelectorAll<HTMLInputElement>("input[type=checkbox]")];
-  // Per row: reasoning, the disabled text box, then the image box.
-  const offset = row * 3 + (name === "reasoning" ? 0 : 2);
-  act(() => boxes[offset]!.click());
+  // Per row: the disabled text box, then the image box.
+  act(() => boxes[row * 2 + 1]!.click());
 }
 
 /** Fill the provider fields needed to get past the provider-level checks. */
@@ -475,19 +475,25 @@ describe("customProviderDialog model validation", () => {
     }));
   });
 
-  it("forwards the modality and thinking flags from the row", async () => {
+  it("forwards the modality flag and the row's thinking levels", async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     const container = mount({ onSubmit });
     withModel(container);
-    clickCheckbox(container, 0, "image");
-    clickCheckbox(container, 0, "reasoning");
+    clickImageCheckbox(container, 0);
+    // The thinking-level multi-select: add Max to the new row's defaults.
+    const max = [...container.querySelectorAll<HTMLButtonElement>("button[aria-pressed]")]
+      .find(button => button.textContent === "Max")!;
+    act(() => max.click());
 
     await act(async () => {
       byText(container, "Save").click();
     });
 
     expect(onSubmit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-      models: [expect.objectContaining({ supportsImages: true, reasoning: false })],
+      models: [expect.objectContaining({
+        supportsImages: true,
+        thinkingLevels: ["off", "low", "medium", "high", "max"],
+      })],
     }));
   });
 

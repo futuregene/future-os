@@ -63,6 +63,7 @@ fn custom_model(id: &str, name: &str, supports_images: bool) -> CustomProviderMo
         name: name.to_string(),
         supports_images,
         reasoning: true,
+        thinking_levels: None,
         context_window: 128_000,
         max_tokens: 16_384,
         input_cost: 0.0,
@@ -82,6 +83,21 @@ fn custom_provider_model_serde_defaults_context_window_and_max_tokens() {
     assert!(model.reasoning);
     assert_eq!(model.name, "");
     assert!(!model.supports_images);
+    // Absent `thinkingLevels` means "not supplied", not "empty":
+    assert_eq!(model.thinking_levels, None);
+}
+
+#[test]
+fn custom_provider_model_serde_reads_thinking_levels() {
+    let model: CustomProviderModel =
+        serde_json::from_str(r#"{"id":"m1","thinkingLevels":["off","max"]}"#).unwrap();
+    assert_eq!(
+        model.thinking_levels,
+        Some(vec!["off".to_string(), "max".to_string()])
+    );
+    // A view entry serializes the field back out under the camelCase name.
+    let entry = serde_json::to_value(&model).unwrap();
+    assert_eq!(entry["thinkingLevels"], json!(["off", "max"]));
 }
 
 #[test]
@@ -368,6 +384,147 @@ fn model_reasoning_round_trips_through_validation_rpc_and_persistence() {
             json!(reasoning)
         );
     }
+}
+
+#[test]
+fn model_thinking_levels_round_trip_through_validation_rpc_and_persistence() {
+    let _home = HomeGuard::new("thinking-levels");
+    let catalog = fixture_catalog();
+    let mut create = input("p1", "P1", true);
+    let mut model = custom_model("reasoner", "", false);
+    // `max` is a valid wire value: the list is not restricted to the shipped
+    // vocabulary, and the implicit `default` is never stored.
+    model.thinking_levels = Some(vec!["off".to_string(), "max".to_string()]);
+    create.models = vec![model];
+
+    // Validation normalizes and keeps the declared order.
+    let validated = validate_custom_provider(create.clone()).unwrap();
+    assert_eq!(
+        validated.models[0].thinking_levels,
+        Some(vec!["off".to_string(), "max".to_string()])
+    );
+
+    // The RPC payload carries the list *and* the presence bit, so the agent
+    // replaces the stored list instead of preserving it.
+    let message = &super::write::provider_upsert_message(&validated).models[0];
+    assert_eq!(message.thinking_levels, ["off", "max"]);
+    assert_eq!(message.replace_thinking_levels, Some(true));
+
+    // Persisted under models.json `thinkingLevels` and read back into the view
+    // for the edit form.
+    let view = upsert_custom_provider_with_catalog(create, &catalog).unwrap();
+    assert_eq!(
+        view.custom[0].models[0].thinking_levels,
+        Some(vec!["off".to_string(), "max".to_string()])
+    );
+    let doc = config_io::read_json_lenient(&models_json_path().unwrap());
+    assert_eq!(
+        doc["providers"]["p1"]["models"][0]["thinkingLevels"],
+        json!(["off", "max"])
+    );
+}
+
+#[test]
+fn an_omitted_thinking_levels_list_preserves_the_stored_one_on_edit() {
+    let _home = HomeGuard::new("thinking-levels-preserve");
+    let catalog = fixture_catalog();
+    let mut create = input("p1", "P1", true);
+    let mut model = custom_model("m1", "", false);
+    model.thinking_levels = Some(vec!["low".to_string(), "high".to_string()]);
+    create.models = vec![model];
+    upsert_custom_provider_with_catalog(create, &catalog).unwrap();
+
+    // A client that predates the field sends no list: `None` is "preserve".
+    let mut edit = input("p1", "P1", false);
+    edit.models = vec![custom_model("m1", "", false)];
+    let validated = validate_custom_provider(edit.clone()).unwrap();
+    assert_eq!(validated.models[0].thinking_levels, None);
+    let message = &super::write::provider_upsert_message(&validated).models[0];
+    assert!(message.thinking_levels.is_empty());
+    assert_eq!(message.replace_thinking_levels, None);
+
+    let view = upsert_custom_provider_with_catalog(edit, &catalog).unwrap();
+    assert_eq!(
+        view.custom[0].models[0].thinking_levels,
+        Some(vec!["low".to_string(), "high".to_string()]),
+        "an edit without the field must not clear the stored list"
+    );
+}
+
+#[test]
+fn a_supplied_empty_thinking_levels_list_clears_the_stored_one() {
+    let _home = HomeGuard::new("thinking-levels-clear");
+    let catalog = fixture_catalog();
+    let mut create = input("p1", "P1", true);
+    let mut model = custom_model("m1", "", false);
+    model.thinking_levels = Some(vec!["off".to_string(), "high".to_string()]);
+    create.models = vec![model];
+    upsert_custom_provider_with_catalog(create, &catalog).unwrap();
+
+    // `Some([])` says "clear it": the model then offers only the implicit default.
+    let mut edit = input("p1", "P1", false);
+    let mut model = custom_model("m1", "", false);
+    model.thinking_levels = Some(Vec::new());
+    edit.models = vec![model];
+    let validated = validate_custom_provider(edit.clone()).unwrap();
+    let message = &super::write::provider_upsert_message(&validated).models[0];
+    assert!(message.thinking_levels.is_empty());
+    assert_eq!(message.replace_thinking_levels, Some(true));
+    upsert_custom_provider_with_catalog(edit, &catalog).unwrap();
+
+    let doc = config_io::read_json_lenient(&models_json_path().unwrap());
+    assert!(
+        doc["providers"]["p1"]["models"][0]
+            .get("thinkingLevels")
+            .is_none(),
+        "{doc}"
+    );
+    let view = providers_view(&catalog);
+    assert_eq!(view.custom[0].models[0].thinking_levels, Some(Vec::new()));
+}
+
+#[test]
+fn thinking_levels_normalize_and_are_bounded() {
+    let _home = HomeGuard::new("thinking-levels-validate");
+    let catalog = fixture_catalog();
+
+    // Trim, drop empties and the reserved `default`, dedupe, keep declared order.
+    let mut normalized = input("p1", "P1", true);
+    let mut model = custom_model("m1", "", false);
+    model.thinking_levels = Some(vec![
+        " high ".to_string(),
+        "high".to_string(),
+        String::new(),
+        "default".to_string(),
+        " max ".to_string(),
+    ]);
+    normalized.models = vec![model];
+    let validated = validate_custom_provider(normalized.clone()).unwrap();
+    assert_eq!(
+        validated.models[0].thinking_levels,
+        Some(vec!["high".to_string(), "max".to_string()])
+    );
+    upsert_custom_provider_with_catalog(normalized, &catalog).unwrap();
+
+    // One level longer than the cap is rejected rather than truncated.
+    let mut long_level = input("p1", "P1", false);
+    let mut model = custom_model("m1", "", false);
+    model.thinking_levels = Some(vec!["l".repeat(33)]);
+    long_level.models = vec![model];
+    assert!(validate_custom_provider(long_level)
+        .unwrap_err()
+        .to_string()
+        .contains("too long"));
+
+    // More than the cap is rejected (the implicit default does not count).
+    let mut too_many = input("p1", "P1", false);
+    let mut model = custom_model("m1", "", false);
+    model.thinking_levels = Some((0..17).map(|index| format!("level-{index}")).collect());
+    too_many.models = vec![model];
+    assert!(validate_custom_provider(too_many)
+        .unwrap_err()
+        .to_string()
+        .contains("cannot offer more than"));
 }
 
 #[test]
@@ -711,7 +868,7 @@ fn validate_model_rules() {
     vision.models = vec![custom_model("v1", "Vision", true)];
     let validated = validate_custom_provider(vision).unwrap();
     assert_eq!(validated.models[0].modalities, ["text", "image"]);
-    let values = model_json_values(&validated.models);
+    let values = model_json_values(&validated.models, None);
     assert_eq!(values[0]["modalities"], json!(["text", "image"]));
     assert_eq!(values[0]["name"], json!("Vision"));
     assert_eq!(values[0]["contextWindow"], json!(128000));

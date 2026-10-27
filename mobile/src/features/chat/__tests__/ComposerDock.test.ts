@@ -389,8 +389,11 @@ test.each([
     expect(StyleSheet.flatten(model.props.style({ pressed: false })).paddingHorizontal).toBe(8);
     expect(StyleSheet.flatten(tree!.root.findByType(TextInput).props.style).paddingHorizontal).toBe(16);
     expect(model.findByType(Text).props.children).toBe("A very long model label");
-    expect(button("chat.thinkingLevel: thinking.high").findByType(Text).props.children).toBe("thinking.high");
-    act(() => button("chat.thinkingLevel: thinking.high").props.onPress());
+    // No catalogue model matches `model`, so the stored level is shown as-is;
+    // this test's `t` returns the key, so an untranslated level falls back to
+    // the raw wire value instead of leaking "thinking.high".
+    expect(button("chat.thinkingLevel: high").findByType(Text).props.children).toBe("high");
+    act(() => button("chat.thinkingLevel: high").props.onPress());
     expect(setSelector).toHaveBeenCalledWith("thinking");
     act(() => model.props.onPress());
     expect(setSelector).toHaveBeenCalledWith("model");

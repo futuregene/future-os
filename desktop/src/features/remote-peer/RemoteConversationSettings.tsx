@@ -55,13 +55,12 @@ export function RemoteConversationSettings({
   // offer (stored before its `thinkingLevels` narrowed, or written by an older
   // client) is shown as that model's own starting level — the host's agent clamps
   // it, so displaying it as the running effort would be wrong. With no level yet
-  // the host's own picker falls back to `off`.
-  const activeThinkingLevel = settings.thinkingLevel
-    ? resolveThinkingLevel(settings.thinkingLevel, settings.model ?? "", modelOptions)
-    : "off";
-  // Levels the host's agent would clamp away are not offered. A host that
-  // predates `thinkingLevels` keeps all six.
+  // the model's own starting level stands (`default` on a current host).
   const thinkingLevels = modelThinkingLevels(settings.model ?? "", modelOptions);
+  const activeThinkingLevel = resolveThinkingLevel(settings.thinkingLevel, settings.model ?? "", modelOptions);
+  // A list holding only the implicit `default` offers no choice, so the picker
+  // is disabled rather than opening a menu with one row.
+  const thinkingChoice = thinkingLevels.length > 1;
   // The host can name a model its catalogue lists without a label, and can be
   // using one the catalogue does not list at all — both of which the phone's
   // control already answers, in this order, so the two controls read the same.
@@ -137,7 +136,7 @@ export function RemoteConversationSettings({
             <button
               aria-label={t("thinkingLevelLabel")}
               className="inline-flex h-7 max-w-40 min-w-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={busy}
+              disabled={busy || !thinkingChoice}
               onClick={() => {
                 setModelMenuOpen(false);
                 setThinkingMenuOpen(open => !open);
@@ -159,7 +158,7 @@ export function RemoteConversationSettings({
                 void settings.setThinkingLevel(level);
               }}
             >
-              <span className="min-w-0 flex-1 truncate font-medium text-ink">{t(`thinkingLevel.${level}`)}</span>
+              <span className="min-w-0 flex-1 truncate font-medium text-ink">{t(`thinkingLevel.${level}`, { defaultValue: level })}</span>
             </SelectMenuItem>
           ))}
         </SelectMenu>

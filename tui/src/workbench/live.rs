@@ -33,8 +33,9 @@ use crate::rpc::GrpcClient;
 use super::i18n::{self, t, Key, Language, LanguagePreference};
 use super::layout::Frame;
 use super::state::{
-    Activity, ActivityKind, InputView, ModelChoice, PreviewView, QueuedPrompt, SessionMeta,
-    SessionRow, SkillRow, UsageData, WorkbenchData, WorkspaceGroup, THINKING_LEVELS,
+    effective_thinking_levels, legacy_wire_thinking_level, next_thinking_level, Activity,
+    ActivityKind, InputView, ModelChoice, PreviewView, QueuedPrompt, SessionMeta, SessionRow,
+    SkillRow, UsageData, WorkbenchData, WorkspaceGroup, DEFAULT_THINKING_LEVEL_NAME,
 };
 use super::WbAction;
 
@@ -1006,6 +1007,8 @@ impl Live {
                     provider: model.provider.clone(),
                     context_window: model.context_window,
                     thinking_level: model.thinking_level.clone(),
+                    thinking_levels: model.thinking_levels.clone(),
+                    default_thinking_level: model.default_thinking_level.clone(),
                 })
                 .collect(),
             skills,
@@ -1476,12 +1479,20 @@ impl Live {
     }
 
     /// The reasoning level the surface should name (see [`Self::shown_model`]).
+    ///
+    /// A launchpad with nothing staged starts at the reserved `default` (the
+    /// provider default, i.e. no thinking parameter): an empty agent state is
+    /// not "no level", it is the implicit one.
     fn shown_effort(&self) -> String {
         if self.detached() {
             return self
                 .pending_effort
                 .clone()
-                .unwrap_or_else(|| self.state.thinking_level.clone());
+                .or_else(|| {
+                    (!self.state.thinking_level.trim().is_empty())
+                        .then(|| self.state.thinking_level.clone())
+                })
+                .unwrap_or_else(|| DEFAULT_THINKING_LEVEL_NAME.to_string());
         }
         self.state.thinking_level.clone()
     }
@@ -1564,6 +1575,39 @@ impl Live {
         ));
     }
 
+    /// The model a picker choice is made for: the staged one while detached,
+    /// otherwise the agent's own.
+    fn choice_model(&self) -> Option<&ModelInfo> {
+        let id = if self.detached() {
+            self.pending_model
+                .as_deref()
+                .or(self.state.model.as_deref())
+        } else {
+            self.state.model.as_deref()
+        }?;
+        let tail = |name: &str| name.rsplit('/').next().unwrap_or(name).to_lowercase();
+        let needle = tail(id);
+        self.models.iter().find(|model| tail(&model.id) == needle)
+    }
+
+    /// The level to send over the wire.
+    ///
+    /// The reserved `default` is only understood by an agent that advertises
+    /// `thinkingLevels`; an older agent's models fall back to the legacy
+    /// vocabulary, whose default is `medium` (see [`legacy_wire_thinking_level`]).
+    /// An agent whose model list has not loaded yet is assumed current.
+    fn wire_thinking_level(&self, level: &str) -> String {
+        let current_agent = self
+            .choice_model()
+            .map(|model| model.thinking_levels.is_some())
+            .unwrap_or(true);
+        if current_agent {
+            level.to_string()
+        } else {
+            legacy_wire_thinking_level(level).to_string()
+        }
+    }
+
     /// Stage a model chosen while nothing is attached — the picker's row or the
     /// launchpad's own chip. Nothing is sent: the agent has no session to set a
     /// model on ("session not found"), and the session the next message creates
@@ -1595,7 +1639,7 @@ impl Live {
         // What the reader chose on the launchpad is what this session starts
         // with; with nothing staged this is the state the agent already has.
         let model = self.shown_model().unwrap_or_default();
-        let level = self.shown_effort();
+        let level = self.wire_thinking_level(&self.shown_effort());
         match self
             .client
             .new_session(
@@ -1648,7 +1692,8 @@ impl Live {
 
     /// Apply one reasoning level (the model picker's slider).
     async fn set_thinking(&mut self, level: &str) {
-        match self.client.set_thinking_level(level).await {
+        let level = self.wire_thinking_level(level);
+        match self.client.set_thinking_level(&level).await {
             Ok(()) => {
                 self.notice = None;
                 self.refresh_state().await;
@@ -1716,18 +1761,24 @@ impl Live {
     }
 
     /// The next reasoning level, staged for the next session.
+    ///
+    /// The ring is the staged model's own declaration (the launchpad can pick a
+    /// model before a session exists), falling back to the legacy vocabulary for
+    /// an older agent. An unknown current level starts the ring at `default`, so
+    /// the first press lands on the first real choice rather than skipping it.
     fn cycle_pending_effort(&mut self) {
+        let model_id = self
+            .pending_model
+            .as_deref()
+            .or(self.state.model.as_deref());
+        let levels = level_ring(&self.models, model_id);
         let current = self
             .pending_effort
             .clone()
-            .unwrap_or_else(|| self.state.thinking_level.clone());
-        let index = THINKING_LEVELS
-            .iter()
-            .position(|level| *level == current)
-            .map(|index| index + 1)
-            .unwrap_or(0);
-        let next = THINKING_LEVELS[index % THINKING_LEVELS.len()];
-        self.set_pending_effort(next);
+            .unwrap_or_else(|| self.shown_effort());
+        if let Some(next) = next_thinking_level(&levels, &current) {
+            self.set_pending_effort(&next);
+        }
     }
 
     /// The approval mode, in the desktop composer's order.
@@ -2660,6 +2711,20 @@ impl Live {
     }
 }
 
+/// The level ring for `model_id`: its declared list from the agent's model
+/// list, or the legacy fallback when the id is unknown (not loaded yet, or from
+/// an older agent that never sent one).
+fn level_ring(models: &[ModelInfo], model_id: Option<&str>) -> Vec<String> {
+    let tail = |name: &str| name.rsplit('/').next().unwrap_or(name).to_lowercase();
+    let declared = model_id.map(tail).and_then(|needle| {
+        models
+            .iter()
+            .find(|model| tail(&model.id) == needle)
+            .and_then(|model| model.thinking_levels.as_deref())
+    });
+    effective_thinking_levels(declared)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3153,6 +3218,58 @@ mod tests {
         assert_eq!(rate_per_second(0, 5.0), None);
         assert_eq!(rate_per_second(100, 0.2), None);
         assert_eq!(rate_per_second(100, 2.0), Some(50.0));
+    }
+
+    fn model_info(id: &str, levels: Option<&[&str]>) -> ModelInfo {
+        ModelInfo {
+            id: id.into(),
+            label: id.into(),
+            provider: String::new(),
+            supports_images: false,
+            thinking_level: "default".into(),
+            thinking_levels: levels
+                .map(|levels| levels.iter().map(|level| level.to_string()).collect()),
+            default_thinking_level: Some("default".into()),
+            context_window: 0,
+            is_default: false,
+        }
+    }
+
+    /// The launchpad's effort chip cycles the *selected model's* levels: a model
+    /// that declares one level is cycled to `default` and back, never through a
+    /// vocabulary it would only be clamped out of.
+    #[test]
+    fn the_launchpad_effort_ring_follows_the_selected_model() {
+        let models = vec![
+            model_info("future/k3", Some(&["default", "off", "low", "high"])),
+            model_info("future/plain", Some(&["default"])),
+        ];
+        assert_eq!(
+            level_ring(&models, Some("future/k3")),
+            vec!["default", "off", "low", "high"]
+        );
+        // The session may name a model bare; the tail match still finds its row.
+        assert_eq!(
+            level_ring(&models, Some("k3")),
+            vec!["default", "off", "low", "high"]
+        );
+        assert_eq!(level_ring(&models, Some("plain")), vec!["default"]);
+        // An unknown model — the list has not loaded yet, or the agent predates
+        // the field — falls back to `default` + the legacy six.
+        let fallback = crate::workbench::state::fallback_thinking_levels();
+        assert_eq!(level_ring(&models, Some("nope")), fallback);
+        assert_eq!(level_ring(&models, None), fallback);
+        // The first press from an unset level lands on the ring's first entry
+        // (`default`); the next one advances to the first real choice.
+        let ring = level_ring(&models, Some("k3"));
+        assert_eq!(
+            next_thinking_level(&ring, "").as_deref(),
+            Some(DEFAULT_THINKING_LEVEL_NAME)
+        );
+        assert_eq!(
+            next_thinking_level(&ring, DEFAULT_THINKING_LEVEL_NAME).as_deref(),
+            Some("off")
+        );
     }
 
     /// The two events that mean the agent knows more about the turn's spend than

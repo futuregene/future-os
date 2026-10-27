@@ -75,6 +75,7 @@ fn upsert_provider_writes_both_files_and_delete_removes_them() {
             context_window: 128000,
             max_tokens: 16384,
             reasoning: false,
+            thinking_levels: None,
             cost: crate::config::providers::ModelCostSpec {
                 input: 1.5,
                 output: 6.0,
@@ -134,7 +135,7 @@ fn upsert_provider_writes_both_files_and_delete_removes_them() {
         .find(|model| model["provider"] == "myprov")
         .unwrap();
     assert_eq!(model["reasoning"], false);
-    assert_eq!(model["thinkingLevel"], "off");
+    assert_eq!(model["thinkingLevel"], "default");
     let auth = read_json(&home.auth_path());
     assert_eq!(auth["myprov"]["key"], "sk-key");
 
@@ -542,23 +543,24 @@ fn list_models_sends_each_models_thinking_levels_and_starting_level() {
 
     assert_eq!(
         row("narrow")["thinkingLevels"],
-        serde_json::json!(["low", "high"])
+        serde_json::json!(["default", "low", "high"])
     );
-    // Its starting level is the agent's clamp of the app default (`medium`),
-    // not `medium` itself: a client seeding from it never starts on a level the
-    // model would snap away from.
-    assert_eq!(row("narrow")["defaultThinkingLevel"], "low");
+    // Every model starts on the implicit `default` (send no parameter).
+    assert_eq!(row("narrow")["defaultThinkingLevel"], "default");
 
-    // The unchanged path: a model that declares nothing still offers all six and
-    // still starts at `medium`.
+    // A model that declares nothing offers only the implicit `default`.
     assert_eq!(
         row("undeclared")["thinkingLevels"],
-        serde_json::json!(["off", "minimal", "low", "medium", "high", "xhigh"])
+        serde_json::json!(["default"])
     );
-    assert_eq!(row("undeclared")["defaultThinkingLevel"], "medium");
+    assert_eq!(row("undeclared")["defaultThinkingLevel"], "default");
 
-    assert_eq!(row("plain")["thinkingLevels"], serde_json::json!(["off"]));
-    assert_eq!(row("plain")["defaultThinkingLevel"], "off");
+    // `reasoning: false` no longer narrows anything: levels are the only input.
+    assert_eq!(
+        row("plain")["thinkingLevels"],
+        serde_json::json!(["default"])
+    );
+    assert_eq!(row("plain")["defaultThinkingLevel"], "default");
 }
 
 /// The two `list_models` filters are a conjunction, and the cheap one
@@ -1001,6 +1003,6 @@ fn declared_thinking_levels_survive_the_typed_wire_payload() {
         .iter()
         .find(|model| model.provider == "wire-test")
         .expect("model listed");
-    assert_eq!(row.thinking_levels, ["off", "low", "high"]);
-    assert_eq!(row.default_thinking_level.as_deref(), Some("low"));
+    assert_eq!(row.thinking_levels, ["default", "off", "low", "high"]);
+    assert_eq!(row.default_thinking_level.as_deref(), Some("default"));
 }

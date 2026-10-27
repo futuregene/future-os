@@ -192,7 +192,18 @@ export interface RemoteProviderModel {
   id: string;
   name?: string;
   supportsImages?: boolean;
+  /**
+   * Kept for the wire (an older desktop still reads it) but it no longer gates
+   * anything: the levels below decide whether the model has thinking controls.
+   */
   reasoning?: boolean;
+  /**
+   * The thinking levels this model accepts, in display order — each entry a wire
+   * value sent verbatim. `"default"` is implicit (an empty list means only
+   * `default`) and is never stored here. Absent on an older host, which also
+   * ignores it on an upsert.
+   */
+  thinkingLevels?: string[];
   contextWindow?: number;
   maxTokens?: number;
   /** Per-1M-token prices; 0 means unpriced (adds nothing to the amount). */
@@ -265,13 +276,21 @@ export interface RemoteModel {
   /** Whether the model's input modality accepts images (agent catalogue). */
   supportsImages?: boolean;
   /**
-   * The thinking levels this model offers, canonical order — the agent sends it
-   * already resolved (a model without thinking controls declares `off` alone, one
-   * that declares nothing offers all six). Absent on an older host; treat it as
-   * "the model constrains nothing".
+   * The levels this model offers, in display order. The host sends the list
+   * already resolved: always non-empty, always starting with `"default"`, and
+   * every other entry is a wire value sent verbatim (`"off"` disables thinking
+   * explicitly; `"max"` and arbitrary provider tokens are allowed).
+   *
+   * Absent on an older host: treat that model as offering the legacy
+   * [`THINKING_LEVELS`] and starting at `"medium"` — never send the literal
+   * `"default"` to a host that predates the field.
    */
   thinkingLevels?: string[] | null;
-  /** The level a conversation starts at on this model, already clamped. */
+  /**
+   * The level a conversation starts at on this model, already clamped to
+   * `thinkingLevels` by the host. `"default"` for a current host; unset on an
+   * older one.
+   */
   defaultThinkingLevel?: string | null;
 }
 
@@ -324,37 +343,72 @@ export interface RemoteSessionState {
   interruptedRun?: { runId?: string } | null;
 }
 
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
-
-/** The product-level thinking vocabulary, shallowest first. */
-export const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+/** A level every client has a label for. The wire accepts any other token too. */
+export type KnownThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /**
- * The levels a model offers, canonical order.
+ * A model's thinking level as it travels the wire: the host declares the values
+ * it accepts and the client sends one back verbatim, so this is deliberately an
+ * open string rather than the known union.
+ */
+export type ThinkingLevel = string;
+
+/** The implicit "send no thinking parameter" level, always available on a current host. */
+export const DEFAULT_THINKING_LEVEL = "default";
+
+/**
+ * The vocabulary and starting level of a host that predates `thinkingLevels`.
  *
- * Filtering happens here and nowhere else on this side: the agent already
- * resolved `thinkingLevels` (declared subset, or `off` alone for a model without
- * thinking controls), so a picker that offers the intersection can never send a
- * level the agent would clamp away. No list (an older host) keeps all six.
+ * Only a fallback: a current host declares its own list (which always starts
+ * with `"default"`), so this is what an older host's models offer and where its
+ * conversations start. It is also the never-send rule: `"default"` is not in it.
+ */
+export const THINKING_LEVELS: readonly KnownThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+
+/** Where an older host's conversations start (its model list has no `"default"`). */
+export const LEGACY_DEFAULT_THINKING_LEVEL = "medium";
+
+/**
+ * The levels a model offers, in the host's display order.
+ *
+ * The host already resolved the list, so it is returned as-is — arbitrary wire
+ * values (`"max"`, a provider-specific token) must reach the picker, not be
+ * filtered down to a client-side vocabulary. Absent (or empty, which a current
+ * host never sends) means an older host: the legacy six, unchanged behaviour.
  */
 export function modelThinkingLevels(
   model: Pick<RemoteModel, "thinkingLevels"> | undefined,
-  all: readonly ThinkingLevel[] = THINKING_LEVELS,
 ): readonly ThinkingLevel[] {
   const declared = model?.thinkingLevels;
+  return declared && declared.length > 0 ? declared : THINKING_LEVELS;
+}
+
+/**
+ * The level a conversation starts at on `model` when none is chosen.
+ *
+ * A current host declares it (`defaultThinkingLevel`, `"default"` in practice).
+ * An older host has no such list, so it keeps its legacy `"medium"` — sending
+ * `"default"` there would be a value it never offered.
+ */
+export function defaultThinkingLevelForModel(
+  model: Pick<RemoteModel, "thinkingLevels" | "defaultThinkingLevel"> | undefined,
+): ThinkingLevel {
+  const declared = model?.thinkingLevels;
   if (!declared || declared.length === 0)
-    return all;
-  return all.filter(level => declared.includes(level));
+    return LEGACY_DEFAULT_THINKING_LEVEL;
+  const stated = model?.defaultThinkingLevel;
+  if (stated && declared.includes(stated))
+    return stated;
+  return declared.includes(DEFAULT_THINKING_LEVEL) ? DEFAULT_THINKING_LEVEL : declared[0]!;
 }
 
 /**
  * The level to show for a conversation on `model`.
  *
  * A stored level the model no longer offers is not a level this conversation can
- * run at — the agent clamps it — so it is replaced by the model's starting level
- * (`defaultThinkingLevel`, which the agent computed from its own clamp) rather
- * than displayed as the current effort. A model that declares nothing keeps the
- * value untouched: display-side, that is the unchanged path.
+ * run at — the host clamps it — so it is replaced by the model's starting level
+ * rather than displayed as the current effort. An unknown model keeps the caller's
+ * own value (undefined): there is no list to resolve against yet.
  */
 export function resolveModelThinkingLevel(
   level: string | null | undefined,
@@ -362,13 +416,9 @@ export function resolveModelThinkingLevel(
 ): ThinkingLevel | undefined {
   if (!model)
     return undefined;
-  const allowed = modelThinkingLevels(model);
-  if (level && allowed.includes(level as ThinkingLevel))
-    return level as ThinkingLevel;
-  const declared = model.defaultThinkingLevel;
-  if (declared && allowed.includes(declared as ThinkingLevel))
-    return declared as ThinkingLevel;
-  return allowed[0];
+  if (level && modelThinkingLevels(model).includes(level))
+    return level;
+  return defaultThinkingLevelForModel(model);
 }
 
 

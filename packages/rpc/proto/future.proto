@@ -83,7 +83,9 @@ message RpcCommand {
 
   // ── set_thinking_level ─────────────────────────────────────────────────
 
-  // Thinking level: "off", "minimal", "low", "medium", "high", "xhigh".
+  // Thinking level. "default" means "send no thinking/effort parameter";
+  // "off" explicitly disables thinking; any other value is a wire value sent
+  // verbatim. The agent clamps an unknown value to "default".
   string level = 40;
 
   // Generic decision/rule mode. Fork accepts through_entry (legacy default),
@@ -429,6 +431,18 @@ message ProviderModel {
   double cost_output = 8;
   double cost_cache_read = 9;
   double cost_cache_write = 10;
+
+  // The thinking levels this model accepts, in display order. Each entry is a
+  // wire value: the level is sent verbatim to the provider (``off`` means
+  // "explicitly disable thinking"; the implicit ``default`` means "send no
+  // thinking/effort parameter at all"). Empty means the model offers only the
+  // implicit ``default``. Older clients omit both fields.
+  repeated string thinking_levels = 11;
+  // Presence bit for ``thinking_levels``: repeated fields cannot distinguish
+  // "the client predates this field" from "the client cleared the list". When
+  // false, the agent keeps the existing model's list on an edit; when true, the
+  // list (possibly empty) replaces it.
+  optional bool replace_thinking_levels = 12;
 }
 
 // ── ImageContent ───────────────────────────────────────────────────────────
@@ -571,8 +585,9 @@ message ModelEntry {
   string label = 2;
   string provider = 3;
   bool supports_images = 4;
-  // Default thinking level for the model ("high" for reasoning models,
-  // "off" otherwise).
+  // The level a conversation starts at on this model. Always "default" for a
+  // current agent (meaning "send no thinking parameter"); older agents sent
+  // "high"/"off".
   string thinking_level = 5;
   int64 context_window = 6;
   bool is_default = 7;
@@ -580,16 +595,18 @@ message ModelEntry {
   optional string description = 8;
   optional string description_en = 9;
   bool recommended = 10;
-  // Whether the model accepts thinking controls; separate from the default level.
+  // Deprecated: kept for older clients (they gate their picker on it). New
+  // clients ignore it — `thinking_levels` already says whether the model has
+  // thinking controls.
   optional bool reasoning = 11;
-  // The thinking levels this model offers, in canonical order
-  // (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`). Empty when the model
-  // declares none — which is every model that predates `models.json`
-  // `thinkingLevels`, and means the full six, i.e. unchanged behaviour. A model
-  // without thinking controls lists `off` alone.
+  // The thinking levels this model offers, in display order, always non-empty
+  // and always starting with "default". Each entry is a wire value sent
+  // verbatim; "off" means "explicitly disable". A model with no configured
+  // levels lists "default" alone. An older agent omits the field entirely.
   repeated string thinking_levels = 12;
   // The level a conversation starts at on this model, already clamped to
-  // `thinking_levels` by the agent. Unset when the model declares no list.
+  // `thinking_levels` by the agent. "default" for a current agent; unset on an
+  // older one.
   optional string default_thinking_level = 13;
 }
 
@@ -901,7 +918,9 @@ message SessionState {
   // Currently active model ID (e.g. "deepseek-v4-pro").
   string model = 1;
 
-  // Thinking / effort level: "off", "minimal", "low", "medium", "high", "xhigh".
+  // Thinking / effort level. "default" means the provider default (no
+  // parameter sent); "off" means thinking is explicitly disabled; any other
+  // value is the wire value the model accepts.
   string thinking_level = 2;
 
   // Whether the agent loop is currently processing a prompt.
