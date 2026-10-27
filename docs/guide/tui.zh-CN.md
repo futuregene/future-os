@@ -153,7 +153,7 @@ launchpad 是**正文**，不是盖在对话上的弹窗：没有会话时整块
 | `ctrl+j` / `ctrl+enter` | 插入换行。`ctrl+j` 任何终端都送来；`ctrl+enter` 需要终端上报修饰键（kitty 键盘协议、xterm `modifyOtherKeys`，或 Windows Terminal 里自己绑一条 `sendInput`），`shift+enter` 同样需要。Windows Terminal 把 `alt+enter` 留给了全屏，且默认把 `ctrl+enter` 当普通 Enter 发，除非读者自己绑，例如 `{"keys": "ctrl+enter", "command": {"action": "sendInput", "input": "\u001b[13;5u"}}` |
 | `ctrl+w`、`alt+d`、`ctrl+u`、`ctrl+k`、`ctrl+y` | 删词、删到行首 / 行尾、粘贴刚删除的内容 |
 | `ctrl+z` / `ctrl+shift+z`（或 `alt+y`） | 撤销 / 重做草稿编辑 |
-| `pageUp` / `pageDown` 或 `ctrl+↑` / `ctrl+↓` | 滚动对话；`esc` 回到最新输出 |
+| `pageUp` / `pageDown` 或 `ctrl+↑` / `ctrl+↓` | 滚动对话——**始终**，包括侧栏拿到按键（`tab`）的时候：翻对话是这个键唯一的意思，让侧栏也回答它等于一个键干两件事。侧栏自己的光标走 `↑`/`↓`，鼠标滚轮在侧栏上滚它；`esc` 回到最新输出 |
 | `/queue` | 查看排队消息——运行期间发出去的那些提示；`x` 取消，`r` / `enter` 取消并取回草稿（`ctrl+x` 停止当前运行，不是取消队列） |
 | `/copy` | 复制最后一条助手回答的正文和代码，不带界面装饰 |
 | `/mouse` | 关闭 / 恢复并保存鼠标捕获，便于终端原生选择复制 |

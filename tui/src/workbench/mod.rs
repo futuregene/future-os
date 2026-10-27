@@ -1302,19 +1302,21 @@ impl Workbench {
         self.select_row(row, data);
     }
 
-    /// Move the conversation (`up` negative = towards the tail) or the focused
-    /// panel's list, and ask for an older page when the top is reached.
+    /// Move the conversation (`up` negative = towards the tail), and ask for an
+    /// older page when the top is reached.
+    ///
+    /// **The conversation, always** — even while the rail has the keys. Paging
+    /// through the transcript is the one thing this key means; a rail that
+    /// answered `pageUp` with its own list made the same key do two jobs and
+    /// left the transcript unreachable without leaving the rail first. The rail
+    /// scrolls where it should: its cursor walks with `↑`/`↓`, the wheel over
+    /// the rail moves it, and the full-screen panel on a narrow terminal has its
+    /// own keys (`Overlay::PanelFull`).
     ///
     /// One method for the keys and the wheel: a scroll offset the surface keeps
     /// in two places would disagree with itself the first time a key and the
     /// wheel alternated.
     fn scroll(&mut self, up: i32, data: &WorkbenchData) -> Vec<WbAction> {
-        if self.sidebar_focus {
-            let index = self.panel.index();
-            let next = self.panel_scroll[index] as i32 - up;
-            self.panel_scroll[index] = next.max(0) as usize;
-            return vec![WbAction::Redraw];
-        }
         let total = data.messages.len();
         // `chat_scroll` counts rows up from the tail: 0 is pinned to the newest
         // row, and the ceiling is "everything loaded is above the viewport".
@@ -5830,6 +5832,57 @@ mod tests {
             crate::utils::strip_ansi_codes(&rows[2]).starts_with('›'),
             "{}",
             crate::utils::strip_ansi_codes(&rows[2])
+        );
+    }
+
+    /// `pageUp`/`pageDown` mean the transcript and nothing else — even while the
+    /// rail has the keys. Letting the rail answer them made one key do two jobs
+    /// and put the conversation behind a `tab`; the rail moves its own cursor
+    /// with `↑`/`↓`, and a wheel over the rail is the pointer's spelling of that.
+    #[test]
+    fn the_page_keys_scroll_the_conversation_even_with_the_rail_focused() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.sidebar_focus = true;
+        let slot = workbench.panel.index();
+        workbench.panel_scroll[slot] = 2;
+
+        let actions = workbench.handle(WbEvent::Key("pageUp".into()), &data);
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, WbAction::Scroll(_))),
+            "pageUp is the transcript's key: {actions:?}"
+        );
+        let scrolled = workbench.chat_scroll;
+        assert!(scrolled > 0, "pageUp left the newest row in place");
+        assert_eq!(
+            workbench.panel_scroll[slot], 2,
+            "the rail's list is not the page keys' to move"
+        );
+
+        // `ctrl+↑` is the same verb, so it goes the same way.
+        workbench.handle(WbEvent::Key("ctrl+down".into()), &data);
+        assert!(workbench.chat_scroll < scrolled, "ctrl+↓ came back");
+        assert_eq!(workbench.panel_scroll[slot], 2);
+
+        // The wheel *over the rail* still moves the rail: that is a pointer
+        // aimed at that list, not a key that has to mean one thing everywhere.
+        let (x, y) = (110, 15);
+        workbench.handle(
+            WbEvent::Mouse(mouse::MouseEvent {
+                kind: mouse::MouseKind::WheelDown,
+                x,
+                y,
+                shift: false,
+                alt: false,
+                ctrl: false,
+            }),
+            &data,
+        );
+        assert!(
+            workbench.panel_scroll[slot] > 2,
+            "the wheel over the rail scrolls it"
         );
     }
 
