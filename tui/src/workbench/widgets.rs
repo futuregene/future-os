@@ -225,7 +225,86 @@ pub fn input_lines(
     view: &crate::workbench::state::InputView,
     title: &str,
 ) -> (Vec<String>, u16, usize) {
-    input_box(palette, columns, view, title, false)
+    input_box(palette, columns, view, title, false, COMPOSER_ROWS)
+}
+
+/// The visual rows a draft may occupy before the box scrolls inside itself: a
+/// hundred pasted lines must not paint over the conversation.
+pub const COMPOSER_ROWS: usize = 8;
+
+/// The width the draft's own text is wrapped at inside a box `columns` wide.
+///
+/// One definition, for the three callers that have to agree: the box paints at
+/// it, the key handler moves the cursor across lines at it
+/// (`Workbench::composer_width`), and a caller reserving the box's height
+/// measures the draft at it. It is two borders plus the two-cell `❯ ` prompt
+/// when the box can be framed, and the prompt alone when it is too narrow.
+pub fn input_content_width(columns: usize) -> usize {
+    let chrome = if columns >= 6 { 4 } else { 2 };
+    columns.saturating_sub(chrome)
+}
+
+/// How many draft rows [`input_box`] paints for `view` in `columns`.
+///
+/// The chat composer has to know the box's height *before* it paints it (the
+/// box grows upward, out of the conversation's rows), and the height belongs to
+/// this module rather than to a second guess at the caller: it is the draft's
+/// own rows within its window, **not** the cursor's row. A draft whose cursor
+/// is above its last line still needs the rows below the cursor — measuring by
+/// the cursor made the band two rows short and the box's closing rule was what
+/// got cut off.
+pub fn input_content_rows(
+    columns: usize,
+    view: &crate::workbench::state::InputView,
+    compact: bool,
+) -> usize {
+    DraftRows::of(view, columns, composer_window(compact)).shown()
+}
+
+/// Rows of the draft the box keeps on screen before it scrolls inside itself.
+fn composer_window(compact: bool) -> usize {
+    if compact {
+        1
+    } else {
+        COMPOSER_ROWS
+    }
+}
+
+/// The window of draft rows a box of `window` rows shows, keeping the cursor
+/// inside it.
+struct DraftRows {
+    visual: Vec<String>,
+    first: usize,
+    end: usize,
+    /// Where the cursor sits inside the window, not in the whole draft.
+    cursor_row: usize,
+    cursor_column: usize,
+}
+
+impl DraftRows {
+    fn of(view: &crate::workbench::state::InputView, columns: usize, window: usize) -> Self {
+        let width = input_content_width(columns).max(1);
+        let mut editor = view.editor.clone();
+        editor.resize(width);
+        let (visual, cursor_row, cursor_column) = editor.rows(width);
+        // The window is anchored on the cursor: the whole draft while it fits,
+        // and once it does not, the rows that keep the cursor on screen.
+        let window = window.max(1);
+        let shown_cursor_row = cursor_row.min(window - 1);
+        let first = cursor_row.saturating_sub(shown_cursor_row);
+        Self {
+            end: (first + window).min(visual.len()),
+            visual,
+            first,
+            cursor_row: shown_cursor_row,
+            cursor_column,
+        }
+    }
+
+    /// Rows of the draft on screen.
+    fn shown(&self) -> usize {
+        self.end.saturating_sub(self.first).max(1)
+    }
 }
 
 /// [`input_lines`] with the short-terminal form: `compact` keeps the box *framed*
@@ -239,37 +318,34 @@ pub fn input_lines(
 /// The box is *not* filled with the panel colour: the cursor is the focus
 /// signal, and a focused box painted a shade darker than the canvas around it
 /// read as a second surface for no gain (the reader asked for one background).
+///
+/// `max_rows` is the room the caller's band has for draft rows, this box's
+/// prompt row included: a caller with less room than the draft needs gets a box
+/// that scrolls inside itself, never one whose closing rule was cut off.
 pub fn input_box(
     palette: &Palette,
     columns: usize,
     view: &crate::workbench::state::InputView,
     title: &str,
     compact: bool,
+    max_rows: usize,
 ) -> (Vec<String>, u16, usize) {
     let top = box_top(palette, columns, title);
     let bottom = box_bottom(palette, columns);
     // Two columns go to the sides; below that there is nothing to frame.
     let framed = columns >= 6;
-    let content_width = if framed {
-        columns.saturating_sub(4)
-    } else {
-        columns.saturating_sub(2)
-    };
-    let mut editor = view.editor.clone();
-    editor.resize(content_width.max(1));
-    let (mut visual, cursor_row, cursor_column) = editor.rows(content_width.max(1));
+    let content_width = input_content_width(columns);
+    let window = composer_window(compact).min(max_rows.max(1));
+    let draft = DraftRows::of(view, columns, window);
+    let mut visual = draft.visual;
+    let first = draft.first;
     if view.text.is_empty() {
         visual = vec![palette.dim(&fit(&view.placeholder, content_width))];
     }
-    // A bounded composer grows up to eight visual rows; keep the cursor's
-    // window visible instead of painting a hundred pasted lines over the chat.
-    let window = if compact { 1 } else { 8 };
-    let shown_cursor_row = cursor_row.min(window - 1);
-    let first = cursor_row.saturating_sub(shown_cursor_row);
-    let last = (first + window).min(visual.len());
+    let last = draft.end.min(visual.len());
     let prompt_width = 2usize;
     let mut rows = vec![top];
-    for (index, line) in visual[first..last].iter().enumerate() {
+    for (index, line) in visual[first.min(last)..last].iter().enumerate() {
         let source = first + index;
         let prompt = if source == 0 {
             palette.text(palette.accent, "❯ ")
@@ -297,8 +373,9 @@ pub fn input_box(
     }
     (
         rows,
-        (cursor_column + prompt_width + usize::from(framed)).min(columns.saturating_sub(1)) as u16,
-        shown_cursor_row + 1,
+        (draft.cursor_column + prompt_width + usize::from(framed)).min(columns.saturating_sub(1))
+            as u16,
+        draft.cursor_row + 1,
     )
 }
 
@@ -334,7 +411,8 @@ mod tests {
     fn the_input_box_keeps_its_sides_in_both_heights() {
         let view = sample_view();
         for (columns, compact) in [(60usize, false), (60, true), (9, true)] {
-            let (rows, cursor, prompt_row) = input_box(&P, columns, &view, "输入", compact);
+            let (rows, cursor, prompt_row) =
+                input_box(&P, columns, &view, "输入", compact, COMPOSER_ROWS);
             assert_eq!(rows.len(), if compact { 2 } else { 3 }, "{columns}");
             assert_eq!(prompt_row, 1, "the prompt is the second row of the box");
             for row in &rows {
@@ -367,13 +445,71 @@ mod tests {
         }
     }
 
+    fn view_of(text: &str, cursor: usize) -> crate::workbench::state::InputView {
+        use crate::workbench::state::InputView;
+        let mut editor = crate::workbench::editor::EditorState::default();
+        editor.set(text, cursor);
+        InputView::from_editor(editor, String::new())
+    }
+
+    /// The box is exactly as tall as [`input_content_rows`] promised, so a
+    /// caller that reserves the band from that number cannot be short of a row
+    /// — the closing rule is then never what the band cuts.
+    #[test]
+    fn the_box_is_exactly_as_tall_as_the_rows_it_reports() {
+        let long = "x".repeat(400);
+        let tall = (1..=12)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for columns in [40usize, 60, 120] {
+            for text in [
+                "",
+                "a",
+                "first\nsecond\nthird",
+                tall.as_str(),
+                long.as_str(),
+            ] {
+                for cursor in [0usize, text.len()] {
+                    let view = view_of(text, cursor.min(text.len()));
+                    for compact in [false, true] {
+                        for max_rows in [COMPOSER_ROWS, 1, 2, usize::MAX] {
+                            let (rows, _, _) =
+                                input_box(&P, columns, &view, "输入", compact, max_rows);
+                            let shown = rows.len() - if compact { 1 } else { 2 };
+                            let reserved = input_content_rows(columns, &view, compact);
+                            // As many rows as the draft needs, and as many as
+                            // the caller left room for — never one fewer, or
+                            // the box floats above blank rows.
+                            assert_eq!(
+                                shown,
+                                reserved.min(max_rows.max(1)),
+                                "{columns}x{compact} max {max_rows}: {text:?} @ {cursor}"
+                            );
+                            // The box's own shape, whatever the room: a top
+                            // rule, its rows, and — when it has a closing rule
+                            // at all — that rule last.
+                            let first = crate::utils::strip_ansi_codes(&rows[0]);
+                            assert!(first.trim_start().starts_with('╭'), "{first:?}");
+                            if !compact {
+                                let last = crate::utils::strip_ansi_codes(&rows[rows.len() - 1]);
+                                assert!(last.trim_start().starts_with('╰'), "{last:?}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn the_prompt_sits_on_the_canvas_instead_of_a_panel_fill() {
         // The cursor marks the box as focused; a background a step off the
         // canvas around it made the composer read as a second surface for no
         // gain, so the box paints no background of its own at all.
         for (columns, compact) in [(60usize, false), (60, true), (9, true), (4, true)] {
-            let (rows, _, _) = input_box(&P, columns, &sample_view(), "输入", compact);
+            let (rows, _, _) =
+                input_box(&P, columns, &sample_view(), "输入", compact, COMPOSER_ROWS);
             for row in &rows {
                 assert!(
                     !row.contains("\x1b[48;5;"),

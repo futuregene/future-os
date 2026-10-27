@@ -61,19 +61,18 @@ pub(crate) fn compose(
         ),
     );
 
-    workbench.composer_width = frame.input.w.saturating_sub(6).max(1) as usize;
+    workbench.composer_width = widgets::input_content_width(frame.input.w as usize).max(1);
     let composer_extra = if data.on_launchpad() || frame.compact {
         0
     } else {
-        let (_, cursor_row, _) = data
-            .input
-            .editor
-            .clone()
-            .rows(frame.input.w.saturating_sub(6) as usize);
-        // A draft that grew past the box takes rows from the conversation — but
-        // never so many that the chat has nothing left.
-        cursor_row
-            .min(7)
+        // The draft's own rows decide how far the box grows above its band —
+        // the rows it will *paint*, not the cursor's row: a draft whose cursor
+        // sits above its last line still needs the rows below the cursor, and
+        // measuring by the cursor made the band short so the box's closing rule
+        // was what got cut. A draft that grew past the box takes rows from the
+        // conversation — but never so many that the chat has nothing left.
+        let rows = widgets::input_content_rows(frame.input.w as usize, &data.input, false);
+        rows.saturating_sub(1)
             .min(frame.body.h.saturating_sub(3) as usize) as u16
     };
     if data.on_launchpad() {
@@ -159,12 +158,13 @@ pub(crate) fn compose(
                 i18n::render(workbench.lang, Key::AttachmentsInDraft, &[&images])
             )
         };
-        let (input_lines, cursor_column, _) = widgets::input_box(
+        let (input_lines, cursor_column, cursor_row) = widgets::input_box(
             &palette,
             frame.input.w as usize,
             &data.input,
             &title,
             frame.compact,
+            composer_extra as usize + 1,
         );
         let input_lines = input_lines
             .into_iter()
@@ -186,9 +186,13 @@ pub(crate) fn compose(
             // only showed once the rail was on the left, where `x` is not 0).
             let column =
                 (cursor_column as usize).min(frame.input.w.saturating_sub(1) as usize) as u16;
+            // The cursor's row is the box's own (it counts the title rule), not
+            // "the last row the box grew to": a cursor above the draft's last
+            // line sits above the box's bottom, and the two only coincide when
+            // the cursor is at the end.
             workbench.set_cursor(Some((
                 frame.input.x.saturating_add(column),
-                frame.prompt_row.saturating_sub(composer_extra),
+                input_rect.y.saturating_add(cursor_row as u16),
             )));
         }
     }
@@ -2506,6 +2510,145 @@ mod tests {
             seen += 1;
         }
         assert!(seen >= 3, "the box has rows to check: {seen}");
+    }
+
+    /// The composer's box is as tall as the draft it draws, never as tall as
+    /// the cursor's line.
+    ///
+    /// The band used to grow by the cursor's row while the box painted every
+    /// row of the draft: a cursor above the draft's last line left the band
+    /// short, and the closing rule — the box's *last* row — was what got cut. So
+    /// a draft typed with `ctrl+j` lost its bottom border as soon as the reader
+    /// went back up a line.
+    #[test]
+    fn the_composer_keeps_its_closing_rule_wherever_the_cursor_sits_in_the_draft() {
+        let (w, h) = (120u16, 34u16);
+        // Byte offsets into `first\nsecond\nthird`: 0..5 line 0, 6..12 line 1,
+        // 13..18 line 2. The last case is one long line that *wraps*: the band
+        // has to be measured at the width the box paints at, or two cells of
+        // wrapping difference float the box off its own bottom.
+        let long = format!("head {}", "z".repeat(200));
+        let cases: Vec<(String, usize, &str)> = vec![
+            ("first\nsecond\nthird".into(), 0, "first"),
+            ("first\nsecond\nthird".into(), 5, "first"),
+            ("first\nsecond\nthird".into(), 6, "second"),
+            ("first\nsecond\nthird".into(), 12, "second"),
+            ("first\nsecond\nthird".into(), 13, "third"),
+            ("first\nsecond\nthird".into(), 18, "third"),
+            (long.clone(), long.len(), "zzzz"),
+        ];
+        for (text, cursor, line) in cases {
+            let mut data = crate::workbench::demo::chat();
+            let mut editor = data.input.editor.clone();
+            editor.set(&text, cursor);
+            data.input = crate::workbench::state::InputView::from_editor(editor, String::new());
+            let mut workbench = Workbench::new();
+            let rows: Vec<String> = workbench
+                .render(&data, w, h)
+                .iter()
+                .map(|row| plain(row))
+                .collect();
+            let top = rows
+                .iter()
+                .position(|row| row.contains('╭'))
+                .unwrap_or_else(|| panic!("cursor {cursor}: no box:\n{}", rows.join("\n")));
+            let bottom = rows
+                .iter()
+                .position(|row| row.contains('╰'))
+                .unwrap_or_else(|| {
+                    panic!("cursor {cursor}: no closing rule:\n{}", rows.join("\n"))
+                });
+            // The box ends where the band does: its closing rule is the band's
+            // last row, with no blank row between it and the activity row.
+            assert_eq!(
+                bottom,
+                (h - 4) as usize,
+                "cursor {cursor}: the closing rule is not on the band's last row:\n{}",
+                rows.join("\n")
+            );
+            let body: Vec<&String> = rows[top + 1..bottom].iter().collect();
+            // The box holds the whole draft, not the rows up to the cursor.
+            // Four cells of each line: the box may *word-wrap* a long line, so
+            // what a row keeps is the line's head, not all of it.
+            for want in text.split('\n') {
+                let head: String = want.chars().take(4).collect();
+                assert!(
+                    body.iter()
+                        .any(|row| row.contains(&head) && row.starts_with('│')),
+                    "cursor {cursor}: `{head}` is not in the box:\n{}",
+                    rows.join("\n")
+                );
+            }
+            // The box closes on the same two columns on every row of it.
+            let right = rows[bottom]
+                .chars()
+                .position(|ch| ch == '╯')
+                .expect("the closing corner");
+            for (offset, row) in body.iter().enumerate() {
+                let cells: Vec<char> = row.chars().collect();
+                assert!(
+                    cells.first() == Some(&'│') && cells.get(right) == Some(&'│'),
+                    "cursor {cursor}: the box's sides are missing on its row {offset}: {row:?}"
+                );
+            }
+            // ... and the hardware cursor is on the row that carries the line
+            // it is in, not on the box's bottom edge.
+            let (_, y) = workbench.cursor().expect("the composer owns the cursor");
+            assert!(
+                (top as u16) < y && y < bottom as u16,
+                "cursor {cursor}: the cursor is outside the box"
+            );
+            assert!(
+                rows[y as usize].contains(line),
+                "cursor {cursor}: the cursor is on {:?}, not on `{line}`:\n{}",
+                rows[y as usize],
+                rows.join("\n")
+            );
+        }
+    }
+
+    /// A draft taller than the box's window keeps its closing rule too: the box
+    /// scrolls inside itself rather than growing without end.
+    #[test]
+    fn a_tall_draft_scrolls_inside_the_composer_instead_of_losing_its_rule() {
+        let text = (1..=12)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for (w, h) in [(120u16, 34u16), (100, 26), (72, 30)] {
+            let mut data = crate::workbench::demo::chat();
+            let mut editor = data.input.editor.clone();
+            editor.set(&text, text.len());
+            data.input = crate::workbench::state::InputView::from_editor(editor, String::new());
+            let mut workbench = Workbench::new();
+            let rows: Vec<String> = workbench
+                .render(&data, w, h)
+                .iter()
+                .map(|row| plain(row))
+                .collect();
+            let top = rows
+                .iter()
+                .position(|row| row.contains('╭'))
+                .unwrap_or_else(|| panic!("{w}x{h}: no box:\n{}", rows.join("\n")));
+            let bottom = rows
+                .iter()
+                .position(|row| row.contains('╰'))
+                .unwrap_or_else(|| panic!("{w}x{h}: no closing rule:\n{}", rows.join("\n")));
+            assert!(
+                bottom - top <= 9,
+                "{w}x{h}: the box is {} rows tall, past its window",
+                bottom - top + 1
+            );
+            // The cursor is at the end of the draft, so the last line is on
+            // screen and it is the row above the closing rule.
+            assert!(
+                rows[bottom - 1].contains("line 12"),
+                "{:?}",
+                rows[bottom - 1]
+            );
+            let (_, y) = workbench.cursor().expect("the composer owns the cursor");
+            assert_eq!(y as usize, bottom - 1, "{w}x{h}: the cursor left its line");
+        }
     }
 
     /// Splicing a band at an offset that lands *inside* a wide glyph keeps the
