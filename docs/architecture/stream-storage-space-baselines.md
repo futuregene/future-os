@@ -89,3 +89,14 @@ It excludes body storage, WAL/write volume, CPU/RSS, commit backlog, UI and disk
 Preserved acceptance artifact SHA-256:
 `564045f7ca4bc9389ac6532c63ce3f47a6e57524c132d3b8e99fed2cb318a6be`.
 The ledger also records original-plan hashes and source commits for later preservation checks.
+
+## B3.1: first candidate, withheld because of regression
+
+[Raw record](../testing/compact-storage-candidate-1-2026-10-27.json) compares `ac9986d0` with previous production code `537bcddf` on the same machine and workload: 55-byte fragments, four fragments per flush, approximately 1 MiB body, long source identities. Values below cover allocated stream table/index pages, excluding bodies and WAL.
+
+| Scenario | Previous metadata bytes | Candidate bytes | Change | Previous/new batch p99 µs |
+|---|---:|---:|---:|---:|
+| High reuse | 3,649,536 | 946,176 | −74.1% | 473 / 562 |
+| Frequent new contexts | 7,639,040 | 12,259,328 | +60.5% | 794 / 1014 |
+
+The latter also grows the WAL file. Delivery is withheld while stable identities are normalized further. Each scenario is a single sample, so timing differences cannot be attributed to one cause. Keep these failed boundaries too; future candidates append records instead of replacing them. Functional/migration/fault passes do not establish space/performance acceptance.

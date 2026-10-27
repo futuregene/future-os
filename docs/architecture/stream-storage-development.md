@@ -1,7 +1,9 @@
 # Compact session storage and streaming development plan
 
-Status: compact-change implementation complete, 2026-10-27; unified acceptance in progress. The complete Agent library suite passed; performance and fault workloads remain pending.
+Status: first implementation passed functional/migration/fault checks, 2026-10-27, but high context churn regresses space; delivery is blocked pending further optimization.
 Exact layout: [implementation contract](compact-stream-layout.md). Implementation status does not establish delivery acceptance.
+[Candidate 1 raw results](../testing/compact-storage-candidate-1-2026-10-27.json) include a fresh previous-layout control.
+Metadata improves 74.1% with high reuse but grows 60.5% under frequent new contexts; this candidate must not land. Next, intern stable long identities into per-stream short-key dictionaries to remove repeated strings in contexts and indices, then rerun affected verification and comparisons.
 Chinese: [精简会话存储开发计划](stream-storage-development.zh-CN.md).
 
 The complete previous plan remains in the [unpublished-plan archive](stream-storage-development-unreleased-2026-10-26.md).
