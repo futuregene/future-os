@@ -79,8 +79,13 @@ pub const SMALL_HEIGHT: u16 = 24;
 /// Sidebar width when nothing has been dragged.
 pub const SIDEBAR_DEFAULT: u16 = 36;
 /// The divider drag's range.
+///
+/// The ceiling is generous because the rail is where a file or a session row is
+/// read, and 48 columns clipped what the reader dragged open to see. It still
+/// leaves the conversation more than its 20-column floor at the narrowest frame
+/// that shows a rail at all ([`NARROW_WIDTH`]): 88 − 60 − 1 = 27.
 pub const SIDEBAR_MIN: u16 = 30;
-pub const SIDEBAR_MAX: u16 = 48;
+pub const SIDEBAR_MAX: u16 = 60;
 /// Columns of padding inside the chat area, left and right.
 pub const CHAT_PADDING: u16 = 2;
 
@@ -469,6 +474,7 @@ mod tests {
         assert_eq!(layout(120, 38, 10).sidebar_w, SIDEBAR_MIN);
         assert_eq!(layout(200, 38, 99).sidebar_w, SIDEBAR_MAX);
         // 88 wide with a 48-column sidebar leaves 39 for the chat: fine.
+        // (The ceiling itself is 60 — see `SIDEBAR_MAX` — and still leaves 27.)
         assert_eq!(layout(88, 38, 48).sidebar_w, 48);
         // A width outside the range is clamped into it, not honoured verbatim.
         assert_eq!(layout(88, 38, 70).sidebar_w, SIDEBAR_MAX);

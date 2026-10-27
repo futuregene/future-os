@@ -3984,7 +3984,7 @@ mod tests {
     }
 
     /// Both ends clamp instead of running off: a rail is never under 30 columns
-    /// or over 48, however far the pointer travels in one drag.
+    /// or over 60, however far the pointer travels in one drag.
     #[test]
     fn the_drag_clamps_and_never_runs_off_the_frame() {
         let data = demo::chat();
