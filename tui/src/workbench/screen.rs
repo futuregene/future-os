@@ -45,13 +45,12 @@ pub(crate) fn compose(
     let frame: Layout = layout::layout_with_position(w, h, sidebar_w, workbench.sidebar_position);
 
     let lang = workbench.lang;
-    let (header_lines, files_button) =
-        header(&palette, data, &frame, columns, &workbench.keys, lang);
+    let (header_lines, doors) = header(&palette, data, &frame, columns, &workbench.keys, lang);
     paint(&mut rows, frame.header, header_lines);
-    if let Some((x, w)) = files_button {
+    for (id, (x, w)) in doors {
         workbench
             .hit_map()
-            .push(Rect::new(x, frame.header.y, w, 1), "header.files");
+            .push(Rect::new(x, frame.header.y, w, 1), id);
     }
 
     workbench.composer_width = widgets::input_content_width(frame.input.w as usize).max(1);
@@ -379,7 +378,7 @@ fn header(
     columns: usize,
     keys: &preferences::Keybindings,
     lang: Language,
-) -> (Vec<String>, Option<(u16, u16)>) {
+) -> (Vec<String>, Vec<DoorSpan>) {
     let compact = frame.compact;
     // The right corner is a *composition*, never a cut string: each candidate is
     // whole (dot, app, version), and the widest one that fits is drawn. Cutting
@@ -390,23 +389,54 @@ fn header(
     let right_avail = (columns / 2).min((columns.saturating_sub(40)).max(columns / 3));
     let right = header_right(palette, data, right_avail);
     let right_width = width(&right);
-    // The files panel's door, beside the title. It is drawn only when a title
-    // still fits next to it: the header's job is naming the conversation, and a
-    // strip of controls that pushed the name off the edge would trade the point
-    // of the row for its tools.
-    let button = header_button(palette, keys, lang);
+    // The surface's two doors, beside the title: the files panel and the
+    // repository browser. They are drawn only when a title still fits next to
+    // them — the header's job is naming the conversation, and a strip of
+    // controls that pushed the name off the edge would trade the point of the
+    // row for its tools.
+    let doors: Vec<Door> = vec![
+        Door {
+            id: "header.files",
+            text: header_button(
+                palette,
+                keys,
+                preferences::Action::Files,
+                t(lang, Key::FilesTitle),
+            ),
+        },
+        Door {
+            id: "header.git",
+            // `git` is a proper noun: it reads the same in both languages, and
+            // the panel's own title says `git · <repo>`.
+            text: header_button(palette, keys, preferences::Action::Git, "git"),
+        },
+    ];
+    let doors: Vec<Door> = doors
+        .into_iter()
+        .filter(|door| !door.text.is_empty())
+        .collect();
+    let group = doors
+        .iter()
+        .map(|door| door.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
     let room_for_left = if compact { 12 } else { 24 };
-    // Two cells either side of the door: one gap is what keeps it from reading
+    // Two cells either side of the group: one gap is what keeps it from reading
     // as the tail of a truncated title, the other from reading as the corner's.
     let reserve = right_width
         + usize::from(right_width > 0)
-        + width(&button)
-        + usize::from(!button.is_empty()) * 4;
-    let button = if columns >= reserve + room_for_left {
-        button
+        + width(&group)
+        + usize::from(!group.is_empty()) * 4;
+    let doors: Vec<Door> = if columns >= reserve + room_for_left {
+        doors
     } else {
-        String::new()
+        Vec::new()
     };
+    let button = doors
+        .iter()
+        .map(|door| door.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
     let button_width = width(&button);
     // Spacing: the door is a control of its own, not the last word of the
     // title. With no door, the title still needs its cell before the corner.
@@ -441,10 +471,7 @@ fn header(
             ),
             columns,
         ));
-        return (
-            lines,
-            files_button_span(left_width, pad + before, button_width),
-        );
+        return (lines, door_spans(&doors, left_width, pad + before));
     }
 
     let title = if data.session.title.is_empty() {
@@ -465,7 +492,7 @@ fn header(
     let left = fit(&left, left_width);
     let left_width = width(&left);
     let pad = columns.saturating_sub(left_width + before + button_width + after + right_width);
-    let span = files_button_span(left_width, pad + before, button_width);
+    let spans = door_spans(&doors, left_width, pad + before);
     (
         vec![
             fit(
@@ -479,32 +506,55 @@ fn header(
             ),
             widgets::rule(palette, columns),
         ],
-        span,
+        spans,
     )
 }
 
-/// Where the header's files button landed, for the hit map: `None` when the row
-/// had no room for it (or the terminal is narrower than the button itself).
-///
-/// `left` is where the title ended and `pad` how much slack sits between it and
-/// the door, so the region is the cells the button itself is painted on and not
-/// the gap in front of it.
-fn files_button_span(left: usize, pad: usize, button: usize) -> Option<(u16, u16)> {
-    if button == 0 {
-        return None;
-    }
-    Some(((left + pad) as u16, button as u16))
+/// One door in the header: the chord and label it paints, and the hit region it
+/// claims (`id`, the name the pointer is resolved against).
+struct Door {
+    id: &'static str,
+    text: String,
 }
 
-/// The header's button: `[ctrl+3] 文件`, the same `[key] label` shape the
+/// A painted region: the door's id and the cells it covers.
+type DoorSpan = (&'static str, (u16, u16));
+
+/// Where each header door landed, for the hit map — one region per button, each
+/// on exactly the cells it is painted on.
+///
+/// `left` is where the title ended and `pad` how much slack sits between it and
+/// the group, so a region never covers the gap in front of a button (a click in
+/// the gap would otherwise open the panel next to the one aimed at).
+fn door_spans(doors: &[Door], left: usize, pad: usize) -> Vec<DoorSpan> {
+    let mut x = left + pad;
+    let mut spans = Vec::new();
+    for door in doors {
+        let w = width(&door.text);
+        if w == 0 {
+            continue;
+        }
+        spans.push((door.id, (x as u16, w as u16)));
+        // The single space that joins two doors.
+        x += w + 1;
+    }
+    spans
+}
+
+/// The header's button: `[ctrl+f] 文件`, the same `[key] label` shape the
 /// approval box uses for its answers — or the bare name when the action has no
-/// chord (`/files` is the door), because `[] 文件` reads as a broken label.
+/// chord, because `[] 文件` reads as a broken label.
 ///
 /// A pointer target on a header row has to look like one, and the chord beside
 /// the name is how a reader who never opened the help discovers the key.
-fn header_button(palette: &Palette, keys: &preferences::Keybindings, lang: Language) -> String {
-    let key = keys.key(preferences::Action::Files);
-    let label = palette.strong(palette.iris, t(lang, Key::FilesTitle));
+fn header_button(
+    palette: &Palette,
+    keys: &preferences::Keybindings,
+    action: preferences::Action,
+    label: &str,
+) -> String {
+    let key = keys.key(action);
+    let label = palette.strong(palette.iris, label);
     if key.is_empty() {
         return label;
     }
@@ -1283,15 +1333,20 @@ fn hint_row(
     compact: bool,
 ) -> Vec<String> {
     use super::preferences::Action;
+    // The order is the order a narrow row loses them: the tail goes first, so
+    // the settings door sits ahead of the new-chat one — a reader hunting for it
+    // is the one who cannot remember the key. `tab` is not listed any more: it
+    // is the one key every terminal reader tries first, and the focus caret says
+    // where it went; the cells it frees are what keep both `ctrl+q` and
+    // `ctrl+n` on the row in English at 120 columns.
     let wide = [
         ("Esc", Key::HintBackToChat),
         (workbench.keys.key(Action::Sidebar), Key::HintSidebar),
-        ("tab", Key::HintFocus),
         (workbench.keys.key(Action::Sessions), Key::HintSessions),
         (workbench.keys.key(Action::Palette), Key::HintCommands),
-        (workbench.keys.key(Action::Help), Key::HintHelp),
-        (workbench.keys.key(Action::NewSession), Key::HintNewChat),
         (workbench.keys.key(Action::Preferences), Key::HintSettings),
+        (workbench.keys.key(Action::NewSession), Key::HintNewChat),
+        (workbench.keys.key(Action::Help), Key::HintHelp),
     ];
     // An action with no chord (`help`, `preferences`: see `default_key`) would
     // otherwise be hinted as " 帮助" — a hint with no key is not a hint.
@@ -3398,8 +3453,9 @@ mod tests {
         // Wide keeps every entry; narrow drops from the right, never from the
         // middle of a key.
         let wide = plain(&hint_row(&Workbench::new(), &FUTURE_DARK, 200, false)[0]);
-        // The last wide entry is the new-chat key; `help` and `preferences` have
-        // no chord, so the row does not name them at all.
+        // Both ends of the row: the settings door and the new-chat key. `help`
+        // has no chord, so the row does not name it at all.
+        assert!(wide.contains("ctrl+q"), "{wide:?}");
         assert!(wide.contains("ctrl+n"), "{wide:?}");
         assert!(!wide.contains("\u{2014}"), "{wide:?}");
         assert!(wide
@@ -3407,9 +3463,11 @@ mod tests {
             .chars()
             .last()
             .is_some_and(|c| c.is_ascii_alphabetic()));
+        // Narrow keeps the head of the row whole and drops the tail: at 40
+        // columns even the palette hint is gone, and nothing is cut mid-key.
         let narrow = plain(&hint_row(&Workbench::new(), &FUTURE_DARK, 40, true)[0]);
         assert!(narrow.contains("ctrl+d"), "{narrow:?}");
-        assert!(narrow.contains("tab"), "{narrow:?}");
+        assert!(narrow.contains("ctrl+r"), "{narrow:?}");
         assert!(!narrow.contains("ctrl+p"), "whole hints are dropped");
     }
 
