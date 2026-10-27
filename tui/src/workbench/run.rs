@@ -1141,6 +1141,16 @@ fn key_events(data: &str) -> Vec<WbEvent> {
         return Vec::new();
     }
     if let Some(key) = crate::keys::parse_key(data) {
+        // A *release* is not a press. The kitty protocol is enabled with the
+        // `report event types` flag (`\x1b[>7u`), so every key this surface is
+        // handed arrives twice — `\x1b[104u` on the way down and `\x1b[104;1:3u`
+        // on the way up — and both parse to the same key id. Handling the
+        // second one typed every character twice (`hi` arrived as `hhii`) and
+        // moved every list two rows per press. The repeat event (`:2`, a held
+        // key) is a press and stays.
+        if crate::keys::is_key_release(data) {
+            return Vec::new();
+        }
         return vec![WbEvent::Key(key)];
     }
     // A chunk the parser does not recognise as one key is one of two things:
@@ -1171,6 +1181,26 @@ fn key_events(data: &str) -> Vec<WbEvent> {
     if let Some(keys) = split_escape_keys(data) {
         return keys;
     }
+    // Printable text that is not a single ASCII character: a CJK character an
+    // IME hands over (`中` is one `str` of three bytes, which `parse_key` only
+    // reads when it is one byte), or several characters arriving in one read.
+    // Each becomes a key of its own, which is exactly what latin typing
+    // produces — so the picker's incremental search can be typed in Chinese and
+    // a filter line sees the same character-by-character input either way.
+    if !data.contains('\x1b') && !data.chars().any(char::is_control) {
+        let keys: Vec<WbEvent> = data
+            .chars()
+            .map(|ch| {
+                // `parse_key` still owns the spelling for the characters it
+                // knows (` ` is `space`, `#` is `#`); the rest is itself.
+                let id = crate::keys::parse_key(&ch.to_string()).unwrap_or_else(|| ch.to_string());
+                WbEvent::Key(id)
+            })
+            .collect();
+        if !keys.is_empty() {
+            return keys;
+        }
+    }
     // Anything else is text, and belongs in the draft as it stands.
     vec![WbEvent::Paste(data.to_string())]
 }
@@ -1187,6 +1217,7 @@ fn split_escape_keys(data: &str) -> Option<Vec<WbEvent>> {
         return None;
     }
     let mut keys = Vec::new();
+    let mut segments = 0usize;
     let mut rest = data;
     while !rest.is_empty() {
         let end = rest[1..]
@@ -1197,10 +1228,18 @@ fn split_escape_keys(data: &str) -> Option<Vec<WbEvent>> {
         if segment == "\x1b" {
             return None;
         }
-        keys.push(WbEvent::Key(crate::keys::parse_key(segment)?));
+        let key = crate::keys::parse_key(segment)?;
+        segments += 1;
+        // One sequence per key, and a release is not a key (see `key_events`).
+        if !crate::keys::is_key_release(segment) {
+            keys.push(WbEvent::Key(key));
+        }
         rest = &rest[end..];
     }
-    (keys.len() > 1).then_some(keys)
+    // Several complete sequences: the chunk is a run of keys, and it is
+    // answered as such even when only a release was in it (which answers
+    // *nothing*, not the raw escape bytes as text).
+    (segments > 1).then_some(keys)
 }
 
 /// The frame the surface is composed for right now, computed once per loop
@@ -1535,7 +1574,6 @@ mod tests {
         assert_eq!(events_of("a"), vec![WbEvent::Key("a".into())]);
         assert_eq!(events_of("\u{3}"), vec![WbEvent::Key("ctrl+c".into())]);
     }
-
     #[test]
     fn a_bracketed_paste_is_one_event_without_its_marks() {
         let events = events_of("\x1b[200~hello\nworld\x1b[201~");
@@ -1570,9 +1608,41 @@ mod tests {
         );
     }
 
+    /// A CJK character is *typed*, not pasted: one key event, exactly like
+    /// `a`, so the pickers' incremental search can be given Chinese and the
+    /// draft does not treat an IME's character as an attachment-sized paste.
     #[test]
-    fn a_multibyte_character_is_text() {
-        assert_eq!(events_of("中"), vec![WbEvent::Paste("中".into())]);
+    fn a_multibyte_character_is_one_typed_key() {
+        assert_eq!(events_of("中"), vec![WbEvent::Key("中".into())]);
+        assert_eq!(
+            events_of("你好"),
+            vec![WbEvent::Key("你".into()), WbEvent::Key("好".into())]
+        );
+    }
+
+    /// The kitty protocol is enabled with `report event types`, so each key
+    /// arrives twice: once as a press and once as a release carrying `:3`. The
+    /// release must not be handled — it used to type every character twice and
+    /// move every list two rows per press. A repeat (`:2`, a held key) is a
+    /// press and still arrives.
+    #[test]
+    fn a_key_release_is_never_handled_as_a_press() {
+        // Press then release of `h`, in the order the terminal sends them.
+        assert_eq!(events_of("\x1b[104u"), vec![WbEvent::Key("h".into())]);
+        assert_eq!(events_of("\x1b[104;1:3u"), Vec::new());
+        // shift+up: `\x1b[1;2A` down, `\x1b[1;2:3A` up.
+        assert_eq!(
+            events_of("\x1b[1;2A"),
+            vec![WbEvent::Key("shift+up".into())]
+        );
+        assert_eq!(events_of("\x1b[1;2:3A"), Vec::new());
+        // A held key repeats (`:2`) — that is still a press.
+        assert_eq!(events_of("\x1b[104;1:2u"), vec![WbEvent::Key("h".into())]);
+        // Two events in one read: the press survives, the release does not.
+        assert_eq!(
+            events_of("\x1b[104u\x1b[104;1:3u"),
+            vec![WbEvent::Key("h".into())]
+        );
     }
 
     /// Two control chords in one read are two events, not one paste: the raw
