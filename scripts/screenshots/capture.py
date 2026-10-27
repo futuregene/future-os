@@ -661,9 +661,28 @@ def ensure_demo_assets() -> None:
         print("  install matplotlib to fix: pip install matplotlib", file=sys.stderr)
 
 
+def serves_demo_assets(port: int) -> bool:
+    """True when `port` already answers with the demo figures."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/effect-size.png", timeout=2) as response:
+            return response.status == 200 and response.headers.get_content_type() == "image/png"
+    except (urllib.error.URLError, OSError):
+        return False
+
+
 def serve_assets(port: int):
     """Serve the demo figures for the mobile harness (its mock image source)."""
     if not port_free(port):
+        # Adopting a live port is only safe when it is a previous run's asset
+        # server. Anything else on that number answers the image request with
+        # something else (the desktop harness's terminal server, for instance),
+        # and then every demo picture renders as a broken image while the
+        # capture still reports success.
+        if not serves_demo_assets(port):
+            raise SystemExit(
+                f"port {port} is held by something that is not the demo-asset server; "
+                f"give the mobile harness a free assetsPort in scripts/screenshots/scenarios.json"
+            )
         print(f"note: port {port} is already serving assets; reusing it")
         return None
     handler = partial(http.server.SimpleHTTPRequestHandler, directory=str(ROOT / "desktop" / "shot" / "assets"))

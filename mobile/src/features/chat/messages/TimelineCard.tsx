@@ -13,6 +13,7 @@ import type { TimelineCardProps } from "./types";
 import { RunIndicator, formatDuration } from "./messageUtils";
 import { useCopyState } from "./useCopyState";
 import { AttachmentChip } from "./AttachmentChip";
+import { AttachmentImage } from "./AttachmentImage";
 import { collapsedPromptHeight, isLongPrompt, promptPreview } from "./promptCollapse";
 import { PromptReader } from "../components/PromptReader";
 import { StatusDivider } from "./MessageStatus";
@@ -298,11 +299,23 @@ function TimelineCardView({
         {item.attachments && item.attachments.length > 0 && (
           <View style={styles.attachmentRow}>
             {item.attachments.map(attachment => (
-              <AttachmentChip
-                attachment={attachment}
-                key={`${item.id}:${attachment.path}`}
-                onOpen={onOpenAttachment ? () => onOpenAttachment(attachment) : undefined}
-              />
+              // A picture is drawn as itself (and opens the viewer); everything
+              // else stays a named chip.
+              attachment.kind === "image"
+                ? (
+                    <AttachmentImage
+                      attachment={attachment}
+                      key={`${item.id}:${attachment.path}`}
+                      onOpen={onOpenAttachment ? () => onOpenAttachment(attachment) : undefined}
+                    />
+                  )
+                : (
+                    <AttachmentChip
+                      attachment={attachment}
+                      key={`${item.id}:${attachment.path}`}
+                      onOpen={onOpenAttachment ? () => onOpenAttachment(attachment) : undefined}
+                    />
+                  )
             ))}
           </View>
         )}

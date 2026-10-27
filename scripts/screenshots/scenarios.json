@@ -3292,7 +3292,7 @@
   },
   "mobile": {
     "port": 8099,
-    "assetsPort": 7391,
+    "assetsPort": 7392,
     "url": "http://localhost:8099/",
     "settle": 600,
     "viewport": {
@@ -4403,6 +4403,30 @@
           {
             "shot": "m-image.png"
           }
+        ]
+      },
+      "image-attachment": {
+        "_comment": "A picture the user sent is drawn as itself in the bubble, and tapping it opens the same full-screen viewer a reply's picture uses — no transfer dialog in between, because the phone already holds the bytes.",
+        "steps": [
+          { "wait": 900 },
+          { "tap": "稍后再说" },
+          { "wait": 1200 },
+          { "tap": "工作区" },
+          { "wait": 1200 },
+          { "tapText": "整理两篇文献的结论对比表" },
+          { "wait": 2500 },
+          { "scroll": [0, -900] },
+          { "wait": 1200 },
+          {
+            "eval": "(() => { const chip = document.querySelector('[aria-label=\"effect-size.png\"]'); if (!chip) throw new Error('the sent picture is not a picture in the bubble'); const thumb = chip.querySelector('img'); if (!thumb || thumb.getBoundingClientRect().width < 120) throw new Error('the attachment is not drawn as a thumbnail'); if (document.querySelector('[data-testid=\"image-viewer\"]')) throw new Error('the viewer opened before it was asked to'); return { width: Math.round(thumb.getBoundingClientRect().width) }; })()"
+          },
+          { "shot": "m-image-attachment.png" },
+          { "tap": "effect-size.png" },
+          { "wait": 1500 },
+          {
+            "eval": "(() => { const viewer = document.querySelector('[data-testid=\"image-viewer\"]'); if (!viewer) throw new Error('tapping the sent picture opened nothing'); const img = viewer.querySelector('img'); if (!img || !(img.getAttribute('src') || '').includes('effect-size.png')) throw new Error('the viewer is showing something else'); return { src: img.getAttribute('src') }; })()"
+          },
+          { "shot": "m-image-attachment-viewer.png" }
         ]
       },
       "image-zoom": {
