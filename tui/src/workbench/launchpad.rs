@@ -178,13 +178,21 @@ pub fn render(
     }
 
     // ── the input box ─────────────────────────────────────────────────
-    let title = if data.session.cwd.is_empty() {
+    let mut title = if data.session.cwd.is_empty() {
         t(lang, Key::LaunchpadNewChat).to_string()
     } else {
         i18n::render(lang, Key::LaunchpadNewChatIn, &[&data.session.cwd])
     };
+    // The pictures pasted into the draft are named in the title, the way the
+    // chat composer names them: the box has no row of its own for them, and an
+    // attachment that is invisible until the prompt is sent is one the reader
+    // cannot check.
+    let images = data.input.editor.image_attachment_count();
+    if images > 0 {
+        title.push_str(&i18n::render(lang, Key::AttachmentsInDraft, &[&images]));
+    }
     let (box_rows, cursor_column, cursor_row) =
-        widgets::input_lines(palette, content_width, &data.input, &title, true);
+        widgets::input_lines(palette, content_width, &data.input, &title);
     let box_top_row = lines.len();
     for (index, row) in box_rows.iter().enumerate() {
         push(&mut lines, row.clone());
@@ -487,6 +495,79 @@ mod tests {
             .expect("the model chip");
         assert_eq!((want.x, want.y), (got.x, got.y));
         assert_eq!(got.y as usize, marker_row);
+    }
+
+    /// A draft carrying pictures pasted into it, built the way the paste builds
+    /// it: the marker needs a real image file behind it, so each one is written
+    /// first.
+    fn launchpad_with_pasted_pictures() -> WorkbenchData {
+        let mut data = demo::launchpad();
+        let dir =
+            std::env::temp_dir().join(format!("future-launchpad-images-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let mut editor = data.input.editor.clone();
+        for number in 1..=2 {
+            let path = dir.join(format!("shot{number}.png"));
+            std::fs::write(&path, b"\x89PNG\r\n\x1a\nrest of the file").expect("a png header");
+            editor.paste(&path.to_string_lossy());
+        }
+        editor.paste("识别这两张图");
+        data.input = crate::workbench::state::InputView::from_editor(editor, String::new());
+        data
+    }
+
+    /// A pasted picture is named in the box's title, and it does *not* push the
+    /// draft down a row.
+    ///
+    /// The box draws the draft's own rows and no others; the component's
+    /// attachment line sat above them and was cut down to a blank row by the
+    /// prompt strip, so a draft with pictures in it painted `❯` alone and put
+    /// the text underneath — reported as "a blank line appeared above the
+    /// prompt".
+    #[test]
+    fn pasted_pictures_are_named_in_the_title_and_leave_no_blank_row() {
+        let data = launchpad_with_pasted_pictures();
+        assert_eq!(data.input.editor.image_attachment_count(), 2);
+        let mut hit = HitMap::new();
+        let (lines, cursor) = render(&data, &P, Rect::new(0, 0, 120, 38), &mut hit, LANG, None);
+        let text = text_of(&lines);
+        assert!(
+            text.contains("· 📎 2 张图片"),
+            "the title names the pictures: {text}"
+        );
+        let rows: Vec<&str> = text.lines().collect();
+        let prompt = rows
+            .iter()
+            .position(|row| row.contains('❯'))
+            .expect("the prompt row");
+        assert!(
+            rows[prompt].contains("[Image #1][Image #2]识别这两张图"),
+            "the draft is on the prompt row: {:?}",
+            rows[prompt]
+        );
+        assert!(
+            rows[prompt - 1].contains('╭'),
+            "the top edge is directly above the prompt: {:?}",
+            rows[prompt - 1]
+        );
+        assert!(cursor.is_some(), "{text}");
+    }
+
+    #[test]
+    fn the_launchpad_is_one_canvas_behind_its_prompt() {
+        // The prompt box is the focus of this screen because it carries the
+        // cursor and the wordmark above it, not because it was filled with the
+        // panel colour — a filled box read as a second surface inside the
+        // canvas (the reader asked for one background on both composers).
+        let data = demo::launchpad();
+        let mut hit = HitMap::new();
+        let (lines, _) = render(&data, &P, Rect::new(0, 0, 120, 38), &mut hit, LANG, None);
+        for line in &lines {
+            assert!(
+                !line.contains("\x1b[48;5;"),
+                "the launchpad paints a background: {line:?}"
+            );
+        }
     }
 
     #[test]

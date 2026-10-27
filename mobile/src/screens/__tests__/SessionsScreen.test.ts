@@ -520,6 +520,31 @@ test("the status dot answers for every machine, and reconnect reaches them all",
   }
 });
 
+/**
+ * The dot's sheet takes over the row's machine, not the open one.
+ *
+ * Its rows list the machines other than the open one too, and a peer in somebody
+ * else's hands is the ordinary reason the dot is yellow at all. Asking the open
+ * machine instead is granted and changes nothing — a desktop this phone already
+ * drives answers `changed: false` — so the sheet closed, the held machine stayed
+ * held, and the tap read as one that did not work. The row's own connection is
+ * the one that can move control, which is what the picker's rows already use.
+ */
+test("a peer's takeover behind the status dot reaches that peer", async () => {
+  mockCatalogs.machines = [
+    { desktopId: "desktop_2", label: "Office", active: false, status: "connected", control: "standby" },
+  ];
+  try {
+    act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
+    const badge = tree.root.findByType(ConnectionBadge);
+    await act(async () => { await badge.props.onTakeControl("desktop_2"); });
+    expect(mockCatalogs.takeControlFor).toHaveBeenCalledWith("desktop_2");
+    expect(mockRemote.takeControl).not.toHaveBeenCalled();
+  } finally {
+    mockCatalogs.machines = [];
+  }
+});
+
 test("category switching is delegated to the list toolbar, without a separate tab row", () => {
   expect(tree.root.findAll(node => node.props.accessibilityRole === "tab")).toHaveLength(0);
   act(() => tree.root.findByType(SessionList).props.onTabChange("workspace"));

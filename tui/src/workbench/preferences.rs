@@ -119,6 +119,8 @@ pub enum Action {
     Thinking,
     Approval,
     Workspaces,
+    /// The interface language: follow the system, Chinese or English.
+    Language,
     PanelRecent,
     PanelWorkspaces,
     PanelFiles,
@@ -160,7 +162,7 @@ impl Group {
 /// Every action, in the order the help overlay lists them: grouped, and inside
 /// a group from most to least used. `ACTIONS` is the one authority — the help
 /// table, the shortcut editor and the event dispatch all walk it.
-pub const ACTIONS: [Action; 26] = [
+pub const ACTIONS: [Action; 27] = [
     // Sessions
     Action::PrevSession,
     Action::NextSession,
@@ -174,6 +176,7 @@ pub const ACTIONS: [Action; 26] = [
     Action::Thinking,
     Action::Approval,
     Action::Workspaces,
+    Action::Language,
     // Panels
     Action::Sidebar,
     Action::PanelRecent,
@@ -194,6 +197,7 @@ pub const ACTIONS: [Action; 26] = [
 ];
 
 impl Action {
+    /// The action's identifier — the wire spelling in the bindings file.
     pub fn id(self) -> &'static str {
         match self {
             Self::Quit => "quit",
@@ -216,6 +220,7 @@ impl Action {
             Self::Thinking => "thinking",
             Self::Approval => "approval",
             Self::Workspaces => "workspaces",
+            Self::Language => "language",
             Self::Model => "model",
             Self::PanelRecent => "panelRecent",
             Self::PanelWorkspaces => "panelWorkspaces",
@@ -237,7 +242,9 @@ impl Action {
             | Self::Queue
             | Self::Stop
             | Self::ReplyDetail => Group::Sessions,
-            Self::Model | Self::Thinking | Self::Approval | Self::Workspaces => Group::Choice,
+            Self::Model | Self::Thinking | Self::Approval | Self::Workspaces | Self::Language => {
+                Group::Choice
+            }
             Self::Sidebar | Self::PanelRecent | Self::PanelWorkspaces | Self::PanelFiles => {
                 Group::Panels
             }
@@ -276,6 +283,7 @@ impl Action {
             Self::Thinking => Key::HelpKeyThinking,
             Self::Approval => Key::HelpKeyApproval,
             Self::Workspaces => Key::HelpKeyWorkspaces,
+            Self::Language => Key::CmdLanguage,
             Self::Model => Key::CmdModel,
             Self::PanelRecent => Key::HelpKeyPanelRecent,
             Self::PanelWorkspaces => Key::HelpKeyPanelWorkspaces,
@@ -306,7 +314,7 @@ impl Action {
             Self::ReplyDetail => "ctrl+e",
             Self::Stop => "ctrl+x",
             Self::Copy => "alt+c",
-            Self::Queue => "ctrl+g",
+            Self::Queue => "alt+q",
             Self::Mouse => "alt+m",
             Self::LinearReading => "alt+l",
             Self::ReduceMotion => "alt+a",
@@ -314,6 +322,7 @@ impl Action {
             Self::Thinking => "ctrl+t",
             Self::Approval => "ctrl+s",
             Self::Workspaces => "ctrl+l",
+            Self::Language => "ctrl+g",
             Self::PanelRecent => "ctrl+1",
             Self::PanelWorkspaces => "ctrl+2",
             Self::PanelFiles => "ctrl+3",

@@ -252,10 +252,8 @@ pub async fn run(options: Options) -> Result<(), String> {
     if settings.language.as_deref() != Some(workbench.language_pref.as_wire()) {
         settings.language = Some(workbench.language_pref.as_wire().to_string());
     }
-    let detail = live.detail().as_wire().to_string();
-    if settings.reply_detail.as_deref() != Some(detail.as_str()) {
-        settings.reply_detail = Some(detail);
-    }
+    // The reading level is deliberately not written: `ctrl+e` expands the
+    // transcript for this run only, so the next terminal opens folded.
     persist_preferences(&workbench, &mut settings, &options.settings_path);
     let _ = workbench.keys.save(&super::preferences::keybindings_path(
         &options.settings_path,
@@ -739,11 +737,9 @@ async fn quit(
                         ReplyDetail::Detailed => ReplyDetail::Default,
                     };
                     live.set_detail(next);
-                    // A key the reader pressed is a choice like any other: it
-                    // goes to `settings.json` now, so the level survives the
-                    // terminal (the `/reply-detail` verb does the same).
-                    settings.reply_detail = Some(next.as_wire().to_string());
-                    save_settings(settings_path, settings);
+                    // A view toggle, not a preference: nothing is written back,
+                    // so the next start opens folded again whatever the reader
+                    // peeked at here (see `ReplyDetail`).
                     return Ok(false);
                 }
                 Some(super::preferences::Action::NewSession) => {

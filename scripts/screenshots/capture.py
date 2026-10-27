@@ -1443,6 +1443,10 @@ TUI_SCENARIO_KEYS: dict[str, str] = {
     "picker-model": "/model\r",
     "picker-theme": "/theme\r",
     "picker-sessions": "/sessions\r",
+    # `#` in the draft opens the session-mention menu: the list that completes
+    # `#title` into a reference, one row per conversation, its workspace in the
+    # column on the right (and this is the frame the alignment bug showed in).
+    "mention-sessions": "#",
     # `ctrl+b` on a terminal too narrow for the rail: the panel takes the body.
     "full-panel": "\x02",
     # A click that hands the keys back to the conversation, then three wheel-ups:

@@ -43,8 +43,15 @@ pub enum ToolStatus {
     Error,
 }
 
-/// How much of a settled reply the transcript keeps — the desktop's and the
-/// phone's `replyDetail` setting, spelled the same on the wire.
+/// How much of a settled reply the transcript keeps — the same two levels the
+/// desktop's and the phone's `replyDetail` setting offer.
+///
+/// The terminal starts at [`Default`](Self::Default) every time: `ctrl+e` (and
+/// the `/reply-detail` verb) is a view toggle for the run it is pressed in, not
+/// a preference written back to `settings.json`. A reader who peeks at the
+/// process used to find every later start expanded, because the peek *became*
+/// the stored level — the one thing a terminal must not do with a key that
+/// reads as "show me this once".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReplyDetail {
     /// A settled reply keeps only the answer it ends on; the reasoning, calls
@@ -58,26 +65,6 @@ pub enum ReplyDetail {
     /// is still one row: its body waits for `ctrl+g`, exactly as at the
     /// default level.
     Detailed,
-}
-
-impl ReplyDetail {
-    /// Parse the persisted/wire spelling. An unknown value falls back to the
-    /// default level, the same rule both GUI clients apply to a value they
-    /// never wrote.
-    pub fn from_wire(value: &str) -> Self {
-        match value {
-            "detailed" => Self::Detailed,
-            _ => Self::Default,
-        }
-    }
-
-    /// The spelling `settings.json` stores.
-    pub fn as_wire(self) -> &'static str {
-        match self {
-            Self::Default => "default",
-            Self::Detailed => "detailed",
-        }
-    }
 }
 
 /// What a folded stretch of a reply hides, as the summary row counts it.
@@ -3589,13 +3576,14 @@ mod tests {
         assert!(chat.compact_activity(), "and so is the compact view");
     }
 
+    /// The level a transcript opens at is the folded one — the state `ctrl+e`
+    /// produces — so a fresh terminal and a restarted one look the same. There
+    /// is no stored level to disagree with it any more (see `ReplyDetail`).
     #[test]
-    fn the_wire_spelling_round_trips_and_unknown_values_are_default() {
-        assert_eq!(ReplyDetail::from_wire("default"), ReplyDetail::Default);
-        assert_eq!(ReplyDetail::from_wire("detailed"), ReplyDetail::Detailed);
-        assert_eq!(ReplyDetail::from_wire("verbose"), ReplyDetail::Default);
-        assert_eq!(ReplyDetail::default().as_wire(), "default");
-        assert_eq!(ReplyDetail::Detailed.as_wire(), "detailed");
+    fn a_new_transcript_opens_folded() {
+        assert_eq!(ReplyDetail::default(), ReplyDetail::Default);
+        let chat = ChatArea::new(W, None);
+        assert_eq!(chat.reply_detail(), ReplyDetail::Default);
     }
 
     fn eager_lines(content: &str, pending: bool, width: usize) -> Vec<String> {

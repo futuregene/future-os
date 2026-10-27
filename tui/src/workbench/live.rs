@@ -208,7 +208,9 @@ impl Live {
         let (client, events, _connection) = GrpcClient::new(addr);
         let client = Arc::new(client.with_no_context_files(no_context_files));
 
-        let detail = settings.map(persisted_detail).unwrap_or_default();
+        // The reading level is not persisted: every terminal starts folded, and
+        // `ctrl+e` expands for the run it is pressed in. See `ReplyDetail`.
+        let detail = ReplyDetail::default();
         // The stored preference decides the adapter's language before anything
         // is painted, so the first frame is already in the reader's language.
         let lang = LanguagePreference::from_wire(
@@ -1219,6 +1221,15 @@ impl Live {
         if self.launchpad || self.state.session_id.is_empty() {
             self.new_session().await;
             if self.state.session_id.is_empty() || self.launchpad {
+                // `new_session` reports its own failure; this is the other
+                // half — the agent made a session but this client did not end
+                // up attached to one. Returning silently here is what makes the
+                // launchpad's first message look like a key that does nothing:
+                // the draft stays (that is deliberate, it can be sent again) and
+                // the reader is owed the reason.
+                if self.notice.is_none() {
+                    self.notice = Some(t(self.lang, Key::NoticeSessionNotStarted).into());
+                }
                 return;
             }
         }
@@ -2511,11 +2522,6 @@ pub fn persisted_palette(settings: &crate::settings::TuiSettings) -> super::them
     super::theme::resolve(settings.theme_id.as_deref())
 }
 
-/// The reading level the inline TUI persisted, or the default.
-pub fn persisted_detail(settings: &crate::settings::TuiSettings) -> ReplyDetail {
-    ReplyDetail::from_wire(settings.reply_detail.as_deref().unwrap_or("default"))
-}
-
 /// The language preference `settings.json` carries. An absent key means `system`
 /// — the reader has not chosen, so the locale decides.
 pub fn persisted_language(settings: &crate::settings::TuiSettings) -> LanguagePreference {
@@ -2775,6 +2781,37 @@ mod tests {
         );
     }
 
+    /// A restart opens folded, even from a `settings.json` that still carries
+    /// the level the old `ctrl+e` used to write.
+    ///
+    /// `replyDetail` is retired with the persistence: peeking at the process is
+    /// a view toggle for the run it happens in, and once it wrote itself back
+    /// the next terminal had no way of knowing the reader had only *looked*.
+    /// The key is therefore ignored on the way in and dropped on the next write
+    /// (see `TuiSettings`), which makes this test the guard against a future
+    /// "remember the level again" change landing without the product decision.
+    #[tokio::test]
+    async fn a_legacy_stored_level_does_not_open_the_transcript_expanded() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[(
+            "get_state",
+            r#"{"sessionId":"s-1"}"#,
+        )]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let settings = crate::settings::TuiSettings::from_json(&serde_json::json!({
+            "replyDetail": "detailed"
+        }));
+
+        let (live, _events) = Live::attach(&addr, None, false, Some(&settings))
+            .await
+            .expect("attach to the test agent");
+
+        assert_eq!(
+            live.detail(),
+            ReplyDetail::Default,
+            "a stored reading level must not survive into the next terminal"
+        );
+    }
+
     /// When no session can be started, the reader's text must survive: the
     /// whole point of the launchpad's first message is that it can be retried
     /// after whatever stopped the session is fixed.
@@ -2800,6 +2837,17 @@ mod tests {
         assert_eq!(
             live.draft.text, "do not lose this",
             "the reader's text must survive a session that could not start"
+        );
+        // …and the key that did nothing but keep the text has to say why: a
+        // silent return is the "press enter, nothing happens" report.
+        let notice = live.notice.expect("a notice explains the missing session");
+        assert!(
+            notice.contains("新会话") || notice.contains("session"),
+            "the notice names what did not happen: {notice}"
+        );
+        assert!(
+            notice.contains("再发一次") || notice.contains("try again"),
+            "and that the draft can be sent again: {notice}"
         );
         let commands = seen.lock().unwrap().clone();
         assert!(
