@@ -130,6 +130,10 @@ pub enum Overlay {
     Diff,
     /// `/git`: the repository browser (log, refs, working tree, stashes).
     Git,
+    /// The files panel: this conversation's workspace as a tree, with a
+    /// preview. Its own surface — the rail lists conversations, which belong to
+    /// the agent, while a tree belongs to the session on screen.
+    Files,
     History,
     Tree,
     Fork,
@@ -253,6 +257,10 @@ pub enum WbAction {
     OpenQueue,
     OpenApproval,
     OpenDiff,
+    /// The workspace as a tree of the session on screen: directories open and
+    /// close, files preview. The overlay is opened by the panel's own shortcut,
+    /// by its header button, and by `/files`.
+    OpenFiles,
     /// Open the repository browser (`/git`), reading the log afresh.
     OpenGit,
     /// The `/git` panel switched tab: the driver reads that section.
@@ -471,6 +479,10 @@ pub struct Workbench {
     pub keybinding_index: usize,
     pub awaiting_keybinding: bool,
     pub panel_scroll: [usize; PanelId::ALL.len()],
+    /// The files overlay's cursor: the tree row the keys will act on. The
+    /// rail's cursor ([`Self::sidebar_index`]) belongs to the tabs, and the
+    /// files panel is no longer one of them.
+    pub files_index: usize,
     pub overlay: Option<Overlay>,
     pub overlay_scroll: usize,
     /// The conversation the confirm box names before it deletes it. Held here
@@ -579,6 +591,7 @@ impl Workbench {
             keybinding_index: 0,
             awaiting_keybinding: false,
             panel_scroll: [0; PanelId::ALL.len()],
+            files_index: 0,
             overlay: None,
             overlay_scroll: 0,
             delete_target: None,
@@ -1037,12 +1050,13 @@ impl Workbench {
             Some(preferences::Action::PanelWorkspaces) => {
                 return self.focus_panel_action(PanelId::Workspaces, data)
             }
-            Some(preferences::Action::PanelFiles) => {
-                return self.focus_panel_action(PanelId::Files, data)
-            }
+            // The files panel is not a rail tab: it opens its own surface, a
+            // tree of the conversation on screen. The driver reads the
+            // directory and paints the box (`run.rs`), because the surface owns
+            // no I/O.
+            Some(preferences::Action::Files) => return vec![WbAction::OpenFiles],
             // The rail's neighbouring tab, from anywhere — the same intent as
-            // `ctrl+1`…`ctrl+3` one step at a time, and the one way to reach the
-            // tabs while `←`/`→` belong to the tree on 文件.
+            // `ctrl+1`/`ctrl+2` one step at a time.
             Some(preferences::Action::PanelPrev) => {
                 let panel = self.panel.previous();
                 return self.focus_panel_action(panel, data);
@@ -1144,28 +1158,12 @@ impl Workbench {
             "enter" => self.submit_draft(data),
             "up" if self.sidebar_focus => self.move_selection(-1, data),
             "down" if self.sidebar_focus => self.move_selection(1, data),
-            // The rail's three tabs, from the rail itself: a focused panel
+            // The rail's two tabs, from the rail itself: a focused panel
             // answers left/right with its neighbour the way a tab strip does
             // with a click. The cursor lands on the conversation on screen,
             // exactly as the click on a tab leaves it.
-            //
-            // *Every* tab answers them, 文件 included. It used to keep the
-            // arrows for its tree, which made the third tab a dead end: the
-            // rail's own hint row promises `←→ 页签`, the other two tabs do it,
-            // and a reader who arrived in the tree by arrow could only leave by
-            // `ctrl+1`…`ctrl+3` or the pointer — one arrow away from feeling
-            // broken. The tree keeps the keys that are its own (`enter` opens,
-            // `↑↓` walk, `backspace` closes a directory or walks up to the one
-            // holding the row).
             "left" if self.sidebar_focus => self.switch_panel(-1, data),
             "right" if self.sidebar_focus => self.switch_panel(1, data),
-            // The tree's own step out of a level, on the key a file browser's
-            // "up one" has always been. Placed before the editor's `backspace`
-            // so a focused rail keeps it, and only in 文件: in the other two
-            // panels there is no level to leave.
-            "backspace" if self.sidebar_focus && self.panel == PanelId::Files => {
-                self.file_close(data)
-            }
             // Pin the workspace the selected conversation belongs to, so the
             // 置顶 section is reachable with the keyboard. Only a *focused* rail
             // takes it: elsewhere `p` is a letter in the draft.
@@ -1328,7 +1326,7 @@ impl Workbench {
     }
 
     /// Put the rail's cursor on `row`, if that row holds something the cursor
-    /// can stand on (a conversation, or a file in the tree).
+    /// can stand on (a conversation, or a workspace heading that folds).
     fn select_row(&mut self, row: Option<usize>, data: &WorkbenchData) {
         let rows = self.panel_rows(data);
         if let Some(row) = row.filter(|row| rows.get(*row).is_some_and(|row| row.selectable())) {
@@ -1343,9 +1341,9 @@ impl Workbench {
     /// Move the cursor one row up or down, keeping the window on it.
     ///
     /// In 最近 a row is a conversation, so the cursor skips the headings
-    /// (`step_session`); in 文件 every row is an entry of the tree, and in 工作区
-    /// a workspace heading is a row the cursor can act on (it folds), so both
-    /// walk every selectable row (`step_row`).
+    /// (`step_session`); in 工作区 a workspace heading is a row the cursor can act
+    /// on (it folds), so it walks every selectable row (`step_row`). The file
+    /// tree is not a tab any more and has its own cursor (`files_index`).
     fn move_selection(&mut self, delta: i32, data: &WorkbenchData) -> Vec<WbAction> {
         let rows = self.panel_rows(data);
         let next = if self.panel == PanelId::Recent {
@@ -1365,8 +1363,8 @@ impl Workbench {
         vec![WbAction::Redraw]
     }
 
-    /// Open what the cursor stands on: a conversation, a file's preview, or a
-    /// directory the reader wants to see inside.
+    /// Open what the cursor stands on: a conversation, or the workspace
+    /// heading that folds the conversations under it.
     fn open_selected(&mut self, data: &WorkbenchData) -> Vec<WbAction> {
         let rows = self.panel_rows(data);
         let Some(row) = rows.get(self.sidebar_index) else {
@@ -1375,16 +1373,15 @@ impl Workbench {
         if let panels::Row::Workspace(at) = row {
             return self.toggle_workspace(*at, data);
         }
-        if let Some(index) = row.session() {
-            return data
-                .sessions
-                .get(index)
-                .map(|session| vec![WbAction::SwitchSession(session.id.clone())])
-                .unwrap_or_default();
-        }
-        let Some(index) = row.file() else {
-            return Vec::new();
-        };
+        row.session()
+            .and_then(|index| data.sessions.get(index))
+            .map(|session| vec![WbAction::SwitchSession(session.id.clone())])
+            .unwrap_or_default()
+    }
+
+    /// `enter`/`→` on a tree row (the files panel): a directory opens, a file
+    /// previews.
+    fn open_tree_row(&mut self, index: usize, data: &WorkbenchData) -> Vec<WbAction> {
         let Some(node) = data.tree.get(index) else {
             return Vec::new();
         };
@@ -1396,17 +1393,12 @@ impl Workbench {
         }
     }
 
-    /// `backspace` in the tree: close the directory, or jump to the one that
-    /// holds the row.
+    /// `backspace`/`←` on a tree row: close the directory, or jump to the one
+    /// that holds the row.
     ///
-    /// It is the file browser's "up one" rather than a tree key stolen from the
-    /// tab strip: `←`/`→` switch the rail's tabs on every tab (see `handle_key`),
-    /// so the level keys have to be their own.
-    fn file_close(&mut self, data: &WorkbenchData) -> Vec<WbAction> {
-        let rows = self.panel_rows(data);
-        let Some(index) = rows.get(self.sidebar_index).and_then(|row| row.file()) else {
-            return Vec::new();
-        };
+    /// It is the file browser's "up one" rather than a key stolen from a tab
+    /// strip: the tree is its own panel, so `←`/`→` have no tab to switch here.
+    fn close_tree_row(&mut self, index: usize, data: &WorkbenchData) -> Vec<WbAction> {
         let Some(node) = data.tree.get(index) else {
             return Vec::new();
         };
@@ -1426,7 +1418,7 @@ impl Workbench {
             .rev()
             .find(|above| data.tree.get(*above).is_some_and(|row| row.depth < depth))
         {
-            self.sidebar_index = parent;
+            self.files_index = parent;
         }
         vec![WbAction::Redraw]
     }
@@ -1639,6 +1631,9 @@ impl Workbench {
     ) -> Vec<WbAction> {
         if overlay == Overlay::Git {
             return self.handle_git_key(key, data);
+        }
+        if overlay == Overlay::Files {
+            return self.handle_files_key(key, data);
         }
         if matches!(
             overlay,
@@ -1948,6 +1943,7 @@ impl Workbench {
             Overlay::Approval
             | Overlay::Diff
             | Overlay::Git
+            | Overlay::Files
             | Overlay::History
             | Overlay::Tree
             | Overlay::Fork
@@ -2000,6 +1996,62 @@ impl Workbench {
     /// The `/git` panel's keys. A tab switch and a cursor move both leave the
     /// panel open; `esc`/`q` close it, the same two keys every other list
     /// overlay answers to.
+    /// The files panel's keys: a tree, so `enter` opens what the cursor stands
+    /// on, `backspace`/`left` goes up a level, and `r` re-reads the directory.
+    ///
+    /// `esc`/`q` close it like every other list overlay, and the pointer can
+    /// open rows too (`files.row.` in `click`).
+    fn handle_files_key(&mut self, key: &str, data: &WorkbenchData) -> Vec<WbAction> {
+        let count = data.tree.rows().len();
+        let cursor = self.files_index.min(count.saturating_sub(1));
+        match key {
+            "escape" | "q" => {
+                self.overlay = None;
+                vec![WbAction::Redraw]
+            }
+            "up" | "k" => self.move_files(-1, data),
+            "down" | "j" => self.move_files(1, data),
+            "home" | "g" => self.select_file(0, data),
+            "end" | "G" => self.select_file(count.saturating_sub(1), data),
+            "pageUp" | "pageDown" | "space" => {
+                let page = self.list_page.max(1) as i32;
+                let delta = if key == "pageUp" { -page } else { page };
+                self.move_files(delta, data)
+            }
+            "enter" | "right" | "l" => self.open_tree_row(cursor, data),
+            "left" | "h" | "backspace" => self.close_tree_row(cursor, data),
+            "r" => vec![WbAction::RefreshFiles],
+            _ => Vec::new(),
+        }
+    }
+
+    /// Move the tree's cursor, keeping the window on it — the same rule the
+    /// rail's list follows, so a long tree scrolls rather than walking under a
+    /// hidden edge.
+    fn move_files(&mut self, delta: i32, data: &WorkbenchData) -> Vec<WbAction> {
+        let count = data.tree.rows().len();
+        if count == 0 {
+            return Vec::new();
+        }
+        let current = self.files_index.min(count - 1) as i32;
+        let next = (current + delta).clamp(0, count as i32 - 1) as usize;
+        self.select_file(next, data)
+    }
+
+    fn select_file(&mut self, index: usize, data: &WorkbenchData) -> Vec<WbAction> {
+        let count = data.tree.rows().len();
+        if count == 0 {
+            return Vec::new();
+        }
+        let index = index.min(count - 1);
+        self.files_index = index;
+        let slot = PanelId::Files.index();
+        if index < self.panel_scroll[slot] {
+            self.panel_scroll[slot] = index;
+        }
+        vec![WbAction::Redraw]
+    }
+
     fn handle_git_key(&mut self, key: &str, data: &WorkbenchData) -> Vec<WbAction> {
         let Some(git) = data.git.as_ref() else {
             if matches!(key, "escape" | "q") {
@@ -2627,6 +2679,17 @@ impl Workbench {
                         .unwrap_or_default();
                 }
                 if let Some(index) = id
+                    .strip_prefix("files.row.")
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
+                    self.files_index = index;
+                    // A click aims at a row the same way a cursor does: a file
+                    // previews and a directory opens, so the pointer and `enter`
+                    // are one verb.
+                    return self.handle_files_key("enter", data);
+                }
+
+                if let Some(index) = id
                     .strip_prefix("git.row.")
                     .and_then(|v| v.parse::<usize>().ok())
                 {
@@ -2805,6 +2868,9 @@ impl Workbench {
             }
             return vec![WbAction::SetPreferences];
         }
+        if id == "header.files" {
+            return vec![WbAction::OpenFiles];
+        }
         if let Some(panel) = id.strip_prefix("sidebar.tab.").and_then(PanelId::parse) {
             self.panel = panel;
             // Clicking the sidebar means working in it; the same click that
@@ -2830,12 +2896,6 @@ impl Workbench {
                         .get(*session)
                         .map(|session| vec![WbAction::SwitchSession(session.id.clone())])
                         .unwrap_or_default()
-                }
-                // A tree row is aimed at too: a file previews, a directory opens
-                // — the same two verbs `enter` runs on it.
-                Some(panels::Row::File(_)) => {
-                    self.sidebar_index = index;
-                    self.open_selected(data)
                 }
                 // A workspace heading folds what is under it away, and opens it
                 // again on the next click: one click on a group is the quickest
@@ -3177,7 +3237,7 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
 /// The command palette's entries: `(command, description)`. Kept here rather
 /// than in the app so the palette, the help overlay and the tests share one
 /// list.
-pub const COMMANDS: [(&str, Key); 30] = [
+pub const COMMANDS: [(&str, Key); 31] = [
     ("/new", Key::CmdNew),
     ("/delete", Key::CmdDelete),
     ("/queue", Key::CmdQueue),
@@ -3186,6 +3246,7 @@ pub const COMMANDS: [(&str, Key); 30] = [
     ("/mouse", Key::CmdMouse),
     ("/diff", Key::CmdDiff),
     ("/git", Key::CmdGit),
+    ("/files", Key::CmdFiles),
     ("/approval", Key::CmdApproval),
     ("/history", Key::CmdHistory),
     ("/tree", Key::CmdTree),
@@ -4082,12 +4143,12 @@ mod tests {
         );
     }
 
-    /// The shift arrows are the documented way through the rail's three tabs:
-    /// they work from anywhere (a hidden rail is shown and takes the keys), they
+    /// The shift arrows are the documented way through the rail's tabs: they
+    /// work from anywhere (a hidden rail is shown and takes the keys), they
     /// wrap, and they land on the same tab the plain arrows reach inside the
-    /// rail.
+    /// rail. 文件 is not one of them — it is its own session-scoped panel.
     #[test]
-    fn shift_left_and_right_walk_the_three_tabs() {
+    fn shift_left_and_right_walk_the_two_tabs() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         let previous = workbench
@@ -4114,31 +4175,25 @@ mod tests {
         assert_eq!(workbench.panel, PanelId::Workspaces);
         assert!(workbench.sidebar_visible && workbench.sidebar_focus);
 
-        // 最近 → 工作区 → 文件 → 最近, and back round.
-        assert_eq!(
-            workbench.handle(WbEvent::Key(next.clone()), &data),
-            vec![WbAction::SwitchPanel(PanelId::Files)]
-        );
+        // 最近 → 工作区 → 最近, and back round. The tree is reached by its own
+        // door; stepping past the last tab wraps rather than opening a box.
         assert_eq!(
             workbench.handle(WbEvent::Key(next.clone()), &data),
             vec![WbAction::SwitchPanel(PanelId::Recent)]
         );
         assert_eq!(
             workbench.handle(WbEvent::Key(previous), &data),
-            vec![WbAction::SwitchPanel(PanelId::Files)]
+            vec![WbAction::SwitchPanel(PanelId::Workspaces)]
         );
-        // 文件 answers the plain arrows with its neighbouring tab as well (the
-        // tree keeps `enter`/`⌫`), so the shift pair and `←`/`→` agree there and
-        // the chord is the same one on all three tabs.
-        assert_eq!(workbench.panel, PanelId::Files);
+        // The plain arrows inside the rail reach the same two tabs, so the two
+        // chords agree wherever the keys are.
         assert_eq!(
             workbench.handle(WbEvent::Key("right".into()), &data),
             vec![WbAction::SwitchPanel(PanelId::Recent)]
         );
-        workbench.panel = PanelId::Files;
         assert_eq!(
             workbench.handle(WbEvent::Key("shift+right".into()), &data),
-            vec![WbAction::SwitchPanel(PanelId::Recent)]
+            vec![WbAction::SwitchPanel(PanelId::Workspaces)]
         );
     }
 
@@ -4625,54 +4680,57 @@ mod tests {
         let rows = workbench.render(&data, 120, 38);
         assert!(plain(&rows).contains("对话会话"), "{}", plain(&rows));
 
-        // `ctrl+3` is the file tree, and it takes the keys like the other two.
+        // `ctrl+3` opens the files panel — its own box, not a third tab: the
+        // rail keeps the tab it had, and the driver paints the tree.
         assert_eq!(
             workbench.handle(WbEvent::Key("ctrl+3".into()), &data),
-            vec![WbAction::SwitchPanel(PanelId::Files)]
+            vec![WbAction::OpenFiles]
         );
-        assert_eq!(workbench.panel, PanelId::Files);
-        let rows = workbench.render(&data, 120, 38);
-        let text = plain(&rows);
+        assert_eq!(
+            workbench.panel,
+            PanelId::Workspaces,
+            "the rail did not move"
+        );
+        // The box itself is painted by the driver (`run.rs`), which owns the
+        // overlay and the directory; the surface's half is the action above.
+        workbench.overlay = Some(Overlay::Files);
+        let text = plain(&workbench.render(&data, 120, 38));
         assert!(text.contains("文件"), "{text}");
         assert!(text.contains("README.md"), "{text}");
     }
 
-    /// The tree's own keys: `↑↓` walk every row, `enter` previews a file or
-    /// opens a directory, `backspace` closes a directory or walks up to the one
-    /// holding the row. None of them is the tab strip's arrow.
+    /// The files panel answers its own keys: `↑↓` walks every row, `enter`
+    /// previews a file or opens a directory, `backspace`/`←` closes a directory
+    /// or walks up to the one holding the row, and `esc` closes the box.
     #[test]
-    fn the_file_panel_navigates_the_tree_with_the_keyboard() {
+    fn the_files_panel_navigates_the_tree_with_the_keyboard() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
-        workbench.handle(WbEvent::Key("ctrl+3".into()), &data);
-        assert_eq!(workbench.panel, PanelId::Files);
+        workbench.overlay = Some(Overlay::Files);
         // 0 = `docs` (open in the fixture), 1 = its `tui` child, 2 = README.md.
-        assert_eq!(workbench.sidebar_index, 0);
+        assert_eq!(workbench.files_index, 0);
         workbench.handle(WbEvent::Key("down".into()), &data);
-        assert_eq!(
-            workbench.sidebar_index, 1,
-            "one row per step, headings included"
-        );
+        assert_eq!(workbench.files_index, 1, "one row per step");
         workbench.handle(WbEvent::Key("down".into()), &data);
-        assert_eq!(workbench.sidebar_index, 2);
+        assert_eq!(workbench.files_index, 2);
 
         // `enter` on a file asks for its preview; on a directory, for its
-        // children.
+        // children. `→` is the same verb on both.
         assert_eq!(
             workbench.handle(WbEvent::Key("enter".into()), &data),
             vec![WbAction::PreviewFile(
                 data.tree.rows()[2].path.to_string_lossy().to_string()
             )]
         );
-        workbench.sidebar_index = 3; // the `tui` directory at depth 0
+        workbench.files_index = 3; // the `tui` directory at depth 0
         assert_eq!(
-            workbench.handle(WbEvent::Key("enter".into()), &data),
+            workbench.handle(WbEvent::Key("right".into()), &data),
             vec![WbAction::ToggleFolder(
                 data.tree.rows()[3].path.to_string_lossy().to_string()
             )]
         );
         // `backspace` closes a directory that is open…
-        workbench.sidebar_index = 0; // `docs`, open in the fixture
+        workbench.files_index = 0; // `docs`, open in the fixture
         assert_eq!(
             workbench.handle(WbEvent::Key("backspace".into()), &data),
             vec![WbAction::ToggleFolder(
@@ -4681,49 +4739,132 @@ mod tests {
         );
         // …and on a row inside one it walks up to the directory holding it
         // rather than folding that directory away.
-        workbench.sidebar_index = 2; // `docs/README.md`, depth 1
+        workbench.files_index = 2; // `docs/README.md`, depth 1
         assert_eq!(
-            workbench.handle(WbEvent::Key("backspace".into()), &data),
+            workbench.handle(WbEvent::Key("left".into()), &data),
             vec![WbAction::Redraw]
         );
-        assert_eq!(workbench.sidebar_index, 0, "up one level, to `docs`");
-        assert_eq!(workbench.panel, PanelId::Files, "the panel did not move");
+        assert_eq!(workbench.files_index, 0, "up one level, to `docs`");
+        // `r` re-reads the directory; `esc` closes the box.
+        assert_eq!(
+            workbench.handle(WbEvent::Key("r".into()), &data),
+            vec![WbAction::RefreshFiles]
+        );
+        assert_eq!(
+            workbench.handle(WbEvent::Key("escape".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(workbench.overlay, None);
     }
 
-    /// A third tab that swallows the strip's arrows is a dead end: the reader
-    /// who arrives in 文件 by `→` could only leave by `ctrl+1`…`ctrl+3` or the
-    /// pointer, while the rail's own hint row promises `←→ 页签`. Every row
-    /// (a file, a closed directory, an open one) answers them with the tab.
+    /// The files panel is not a tab: the strip names two of them, no strip cell
+    /// opens the tree, and the doors are its own (the shortcut, the header's
+    /// button, `/files`).
     #[test]
-    fn the_rail_arrows_switch_tabs_from_the_file_panel_too() {
+    fn the_files_panel_is_its_own_surface_not_a_tab() {
+        let data = demo::chat();
+        let (mut workbench, rows) = frame(&data, 120, 38);
+        let text = plain(&rows);
+        // 文件 is on screen in the header's button, never in the tab strip.
+        assert!(text.contains("最近") && text.contains("工作区"), "{text}");
+        assert!(text.contains("文件"), "the header names the door: {text}");
+        let ids: Vec<&str> = workbench
+            .hits()
+            .regions()
+            .iter()
+            .map(|(_, id)| id.as_str())
+            .collect();
+        assert!(!ids.contains(&"sidebar.tab.files"), "{ids:?}");
+        assert!(ids.contains(&"header.files"), "{ids:?}");
+
+        // The region is the cells the button is *painted* on, not a rectangle
+        // beside it: the cells it names carry `[ctrl+3] 文件`.
+        let (rect, _) = workbench
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "header.files")
+            .cloned()
+            .expect("the header's button");
+        let painted = crate::workbench::ansi::slice_cols(
+            &rows[rect.y as usize],
+            rect.x as usize,
+            rect.right() as usize,
+        );
+        assert_eq!(
+            crate::utils::strip_ansi_codes(&painted).trim_end(),
+            format!(
+                "[{}] {}",
+                workbench.keys.key(preferences::Action::Files),
+                t(Language::Zh, Key::FilesTitle)
+            )
+        );
+
+        // The header's button is the same verb as the key.
+        assert_eq!(
+            click_region(&mut workbench, &data, 120, 38, "header.files"),
+            vec![WbAction::OpenFiles]
+        );
+        // Opened, it paints the tree and takes the keys; `esc` gives them back.
+        workbench.overlay = Some(Overlay::Files);
+        let text = plain(&workbench.render(&data, 120, 38));
+        assert!(text.contains("README.md"), "{text}");
+        assert!(text.contains("↑↓ 选择"), "the box names its keys: {text}");
+        workbench.handle(WbEvent::Key("escape".into()), &data);
+        assert_eq!(workbench.overlay, None);
+    }
+
+    /// The files panel is a box on the frame, not a band beside it: every row is
+    /// the frame's width, the tree is painted inside the box's border, and each
+    /// painted row is a hit region so a pointer can open what it aims at.
+    #[test]
+    fn the_files_panel_paints_a_box_around_the_tree() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
-        workbench.handle(WbEvent::Key("ctrl+3".into()), &data);
-        assert_eq!(workbench.panel, PanelId::Files);
-        // 0 = open `docs`, 2 = a file, 3 = a closed directory, 6 = a picture.
-        for index in [0, 2, 3, 6] {
-            workbench.sidebar_index = index;
-            assert_eq!(
-                workbench.handle(WbEvent::Key("right".into()), &data),
-                vec![WbAction::SwitchPanel(PanelId::Recent)],
-                "`→` on row {index} must be the strip's arrow"
-            );
-            assert_eq!(workbench.panel, PanelId::Recent);
-            assert_eq!(
-                workbench.handle(WbEvent::Key("left".into()), &data),
-                vec![WbAction::SwitchPanel(PanelId::Files)],
-                "`←` must come back to the tree"
-            );
-            assert_eq!(workbench.panel, PanelId::Files);
+        workbench.overlay = Some(Overlay::Files);
+        let rows = workbench.render(&data, 120, 38);
+        for row in &rows {
+            assert_eq!(crate::workbench::ansi::width(row), 120, "{row:?}");
         }
-        // The tree keeps the keys that are its own.
-        workbench.sidebar_index = 0;
-        assert!(matches!(
-            workbench
-                .handle(WbEvent::Key("backspace".into()), &data)
-                .as_slice(),
-            [WbAction::ToggleFolder(_)]
-        ));
+        let text = plain(&rows);
+        if std::env::var_os("TUI_SHOW_FRAME").is_some() {
+            println!("{text}");
+        }
+        // The box's title names the conversation's workspace, and the tree's
+        // rows sit inside its border rather than on the page behind it.
+        let title = text
+            .lines()
+            .find(|line| line.contains("╭─"))
+            .unwrap_or_default();
+        assert!(title.contains("文件"), "{text}");
+        assert!(title.contains(&data.tree.root), "{title}");
+        let row = text
+            .lines()
+            .find(|line| line.contains("README.md"))
+            .expect("the tree's row");
+        assert!(row.contains('│'), "a tree row is inside the box: {row}");
+
+        // A click on a tree row is the same verb `enter` runs on it.
+        let row_of_file = data
+            .tree
+            .rows()
+            .iter()
+            .position(|node| !node.is_dir())
+            .expect("a file in the fixture tree");
+        let path = data.tree.rows()[row_of_file]
+            .path
+            .to_string_lossy()
+            .to_string();
+        assert_eq!(
+            click_region(
+                &mut workbench,
+                &data,
+                120,
+                38,
+                &format!("files.row.{row_of_file}"),
+            ),
+            vec![WbAction::PreviewFile(path)]
+        );
     }
 
     /// A preview keeps its own view state, and a new file starts fresh.
@@ -5354,15 +5495,12 @@ mod tests {
                 .all(|(rect, _)| rect.y as usize != footer),
             "nothing is clickable on the hint row"
         );
-        // 文件 answers one key the other two do not, so its footer names it;
-        // the panels without a tree do not claim a key they ignore.
-        workbench.handle(WbEvent::Key("ctrl+3".into()), &data);
-        assert_eq!(workbench.panel, PanelId::Files);
-        let files = plain(&workbench.render(&data, 120, 38));
-        assert!(files.contains("⌫ 收起"), "{files}");
-        workbench.handle(WbEvent::Key("ctrl+1".into()), &data);
+        // The rail promises two tabs and nothing else: 文件 is its own panel
+        // now, so no tab key walks onto it and no footer claims a tree key here.
+        // (The header names the door; the strip does not.)
         let recent = plain(&workbench.render(&data, 120, 38));
         assert!(!recent.contains("⌫"), "{recent}");
+        assert!(!recent.contains("› 文件"), "{recent}");
     }
 
     #[test]

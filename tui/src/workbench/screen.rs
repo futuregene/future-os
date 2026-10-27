@@ -44,11 +44,15 @@ pub(crate) fn compose(
     };
     let frame: Layout = layout::layout_with_position(w, h, sidebar_w, workbench.sidebar_position);
 
-    paint(
-        &mut rows,
-        frame.header,
-        header(&palette, data, &frame, columns),
-    );
+    let lang = workbench.lang;
+    let (header_lines, files_button) =
+        header(&palette, data, &frame, columns, &workbench.keys, lang);
+    paint(&mut rows, frame.header, header_lines);
+    if let Some((x, w)) = files_button {
+        workbench
+            .hit_map()
+            .push(Rect::new(x, frame.header.y, w, 1), "header.files");
+    }
 
     workbench.composer_width = widgets::input_content_width(frame.input.w as usize).max(1);
     let composer_extra = if data.on_launchpad() || frame.compact {
@@ -265,6 +269,11 @@ pub(crate) fn compose(
             paint_overlay(&mut rows, &palette, lines, columns);
             workbench.set_cursor(None);
         }
+        Some(Overlay::Files) => {
+            let lines = files_box(workbench, data, &palette, w, h);
+            paint_overlay(&mut rows, &palette, lines, columns);
+            workbench.set_cursor(None);
+        }
         Some(Overlay::Picker(kind)) => {
             let lines = picker_box(workbench, data, &palette, w, h, kind);
             paint_overlay(&mut rows, &palette, lines, columns);
@@ -363,7 +372,14 @@ fn paint_overlay(rows: &mut [String], palette: &Palette, lines: Vec<String>, col
 
 // ─── header ────────────────────────────────────────────────────────────────
 
-fn header(palette: &Palette, data: &WorkbenchData, frame: &Layout, columns: usize) -> Vec<String> {
+fn header(
+    palette: &Palette,
+    data: &WorkbenchData,
+    frame: &Layout,
+    columns: usize,
+    keys: &preferences::Keybindings,
+    lang: Language,
+) -> (Vec<String>, Option<(u16, u16)>) {
     let compact = frame.compact;
     // The right corner is a *composition*, never a cut string: each candidate is
     // whole (dot, app, version), and the widest one that fits is drawn. Cutting
@@ -374,6 +390,32 @@ fn header(palette: &Palette, data: &WorkbenchData, frame: &Layout, columns: usiz
     let right_avail = (columns / 2).min((columns.saturating_sub(40)).max(columns / 3));
     let right = header_right(palette, data, right_avail);
     let right_width = width(&right);
+    // The files panel's door, beside the title. It is drawn only when a title
+    // still fits next to it: the header's job is naming the conversation, and a
+    // strip of controls that pushed the name off the edge would trade the point
+    // of the row for its tools.
+    let button = header_button(palette, keys, lang);
+    let room_for_left = if compact { 12 } else { 24 };
+    // Two cells either side of the door: one gap is what keeps it from reading
+    // as the tail of a truncated title, the other from reading as the corner's.
+    let reserve = right_width
+        + usize::from(right_width > 0)
+        + width(&button)
+        + usize::from(!button.is_empty()) * 4;
+    let button = if columns >= reserve + room_for_left {
+        button
+    } else {
+        String::new()
+    };
+    let button_width = width(&button);
+    // Spacing: the door is a control of its own, not the last word of the
+    // title. With no door, the title still needs its cell before the corner.
+    let (before, after) = if button_width > 0 {
+        (2, 2)
+    } else {
+        (0, usize::from(right_width > 0))
+    };
+    let left_width = columns.saturating_sub(right_width + before + button_width + after);
 
     let mut lines: Vec<String> = Vec::new();
     if compact {
@@ -387,13 +429,22 @@ fn header(palette: &Palette, data: &WorkbenchData, frame: &Layout, columns: usiz
             palette.strong(palette.accent, "FUTURE OS"),
             palette.dim(&format!("· {title}"))
         );
-        let left = fit(
-            &left,
-            columns.saturating_sub(right_width + usize::from(right_width > 0)),
+        let left = fit(&left, left_width);
+        let left_width = width(&left);
+        let pad = columns.saturating_sub(left_width + before + button_width + after + right_width);
+        lines.push(fit(
+            &format!(
+                "{left}{}{}{button}{}{right}",
+                " ".repeat(pad),
+                " ".repeat(before),
+                " ".repeat(after)
+            ),
+            columns,
+        ));
+        return (
+            lines,
+            files_button_span(left_width, pad + before, button_width),
         );
-        let pad = columns.saturating_sub(width(&left) + right_width);
-        lines.push(fit(&format!("{left}{}{right}", " ".repeat(pad)), columns));
-        return lines;
     }
 
     let title = if data.session.title.is_empty() {
@@ -411,15 +462,54 @@ fn header(palette: &Palette, data: &WorkbenchData, frame: &Layout, columns: usiz
         palette.strong(palette.accent, "FUTURE OS"),
         palette.dim(&format!("· {title} · {workspace}"))
     );
-    let left = fit(
-        &left,
-        columns.saturating_sub(right_width + usize::from(right_width > 0)),
-    );
-    let pad = columns.saturating_sub(width(&left) + right_width);
-    vec![
-        fit(&format!("{left}{}{right}", " ".repeat(pad)), columns),
-        widgets::rule(palette, columns),
-    ]
+    let left = fit(&left, left_width);
+    let left_width = width(&left);
+    let pad = columns.saturating_sub(left_width + before + button_width + after + right_width);
+    let span = files_button_span(left_width, pad + before, button_width);
+    (
+        vec![
+            fit(
+                &format!(
+                    "{left}{}{}{button}{}{right}",
+                    " ".repeat(pad),
+                    " ".repeat(before),
+                    " ".repeat(after)
+                ),
+                columns,
+            ),
+            widgets::rule(palette, columns),
+        ],
+        span,
+    )
+}
+
+/// Where the header's files button landed, for the hit map: `None` when the row
+/// had no room for it (or the terminal is narrower than the button itself).
+///
+/// `left` is where the title ended and `pad` how much slack sits between it and
+/// the door, so the region is the cells the button itself is painted on and not
+/// the gap in front of it.
+fn files_button_span(left: usize, pad: usize, button: usize) -> Option<(u16, u16)> {
+    if button == 0 {
+        return None;
+    }
+    Some(((left + pad) as u16, button as u16))
+}
+
+/// The header's button: `[ctrl+3] 文件`, the same `[key] label` shape the
+/// approval box uses for its answers.
+///
+/// A pointer target on a header row has to look like one, and the chord beside
+/// the name is how a reader who never opened the help discovers the key.
+fn header_button(palette: &Palette, keys: &preferences::Keybindings, lang: Language) -> String {
+    format!(
+        "{} {}",
+        palette.text(
+            palette.iris,
+            &format!("[{}]", keys.key(preferences::Action::Files))
+        ),
+        palette.strong(palette.iris, t(lang, Key::FilesTitle))
+    )
 }
 
 /// The header's right corner: the widest whole composition that fits `avail`.
@@ -986,7 +1076,7 @@ fn sidebar_rows(
     if area.h == 0 {
         return lines;
     }
-    let tabs: Vec<(String, bool)> = PanelId::ALL
+    let tabs: Vec<(String, bool)> = PanelId::TABS
         .iter()
         .map(|panel| {
             (
@@ -1025,7 +1115,7 @@ fn sidebar_rows(
     }
     // Each tab registers its own click region; tab labels are ` label ` wide.
     let mut x: u16 = if workbench.sidebar_focus { 1 } else { 0 };
-    for panel in PanelId::ALL {
+    for panel in PanelId::TABS {
         let tab_width = width(panel.label(workbench.lang)) as u16 + 2;
         workbench.hit_map().push(
             Rect::new(area.x + x, area.y, tab_width.min(area.w), 1),
@@ -1060,19 +1150,11 @@ fn sidebar_rows(
         lang,
         frame,
         &folded,
+        "sidebar.row.",
     );
     lines.extend(body);
     if footer == 1 {
-        // The 文件 panel answers one key the other two do not (`backspace`
-        // closes a directory or walks up to the one holding the row), so its
-        // hint names it: a key that only the hint row can teach is a key that
-        // does not exist otherwise.
-        let hint_key = if panel == PanelId::Files {
-            Key::RailHintFiles
-        } else {
-            Key::RailHint
-        };
-        let hint = fit(t(lang, hint_key), columns);
+        let hint = fit(t(lang, Key::RailHint), columns);
         lines.push(fit(&palette.dim(&hint), columns));
     }
     lines.truncate(area.h as usize);
@@ -1752,6 +1834,94 @@ fn git_empty_key(section: state::GitSection) -> Key {
         state::GitSection::Status => Key::GitCleanStatus,
         state::GitSection::Stash => Key::GitEmptyStash,
     }
+}
+
+/// Width the files panel asks for: a column of paths and their sizes needs
+/// more than the rail's 36 cells and less than a 132-column diff.
+const FILES_WIDTH: u16 = 100;
+
+/// The files panel: this conversation's workspace as a tree.
+///
+/// The box's frame is painted here and its rows by the same renderer the rail
+/// used to paint them (`panels::render_with`), at the box's *inner* width — so
+/// a row is the row the panel's own model says it is, and the hit regions land
+/// on exactly the cells they were drawn at.
+fn files_box(
+    workbench: &mut Workbench,
+    data: &WorkbenchData,
+    palette: &Palette,
+    w: u16,
+    h: u16,
+) -> Vec<String> {
+    let lang = workbench.lang;
+    let columns = box_width(w, FILES_WIDTH) as usize;
+    let inner = columns.saturating_sub(2);
+    let left = (w as usize).saturating_sub(columns) / 2;
+    // Claim the box before its rows, so a click on the title rule or a blank row
+    // belongs to the panel and not to the page behind it.
+    workbench.hit_map().push(
+        Rect::new(left as u16, 0, columns as u16, h),
+        "overlay.surface",
+    );
+    let title = match data.tree.root.trim() {
+        "" => t(lang, Key::FilesTitle).to_string(),
+        root => format!("{} · {root}", t(lang, Key::FilesTitle)),
+    };
+    let mut rows = vec![widgets::box_top(palette, columns, &title)];
+    // The box is the frame's full height: a tree is read by scrolling it.
+    let available = (h as usize).saturating_sub(3);
+    if available == 0 {
+        rows.push(widgets::box_bottom(palette, columns));
+        return indent(rows, left, w as usize);
+    }
+    rows.push(widgets::box_row(palette, t(lang, Key::FilesHint), columns));
+    let list = Rect::new(
+        (left + 1) as u16,
+        rows.len() as u16,
+        inner as u16,
+        available as u16,
+    );
+    workbench.set_list_page(available);
+    let painted: Vec<String> = if data.tree.root.trim().is_empty() {
+        // No workspace at all (the launchpad) is not an empty directory: the
+        // tree has nothing to describe, so the panel says which of the two it is.
+        let mut lines = vec![palette.dim(&fit(
+            &format!("  {}", t(lang, Key::FilesNoWorkspace)),
+            inner,
+        ))];
+        while lines.len() < available {
+            lines.push(fit("", inner));
+        }
+        lines
+    } else {
+        let view = panels::PanelView {
+            scroll: workbench.panel_scroll[PanelId::Files.index()],
+            // The cursor is clamped to the tree on screen: switching
+            // conversations can hand the panel a shorter tree, and a stale index
+            // would be a window computed for a row that no longer exists.
+            selected: workbench
+                .files_index
+                .min(data.tree.rows().len().saturating_sub(1)),
+        };
+        let frame = workbench.spinner_frame();
+        panels::render_with(
+            PanelId::Files,
+            data,
+            palette,
+            list,
+            view,
+            workbench.hit_map(),
+            lang,
+            frame,
+            &panels::Folded::new(),
+            "files.row.",
+        )
+    };
+    for line in painted {
+        rows.push(widgets::box_row(palette, &line, columns));
+    }
+    rows.push(widgets::box_bottom(palette, columns));
+    indent(rows, left, w as usize)
 }
 
 fn help_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec<String> {
@@ -2591,6 +2761,7 @@ fn panel_box(
         lang,
         frame,
         &folded,
+        "sidebar.row.",
     );
     let geometry = box_geometry(w, h, PANEL_WIDTH, body.len());
     claim_box(workbench, &geometry);

@@ -732,6 +732,15 @@ async fn quit(
                     open_git_panel(live, frame, workbench, section, filter, 0, true).await;
                     continue;
                 }
+                // The files panel: the conversation's own workspace, read afresh
+                // — a run may have written into it since the tree was last
+                // scanned, and a panel that opened on yesterday's listing would
+                // be the one thing on screen that is not live.
+                "/files" => {
+                    live.refresh_tree();
+                    workbench.overlay = Some(super::Overlay::Files);
+                    continue;
+                }
                 "/worktree" | "/worktree " => {
                     let cwd = live.data(frame).session.cwd;
                     let result = tokio::task::spawn_blocking(move || {
@@ -874,6 +883,11 @@ async fn quit(
             {
                 live.notice = notice;
             }
+            continue;
+        }
+        if matches!(action, WbAction::OpenFiles) {
+            live.refresh_tree();
+            workbench.overlay = Some(super::Overlay::Files);
             continue;
         }
         if matches!(action, WbAction::SelectDiff(_)) {

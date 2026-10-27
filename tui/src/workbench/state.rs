@@ -383,7 +383,14 @@ impl Activity {
     }
 }
 
-/// The sidebar's three panels, in tab order.
+/// The panels a surface can paint.
+///
+/// Two of them are the rail's tabs ([`Self::TABS`]), and both list
+/// *conversations*: everything the rail shows is true for the whole agent.
+/// [`Self::Files`] is not a tab any more — a workspace tree belongs to the
+/// conversation on screen, so it is its own session-scoped overlay
+/// (`Overlay::Files`). It keeps a `PanelId` because the tree's painter is keyed
+/// by one and the overlay paints the same rows at another area.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PanelId {
     /// Every conversation by when it was refreshed — the default landing panel.
@@ -396,6 +403,16 @@ pub enum PanelId {
 }
 
 impl PanelId {
+    /// The panels the rail's tab strip offers, in tab order.
+    ///
+    /// Every key that walks tabs (`←`/`→` on the rail, `shift+←/→` anywhere,
+    /// [`Action::PanelPrev`](super::preferences::Action::PanelPrev)) walks this
+    /// list, so 文件 cannot be reached by stepping past 工作区 — the panel has its
+    /// own door (`/files`, its own shortcut, the header's button).
+    pub const TABS: [PanelId; 2] = [PanelId::Recent, PanelId::Workspaces];
+
+    /// Every panel id, tabs first. The scroll slots are indexed by this, so the
+    /// file tree's offset has a home even though no tab shows it.
     pub const ALL: [PanelId; 3] = [PanelId::Recent, PanelId::Workspaces, PanelId::Files];
 
     /// The tab label.
@@ -405,7 +422,7 @@ impl PanelId {
             match self {
                 Self::Recent => Key::TabRecent,
                 Self::Workspaces => Key::TabWorkspaces,
-                Self::Files => Key::TabFiles,
+                Self::Files => Key::FilesTitle,
             },
         )
     }
@@ -441,13 +458,23 @@ impl PanelId {
             .unwrap_or(0)
     }
 
+    /// The neighbouring tab, wrapping. Stepping from [`Self::Files`] (which no
+    /// tab strip holds) lands on the first tab rather than nowhere.
     pub fn next(self) -> Self {
-        Self::ALL[(self.index() + 1) % Self::ALL.len()]
+        Self::TABS[(self.tab_index() + 1) % Self::TABS.len()]
     }
 
     pub fn previous(self) -> Self {
-        let count = Self::ALL.len();
-        Self::ALL[(self.index() + count - 1) % count]
+        let count = Self::TABS.len();
+        Self::TABS[(self.tab_index() + count - 1) % count]
+    }
+
+    /// This panel's place in [`Self::TABS`]; `0` for a panel that is not one.
+    fn tab_index(self) -> usize {
+        Self::TABS
+            .iter()
+            .position(|panel| *panel == self)
+            .unwrap_or(0)
     }
 }
 
@@ -866,10 +893,13 @@ mod tests {
     #[test]
     fn panels_cycle_in_the_contracts_order() {
         assert_eq!(PanelId::ALL.len(), 3);
+        // Only the two conversation lists are tabs: 文件 is its own overlay, so
+        // no tab key steps onto it.
+        assert_eq!(PanelId::TABS, [PanelId::Recent, PanelId::Workspaces]);
         assert_eq!(PanelId::Recent.next(), PanelId::Workspaces);
-        assert_eq!(PanelId::Workspaces.next(), PanelId::Files);
-        assert_eq!(PanelId::Files.next(), PanelId::Recent);
-        assert_eq!(PanelId::Recent.previous(), PanelId::Files);
+        assert_eq!(PanelId::Workspaces.next(), PanelId::Recent);
+        assert_eq!(PanelId::Recent.previous(), PanelId::Workspaces);
+        assert_eq!(PanelId::Files.next(), PanelId::Workspaces);
         for panel in PanelId::ALL {
             assert_eq!(PanelId::parse(panel.id()), Some(panel));
             assert_eq!(PanelId::parse(&panel.id().to_uppercase()), Some(panel));

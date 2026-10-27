@@ -26,11 +26,13 @@ implementation may extend it, but may not change its meaning.
    sessions.
 4. Sidebar with 2 real panels: recent conversations (name, workspace, age) and
    the same conversations filed by workspace (pinned / workspaces / chats).
-   A third, **文件**, browses the session workspace: one level at a time, a
-   directory read when it opens, `↑`/`↓` to walk, `enter` to open a directory or
-   preview a file, `backspace` to close a directory or walk up to the one holding
-   the row. `←`/`→` stay the tab strip's on all three tabs. Its rows are the same
-   `HitMap` rows every other panel registers, so a click opens what it landed on.
+   **文件** is not a third tab: it is the session workspace as its own overlay
+   (`ctrl+3`, the header's `[ctrl+3] 文件` button, or `/files`) — one level at a
+   time, a directory read when it opens, `↑`/`↓` to walk, `enter` to open a
+   directory or preview a file, `backspace` to close a directory or walk up to
+   the one holding the row. It is scoped to the conversation on screen, the way
+   `/git` is, and re-reads when the session moves. Its rows are the same
+   `HitMap` rows the rail registers, so a click opens what it landed on.
 5. Real metrics in the status bar: model · effort · cwd · git branch · context
    gauge · tokens · cost / cache.
 6. `/` command palette (with descriptions, Tab completion), `?` help overlay,
@@ -263,22 +265,23 @@ the row under the pointer rather than one beside it.
 
 Keep the existing global bindings; add/override:
 `ctrl+m` model chooser; `ctrl+t` thinking-effort chooser; `ctrl+s` approval-mode
-chooser; `ctrl+l` workspace chooser; `ctrl+1` / `ctrl+2` / `ctrl+3` the rail's
-three tabs; `ctrl+v` read the clipboard (an image becomes a draft attachment,
+chooser; `ctrl+l` workspace chooser; `ctrl+1` / `ctrl+2` the rail's two tabs;
+`ctrl+3` the files panel (the session's own workspace, not a tab);
+`ctrl+v` read the clipboard (an image becomes a draft attachment,
 text is pasted); `alt+v` preview the newest attached image;
 `ctrl+b` sidebar open/focus/close (the rail's own `›` edge button does the same
 with one click, and leaves a `‹` in the same column when the rail is closed);
 `tab` focus within a panel; `shift+tab`
 reverse; `ctrl+q` collapse todos; `alt+z` enlarge the sidebar; `/` command
 palette; `?` help; `esc` close one layer at a time. `shift+←` / `shift+→` walk
-the rail's three tabs from anywhere — they show a hidden rail and take the keys —
+the rail's two tabs from anywhere — they show a hidden rail and take the keys —
 and `shift+↑` / `shift+↓` switch to the previous / next conversation. A focused
 rail spends its last row on exactly those two chords
 (`shift+←→ 页签 · shift+↑↓ 切换会话`): `↑↓` alone only moves the list cursor and
 `⏎` only opens the row it stands on, so the row that says how to *change* the
-conversation is the one thing the rail cannot leave to guesswork. 文件 spends it
-on its own set (`↑↓ · ⏎ 打开 · ⌫ 收起 · ←→ 页签`) — the one key the other two do
-not answer has no other teacher.
+conversation is the one thing the rail cannot leave to guesswork. The files
+panel is its own box and spends a row on its own set
+(`↑↓ 选择 · ⏎ 打开 · ⌫ 上一层 · r 刷新 · esc 关闭`).
 
 No **default** is a function key: `F1`–`F12` need an `Fn` modifier on a laptop
 and are absent on a compact keyboard, so those actions default to `alt` + a

@@ -67,16 +67,21 @@ while its arguments stream. Switching conversations — a click in the rail,
 whose run is still in flight (started here, by the desktop, by a queued run)
 takes the spinner back rather than showing `idle`.
 
-The rail has **three tabs**: 最近 (conversations by refresh time), 工作区 (filed
-by directory) and **文件** — a browser of the session workspace. 文件 lists one level
-at a time and reads a directory when it is opened, never before: a repository
-with a `node_modules` opens instantly, and each listing is capped at 400 entries
-with a line saying so. `↑`/`↓` walk the rows, `enter` opens a directory and
-previews a file, `backspace` closes a directory (or jumps to the directory that
-holds the row), and a click does what `enter` does on the row it landed on.
-`←`/`→` switch tabs on this tab too — a third tab that kept the arrows for
-itself was a dead end, since the other two answer them — and the rail's last row
-names the keys the panel in force answers.
+The rail has **two tabs**: 最近 (conversations by refresh time) and 工作区 (filed by
+by directory). Everything the rail lists is true for the whole agent; the
+conversation's own workspace is a **separate panel** (文件), because it is not a
+fact about the agent but about the conversation on screen.
+
+**文件** (`ctrl+3`, the `[ctrl+3] 文件` button in the header, or `/files`) opens the
+session workspace as a box over the frame: 文件 lists one level at a time and
+reads a directory when it is opened, never before: a repository with a
+`node_modules` opens instantly, and each listing is capped at 400 entries
+with a line saying so. `↑`/`↓` walk the rows, `enter` (or `→`) opens a directory
+and previews a file, `backspace` (or `←`) closes a directory (or jumps to the
+directory that holds the row), `r` re-reads the directory and `esc`/`q` close
+the box. A click does what `enter` does on the row it landed on. Switching
+conversations re-reads the tree: the panel is scoped to the session, the same
+way `/git` is.
 
 ## Pictures
 
@@ -130,7 +135,8 @@ permission level, because no other client offers one.
 No default shortcut is a function key: `F1`–`F12` need an `Fn` modifier on a
 laptop keyboard and are absent on a compact one, so the defaults are
 `ctrl+m` model, `ctrl+t` effort, `ctrl+s` approval mode, `ctrl+l` workspaces,
-`ctrl+1`/`ctrl+2` the rail's tabs, `alt+h` help, `alt+r` refresh, `alt+c` copy,
+`ctrl+1`/`ctrl+2` the rail's tabs, `ctrl+3` the files panel, `alt+h` help,
+`alt+r` refresh, `alt+c` copy,
 `alt+m` mouse, `alt+a` reduced motion, `alt+g` the git browser (`/git`). Every
 one of them is rebindable in `/preferences`, and the help overlay lists them
 grouped by what they do rather than in one flat list.
@@ -185,7 +191,7 @@ incremental shortcut overrides live beside it in
 
 With no stored `sidebarVisible` — a first start, or a file written before the
 key existed — the rail starts **hidden**: the conversation gets the whole
-width, and `ctrl+b` (or `ctrl+1`/`ctrl+2`/`ctrl+3`, which show the rail to reach
+width, and `ctrl+b` (or `ctrl+1`/`ctrl+2`, which show the rail to reach
 their panel) brings it back. Once the reader has shown or hidden it, that choice
 is what the next start begins with, and `Restore defaults` lands back on the
 hidden layout.
@@ -234,9 +240,9 @@ click on the rail's tab strip are the doors to the same places.
 | Key | Action |
 |---|---|
 | `tab` / `shift+tab` | Launchpad: move between the prompt and the parameter chips (`enter` cycles the chip under the cursor; `escape` or typing goes back to the prompt). Conversation: take the keys into the rail (the cursor lands on the conversation on screen) and back |
-| `←` `→` | Move the draft cursor; in a focused rail, switch to the neighbouring tab (最近 → 工作区 → 文件) — the same three `shift+←`/`shift+→` step through from anywhere |
+| `←` `→` | Move the draft cursor; in a focused rail, switch to the neighbouring tab (最近 ↔ 工作区) — the same two `shift+←`/`shift+→` step through from anywhere |
 | `↑` `↓` | Move through draft lines / submission history; in a focused rail, move the list cursor (headings are skipped). `enter` opens the row under it; switching the conversation itself needs no `enter` — that is `shift+↑`/`shift+↓` |
-| `shift+←` / `shift+→` | The rail's three tabs (最近 / 工作区 / 文件), wherever the keys are: the rail is shown and takes the keys, and its cursor lands on the conversation on screen. Wraps |
+| `shift+←` / `shift+→` | The rail's two tabs (最近 / 工作区), wherever the keys are: the rail is shown and takes the keys, and its cursor lands on the conversation on screen. Wraps |
 | `shift+↑` / `shift+↓` | Switch to the previous / next conversation in the rail's order, wherever the keys are: the transcript follows, and so does the rail's cursor. A held key switches once per burst, not once per repeat |
 | `p` | Rails: pin / unpin the workspace the selected conversation belongs to |
 | `ctrl+d` | Delete a conversation: the confirm box names the one that would go — the row under the rail's cursor when the rail has the keys, otherwise the one on screen — and `⏎` is what deletes it (`esc` keeps it). In a focused rail `delete` is the same door. The row that takes its place opens, and deleting the last one leaves the launchpad |
@@ -247,7 +253,8 @@ click on the rail's tab strip are the doors to the same places.
 | `alt+q` or `/queue` | List queued prompts; `x` cancels, `r` / `enter` cancels and recalls into the draft (`ctrl+x` stops the active run, not the queue) |
 | `alt+g` or `/git` | The repository browser: 提交 / 引用 / 改动 / 暂存 tabs, a graph log, and the selected row's patch. `1`–`4` pick a tab, `tab` switches list/detail, `y` copies the row |
 | `ctrl+m` | Model picker (`/model`): every model the agent offers, grouped by provider, with the reasoning slider on its first row |
-| `ctrl+1` / `ctrl+2` / `ctrl+3` | The rail's three tabs: 最近 (conversations by refresh time), 工作区 (filed by directory), 文件 (the workspace tree). The rail takes the keys and its cursor lands on the conversation on screen (or on the first row of the tree) |
+| `ctrl+1` / `ctrl+2` | The rail's two tabs: 最近 (conversations by refresh time) and 工作区 (filed by directory). The rail takes the keys and its cursor lands on the conversation on screen |
+| `ctrl+3` or `/files` | The **files panel**: this conversation's workspace as a tree, in a box over the frame — the same session scope as `/git`. `↑`/`↓` walk it, `⏎`/`→` open, `⌫`/`←` go up a level, `r` re-reads the directory, `esc` closes. The header's `[ctrl+3] 文件` button is the pointer's door to it |
 | `ctrl+v` | Read the clipboard: an image becomes a draft attachment, text is pasted. `/paste` does the same for terminals that bind the key themselves |
 | `alt+v` | Preview the newest image attached to the draft |
 | `+` / `-` / `0`, arrows, wheel | In the preview box: zoom a picture (up to 6×), pan it, reset; scroll a document |
@@ -351,7 +358,7 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | `tui/src/workbench/layout.rs` | Band rectangles, the two breakpoints, the hit map |
 | `tui/src/workbench/ansi.rs` | Width-safe text: `fit`, `pad`, `clip`, column slicing |
 | `tui/src/workbench/widgets.rs` | Rules, boxes, tabs, bars, badges, spinner, the input box |
-| `tui/src/workbench/panels.rs` | The rail's three panels (pure renderers over one row model) |
+| `tui/src/workbench/panels.rs` | The rail's panels and the files box's rows (pure renderers over one row model) |
 | `tui/src/workbench/picker.rs` | The `/model`, `/theme` and `/sessions` list picker |
 | `tui/src/workbench/launchpad.rs` | The first screen |
 | `tui/src/workbench/files.rs` | The 文件 panel's tree and what a path can be previewed as |

@@ -260,7 +260,8 @@ pub enum Key {
     TabSkills,
     TabRecent,
     TabWorkspaces,
-    TabFiles,
+    /// The files panel's title, its header button and the help row's name.
+    FilesTitle,
     // ── the workspace tab's sections ──────────────────────────────────
     SectionPinned,
     SectionWorkspaces,
@@ -325,7 +326,9 @@ pub enum Key {
     ModeAutoDesc,
     ModeOffDesc,
     RailHint,
-    RailHintFiles,
+    // ── the files panel (its own overlay, not a rail tab) ──────────
+    FilesHint,
+    FilesNoWorkspace,
     LangSystem,
     // ── the conversation surface ──────────────────────────────────────
     InputHintChat,
@@ -416,6 +419,7 @@ pub enum Key {
     WorktreeCreating,
     // ── the `/git` panel ───────────────────────────────────────────────
     CmdGit,
+    CmdFiles,
     GitHint,
     GitTabCommits,
     GitTabRefs,
@@ -515,7 +519,7 @@ pub enum Key {
     HelpKeyWorkspaces,
     HelpKeyPanelRecent,
     HelpKeyPanelWorkspaces,
-    HelpKeyPanelFiles,
+    HelpKeyFiles,
     HelpKeyPrevPanel,
     HelpKeyNextPanel,
     // ── the preview box and clipboard paste ──────────────────────────
@@ -579,7 +583,7 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         SectionEarlier => ("更早", "Earlier"),
         SummaryUnitsSessions => ("会话", "chats"),
         PanelEmptyWorkspaces => ("没有工作区", "no workspaces"),
-        TabFiles => ("文件", "Files"),
+        FilesTitle => ("文件", "Files"),
         PanelEmptyFiles => ("目录是空的", "empty directory"),
         PanelTreeTruncated => ("只列出前 {} 项", "listing stopped at {} entries"),
 
@@ -694,13 +698,11 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "shift+←→ 页签 · shift+↑↓ 切换会话",
             "shift+←→ tabs · shift+↑↓ switches session",
         ),
-        // Shorter than `RailHint` on purpose: the rail is not wide enough for
-        // four hints spelled out (`… · ⌫ closes · …` is cut at ~36 cells), and a
-        // hint the reader cannot finish reading is not a hint.
-        RailHintFiles => (
-            "↑↓ · ⏎ 打开 · ⌫ 收起 · ←→ 页签",
-            "↑↓ · ⏎ open · ⌫ close · ←→ tabs",
+        FilesHint => (
+            "↑↓ 选择 · ⏎ 打开 · ⌫ 上一层 · r 刷新 · esc 关闭",
+            "↑↓ select · enter opens · ⌫ up a level · r refreshes · esc closes",
         ),
+        FilesNoWorkspace => ("这个会话没有工作区", "This conversation has no workspace"),
         ShortcutRefresh => ("刷新会话和用量", "Refresh sessions and usage"),
         ShortcutStop => ("停止当前生成", "Stop the current run"),
 
@@ -804,6 +806,10 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         CmdGit => (
             "浏览 git 仓库：提交、引用、改动、stash",
             "Browse the git repository: commits, refs, changes, stashes",
+        ),
+        CmdFiles => (
+            "打开本会话的工作区文件树",
+            "Open this conversation's workspace files",
         ),
         GitHint => (
             "1-4 视图 · ↑↓ 选择 · tab 列表/详情 · ⏎ 打开 · y 复制 · r 刷新 · esc 关闭",
@@ -927,9 +933,12 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ),
         HelpKeyPanelRecent => ("切到「最近」面板", "Show the Recent panel"),
         HelpKeyPanelWorkspaces => ("切到「工作区」面板", "Show the Workspaces panel"),
-        HelpKeyPanelFiles => ("切到「文件」面板", "Show the Files panel"),
-        HelpKeyPrevPanel => ("上一个页签：最近 / 工作区 / 文件", "Previous tab: Recent / Workspaces / Files"),
-        HelpKeyNextPanel => ("下一个页签：最近 / 工作区 / 文件", "Next tab: Recent / Workspaces / Files"),
+        HelpKeyFiles => (
+            "打开本会话的文件面板",
+            "Show this conversation's files",
+        ),
+        HelpKeyPrevPanel => ("上一个页签：最近 / 工作区", "Previous tab: Recent / Workspaces"),
+        HelpKeyNextPanel => ("下一个页签：最近 / 工作区", "Next tab: Recent / Workspaces"),
         HelpKeyPasteImage => (
             "粘贴：图片直接成为草稿附件，文字粘进草稿",
             "Paste: an image becomes a draft attachment, text is pasted",
@@ -1217,7 +1226,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 287] = {
+    const ALL_KEYS: [Key; 289] = {
         use Key::*;
         [
             TabTodo,
@@ -1227,7 +1236,7 @@ mod tests {
             TabSkills,
             TabRecent,
             TabWorkspaces,
-            TabFiles,
+            FilesTitle,
             SectionPinned,
             SectionWorkspaces,
             SectionChats,
@@ -1288,7 +1297,8 @@ mod tests {
             ModeAutoDesc,
             ModeOffDesc,
             RailHint,
-            RailHintFiles,
+            FilesHint,
+            FilesNoWorkspace,
             LangSystem,
             InputHintChat,
             ChatOlder,
@@ -1373,6 +1383,7 @@ mod tests {
             WorktreeEmpty,
             WorktreeCreating,
             CmdGit,
+            CmdFiles,
             GitHint,
             GitTabCommits,
             GitTabRefs,
@@ -1464,7 +1475,7 @@ mod tests {
             HelpKeyWorkspaces,
             HelpKeyPanelRecent,
             HelpKeyPanelWorkspaces,
-            HelpKeyPanelFiles,
+            HelpKeyFiles,
             HelpKeyPrevPanel,
             HelpKeyNextPanel,
             HelpKeyPasteImage,

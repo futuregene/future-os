@@ -88,7 +88,9 @@ pub enum Action {
     Language,
     PanelRecent,
     PanelWorkspaces,
-    PanelFiles,
+    /// The workspace tree of the conversation on screen — its own overlay, not
+    /// a rail tab (see `PanelId::TABS`).
+    Files,
     /// The rail's neighbouring tab: `shift+←` / `shift+→`.
     PanelPrev,
     PanelNext,
@@ -156,7 +158,7 @@ pub const ACTIONS: [Action; 30] = [
     Action::Sidebar,
     Action::PanelRecent,
     Action::PanelWorkspaces,
-    Action::PanelFiles,
+    Action::Files,
     Action::PanelPrev,
     Action::PanelNext,
     Action::Git,
@@ -201,7 +203,7 @@ impl Action {
             Self::Model => "model",
             Self::PanelRecent => "panelRecent",
             Self::PanelWorkspaces => "panelWorkspaces",
-            Self::PanelFiles => "panelFiles",
+            Self::Files => "files",
             Self::PanelPrev => "panelPrevious",
             Self::PanelNext => "panelNext",
             Self::Git => "git",
@@ -210,6 +212,10 @@ impl Action {
         }
     }
     fn from_id(id: &str) -> Option<Self> {
+        // `panelFiles` is the id 文件 wore while it was a rail tab: a
+        // `keybindings.json` written by that build keeps working instead of
+        // silently losing its chord.
+        let id = if id == "panelFiles" { "files" } else { id };
         ACTIONS.into_iter().find(|action| action.id() == id)
     }
     /// The heading this action is listed under in the help overlay.
@@ -229,7 +235,7 @@ impl Action {
             Self::Sidebar
             | Self::PanelRecent
             | Self::PanelWorkspaces
-            | Self::PanelFiles
+            | Self::Files
             | Self::PanelPrev
             | Self::PanelNext
             | Self::Git => Group::Panels,
@@ -271,7 +277,7 @@ impl Action {
             Self::Model => Key::CmdModel,
             Self::PanelRecent => Key::HelpKeyPanelRecent,
             Self::PanelWorkspaces => Key::HelpKeyPanelWorkspaces,
-            Self::PanelFiles => Key::HelpKeyPanelFiles,
+            Self::Files => Key::FilesTitle,
             Self::PanelPrev => Key::HelpKeyPrevPanel,
             Self::PanelNext => Key::HelpKeyNextPanel,
             Self::Git => Key::CmdGit,
@@ -311,7 +317,9 @@ impl Action {
             Self::Language => "ctrl+g",
             Self::PanelRecent => "ctrl+1",
             Self::PanelWorkspaces => "ctrl+2",
-            Self::PanelFiles => "ctrl+3",
+            // The files panel, on the chord the third tab used to answer to:
+            // the panel moved out of the rail, the hand did not.
+            Self::Files => "ctrl+3",
             Self::PanelPrev => "shift+left",
             Self::PanelNext => "shift+right",
             Self::Git => "alt+g",
