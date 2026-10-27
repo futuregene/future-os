@@ -224,9 +224,8 @@ pub fn input_lines(
     columns: usize,
     view: &crate::workbench::state::InputView,
     title: &str,
-    focused: bool,
 ) -> (Vec<String>, u16, usize) {
-    input_box(palette, columns, view, title, focused, false)
+    input_box(palette, columns, view, title, false)
 }
 
 /// [`input_lines`] with the short-terminal form: `compact` keeps the box *framed*
@@ -236,12 +235,15 @@ pub fn input_lines(
 /// which read as "no input box at all" at 60×20. A top edge plus one prompt row
 /// with `│` on both sides is enough to read as a box, and the status bar right
 /// beneath closes the shape — a third row would not fit.
+///
+/// The box is *not* filled with the panel colour: the cursor is the focus
+/// signal, and a focused box painted a shade darker than the canvas around it
+/// read as a second surface for no gain (the reader asked for one background).
 pub fn input_box(
     palette: &Palette,
     columns: usize,
     view: &crate::workbench::state::InputView,
     title: &str,
-    focused: bool,
     compact: bool,
 ) -> (Vec<String>, u16, usize) {
     let top = box_top(palette, columns, title);
@@ -275,16 +277,10 @@ pub fn input_box(
             "  ".to_string()
         };
         let body = fit(line, content_width.max(1));
-        let row = format!("{prompt}{}", palette.body(&body));
-        let row = if focused {
-            palette.on(
-                palette.panel,
-                &fit(&row, columns.saturating_sub(2)),
-                columns.saturating_sub(2),
-            )
-        } else {
-            fit(&row, columns.saturating_sub(2))
-        };
+        let row = fit(
+            &format!("{prompt}{}", palette.body(&body)),
+            columns.saturating_sub(2),
+        );
         rows.push(if framed {
             format!(
                 "{}{}{}",
@@ -304,57 +300,6 @@ pub fn input_box(
         (cursor_column + prompt_width + usize::from(framed)).min(columns.saturating_sub(1)) as u16,
         shown_cursor_row + 1,
     )
-}
-
-/// The `│ ❯ draft │` row, and the cursor's cell within it.
-#[allow(dead_code)]
-fn prompt_row(
-    palette: &Palette,
-    columns: usize,
-    view: &crate::workbench::state::InputView,
-    focused: bool,
-    framed: bool,
-) -> (String, u16) {
-    let inner = if framed {
-        columns.saturating_sub(2)
-    } else {
-        columns
-    };
-    let prompt = palette.text(palette.accent, "❯ ");
-    let prompt_width = width(&prompt);
-    let text_width = inner.saturating_sub(prompt_width + 1);
-    let (body, cursor_inner) = if view.text.is_empty() {
-        (
-            palette.dim(&fit(&view.placeholder, text_width)),
-            prompt_width,
-        )
-    } else {
-        let before = &view.text[..view.cursor.min(view.text.len())];
-        let cursor = prompt_width + width(before).min(text_width);
-        (palette.body(&fit(&view.text, text_width)), cursor)
-    };
-    let line = format!("{prompt}{body}");
-    let line = if focused {
-        palette.on(palette.panel, &fit(&line, inner), inner)
-    } else {
-        fit(&line, inner)
-    };
-    let row = if framed {
-        format!(
-            "{}{}{}",
-            palette.text(palette.border, "│"),
-            line,
-            palette.text(palette.border, "│")
-        )
-    } else {
-        line
-    };
-    let cursor = if framed {
-        cursor_inner + 1
-    } else {
-        cursor_inner
-    };
-    (row, cursor.min(columns.saturating_sub(1)) as u16)
 }
 
 #[cfg(test)]
@@ -387,19 +332,9 @@ mod tests {
 
     #[test]
     fn the_input_box_keeps_its_sides_in_both_heights() {
-        use crate::workbench::state::InputView;
-        let view = InputView {
-            text: "hi".into(),
-            cursor: 2,
-            placeholder: "p".into(),
-            editor: {
-                let mut editor = crate::workbench::editor::EditorState::default();
-                editor.set("hi", 2);
-                editor
-            },
-        };
+        let view = sample_view();
         for (columns, compact) in [(60usize, false), (60, true), (9, true)] {
-            let (rows, cursor, prompt_row) = input_box(&P, columns, &view, "输入", true, compact);
+            let (rows, cursor, prompt_row) = input_box(&P, columns, &view, "输入", compact);
             assert_eq!(rows.len(), if compact { 2 } else { 3 }, "{columns}");
             assert_eq!(prompt_row, 1, "the prompt is the second row of the box");
             for row in &rows {
@@ -414,6 +349,37 @@ mod tests {
             assert!(prompt.contains("❯ hi"), "{prompt:?}");
             // The cursor is inside the frame: border, prompt glyph, text.
             assert_eq!(cursor, 1 + 2 + 2, "{columns}");
+        }
+    }
+
+    /// A composer with a draft: what both the launchpad and the chat band paint.
+    fn sample_view() -> crate::workbench::state::InputView {
+        use crate::workbench::state::InputView;
+        InputView {
+            text: "hi".into(),
+            cursor: 2,
+            placeholder: "p".into(),
+            editor: {
+                let mut editor = crate::workbench::editor::EditorState::default();
+                editor.set("hi", 2);
+                editor
+            },
+        }
+    }
+
+    #[test]
+    fn the_prompt_sits_on_the_canvas_instead_of_a_panel_fill() {
+        // The cursor marks the box as focused; a background a step off the
+        // canvas around it made the composer read as a second surface for no
+        // gain, so the box paints no background of its own at all.
+        for (columns, compact) in [(60usize, false), (60, true), (9, true), (4, true)] {
+            let (rows, _, _) = input_box(&P, columns, &sample_view(), "输入", compact);
+            for row in &rows {
+                assert!(
+                    !row.contains("\x1b[48;5;"),
+                    "{columns}x{compact} paints a background: {row:?}"
+                );
+            }
         }
     }
 

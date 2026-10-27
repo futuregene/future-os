@@ -28,7 +28,9 @@ pub struct Palette {
     pub id: &'static str,
     /// Canvas behind everything.
     pub bg: u8,
-    /// Sidebar and input-box background.
+    /// Sidebar, menu and overlay background. Not the composer's: that box sits
+    /// on the canvas like the chat around it, and its cursor is the focus
+    /// signal.
     pub panel: u8,
     /// Borders, dividers, box rules.
     pub border: u8,
