@@ -118,11 +118,6 @@ pub const ALLOW: &[Allow] = &[
     ),
     Allow::known_gap(
         "components/chat_area.rs",
-        " Thinking... (ctrl+o to expand)",
-        "the live-run placeholder shown while the thinking is folded away",
-    ),
-    Allow::known_gap(
-        "components/chat_area.rs",
         "tool call",
         "the reply summary counts tools in English, pluralised inline",
     ),
@@ -261,4 +256,4 @@ pub const FILES: &[FileExempt] = &[FileExempt {
 /// 35 → 37: the two `@path` inlining notes in `workbench/live.rs`. They are the
 /// prompt text the model reads in place of a file it was not given — never
 /// drawn — so they stay in the language the prompt is written in.
-pub const BUDGET: usize = 36;
+pub const BUDGET: usize = 35;
