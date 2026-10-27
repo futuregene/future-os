@@ -90,19 +90,21 @@ impl Row {
 ///
 /// 工作区 has three, in the desktop's order (置顶 / 工作区 / 对话会话). 最近 has two,
 /// and they are the desktop's recent view: the conversations with a run still in
-/// flight above the ones that have gone quiet.
+/// flight above the ones that have gone quiet. Inside a stretch rows are ordered
+/// newest-created first — the rail is a chronology, and a conversation keeps its
+/// place for its whole life (see `Live::data`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     /// Conversations of the workspaces the reader pinned.
     Pinned,
-    /// Every other workspace, newest activity first.
+    /// Every other workspace, most recently worked on first.
     Workspaces,
     /// Conversations that belong to no workspace at all.
     Chats,
     /// 最近's first stretch: a run that has not finished (see
     /// [`SessionRow::streaming`]).
     Active,
-    /// 最近's second stretch: everything else, by when it last spoke.
+    /// 最近's second stretch: everything else, newest-created first.
     Earlier,
 }
 
@@ -143,16 +145,15 @@ pub fn rows_with(panel: PanelId, data: &WorkbenchData, folded: &Folded) -> Vec<R
     match panel {
         PanelId::Recent => {
             // The desktop's recent view, in the rail's own shape: a run that is
-            // still in flight leads, everything else follows by when it last
-            // spoke. The split is only drawn when there is a split to draw —
-            // with nothing running the whole list *is* 更早, and a heading
-            // saying so would spend a row of a rail that shows twenty.
+            // still in flight leads, everything else follows. The split is only
+            // drawn when there is a split to draw — with nothing running the
+            // whole list *is* 更早, and a heading saying so would spend a row of
+            // a rail that shows twenty.
             //
-            // The running rows keep the list's own order (newest activity
-            // first). The desktop ranks them by when they *started* instead,
-            // because a streaming run rewrites its activity stamp once a
-            // second; `list_sessions` sends no start time, and here the worst
-            // case is two running rows trading places on a five-second poll.
+            // Both stretches keep the list's own order, which is newest-created
+            // first (`Live::data` sorts once, deliberately not by activity):
+            // that is what keeps the two running rows from trading places on
+            // every five-second poll as each one's activity stamp moves.
             let streaming: Vec<usize> = (0..data.sessions.len())
                 .filter(|index| data.sessions[*index].streaming)
                 .collect();

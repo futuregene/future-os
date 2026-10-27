@@ -57,7 +57,8 @@ pub struct SessionRow {
     /// group's identity rather than the row's label.
     pub workspace: String,
     pub parent_id: Option<String>,
-    /// How long ago it was last active (`5m`, `3h`).
+    /// How long ago it was last active (`5m`, `3h`). Not the row's sort key:
+    /// rows are ordered by creation, which does not move (see `Live::data`).
     pub age: String,
     /// The session the workbench is attached to.
     pub current: bool,
@@ -85,7 +86,7 @@ pub struct WorkspaceGroup {
     pub pinned: bool,
     /// How long ago anything in it was refreshed (`5m`, `3h`).
     pub age: String,
-    /// The conversations filed under it, most recently refreshed first.
+    /// The conversations filed under it, newest-created first.
     pub session_ids: Vec<String>,
 }
 
