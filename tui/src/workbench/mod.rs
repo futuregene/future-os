@@ -4045,16 +4045,17 @@ mod tests {
         assert_eq!(rows[workbench.sidebar_index].session(), Some(current));
     }
 
-    /// The delete chord asks before it acts: it opens a box naming the
-    /// conversation on screen and removes nothing until `enter` — that is the
-    /// whole guard around the one destructive verb on the surface.
+    /// Deleting a conversation asks before it acts: `/delete` (or the rail's
+    /// `delete`) opens a box naming the conversation on screen and removes
+    /// nothing until `enter` — that is the whole guard around the one destructive
+    /// verb on the surface. It has no chord: `ctrl+d` belongs to the rail.
     #[test]
-    fn the_delete_chord_names_the_conversation_before_it_deletes() {
+    fn the_delete_command_names_the_conversation_before_it_deletes() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         assert_eq!(
-            workbench.handle(WbEvent::Key("ctrl+d".into()), &data),
-            vec![WbAction::Redraw]
+            workbench.surface_command("/delete", &data),
+            VerbOutcome::Done { notice: None }
         );
         assert_eq!(workbench.overlay, Some(Overlay::DeleteSession));
         assert_eq!(
@@ -4079,7 +4080,7 @@ mod tests {
         assert_eq!(workbench.overlay, None);
         assert!(workbench.delete_target.is_none());
         // Opened again, `enter` is the delete.
-        workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
+        workbench.surface_command("/delete", &data);
         assert_eq!(
             workbench.handle(WbEvent::Key("enter".into()), &data),
             vec![WbAction::DeleteSession("s1".into())]
@@ -4136,17 +4137,17 @@ mod tests {
         );
     }
 
-    /// With no conversation on screen and nothing under the cursor the key says
+    /// With no conversation on screen and nothing under the cursor the verb says
     /// so, instead of opening a box that names nothing.
     #[test]
-    fn the_delete_chord_without_a_conversation_is_a_notice() {
+    fn the_delete_command_without_a_conversation_is_a_notice() {
         let mut data = demo::chat();
         data.sessions.clear();
         let (mut workbench, _rows) = frame(&data, 120, 38);
-        let actions = workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
+        let outcome = workbench.surface_command("/delete", &data);
         assert!(
-            matches!(actions.as_slice(), [WbAction::Notice(text)] if text.contains("没有可删除")),
-            "{actions:?}"
+            matches!(&outcome, VerbOutcome::Done { notice: Some(text) } if text.contains("没有可删除")),
+            "{outcome:?}"
         );
         assert_eq!(workbench.overlay, None);
     }
@@ -5578,11 +5579,10 @@ mod tests {
         assert_eq!(workbench.overlay, None);
     }
 
-    /// The rail's action cycles show → focus → hide. It has no default chord in
-    /// this scheme (`b` belongs to tmux, `s` to the approval chooser), so the
-    /// test drives the action itself; a reader who wants the key back binds one
-    /// in the shortcut editor, and the two doors that remain — the `›` edge
-    /// button and `shift+←`/`shift+→` — have their own tests.
+    /// The rail's action cycles show → focus → hide, on `ctrl+d` (`d` for the
+    /// dock it slides in and out of — `b` belongs to tmux and `s` to the
+    /// approval chooser). The `›` edge button and `shift+←`/`shift+→` are its
+    /// other two doors and have their own tests.
     #[test]
     fn the_rail_cycles_show_focus_hide() {
         let data = demo::chat();
@@ -5591,13 +5591,13 @@ mod tests {
         assert!(plain(&rows).contains("最近"));
 
         // open → focus
-        workbench.toggle_sidebar();
+        workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
         assert!(workbench.sidebar_visible && workbench.sidebar_focus);
 
         // focus → closed. Closing is a *preference*, not a transient view
         // state: the action asks the driver to write it, so the next start opens
         // the way the reader left it.
-        let actions = workbench.toggle_sidebar();
+        let actions = workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
         assert!(actions.contains(&WbAction::SetPreferences), "{actions:?}");
         assert!(!workbench.sidebar_visible && !workbench.sidebar_focus);
         assert!(
@@ -5634,7 +5634,7 @@ mod tests {
         // closed → open (and focused). The width decides whether a rail can
         // exist — asking the *layout* with a hidden rail would answer "none" and
         // open the overlay on a 120-column terminal.
-        workbench.toggle_sidebar();
+        workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
         assert!(workbench.sidebar_visible && workbench.sidebar_focus);
         assert!(
             workbench.overlay.is_none(),
@@ -5643,7 +5643,7 @@ mod tests {
 
         // A hidden rail cannot take the keys: focusing it would swallow
         // up/down with nothing on screen to show for it.
-        workbench.toggle_sidebar(); // hide
+        workbench.handle(WbEvent::Key("ctrl+d".into()), &data); // hide
         assert!(!workbench.sidebar_visible);
         workbench.handle(WbEvent::Key("tab".into()), &data);
         assert!(!workbench.sidebar_focus);
