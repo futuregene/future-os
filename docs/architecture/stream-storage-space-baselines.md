@@ -156,3 +156,9 @@ The same valid transcripts and logical-content digest checks run for three new s
 Read workers only parse schema before advertising readiness; they do not read historical bodies. Reopen times are retained too, so shifted initialization cost is not hidden.
 There are only three first-read samples/scenario, not a robust population p95. New direct-batch p99 is below 1 ms in every run, but unthrottled write-time medians remain approximately 29%/32% higher. Interpret CPU/RSS, queue responsiveness and UI together.
 This artifact preserves its contemporaneous acceptance status; running full regressions and pending fault/concurrency/UI checks are not recorded as passing.
+
+## B3.6: final automated acceptance and native manual handoff
+
+[C6 raw final evidence](../testing/compact-storage-acceptance-2026-10-27.json) records fresh 1/10 MiB, small/large tools, native UUID 1/4/16 concurrency, actual admission, browser and migration/fault results, plus exact synthetic baseline overlays. C5's three paired realistic runs remain unchanged: allocations fall approximately 39.7%/52.7% for 20/150 tools and logical WAL approximately 8.5%; unthrottled total write/publication median wall time rises approximately 29%/32%.
+
+Observed admission-to-durable p99 stays within 39.5/36.5/44.2 ms for 1/4/16 sessions. Terminal work for 1/10 MiB takes 1.65/1.78 ms. Large tool publication appends no duplicate bodies but full hash verification still takes approximately 26.5/268.8 ms; single-tool WAL rises about 3.4%/0.4%. File length, logical page writes and UI blocking are distinct metrics; checkpoint differences are not savings. See C6 and plan section15 for raw values, resource use, failures and limitations.

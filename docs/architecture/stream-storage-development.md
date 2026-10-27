@@ -1,6 +1,6 @@
 # Compact session storage and streaming development plan
 
-Status: UUID and structured body ownership, bounded multi-fact commits, and scoped identity reuse are implemented, 2026-10-27. Realistic-workload comparisons and final full acceptance remain in progress; delivery is not yet approved.
+Status: implementation and local automated acceptance complete, 2026-10-27; delivered through the main workspace for user native UI testing. Final evidence and limitations are in section 15.
 Exact layout: [implementation contract](compact-stream-layout.md). Implementation status does not establish delivery acceptance.
 [Candidate 1 raw results](../testing/compact-storage-candidate-1-2026-10-27.json) include a fresh previous-layout control.
 [Candidate 2](../testing/compact-storage-candidate-2-2026-10-27.json) records binary/source validation, real UUID migration cases and page-write comparisons without replacing candidate 1.
@@ -259,3 +259,36 @@ Follow-up progress: staged body ownership now uses integer `(stream_id,key_id)` 
 The single intermediate [B3.3 raw measurement](../testing/compact-storage-candidate-3-2026-10-27.json) reduces the high-churn database file to 7,933,952 bytes but logical WAL page writes remain about 38.7% above the old implementation. Continue investigating dictionary/context and index write amplification without widening confirmation windows, weakening durability or adding completion-time compression. Final migration, fault, repeated performance and UI acceptance must precede main-workspace integration.
 
 Current implementation follow-up: redundant composite identity indices are replaced by single-column foreign keys and primary-key ownership/kind guards, with exact trigger admission checks. Semantic facts remain distinct inside bounded atomic batches; encoder body dependencies flush explicitly, and no pending batch survives acknowledgement. Transaction-borrowed owner handles and captured physical snapshot keys avoid repeated UUID resolution without caching aborted allocations. Metadata budget counting avoids temporary JSON strings, while publication still checks actual bytes. Historical-parent forks now stage a native-UUID format-2 child under parent revision/database fences; historical parents are read, never rewritten. Targeted content checks pass 101 tests and the fork checks pass 49; final full-suite/migration/fault/performance validation must still be completed. One earlier parallel full-suite run had an elapsed-time failure in healing_rewrite_preserves_run_markers; its isolated rerun passed, so retain that failed run and rerun the final suite with bounded concurrency.
+
+## 15. Final automated acceptance and manual handoff (2026-10-27)
+
+M0–M5 are implemented and automatically verified. M6 local automated checks are complete; the next step is integration into the main workspace for the user's native UI testing. [C6 final raw acceptance](../testing/compact-storage-acceptance-2026-10-27.json) retains final measurements and logs; [C5 paired realistic runs](../testing/compact-storage-candidate-5-2026-10-27.json) and B0–B3.5 remain unchanged. This final status supersedes earlier pending stage notes without erasing failures or intermediate evidence.
+
+| Scope | Result and evidence |
+|---|---|
+| Full Agent | 2691 passed, zero failed, 10 explicit acceptance tests ignored by default and exercised separately; database regression after migration fault hooks: 32 passed, 2 explicit tests ignored |
+| Agent integration | 64 passed across 10 targets; 9 Linux platform security cases ignored on macOS |
+| Released migrations | Frozen Agent schemas 2–7, exact legacy continuation beside native UUID sessions, snapshots/reopen/damaged-layout rejection; Host migration tests 13 passed; CLI data tests 12 passed |
+| Migration faults | Each schema 2–7 tested before-commit kill, after-commit kill and real SQLITE_FULL: 18 cases, original history/snapshots preserved, retry and idempotent reopen verified |
+| Durability faults | SQLite FULL, external write lock, writer panic, actual child kills after commit and inside an open transaction; confirmed prefix recovered without acknowledging failed content |
+| Static checks | Entire Rust workspace including Desktop fmt and all-target Clippy; Desktop ESLint/TypeScript and mobile TypeScript passed; Agent Clippy rerun for added test hooks |
+| Native UUID concurrency | 1/4/16 sessions, BLOB16/API UUID36, exact recovered bodies and foreign-key integrity |
+| Actual admission path | Natural 25 ms window; maximum worker observed admission-to-durable p99 39.5/36.5/44.2 ms for 1/4/16 sessions; slowest control flush approximately 10.8 ms |
+
+For realistic 20/150-tool workloads, relevant allocated storage fell approximately 39.7%/52.7% versus the previous implementation and logical WAL page writes fell approximately 8.5% each. Three old first reads of 2.21–3.49/3.06–3.26 ms became 1.05–1.21/1.41–1.80 ms. Three first-read samples do not establish a population p95. Unthrottled write/publication median wall time still increased approximately 29%/32%; this CPU/throughput tradeoff is retained rather than hidden. Measured production admission stays below the 100 ms target.
+
+Fresh 1/10 MiB bodies finish in 1.65/1.78 ms without terminal body repacking. Single 1/10 MiB tool publications still verify complete hashes off the ordered writer, taking approximately 26.5/268.8 ms while appending zero duplicate body bytes. This verification remains O(body size). Logical WAL in these single-tool cases increased about 3.4%/0.4%, reported separately from long tool chains.
+
+UI measurements use headless Chrome only: cooperative 10 MiB object JSON reduces timer blocking from approximately 24–32 ms to 3–4 ms while increasing total decode time. The 3000-row markdown worker path remains approximately 31–35 ms. Native Tauri IPC, phone interaction and physical power loss are not claimed as tested; native manual experience is the user handoff.
+
+The personal database currently uses an older unpublished schema8 layout. The new implementation intentionally refuses that layout before modification. Preserve it and test with isolated FUTURE_HOME or a released schema2–7 backup; no personal database rewrite or draft-upgrade codec is added.
+
+Additional explicit acceptance commands:
+
+```sh
+cargo test -p future-agent --lib released_migrations_survive_process_kill_and_sqlite_full -- --ignored --nocapture --test-threads=1
+cargo test -p future-agent --lib paced_native_admission_and_control_latency -- --ignored --nocapture --test-threads=1
+cargo test -p future-agent --lib large_tool_outputs_reuse_durable_bodies -- --ignored --nocapture --test-threads=1
+```
+
+Main-sync addendum: after integrating c02f4ae2, TUI all-target Clippy, 1386 library tests and 8 i18n guards passed. The initial library run inherited NO_COLOR=1 and failed 32 color assertions; all passed with that variable unset, and both raw logs remain. Strict documentation checks passed for 368 documents.

@@ -391,6 +391,14 @@
       "artifactSha256": "982b798310fccbe2a094f6551c150efe7bc14d9ae22b30a8506ecefa9737c1c2",
       "implementationCheckpoint": "cc0ae84b9a11d12294cd6f47a2a8e47ed7f1c9ef",
       "scope": "three paired valid UUID transcript measurements with verified equal logical content; full acceptance pending"
+    },
+    {
+      "id": "B3.6-final-automated-acceptance",
+      "status": "automated acceptance complete; native user testing handoff",
+      "artifact": "docs/testing/compact-storage-acceptance-2026-10-27.json",
+      "artifactSha256": "0c0f91363074a1636341f7d6b56e66de3a4440de8907379361544a5e6c34da33",
+      "implementationCheckpoint": "52b6b3f8b13e5a4db45e06f21721830e92a6a51d",
+      "scope": "Final migration/fault/static/full regression plus fresh paired 1/10 MiB, large tools, native concurrency, production admission and headless browser results; C5 repeated realistic comparisons retained."
     }
   ]
 }
