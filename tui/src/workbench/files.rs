@@ -343,6 +343,50 @@ pub fn preview_kind(path: &Path) -> PreviewKind {
     }
 }
 
+/// The pictures that sit next to `path`, in the panel's own order.
+///
+/// `path` must be an image the reader opened from a directory: the box steps
+/// through this list so a folder of figures browses like the desktop's preview.
+/// Order is the panel's (directories first, then case-insensitive by name), and
+/// an image is decided by bytes rather than by extension (see [`preview_kind`]).
+/// Returns the list and where `path` sits in it; an empty list means there is
+/// nothing to step through — one picture in the folder, or no readable folder.
+pub fn image_siblings(path: &str) -> (Vec<String>, usize) {
+    let path = Path::new(path);
+    let Some(parent) = path.parent() else {
+        return (Vec::new(), 0);
+    };
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return (Vec::new(), 0);
+    };
+    let mut pictures: Vec<(String, std::path::PathBuf)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let candidate = entry.path();
+            if !candidate.is_file() || preview_kind(&candidate) != PreviewKind::Image {
+                return None;
+            }
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            Some((name, candidate))
+        })
+        .collect();
+    pictures.sort_by(|a, b| a.0.cmp(&b.0));
+    let paths: Vec<String> = pictures
+        .into_iter()
+        .map(|(_, candidate)| candidate.to_string_lossy().into_owned())
+        .collect();
+    // The list exists to step *from* the picture on screen: a document opened
+    // from the same folder has nothing to step through, so it gets no list
+    // rather than one whose first entry is somebody else's picture.
+    match paths
+        .iter()
+        .position(|candidate| Path::new(candidate) == path)
+    {
+        Some(index) => (paths, index),
+        None => (Vec::new(), 0),
+    }
+}
+
 fn read_head(path: &Path, limit: usize) -> Vec<u8> {
     use std::io::Read;
     let Ok(file) = std::fs::File::open(path) else {
@@ -366,6 +410,41 @@ pub fn short_size(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// The preview box steps through the folder the picture was opened from.
+    #[test]
+    fn image_siblings_lists_the_pictures_beside_one() {
+        let root = std::env::temp_dir().join(format!("future-siblings-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        // Two pictures, a text file and a directory: only the pictures count,
+        // and they keep the panel's order (case-insensitive by name).
+        std::fs::write(root.join("b.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+        std::fs::write(root.join("A.PNG"), b"\x89PNG\r\n\x1a\n").unwrap();
+        std::fs::write(root.join("notes.md"), b"# notes\n").unwrap();
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+
+        let open = root.join("b.png");
+        let (list, index) = super::image_siblings(&open.to_string_lossy());
+        let names: Vec<String> = list
+            .iter()
+            .map(|path| {
+                std::path::Path::new(path)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(names, vec!["A.PNG", "b.png"]);
+        assert_eq!(index, 1, "the opened picture's own place");
+        // A lone picture has nothing to step to, and a missing folder is not an
+        // error: the box simply has no steps.
+        let (empty, at) = super::image_siblings(&root.join("notes.md").to_string_lossy());
+        assert!(empty.is_empty());
+        assert_eq!(at, 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     use super::*;
 
     fn tree_fixture() -> tempfile::TempDir {

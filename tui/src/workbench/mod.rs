@@ -414,6 +414,20 @@ struct Drag {
     grab_width: u16,
 }
 
+/// A picture pan in progress: where the pointer went down, and the pan the
+/// picture had at that moment.
+///
+/// Dragging is the pointer's way of panning, the counterpart of the arrow keys.
+/// The delta is taken from the grab point rather than accumulated per event, so
+/// a drop and re-grab never drifts, and the picture follows the hand one cell
+/// per cell — the same distance the arrows move it per press.
+#[derive(Debug, Clone, Copy)]
+struct PreviewDrag {
+    grab_x: u16,
+    grab_y: u16,
+    pan: (i32, i32),
+}
+
 /// How many animation ticks the spinner holds one frame.
 ///
 /// The ticker fires every 120 ms (see `run`), so a frame lasts 480 ms — slow
@@ -435,6 +449,11 @@ pub const MAX_PREVIEW_ZOOM: u32 = 6;
 /// strings are never drawn.
 const ZOOM_IN: &str = "preview.zoomIn";
 const ZOOM_OUT: &str = "preview.zoomOut";
+/// Back to "fit the box" — the same intent as `0`.
+const ZOOM_FIT: &str = "preview.fit";
+/// The box's own step buttons: the folder's previous/next picture.
+const PREV_IMAGE: &str = "preview.prev";
+const NEXT_IMAGE: &str = "preview.next";
 
 /// The surface's own state: where the panels and the pointers are.
 ///
@@ -542,6 +561,13 @@ pub struct Workbench {
     pub preview_zoom: u32,
     pub preview_pan: (i32, i32),
     pub preview_scroll: usize,
+    /// The pictures beside the one in the box, in the panel's order, and where
+    /// the open one sits. Filled by the driver when a preview opens, so the box
+    /// can step through a folder without a round trip through the panel.
+    pub preview_siblings: Vec<String>,
+    pub preview_index: usize,
+    /// A pan in progress: the pointer's press cell and the pan it began at.
+    preview_drag: Option<PreviewDrag>,
     /// The workspace headings the reader folded shut, by path (see
     /// [`panels::Folded`]). A rail with a long conversation list is scrolled a
     /// group at a time once its workspaces are folded.
@@ -628,6 +654,9 @@ impl Workbench {
             preview_zoom: 1,
             preview_pan: (0, 0),
             preview_scroll: 0,
+            preview_siblings: Vec::new(),
+            preview_index: 0,
+            preview_drag: None,
             folded_workspaces: panels::Folded::new(),
             image_request: None,
             painted_image: None,
@@ -1570,11 +1599,22 @@ impl Workbench {
                 }
                 Some(vec![WbAction::Redraw])
             }
-            "0" => {
+            "0" | ZOOM_FIT => {
                 self.preview_zoom = 1;
                 self.preview_pan = (0, 0);
                 self.preview_scroll = 0;
                 Some(vec![WbAction::Redraw])
+            }
+            // `[` / `]` walk the folder's other pictures: the keys a reader has
+            // for "previous/next" everywhere else in this surface, and the same
+            // gesture as the box's own two step buttons.
+            "[" | PREV_IMAGE => {
+                let step = self.preview_step(-1);
+                Some(step)
+            }
+            "]" | NEXT_IMAGE => {
+                let step = self.preview_step(1);
+                Some(step)
             }
             // A zoomed picture pans; a document scrolls. One key, two readings
             // of "further into the thing", decided by what is in the box.
@@ -1589,6 +1629,34 @@ impl Workbench {
             "pageDown" => Some(self.page_preview(1)),
             _ => None,
         }
+    }
+
+    /// Step to the previous (`-1`) or next picture beside the open one.
+    ///
+    /// The list came from the directory the picture was opened from, so this is
+    /// the panel's own order — "next" is the row below the one that was opened.
+    /// At either end nothing moves: the box keeps showing the picture it has
+    /// rather than wrapping into a list the reader did not ask for.
+    fn preview_step(&mut self, delta: i32) -> Vec<WbAction> {
+        if self.preview_siblings.len() < 2 {
+            return vec![WbAction::Redraw];
+        }
+        let next = self.preview_index as i32 + delta;
+        if next < 0 || next as usize >= self.preview_siblings.len() {
+            return vec![WbAction::Redraw];
+        }
+        self.preview_index = next as usize;
+        self.reset_preview();
+        let path = self.preview_siblings[next as usize].clone();
+        vec![WbAction::PreviewFile(path)]
+    }
+
+    /// The pictures beside the one in the box, from the folder it was opened
+    /// from. The driver calls this when a preview opens; an empty list is a box
+    /// with nothing to step through.
+    pub fn set_preview_siblings(&mut self, (siblings, index): (Vec<String>, usize)) {
+        self.preview_siblings = siblings;
+        self.preview_index = index.min(self.preview_siblings.len().saturating_sub(1));
     }
 
     /// Pan by cells, or scroll a document by rows.
@@ -2597,11 +2665,27 @@ impl Workbench {
             );
         }
         if event.kind != mouse::MouseKind::Press {
+            // Dragging inside the preview box pans the picture — the pointer's
+            // counterpart of the arrow keys. The delta is taken from the press
+            // cell, so the picture keeps up with the hand rather than drifting
+            // with the event rate; the paint clamps it to the picture's edge.
+            if overlay == Overlay::FilePreview {
+                if event.kind == mouse::MouseKind::Drag {
+                    if let Some(drag) = self.preview_drag {
+                        let dx = event.x as i32 - drag.grab_x as i32;
+                        let dy = event.y as i32 - drag.grab_y as i32;
+                        self.preview_pan = (drag.pan.0 - dx, drag.pan.1 - dy);
+                        return vec![WbAction::Redraw];
+                    }
+                }
+                if event.kind == mouse::MouseKind::Release && self.preview_drag.take().is_some() {
+                    return vec![WbAction::Redraw];
+                }
+            }
             return Vec::new();
-        }
-        // Resolve against what the *overlay* painted, not the page under it. A
-        // modal that leaves the frame beneath in the hit map would let a click
-        // on its own padding reach a sidebar tab and switch the panel behind it.
+        } // Resolve against what the *overlay* painted, not the page under it. A
+          // modal that leaves the frame beneath in the hit map would let a click
+          // on its own padding reach a sidebar tab and switch the panel behind it.
         let mark = self.overlay_mark;
         let Some(id) = self
             .hit
@@ -2629,6 +2713,24 @@ impl Workbench {
                 vec![WbAction::Redraw]
             }
             "preferences.reset" => self.handle_overlay_key(Overlay::Preferences, "enter", data),
+            // The preview box's own controls, drawn in its top row. They are the
+            // pointer's spelling of keys the box already answers, so a click
+            // runs the same handler rather than a second implementation.
+            "preview.zoomIn" => self.preview_key(ZOOM_IN, data).unwrap_or_default(),
+            "preview.zoomOut" => self.preview_key(ZOOM_OUT, data).unwrap_or_default(),
+            "preview.fit" => self.preview_key(ZOOM_FIT, data).unwrap_or_default(),
+            "preview.prev" => self.preview_key(PREV_IMAGE, data).unwrap_or_default(),
+            "preview.next" => self.preview_key(NEXT_IMAGE, data).unwrap_or_default(),
+            // The picture itself: a press here starts a drag, which is how a
+            // zoomed picture is moved with the mouse rather than the arrows.
+            "preview.picture" => {
+                self.preview_drag = Some(PreviewDrag {
+                    grab_x: event.x,
+                    grab_y: event.y,
+                    pan: self.preview_pan,
+                });
+                Vec::new()
+            }
             _ => {
                 if let Some(index) = id
                     .strip_prefix("queue.row.")
@@ -4935,6 +5037,122 @@ mod tests {
         workbench.preview_scroll = 5;
         workbench.handle(WbEvent::Mouse(press(mouse::MouseKind::WheelDown)), &data);
         assert!(workbench.preview_scroll > 5, "wheel down moves the text");
+    }
+
+    /// The box's own controls: the buttons are the pointer's spelling of keys
+    /// the box already answers, and the folder's pictures step with `[` / `]`.
+    #[test]
+    fn the_preview_box_controls_step_through_the_folder() {
+        let mut data = demo::chat();
+        data.preview = Some(demo::preview_image());
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.overlay = Some(Overlay::FilePreview);
+        workbench.set_preview_siblings((
+            vec!["/w/a.png".into(), "/w/b.png".into(), "/w/c.png".into()],
+            1,
+        ));
+
+        // The controls are painted, and each is a live target.
+        workbench.render(&data, 120, 38);
+        let ids: Vec<String> = workbench
+            .hits()
+            .regions()
+            .iter()
+            .map(|(_, id)| id.clone())
+            .collect();
+        for id in [
+            "preview.zoomIn",
+            "preview.zoomOut",
+            "preview.fit",
+            "preview.prev",
+            "preview.next",
+            "preview.picture",
+        ] {
+            assert!(
+                ids.iter().any(|known| known == id),
+                "no region {id}: {ids:?}"
+            );
+        }
+
+        // A click on `[+]` zooms exactly like the key does.
+        let actions = click_region(&mut workbench, &data, 120, 38, "preview.zoomIn");
+        assert_eq!(actions, vec![WbAction::Redraw]);
+        assert_eq!(workbench.preview_zoom, 2);
+        click_region(&mut workbench, &data, 120, 38, "preview.fit");
+        assert_eq!(workbench.preview_zoom, 1);
+
+        // `]` asks the driver for the next picture, `[` for the previous one —
+        // the same actions the two step buttons produce.
+        assert_eq!(
+            workbench.handle(WbEvent::Key("]".into()), &data),
+            vec![WbAction::PreviewFile("/w/c.png".into())]
+        );
+        assert_eq!(workbench.preview_index, 2);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("[".into()), &data),
+            vec![WbAction::PreviewFile("/w/b.png".into())]
+        );
+        assert_eq!(workbench.preview_index, 1);
+
+        // The ends do not wrap into a list the reader never asked for.
+        workbench.preview_index = 0;
+        assert_eq!(
+            workbench.handle(WbEvent::Key("[".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        workbench.preview_index = 2;
+        assert_eq!(
+            workbench.handle(WbEvent::Key("]".into()), &data),
+            vec![WbAction::Redraw]
+        );
+    }
+
+    /// Dragging the picture pans it: the pointer's counterpart of the arrows.
+    #[test]
+    fn dragging_the_picture_pans_it() {
+        let mut data = demo::chat();
+        data.preview = Some(demo::preview_image());
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.overlay = Some(Overlay::FilePreview);
+        workbench.preview_zoom = 4;
+        workbench.render(&data, 120, 38);
+        let (rect, _) = workbench
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "preview.picture")
+            .cloned()
+            .expect("the picture is a drag surface");
+        let event = |kind, x, y| mouse::MouseEvent {
+            kind,
+            x,
+            y,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        };
+        // Grab the picture and drag it right and down: the window moves the
+        // other way, so the picture follows the hand.
+        workbench.handle(
+            WbEvent::Mouse(event(mouse::MouseKind::Press, rect.x + 1, rect.y)),
+            &data,
+        );
+        let actions = workbench.handle(
+            WbEvent::Mouse(event(mouse::MouseKind::Drag, rect.x + 6, rect.y + 2)),
+            &data,
+        );
+        assert_eq!(actions, vec![WbAction::Redraw]);
+        assert_eq!(workbench.preview_pan, (-5, -2));
+        // Releasing ends the pan; later motion is not a drag any more.
+        workbench.handle(
+            WbEvent::Mouse(event(mouse::MouseKind::Release, rect.x + 6, rect.y + 2)),
+            &data,
+        );
+        workbench.handle(
+            WbEvent::Mouse(event(mouse::MouseKind::Drag, rect.x + 9, rect.y + 9)),
+            &data,
+        );
+        assert_eq!(workbench.preview_pan, (-5, -2));
     }
 
     /// `ctrl+v` asks the adapter to read the clipboard; `alt+v` for the image

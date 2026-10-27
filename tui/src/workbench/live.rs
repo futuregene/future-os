@@ -2471,11 +2471,13 @@ fn file_sessions(
 
 /// The longest side a preview image is decoded to, in pixels.
 ///
-/// The renderer draws at most a couple of hundred cells wide, so anything past
-/// this is detail nobody can see — and a 4000×3000 photo kept at full size is
-/// 48 MB of RGBA in the surface's own state. One downscale at load time keeps a
-/// zoom cheap and the frame's memory flat.
-pub const MAX_PREVIEW_IMAGE_PX: u32 = 1024;
+/// This is the resolution a *zoom* sees, so it decides how much a reader can
+/// read in a dense screenshot: at 1024 a picture zoomed twice was already an
+/// upscaled guess. 2048 is 16 MB of RGBA in the surface's own state — one
+/// picture at a time, and the transmitted bitmap is downsampled to the cells on
+/// screen anyway (see `run::transmit_bitmap`), so the extra pixels cost memory
+/// when zoomed and nothing at all when fitted.
+pub const MAX_PREVIEW_IMAGE_PX: u32 = 2048;
 
 /// Read `path` as the preview box will show it.
 ///
