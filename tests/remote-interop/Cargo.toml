@@ -24,6 +24,7 @@ nkeys = "0.4"
 sha2 = "0.10"
 url = "2"
 async-nats = "0.50"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 [[bin]]
 name = "remote-interop-host"
@@ -48,4 +49,9 @@ required-features = ["network-tests"]
 [[test]]
 name = "page_encoding"
 path = "tests/page_encoding.rs"
+required-features = ["network-tests"]
+
+[[test]]
+name = "image_latency"
+path = "tests/image_latency.rs"
 required-features = ["network-tests"]
