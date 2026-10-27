@@ -296,7 +296,7 @@ impl Action {
     /// absent on a compact one.
     ///
     /// The letters are not free to pick, and the exclusions are why the map
-    /// stops at fifteen:
+    /// stops at fourteen:
     ///
     /// * `ctrl+h` / `ctrl+i` / `ctrl+j` / `ctrl+m` never arrive as themselves —
     ///   a terminal sends Backspace, Tab, `\n` and Enter for them (see
@@ -310,9 +310,18 @@ impl Action {
     ///   only duplicate Home / End / Right, so `e` and `f` are the two the map
     ///   does take (Home/End/arrows still edit the draft).
     ///
-    /// An action that has no chord keeps a typed door (`/copy`, `/mode`,
-    /// `/preferences`, `/preview`…) and a visible control instead: `""` is that
-    /// "no default", and [`Keybindings::action`] never resolves it.
+    /// An action that has no chord keeps a typed door (`/copy`, `/preferences`,
+    /// `/preview`, `/lang`, `/refresh`…) and a visible control instead: `""` is
+    /// that "no default", and [`Keybindings::action`] never resolves it.
+    ///
+    /// The fourteen go to what is pressed *while working*: the commands, the
+    /// sessions, the three answers that decide what runs next (model, effort,
+    /// approval), the two places a reader keeps going back to (the workspace
+    /// list and the files of this session's workspace), the repository, the run
+    /// under them, and leaving. Switching the interface language, refreshing the
+    /// view, and the queue of prompts sent mid-run are things a reader does once
+    /// in a while, so they keep commands instead of taking a letter from
+    /// something pressed every minute.
     pub fn default_key(self) -> &'static str {
         match self {
             Self::Quit => "ctrl+c",
@@ -320,28 +329,40 @@ impl Action {
             Self::Sessions => "ctrl+r",
             Self::DeleteSession => "ctrl+d",
             Self::Stop => "ctrl+x",
-            Self::Queue => "ctrl+q",
             Self::ReplyDetail => "ctrl+e",
             Self::Palette => "ctrl+p",
             // `m` is Enter on a terminal that does not report modifiers; `o`
             // (the chooser's own options) is the nearest free letter.
             Self::Model => "ctrl+o",
             Self::Thinking => "ctrl+t",
-            Self::Language => "ctrl+l",
+            // The approval-mode chooser: `s` is the sandbox it switches to, and
+            // it is the chord it answered to before the scheme was unified.
+            Self::Approval => "ctrl+s",
+            // The workspace chooser: `l` is the list of directories it opens.
+            Self::Workspaces => "ctrl+l",
             Self::Git => "ctrl+g",
-            Self::Sidebar => "ctrl+s",
-            Self::Refresh => "ctrl+f",
+            // The session workspace's own tree — the panel a reader opens to
+            // find the file the agent just mentioned.
+            Self::Files => "ctrl+f",
             Self::PasteImage => "ctrl+v",
-            // No chord: a typed door and a visible control instead.
+            // No chord: a typed door and a visible control instead. The rail is
+            // the one that hurts: `b` belongs to tmux and `s` to the approval
+            // chooser, so its doors are the `›` edge button, `tab` and
+            // `shift+←`/`shift+→` (which also brings a hidden rail back).
             Self::Copy => "",
             Self::Help => "",
             Self::Preferences => "",
-            Self::Approval => "",
-            Self::Workspaces => "",
+            Self::Sidebar => "",
+            Self::Language => "",
+            Self::Refresh => "",
             Self::Mouse => "",
             Self::ReduceMotion => "",
             Self::PreviewAttachment => "",
-            Self::PanelRecent | Self::PanelWorkspaces | Self::Files => "",
+            // The queue is the list of prompts sent while a run was in flight —
+            // a diagnostic the status bar already counts, not something pressed
+            // while working.
+            Self::Queue => "",
+            Self::PanelRecent | Self::PanelWorkspaces => "",
             // Arrows, not chords: stepping is navigation, and these four are
             // the only defaults that are not `ctrl`.
             Self::PanelPrev => "shift+left",
@@ -536,15 +557,16 @@ mod tests {
         let mut keys = Keybindings::default();
         keys.bind(Action::Palette, "ctrl+j").unwrap();
         keys.bind(Action::Sidebar, "ctrl+j").unwrap();
-        // The chord's previous owner trades places with the new one: Sidebar's
-        // own default (`ctrl+s`) is now Palette's.
-        assert_eq!(keys.key(Action::Palette), "ctrl+s");
+        // The chord's previous owner trades places with the new one. The rail
+        // has no default chord, so Palette inherits "none" — not a duplicate.
+        assert_eq!(keys.key(Action::Palette), "");
         assert_eq!(keys.key(Action::Sidebar), "ctrl+j");
         assert_eq!(keys.action("ctrl+j"), Some(Action::Sidebar));
+        assert_eq!(keys.action(""), None, "an empty key resolves to nothing");
         let dir = tempfile::tempdir().unwrap();
         keys.save(&dir.path().join("keys.json")).unwrap();
         let restored = Keybindings::load(&dir.path().join("keys.json"));
-        assert_eq!(restored.key(Action::Palette), "ctrl+s");
+        assert_eq!(restored.key(Action::Palette), "");
         assert_eq!(restored.key(Action::Sidebar), "ctrl+j");
     }
 
