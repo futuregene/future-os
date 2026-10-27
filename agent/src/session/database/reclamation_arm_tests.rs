@@ -20,6 +20,18 @@ use super::*;
 /// the moment the branch becomes reachable and the ledger row must change.
 #[test]
 fn incremental_vacuum_never_reports_no_progress_without_an_error() {
+    // This probes SQLite's statement result, not the idle worker. Keep the
+    // background scan from consuming the nonempty freelist between probes.
+    // The separate idle-worker test below exercises real automatic recovery.
+    fn open_probe(path: &std::path::Path) -> Database {
+        let database = Database::open(path).unwrap();
+        database
+            .inner
+            .reclaim_requested
+            .store(false, Ordering::Release);
+        database
+    }
+
     /// Run one `incremental_vacuum(1)` and report (before, after, result).
     fn vacuum(connection: &Connection) -> anyhow::Result<(i64, i64, Result<(), rusqlite::Error>)> {
         let before: i64 = connection.pragma_query_value(None, "freelist_count", |r| r.get(0))?;
@@ -65,7 +77,7 @@ fn incremental_vacuum_never_reports_no_progress_without_an_error() {
 
     // 1. The plain case, and the exact size of one slice's progress.
     let dir = tempfile::tempdir().unwrap();
-    let store = Database::open(&dir.path().join("a.db")).unwrap();
+    let store = open_probe(&dir.path().join("a.db"));
     store.db_call_filler("f", 40).unwrap();
     let (before, after, outcome) = store.call(|c| vacuum(c)).unwrap();
     assert!(outcome.is_ok(), "the plain case must run");
@@ -79,7 +91,7 @@ fn incremental_vacuum_never_reports_no_progress_without_an_error() {
     //    vacuum must report the failure rather than quietly doing nothing.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("b.db");
-    let store = Database::open(&path).unwrap();
+    let store = open_probe(&path);
     store.db_call_filler("f", 40).unwrap();
     let writer = Connection::open(&path).unwrap();
     writer.execute_batch("BEGIN IMMEDIATE").unwrap();
@@ -98,7 +110,7 @@ fn incremental_vacuum_never_reports_no_progress_without_an_error() {
 
     // 3. An open cursor on the same connection.
     let dir = tempfile::tempdir().unwrap();
-    let store = Database::open(&dir.path().join("c.db")).unwrap();
+    let store = open_probe(&dir.path().join("c.db"));
     let (before, after, outcome) = store
         .call(|c| {
             filler(c, "f", 40)?;
@@ -115,7 +127,7 @@ fn incremental_vacuum_never_reports_no_progress_without_an_error() {
     // 4. A foreign connection holding an open read transaction.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("d.db");
-    let store = Database::open(&path).unwrap();
+    let store = open_probe(&path);
     store.db_call_filler("f", 40).unwrap();
     let reader = Connection::open(&path).unwrap();
     reader
@@ -128,7 +140,7 @@ fn incremental_vacuum_never_reports_no_progress_without_an_error() {
     // 5. Inside the connection's own transaction, with the free pages created
     //    in that same transaction (so nothing is committed yet).
     let dir = tempfile::tempdir().unwrap();
-    let store = Database::open(&dir.path().join("e.db")).unwrap();
+    let store = open_probe(&dir.path().join("e.db"));
     store
         .call(|c| {
             c.execute_batch("CREATE TABLE f(id INTEGER PRIMARY KEY, body BLOB);")?;
@@ -152,7 +164,7 @@ fn incremental_vacuum_never_reports_no_progress_without_an_error() {
     // 6. Free pages in the middle, with a live table owning the tail — the case
     //    that has to relocate a page rather than truncate.
     let dir = tempfile::tempdir().unwrap();
-    let store = Database::open(&dir.path().join("f.db")).unwrap();
+    let store = open_probe(&dir.path().join("f.db"));
     store
         .call(|c| {
             c.execute_batch("CREATE TABLE mid(id INTEGER PRIMARY KEY, body BLOB);")?;
@@ -172,7 +184,7 @@ fn incremental_vacuum_never_reports_no_progress_without_an_error() {
 
     // 7. Free pages from a DROP TABLE, which also frees the root page.
     let dir = tempfile::tempdir().unwrap();
-    let store = Database::open(&dir.path().join("g.db")).unwrap();
+    let store = open_probe(&dir.path().join("g.db"));
     store
         .call(|c| {
             c.execute_batch("CREATE TABLE f(id INTEGER PRIMARY KEY, body BLOB);")?;
@@ -194,7 +206,7 @@ fn incremental_vacuum_never_reports_no_progress_without_an_error() {
     //    deferred to VACUUM, so the pointer map may be missing).
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("h.db");
-    let store = Database::open(&path).unwrap();
+    let store = open_probe(&path);
     store
         .call(|c| {
             c.execute_batch("PRAGMA auto_vacuum=0;")?;
@@ -207,8 +219,16 @@ fn incremental_vacuum_never_reports_no_progress_without_an_error() {
     assert_progress_or_error("mode 2 requested on populated db", before, after, &outcome);
 
     // 9. The same file reopened, so the header setting is the one in force.
-    let store = Database::open(&path).unwrap();
-    let (before, after, outcome) = store.call(|c| vacuum(c)).unwrap();
+    drop(store);
+    let store = open_probe(&path);
+    let (before, after, outcome) = store
+        .call(|c| {
+            // Opening may legitimately reclaim the old freelist before returning.
+            // Establish nonempty free pages and probe in the same writer job.
+            filler(c, "reopened_f", 40)?;
+            vacuum(c)
+        })
+        .unwrap();
     assert_progress_or_error("reopened after mode switch", before, after, &outcome);
 }
 

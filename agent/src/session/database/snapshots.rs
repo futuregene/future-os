@@ -5,7 +5,7 @@ use anyhow::{ensure, Context, Result};
 use rusqlite::Connection;
 use std::{
     path::Path,
-    sync::Arc,
+    sync::{Arc, Weak},
     time::{Duration, Instant},
 };
 
@@ -16,6 +16,7 @@ const LIFETIME: Duration = Duration::from_secs(10);
 struct State {
     idle: Vec<Connection>,
     closed: bool,
+    active: Vec<Weak<Lease>>,
 }
 struct Pool {
     state: parking_lot::Mutex<State>,
@@ -33,6 +34,7 @@ impl Readers {
             state: parking_lot::Mutex::new(State {
                 idle,
                 closed: false,
+                active: Vec::new(),
             }),
             available: parking_lot::Condvar::new(),
             metrics,
@@ -45,7 +47,6 @@ impl Readers {
         loop {
             ensure!(!state.closed, "history snapshot readers are closed");
             if let Some(connection) = state.idle.pop() {
-                drop(state);
                 // The guard owns the connection before BEGIN, so a failed
                 // BEGIN also returns/closes it without losing pool capacity.
                 let snapshot = ReadSnapshot(Arc::new(Lease {
@@ -53,6 +54,9 @@ impl Readers {
                     pool: self.0.clone(),
                     deadline: Instant::now() + LIFETIME,
                 }));
+                state.active.retain(|lease| lease.strong_count() != 0);
+                state.active.push(Arc::downgrade(&snapshot.0));
+                drop(state);
                 snapshot.read(|db| {
                     db.execute_batch("BEGIN DEFERRED")?;
                     Ok(())
@@ -68,10 +72,26 @@ impl Readers {
     }
 
     pub(super) fn shutdown(&self) {
-        let mut state = self.0.state.lock();
-        state.closed = true;
-        state.idle.clear();
-        self.0.available.notify_all();
+        let active = {
+            let mut state = self.0.state.lock();
+            state.closed = true;
+            state.idle.clear();
+            let active = state
+                .active
+                .drain(..)
+                .filter_map(|lease| lease.upgrade())
+                .collect::<Vec<_>>();
+            self.0.available.notify_all();
+            active
+        };
+        // Close leased handles too, including a request currently assembling
+        // JSON outside the connection lock. Restores on Windows must not wait
+        // for that request to drop its last Arc before replacing the DB file.
+        for lease in active {
+            if let Some(connection) = lease.connection.lock().take() {
+                let _ = connection.execute_batch("ROLLBACK");
+            }
+        }
     }
 }
 impl Drop for Readers {
@@ -188,6 +208,10 @@ mod tests {
         database.shutdown().unwrap();
         for lease in leases {
             assert!(lease.read(|_| Ok(())).is_err());
+            assert!(
+                lease.0.connection.lock().is_none(),
+                "shutdown closes active file handles before restore"
+            );
         }
     }
 }
