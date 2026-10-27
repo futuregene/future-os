@@ -1218,6 +1218,15 @@ impl Live {
         if self.launchpad || self.state.session_id.is_empty() {
             self.new_session().await;
             if self.state.session_id.is_empty() || self.launchpad {
+                // `new_session` reports its own failure; this is the other
+                // half — the agent made a session but this client did not end
+                // up attached to one. Returning silently here is what makes the
+                // launchpad's first message look like a key that does nothing:
+                // the draft stays (that is deliberate, it can be sent again) and
+                // the reader is owed the reason.
+                if self.notice.is_none() {
+                    self.notice = Some(t(self.lang, Key::NoticeSessionNotStarted).into());
+                }
                 return;
             }
         }
@@ -2763,6 +2772,17 @@ mod tests {
         assert_eq!(
             live.draft.text, "do not lose this",
             "the reader's text must survive a session that could not start"
+        );
+        // …and the key that did nothing but keep the text has to say why: a
+        // silent return is the "press enter, nothing happens" report.
+        let notice = live.notice.expect("a notice explains the missing session");
+        assert!(
+            notice.contains("新会话") || notice.contains("session"),
+            "the notice names what did not happen: {notice}"
+        );
+        assert!(
+            notice.contains("再发一次") || notice.contains("try again"),
+            "and that the draft can be sent again: {notice}"
         );
         let commands = seen.lock().unwrap().clone();
         assert!(
