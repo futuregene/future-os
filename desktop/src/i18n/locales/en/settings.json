@@ -307,7 +307,6 @@
     "modelNamePlaceholder": "Leave blank to use the model ID",
     "removeModel": "Remove model",
     "thinkingLevelsLabel": "Thinking levels",
-    "thinkingLevelsHint": "Default is always available. Selected values are sent to the provider exactly as named; with none selected the model offers Default only.",
     "modalityLabel": "Modality",
     "modalityText": "Text",
     "modalityImage": "Image",

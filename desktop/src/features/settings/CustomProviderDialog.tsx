@@ -428,7 +428,6 @@ export function CustomProviderDialog({
                               );
                             })}
                           </div>
-                          <p className="text-xs text-ink-soft">{t("customProvider.thinkingLevelsHint")}</p>
                         </fieldset>
                         <div className="flex items-center gap-4">
                           <span className="text-xs text-ink-muted">{t("customProvider.modalityLabel")}</span>

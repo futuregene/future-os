@@ -304,7 +304,6 @@
     "modelNamePlaceholder": "留空使用模型 ID",
     "removeModel": "移除模型",
     "thinkingLevelsLabel": "思考等级",
-    "thinkingLevelsHint": "始终提供“默认”。所选值会按原名原样发送给提供方；不选则仅提供“默认”。",
     "modalityLabel": "模态",
     "modalityText": "文本",
     "modalityImage": "图片",
