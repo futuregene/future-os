@@ -256,7 +256,7 @@ click on the rail's tab strip are the doors to the same places.
 | `ctrl+o` | Preferences and shortcut editor |
 | `alt+h` or `?` | Help overlay (effective keys, grouped by area, then the commands; `?` requires an empty draft) |
 | `ctrl+g` or `/lang` | Interface language: opens the picker — follow the system, Chinese or English |
-| `ctrl+e` | Final-answer / full-process reading level: a settled reply folds its whole work — the calls and reasoning before *and* after its last prose — into one summary row. A view toggle for the run it is pressed in, not a preference: every start opens folded, so a peek at the process cannot leave the next terminal expanded |
+| `ctrl+e` | Final-answer / full-process reading level: a settled reply folds its whole work — the calls and reasoning before *and* after its last prose — into one summary row, and reasoning is collapsed to a `▸ thinking` row at the default level (the way the desktop and the phone show it) while the full-process level prints its text. A view toggle for the run it is pressed in, not a preference: every start opens folded, so a peek at the process cannot leave the next terminal expanded |
 | `ctrl+c` | Quit |
 
 | Mouse | Action |
