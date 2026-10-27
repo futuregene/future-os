@@ -295,7 +295,8 @@ pub(crate) fn compose(
                 } else {
                     frame.input.y.saturating_sub(composer_extra)
                 };
-                let (lines, geometry) = mention_box(workbench, data, &palette, w, h, input_top);
+                let (lines, geometry) =
+                    mention_box(workbench, data, &palette, w, h, frame.input, input_top);
                 paint_mention(&mut rows, &palette, lines, geometry, columns);
             }
         }
@@ -2052,11 +2053,17 @@ fn mention_box(
     palette: &Palette,
     w: u16,
     h: u16,
+    column: Rect,
     input_top: u16,
 ) -> (Vec<String>, BoxGeometry) {
     let lang = workbench.lang;
+    // The menu completes the line the reader is typing, so it is as wide as that
+    // line's column and centred over it — never 64 columns of the whole
+    // terminal, which at 120 columns runs over the rail (its right border then
+    // sits inside the rail, a second vertical line beside the rail's own).
+    let box_w = box_width(column.w, 64);
     let Some(kind) = workbench.mention.as_ref().map(|m| m.kind) else {
-        return (Vec::new(), box_geometry(w, h, 64, 0));
+        return (Vec::new(), box_geometry(column.w, h, box_w, 0));
     };
     let rows = workbench.mention_rows(data);
     let query = workbench
@@ -2091,7 +2098,7 @@ fn mention_box(
     // cell on every row. It used to start right after each label, which made a
     // list of conversations read as ragged text: `future-os` sat somewhere
     // different on every line.
-    let inner = box_geometry(w, h, 64, 1).w.saturating_sub(2) as usize;
+    let inner = box_w.saturating_sub(2) as usize;
     let detail_width = rows
         .iter()
         .map(|row| width(&row.detail))
@@ -2122,7 +2129,9 @@ fn mention_box(
     // reader is still typing, so it must not cover the draft, the composer's own
     // frame, the status bar or the hints. Its height is bounded (a long candidate
     // list scrolls inside the window) so it cannot reach the header either.
-    let mut geometry = box_geometry(w, h, 64, content.len());
+    let mut geometry = box_geometry(column.w, h, box_w, content.len());
+    geometry.left = column.x + (column.w.saturating_sub(box_w)) / 2;
+    geometry.w = box_w;
     geometry.h = geometry.h.min(12);
     geometry.top = input_top.saturating_sub(geometry.h).max(1);
 
@@ -2391,6 +2400,113 @@ mod tests {
             connected: true,
             ..WorkbenchData::default()
         }
+    }
+
+    /// The mention menu's own frame is one rectangle: the left border is in one
+    /// cell on every row, the right border in another. A wide glyph *behind* the
+    /// box used to shift a row's border one cell (the `splice` cut through the
+    /// pair), which read as a broken frame rather than as a text problem.
+    #[test]
+    fn every_row_of_the_mention_box_has_its_borders_in_the_same_cells() {
+        let mut data = crate::workbench::demo::chat();
+        // Wide glyphs on the rows the box lands on.
+        data.messages = vec![
+            "parser 里有个 off-by-one".into(),
+            "把 <= 改成 < 之后".into(),
+            "四十一 个用例全过".into(),
+        ];
+        let mut workbench = Workbench::new();
+        let mut editor = data.input.editor.clone();
+        editor.set("#", 1);
+        data.input = crate::workbench::state::InputView::from_editor(editor, String::new());
+        let rows = workbench.render(&data, 120, 34);
+        // Cells, not character offsets: a wide glyph before the box would
+        // otherwise make the expected column wrong.
+        fn cells_of(text: &str) -> Vec<(usize, char)> {
+            let mut out = Vec::new();
+            let mut column = 0usize;
+            for ch in text.chars() {
+                out.push((column, ch));
+                column += crate::utils::grapheme_width(&ch.to_string());
+            }
+            out
+        }
+        let top = rows
+            .iter()
+            .position(|row| plain(row).contains('╭'))
+            .expect("the menu is painted");
+        let top_cells = cells_of(&plain(&rows[top]));
+        let left_col = top_cells
+            .iter()
+            .find(|(_, ch)| *ch == '╭')
+            .map(|(c, _)| *c)
+            .expect("the corner");
+        let right_col = top_cells
+            .iter()
+            .rev()
+            .find(|(_, ch)| *ch == '╮')
+            .map(|(c, _)| *c)
+            .expect("the top border closes");
+        assert!(right_col > left_col);
+        // The menu is inside the composer's column: the rail keeps its own right
+        // of the frame. A box centred on the whole terminal reaches into the
+        // rail and puts its right border beside the rail's own vertical.
+        let chat_columns = 120 - (workbench.sidebar_w as usize + 1);
+        assert!(
+            right_col < chat_columns,
+            "the menu reaches past the composer's column: {right_col} >= {chat_columns}"
+        );
+        let rail_cols: Vec<usize> = Vec::new();
+        // Rows between the top border and the closing rule carry both borders
+        // in the same two cells.
+        let bottom = rows
+            .iter()
+            .enumerate()
+            .skip(top + 1)
+            .find(|(_, row)| {
+                cells_of(&plain(row))
+                    .iter()
+                    .any(|(c, ch)| *ch == '╰' && *c == left_col)
+            })
+            .map(|(y, _)| y)
+            .expect("the box closes");
+        let mut seen = 0usize;
+        for (y, row) in rows.iter().enumerate().take(bottom).skip(top + 1) {
+            let text = plain(row);
+            let cells = cells_of(&text);
+            assert!(
+                cells.iter().any(|(c, ch)| *c == left_col && *ch == '│'),
+                "row {y} has no left border at {left_col}: {text:?}"
+            );
+            assert!(
+                cells.iter().any(|(c, ch)| *c == right_col && *ch == '│'),
+                "row {y} has no right border at {right_col}: {text:?}"
+            );
+            // The rail's own column is beside the box, never under it: the menu
+            // belongs to the composer's column, and a box that reached the rail
+            // left two verticals one cell apart.
+            for rail_col in &rail_cols {
+                assert!(
+                    cells.iter().any(|(c, ch)| c == rail_col && *ch == '│'),
+                    "row {y} painted over the rail's column {rail_col}: {text:?}"
+                );
+            }
+            seen += 1;
+        }
+        assert!(seen >= 3, "the box has rows to check: {seen}");
+    }
+
+    /// Splicing a band at an offset that lands *inside* a wide glyph keeps the
+    /// band where it was put: the half-glyph becomes a space, never nothing.
+    #[test]
+    fn a_band_spliced_into_a_wide_glyph_keeps_its_offset() {
+        let base = format!("{}里{}", "a".repeat(5), "b".repeat(20));
+        let piece = "[BOX]";
+        // `里` owns cells 5..7; splice at 6 is inside it.
+        let out = splice(&base, piece, 6, piece.len());
+        assert_eq!(ansi::width(&out), ansi::width(&base));
+        assert_eq!(ansi::width(&ansi::slice_cols(&out, 0, 6)), 6);
+        assert!(out.contains(piece), "{out:?}");
     }
 
     /// The transcript's last row is blank, so the newest line is not painted on
