@@ -2541,24 +2541,9 @@ impl Workbench {
                 None => vec![WbAction::Redraw],
             };
         }
-        // The launchpad's own shortcut entries: the pointer runs the same verb
-        // the key beside them does. `palette`, `help` and `sidebar` are surface
-        // gestures; the rest are commands, dispatched exactly like a typed one.
-        if let Some(name) = id.strip_prefix("launchpad.command.") {
-            return match name {
-                "palette" => {
-                    self.open_palette();
-                    vec![WbAction::Redraw]
-                }
-                "help" => {
-                    self.overlay = Some(Overlay::Help);
-                    self.overlay_scroll = 0;
-                    vec![WbAction::Redraw]
-                }
-                "sidebar" => self.toggle_sidebar(),
-                other => vec![WbAction::Command(format!("/{other}"))],
-            };
-        }
+        // A launchpad chip is a pointer target: the click runs the same verb
+        // `tab` + `enter` does on that chip. The block teaches no key of its
+        // own, so there is nothing else here to aim at.
         if id.starts_with("launchpad.") {
             return vec![WbAction::Command(format!("/{id}"))];
         }

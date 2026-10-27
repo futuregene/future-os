@@ -79,10 +79,6 @@ pub(crate) fn compose(
     if data.on_launchpad() {
         let lang = workbench.lang;
         let focused = workbench.launch_field.chip_id();
-        // The launchpad teaches the *bound* keys, and the hit map is a `&mut`
-        // borrow of the same struct that owns them: one clone of the (tiny)
-        // binding map buys both.
-        let keys = workbench.keys.clone();
         let (lines, cursor) = launchpad::render(
             data,
             &palette,
@@ -90,7 +86,6 @@ pub(crate) fn compose(
             workbench.hit_map(),
             lang,
             focused,
-            &keys,
         );
         paint(&mut rows, frame.body, lines);
         workbench.set_cursor(cursor);

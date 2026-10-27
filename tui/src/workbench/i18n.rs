@@ -264,10 +264,6 @@ pub enum Key {
     ChipModel,
     ChipEffort,
     ChipApproval,
-    ShortcutCommands,
-    ShortcutHelp,
-    ShortcutNewChat,
-    ShortcutSidebar,
     LaunchpadTagline,
     LaunchpadNewChat,
     LaunchpadNewChatIn,
@@ -617,10 +613,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ChipModel => ("模型", "Model"),
         ChipEffort => ("强度", "Effort"),
         ChipApproval => ("审批", "Approval"),
-        ShortcutCommands => ("命令", "Commands"),
-        ShortcutHelp => ("帮助", "Help"),
-        ShortcutNewChat => ("新会话", "New Chat"),
-        ShortcutSidebar => ("侧栏", "Sidebar"),
         LaunchpadTagline => (
             "一个 AI agent，终端、桌面、手机都在",
             "One AI agent — terminal, desktop, phone",
@@ -839,11 +831,12 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ),
 
         InputHintLaunchpad => (
-            // What the *draft* can hold that the box's own title does not say.
-            // `/ 命令` used to be here too, and then the title said it again one
-            // row above; the footer names the palette as well.
-            "描述你要做的事 · @ 文件 · # 会话",
-            "Describe the task · @ files · # sessions",
+            // What the *draft* can hold, in the order the reader types it: the
+            // task itself, then the three sigils the box answers. `/ 命令` is
+            // here rather than in a shortcut row under the box, because it is
+            // typed into the box — it is not a key binding to memorize.
+            "描述你要做的事 · / 命令 · @ 文件 · # 会话",
+            "Describe the task · / commands · @ files · # sessions",
         ),
         ApprovalWaiting => (
             "等待批准：{}{} — y 允许 · n 拒绝",
@@ -1038,7 +1031,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 272] = {
+    const ALL_KEYS: [Key; 268] = {
         use Key::*;
         [
             TabTodo,
@@ -1145,10 +1138,6 @@ mod tests {
             ChipModel,
             ChipEffort,
             ChipApproval,
-            ShortcutCommands,
-            ShortcutHelp,
-            ShortcutNewChat,
-            ShortcutSidebar,
             LaunchpadTagline,
             LaunchpadNewChat,
             LaunchpadNewChatIn,
