@@ -50,8 +50,6 @@ pub struct TuiSettings {
     pub notify: Option<crate::notifications::NotifyConfig>,
     /// Keep the activity indicator still; streaming itself is never delayed.
     pub reduced_motion: Option<bool>,
-    /// Single-column, focused, static reading without the auxiliary sidebar.
-    pub linear_reading: Option<bool>,
     /// Workspace paths pinned in the rail's 置顶 section (`pinnedWorkspaces`),
     /// in the order they were pinned.
     pub pinned_workspaces: Option<Vec<String>>,
@@ -112,9 +110,6 @@ impl TuiSettings {
         if let Some(reduced) = self.reduced_motion {
             obj.insert("reducedMotion".into(), Value::Bool(reduced));
         }
-        if let Some(linear) = self.linear_reading {
-            obj.insert("linearReading".into(), Value::Bool(linear));
-        }
         if let Some(pinned) = &self.pinned_workspaces {
             obj.insert(
                 "pinnedWorkspaces".into(),
@@ -160,7 +155,6 @@ impl TuiSettings {
                 .get("notify")
                 .and_then(|value| serde_json::from_value(value.clone()).ok()),
             reduced_motion: value.get("reducedMotion").and_then(Value::as_bool),
-            linear_reading: value.get("linearReading").and_then(Value::as_bool),
             pinned_workspaces: value.get("pinnedWorkspaces").and_then(Value::as_array).map(
                 |paths| {
                     paths
@@ -201,7 +195,6 @@ mod tests {
                 title: false,
             }),
             reduced_motion: Some(true),
-            linear_reading: Some(true),
             pinned_workspaces: Some(vec!["/src/future-os".into()]),
         };
         let back = TuiSettings::from_json(&settings.to_json());
@@ -219,7 +212,6 @@ mod tests {
         assert_eq!(back.mouse_capture, Some(false));
         assert!(!back.notify.unwrap().bell);
         assert_eq!(back.reduced_motion, Some(true));
-        assert_eq!(back.linear_reading, Some(true));
         assert_eq!(back.pinned_workspaces, Some(vec!["/src/future-os".into()]));
     }
 

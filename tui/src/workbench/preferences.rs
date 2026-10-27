@@ -78,7 +78,6 @@ pub struct LayoutPreferences {
     pub mouse_capture: bool,
     pub notify: crate::notifications::NotifyConfig,
     pub reduced_motion: bool,
-    pub linear_reading: bool,
 }
 
 impl Default for LayoutPreferences {
@@ -93,7 +92,6 @@ impl Default for LayoutPreferences {
             mouse_capture: true,
             notify: crate::notifications::NotifyConfig::default(),
             reduced_motion: false,
-            linear_reading: false,
         }
     }
 }
@@ -113,7 +111,6 @@ pub enum Action {
     Copy,
     Queue,
     Mouse,
-    LinearReading,
     ReduceMotion,
     Model,
     Thinking,
@@ -166,7 +163,7 @@ impl Group {
 /// Every action, in the order the help overlay lists them: grouped, and inside
 /// a group from most to least used. `ACTIONS` is the one authority — the help
 /// table, the shortcut editor and the event dispatch all walk it.
-pub const ACTIONS: [Action; 28] = [
+pub const ACTIONS: [Action; 27] = [
     // Sessions
     Action::PrevSession,
     Action::NextSession,
@@ -196,7 +193,6 @@ pub const ACTIONS: [Action; 28] = [
     Action::PasteImage,
     Action::PreviewAttachment,
     Action::Mouse,
-    Action::LinearReading,
     Action::ReduceMotion,
     Action::Quit,
 ];
@@ -218,7 +214,6 @@ impl Action {
             Self::Copy => "copy",
             Self::Queue => "queue",
             Self::Mouse => "mouse",
-            Self::LinearReading => "linearReading",
             Self::ReduceMotion => "reduceMotion",
             Self::PrevSession => "previousSession",
             Self::NextSession => "nextSession",
@@ -263,7 +258,6 @@ impl Action {
             | Self::PasteImage
             | Self::PreviewAttachment
             | Self::Mouse
-            | Self::LinearReading
             | Self::ReduceMotion
             | Self::Quit => Group::Interface,
         }
@@ -284,7 +278,6 @@ impl Action {
             Self::Copy => Key::CmdCopy,
             Self::Queue => Key::CmdQueue,
             Self::Mouse => Key::CmdMouse,
-            Self::LinearReading => Key::PrefLinear,
             Self::ReduceMotion => Key::PrefMotion,
             Self::PrevSession => Key::HelpKeyPrevSession,
             Self::NextSession => Key::HelpKeyNextSession,
@@ -324,7 +317,6 @@ impl Action {
             Self::Copy => "alt+c",
             Self::Queue => "alt+q",
             Self::Mouse => "alt+m",
-            Self::LinearReading => "alt+l",
             Self::ReduceMotion => "alt+a",
             Self::Model => "ctrl+m",
             Self::Thinking => "ctrl+t",
@@ -471,12 +463,11 @@ pub enum PreferenceRow {
     Notifications,
     NotificationBell,
     Motion,
-    Linear,
     Shortcuts,
     Reset,
 }
 
-pub const PREFERENCE_ROWS: [PreferenceRow; 10] = [
+pub const PREFERENCE_ROWS: [PreferenceRow; 9] = [
     PreferenceRow::Density,
     PreferenceRow::Position,
     PreferenceRow::Width,
@@ -484,7 +475,6 @@ pub const PREFERENCE_ROWS: [PreferenceRow; 10] = [
     PreferenceRow::Notifications,
     PreferenceRow::NotificationBell,
     PreferenceRow::Motion,
-    PreferenceRow::Linear,
     PreferenceRow::Shortcuts,
     PreferenceRow::Reset,
 ];
@@ -500,7 +490,6 @@ pub fn preference_label(row: PreferenceRow, lang: Language) -> &'static str {
             PreferenceRow::Notifications => Key::PrefNotifications,
             PreferenceRow::NotificationBell => Key::PrefNotificationBell,
             PreferenceRow::Motion => Key::PrefMotion,
-            PreferenceRow::Linear => Key::PrefLinear,
             PreferenceRow::Shortcuts => Key::PrefShortcuts,
             PreferenceRow::Reset => Key::PrefReset,
         },

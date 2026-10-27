@@ -448,11 +448,6 @@ pub enum Key {
     MouseOff,
     NotificationTitle,
     NotificationBody,
-    LinearYou,
-    LinearApproval,
-    LinearTool,
-    LinearError,
-    LinearUnknownError,
     ChatNewOutput,
     CmdSessions,
     CmdModel,
@@ -475,7 +470,6 @@ pub enum Key {
     PrefNotifications,
     PrefNotificationBell,
     PrefMotion,
-    PrefLinear,
     PrefEnabled,
     PrefDisabled,
     PrefShortcuts,
@@ -825,11 +819,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         MouseOff => ("鼠标捕获已关闭，可使用终端原生选择", "Mouse capture disabled; native terminal selection is available"),
         NotificationTitle => ("FutureOS：运行完成", "FutureOS: run complete"),
         NotificationBody => ("本轮已成功完成。", "This turn finished successfully."),
-        LinearYou => ("你：{}", "You: {}"),
-        LinearApproval => ("需要审批：{}", "Approval needed: {}"),
-        LinearTool => ("工具执行", "tool execution"),
-        LinearError => ("错误：{}", "Error: {}"),
-        LinearUnknownError => ("未知错误", "unknown error"),
         ChatNewOutput => ("↓ 新输出 · esc 回到最新", "↓ new output · esc returns to latest"),
         CmdSessions => ("浏览并切换会话", "Browse and switch sessions"),
         CmdModel => ("选择模型", "Choose a model"),
@@ -855,7 +844,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         PrefNotifications => ("完成时通知", "Completion notifications"),
         PrefNotificationBell => ("通知包含提示音", "Notification bell"),
         PrefMotion => ("减少动态", "Reduce motion"),
-        PrefLinear => ("线性阅读", "Linear reading"),
         PrefEnabled => ("开启", "On"),
         PrefDisabled => ("关闭", "Off"),
         PrefShortcuts => ("自定义快捷键", "Customize shortcuts"),
@@ -1197,7 +1185,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 282] = {
+    const ALL_KEYS: [Key; 276] = {
         use Key::*;
         [
             TabTodo,
@@ -1379,11 +1367,6 @@ mod tests {
             MouseOff,
             NotificationTitle,
             NotificationBody,
-            LinearYou,
-            LinearApproval,
-            LinearTool,
-            LinearError,
-            LinearUnknownError,
             ChatNewOutput,
             CmdSessions,
             CmdModel,
@@ -1406,7 +1389,6 @@ mod tests {
             PrefNotifications,
             PrefNotificationBell,
             PrefMotion,
-            PrefLinear,
             PrefEnabled,
             PrefDisabled,
             PrefShortcuts,
