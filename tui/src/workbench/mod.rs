@@ -991,6 +991,9 @@ impl Workbench {
             Some(preferences::Action::Workspaces) => {
                 return vec![WbAction::Command("/workspace".into())]
             }
+            // The interface language: the same chooser `/lang` opens, so the
+            // key cannot drift from the command it names.
+            Some(preferences::Action::Language) => return vec![WbAction::Command("/lang".into())],
             // The rail's two tabs, from anywhere: the same intent as a click on
             // the tab strip, so the key and the pointer land in the same place
             // (the conversation on screen gets the cursor).
@@ -1035,7 +1038,10 @@ impl Workbench {
         }
         match key {
             "ctrl+q" => vec![WbAction::Quit],
-            "ctrl+g" => vec![WbAction::OpenQueue],
+            // `ctrl+g` is the language key now (`Action::Language`); the queue
+            // keeps `alt+q` and `/queue`. A literal arm here would fire for a
+            // reader who moved the binding away, which is the one thing a
+            // rebindable key must never do.
             "?" if data.input.text.is_empty() => {
                 self.overlay = Some(Overlay::Help);
                 self.overlay_scroll = 0;
@@ -4154,6 +4160,28 @@ mod tests {
         assert_eq!(workbench.overlay, None);
     }
 
+    /// `ctrl+g` is the interface-language chooser — the same box `/lang` opens,
+    /// so a key cannot drift from the command it names. The queue keeps `alt+q`
+    /// and `/queue`.
+    #[test]
+    fn ctrl_g_opens_the_language_chooser_and_the_queue_keeps_alt_q() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("ctrl+g".into()), &data),
+            vec![WbAction::Command("/lang".into())]
+        );
+        assert_eq!(
+            workbench.handle(WbEvent::Key("alt+q".into()), &data),
+            vec![WbAction::OpenQueue],
+            "the queue moved off ctrl+g"
+        );
+        // The binding is an action, so the help table and the shortcut editor
+        // say the same thing the key does.
+        assert_eq!(workbench.keys.key(preferences::Action::Language), "ctrl+g");
+        assert_eq!(workbench.keys.key(preferences::Action::Queue), "alt+q");
+    }
+
     /// `ctrl+m` is the model picker, `ctrl+1`/`ctrl+2` the rail's two tabs — the
     /// three keys the reader asked for so the pointer is never the only way.
     #[test]
@@ -4585,6 +4613,60 @@ mod tests {
             panic!("{actions:?}");
         };
         assert_eq!(text, "read @src/lib.rs ");
+    }
+
+    /// The `#` menu is a *table*: the workspace (the detail) starts in one
+    /// column, so a list of conversations reads as a list instead of as ragged
+    /// text. The row painter is exercised directly — a frame-level measurement
+    /// has to guess at box offsets and at which occurrences are labels.
+    #[test]
+    fn the_session_mention_menu_aligns_its_workspace_column() {
+        use crate::workbench::ansi::width;
+        use crate::workbench::screen::mention_line;
+        let palette = crate::workbench::theme::FUTURE_DARK;
+        // Three labels of three widths (one of them CJK), three workspaces of
+        // three widths, one of them CJK too.
+        let rows = [
+            ("修复 parser 的 off-by-one", "future-os"),
+            ("workbench 布局草图", "ui"),
+            ("nightly coverage run", "临时对话"),
+        ];
+        let label_width = 26;
+        let detail_width = 12;
+        let lines: Vec<String> = rows
+            .iter()
+            .enumerate()
+            .map(|(index, (label, detail))| {
+                crate::utils::strip_ansi_codes(&mention_line(
+                    &palette,
+                    index == 0,
+                    label,
+                    label_width,
+                    detail,
+                    detail_width,
+                ))
+            })
+            .collect();
+        let mut columns = Vec::new();
+        for (line, (_, detail)) in lines.iter().zip(rows.iter()) {
+            let at = line.rfind(detail).expect("the detail is painted");
+            columns.push(width(&line[..at]));
+        }
+        assert!(
+            columns.windows(2).all(|pair| pair[0] == pair[1]),
+            "the detail column is ragged: {columns:?}\n{lines:?}"
+        );
+        // …and the column is the same one for a row with no detail at all: a
+        // file mention has no workspace, and its row still ends at the marker.
+        let plain_row = crate::utils::strip_ansi_codes(&mention_line(
+            &palette,
+            false,
+            "src/main.rs",
+            label_width,
+            "",
+            detail_width,
+        ));
+        assert_eq!(width(&plain_row), 3 + label_width);
     }
 
     #[test]

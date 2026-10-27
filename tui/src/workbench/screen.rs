@@ -2086,22 +2086,34 @@ fn mention_box(
         })
     ));
     content.push(String::new());
+    // The label column is as wide as the widest candidate on screen, so the
+    // detail — for a session, the workspace it belongs to — starts in the same
+    // cell on every row. It used to start right after each label, which made a
+    // list of conversations read as ragged text: `future-os` sat somewhere
+    // different on every line.
+    let inner = box_geometry(w, h, 64, 1).w.saturating_sub(2) as usize;
+    let detail_width = rows
+        .iter()
+        .map(|row| width(&row.detail))
+        .max()
+        .unwrap_or(0)
+        .min(inner / 3);
+    // ` marker ` is three cells, then the label, a gap, and the detail column.
+    let label_width = rows
+        .iter()
+        .map(|row| width(&row.label))
+        .max()
+        .unwrap_or(0)
+        .min(inner.saturating_sub(3 + detail_width + 1).max(4));
     for (index, row) in rows.iter().enumerate().skip(start).take(shown) {
-        let marker = if index == selection { "›" } else { " " };
-        let detail = if row.detail.is_empty() {
-            String::new()
-        } else {
-            palette.dim(&format!("  {}", row.detail))
-        };
-        let line = format!(
-            " {marker} {}{detail}",
-            palette.text(palette.iris, &row.label)
-        );
-        content.push(if index == selection {
-            palette.strong(palette.fg, &line)
-        } else {
-            line
-        });
+        content.push(mention_line(
+            palette,
+            index == selection,
+            &row.label,
+            label_width,
+            &row.detail,
+            detail_width,
+        ));
     }
     content.push(String::new());
     content.push(palette.dim(&format!(" {}", kind.hint(lang))));
@@ -2143,8 +2155,40 @@ fn mention_box(
     )
 }
 
-/// Paint the mention menu over the box's own rectangle only.
+/// One candidate row of the mention menu: the marker, the label in its column,
+/// and the detail in its column.
 ///
+/// The label is padded to the list's own label width, so the detail starts in
+/// the same cell on every row. Before this, the detail followed each label
+/// after two spaces, so a list of conversations read as ragged text: the
+/// workspace name (`future-os`, `mobile`, …) sat somewhere different on every
+/// line, which is exactly what the `#` menu was reported for.
+pub(crate) fn mention_line(
+    palette: &Palette,
+    selected: bool,
+    label: &str,
+    label_width: usize,
+    detail: &str,
+    detail_width: usize,
+) -> String {
+    let marker = if selected { "›" } else { " " };
+    let label = palette.text(palette.iris, &fit(label, label_width));
+    let line = if detail.is_empty() {
+        format!(" {marker} {label}")
+    } else {
+        format!(
+            " {marker} {label} {}",
+            palette.dim(&fit(detail, detail_width))
+        )
+    };
+    if selected {
+        palette.strong(palette.fg, &line)
+    } else {
+        line
+    }
+}
+
+/// Paint the mention menu over the box's own rectangle only.
 /// Unlike the full-screen overlays this one does **not** sheet the whole frame:
 /// the menu sits above the composer, and the draft it is completing has to stay
 /// readable underneath and beside it.
