@@ -388,13 +388,12 @@ impl SqliteStore {
                 "INSERT OR IGNORE INTO storage_meta VALUES ('legacy_complete','1')",
                 [],
             )?;
-            // A first import can temporarily grow the WAL to the size of the
-            // complete legacy event journal. The import is fully committed at
-            // this point, so reset and truncate that high-water allocation
-            // before the Agent begins serving requests.
-            db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
             Ok(())
-        })
+        })?;
+        // The import is committed before asking the sole checkpoint worker to
+        // reclaim its high-water allocation. Running TRUNCATE on the writer
+        // raced the worker's PASSIVE checkpoint and silently ignored SQLITE_BUSY.
+        self.db.checkpoint_after_import()
     }
 }
 
