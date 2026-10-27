@@ -109,6 +109,17 @@ fn native_session_public_reads_and_deleted_identity_survive_reopen() {
     // Exercise the production admission boundary, rather than test reservation.
     store.bind_events(&session).unwrap();
     assert!(!store.contains(&session).unwrap());
+    assert_eq!(
+        manager
+            .session_presence(std::slice::from_ref(&session))
+            .unwrap()["sessions"][0]["status"],
+        "present",
+        "the first prompt source fence must accept a reserved native identity"
+    );
+    assert!(
+        !manager.list_ids().unwrap().contains(&session),
+        "an empty reservation stays hidden from the sidebar"
+    );
     let metadata = json!({"id":info,"type":"session_info","timestamp":"2026-10-27T00:00:00Z","content":{"cwd":".","model":"mock","session_name":"native sidebar"}});
     store.replace(&session,vec![metadata.clone(),json!({"id":user,"type":"user","role":"user","timestamp":"2026-10-27T00:00:01Z","content":"native visible input"})]).unwrap();
     store.bind_events(&session).unwrap();
