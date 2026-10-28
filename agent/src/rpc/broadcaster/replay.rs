@@ -223,6 +223,57 @@ impl SseBroadcaster {
         Ok(active)
     }
 
+    /// The earliest cursor this Agent can still serve for `run_id`, or `None`
+    /// when it holds nothing for that run.
+    ///
+    /// The answer is the union of the two replay sources: the live ring's front
+    /// and the journal's first stored change. A reader whose cursor sits below it
+    /// asked for events that are gone, and the replay must say so — otherwise a
+    /// consumer folding the surviving tail into its own projection skips whatever
+    /// fell outside the window without ever learning it did.
+    ///
+    /// The journal is only asked when the ring cannot answer for `since`: while
+    /// the ring still covers the requested window the replay is served from it and
+    /// the head is, by definition, the ring's front.
+    pub(crate) fn earliest_cursor(&self, run_id: &str, since: i64) -> anyhow::Result<Option<i64>> {
+        let (ring_front, store, session) = {
+            let run = self.run.lock();
+            let journal = self.journal.lock();
+            let ring_front = (run.run_id == run_id)
+                .then(|| run.events.front().map(|event| event.idx))
+                .flatten()
+                .or_else(|| {
+                    // A compacted run keeps no raw ring; its projection starts at
+                    // the oldest event it folded, which is what it can serve.
+                    (run.run_id == run_id && run.compacted)
+                        .then(|| run.projection_events.first_idx())
+                        .flatten()
+                });
+            (
+                ring_front,
+                journal.store.clone(),
+                journal.session_id.clone(),
+            )
+        };
+        if ring_front.is_some_and(|front| since.saturating_add(1) >= front) {
+            return Ok(ring_front);
+        }
+        let stored = match store {
+            Some(store) => {
+                // The ring could not answer for `since`, so the journal has to:
+                // fence the buffered appends first, exactly like the watermark
+                // probe, or a delta still in flight would read as a lost head.
+                self.flush_journal()?;
+                store.run_first_cursor(&session, run_id)?
+            }
+            None => None,
+        };
+        Ok(match (ring_front, stored) {
+            (Some(ring), Some(stored)) => Some(ring.min(stored)),
+            (ring, stored) => ring.or(stored),
+        })
+    }
+
     /// Current-run events with `idx > since_idx`, plus the earliest idx still in
     /// the buffer (`min_idx`, 0 if empty). A stale run id is an explicit error;
     /// it must never silently return another run's events. A

@@ -1,5 +1,6 @@
 use super::reconciliation::reconcile_run_gone;
 use super::*;
+use crate::console;
 
 /// Persist the user entry for a prompt the Agent accepted but queued behind an
 /// older run (attach refused with RunGone). The acceptance ordering is
@@ -416,7 +417,7 @@ pub(super) async fn agent_prompt_inner(
                 // own stream ends here — NOT as a failure of the run.
                 if let Err(error) = persist_queued_user_entry(&session_id, &canonical_run_id).await
                 {
-                    eprintln!("FutureOS queued user-entry persistence failed: {error}");
+                    console::eprintln!("FutureOS queued user-entry persistence failed: {error}");
                 }
                 return Ok(AgentPromptResponse {
                     content: String::new(),
@@ -442,7 +443,9 @@ pub(super) async fn agent_prompt_inner(
                 ))
                 .await
             {
-                eprintln!("FutureOS: failed to abort Agent after stream error: {abort_error}");
+                console::eprintln!(
+                    "FutureOS: failed to abort Agent after stream error: {abort_error}"
+                );
             }
             Err(error)
         }

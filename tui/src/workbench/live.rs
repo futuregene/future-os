@@ -22,7 +22,9 @@ use std::time::Instant;
 
 use serde_json::Value;
 
-use crate::components::chat_area::{ChatArea, ChatMessage, ChatRole, ReplyDetail, RunState};
+use crate::components::chat_area::{
+    ChatArea, ChatMessage, ChatRole, FoldWords, ReplyDetail, RunState,
+};
 use crate::paste;
 use crate::rpc::types::{
     AgentEvent, ModelInfo, PendingApprovalState, RpcSessionState, SessionEntriesPage,
@@ -330,6 +332,7 @@ impl Live {
         let mouse_capture = settings.and_then(|s| s.mouse_capture).unwrap_or(true);
         let mut chat = ChatArea::new(80, None);
         chat.set_reply_detail(detail);
+        chat.set_fold_words(fold_words(lang));
 
         let mut live = Self {
             client,
@@ -913,6 +916,10 @@ impl Live {
         match event.r#type.as_str() {
             "text_chunk" => {
                 self.mark(ActivityKind::Streaming);
+                // A run this client attached to mid-flight never saw its
+                // `agent_start`: the first slice that arrives is enough to know
+                // the trailing reply is still being written.
+                self.chat.begin_reply_run();
                 self.chat.append_to_last_message(&text);
             }
             "agent_start" => {
@@ -921,6 +928,7 @@ impl Live {
                 self.run_output_tokens = 0;
                 self.run_tps = 0.0;
                 self.mark(ActivityKind::Thinking);
+                self.chat.begin_reply_run();
                 self.chat.add_message(ChatMessage::new(
                     crate::session_rows::random_id(),
                     ChatRole::Assistant,
@@ -929,6 +937,7 @@ impl Live {
             }
             "thinking_start" => {
                 self.mark(ActivityKind::Thinking);
+                self.chat.begin_reply_run();
                 self.chat.start_thinking();
             }
             "thinking_delta" => self.chat.append_thinking_delta(&text),
@@ -942,6 +951,7 @@ impl Live {
                 });
                 // One call, however many phases announce it — see the field.
                 self.run_tools.insert(tool_id.clone());
+                self.chat.begin_reply_run();
                 self.chat.add_tool_start(&tool_id, &name, args);
                 self.mark(ActivityKind::Tool);
             }
@@ -967,6 +977,10 @@ impl Live {
                     self.chat.update_last_message(final_text);
                 }
                 self.chat.mark_last_message_complete();
+                // Only now may the reading level fold the reply onto its
+                // answer: the desktop collapses a reply once it has stopped
+                // streaming, never between two of its slices.
+                self.chat.end_reply_run();
                 self.approval = None;
                 self.activity = Activity::default();
                 // The end of a run states its own totals, which is what the
@@ -1039,6 +1053,10 @@ impl Live {
         self.run_started = None;
         self.run_output_tokens = 0;
         self.run_tps = 0.0;
+        // No run is writing this transcript any more: its last reply is
+        // settled, and the reading level may fold it (a switch, a fork or a
+        // stop leaves nothing that will still send slices for it).
+        self.chat.end_reply_run();
     }
 
     /// Make the activity row describe the session this client just attached to.
@@ -1053,6 +1071,9 @@ impl Live {
         if self.state.is_streaming {
             self.mark(ActivityKind::Thinking);
             self.run_started = Some(Instant::now());
+            // The trailing reply is being written by a run this client did not
+            // start: it keeps the live shape until that run ends.
+            self.chat.begin_reply_run();
         }
     }
 
@@ -1880,10 +1901,9 @@ impl Live {
             "launchpad.approval" => self.cycle_mode().await,
             "launchpad.workspace" => self.cycle_pending_workspace(),
             "reply-detail" => {
-                let next = match self.detail {
-                    ReplyDetail::Default => ReplyDetail::Detailed,
-                    ReplyDetail::Detailed => ReplyDetail::Default,
-                };
+                // `ctrl+e`'s cycle: every slice, then the work folded, then the
+                // process folded too — one press folds one more thing away.
+                let next = self.detail.next();
                 self.set_detail(next);
             }
             // The bodies under the tool rows: one row per call is the point of
@@ -3154,6 +3174,10 @@ impl Live {
             self.activity = Activity::default();
             self.activity_start = None;
             self.run_tools.clear();
+            // A stopped reply is settled: the reading level folds it now
+            // rather than waiting for an `agent_end` the interrupt may never
+            // produce.
+            self.chat.end_reply_run();
         }
     }
 
@@ -4135,7 +4159,22 @@ impl Live {
     pub fn set_language(&mut self, preference: LanguagePreference) -> Language {
         self.lang = preference.resolve();
         self.draft.placeholder = t(self.lang, Key::InputHintLaunchpad).into();
+        // The transcript's own process rows are chrome, not model output: they
+        // are worded in the interface language (`工具调用 61 次 · 思考 30 次`).
+        self.chat.set_fold_words(fold_words(self.lang));
         self.lang
+    }
+}
+
+/// The words a transcript's process rows are drawn in (see `FoldWords`).
+fn fold_words(lang: Language) -> FoldWords {
+    FoldWords {
+        tool_call: t(lang, Key::ChatFoldToolCall),
+        tool_calls: t(lang, Key::ChatFoldToolCalls),
+        thought: t(lang, Key::ChatFoldThought),
+        thoughts: t(lang, Key::ChatFoldThoughts),
+        thinking: t(lang, Key::ChatThinkingLabel),
+        process: t(lang, Key::ChatProcessLabel),
     }
 }
 
@@ -5697,6 +5736,130 @@ mod tests {
         // The next run starts its own tally.
         live.handle_event(event("agent_start", serde_json::json!({})));
         assert_eq!(live.data(&frame()).activity.tools, 0);
+    }
+
+    /// `agent_start` and `agent_end` are what tell the transcript a reply is
+    /// still being written: between them its prose stays on screen, and only
+    /// when the run ends does the reading level fold it onto its answer.
+    ///
+    /// Reading that off the messages instead made the last reply collapse and
+    /// reopen on every step — a slice stops growing whenever the model moves on
+    /// to a call — which is the flicker the desktop never shows.
+    #[tokio::test]
+    async fn a_run_brackets_when_its_reply_may_fold() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        // The frame's words depend on the machine's locale; this test asserts
+        // the shape, so it pins the language.
+        live.set_language(super::i18n::LanguagePreference::En);
+        assert!(!live.chat.run_in_flight(), "nothing runs on a fresh client");
+
+        live.chat
+            .add_message(ChatMessage::new("u".into(), ChatRole::User, "go"));
+        live.handle_event(event("agent_start", serde_json::json!({})));
+        assert!(live.chat.run_in_flight(), "agent_start opens the run");
+        live.handle_event(event(
+            "text_chunk",
+            serde_json::json!({"text": "First note."}),
+        ));
+        live.handle_event(event(
+            "tool_start",
+            serde_json::json!({"tool_id": "t1", "tool_name": "read", "tool_args": "{\"path\":\"/a.rs\"}"}),
+        ));
+        live.handle_event(event(
+            "tool_end",
+            serde_json::json!({"tool_id": "t1", "text": "ok"}),
+        ));
+        live.handle_event(event(
+            "text_chunk",
+            serde_json::json!({"text": "Second note."}),
+        ));
+
+        let rows = |chat: &mut ChatArea| -> Vec<String> {
+            chat.render_all(120)
+                .iter()
+                .map(|line| crate::utils::strip_ansi_codes(line))
+                .collect()
+        };
+        // In flight: both notes are on screen, and the call is one row.
+        let running = rows(&mut live.chat);
+        assert!(
+            running.iter().any(|line| line.contains("First note.")),
+            "{running:?}"
+        );
+        assert!(
+            running.iter().any(|line| line.contains("read /a.rs")),
+            "{running:?}"
+        );
+
+        live.handle_event(event("agent_end", serde_json::json!({})));
+        assert!(!live.chat.run_in_flight(), "agent_end closes the run");
+        let settled = rows(&mut live.chat);
+        assert!(
+            !settled.iter().any(|line| line.contains("First note.")),
+            "the settled reply is its answer and the counts — {settled:?}"
+        );
+        assert!(
+            settled.iter().any(|line| line.contains("▸ 1 tool call")),
+            "{settled:?}"
+        );
+        assert!(
+            settled.iter().any(|line| line.contains("Second note.")),
+            "{settled:?}"
+        );
+    }
+
+    /// The process rows are chrome, worded in the interface language: Chinese
+    /// counts with 次 and puts the noun first, English pluralizes and puts the
+    /// number first.
+    #[test]
+    fn the_process_rows_are_drawn_in_the_interface_language() {
+        let zh = fold_words(Language::Zh);
+        assert_eq!(zh.tool_calls, "工具调用 {} 次");
+        assert_eq!(zh.thoughts, "思考 {} 次");
+        assert_eq!(zh.thinking, "思考");
+        assert_eq!(zh.process, "过程");
+        let en = fold_words(Language::En);
+        assert_eq!(en.tool_calls, "{} tool calls");
+        assert_eq!(en.thoughts, "{} thoughts");
+        assert_eq!(en.thinking, "thinking");
+        assert_eq!(en.process, "process");
+
+        // And a transcript drawn with them says what it means.
+        let mut chat = ChatArea::new(120, None);
+        chat.set_fold_words(zh);
+        chat.add_message(ChatMessage::new("u".into(), ChatRole::User, "开始"));
+        let mut lone = ChatMessage::new("t".into(), ChatRole::Assistant, "");
+        lone.thinking = Some("先看看".into());
+        chat.add_message(lone);
+        chat.add_message(ChatMessage::new("u2".into(), ChatRole::User, "继续"));
+        let mut answered = ChatMessage::new("a2".into(), ChatRole::Assistant, "好了");
+        answered.thinking = Some("想清楚了".into());
+        chat.add_message(answered);
+        let rows: Vec<String> = chat
+            .render_all(120)
+            .iter()
+            .map(|line| crate::utils::strip_ansi_codes(line))
+            .collect();
+        assert!(
+            rows.iter().any(|line| line.contains("▸ 思考")),
+            "the reasoning marker is Chinese — {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|line| line.contains("▸ 思考 1 次")),
+            "the count row is Chinese too — {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|line| line.contains("thought")),
+            "{rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|line| line.contains("thinking")),
+            "{rows:?}"
+        );
     }
 
     /// The activity row describes the conversation on screen. It used to carry

@@ -24,6 +24,7 @@ mod util;
 mod workspace_files;
 mod workspaces;
 
+use crate::console;
 use db::*;
 
 pub use app_settings::{
@@ -189,8 +190,8 @@ pub fn reconcile_after_startup() {
 fn log_purge(result: Result<usize, crate::Error>, noun: &str, op: &str) {
     match result {
         Ok(0) => {}
-        Ok(count) => eprintln!("purged {count} {noun}"),
-        Err(error) => eprintln!("{op} failed: {error}"),
+        Ok(count) => console::eprintln!("purged {count} {noun}"),
+        Err(error) => console::eprintln!("{op} failed: {error}"),
     }
 }
 
@@ -198,7 +199,7 @@ fn log_purge(result: Result<usize, crate::Error>, noun: &str, op: &str) {
 /// on reclaim failures). Split out so the `Ok`/`Err` arms are directly testable.
 fn log_reconcile(result: Result<usize, crate::Error>, op: &str) {
     if let Err(error) = result {
-        eprintln!("{op} failed: {error}");
+        console::eprintln!("{op} failed: {error}");
     }
 }
 

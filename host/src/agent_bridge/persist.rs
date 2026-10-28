@@ -3,6 +3,7 @@
 //! artifacts. All persistence is best-effort — failures are logged, never
 //! propagated, so a storage hiccup can't abort an in-flight agent response.
 
+use crate::console;
 use std::path::Path;
 
 use crate::{git_review, store};
@@ -54,6 +55,8 @@ pub fn persist_run_event(run_id: Option<&str>, event_type: &str, payload: &str, 
             payload: Some(payload.to_string()),
             sequence,
             created_at: store::now_millis(),
+            // This path folds live lifecycle events, not a replayed window.
+            truncated: false,
         };
         store::advance_tool_projection(run_id, std::slice::from_ref(&record));
     }
@@ -86,7 +89,7 @@ fn persist_agent_tool_projection(run_id: &str, event_type: &str, payload: &str, 
     match event_type {
         "approval_assessment" => {
             if let Err(error) = store::record_approval_assessment(run_id, &value) {
-                eprintln!("FutureOS assessment projection failed: {error}");
+                console::eprintln!("FutureOS assessment projection failed: {error}");
             }
         }
         "approval_request" => persist_approval_request(run_id, &value),
@@ -150,7 +153,7 @@ fn persist_approval_request(run_id: &str, value: &serde_json::Value) {
         save_suggestion,
         reviewer,
     }) {
-        eprintln!("FutureOS approval persistence failed: {error}");
+        console::eprintln!("FutureOS approval persistence failed: {error}");
     }
     // CAS the run to waiting_approval only if it isn't already terminal. Without
     // the guard a late-arriving approval_request event (the user aborted while
@@ -170,11 +173,11 @@ fn persist_approval_request(run_id: &str, value: &serde_json::Value) {
                 status: "cancelled".to_string(),
                 decision_note: Some("Cancelled because the run had already ended.".to_string()),
             }) {
-                eprintln!("FutureOS stale approval cancellation failed: {error}");
+                console::eprintln!("FutureOS stale approval cancellation failed: {error}");
             }
         }
         Ok(true) => {}
-        Err(error) => eprintln!("FutureOS run approval status update failed: {error}"),
+        Err(error) => console::eprintln!("FutureOS run approval status update failed: {error}"),
     }
 }
 
@@ -192,7 +195,7 @@ fn persist_approval_decision(run_id: &str, value: &serde_json::Value) {
         status: status.clone(),
         decision_note: note,
     }) {
-        eprintln!("FutureOS approval decision persistence failed: {error}");
+        console::eprintln!("FutureOS approval decision persistence failed: {error}");
     }
 
     if status == "cancelled" {
@@ -202,7 +205,7 @@ fn persist_approval_decision(run_id: &str, value: &serde_json::Value) {
             error_message: Some("Approval request was cancelled.".to_string()),
             error_type: None,
         }) {
-            eprintln!("FutureOS run approval cancellation status update failed: {error}");
+            console::eprintln!("FutureOS run approval cancellation status update failed: {error}");
         }
         return;
     }
@@ -213,7 +216,7 @@ fn persist_approval_decision(run_id: &str, value: &serde_json::Value) {
         error_message: None,
         error_type: None,
     }) {
-        eprintln!("FutureOS run approval decision status update failed: {error}");
+        console::eprintln!("FutureOS run approval decision status update failed: {error}");
     }
 }
 
@@ -273,7 +276,7 @@ fn persist_file_artifact(
         Ok(true) => {}
         Ok(false) => return,
         Err(error) => {
-            eprintln!("FutureOS {tool_name} artifact workspace check failed: {error}");
+            console::eprintln!("FutureOS {tool_name} artifact workspace check failed: {error}");
             return;
         }
     }
@@ -296,7 +299,7 @@ fn persist_file_artifact(
         content_storage: Some("file".to_string()),
         summary: Some(summary.to_string()),
     }) {
-        eprintln!("FutureOS {tool_name} artifact persistence failed: {error}");
+        console::eprintln!("FutureOS {tool_name} artifact persistence failed: {error}");
     }
 }
 
@@ -342,7 +345,7 @@ fn persist_artifact(run_id: &str, value: &serde_json::Value) {
         Ok(true) => {}
         Ok(false) => return,
         Err(error) => {
-            eprintln!("FutureOS artifact workspace check failed: {error}");
+            console::eprintln!("FutureOS artifact workspace check failed: {error}");
             return;
         }
     }
@@ -360,7 +363,7 @@ fn persist_artifact(run_id: &str, value: &serde_json::Value) {
         content_storage,
         summary,
     }) {
-        eprintln!("FutureOS artifact persistence failed: {error}");
+        console::eprintln!("FutureOS artifact persistence failed: {error}");
     }
 }
 

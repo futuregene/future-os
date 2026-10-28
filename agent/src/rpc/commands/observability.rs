@@ -204,9 +204,20 @@ pub(crate) fn handle_get_events_since(
     {
         return RpcResponse::build_fail(id, "get_events_since", "replay_window_changed");
     }
-    // A cursor older than the replay ring returns a complete compressed
-    // projection instead of a knowingly incomplete event tail.
-    let truncated = projection.is_some();
+    // A cursor older than what this Agent can still serve is not a window: the
+    // events that fell outside it are gone, and the consumer must be told so it
+    // can rebuild from a full read instead of folding the surviving tail into
+    // the projection it already has. Two shapes reach here — a compressed
+    // projection standing in for a dropped tail, and a raw window whose head the
+    // ring or the journal no longer holds (a first event above the cursor).
+    let head_lost = cmd.since_idx >= 0
+        && match broadcaster.earliest_cursor(&cmd.run_id, cmd.since_idx) {
+            Ok(first) => first.is_some_and(|first| cmd.since_idx.saturating_add(1) < first),
+            // The replay itself already answered; a head probe that cannot read
+            // is not worth failing the read over.
+            Err(_) => false,
+        };
+    let truncated = projection.is_some() || head_lost;
     // Paging (proto max_events): a long run's journal far exceeds the
     // gRPC message cap when returned whole, so a paging caller gets the
     // tail cut to its page size (bounded by a serialized-size budget)

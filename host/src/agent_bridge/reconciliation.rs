@@ -1,3 +1,4 @@
+use crate::console;
 use std::collections::HashSet;
 
 use super::client::run_control_command;
@@ -24,7 +25,7 @@ pub async fn reconcile_interrupted_runs() {
         match check_and_reanimate_run(&session_id, &run_id, &thread_id).await {
             Ok(()) => {}
             Err(error) => {
-                eprintln!("FutureOS run reanimation failed for {run_id}: {error}");
+                console::eprintln!("FutureOS run reanimation failed for {run_id}: {error}");
             }
         }
     }
@@ -71,7 +72,7 @@ pub(super) async fn check_and_reanimate_run(
         // interrupted state the synchronous phase set rather than asserting it
         // completed, so it stays visible as interrupted instead of vanishing
         // into a false "completed".
-        eprintln!(
+        console::eprintln!(
             "FutureOS startup reconcile: get_state failed for run {run_id} ({}); leaving interrupted",
             state.error
         );
@@ -105,7 +106,7 @@ pub(super) async fn check_and_reanimate_run(
         let reanimated =
             crate::store::reanimate_run(run_id).map_err(|e| format!("reanimate: {e}"))?;
         if !reanimated {
-            eprintln!(
+            console::eprintln!(
                 "FutureOS startup reconcile: run {run_id} no longer interrupted; skipping reattach"
             );
             return Ok(());
@@ -118,7 +119,7 @@ pub(super) async fn check_and_reanimate_run(
         // The Agent confirms this run began but never committed (interrupted by
         // the restart). The synchronous phase already cancelled it with
         // error_type='interrupted'; leave that accurate state in place.
-        eprintln!("FutureOS startup reconcile: run {run_id} confirmed interrupted by restart; leaving cancelled");
+        console::eprintln!("FutureOS startup reconcile: run {run_id} confirmed interrupted by restart; leaving cancelled");
     } else if let Some(terminal) = requested_terminal {
         let state = terminal
             .get("status")
@@ -128,7 +129,7 @@ pub(super) async fn check_and_reanimate_run(
         crate::store::settle_interrupted_run_from_agent(run_id, state, error)
             .map_err(|e| format!("settle: {e}"))?;
     } else {
-        eprintln!(
+        console::eprintln!(
             "FutureOS startup reconcile: no durable terminal for run {run_id}; leaving interrupted"
         );
     }
@@ -187,7 +188,7 @@ pub(super) async fn reconcile_run_gone(
     // terminal/orphan settling — the run is alive and the session observer
     // will project it from the journal once it starts.
     if queued_run_ids(&state_value).any(|run_id| run_id == canonical_run_id) {
-        eprintln!(
+        console::eprintln!(
             "FutureOS run {local_run_id} is queued on the Agent; observer projects it on start ({reason})"
         );
         observer::ensure_observer_for_thread(session_id, thread_id)?;
@@ -199,7 +200,7 @@ pub(super) async fn reconcile_run_gone(
         .and_then(|run| run.get("runId"))
         .and_then(|id| id.as_str());
     if active == Some(canonical_run_id) {
-        eprintln!(
+        console::eprintln!(
             "FutureOS run {local_run_id} still active on Agent after RunGone ({reason}); leaving running"
         );
         return Ok(());
@@ -595,7 +596,7 @@ pub(super) async fn active_run_watchdog_pass(now_ms: i64, settled_verified: &mut
             .canonical_for_local(&run.run_id)
             .unwrap_or_else(|| run.run_id.clone());
         if let Err(error) = reconcile_active_run_once(&run, &canonical, age_secs).await {
-            eprintln!(
+            console::eprintln!(
                 "FutureOS run watchdog could not reconcile {}: {error}",
                 run.run_id
             );
@@ -718,7 +719,7 @@ async fn reconcile_settled_runs(now_ms: i64, verified: &mut HashSet<String>) {
             .unwrap_or_else(|| row.run_id.clone());
         match reconcile_settled_run_once(&row, &canonical).await {
             Ok(SettledRunOutcome::Repaired(status)) => {
-                eprintln!(
+                console::eprintln!(
                     "FutureOS settled run {} repaired from the Agent ledger to {status}",
                     row.run_id
                 );
@@ -738,7 +739,7 @@ async fn reconcile_settled_runs(now_ms: i64, verified: &mut HashSet<String>) {
                 verified.insert(row.run_id.clone());
             }
             Ok(SettledRunOutcome::Unknown) => {}
-            Err(error) => eprintln!(
+            Err(error) => console::eprintln!(
                 "FutureOS settled run watchdog could not reconcile {}: {error}",
                 row.run_id
             ),

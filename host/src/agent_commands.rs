@@ -536,6 +536,11 @@ mod tests {
         );
         assert_eq!(bare.model_id, "");
         assert_eq!(bare.level, "");
+        // A session created without a name stays unnamed: the Agent titles it
+        // from its first message, which is what every chat conversation wants.
+        // Task runs set the name on the command themselves (see
+        // `agent_bridge::session::ensure_named_agent_session`).
+        assert_eq!(bare.name, "");
     }
 
     #[test]

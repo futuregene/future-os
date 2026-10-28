@@ -1,6 +1,7 @@
 //! Headless uses the same scoped in-process owner as GUI. The bundled CLI
 //! remains needed only for short maintenance commands such as skill bootstrap.
 
+use future_agent::console;
 use std::time::{Duration, Instant};
 
 use future_rpc::supervision::{
@@ -90,7 +91,7 @@ impl Agent {
                     Some((since, _)) if now.duration_since(*since) < WAIT_FOR_OWNER => {
                         let waited = now.duration_since(*since);
                         if waited >= WAIT_NOTICE_AFTER && self.should_notice(waited) {
-                            eprintln!(
+                            console::eprintln!(
                                 "FutureOS: waiting for the Agent another process is starting \
                                  ({waited:?} of {WAIT_FOR_OWNER:?}). {detail}"
                             );
@@ -105,7 +106,7 @@ impl Agent {
                     .into()),
                     None => {
                         self.waiting_for = Some((now, detail.clone()));
-                        eprintln!("FutureOS: another process owns the Agent; waiting for it instead of starting a second one. {detail}");
+                        console::eprintln!("FutureOS: another process owns the Agent; waiting for it instead of starting a second one. {detail}");
                         Ok(())
                     }
                 }
@@ -123,7 +124,7 @@ impl Agent {
                     return Ok(());
                 }
                 self.unseen_since = None;
-                eprintln!("FutureOS: the Agent is gone; starting a new one.");
+                console::eprintln!("FutureOS: the Agent is gone; starting a new one.");
                 self.reachable_since = None;
                 // A host that only attached to the dead Agent must give it up
                 // first, or `start` reports the stale `Ready` and does nothing.
@@ -361,6 +362,6 @@ mod block_fixtures {
             }
             other => panic!("unknown case {other}"),
         }
-        eprintln!("{CASE_RAN} {case}");
+        console::eprintln!("{CASE_RAN} {case}");
     }
 }

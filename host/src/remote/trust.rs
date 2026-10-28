@@ -23,6 +23,7 @@
 //! to a failed connection. The snapshot *is* the platform store, so this
 //! changes no trust decision — it is a cache, not a second policy.
 
+use crate::console;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use std::path::{Path, PathBuf};
@@ -60,14 +61,14 @@ fn bundle_with_extra(ca: &std::path::Path) -> Option<PathBuf> {
             let extra = match std::fs::read_to_string(ca) {
                 Ok(text) if text.contains("-----BEGIN CERTIFICATE-----") => text,
                 Ok(_) => {
-                    eprintln!(
+                    console::eprintln!(
                         "remote: the relay CA file holds no certificate: {}",
                         ca.display()
                     );
                     return None;
                 }
                 Err(error) => {
-                    eprintln!(
+                    console::eprintln!(
                         "remote: could not read the relay CA file {}: {error}",
                         ca.display()
                     );
@@ -88,7 +89,7 @@ fn bundle_with_extra(ca: &std::path::Path) -> Option<PathBuf> {
             match std::fs::write(&path, text) {
                 Ok(()) => Some(path),
                 Err(error) => {
-                    eprintln!("remote: could not write the relay trust bundle: {error}");
+                    console::eprintln!("remote: could not write the relay trust bundle: {error}");
                     None
                 }
             }
@@ -118,16 +119,16 @@ fn bundle_at(path: &Path, load: &dyn Fn() -> Result<Vec<Vec<u8>>, String>) -> Op
         Ok(certs) if !certs.is_empty() => match write_bundle(path, &certs) {
             Ok(()) => Some(path.to_path_buf()),
             Err(error) => {
-                eprintln!("remote: writing the relay trust bundle failed: {error}");
+                console::eprintln!("remote: writing the relay trust bundle failed: {error}");
                 existing_bundle(path)
             }
         },
         Ok(_) => {
-            eprintln!("remote: the platform trust store returned no certificates");
+            console::eprintln!("remote: the platform trust store returned no certificates");
             existing_bundle(path)
         }
         Err(error) => {
-            eprintln!("remote: reading the platform trust store failed: {error}");
+            console::eprintln!("remote: reading the platform trust store failed: {error}");
             existing_bundle(path)
         }
     }

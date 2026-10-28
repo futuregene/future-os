@@ -4,6 +4,7 @@
 //! the Agent's committed config revision to the WebView and remote clients so
 //! every endpoint invalidates provider/model state from the same completion.
 
+use crate::console;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -29,7 +30,7 @@ async fn run() {
             break;
         }
         if let Err(error) = result {
-            eprintln!("FutureOS provider config observer reconnecting: {error}");
+            console::eprintln!("FutureOS provider config observer reconnecting: {error}");
         }
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(Duration::from_secs(5));
