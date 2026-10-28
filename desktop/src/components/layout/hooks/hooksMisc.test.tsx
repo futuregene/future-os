@@ -57,11 +57,8 @@ function captureToasts() {
 describe("useAgentStatus", () => {
   beforeEach(() => mocks.getStatus.mockReset());
 
-  // NOTE: the `catch` arm of useAgentStatus (the transport-failure branch that
-  // synthesizes `phase: "unavailable"`) is covered by "keeps polling after a
-  // probe failure so a later recovery is picked up" below: rejecting the probe
-  // *once* and then resolving lets the failure arm be asserted without vitest 4
-  // reporting a test-scoped unhandled error (a rejected-only mock does).
+  // Rejecting one probe and then resolving exercises the retry path without
+  // leaving a test-scoped unhandled error in Vitest 4.
 
   it("does not arm a follow-up probe when the gate unmounts before the first one resolves", async () => {
     // Tearing down before the first `await getAgentStatus()` resolves means no
@@ -119,7 +116,9 @@ describe("useAgentStatus", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(harness.current.phase).toBe("unavailable");
+    // A rejected probe does not report the Agent as unavailable immediately.
+    // The last successful response controls the 15-second silence timeout.
+    expect(harness.current.phase).toBe("checking");
 
     // The failure schedules the next probe; once it answers ready, the app is
     // admitted (after the splash floor).
