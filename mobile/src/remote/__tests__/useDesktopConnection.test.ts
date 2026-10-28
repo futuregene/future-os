@@ -43,6 +43,7 @@ jest.mock("../client", () => {
       return { complete: true, pendingTasks: [] };
     });
     waitTasks = jest.fn(async () => ({ complete: true, pendingTasks: [] }));
+    connectionState: ConnectionState = "ready";
     setAppActive = jest.fn();
     setVisibleSession = jest.fn();
     open = jest.fn(async () => {
@@ -112,6 +113,7 @@ interface MockClient {
   open: jest.Mock;
   recoverNow: jest.Mock;
   request: jest.Mock;
+  connectionState: ConnectionState;
 }
 
 const credentials: RemoteCredentials = {
@@ -623,6 +625,31 @@ describe("useDesktopConnection", () => {
       const c = client();
       await act(async () => { await result.current.recover("foreground"); });
       expect(c.recoverNow).toHaveBeenCalledWith("foreground");
+    });
+
+    test("a fatal client is rebuilt on recover, not probed", async () => {
+      await mountConnected();
+      const previous = client();
+      previous.connectionState = "failed";
+      await act(async () => { await result.current.recover("request-failure"); });
+      // `recoverNow` is a no-op for a terminal client, so probing would leave
+      // the conversation and the composer dead until the app was killed. The
+      // state machine's own answer is a fresh client with the same credentials.
+      expect(previous.recoverNow).not.toHaveBeenCalled();
+      expect(previous.shutdown).toHaveBeenCalled();
+      expect(options.clientRef.current).not.toBe(previous);
+      expect(client().open).toHaveBeenCalled();
+      expect(client().connectionState).toBe("ready");
+    });
+
+    test("a revoked client is not rebuilt by a retry", async () => {
+      await mountConnected();
+      const previous = client();
+      previous.connectionState = "revoked";
+      await act(async () => { await result.current.recover("request-failure"); });
+      // A revoked pairing needs a new pair, not another connection attempt.
+      expect(options.clientRef.current).toBe(previous);
+      expect(previous.open).toHaveBeenCalledTimes(1);
     });
 
     test("a recovery that fails after a reconnect is reported rather than swallowed", async () => {

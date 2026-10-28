@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { RemoteClient } from "./client";
+import type { RecoveryReason, RemoteClient } from "./client";
 import { captureConversationLifetime } from "./conversationLifetime";
 import { notifyTaskFinished } from "../notifications/taskNotifications";
 import { useConversationController } from "./useConversationController";
@@ -153,6 +153,8 @@ export function useDesktopRuntime({
     });
   }, []);
 
+  // Set after the connection exists, read by the timeline controller's retry.
+  const recoverConnectionRef = useRef<((reason: RecoveryReason) => Promise<void>) | null>(null);
   const timelineController = useTimelineController({
     clientRef,
     selectedRef,
@@ -162,6 +164,11 @@ export function useDesktopRuntime({
     refreshSessions,
     setTitleOverrides,
     onSessionState,
+    // Built before the connection (the controller owns the sync engine the
+    // connection drives), so the runtime's recovery reaches it through a ref:
+    // a retry on a fatal client must be able to replace that client, which
+    // `client.recoverNow` alone can never do.
+    recoverConnection: (reason) => recoverConnectionRef.current?.(reason) ?? Promise.resolve(),
   });
   const {
     timeline,
@@ -260,6 +267,9 @@ export function useDesktopRuntime({
     resetTimeline,
   });
   const { phase, presence, desktopOnline } = connection;
+  useEffect(() => {
+    recoverConnectionRef.current = connection.recover;
+  }, [connection.recover]);
 
   const conversation = useConversationController({
     clientRef,
