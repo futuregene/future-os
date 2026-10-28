@@ -1137,6 +1137,60 @@ mod tests {
         assert_ne!(tagged, other);
     }
 
+    /// The pipe the *process* would use, in both directions: the FutureOS
+    /// override is the only input that moves it, and `HOME` is not.
+    ///
+    /// The first direction is the isolation every fixture relies on; the second
+    /// is the trap that cost real credentials. Dropping `FUTURE_HOME` and moving
+    /// only `HOME` keeps the *files* in a temp dir while the endpoint silently
+    /// falls back to the untagged default pipe — the running Agent's — so a test
+    /// that asked "am I isolated?" of the file paths was told yes. If anything
+    /// ever removes the fixture's override again, this direction goes red with
+    /// the reason, rather than the suite quietly talking to the developer's
+    /// Agent. Only the name is computed: nothing is bound or connected.
+    #[cfg(windows)]
+    #[test]
+    fn local_pipe_name_moves_with_the_future_home_override_and_not_with_home() {
+        let _guard = crate::home::env_guard();
+        let previous_future_home = std::env::var_os(crate::home::FUTURE_HOME_ENV);
+        let previous_home = std::env::var_os("HOME");
+        let sid = current_user_sid_string().expect("the process token must yield a SID");
+
+        // A redirected user home, no override: still the untagged default pipe.
+        std::env::remove_var(crate::home::FUTURE_HOME_ENV);
+        let user_home = std::env::temp_dir().join("rpc-pipe-home-only");
+        std::env::set_var("HOME", &user_home);
+        let default = local_pipe_name();
+        assert_eq!(
+            default,
+            format!(r"\\.\pipe\future-agent-{sid}"),
+            "HOME alone must not rename the pipe: that is the running Agent's name"
+        );
+
+        // With the override, the name carries the tag of that root.
+        let root = std::env::temp_dir().join("rpc-pipe-isolated-root");
+        std::env::set_var(crate::home::FUTURE_HOME_ENV, &root);
+        let isolated = local_pipe_name();
+        assert_eq!(
+            isolated,
+            format!(
+                r"\\.\pipe\future-agent-{sid}-{}",
+                crate::home::home_tag(&root)
+            ),
+            "the override must rename the pipe to this instance's own"
+        );
+        assert_ne!(isolated, default);
+
+        match previous_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+        match previous_future_home {
+            Some(value) => std::env::set_var(crate::home::FUTURE_HOME_ENV, value),
+            None => std::env::remove_var(crate::home::FUTURE_HOME_ENV),
+        }
+    }
+
     /// The pipe is created with a DACL that grants only SYSTEM and the current user,
     /// so a local process running as someone else cannot connect. That rests on
     /// `current_user_sid_string` actually resolving a SID - if it silently returned an
