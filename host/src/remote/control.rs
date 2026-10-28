@@ -262,6 +262,21 @@ pub(crate) struct DeviceSnapshot {
 pub(crate) struct ClientSnapshot {
     pub(crate) name: String,
     pub(crate) kind: String,
+    /// The build that client said it runs, when it said.
+    ///
+    /// Absent for every client that predates the field, and for one that could
+    /// not name its own build — so a reader shows "unknown" rather than making
+    /// a version up. Nothing compares it: this is a label, not a gate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) version: Option<String>,
+    /// The reconcile stage that client last reported it was stuck at.
+    ///
+    /// The one thing a stuck remote conversation could never say out loud: the
+    /// phone spins and the machine it is talking to has no idea which step
+    /// failed. Absent when the client reports nothing, which is both "healthy"
+    /// and "too old to say".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) sync_stage: Option<String>,
 }
 
 /// One remote desktop this machine is paired *with*, as a terminal needs it.
@@ -439,6 +454,10 @@ fn client_snapshot(client: &crate::remote::ClientIdentity) -> ClientSnapshot {
     ClientSnapshot {
         name: client.name.clone(),
         kind: client.kind.clone(),
+        // Carried, never checked: the terminal and the Remote page print what
+        // the device said about itself so a stuck conversation has an owner.
+        version: client.version.clone(),
+        sync_stage: client.sync_stage.clone(),
     }
 }
 
@@ -1245,6 +1264,7 @@ mod tests {
         running.client = Some(crate::remote::ClientIdentity {
             name: "iPhone".into(),
             kind: "phone".into(),
+            ..Default::default()
         });
         running.devices = vec![future_remote_server::types::RemoteDevice {
             pair_id: "pair_AAAA".into(),
@@ -2044,5 +2064,39 @@ mod tests {
         // what it was before this channel learned the client role.
         let empty = serde_json::to_value(Reply::default()).unwrap();
         assert!(empty.get("peers").is_none(), "{empty}");
+    }
+
+    /// What a device said about itself reaches the terminal's document, and a
+    /// device that said nothing about its build still serializes to the shape it
+    /// always had.
+    ///
+    /// This is the half of the diagnostic that the phone cannot report from its
+    /// own side (no adb, no version on the wire before this field): if it were
+    /// dropped between the server's identity record and this snapshot, the field
+    /// would exist everywhere except the one place a person looks.
+    #[test]
+    fn a_device_build_and_stuck_stage_reach_the_terminal_document() {
+        let described = super::client_snapshot(&crate::remote::ClientIdentity {
+            name: "PJZ110".into(),
+            kind: "mobile".into(),
+            version: Some("2.0.1".into()),
+            sync_stage: Some("history".into()),
+        });
+        let value = serde_json::to_value(&described).unwrap();
+        assert_eq!(value["name"], "PJZ110");
+        assert_eq!(value["kind"], "mobile");
+        assert_eq!(value["version"], "2.0.1");
+        assert_eq!(value["syncStage"], "history");
+
+        // An older client sends neither, and the document has to stay readable: no
+        // empty strings, no nulls a reader would print as a version.
+        let silent = super::client_snapshot(&crate::remote::ClientIdentity {
+            name: "PJZ110".into(),
+            kind: "mobile".into(),
+            ..Default::default()
+        });
+        let value = serde_json::to_value(&silent).unwrap();
+        assert!(value.get("version").is_none(), "{value}");
+        assert!(value.get("syncStage").is_none(), "{value}");
     }
 }

@@ -189,6 +189,8 @@ export class RemoteClient {
   private desktopAvailable = false;
   private agentWasUnavailable = false;
   private presenceTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The reconcile stage this client last reported as stuck, if any. */
+  private syncStage: string | null = null;
 
   private endUnavailable(error: Error): void {
     if (this.stopped || this.isTerminal()) return;
@@ -1548,6 +1550,11 @@ export class RemoteClient {
   }
 
   private async activateSecureChannel(connection: NatsConnection): Promise<void> {
+    // A stage describes the connection that observed it. A new one starts with
+    // nothing to report until its own lane fails again — otherwise a device that
+    // reconnected would keep describing trouble on a socket that no longer
+    // exists.
+    this.syncStage = null;
     // Declare this client's capabilities. Each is opt-in so the desktop keeps
     // its legacy behaviour for a client that never asks:
     //   event_coalescing_v1 — the desktop may merge a run's text fragments, and
@@ -1576,9 +1583,13 @@ export class RemoteClient {
         features: this.declaredFeatures(),
         // Not a capability: the desktop shows the user what is connected, and it
         // cannot say "a phone" about something that never told it so. An older
-        // desktop ignores both fields.
+        // desktop ignores all three fields.
         deviceName: this.host.deviceName(),
         deviceKind: this.host.deviceKind(),
+        // The build, so the machine can name what is talking to it. Omitted
+        // when the host cannot say (an older client sends nothing at all, and
+        // the two cases have to read the same on the other end: "unknown").
+        ...(this.declaredVersion() ? { deviceVersion: this.declaredVersion() } : {}),
       },
       "handshake",
     );
@@ -1586,6 +1597,12 @@ export class RemoteClient {
     // proved it). Keep proving it until this connection goes away: the
     // declaration above says silence will be read as a departure.
     this.startPresenceBeats();
+  }
+
+  /** The build this client declares, or `""` when its host cannot say. */
+  private declaredVersion(): string {
+    const version = this.host.deviceVersion?.() ?? "";
+    return version.trim();
   }
 
   /**
@@ -1633,8 +1650,16 @@ export class RemoteClient {
     const channel = this.secureChannels.get(connection);
     if (!channel) return;
     const subject = `p.${this.credentials.pairId}.cmd.client_presence`;
+    // The beat is the one message this client already sends on a timer, so it is
+    // where a stage rides rather than a command of its own: the desktop reads
+    // the same message it always read, and only a host that knows the field
+    // looks at it. Absent means "nothing to report" — the healthy case and the
+    // too-old-to-say case, which the desktop treats identically.
+    const beat = this.syncStage
+      ? { type: "client_presence", syncStage: this.syncStage }
+      : { type: "client_presence" };
     try {
-      connection.publish(subject, channel.seal(subject, encoder.encode(JSON.stringify({ type: "client_presence" }))));
+      connection.publish(subject, channel.seal(subject, encoder.encode(JSON.stringify(beat))));
     }
     catch {
       // A closed socket is not a client-side failure: the recovery path owns
@@ -1646,6 +1671,28 @@ export class RemoteClient {
   private startPresenceBeats(): void {
     this.stopPresenceBeats();
     this.presenceBeatTimer = setInterval(() => this.beatPresence(), CLIENT_PRESENCE_BEAT_MS);
+    this.beatPresence();
+  }
+
+  /**
+   * Report the reconcile stage this client is stuck at, or clear it.
+   *
+   * Called by whoever owns the sync lane, on the failure and on the recovery —
+   * the two moments where the answer changes. It rides the presence beat, which
+   * already exists for liveness, so a stage costs no new command, subject or
+   * connection, and a desktop that does not know the field is unaffected.
+   *
+   * Deliberately not a gate and not a retry policy: nothing on either side acts
+   * on the value beyond displaying it. A stage left over from a connection that
+   * has since been replaced is dropped with that connection's state, because a
+   * stage describes where *this* client was, not a permanent property of it.
+   */
+  setSyncStage(stage: string | null): void {
+    const next = stage && stage.trim() ? stage.trim() : null;
+    if (next === this.syncStage) return;
+    this.syncStage = next;
+    // Send it now rather than at the next tick: the failure that produced it is
+    // the moment someone is looking at a spinner.
     this.beatPresence();
   }
 

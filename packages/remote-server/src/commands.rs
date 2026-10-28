@@ -154,6 +154,60 @@ fn declared_identity(command: &IncomingCmd) -> Option<crate::types::ClientIdenti
     Some(crate::types::ClientIdentity {
         name: name.to_string(),
         kind: command.device_kind.trim().to_string(),
+        // Not a gate and not a comparison: the version is carried so a machine
+        // can *name* what is talking to it. Blank means the client did not say.
+        version: declared_text(&command.device_version),
+        sync_stage: None,
+    })
+}
+
+/// A string a client declared, as the identity keeps it: trimmed, and absent
+/// when it said nothing. Blank and absent have to be the same answer here — the
+/// wire spells "not said" as an empty string, and a UI told "" would render an
+/// empty label rather than its own "unknown" wording.
+fn declared_text(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Record the reconcile stage a client reports on its presence beat.
+///
+/// This is the second half of the version field's job: a version says which
+/// build a device runs, and this says where its conversation sync is stuck. It
+/// rides the beat the client already sends while connected, so it costs no new
+/// command, subject or connection — and a host that does not know the field sees
+/// exactly the beat it always saw.
+///
+/// A stage with no identity to hang it on is dropped: the UI names a device by
+/// what it declared, and an unnamed row with a stage would describe trouble on a
+/// device it cannot even call by name. `secure_ready` always precedes the first
+/// beat on a healthy connection, so this only skips a client that never declared
+/// itself. A later beat without the field clears the stage, because a recovered
+/// client must stop reading as broken without anyone reloading the page.
+fn record_client_sync_stage(runtime: &dyn CommandRuntime, pair_id: &str, command: &IncomingCmd) {
+    let Some(slot) = runtime.client_identity(pair_id) else {
+        return;
+    };
+    let stage = declared_text(&command.sync_stage);
+    let mut current = slot.lock().unwrap();
+    *current = with_sync_stage(current.take(), stage);
+}
+
+/// The stage half of [`record_client_sync_stage`], split out because it is the
+/// rule that matters: a stage describes the device that reported it, so it can
+/// only ever be written *onto* an identity that already exists.
+///
+/// Pure so every branch is testable without a bridge: `None` in, `None` out (a
+/// client that never declared itself is not invented here), and an existing
+/// identity takes the stage verbatim — including `None`, which is how a
+/// recovered client clears the one it reported before.
+fn with_sync_stage(
+    current: Option<crate::types::ClientIdentity>,
+    stage: Option<String>,
+) -> Option<crate::types::ClientIdentity> {
+    current.map(|mut identity| {
+        identity.sync_stage = stage;
+        identity
     })
 }
 
@@ -818,6 +872,9 @@ async fn handle_command_inner(
         // device keeps proving it is present without being allowed to command
         // anything — presence and authority are different questions.
         "client_presence" => {
+            // The beat is also where a client says it is stuck, if it is: the
+            // stage rides this existing message instead of a command of its own.
+            record_client_sync_stage(handshake.runtime.as_ref(), &handshake.creds.pair_id, &cmd);
             reply(client, &msg, true, json!({}), None).await;
         }
         // The client is leaving.
@@ -1375,6 +1432,7 @@ mod identity_tests {
             Some(crate::types::ClientIdentity {
                 name: "FutureOS Desktop (studio-imac)".into(),
                 kind: "desktop".into(),
+                ..Default::default()
             })
         );
     }
@@ -1411,6 +1469,58 @@ mod identity_tests {
             .map(|client| client.kind),
             Some(String::new())
         );
+    }
+    /// A version rides the same optional declaration as the name, and is
+    /// normalised the same way: trimmed when present, absent when blank.
+    ///
+    /// The blank case is the one that matters for older clients: a client that
+    /// predates the field sends nothing, and the page must say "unknown" rather
+    /// than render an empty version as if the device had answered.
+    #[test]
+    fn a_declared_version_is_carried_and_blank_means_unknown() {
+        assert_eq!(
+            declared_identity(&IncomingCmd {
+                device_name: "PJZ110".into(),
+                device_kind: "mobile".into(),
+                device_version: "  2.0.1+45  ".into(),
+                ..Default::default()
+            })
+            .and_then(|client| client.version),
+            Some("2.0.1+45".to_string())
+        );
+        assert_eq!(
+            declared_identity(&IncomingCmd {
+                device_name: "PJZ110".into(),
+                device_version: "   ".into(),
+                ..Default::default()
+            })
+            .and_then(|client| client.version),
+            None
+        );
+    }
+    /// The stage travels the other way round from the version: it is reported on
+    /// the presence beat, which repeats, so it has to be able to go away again.
+    /// A device that recovered must stop reading as stuck on a page nobody
+    /// reloaded, and a beat carrying no stage is exactly how it says so.
+    #[test]
+    fn a_reported_stage_attaches_to_the_device_and_clears_when_it_stops_reporting() {
+        let identity = crate::types::ClientIdentity {
+            name: "PJZ110".into(),
+            kind: "mobile".into(),
+            ..Default::default()
+        };
+        let broken = with_sync_stage(Some(identity.clone()), declared_text("history"))
+            .expect("a stage rides the identity that reported it");
+        assert_eq!(broken.sync_stage.as_deref(), Some("history"));
+        // Everything the identity said about itself survives the stage.
+        assert_eq!(broken.name, "PJZ110");
+        assert_eq!(broken.kind, "mobile");
+        let recovered = with_sync_stage(Some(broken), declared_text(""))
+            .expect("the identity is not the stage's to remove");
+        assert_eq!(recovered.sync_stage, None);
+        // No identity, no device invented: an unnamed client cannot be
+        // described as stuck without a name to put on the row.
+        assert_eq!(with_sync_stage(None, declared_text("replay")), None);
     }
 }
 
