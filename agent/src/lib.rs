@@ -326,13 +326,31 @@ pub(crate) mod test_support {
             }
             let inherited = std::env::var_os("FUTURE_HOME").unwrap();
             let home = super::TestHome::new();
-            assert!(std::env::var_os("FUTURE_HOME").is_none());
+            // An inherited override is *replaced*, not dropped: dropping it
+            // still resolves the files to `<home>/.future`, but names the
+            // local endpoint from the untagged default (the developer's
+            // running Agent) instead of the fixture's own root.
+            let redirected =
+                crate::sandbox::paths::canonicalize_lenient(home.path()).join(".future");
+            assert_eq!(
+                std::env::var_os("FUTURE_HOME").as_deref(),
+                Some(redirected.as_os_str()),
+                "TestHome must point FUTURE_HOME at its own <home>/.future"
+            );
+            assert_ne!(
+                std::env::var_os("FUTURE_HOME").as_deref(),
+                Some(inherited.as_os_str()),
+                "the inherited override must not survive TestHome::new()"
+            );
+            assert_eq!(crate::utils::future_home(), redirected);
+            drop(home);
+            // The drop arm still restores the inherited value — and the
+            // resolver, which reads the env on every call, follows it again.
+            assert_eq!(std::env::var_os("FUTURE_HOME"), Some(inherited.clone()));
             assert_eq!(
                 crate::utils::future_home(),
-                crate::sandbox::paths::canonicalize_lenient(home.path()).join(".future")
+                std::path::PathBuf::from(&inherited)
             );
-            drop(home);
-            assert_eq!(std::env::var_os("FUTURE_HOME"), Some(inherited));
         }
 
         /// Both restore arms, exercised directly (the Some/None mix a real

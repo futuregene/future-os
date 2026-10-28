@@ -135,6 +135,61 @@ pub async fn wait_for(mut cond: impl FnMut() -> bool) -> bool {
     false
 }
 
+/// A free TCP port that no other `bind("127.0.0.1:0")` in this process (or on
+/// this machine) can be handed while the test uses it.
+///
+/// The `free_port()` idiom — bind `:0`, read the port, drop the listener — only
+/// proves the port was free at that instant. Every other `:0` bind in the test
+/// binary draws from the same ephemeral pool: mock HTTP servers, CDP fixtures,
+/// and the 50-port exhaustion reservation all do. One of them can be handed the
+/// port between the probe and its use, and then the test talks to a stranger.
+/// That is what reddened CI (`start_stops_polling_when_the_probe_budget_runs_out`
+/// took the already-running branch and died on `No sessionId in createSession
+/// response: {}`, i.e. a mock with a `/status` route and no `/session` route
+/// answered instead of silence) and it reproduces here as `port_in_use_probe`
+/// failing on `!port_in_use(free)`.
+///
+/// The kernel never assigns a `:0` bind a port below its ephemeral range —
+/// `net.inet.ip.portrange.first` = 49152 on macOS, `ip_local_port_range` starts
+/// at 32768 on Linux, the dynamic range starts at 49152 on Windows — so a port
+/// from [`RESERVED_PORT_BAND`] is only ever taken by an explicit bind, which no
+/// fixture here does. Ports are handed out once per process (the start is
+/// spread by pid so concurrently running test binaries differ) and each
+/// candidate is proved free by binding it first.
+pub fn reserved_port() -> i64 {
+    use std::sync::{Mutex, OnceLock};
+    static NEXT: OnceLock<Mutex<u16>> = OnceLock::new();
+    let mut next = NEXT
+        .get_or_init(|| {
+            let span = u32::from(RESERVED_PORT_BAND.1 - RESERVED_PORT_BAND.0);
+            let start = RESERVED_PORT_BAND.0 + (std::process::id() % span) as u16;
+            Mutex::new(start)
+        })
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for _ in 0..(RESERVED_PORT_BAND.1 - RESERVED_PORT_BAND.0) {
+        let candidate = *next;
+        *next = if candidate + 1 >= RESERVED_PORT_BAND.1 {
+            RESERVED_PORT_BAND.0
+        } else {
+            candidate + 1
+        };
+        if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", candidate)) {
+            drop(listener);
+            return i64::from(candidate);
+        }
+    }
+    panic!(
+        "no free port in the reserved band {}..{}",
+        RESERVED_PORT_BAND.0, RESERVED_PORT_BAND.1
+    );
+}
+
+/// The band [`reserved_port`] hands out from: entirely below every supported
+/// platform's ephemeral range (see that function), so `bind(:0)` never returns
+/// one of these ports to anybody else.
+pub const RESERVED_PORT_BAND: (u16, u16) = (20_000, 29_000);
+
 /// Reserve `n` consecutive TCP ports (for port-scan exhaustion tests).
 /// The first candidate range always contains one deliberately squatted port,
 /// so the collision-retry arm runs deterministically; a genuine transient
@@ -173,6 +228,37 @@ pub fn reserve_consecutive_ports(n: i64) -> (i64, Vec<std::net::TcpListener>) {
 
 #[cfg(test)]
 mod tests {
+    /// Three properties the fix depends on: the port is out of `bind(:0)`'s
+    /// reach, it is free when handed out, and it is never handed out twice.
+    #[test]
+    fn reserved_port_is_out_of_reach_free_and_unique() {
+        let (low, high) = super::RESERVED_PORT_BAND;
+        // A `:0` bind is only ever assigned a port from the OS ephemeral range:
+        // 49152+ on macOS, 32768+ on Linux, 49152+ on Windows. A port below the
+        // lowest of those floors cannot be taken by another fixture's bind.
+        assert!(
+            high <= 32_768,
+            "the band must end below Linux's 32768 ephemeral floor"
+        );
+        let first = super::reserved_port();
+        assert!(
+            (i64::from(low)..i64::from(high)).contains(&first),
+            "{first} is outside the reserved band {low}..{high}"
+        );
+        // Free at hand-out: the same bind a `:0` fixture would attempt succeeds.
+        let listener = std::net::TcpListener::bind(("127.0.0.1", first as u16))
+            .expect("a reserved port is free when it is handed out");
+        drop(listener);
+        // Handed out once per process, so two concurrently starting tests never
+        // agree on a port.
+        let second = super::reserved_port();
+        assert!(
+            (i64::from(low)..i64::from(high)).contains(&second),
+            "{second} is outside the reserved band {low}..{high}"
+        );
+        assert_ne!(first, second, "a reserved port must not repeat");
+    }
+
     #[tokio::test]
     async fn temporary_home_survives_its_constructor_and_restores_all_roots() {
         let _lock = super::lock_env().await;
