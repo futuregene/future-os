@@ -22,6 +22,7 @@ jest.mock("./host", () => ({
   // The declaration carries the device's own name, so the mock has to answer
   // one: a missing export here is a TypeError on the handshake path.
   deviceName: () => "Pixel 8",
+  deviceVersion: () => "2.0.1-test",
   refreshCredentials: jest.fn(),
 }));
 jest.mock("../src/codec", () => ({
@@ -188,6 +189,30 @@ describe("RemoteClient connection handoff", () => {
     const beats = live.publish.mock.calls.filter(([subject]) =>
       String(subject) === `p.${credentials.pairId}.cmd.client_presence`);
     expect(beats.length).toBeGreaterThanOrEqual(2);
+  });
+
+  // A stuck conversation has one question nobody at the wheel can answer: which
+  // step died. The stage rides the beat this client already sends, so it costs
+  // no command and no connection, and it has to be able to go away again — a
+  // device that recovered must stop reading as stuck.
+  test("a reported sync stage rides the presence beat and clears again", async () => {
+    const live = socket();
+    (wsconnect as jest.Mock).mockResolvedValue(live.connection);
+    await client.open();
+    const started = client as unknown as { startPresenceBeats: () => void; };
+    started.startPresenceBeats();
+    const stages = () => live.publish.mock.calls
+      .filter(([subject]) => String(subject) === `p.${credentials.pairId}.cmd.client_presence`)
+      .map(([, payload]) => {
+        // Sealed on the wire; the suite's channel double passes plaintext through.
+        const text = new TextDecoder().decode(payload as Uint8Array);
+        return JSON.parse(text) as { syncStage?: string };
+      });
+    expect(stages().every((beat) => beat.syncStage === undefined)).toBe(true);
+    client.setSyncStage("history");
+    expect(stages().at(-1)?.syncStage).toBe("history");
+    client.setSyncStage(null);
+    expect(stages().at(-1)?.syncStage).toBeUndefined();
   });
 
   // Disconnecting is the user's own stop, and the desktop has to hear it at that
@@ -634,6 +659,9 @@ describe("RemoteClient connection handoff", () => {
       ],
       deviceName: "Pixel 8",
       deviceKind: "mobile",
+      // The build, so the machine can name what is talking to it. Omitted by a
+      // client that cannot say, and an older desktop ignores it either way.
+      deviceVersion: "2.0.1-test",
     });
     // Each declared capability has to stay truthful for this build, or the
     // declaration must be dropped with it. The lean feed's three requirements

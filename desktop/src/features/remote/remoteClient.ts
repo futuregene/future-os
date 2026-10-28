@@ -55,7 +55,21 @@ export interface RemoteDevice {
    * and every row it sent was one it believed was there.
    */
   present?: boolean;
-  client: { name: string; kind: string } | null;
+  /**
+   * What the device said about itself.
+   *
+   * `version` and `syncStage` are optional on the wire and absent for every
+   * client that predates them — an unknown version is a fact to show, never a
+   * reason to refuse the device. `syncStage` names the step its conversation
+   * sync is stuck at (`get_state`, `history`, `replay`) and is cleared by the
+   * client once it recovers, so it always describes *now*.
+   */
+  client: {
+    name: string;
+    kind: string;
+    version?: string | null;
+    syncStage?: string | null;
+  } | null;
   /** An invitation for this device that nobody has claimed yet. */
   pairingCode: string | null;
   pairingCodeExpiresAt: number | null;
@@ -89,7 +103,12 @@ export interface RemoteStatus {
    * has to read this as "not said", never as "nothing is connected". It exists
    * because the connection stopped being phone-only.
    */
-  client: { name: string; kind: string } | null;
+  client: {
+    name: string;
+    kind: string;
+    version?: string | null;
+    syncStage?: string | null;
+  } | null;
   /**
    * Every paired device. Absent from a backend that predates multi-device, so
    * the page falls back to the single-device flow rather than reporting an

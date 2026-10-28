@@ -70,6 +70,10 @@ pub struct IncomingCmd {
     /// `secure_ready`: what the client says it is. Optional and additive, so an older client that sends neither is simply "unknown" rather than wrong.
     pub device_name: String,
     pub device_kind: String,
+    /// `secure_ready`: the build the client is running, as its own opaque string. Optional and additive — an older client sends none and is reported as an unknown version, never rejected. Nothing on this side compares it against a minimum; it exists so a machine can name what is talking to it, which is the one thing neither end could otherwise learn (the phone's package version, the desktop's release tag).
+    pub device_version: String,
+    /// `client_presence`: the reconcile stage this client last failed at (`get_state`, `history`, `replay`). Rides the beat the client already sends, so where a stuck conversation died reaches the machine without a new command or connection. Absent (or empty) means "nothing to report", which is what a healthy client and an older client both say.
+    pub sync_stage: String,
     /// file transfer control + prompt attachment references
     pub mime_type: String,
     pub kind: String,
@@ -143,6 +147,8 @@ impl Default for IncomingCmd {
             path: String::new(),
             device_name: String::new(),
             device_kind: String::new(),
+            device_version: String::new(),
+            sync_stage: String::new(),
             mime_type: String::new(),
             kind: String::new(),
             original_size: 0,

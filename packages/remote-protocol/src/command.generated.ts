@@ -68,6 +68,10 @@ export interface RemoteCommand {
   /** `secure_ready`: what the client says it is. Optional and additive, so an older client that sends neither is simply "unknown" rather than wrong. */
   deviceName?: string;
   deviceKind?: string;
+  /** `secure_ready`: the build the client is running, as its own opaque string. Optional and additive — an older client sends none and is reported as an unknown version, never rejected. Nothing on this side compares it against a minimum; it exists so a machine can name what is talking to it, which is the one thing neither end could otherwise learn (the phone's package version, the desktop's release tag). */
+  deviceVersion?: string;
+  /** `client_presence`: the reconcile stage this client last failed at (`get_state`, `history`, `replay`). Rides the beat the client already sends, so where a stuck conversation died reaches the machine without a new command or connection. Absent (or empty) means "nothing to report", which is what a healthy client and an older client both say. */
+  syncStage?: string;
   /** file transfer control + prompt attachment references */
   mimeType?: string;
   kind?: string;
