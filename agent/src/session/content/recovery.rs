@@ -8,6 +8,24 @@ use rusqlite::params;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct InvalidRecoveryData(&'static str);
+
+fn is_local_recovery_failure(error: &anyhow::Error) -> bool {
+    // Never downgrade a storage/worker failure into a broken conversation.
+    // Only explicitly identified run data failures may be isolated.
+    !error.is::<crate::service::StartupCancelled>()
+        && !error.chain().any(|cause| {
+            cause.is::<std::io::Error>()
+                || matches!(
+                    cause.downcast_ref::<rusqlite::Error>(),
+                    Some(rusqlite::Error::SqliteFailure(..))
+                )
+        })
+        && error.is::<InvalidRecoveryData>()
+}
+
 struct Draft {
     id: String,
     timestamp: String,
@@ -44,7 +62,7 @@ impl Draft {
         if let Some((_, prior, _)) = self.links.iter_mut().find(|(known, _, _)| known == &field) {
             anyhow::ensure!(
                 prior.id == range.id && prior.offset + prior.length == range.offset,
-                "recovery content range has a gap"
+                InvalidRecoveryData("recovery content range has a gap")
             );
             prior.length += range.length;
         } else {
@@ -55,9 +73,9 @@ impl Draft {
     fn tool_slot(&mut self, data: &Value) -> Result<usize> {
         // The released SSE carrier omits tc_index for the first tool.
         let index = data["tc_index"].as_u64().unwrap_or(0);
-        let key = data["content_key"]
-            .as_str()
-            .context("recovery tool input has no content identity")?;
+        let key = data["content_key"].as_str().context(InvalidRecoveryData(
+            "recovery tool input has no content identity",
+        ))?;
         let ordinal = *self.tool_slots.entry(index).or_insert_with(|| {
             let ordinal = self.blocks.len();
             self.keys.push(key.into());
@@ -87,8 +105,87 @@ impl Draft {
 impl SqliteStore {
     /// Called while startup still excludes executors. Old conversations are
     /// untouched; only explicit active format-2 run records enter this path.
+    #[cfg(test)]
     pub(crate) fn recover_segmented_runs(&self) -> Result<()> {
+        self.recover_segmented_runs_cancellable(&Default::default())
+    }
+
+    fn isolate_failed_recovery(
+        &self,
+        session: &str,
+        run: &str,
+        epoch: i64,
+        error: &anyhow::Error,
+    ) -> Result<()> {
+        let (session, run, error) = (session.to_owned(), run.to_owned(), format!("{error:#}"));
+        self.db.call(move |db| {
+            let tx = crate::session::database::begin_write_transaction(db)?;
+            let run = crate::session::identity::BoundIdentity::run(&tx, &session, &run)?;
+            let session = crate::session::identity::BoundIdentity::session(&tx, &session)?;
+            let changed = tx.execute("UPDATE runs SET status='recovery_failed',error=?4 WHERE session_id=?1 AND run_id=?2 AND coalesce(epoch,0)=?3 AND status='running'", params![session,run,epoch,error])?;
+            anyhow::ensure!(changed == 1, "interrupted run changed during recovery isolation");
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    pub(crate) fn retry_segmented_recovery(&self, session: &str) -> Result<()> {
+        let id = session.to_owned();
+        let runs = self.db.read(move |db| {
+            let id = crate::session::identity::BoundIdentity::session(db, &id)?;
+            let mut query = db.prepare("SELECT run_id,coalesce(epoch,0),coalesce(run_sequence,-1) FROM runs WHERE session_id=?1 AND status='recovery_failed' ORDER BY run_id")?;
+            let rows = query.query_map([id], |row| Ok((row.get::<_,crate::session::identity::BoundIdentity>(0)?,row.get::<_,i64>(1)?,row.get::<_,i64>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })?;
+        anyhow::ensure!(
+            !runs.is_empty(),
+            "session has no isolated run recovery to retry"
+        );
+        let snapshot = self.db.call(|db| {
+            let path = std::path::Path::new(db.path().context("recovery database has no path")?);
+            crate::session::create_database_snapshot(
+                db,
+                &path
+                    .parent()
+                    .context("recovery database has no directory")?
+                    .join("backups"),
+                "agent-before-recovery-retry",
+            )
+        })?;
+        tracing::info!(session, snapshot = %snapshot.display(), "preserved database before explicit recovery retry");
+        let cancellation = crate::service::StartupCancellation::default();
+        for (run, epoch, sequence) in runs {
+            let (id, key) = (session.to_owned(), run.to_string());
+            self.db.call(move |db| {
+                let tx = crate::session::database::begin_write_transaction(db)?;
+                let key = crate::session::identity::BoundIdentity::run(&tx, &id, &key)?;
+                let id = crate::session::identity::BoundIdentity::session(&tx, &id)?;
+                let changed = tx.execute("UPDATE runs SET status='running' WHERE session_id=?1 AND run_id=?2 AND status='recovery_failed'", params![id,key])?;
+                anyhow::ensure!(changed == 1, "isolated run changed before retry");
+                tx.commit()?;
+                Ok(())
+            })?;
+            if let Err(error) =
+                self.recover_segmented_run(session, &run, epoch, sequence, &cancellation)
+            {
+                self.isolate_failed_recovery(session, &run, epoch, &error)?;
+                return Err(error).with_context(|| {
+                    format!(
+                        "recovery retry failed; pre-retry snapshot: {}",
+                        snapshot.display()
+                    )
+                });
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn recover_segmented_runs_cancellable(
+        &self,
+        cancellation: &crate::service::StartupCancellation,
+    ) -> Result<()> {
         loop {
+            cancellation.check()?;
             let runs=self.db.read(|db| {
                 let mut query=db.prepare("SELECT r.session_id,r.run_id,coalesce(r.epoch,0),coalesce(r.run_sequence,-1) FROM runs r JOIN session_formats f ON f.session_id=r.session_id JOIN sessions s ON s.id=r.session_id WHERE f.format=2 AND r.status='running' AND s.revision>=0 ORDER BY r.session_id,r.run_id LIMIT 16")?;
                 let rows=query.query_map([],|row|Ok((row.get::<_,crate::session::identity::BoundIdentity>(0)?,row.get::<_,crate::session::identity::BoundIdentity>(1)?,row.get::<_,i64>(2)?,row.get::<_,i64>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;Ok(rows)
@@ -97,12 +194,24 @@ impl SqliteStore {
                 return Ok(());
             }
             for (session, run, epoch, sequence) in runs {
+                cancellation.check()?;
                 let started = std::time::Instant::now();
                 tracing::info!(session = %session, run = %run, epoch, sequence, "session storage: recovering interrupted run");
-                self.recover_segmented_run(&session, &run, epoch, sequence)
+                let result = self
+                    .recover_segmented_run(&session, &run, epoch, sequence, cancellation)
                     .with_context(|| {
                         format!("recover interrupted run session={session} run={run} epoch={epoch}")
-                    })?;
+                    });
+                if let Err(error) = result {
+                    if !is_local_recovery_failure(&error) {
+                        return Err(error);
+                    }
+                    self.isolate_failed_recovery(&session, &run, epoch, &error)?;
+                    tracing::error!(session = %session, run = %run, epoch, error = %format!("{error:#}"), "session recovery isolated; original history and streams retained");
+                    cancellation.record_progress();
+                    continue;
+                }
+                cancellation.record_progress();
                 tracing::info!(session = %session, run = %run, epoch, elapsed_ms = started.elapsed().as_millis() as u64, "session storage: interrupted run recovered");
             }
         }
@@ -114,6 +223,7 @@ impl SqliteStore {
         run: &str,
         epoch: i64,
         sequence: i64,
+        cancellation: &crate::service::StartupCancellation,
     ) -> Result<()> {
         let (s, r) = (session.to_owned(), run.to_owned());
         let epochs = self.db.read(move |db| {
@@ -129,6 +239,7 @@ impl SqliteStore {
         })?;
         let terminal_epoch_seen = epochs.contains(&epoch);
         for epoch in epochs {
+            cancellation.check()?;
             let identity = StreamIdentity {
                 session_id: session.into(),
                 run_id: run.into(),
@@ -137,12 +248,14 @@ impl SqliteStore {
             let mut draft: Option<Draft> = None;
             let mut cursor = -1;
             loop {
+                cancellation.check()?;
                 let scope = identity.clone();
                 let page = self
                     .db
                     .read(move |db| {
                         let tx = db.transaction()?;
-                        let page = read_encoded_changes(&tx, &scope, cursor, 128)?;
+                        let page = read_encoded_changes(&tx, &scope, cursor, 128)
+                            .context(InvalidRecoveryData("invalid recovery stream page"))?;
                         tx.commit()?;
                         Ok(page)
                     })
@@ -150,19 +263,22 @@ impl SqliteStore {
                         format!("read recovery stream epoch={epoch} after_cursor={cursor}")
                     })?
                     .decode()
+                    .context(InvalidRecoveryData("invalid encoded recovery data"))
                     .with_context(|| {
                         format!("decode recovery stream epoch={epoch} after_cursor={cursor}")
                     })?;
+                cancellation.record_progress();
                 for change in page.changes {
+                    cancellation.check()?;
                     cursor = change.last_cursor;
                     anyhow::ensure!(
                         cursor <= page.durable_cursor,
-                        "recovery crossed durable watermark"
+                        InvalidRecoveryData("recovery crossed durable watermark")
                     );
                     let data = &change.metadata["data"];
                     let timestamp = change.metadata["timestamp"]
                         .as_str()
-                        .context("recovery event has no timestamp")?
+                        .context(InvalidRecoveryData("recovery event has no timestamp"))?
                         .to_owned();
                     let entry = data["entry_id"].as_str().unwrap_or("");
                     match change.event_type.as_str() {
@@ -170,16 +286,19 @@ impl SqliteStore {
                             if let Some(previous) = draft.take() {
                                 self.publish_recovered(session, previous)?;
                             }
-                            anyhow::ensure!(!entry.is_empty(), "recovery message has no identity");
+                            anyhow::ensure!(
+                                !entry.is_empty(),
+                                InvalidRecoveryData("recovery message has no identity")
+                            );
                             if !self.entry_exists(session, entry)? {
                                 draft = Some(Draft::assistant(entry.into(), timestamp, run));
                             }
                         }
                         "text_start" | "thinking_start" => {
                             if let Some(draft) = draft.as_mut().filter(|draft| draft.id == entry) {
-                                let key = data["content_key"]
-                                    .as_str()
-                                    .context("recovery start has no block identity")?;
+                                let key = data["content_key"].as_str().context(
+                                    InvalidRecoveryData("recovery start has no block identity"),
+                                )?;
                                 if !draft.keys.iter().any(|known| known == key) {
                                     draft.keys.push(key.into());
                                     draft.blocks.push(json!({"type":if change.event_type == "text_start" {"text"} else {"reasoning"},"text":""}));
@@ -188,9 +307,9 @@ impl SqliteStore {
                         }
                         "text_chunk" | "thinking_delta" => {
                             if let Some(draft) = draft.as_mut().filter(|draft| draft.id == entry) {
-                                let key = data["content_key"]
-                                    .as_str()
-                                    .context("recovery delta has no content identity")?;
+                                let key = data["content_key"].as_str().context(
+                                    InvalidRecoveryData("recovery delta has no content identity"),
+                                )?;
                                 if let Some((_, range, _)) = change
                                     .bodies
                                     .iter()
@@ -222,9 +341,11 @@ impl SqliteStore {
                                     change.bodies.iter().find(|(known, _, _)| known == field)
                                 {
                                     draft.text(
-                                        data["content_key"]
-                                            .as_str()
-                                            .context("recovery tool content identity missing")?,
+                                        data["content_key"].as_str().context(
+                                            InvalidRecoveryData(
+                                                "recovery tool content identity missing",
+                                            ),
+                                        )?,
                                         "text",
                                         *range,
                                     )?;
@@ -360,14 +481,17 @@ impl SqliteStore {
             if let Some(draft) = draft {
                 self.publish_recovered(session, draft)?;
             }
-            self.release_unpublished_stream_owners(&identity)?;
+            self.release_unpublished_stream_owners(&identity, cancellation)?;
         }
         if !terminal_epoch_seen {
-            self.release_unpublished_stream_owners(&StreamIdentity {
-                session_id: session.into(),
-                run_id: run.into(),
-                epoch,
-            })?;
+            self.release_unpublished_stream_owners(
+                &StreamIdentity {
+                    session_id: session.into(),
+                    run_id: run.into(),
+                    epoch,
+                },
+                cancellation,
+            )?;
         }
         let (session, run) = (session.to_owned(), run.to_owned());
         self.db.call(move|db| {
@@ -395,9 +519,14 @@ impl SqliteStore {
     /// Only an active interrupted run's scoped staging owners are visited.
     /// Each job examines at most 64 metadata rows; published change ranges and
     /// recovered entry references remain authoritative. No historical sweep.
-    fn release_unpublished_stream_owners(&self, stream: &StreamIdentity) -> Result<()> {
+    fn release_unpublished_stream_owners(
+        &self,
+        stream: &StreamIdentity,
+        cancellation: &crate::service::StartupCancellation,
+    ) -> Result<()> {
         let mut after = -1i64;
         loop {
+            cancellation.check()?;
             let scope = stream.clone();
             let page=self.db.call(move|db| {
                 let tx=crate::session::database::begin_write_transaction(db)?;
@@ -412,6 +541,7 @@ impl SqliteStore {
                 }
                 let next=owners.last().map(|(_,key,_)|*key);tx.commit()?;Ok(next)
             })?;
+            cancellation.record_progress();
             let Some(next) = page else {
                 break;
             };
@@ -447,7 +577,10 @@ impl SqliteStore {
             self.db.call(move |db| {
                 let tx = crate::session::database::begin_write_transaction(db)?;
                 for (field, range, encoding) in links {
-                    super::bind_encoded(&tx, &session, "entry", &entry, &field, range, encoding)?;
+                    super::bind_encoded(&tx, &session, "entry", &entry, &field, range, encoding)
+                        .context(InvalidRecoveryData(
+                            "invalid recovered entry content reference",
+                        ))?;
                 }
                 tx.commit()?;
                 Ok(())
@@ -460,7 +593,10 @@ impl SqliteStore {
                 &tx,
                 &session,
                 vec![draft.value()],
-            )?;
+            )
+            .context(InvalidRecoveryData(
+                "recovered entry conflicts with committed history",
+            ))?;
             let session = crate::session::identity::BoundIdentity::session(&tx, &session)?;
             tx.execute(
                 "UPDATE sessions SET revision=revision+1 WHERE id=?1",
@@ -471,3 +607,7 @@ impl SqliteStore {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "recovery_tests.rs"]
+mod tests;

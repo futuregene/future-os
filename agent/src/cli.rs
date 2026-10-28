@@ -81,6 +81,10 @@ pub struct Cli {
     /// Explicitly retry one skipped legacy session while the Agent is stopped.
     #[arg(long, value_name = "SESSION_ID")]
     retry_session_import: Option<String>,
+    /// Retry an isolated interrupted run after repairing/restoring its data.
+    /// Preserves a pre-retry database snapshot; never resumes model/tool work.
+    #[arg(long, value_name = "SESSION_ID", conflicts_with_all = ["migrate_sessions", "retry_session_import"])]
+    retry_session_recovery: Option<String>,
     /// Session directory for isolated migration verification (maintenance only).
     #[arg(long, value_name = "DIRECTORY")]
     migration_source: Option<std::path::PathBuf>,
@@ -231,9 +235,12 @@ pub fn run_from_args(args: &[String]) -> Result<()> {
     // Maintenance commands above are deliberately sessionless and must remain
     // usable while the server is running. Only the long-lived server owns the
     // user-scoped singleton lock.
-    if cli.migration_source.is_some() && !cli.migrate_sessions && cli.retry_session_import.is_none()
+    if cli.migration_source.is_some()
+        && !cli.migrate_sessions
+        && cli.retry_session_import.is_none()
+        && cli.retry_session_recovery.is_none()
     {
-        anyhow::bail!("--migration-source requires --migrate-sessions or --retry-session-import");
+        anyhow::bail!("--migration-source requires --migrate-sessions, --retry-session-import or --retry-session-recovery");
     }
     let config = crate::service::AgentConfig {
         verbose: cli.verbose,
@@ -241,13 +248,24 @@ pub fn run_from_args(args: &[String]) -> Result<()> {
         ..crate::service::AgentConfig::default()
     };
     crate::service::AgentService::with_instance(config, |service| {
-        if cli.migrate_sessions || cli.retry_session_import.is_some() {
+        if cli.migrate_sessions
+            || cli.retry_session_import.is_some()
+            || cli.retry_session_recovery.is_some()
+        {
             let manager = Manager::new(
                 cli.migration_source
                     .clone()
                     .unwrap_or_else(|| crate::utils::default_session_dir("")),
             );
             manager.initialize()?;
+            if let Some(id) = cli.retry_session_recovery.as_deref() {
+                manager.retry_session_recovery(id)?;
+                println!(
+                    "{}",
+                    serde_json::json!({"sessionId":id,"recovery":"completed","executionResumed":false})
+                );
+                return Ok(());
+            }
             if let Some(id) = cli.retry_session_import.as_deref() {
                 manager.retry_legacy_import(id)?;
             }

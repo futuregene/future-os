@@ -21,20 +21,26 @@ pub(super) fn open_connection_cancellable(
         std::fs::create_dir_all(parent).context("create SQLite directory")?;
     }
     let mut connection = Connection::open(path).context("open Agent SQLite database")?;
-    crate::session::content::install_functions(&connection)?;
+    cancellation.monitor_sqlite(&connection)?;
+    let result = initialize_connection(&mut connection, path, cancellation);
+    // The startup token must not interrupt ordinary writes after readiness.
+    connection.progress_handler(0, None::<fn() -> bool>)?;
+    cancellation.check()?;
+    result?;
+    Ok(connection)
+}
+
+fn initialize_connection(
+    connection: &mut Connection,
+    path: &Path,
+    cancellation: &crate::service::StartupCancellation,
+) -> Result<()> {
+    crate::session::content::install_functions(connection)?;
     connection.busy_timeout(Duration::from_secs(5))?;
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     let application: i64 =
         connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
-    if version != 0
-        && version != 2
-        && version != 3
-        && version != 4
-        && version != 5
-        && version != 6
-        && version != 7
-        && version != super::CURRENT_SCHEMA_VERSION
-    {
+    if !super::supports_schema_version(version) {
         bail!("unsupported Agent database schema version {version}");
     }
     if application != 0 && application != 0x46555452 {
@@ -74,7 +80,7 @@ pub(super) fn open_connection_cancellable(
     }
     if version == super::CURRENT_SCHEMA_VERSION {
         // CREATE IF NOT EXISTS must never mask missing authoritative history.
-        super::schema::validate_core(&connection)?;
+        super::schema::validate_core(connection)?;
     } else if application != 0 {
         let bootstrap: bool = connection.query_row(
             "SELECT NOT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table'
@@ -84,24 +90,25 @@ pub(super) fn open_connection_cancellable(
             |row| row.get(0),
         )?;
         if !(bootstrap && matches!(version, 0 | 3 | 4)) {
-            super::schema::validate_authoritative_history(&connection, version)?;
+            super::schema::validate_authoritative_history(connection, version)?;
         }
         let directory = path
             .parent()
             .context("Agent database has no parent")?
             .join("backups");
         cancellation.report(crate::service::StartupStage::BackingUpStorage);
-        let snapshot = crate::session::create_database_snapshot(
-            &connection,
+        let snapshot = crate::session::database_backup::create_database_snapshot_cancellable(
+            connection,
             &directory,
             "agent-before-schema-upgrade",
+            cancellation,
         )?;
         tracing::info!(path = %snapshot.display(), "preserved Agent pre-upgrade snapshot");
     }
     // WAL initialization writes the database header. Configure a fresh file's
     // pointer-map layout before that first write, without a full VACUUM.
     cancellation.check()?;
-    configure_incremental_auto_vacuum(&connection)?;
+    configure_incremental_auto_vacuum(connection)?;
     connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "synchronous", "FULL")?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -113,7 +120,7 @@ pub(super) fn open_connection_cancellable(
     if version != super::CURRENT_SCHEMA_VERSION && application != 0 {
         cancellation.report(crate::service::StartupStage::UpgradingStorage);
     }
-    super::schema::initialize_schema(&mut connection, cancellation)?;
+    super::schema::initialize_schema(connection, cancellation)?;
     cancellation.check()?;
-    Ok(connection)
+    Ok(())
 }

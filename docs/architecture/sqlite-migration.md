@@ -10,7 +10,7 @@
 ## Automatic import
 
 TUI and Desktop use the same Agent storage upgrade code. Released SQLite
-schemas 2, 3, 4, 5 and 6 upgrade directly to schema 7, with a verified
+schemas 2 through 7 upgrade directly to schema 8, with a verified
 pre-upgrade snapshot in `agent/backups/`. Admission validates the history
 structure belonging to the source version: schemas 2–4 predate
 `run_snapshots`, so migration creates that table after preserving the old
@@ -18,6 +18,46 @@ database. Schemas 5 and later must retain their existing snapshots; missing
 authoritative history remains an error. Skills-only bootstrap databases also
 retain installation records and uninstall tombstones. Regression fixtures
 freeze the DDL from historical commits rather than relabel the current schema.
+
+Skill registry and session storage share the same accepted schema-version
+boundary, including schema 7. Skill commands may run before the first Agent
+upgrade without changing existing session history or uninstall tombstones.
+
+### Startup progress and isolated run recovery
+
+The embedded host's 180-second budget measures lack of actual progress, not
+total upgrade duration. SQLite VM progress during checking, backup and migration,
+and completed bounded recovery/import work renew that budget. Reading startup
+status does not renew it. Startup cancellation interrupts SQLite statements;
+the startup handler is removed before the writer serves ordinary requests.
+
+An explicitly identified run-data recovery failure is retained as
+`runs.status='recovery_failed'`, with its diagnostic in `runs.error`. The original
+transcript and stream facts remain intact; startup continues for other sessions.
+The affected session cannot accept direct or queued prompts, compaction, forks,
+title-model calls or a synthetic terminal from an abort/watchdog fallback.
+SQLite failures, disk errors, cancelled startup and unknown worker failures
+still propagate instead of being hidden as isolated history problems.
+`future doctor` reports `failedRunRecoveries`.
+
+After stopping every Agent owner, repair/restore the affected data and explicitly
+run `future agent --retry-session-recovery SESSION_ID`. It preserves a verified
+pre-retry snapshot, retries only isolated runs, and never executes a model or tool.
+A failed retry keeps the session fenced. `--migration-source` can target an
+isolated copy for maintenance verification.
+
+Repeated legacy discovery reads completed imports, tombstones and canonical
+identities in one catalogue job, then filters known files before sorting pending
+sources. An unchanged catalogue requires no per-file writer jobs, completion
+write or forced checkpoint. Files restored later are still discovered, and
+admission is checked again in the import transaction.
+
+Normal Agent CI now includes released-schema migration process-kill/SQLITE_FULL,
+confirmed-prefix crash/write-lock/writer-panic tests, native-UUID realistic and
+1/10 MiB body workloads, and shared-writer/read/admission observations at 1/4/16
+sessions. Each OS uploads storage observation JSON artifacts. Timing observations
+are not native GUI measurements or universal latency guarantees; physical power
+loss and actual filesystem exhaustion remain outside injected SQLite faults.
 
 The new Agent, under the instance lock and before serving externally, imports
 old `sessions/*.jsonl` and their sibling `run-events/` files. Startup scans again

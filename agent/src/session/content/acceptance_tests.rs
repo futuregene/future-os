@@ -321,7 +321,6 @@ fn storage_space_and_constant_finish_workload() {
 }
 
 #[test]
-#[ignore = "final acceptance: one shared writer with 1/4/16 sessions and bounded readers"]
 fn shared_writer_and_history_reader_concurrency() {
     let mut cases = Vec::new();
     for sessions in [1, 4, 16] {
@@ -407,10 +406,11 @@ fn shared_writer_and_history_reader_concurrency() {
         }).unwrap();
         cases.push(json!({"sessions":sessions,"workers":workers,"io":store.db.metrics()}));
     }
-    println!(
-        "STORAGE_CONCURRENCY_REPORT={}",
-        json!({"cases":cases,"scope":"shared ordered SQLite writer and independent bounded history readers; direct batches, not live admission backlog or UI timing"})
-    );
+    let report = json!({"cases":cases,"scope":"shared ordered SQLite writer and independent bounded history readers; direct batches, not live admission backlog or UI timing"});
+    println!("STORAGE_CONCURRENCY_REPORT={report}");
+    if let Some(path) = std::env::var_os("FUTURE_STORAGE_CONCURRENCY_REPORT") {
+        std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+    }
 }
 
 struct ChildGuard(Child);
@@ -451,7 +451,6 @@ fn cursor(store: &SqliteStore) -> i64 {
 }
 
 #[test]
-#[ignore = "final acceptance: SQLITE_FULL injection without filling the actual disk"]
 fn full_database_does_not_acknowledge_a_body_and_recovers_after_capacity_returns() {
     let directory = tempfile::tempdir().unwrap();
     let store = open(&directory.path().join("agent.db"), true);
@@ -489,7 +488,6 @@ fn full_database_does_not_acknowledge_a_body_and_recovers_after_capacity_returns
 }
 
 #[test]
-#[ignore = "final acceptance: external write lock and independent committed-prefix read"]
 fn write_lock_refuses_new_ack_but_allows_reading_the_confirmed_prefix() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("agent.db");
@@ -516,7 +514,6 @@ fn write_lock_refuses_new_ack_but_allows_reading_the_confirmed_prefix() {
 }
 
 #[test]
-#[ignore = "final acceptance: real writer-thread unwind with an open SQLite transaction"]
 fn writer_panic_rolls_back_and_reopen_recovers_the_confirmed_prefix() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("agent.db");
@@ -583,7 +580,6 @@ fn crash_child() {
 }
 
 #[test]
-#[ignore = "final acceptance: kill real child processes around commit boundaries"]
 fn killed_process_retains_only_the_confirmed_prefix() {
     for stage in ["confirmed", "open-transaction"] {
         let root = tempfile::tempdir().unwrap();

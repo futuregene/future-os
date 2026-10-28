@@ -8,6 +8,16 @@ pub fn create_database_snapshot(
     directory: &Path,
     prefix: &str,
 ) -> Result<PathBuf> {
+    create_database_snapshot_cancellable(connection, directory, prefix, &Default::default())
+}
+
+pub(crate) fn create_database_snapshot_cancellable(
+    connection: &Connection,
+    directory: &Path,
+    prefix: &str,
+    cancellation: &crate::service::StartupCancellation,
+) -> Result<PathBuf> {
+    cancellation.check()?;
     let check: String = connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
     ensure!(
         check == "ok",
@@ -27,14 +37,19 @@ pub fn create_database_snapshot(
             .to_str()
             .context("database snapshot path is not valid UTF-8")?],
     )?;
+    cancellation.check()?;
     let snapshot = Connection::open_with_flags(&temporary, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let check: String = snapshot.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+    cancellation.monitor_sqlite(&snapshot)?;
+    let checked = snapshot.query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0));
+    cancellation.check()?;
+    let check = checked?;
     ensure!(check == "ok", "database snapshot integrity check failed");
     drop(snapshot);
     std::fs::OpenOptions::new()
         .write(true)
         .open(&temporary)?
         .sync_all()?;
+    cancellation.check()?;
     temporary
         .persist_noclobber(&destination)
         .context("publish verified database snapshot")?;
@@ -56,6 +71,33 @@ pub fn create_database_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cancelled_upgrade_does_not_publish_an_incomplete_snapshot() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Connection::open(root.path().join("source.db")).unwrap();
+        db.execute_batch(
+            "CREATE TABLE history(body TEXT); INSERT INTO history VALUES ('original');",
+        )
+        .unwrap();
+        let cancellation = crate::service::StartupCancellation::default();
+        cancellation.cancel();
+        let error = create_database_snapshot_cancellable(
+            &db,
+            &root.path().join("backups"),
+            "before",
+            &cancellation,
+        )
+        .unwrap_err();
+        assert!(error.is::<crate::service::StartupCancelled>());
+        assert!(!root.path().join("backups").exists());
+        assert_eq!(
+            db.query_row("SELECT body FROM history", [], |row| row
+                .get::<_, String>(0))
+                .unwrap(),
+            "original"
+        );
+    }
 
     #[test]
     fn snapshot_preserves_committed_wal_and_does_not_overwrite_prior_snapshot() {
