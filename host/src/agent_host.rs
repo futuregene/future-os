@@ -471,7 +471,7 @@ impl AgentHost {
                 }
             })
         })
-        .map_err(|error| error.to_string().into())
+        .map_err(|error| format!("{error:#}").into())
     }
 
     /// Run the prepared service on the runtime owned by the entry. Shutdown
