@@ -507,7 +507,7 @@ pub fn chat() -> WorkbenchData {
         // The process row the conversation renderer draws at the default
         // level: the desktop's wrench and brain beside the counts, so the row
         // reads the same in every language (only its `思考` marker is a word).
-        style(p.muted, " ▸ 🔧×2 · 🧠×1"),
+        style(p.muted, " ▸ ⚒×2 · ✻×1"),
         String::new(),
         style(p.fg, " 循环用的是 `<=`，最后一位会越界读一个字节。"),
         style(p.fg, "改成 `<` 之后 41 个用例都过了。"),
@@ -603,7 +603,7 @@ mod tests {
             .map(|line| crate::utils::strip_ansi_codes(line))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("🔧×2 · 🧠×1"), "{text}");
+        assert!(text.contains("⚒×2 · ✻×1"), "{text}");
         assert!(text.contains("41 个用例都过了"), "{text}");
     }
 

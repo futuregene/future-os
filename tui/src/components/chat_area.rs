@@ -13,7 +13,9 @@ use regex::Regex;
 
 use crate::components::diff::{self, DiffTheme};
 use crate::components::markdown::{MarkdownRenderer, MarkdownTheme, MarkdownThemePartial};
-use crate::theme::{bold, dim, fg, italic, Chrome, Theme, DARK_THEME};
+use crate::theme::{
+    bold, dim, dim_raw, fg, fg_raw, italic, italic_raw, Chrome, Color, Theme, DARK_THEME,
+};
 use crate::tui::{Component, RESET};
 use crate::utils::{
     apply_background_to_line, strip_ansi_codes, truncate_to_width, wrap_text_with_ansi,
@@ -59,7 +61,7 @@ pub enum ReplyDetail {
     /// `/tool-output`, exactly as at the other levels.
     Detailed,
     /// Half folded: finished calls and reasoning collapse where they happened
-    /// (a `▸ 🔧×12 · 🧠×3` row, a `▸ thinking` marker), while
+    /// (a `▸ ⚒×12 · ✻×3` row, a `▸ thinking` marker), while
     /// every piece of prose the model wrote — including the notes between its
     /// calls — stays on screen in order. This is the desktop's *live* shape
     /// kept for a settled reply.
@@ -125,15 +127,21 @@ struct ReplyFold {
     burst: bool,
 }
 
-/// The glyphs a folded count row is drawn with: the desktop's wrench for tool
-/// calls and its brain for reasoning, so the row reads `▸ 🔧×12 · 🧠×3` — the
-/// same two marks, in the same order, the desktop puts beside those numbers
-/// (`Wrench`/`Brain` in its `ReplySteps`). Counting with a glyph instead of a
-/// noun is what keeps the row quiet and language-neutral: there is no `tool
-/// calls`/`工具调用` to translate, and nothing in it competes with the prose it
-/// stands for.
-const TOOL_GLYPH: &str = "🔧";
-const THOUGHT_GLYPH: &str = "🧠";
+/// The glyphs a folded count row is drawn with: a hammer-and-pick for tool calls
+/// and a spark for reasoning, so the row reads `▸ ⚒×12 · ✻×3` — the two marks,
+/// in the order, the desktop's `ReplySteps` puts beside those numbers.
+///
+/// Both are **text** glyphs, not emoji. The emoji they replaced (`⚒`, `✻`)
+/// were wider and, worse, carry their own colours: a terminal draws an emoji
+/// from its colour font, so the row's foreground colour never reached them and
+/// the faintest ink in the frame still showed up as a bright picture. A text
+/// glyph takes the colour it is given — which is what makes this row recede
+/// behind the prose — and measures one cell, like the letters around it.
+///
+/// Counting with a glyph instead of a noun is what keeps the row
+/// language-neutral too: there is no `tool calls`/`工具调用` to translate.
+pub(crate) const TOOL_GLYPH: &str = "⚒";
+pub(crate) const THOUGHT_GLYPH: &str = "✻";
 
 /// The words a transcript's own process rows are drawn in.
 ///
@@ -2216,19 +2224,33 @@ impl ChatArea {
         end - msg_idx
     }
 
-    // ─── User message (markdown + full-width background Box) ────────────
+    // ─── User message (markdown on a padded, full-width surface) ────────
+
+    /// Columns between the user block's coloured edge and its text. The wrap
+    /// width loses twice this, so a full line ends with the same inset on the
+    /// right that it starts with on the left and the text never hugs the edge.
+    const USER_CARD_INSET: usize = 2;
 
     fn render_user_message(&mut self, msg: &ChatMessage) {
+        let bg = self.theme.user_bg;
+        // The block is a surface, not a tinted row: one empty row of its own
+        // colour above and below the text. Those rows are the card's padding —
+        // the transcript's blank separator rows stay terminal background and
+        // sit outside it.
+        self.push_user_card_row("", bg);
+        // Below four columns the card's inset has nowhere to go: those layouts
+        // bottom out at the one-column gutter every other row keeps.
+        let inset = if self.width >= Self::USER_CARD_INSET * 2 {
+            Self::USER_CARD_INSET
+        } else {
+            1
+        };
+        let indent = " ".repeat(inset);
         let rendered = self
             .md
-            .render_text(&msg.content, self.width.saturating_sub(2).max(1));
+            .render_text(&msg.content, self.width.saturating_sub(inset * 2).max(1));
         for line in rendered {
-            let text = format!(" {line}");
-            let bg_line = apply_background_to_line(&text, self.width, self.theme.user_bg);
-            self.rendered_lines.push(RenderedLine {
-                text: bg_line,
-                dim: false,
-            });
+            self.push_user_card_row(&format!("{indent}{line}"), bg);
         }
         if msg.run_state == Some(RunState::Queued) {
             let suffix = match msg.queue_position {
@@ -2236,11 +2258,8 @@ impl ChatArea {
                 None => String::new(),
             };
             // TS: dim(`queued${suffix}`) — suffix inside the dim.
-            let t = format!(" {}", dim(&format!("queued{suffix}")));
-            self.rendered_lines.push(RenderedLine {
-                text: apply_background_to_line(&t, self.width, self.theme.user_bg),
-                dim: true,
-            });
+            let t = format!("{indent}{}", dim(&format!("queued{suffix}")));
+            self.push_user_card_row(&t, bg);
         }
         if matches!(
             msg.run_state,
@@ -2252,12 +2271,23 @@ impl ChatArea {
                 | Some(RunState::NotAcknowledged)
         ) {
             let label = msg.run_state.unwrap().label();
-            let t = format!(" {}", dim(label));
-            self.rendered_lines.push(RenderedLine {
-                text: apply_background_to_line(&t, self.width, self.theme.user_bg),
-                dim: true,
-            });
+            let t = format!("{indent}{}", dim(label));
+            self.push_user_card_row(&t, bg);
         }
+        self.push_user_card_row("", bg);
+    }
+
+    /// One row of the user block: `text` on the block's background, padded out
+    /// to the full width so the colour runs edge to edge and every row of a
+    /// message — text, padding, run state — carries the same surface.
+    fn push_user_card_row(&mut self, text: &str, bg: Color) {
+        // `.max(3)`: below three columns the layout bottoms out (one gutter
+        // column plus one content column), and the card's empty rows follow the
+        // same floor so every degenerate width renders identical rows.
+        self.rendered_lines.push(RenderedLine {
+            text: apply_background_to_line(text, self.width.max(3), bg),
+            dim: false,
+        });
     }
 
     // ─── Assistant message (markdown, thinking first) ───────────────────
@@ -2516,12 +2546,41 @@ impl ChatArea {
         if msg.pending && msg.content.trim().is_empty() {
             label.push('…');
         }
-        let text = format!(" {} {}", dim(FOLD_MARKER), italic(&label));
-        let text = truncate_to_width(&text, self.width, &TruncateOptions::default());
-        self.rendered_lines.push(RenderedLine {
-            text: fg(self.theme.thinking_text as u8, &text),
-            dim: true,
-        });
+        // The reasoning ink, and italic (the one row that is a *word* rather
+        // than a count keeps the softer slant the marker has always had) — both
+        // stated once, for the whole row, by `push_quiet_row`.
+        let ink = self.theme.thinking_text as u8;
+        self.push_quiet_row(&label, ink, true);
+    }
+
+    /// One of the transcript's own quiet rows: `" ▸ label"` in a single ink,
+    /// with the fold marker dimmed.
+    ///
+    /// The dim is switched off with `22` and the row's only full reset comes at
+    /// its end. That is not pedantry: a reset in the *middle* of a row drops the
+    /// colour it was given, and the frame's row painter re-arms the body ink
+    /// after it — so a label that followed a `dim(▸)` arrived in the bright body
+    /// colour instead of the faint one the row asked for (invisible while the
+    /// row's marks were emoji, which carry their own colours and ignore both).
+    fn push_quiet_row(&mut self, label: &str, ink: u8, italic_label: bool) {
+        // A row is text like any other: a terminal too narrow for it clips it
+        // instead of spilling past the last column. The marker and its two
+        // spaces stay whole; the label takes what is left.
+        let label = truncate_to_width(
+            label,
+            self.width.saturating_sub(3),
+            &TruncateOptions::default(),
+        );
+        let mut text = fg_raw(ink, " ");
+        text.push_str(&dim_raw(FOLD_MARKER));
+        text.push_str("\x1b[22m ");
+        if italic_label {
+            text.push_str(&italic_raw(&label));
+        } else {
+            text.push_str(&label);
+        }
+        text.push_str(RESET);
+        self.rendered_lines.push(RenderedLine { text, dim: true });
     }
 
     /// The row a folded reply's work leaves behind: how much ran, not what it
@@ -2546,22 +2605,16 @@ impl ChatArea {
         } else {
             parts.join(" · ")
         };
-        // Upright, not italic: the desktop's counts are plain and its icons have
-        // no italic to give, and slanted digits would pull the eye to the one
-        // row that is meant to sit behind the prose.
-        let text = format!(" {} {}", dim(FOLD_MARKER), label);
-        // A summary row is text like any other: a terminal too narrow for it
-        // clips it instead of spilling past the last column.
-        let text = truncate_to_width(&text, self.width, &TruncateOptions::default());
+        // Upright, not italic: the desktop's counts are plain and its glyphs
+        // have no italic to give, and slanted digits would pull the eye to the
+        // one row that is meant to sit behind the prose.
+        //
         // The faintest ink the chrome has (the default palette's `241`, one step
         // under the `245` of body dim text): the row is a note about work that
         // already happened, and it should recede behind the answer it stands
         // above.
         let ink = Chrome::from_theme(&self.theme).muted;
-        self.rendered_lines.push(RenderedLine {
-            text: fg(ink, &text),
-            dim: true,
-        });
+        self.push_quiet_row(&label, ink, false);
     }
 
     fn render_tool_message(&mut self, msg: &ChatMessage) {
@@ -2991,7 +3044,7 @@ mod tests {
             "{lines:?}"
         );
         assert!(
-            lines.iter().any(|l| l.contains("🧠×1")),
+            lines.iter().any(|l| l.contains("✻×1")),
             "the fold counts the thought: {lines:?}"
         );
         assert!(lines.iter().any(|l| l.contains("answer")));
@@ -3569,7 +3622,7 @@ mod tests {
         let lines = compact_lines(&mut chat);
         assert_eq!(
             lines,
-            vec!["fix the parser", "▸ 🔧×1 · 🧠×1", "Fixed the off-by-one.",],
+            vec!["fix the parser", "▸ ⚒×1 · ✻×1", "Fixed the off-by-one.",],
             "{lines:?}"
         );
         assert_matches_fresh_render(&mut chat);
@@ -3602,7 +3655,7 @@ mod tests {
         assert!(
             !lines
                 .iter()
-                .any(|l| l.contains('\u{1F527}') || l.contains('\u{1F9E0}')),
+                .any(|l| l.contains(TOOL_GLYPH) || l.contains(THOUGHT_GLYPH)),
             "detail draws no fold row — {lines:?}"
         );
         // The call's body stays behind /tool-output at either reading level.
@@ -3634,7 +3687,7 @@ mod tests {
             lines,
             vec![
                 "fix the parser",
-                "▸ 🔧×1 · 🧠×1",
+                "▸ ⚒×1 · ✻×1",
                 "I read the parser.",
                 "Fixed",
             ],
@@ -3650,7 +3703,7 @@ mod tests {
         let lines = compact_lines(&mut chat);
         assert_eq!(
             lines,
-            vec!["fix the parser", "▸ 🔧×1 · 🧠×1", "Fixed the off-by-one.",],
+            vec!["fix the parser", "▸ ⚒×1 · ✻×1", "Fixed the off-by-one.",],
             "{lines:?}"
         );
         assert_matches_fresh_render(&mut chat);
@@ -3684,9 +3737,9 @@ mod tests {
             lines,
             vec![
                 "go",
-                "▸ 🔧×1 · 🧠×1",
+                "▸ ⚒×1 · ✻×1",
                 "Let me compare both files.",
-                "▸ 🔧×1 · 🧠×1",
+                "▸ ⚒×1 · ✻×1",
                 "Both fold the same way.",
             ],
             "{lines:?}"
@@ -3698,7 +3751,7 @@ mod tests {
         let lines = compact_lines(&mut chat);
         assert_eq!(
             lines,
-            vec!["go", "▸ 🔧×2 · 🧠×2", "Both fold the same way.",],
+            vec!["go", "▸ ⚒×2 · ✻×2", "Both fold the same way.",],
             "{lines:?}"
         );
         assert_matches_fresh_render(&mut chat);
@@ -3781,18 +3834,14 @@ mod tests {
         // The finished call folded into the count; the running one is the row
         // the reader is watching.
         let live = compact_lines(&mut chat);
-        assert_eq!(live, vec!["go", "▸ 🔧×1 · 🧠×1", "read /b.rs"], "{live:?}");
+        assert_eq!(live, vec!["go", "▸ ⚒×1 · ✻×1", "read /b.rs"], "{live:?}");
 
         // The answer arriving moves the summary onto it — the counts do not
         // wait for the run to end.
         chat.finish_tool("c2", None, false);
         chat.append_to_last_message("the answer");
         let lines = compact_lines(&mut chat);
-        assert_eq!(
-            lines,
-            vec!["go", "▸ 🔧×2 · 🧠×1", "the answer",],
-            "{lines:?}"
-        );
+        assert_eq!(lines, vec!["go", "▸ ⚒×2 · ✻×1", "the answer",], "{lines:?}");
         assert_matches_fresh_render(&mut chat);
     }
 
@@ -3811,11 +3860,11 @@ mod tests {
         let lines = compact_lines(&mut chat);
         // No answer to ride on, so the summary rides on the call the turn
         // stopped at; the reasoning is counted rather than drawn as a marker.
-        assert!(lines.iter().any(|l| l == "▸ 🧠×1"), "{lines:?}");
+        assert!(lines.iter().any(|l| l == "▸ ✻×1"), "{lines:?}");
         assert!(!lines.iter().any(|l| l.contains("where to look")));
         assert!(lines.iter().any(|l| l.contains("read /a.rs")), "{lines:?}");
         assert!(
-            !lines.iter().any(|l| l.contains('\u{1F527}')),
+            !lines.iter().any(|l| l.contains(TOOL_GLYPH)),
             "the call keeps its own row, so the count is the thought alone — {lines:?}"
         );
     }
@@ -3838,7 +3887,7 @@ mod tests {
         let lines = compact_lines(&mut chat);
         // The newest reply is still streaming, so it is not folded: its call is
         // a row, and its reasoning is the collapsed marker.
-        assert!(lines.iter().any(|l| l == "▸ 🔧×1 · 🧠×1"), "{lines:?}");
+        assert!(lines.iter().any(|l| l == "▸ ⚒×1 · ✻×1"), "{lines:?}");
         assert!(
             !lines.iter().any(|l| l.contains("running the suite")),
             "{lines:?}"
@@ -3859,7 +3908,7 @@ mod tests {
             ],
         );
         let lines = compact_lines(&mut chat);
-        assert_eq!(lines, vec!["hi", "▸ 🧠×1", "Hello!"], "{lines:?}");
+        assert_eq!(lines, vec!["hi", "▸ ✻×1", "Hello!"], "{lines:?}");
     }
 
     #[test]
@@ -3879,7 +3928,7 @@ mod tests {
         assert_eq!(chat.toggle_reply_detail(), ReplyDetail::Steps);
         let half = compact_lines(&mut chat);
         assert!(
-            half.iter().any(|line| line == "▸ 🔧×1 · 🧠×1"),
+            half.iter().any(|line| line == "▸ ⚒×1 · ✻×1"),
             "the half-folded level counts the work — {half:?}"
         );
         assert!(
@@ -3914,7 +3963,7 @@ mod tests {
         // The reasoning folded into a count as soon as the answer started, and
         // the reasoning text never reaches the screen.
         let live = compact_lines(&mut chat);
-        assert_eq!(live, vec!["go", "▸ 🔧×1 · 🧠×1", "the answer"], "{live:?}");
+        assert_eq!(live, vec!["go", "▸ ⚒×1 · ✻×1", "the answer"], "{live:?}");
         assert!(
             !live.iter().any(|line| line.contains("weighing it")),
             "{live:?}"
@@ -3922,11 +3971,7 @@ mod tests {
 
         chat.mark_last_message_complete();
         let lines = compact_lines(&mut chat);
-        assert_eq!(
-            lines,
-            vec!["go", "▸ 🔧×1 · 🧠×1", "the answer"],
-            "{lines:?}"
-        );
+        assert_eq!(lines, vec!["go", "▸ ⚒×1 · ✻×1", "the answer"], "{lines:?}");
         assert_matches_fresh_render(&mut chat);
     }
 
@@ -3977,7 +4022,7 @@ mod tests {
         let settled = compact_lines(&mut chat);
         assert_eq!(
             settled,
-            vec!["go", "▸ 🔧×2 · 🧠×1", "Both fold the same way.",],
+            vec!["go", "▸ ⚒×2 · ✻×1", "Both fold the same way.",],
             "{settled:?}"
         );
         assert_matches_fresh_render(&mut chat);
@@ -4019,7 +4064,7 @@ mod tests {
             settled.len() < live.len(),
             "ending the run is what folds the reply — {settled:?} vs {live:?}"
         );
-        assert_eq!(settled, vec!["go", "▸ 🔧×3", "step 2"], "{settled:?}");
+        assert_eq!(settled, vec!["go", "▸ ⚒×3", "step 2"], "{settled:?}");
         assert_matches_fresh_render(&mut chat);
     }
 
@@ -4049,7 +4094,7 @@ mod tests {
         let live = compact_lines(&mut chat);
         assert_eq!(
             live,
-            vec!["go", "▸ 🔧×1 · 🧠×2", "Second file next."],
+            vec!["go", "▸ ⚒×1 · ✻×2", "Second file next."],
             "the thought is counted, not a second uncounted marker row — {live:?}"
         );
         assert!(
@@ -4063,7 +4108,7 @@ mod tests {
         let settled = compact_lines(&mut chat);
         assert_eq!(
             settled,
-            vec!["go", "▸ 🔧×1 · 🧠×2", "Second file next."],
+            vec!["go", "▸ ⚒×1 · ✻×2", "Second file next."],
             "{settled:?}"
         );
     }
@@ -4093,7 +4138,7 @@ mod tests {
             live,
             vec![
                 "go",
-                "▸ 🔧×1 · 🧠×1",
+                "▸ ⚒×1 · ✻×1",
                 "Looking at a.rs.",
                 "▸ thinking",
                 "Second file next.",
@@ -4108,7 +4153,7 @@ mod tests {
         let settled = compact_lines(&mut chat);
         assert_eq!(
             settled,
-            vec!["go", "▸ 🔧×1 · 🧠×2", "Second file next."],
+            vec!["go", "▸ ⚒×1 · ✻×2", "Second file next."],
             "{settled:?}"
         );
     }
@@ -4127,7 +4172,7 @@ mod tests {
             lines,
             vec![
                 "fix the parser",
-                "▸ 🔧×1 · 🧠×1",
+                "▸ ⚒×1 · ✻×1",
                 "I read the parser.",
                 "Fixed the off-by-one.",
             ],
@@ -4171,7 +4216,7 @@ mod tests {
         chat.append_to_last_message("看完了");
 
         let lines = compact_lines(&mut chat);
-        assert_eq!(lines, vec!["开始", "▸ 🔧×2 · 🧠×1", "看完了"], "{lines:?}");
+        assert_eq!(lines, vec!["开始", "▸ ⚒×2 · ✻×1", "看完了"], "{lines:?}");
         assert_matches_fresh_render(&mut chat);
 
         // The English defaults draw the same counts and the English marker.
@@ -4195,12 +4240,30 @@ mod tests {
         let row = chat
             .render_all(W)
             .into_iter()
-            .find(|line| strip(line).contains("🔧×1"))
+            .find(|line| strip(line).contains("⚒×1"))
             .unwrap_or_else(|| panic!("no count row"));
         let faint = Chrome::from_theme(&DARK_THEME).muted;
         assert!(
             row.contains(&format!("38;5;{faint}m")),
             "the row is drawn in the chrome's faint ink ({faint}); got {row:?}"
+        );
+        // The ink has to cover the *whole* row, not just its first cell: a
+        // reset in the middle drops the colour and the frame's row painter
+        // re-arms the body ink after it, which is how this row arrived bright
+        // white apart from its marker.
+        assert_eq!(
+            row.matches("38;5;").count(),
+            1,
+            "one colour, stated once, for the whole row — {row:?}"
+        );
+        assert_eq!(
+            row.matches("\x1b[0m").count() + row.matches("\x1b[m").count(),
+            1,
+            "…and one reset, at the end — {row:?}"
+        );
+        assert!(
+            row.contains("\x1b[22m"),
+            "the marker's dim is switched off, not reset away — {row:?}"
         );
         assert!(
             faint < DARK_THEME.dim as u8,
@@ -4257,7 +4320,7 @@ mod tests {
     /// point leaves every settled reply as one summary row.
     #[test]
     fn the_reading_level_folds_history_loaded_from_the_store() {
-        const FOLDED_TURN: &str = "▸ 🔧×1 · 🧠×1";
+        const FOLDED_TURN: &str = "▸ ⚒×1 · ✻×1";
         fn assert_folded(chat: &mut ChatArea, turns: usize, stage: &str) {
             let lines = compact_lines(chat);
             assert_eq!(
@@ -4360,7 +4423,7 @@ mod tests {
     }
 
     fn folded_rows(chat: &mut ChatArea) -> usize {
-        const FOLDED: &str = "\u{25b8} \u{1F527}\u{00d7}1 \u{00b7} \u{1F9E0}\u{00d7}1";
+        const FOLDED: &str = "▸ ⚒×1 · ✻×1";
         compact_lines(chat)
             .iter()
             .filter(|line| line.as_str() == FOLDED)
@@ -4502,7 +4565,7 @@ mod tests {
         // unanswered one onto the call it stopped at.
         assert_eq!(folded_rows(&mut chat), 1, "{lines:?}");
         assert!(
-            lines.iter().any(|l| l.contains("▸ 🧠×1")),
+            lines.iter().any(|l| l.contains("▸ ✻×1")),
             "the unanswered turn counts its reasoning: {lines:?}"
         );
         assert!(
@@ -4537,7 +4600,7 @@ mod tests {
             "the slice the stored turn stopped at keeps its row — {lines:?}"
         );
         assert!(
-            lines.iter().any(|line| line.contains("▸ 🧠×1")),
+            lines.iter().any(|line| line.contains("▸ ✻×1")),
             "its stored reasoning is a count — {lines:?}"
         );
     }
@@ -4591,7 +4654,7 @@ mod tests {
         );
         assert_eq!(
             compact_lines(&mut chat),
-            vec!["fix the parser", "▸ 🔧×3", "Fixed the off-by-one.",]
+            vec!["fix the parser", "▸ ⚒×3", "Fixed the off-by-one.",]
         );
         assert_matches_fresh_render(&mut chat);
 
@@ -5797,7 +5860,17 @@ mod tests {
         chat.render(W);
         chat.add_message(ChatMessage::new("u".into(), ChatRole::User, "hi there"));
         let lines = chat.render_all(W);
-        assert!(lines[0].starts_with("\x1b[48;5;59m"));
+        let bg = format!("\x1b[48;5;{}m", DARK_THEME.user_bg);
+        // Card padding row, the text row, and the padding row under it — then
+        // the transcript's trailing spacer.
+        let (card, tail) = lines.split_at(3);
+        assert_eq!(tail.len(), 1, "{lines:?}");
+        for line in card {
+            assert!(line.starts_with(&bg), "every block row carries the surface");
+        }
+        // The text is inset from the surface's left edge — the block is a card,
+        // not a highlighted row.
+        assert!(strip(&card[1]).starts_with("  hi there"));
     }
 
     #[test]
@@ -5831,8 +5904,9 @@ mod tests {
         assert_eq!(
             line,
             format!(
-                "\x1b[48;5;59m \x1b[2mqueued (#3)\x1b[0m\x1b[48;5;59m\x1b[0m\x1b[48;5;59m{}\x1b[0m",
-                " ".repeat(W - 12)
+                "{bg}  \x1b[2mqueued (#3)\x1b[0m{bg}\x1b[0m{bg}{}\x1b[0m",
+                " ".repeat(W - 13),
+                bg = format!("\x1b[48;5;{}m", DARK_THEME.user_bg)
             )
         );
     }

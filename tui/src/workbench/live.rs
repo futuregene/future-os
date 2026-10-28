@@ -5693,7 +5693,7 @@ mod tests {
             "the settled reply is its answer and the counts — {settled:?}"
         );
         assert!(
-            settled.iter().any(|line| line.contains("▸ 🔧×1")),
+            settled.iter().any(|line| line.contains("▸ ⚒×1")),
             "{settled:?}"
         );
         assert!(
@@ -5735,7 +5735,7 @@ mod tests {
             "the reasoning marker is Chinese — {rows:?}"
         );
         assert!(
-            rows.iter().any(|line| line.contains("▸ 🧠×1")),
+            rows.iter().any(|line| line.contains("▸ ✻×1")),
             "the count row is the desktop's glyph and needs no word — {rows:?}"
         );
         assert!(
