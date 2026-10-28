@@ -2238,6 +2238,59 @@ describe("useTimelineController", () => {
         jest.useRealTimers();
       }
     });
+
+    test("keeps waiting while the lane is still inside one attempt", async () => {
+      jest.useFakeTimers();
+      try {
+        options.selectedSessionId = "s1";
+        options.selectedRef.current = "s1";
+        // One slow round trip: the client's own request timeout (10 s) plus its
+        // retries can legitimately outlast the 15-second mark, and an open that
+        // is still working must keep its spinner instead of claiming failure.
+        let resolveState!: (value: unknown) => void;
+        request.mockImplementation((command: { type: string }) =>
+          command.type === "get_state"
+            ? new Promise((yes) => { resolveState = yes; })
+            : Promise.resolve({
+              data: { entries: [userEntry("e1", "hi")], hasMore: false },
+            }),
+        );
+        render();
+        act(() => result.current.reconcileSession("s1", "open"));
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(20_001);
+        });
+        expect(result.current.timelineError).toBeNull();
+        expect(result.current.timelinePending).toBe(true);
+        // The ceiling still bounds a wedged attempt, so nobody spins forever.
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(26_000);
+        });
+        expect(result.current.timelineError).toBe("timeout");
+        expect(resolveState).toBeDefined();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    test("reports at the deadline once an attempt has failed", async () => {
+      jest.useFakeTimers();
+      try {
+        options.selectedSessionId = "s1";
+        options.selectedRef.current = "s1";
+        request.mockRejectedValue(new Error("desktop_unavailable"));
+        render();
+        act(() => result.current.reconcileSession("s1", "open"));
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(15_001);
+        });
+        // A lane that has said where it is stuck is reported at the deadline,
+        // as before: waiting is only for lanes that have not answered yet.
+        expect(result.current.timelineError).toBe("timeout");
+      } finally {
+        jest.useRealTimers();
+      }
+    });
   });
 
   describe("retryTimeline", () => {

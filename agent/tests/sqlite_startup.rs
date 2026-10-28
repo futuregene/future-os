@@ -3,10 +3,18 @@ use serde_json::json;
 use std::process::{Command, Output};
 
 fn run(home: &std::path::Path, args: &[&str]) -> Output {
+    // `FUTURE_HOME` is what decides where the agent's state lives and it
+    // outranks `HOME`, so it is the one that must be redirected too — otherwise
+    // a shell that exports it makes this fixture read and write the developer's
+    // real `~/.future`. The endpoint variables are cleared so the instance owns
+    // its own endpoint instead of attaching to a running Agent.
     Command::new(env!("CARGO_BIN_EXE_future-agent"))
         .args(args)
         .env("HOME", home)
         .env("USERPROFILE", home)
+        .env("FUTURE_HOME", home.join(".future"))
+        .env_remove("FUTURE_AGENT_SOCKET")
+        .env_remove("FUTURE_AGENT_GRPC_ADDR")
         .output()
         .unwrap()
 }

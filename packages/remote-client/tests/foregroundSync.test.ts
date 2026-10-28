@@ -161,8 +161,12 @@ test("one opening state request feeds controls and history without another netwo
     await expect(opening).resolves.toEqual(state);
     expect(requestGetState).toHaveBeenCalledTimes(1);
     expect(requestHistory).toHaveBeenCalledTimes(1);
+    // The history read started beside the state read, so the timeline is ready
+    // one round trip in rather than two. Still one request each: sharing the
+    // opening state is what keeps the pair to a single `get_state`.
+    expect(commits).toEqual([350]);
     await jest.advanceTimersByTimeAsync(350);
-    expect(commits).toEqual([700]);
+    expect(commits).toEqual([350]);
     expect(requestGetState).toHaveBeenCalledTimes(1);
     expect(requestHistory).toHaveBeenCalledTimes(1);
   } finally { engine.clear(); }
