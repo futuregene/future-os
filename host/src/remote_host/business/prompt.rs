@@ -312,6 +312,12 @@ pub(crate) struct RemotePromptOptions {
 /// stays readable in the desktop's own logs.
 pub(crate) const UNKNOWN_SESSION_CODE: &str = "session_not_on_desktop";
 
+/// The same token for a conversation whose run is still in flight. The client
+/// no longer guesses at this locally (its own "still streaming" flag outlives
+/// the run it described), so the refusal has to arrive with a reason it can
+/// turn into a sentence instead of "message failed to send".
+pub(crate) const SESSION_BUSY_CODE: &str = "session_busy";
+
 /// Find the thread for `session_id`, then persist user message + run via
 /// `agent_bridge::headless`.
 ///
@@ -407,9 +413,9 @@ pub(crate) async fn prepare_remote_prompt(
         .iter()
         .any(|active| active == &resolved_session_id)
     {
-        return Err(crate::Error::Message(
-            "This session is still running; wait for it to finish or abort it first.".to_string(),
-        ));
+        return Err(crate::Error::Message(format!(
+            "{SESSION_BUSY_CODE}: this session is still running; wait for it to finish or abort it first."
+        )));
     }
     let attachments = crate::remote_host::files::claim_uploads(&upload_references, &thread.id)?;
     let prepared = crate::agent_bridge::prepare_prompt_persisted_with_trigger(

@@ -30,8 +30,14 @@ export function useComposerSubmission(options: Options) {
 
   const submit = useCallback(async (install = false, dismiss = false) => {
     const initial = latest.current;
+    // No judgment about whether the session "looks" busy: that flag is this
+    // client's own projection and outlives the run it described (a missed
+    // terminal event, a socket that died mid-stream), so consulting it made
+    // sends vanish silently. The desktop answers for itself — a run still in
+    // flight is refused there with a reason — and `attemptRef` still stops one
+    // tap from submitting twice.
     if (attemptRef.current || initial.restoring || initial.remote.busy
-      || initial.remote.timeline.streaming || initial.remote.compacting) return;
+      || initial.remote.compacting) return;
     if (!initial.message.trim() && !initial.attachments.length) return;
     const attempt = {};
     attemptRef.current = attempt;

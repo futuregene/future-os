@@ -98,6 +98,23 @@ test("submit cannot send an empty draft while restoration is pending", async () 
   expect(options.send).not.toHaveBeenCalled();
 });
 
+test("a stale \"still streaming\" flag does not swallow the send", async () => {
+  // The flag is this client's projection: it outlives the run it described (a
+  // missed terminal event, a socket that died mid-stream) and nothing clears it
+  // now that automatic resume is retired. Consulting it made sends vanish with
+  // no feedback at all; the desktop answers for itself instead.
+  const options = optionsFor();
+  render({
+    ...options,
+    remote: {
+      ...options.remote,
+      timeline: { ...options.remote.timeline, streaming: true },
+    },
+  });
+  await act(async () => { await api.sendFromComposer(); });
+  expect(options.send).toHaveBeenCalledWith(undefined);
+});
+
 test("unrelated remote updates preserve composer callbacks", () => {
   const options = optionsFor();
   render(options);
