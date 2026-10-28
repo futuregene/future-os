@@ -31,6 +31,12 @@ pub(crate) use commands::test_support::make_app_state as service_test_state;
 pub use protocol::{HistoryResetCommand, RpcCommand, RpcResponse, SseEvent};
 pub use session::ServerSession;
 
+/// Upper bound on hydrated session handles. A handle owns a scheduler task,
+/// event writer, model loop and potentially a working transcript; the process
+/// may still expose every session on disk. Least-recently-used idle handles
+/// beyond this budget are released and transparently rehydrated on access.
+const MAX_RESIDENT_SESSIONS: usize = 64;
+
 /// Map one broadcaster/journal event into its replay payload carrier. The
 /// wire type lives in the future-rpc crate; the mapping needs the
 /// agent-internal `SseEvent`, so this adapter stays on the agent side.
@@ -114,6 +120,7 @@ impl AppState {
             if let Some(sess) = sessions.get(session_id) {
                 let sess = sess.clone();
                 drop(sessions);
+                sess.read().touch();
                 ServerSession::ensure_scheduler_worker(&sess);
                 return Ok(Some(sess));
             }
@@ -208,7 +215,9 @@ impl AppState {
             let sess_arc = Arc::new(RwLock::new(new_sess));
             sessions.insert(session_id.to_string(), sess_arc.clone());
             drop(sessions);
+            sess_arc.read().touch();
             ServerSession::ensure_scheduler_worker(&sess_arc);
+            self.evict_idle_sessions(session_id);
             Ok(Some(sess_arc))
         }
     }
@@ -251,8 +260,10 @@ impl AppState {
         }
         session.service_work = self.service_work.clone();
         let session = Arc::new(RwLock::new(session));
+        session.read().touch();
         self.sessions.write().insert(id.clone(), session.clone());
         ServerSession::ensure_scheduler_worker(&session);
+        self.evict_idle_sessions(&id);
         // Announce after the map insert so subscribers can resolve the
         // session (e.g. get_state) the moment they see the event.
         self.control_plane.publish_session_created_with_creator(
@@ -262,6 +273,64 @@ impl AppState {
             &cwd,
         );
         id
+    }
+
+    fn evict_idle_sessions(&self, protected: &str) {
+        let mut candidates = {
+            let sessions = self.sessions.read();
+            if sessions.len() <= MAX_RESIDENT_SESSIONS {
+                return;
+            }
+            sessions
+                .iter()
+                .filter(|(id, _)| id.as_str() != protected)
+                .map(|(id, session)| {
+                    (
+                        id.clone(),
+                        session.clone(),
+                        session
+                            .read()
+                            .last_used_ms
+                            .load(std::sync::atomic::Ordering::Relaxed),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        candidates.sort_by_key(|(_, _, used)| *used);
+        for (id, session, _) in candidates {
+            // The map plus this candidate are the only owners. Any handler,
+            // stream or maintenance job holding the handle makes it ineligible.
+            if Arc::strong_count(&session) != 2 {
+                continue;
+            }
+            {
+                let session = session.read();
+                if session.ephemeral
+                    || session
+                        .history_reset_in_progress
+                        .load(std::sync::atomic::Ordering::Acquire)
+                    || session.runtime.snapshot().is_some()
+                    || session.runtime.has_owned_task()
+                    || session.scheduler.active().is_some()
+                    || !session.scheduler.queued().is_empty()
+                    || session.broadcaster.has_subscribers()
+                    || session.persistence.last_error().is_some()
+                {
+                    continue;
+                }
+            }
+            let mut sessions = self.sessions.write();
+            if sessions.len() <= MAX_RESIDENT_SESSIONS {
+                break;
+            }
+            let Some(current) = sessions.get(&id) else {
+                continue;
+            };
+            if !Arc::ptr_eq(current, &session) || Arc::strong_count(current) != 2 {
+                continue;
+            }
+            sessions.remove(&id);
+        }
     }
 
     /// Activate a session that has already crossed its SQLite commit boundary.
@@ -1006,6 +1075,51 @@ mod tests {
             )),
         };
         (dir, state)
+    }
+
+    fn resident_session(state: &AppState, id: &str) -> ServerSession {
+        ServerSession::new_with_queue_budget(
+            id.to_string(),
+            Arc::new(tokio::sync::RwLock::new(
+                state.loop_template.independent_copy(),
+            )),
+            state.session_manager.clone(),
+            "/tmp",
+            Arc::new(SseBroadcaster::new()),
+            state.approval_gate.clone(),
+            state.model_registry.clone(),
+            state.queue_budget.clone(),
+        )
+    }
+
+    #[test]
+    fn resident_session_budget_releases_the_oldest_idle_handles() {
+        let (_dir, state) = bare_app_state();
+        for index in 0..(MAX_RESIDENT_SESSIONS - 1) {
+            state.create_session(resident_session(&state, &format!("old-{index:02}")));
+        }
+        state.create_session(resident_session(&state, "kept-by-subscriber"));
+        let kept = state.sessions.read()["kept-by-subscriber"].clone();
+        let subscriber = kept.read().broadcaster.subscribe();
+
+        for index in 0..8 {
+            state.create_session(resident_session(&state, &format!("new-{index:02}")));
+        }
+        assert!(state.sessions.read().len() <= MAX_RESIDENT_SESSIONS);
+        assert!(
+            state.sessions.read().contains_key("kept-by-subscriber"),
+            "a live subscriber pins its resident handle"
+        );
+
+        drop(subscriber);
+        for index in 0..MAX_RESIDENT_SESSIONS {
+            state.create_session(resident_session(&state, &format!("final-{index:02}")));
+        }
+        assert!(state.sessions.read().len() <= MAX_RESIDENT_SESSIONS);
+        assert!(
+            !state.sessions.read().contains_key("old-00"),
+            "the least-recently-used idle handle is released"
+        );
     }
 
     #[test]

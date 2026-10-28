@@ -43,6 +43,13 @@ async fn scheduler_wake_worker(
 // opt-in via settings. Matches config::default_permission_level().
 const DEFAULT_PERMISSION_LEVEL: &str = "all";
 
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or_default()
+}
+
 /// Default thinking level for a session that never chose one.
 ///
 /// `default` means "send no thinking/effort parameter at all": the provider's
@@ -105,6 +112,9 @@ pub struct ServerSession {
     /// must load once; `None` with this set means "loaded, and there is no
     /// checkpoint", which is different from "not loaded yet".
     pub(crate) checkpoint_loaded: std::sync::atomic::AtomicBool,
+    /// Last lookup time (Unix epoch milliseconds), used only to choose which
+    /// idle handles may be released from the resident session map.
+    pub(crate) last_used_ms: std::sync::atomic::AtomicU64,
     /// Canonical model identifier for this session (e.g. "deepseek-v4-pro").
     /// Updated by `set_model`; read by prompt construction and compaction.
     pub model: String,
@@ -324,6 +334,7 @@ impl ServerSession {
             history_loaded: true,
             active_checkpoint,
             checkpoint_loaded: std::sync::atomic::AtomicBool::new(true),
+            last_used_ms: std::sync::atomic::AtomicU64::new(now_millis()),
             model: String::new(),
             thinking_level: DEFAULT_THINKING_LEVEL.to_string(),
             auto_compaction: true,
@@ -1770,6 +1781,11 @@ impl ServerSession {
         self.history_loaded = false;
         self.checkpoint_loaded
             .store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) fn touch(&self) {
+        self.last_used_ms
+            .store(now_millis(), std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Drop the cached full transcript after a session has been idle. Every
