@@ -5,8 +5,12 @@
 //! own logging, environment changes, signals, profiling and process exit.
 //!
 //! Hosts request shutdown through `AgentHandle` and continue polling `serve`
-//! until the listener drains. A timeout retains instance ownership until process
-//! exit; dropping a serving future is not a successful shutdown.
+//! until the listener drains. Every wait in that drain is bounded: the listener
+//! is dropped once its graceful drain outlives its share of the stop, because a
+//! client that never closes must not keep the endpoint and the instance lock.
+//! A drain that still times out — a stuck storage write, a host that stops
+//! polling `serve` — retains instance ownership until process exit; dropping a
+//! serving future is not a successful shutdown.
 
 mod activity;
 #[cfg(test)]
@@ -392,12 +396,29 @@ impl RunningAgent<'_, '_> {
             completed: false,
         };
         let shutdown = self.state.service_work.listener_shutdown();
+        // The hard stop for the drain above: `stop_listener` starts a graceful
+        // shutdown that waits for connected peers, and a peer that never
+        // finishes cannot be waited for by the stop. When this resolves the
+        // server is dropped, which closes the listener and every connection.
+        let abandoned = self.state.service_work.listener_abandoned();
         let server = self.listener.serve(self.state, shutdown);
         tokio::pin!(server);
+        tokio::pin!(abandoned);
         drop(admission);
         let mut ready = ready.map(|sender| (sender, self.ready));
         let mut server_completed = false;
         let result = futures::future::poll_fn(|cx| {
+            if std::future::Future::poll(abandoned.as_mut(), cx).is_ready() {
+                // Dropping the server (on return) ends the listener's ownership
+                // of the endpoint instead of inheriting it for the life of the
+                // process, which is what left the socket, its port and the
+                // instance lock held by an Agent that had already been told to
+                // stop.
+                tracing::warn!(
+                    "Agent shutdown: dropping the RPC server instead of waiting for its clients"
+                );
+                return std::task::Poll::Ready(Ok(()));
+            }
             let result = std::future::Future::poll(server.as_mut(), cx);
             server_completed = result.is_ready();
             if result.is_pending() {
