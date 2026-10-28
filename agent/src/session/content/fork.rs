@@ -151,7 +151,8 @@ impl SqliteStore {
             for child in children {
                 after = child.clone();
                 if !ActiveOperation::is_active(&active_key(&child)) {
-                    self.discard_hidden_fork_cancellable(&child, Some(cancellation))?;
+                    self.discard_hidden_fork_cancellable(&child, Some(cancellation))
+                        .with_context(|| format!("recover hidden fork session={child}"))?;
                 }
             }
         }

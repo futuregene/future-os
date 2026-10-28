@@ -7,6 +7,109 @@ use crate::{
 use serde_json::{json, Value};
 
 #[test]
+fn restart_recovers_native_runs_without_republishing_committed_messages() {
+    // Native UUIDs are stored as BLOBs. Short TEXT fixture IDs cannot expose
+    // recovery's mistaken "entry is absent" lookup after a real restart.
+    for published in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("sessions");
+        let session = uuid::Uuid::new_v4().to_string();
+        let run = uuid::Uuid::new_v4().to_string();
+        let message = uuid::Uuid::new_v4().to_string();
+        let tool = uuid::Uuid::new_v4().to_string();
+        let manager = crate::session::Manager::new(directory.clone());
+        let store = manager.storage().unwrap();
+        store.bind_events(&session).unwrap();
+        store.replace(&session, vec![
+            json!({"id":uuid::Uuid::new_v4().to_string(),"type":"session_info","timestamp":"2026-10-27T00:00:00Z","content":{"cwd":".","model":"synthetic"}}),
+            json!({"id":uuid::Uuid::new_v4().to_string(),"type":"run_started","timestamp":"2026-10-27T00:00:00Z","content":{"run_id":run,"epoch":1,"run_sequence":1}}),
+        ]).unwrap();
+        let key = format!("{message}:text:b");
+        let event = |cursor, kind: &str, data: Value| json!({"session_id":session,"run_id":run,"epoch":1,"idx":cursor,"session_idx":-1,"event_type":kind,"timestamp":"2026-10-27T00:00:01Z","data":data.to_string()});
+        journal::Writer::default().persist(store, &session, &[
+            event(0, "message_start", json!({"entry_id":message})),
+            event(1, "text_chunk", json!({"entry_id":message,"content_key":key,"content_offset":0,"content_bytes":6,"text":"native"})),
+            event(2, "text_end", json!({"entry_id":message,"content_key":key,"content_offset":6,"content_bytes":0,"content_seal":true})),
+            event(3, "message_end", json!({"entry_id":message})),
+            event(4, "tool_end", json!({"entry_id":tool,"tool_id":"call","text":"","is_error":false})),
+        ]).unwrap();
+        if published {
+            let assistant = AgentMessage {
+                role: "assistant".into(),
+                content: vec![ContentBlock::text("native")],
+                name: String::new(),
+                tool_args: String::new(),
+                metadata: Some(serde_json::Map::from_iter([
+                    (AgentMessage::JOURNAL_ENTRY_ID_KEY.into(), json!(message)),
+                    (AgentMessage::STREAM_BLOCKS_KEY.into(), json!([key])),
+                ])),
+            };
+            store
+                .append_stream_entry(
+                    &session,
+                    stream_entry::StreamEntry::from_assistant(&assistant, &run, 1).unwrap(),
+                )
+                .unwrap();
+            store.append(&session, vec![json!({"id":tool,"type":"tool","role":"tool","timestamp":"2026-10-27T00:00:01Z","meta":{"run_id":run},"content":[{"type":"tool_result","tool_call_id":"call","content":"","is_error":false}]})]).unwrap();
+        }
+        let before = store.entries(&session).unwrap();
+        let revision = store.revision(&session).unwrap().unwrap();
+        drop(manager);
+
+        let reopened = crate::session::Manager::new(directory.clone());
+        reopened.initialize().unwrap();
+        let store = reopened.storage().unwrap();
+        let recovered = store.entries(&session).unwrap();
+        for id in [&message, &tool] {
+            let matches = recovered
+                .iter()
+                .filter(|entry| entry["id"] == *id)
+                .collect::<Vec<_>>();
+            assert_eq!(matches.len(), 1, "each native entry is published once");
+            if published {
+                assert_eq!(
+                    *matches[0],
+                    *before.iter().find(|entry| entry["id"] == *id).unwrap(),
+                    "committed bodies and metadata must remain unchanged"
+                );
+            } else {
+                assert_eq!(matches[0]["meta"]["recovered_partial"], true);
+            }
+        }
+        assert_eq!(
+            recovered
+                .iter()
+                .find(|entry| entry["id"] == message)
+                .unwrap()["content"][0]["text"],
+            "native"
+        );
+        let terminals = recovered
+            .iter()
+            .filter(|entry| entry["type"] == "run_terminal")
+            .collect::<Vec<_>>();
+        assert_eq!(terminals.len(), 1);
+        assert_eq!(
+            terminals[0]["content"]["state"],
+            crate::session::RUN_STATE_INTERRUPTED_BY_RESTART
+        );
+        // Each recovered message and the terminal invalidate cached history.
+        let expected_revision = revision + if published { 1 } else { 3 };
+        assert_eq!(store.revision(&session).unwrap(), Some(expected_revision));
+        drop(reopened);
+        let reopened = crate::session::Manager::new(directory);
+        reopened.initialize().unwrap();
+        assert_eq!(
+            reopened.storage().unwrap().entries(&session).unwrap(),
+            recovered
+        );
+        assert_eq!(
+            reopened.storage().unwrap().revision(&session).unwrap(),
+            Some(expected_revision)
+        );
+    }
+}
+
+#[test]
 fn native_message_keys_roundtrip_bodies_and_terminal_identity() {
     let root = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(&root.path().join("agent.db")).unwrap();

@@ -97,7 +97,13 @@ impl SqliteStore {
                 return Ok(());
             }
             for (session, run, epoch, sequence) in runs {
-                self.recover_segmented_run(&session, &run, epoch, sequence)?;
+                let started = std::time::Instant::now();
+                tracing::info!(session = %session, run = %run, epoch, sequence, "session storage: recovering interrupted run");
+                self.recover_segmented_run(&session, &run, epoch, sequence)
+                    .with_context(|| {
+                        format!("recover interrupted run session={session} run={run} epoch={epoch}")
+                    })?;
+                tracing::info!(session = %session, run = %run, epoch, elapsed_ms = started.elapsed().as_millis() as u64, "session storage: interrupted run recovered");
             }
         }
     }
@@ -139,8 +145,14 @@ impl SqliteStore {
                         let page = read_encoded_changes(&tx, &scope, cursor, 128)?;
                         tx.commit()?;
                         Ok(page)
+                    })
+                    .with_context(|| {
+                        format!("read recovery stream epoch={epoch} after_cursor={cursor}")
                     })?
-                    .decode()?;
+                    .decode()
+                    .with_context(|| {
+                        format!("decode recovery stream epoch={epoch} after_cursor={cursor}")
+                    })?;
                 for change in page.changes {
                     cursor = change.last_cursor;
                     anyhow::ensure!(
@@ -412,6 +424,10 @@ impl SqliteStore {
     fn entry_exists(&self, session: &str, entry: &str) -> Result<bool> {
         let (session, entry) = (session.to_owned(), entry.to_owned());
         self.db.read(move |db| {
+            // Native UUIDs are BLOB keys; binding their wire spelling as TEXT
+            // misses an already committed entry and recovery conflicts with it.
+            let entry = crate::session::identity::BoundIdentity::entry(db, &session, &entry)?;
+            let session = crate::session::identity::BoundIdentity::session(db, &session)?;
             Ok(db.query_row(
                 "SELECT EXISTS(SELECT 1 FROM entries WHERE session_id=?1 AND entry_id=?2)",
                 params![session, entry],
@@ -445,6 +461,7 @@ impl SqliteStore {
                 &session,
                 vec![draft.value()],
             )?;
+            let session = crate::session::identity::BoundIdentity::session(&tx, &session)?;
             tx.execute(
                 "UPDATE sessions SET revision=revision+1 WHERE id=?1",
                 [session],
