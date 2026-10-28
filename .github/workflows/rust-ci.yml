@@ -69,7 +69,8 @@ jobs:
         if: inputs.mode == 'test' && contains(matrix.packages, 'future-agent')
         env:
           STORAGE_ACCEPTANCE_DIRECTORY: ${{ runner.temp }}/storage-acceptance
-        run: node -e "require('node:fs').mkdirSync(process.env.STORAGE_ACCEPTANCE_DIRECTORY, { recursive: true })"
+        run: |
+          node -e "require('node:fs').mkdirSync(process.env.STORAGE_ACCEPTANCE_DIRECTORY, { recursive: true })"
       - name: Tests
         if: inputs.mode == 'test'
         env:
