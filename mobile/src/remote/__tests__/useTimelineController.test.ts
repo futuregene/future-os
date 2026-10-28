@@ -81,6 +81,9 @@ describe("useTimelineController", () => {
     return {
       requestRetry: request,
       recoverNow: jest.fn(async () => {}),
+      // The stage this client reports to the desktop. Asserted where a failure
+      // has to reach the machine the phone is talking to, not just the log.
+      setSyncStage: jest.fn(),
     } as unknown as RemoteClient;
   }
 
@@ -1220,11 +1223,18 @@ describe("useTimelineController", () => {
         await flush();
         expect(result.current.timeline.items.map(item => item.id)).toEqual(["m_u1"]);
         expect(result.current.timelineSyncStatus).toBe("retrying");
+        // The failing stage reaches the desktop, so a person looking at the
+        // machine can see where the conversation died instead of watching a
+        // phone spin.
+        expect(client().current?.setSyncStage).toHaveBeenLastCalledWith("replay");
         request.mockResolvedValueOnce({ data: {} }).mockResolvedValueOnce(tail).mockResolvedValueOnce(gap);
         act(() => result.current.syncEngineRef.current!.restart("s1", "reconnect"));
         await flush();
         expect(request.mock.calls.filter(([command]) => command.before === 23)).toHaveLength(2);
         expect(result.current.timeline.items.map(item => item.id)).toEqual(["m_u1", "m_u2", "m_a2", "m_u3"]);
+        // Recovery clears the report: a device that caught up must stop reading
+        // as stuck without anyone reloading the page.
+        expect(client().current?.setSyncStage).toHaveBeenLastCalledWith(null);
         request.mockResolvedValueOnce({ data: {
           entries: [userEntry("u0", "older")], nextOffset: 0, hasMore: false,
         } });

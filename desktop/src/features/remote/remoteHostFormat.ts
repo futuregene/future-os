@@ -91,6 +91,40 @@ export function deviceLabel(
 }
 
 /**
+ * The build a device reported, or the wording for one that never said.
+ *
+ * A remote conversation that will not load has exactly one question the person
+ * in front of the window cannot answer by looking: is the device at the other
+ * end older than this machine? Neither side could tell before this field — the
+ * phone cannot report its own package version at runtime, and a disconnection
+ * leaves nothing behind. "Unknown" is therefore a real answer, not a failure:
+ * it is what every client that predates the field says.
+ */
+export function deviceVersionLabel(
+  device: Pick<RemoteDevice, "client">,
+  t: TFunction<"remote">,
+): string {
+  const version = device.client?.version?.trim();
+  return version ? t("clientVersion", { version }) : t("clientVersionUnknown");
+}
+
+/**
+ * The step a device's conversation sync is stuck at, or `null` when it reports
+ * none.
+ *
+ * The version says *who* is at the other end; this says *where* it died, which
+ * is the half that can be acted on. A device that recovered stops reporting a
+ * stage, so this describes the present rather than a history.
+ */
+export function deviceSyncStageLabel(
+  device: Pick<RemoteDevice, "client">,
+  t: TFunction<"remote">,
+): string | null {
+  const stage = device.client?.syncStage?.trim();
+  return stage ? t("clientSyncStalled", { stage }) : null;
+}
+
+/**
  * Whether the machine can actually serve this device right now.
  *
  * Two halves, and both are needed: the bridge (`connected`) and the client that

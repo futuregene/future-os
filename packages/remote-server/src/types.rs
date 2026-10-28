@@ -179,11 +179,30 @@ impl std::fmt::Debug for RemoteDevice {
 /// `name` is the device's own name and `kind` is its category. Both are opaque
 /// strings from the client: this side renders them and never branches on them,
 /// so a new kind costs nothing here.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+///
+/// `version` and `sync_stage` are the two halves of "what is this device and
+/// what is it stuck on", and both are optional by construction. A client that
+/// predates them sends neither, which reads as an unknown version and nothing
+/// to report — never as a reason to refuse it. Nothing on this side compares a
+/// version against a minimum: the desktop stopped having a version gate the day
+/// pairing became capability-negotiated, and re-introducing one here to make a
+/// diagnostic field convenient would trade a working older client for a label.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientIdentity {
     pub name: String,
     pub kind: String,
+    /// The build the client says it is running, when it said. Opaque here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// The reconcile stage that client last reported a failure at, or `None`
+    /// once it stopped reporting one.
+    ///
+    /// It describes the client's *current* trouble, not a history: a beat
+    /// without it clears it, so a device that recovered stops looking broken on
+    /// a page nobody reloaded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_stage: Option<String>,
 }
 
 pub fn retryable_start_status(status: &RemoteStatus) -> bool {
