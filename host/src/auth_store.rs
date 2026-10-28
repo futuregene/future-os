@@ -200,7 +200,6 @@ pub mod test_support {
             timing.mark("pre_cleanup");
             let previous = std::env::var("HOME").ok();
             let previous_future_home = std::env::var_os("FUTURE_HOME");
-            std::env::remove_var("FUTURE_HOME");
             let dir = std::env::temp_dir().join(format!(
                 "futureos-test-{}-{}",
                 std::process::id(),
@@ -209,6 +208,15 @@ pub mod test_support {
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             std::env::set_var("HOME", &dir);
+            // The FutureOS root has to move with this fixture, not merely be
+            // forgotten. Removing the override still puts every *file* under
+            // `<dir>/.future`, but the local endpoint is named from the override
+            // alone (an absent one resolves to the untagged default socket/pipe),
+            // so a fixture that removed it reached the developer's running Agent
+            // while its own state sat in a temp dir. `<dir>/.future` is exactly
+            // what "override absent + this HOME" already resolved to, so no path
+            // assertion changes — only the endpoint becomes this fixture's own.
+            std::env::set_var("FUTURE_HOME", dir.join(".future"));
             timing.mark("setup");
             HomeGuard {
                 previous,
@@ -286,9 +294,8 @@ pub mod test_support {
     }
 
     /// `FUTURE_HOME` is the documented way to relocate the whole FutureOS root
-    /// (an embedded host sets it). The fixture clears it
-    /// while it is live — the tests must resolve *its* home, not the caller's —
-    /// and `restore` puts the caller's value back, the same way it does HOME.
+    /// (an embedded host sets it). `restore` puts the caller's value back, the
+    /// same way it does HOME.
     #[test]
     fn home_guard_restores_a_previously_set_future_home() {
         let lock = crate::TEST_HOME_LOCK
@@ -307,8 +314,8 @@ pub mod test_support {
             cleanup: cleanup_host,
             timing: crate::test_support::timing::FixtureTiming::start("HomeGuard", "future-home"),
         };
-        // While the fixture is live the variable is removed, so the code under
-        // test resolves the fixture's HOME-based root.
+        // While the fixture is live the variable names the fixture's own root,
+        // so the code under test cannot resolve the caller's one.
         std::env::set_var("FUTURE_HOME", "/opt/temporary-future-home");
 
         guard.restore();
@@ -324,6 +331,30 @@ pub mod test_support {
         // environment exactly as this test found it instead of re-setting it.
         guard.previous_future_home = None;
         std::env::remove_var("FUTURE_HOME");
+    }
+
+    /// A live guard must redirect the FutureOS root itself, not just `HOME`.
+    ///
+    /// Both variables decide where state lands — `HOME` for the files, the
+    /// override for the local endpoint (the untagged default socket/pipe when it
+    /// is absent) — so a fixture that only moved `HOME` kept its own files while
+    /// still reaching the developer's running Agent. `<dir>/.future` is the root
+    /// a `HOME`-only resolution produced anyway, so this pins that the two move
+    /// together without changing any path.
+    #[test]
+    fn a_live_home_guard_redirects_the_future_home_root_it_created() {
+        let home = HomeGuard::new("future-home-live");
+        let dir = home.path().to_path_buf();
+        assert_eq!(
+            future_rpc::home::future_home_override(),
+            Some(dir.join(".future")),
+            "the guard must publish its own FutureOS root"
+        );
+        assert_eq!(
+            future_rpc::home::future_home(),
+            dir.join(".future"),
+            "files resolve to the fixture root, exactly as a HOME-only resolution did"
+        );
     }
     #[test]
     fn home_guard_removes_its_directory_even_with_a_live_pooled_connection() {

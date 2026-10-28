@@ -366,6 +366,17 @@ EOF
 export_case_env() {
   export HOME="$case_home"
   export PATH="$case_path"
+  # The FutureOS root has to be redirected too, or the file fixtures below are
+  # the only thing isolated: `FUTURE_HOME` decides where the CLI's state and its
+  # local endpoint live, and it outranks HOME. This harness is POSIX-only today
+  # (fixed $WORK, /usr/bin:/bin) so it never actually ran against a real
+  # ~/.future, but a shell that exports FUTURE_HOME would have redirected it
+  # there — and the two `auth logout` cases would have cleared the developer's
+  # real key. `${HOME}/.future` is exactly the path a HOME-only resolution
+  # produced in every recorded golden (e.g. logout/0.out names
+  # `$HOME/.future/agent/auth.json`), so the output stays byte-identical.
+  export FUTURE_HOME="${HOME}/.future"
+  unset FUTURE_AGENT_SOCKET
   if [[ -n "$case_grpc" ]]; then
     export FUTURE_AGENT_GRPC_ADDR="$case_grpc"
   else

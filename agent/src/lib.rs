@@ -215,7 +215,13 @@ pub(crate) mod test_support {
             // (non-canonical) $HOME would make raw dirs::home_dir() paths never
             // match canonicalized rule bases.
             let canonical_home = crate::sandbox::paths::canonicalize_lenient(dir.path());
-            std::env::remove_var("FUTURE_HOME");
+            // The FutureOS root moves with the home instead of being dropped:
+            // an absent override still resolves the *files* to
+            // `<home>/.future`, but names the local endpoint from the override
+            // alone (the untagged default socket/pipe, i.e. the developer's
+            // running Agent). `<home>/.future` is the root this fixture always
+            // resolved to, so no path changes — only the endpoint does.
+            std::env::set_var("FUTURE_HOME", canonical_home.join(".future"));
             std::env::set_var("HOME", &canonical_home);
             std::env::set_var("USERPROFILE", &canonical_home);
             Self {

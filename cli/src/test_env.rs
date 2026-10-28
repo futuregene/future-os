@@ -39,18 +39,47 @@ pub struct EnvGuard {
 
 impl EnvGuard {
     /// Point `vars` at fresh throwaway values; originals restored on drop.
+    ///
+    /// Redirecting `HOME` also redirects the FutureOS root (`FUTURE_HOME`) into
+    /// `<that home>/.future`, unless the caller names `FUTURE_HOME` itself.
+    /// Without that, an ambient override — a developer whose shell exports
+    /// `FUTURE_HOME`, or a second isolated instance — stays in charge while the
+    /// test believes it isolated everything: `future_home()` keeps resolving to
+    /// the ambient root, so the app database, workspaces and task store a test
+    /// just redirected land outside its temp dir, and the local endpoint is the
+    /// running Agent's. `<home>/.future` is what a `HOME`-only resolution already
+    /// produced, so no path assertion changes — only the ambient value stops
+    /// winning.
     pub fn set(vars: &[(&'static str, std::ffi::OsString)]) -> Self {
-        let saved = vars
+        let mut saved: Vec<(&'static str, Option<std::ffi::OsString>)> = vars
             .iter()
             .map(|(k, _)| (*k, std::env::var_os(k)))
             .collect();
+        let names_future_home = vars.iter().any(|(k, _)| *k == "FUTURE_HOME");
+        let redirected_home = vars
+            .iter()
+            .find(|(k, _)| *k == "HOME")
+            .map(|(_, v)| std::path::PathBuf::from(v));
         for (k, v) in vars {
             std::env::set_var(k, v);
+        }
+        if let (Some(home), false) = (redirected_home, names_future_home) {
+            saved.push(("FUTURE_HOME", std::env::var_os("FUTURE_HOME")));
+            std::env::set_var("FUTURE_HOME", home.join(".future"));
         }
         EnvGuard { saved, home: None }
     }
 
-    /// Own a fresh home until restoration, including the FutureOS override.
+    /// Own a fresh home until restoration, with the FutureOS root redirected
+    /// into it as well.
+    ///
+    /// The root has to move with the home, not merely be forgotten: dropping
+    /// `FUTURE_HOME` still lands the *files* under `<temp>/.future`, but the
+    /// local endpoint is named from the override alone
+    /// (`future_home_override()` → the untagged default socket/pipe), so a test
+    /// that removed it talked to the developer's running Agent while its files
+    /// sat in a temp dir. Pointing the override at `<temp>/.future` keeps the
+    /// file paths identical and moves the endpoint with them.
     pub fn temp_home() -> Self {
         Self::set(&[]).with_temp_home()
     }
@@ -62,7 +91,10 @@ impl EnvGuard {
         }
         std::env::set_var("HOME", dir.path());
         std::env::set_var("USERPROFILE", dir.path());
-        std::env::remove_var("FUTURE_HOME");
+        // `<temp>/.future` is what `FUTURE_HOME` absent + `<temp>` as HOME
+        // already resolved to, so every file assertion is unchanged; the
+        // difference is that the endpoint is now this instance's own.
+        std::env::set_var("FUTURE_HOME", dir.path().join(".future"));
         self.home = Some(dir);
         self
     }
@@ -154,7 +186,12 @@ mod tests {
         let guard = super::EnvGuard::temp_home();
         let path = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
         assert!(path.is_dir(), "the returned guard owns the live directory");
-        assert!(std::env::var_os("FUTURE_HOME").is_none());
+        // The ambient override must not outlive the guard: the fixture names
+        // its own root (`<home>/.future`), not the caller's.
+        assert_eq!(
+            std::env::var_os("FUTURE_HOME"),
+            Some(path.join(".future").as_os_str().to_owned())
+        );
         assert_eq!(
             std::env::var_os("USERPROFILE"),
             Some(path.as_os_str().to_owned())
@@ -177,6 +214,51 @@ mod tests {
         assert_eq!(
             std::env::var_os("FUTURE_HOME"),
             Some(inherited.path().as_os_str().to_owned())
+        );
+    }
+
+    /// Redirecting `HOME` alone must not leave an ambient override in charge.
+    /// Asserted in both directions, because the wrong half is the dangerous one:
+    /// with the ambient value winning, a test's app database, workspaces and
+    /// task store land in the developer's real root and its local endpoint is
+    /// the running Agent's — while every path it printed still looks isolated.
+    #[tokio::test]
+    async fn set_redirects_the_future_home_root_with_the_home_it_redirects() {
+        let _lock = super::lock_env().await;
+        let ambient = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let explicit = tempfile::tempdir().unwrap();
+        let _ambient = super::EnvGuard::remove(&["FUTURE_HOME"]);
+        std::env::set_var("FUTURE_HOME", ambient.path());
+
+        {
+            let _guard = super::EnvGuard::set(&[("HOME", home.path().as_os_str().to_owned())]);
+            assert_eq!(
+                std::env::var_os("FUTURE_HOME"),
+                Some(home.path().join(".future").as_os_str().to_owned()),
+                "an ambient override must not outrank the home the guard set"
+            );
+        }
+        assert_eq!(
+            std::env::var_os("FUTURE_HOME"),
+            Some(ambient.path().as_os_str().to_owned()),
+            "the ambient value is restored on drop"
+        );
+
+        // An explicit FUTURE_HOME is the caller's decision, not derived.
+        {
+            let _guard = super::EnvGuard::set(&[
+                ("HOME", home.path().as_os_str().to_owned()),
+                ("FUTURE_HOME", explicit.path().as_os_str().to_owned()),
+            ]);
+            assert_eq!(
+                std::env::var_os("FUTURE_HOME"),
+                Some(explicit.path().as_os_str().to_owned())
+            );
+        }
+        assert_eq!(
+            std::env::var_os("FUTURE_HOME"),
+            Some(ambient.path().as_os_str().to_owned())
         );
     }
 

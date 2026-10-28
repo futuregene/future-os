@@ -849,7 +849,11 @@ impl IsolatedHome {
         let original = std::env::var("HOME").ok();
         let original_future_home = std::env::var("FUTURE_HOME").ok();
         std::env::set_var("HOME", &path);
-        std::env::remove_var("FUTURE_HOME");
+        // Redirect the FutureOS root into the fixture rather than dropping it:
+        // the *files* resolve to `<home>/.future` either way, but the local
+        // endpoint is named from the override alone, so an absent one would
+        // point this instance at the developer's running Agent.
+        std::env::set_var("FUTURE_HOME", path.join(".future"));
         Self {
             path,
             original,
