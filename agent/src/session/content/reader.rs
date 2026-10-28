@@ -173,7 +173,7 @@ impl Snapshot {
         }
         let scope = self.clone();
         let entries = page.to_vec();
-        let values = self.read(store, move |db| {
+        let (values, metadata_generation) = self.read(store, move |db| {
             let tx = db.savepoint()?;
             scope.check(&tx)?;
             let first = entries.iter().map(|entry| entry.position).min().unwrap_or(-1);
@@ -316,8 +316,9 @@ impl Snapshot {
             }
 
             let mut values = Vec::with_capacity(entries.len());
+            let mut metadata_generation = None;
             for entry in &entries {
-                let (id, kind, role, run, metadata, content, _generation, current) =
+                let (id, kind, role, run, metadata, content, generation, current) =
                     rows.remove(&entry.position)
                         .context("entry disappeared during page read")?;
                 ensure!(
@@ -344,6 +345,14 @@ impl Snapshot {
                     value["meta"]["run_id"] = json!(run);
                 }
                 if kind == "session_info" {
+                    if let Some(expected) = metadata_generation {
+                        ensure!(
+                            expected == generation,
+                            "session metadata generation changed within an entry page"
+                        );
+                    } else {
+                        metadata_generation = Some(generation);
+                    }
                     value["content"] = current
                         .map(|content| serde_json::from_str(&content))
                         .transpose()?
@@ -381,9 +390,22 @@ impl Snapshot {
                 values.push(value);
             }
             tx.commit()?;
-            Ok(values)
+            Ok((values, metadata_generation))
         })?;
         self.verify(store)?;
+        if let Some(expected) = metadata_generation {
+            let scope = self.clone();
+            self.read(store, move |db| {
+                let tx = db.savepoint()?;
+                scope.check(&tx)?;
+                ensure!(
+                    super::metadata::generation(&tx, &scope.session)? == expected,
+                    "session metadata changed during paged read"
+                );
+                tx.commit()?;
+                Ok(())
+            })?;
+        }
         Ok(values)
     }
 

@@ -4,13 +4,14 @@ use std::collections::VecDeque;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
-use std::time::UNIX_EPOCH;
 
 const IMAGE_CACHE_ENTRIES: usize = 32;
 const IMAGE_CACHE_BYTES: usize = 64 * 1024 * 1024;
 const IMAGE_CACHE_MAX_ENTRY_BYTES: usize = 8 * 1024 * 1024;
 
-type ImageCacheKey = (PathBuf, u128, u64);
+// Content identity, not path/mtime: replacing a file while preserving its
+// timestamp and length must never resurrect the previous image in a prompt.
+type ImageCacheKey = [u8; 32];
 
 #[derive(Default)]
 struct ImageUrlCache {
@@ -138,6 +139,7 @@ pub fn detect_image_mime_type(path: &Path) -> Option<String> {
 /// too large either way).
 pub fn image_data_url_for_model(path: &str) -> Option<String> {
     use base64::Engine as _;
+    use sha2::Digest as _;
 
     const MAX_DIM: u32 = 2000;
     const MAX_BASE64_BYTES: usize = 5 * 1024 * 1024;
@@ -152,38 +154,24 @@ pub fn image_data_url_for_model(path: &str) -> Option<String> {
     // Projected base64 length is ~4/3 of the raw byte count.
     let fits_base64 = |len: usize| len.div_ceil(3) * 4 <= MAX_BASE64_BYTES;
 
-    let metadata = std::fs::metadata(path).ok()?;
-    if metadata.len() > MAX_SOURCE_BYTES {
+    if std::fs::metadata(path).ok()?.len() > MAX_SOURCE_BYTES {
         return None;
     }
-    let modified = metadata
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    let key = (PathBuf::from(path), modified, metadata.len());
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.len() as u64 > MAX_SOURCE_BYTES {
+        return None;
+    }
+    // The URL cache avoids repeated full decode + base64 work, but correctness
+    // must not depend on filesystem timestamp granularity. Hashing the bytes we
+    // actually read also closes the metadata/read replacement race.
+    let key = <[u8; 32]>::from(sha2::Sha256::digest(&bytes));
     if let Some(url) = cached_image_url(&key) {
         return Some(url);
     }
-    let bytes = std::fs::read(path).ok()?;
-    // Read dimensions from the header first. The common case sends the original
-    // bytes unchanged, so decoding the full image before this check spent tens of
-    // milliseconds per screenshot for a value the header already contains.
-    let dimensions_reader = image::ImageReader::new(std::io::Cursor::new(&bytes))
-        .with_guessed_format()
-        .ok()?;
-    let format = dimensions_reader.format()?;
-    let (width, height) = dimensions_reader.into_dimensions().ok()?;
 
-    // Small enough already: send the original bytes, keeping the source format
-    // (e.g. PNG transparency) instead of forcing a JPEG re-encode.
-    if width <= MAX_DIM && height <= MAX_DIM && fits_base64(bytes.len()) {
-        let url = data_url(format.to_mime_type(), &bytes);
-        remember_image_url(key, &url);
-        return Some(url);
-    }
-
+    // Validate the complete stream before sending original bytes. Header-only
+    // dimensions would accept a truncated PNG/JPEG and turn what used to be a
+    // skipped attachment into a provider-wide request failure.
     // Cap the decoder's allocation so a decompression bomb (a tiny file that
     // decodes to a huge bitmap) can't OOM the agent. 512MB comfortably fits any
     // legitimate photo/screenshot while rejecting absurd dimensions.
@@ -193,8 +181,17 @@ pub fn image_data_url_for_model(path: &str) -> Option<String> {
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(512 * 1024 * 1024);
     reader.limits(limits);
+    let format = reader.format()?;
     let img = reader.decode().ok()?;
     let (width, height) = (img.width(), img.height());
+
+    // Small enough already: send the original bytes, keeping the source format
+    // (e.g. PNG transparency) instead of forcing a JPEG re-encode.
+    if width <= MAX_DIM && height <= MAX_DIM && fits_base64(bytes.len()) {
+        let url = data_url(format.to_mime_type(), &bytes);
+        remember_image_url(key, &url);
+        return Some(url);
+    }
 
     // Downscale to fit MAX_DIM (aspect-preserving), then JPEG-compress at
     // decreasing quality until the payload fits.
@@ -500,6 +497,58 @@ mod image_prep_tests {
     #[test]
     fn missing_or_undecodable_returns_none() {
         assert!(image_data_url_for_model("/no/such/file-xyz.png").is_none());
+    }
+
+    #[test]
+    fn truncated_stream_with_a_valid_header_is_not_sent() {
+        let path = write_png("truncated", 64, 64);
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
+        let truncated = std::fs::read(&path).unwrap();
+        assert!(
+            image::ImageReader::new(std::io::Cursor::new(&truncated))
+                .with_guessed_format()
+                .unwrap()
+                .into_dimensions()
+                .is_ok(),
+            "the fixture must keep a readable dimensions header"
+        );
+        assert!(image_data_url_for_model(path.to_str().unwrap()).is_none());
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn cache_does_not_reuse_old_content_when_mtime_and_length_are_preserved() {
+        use base64::Engine as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("replacement.png");
+        image::RgbImage::from_pixel(2, 2, image::Rgb([255, 0, 0]))
+            .save_with_format(&path, image::ImageFormat::Png)
+            .unwrap();
+        let first_bytes = std::fs::read(&path).unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let first_url = image_data_url_for_model(path.to_str().unwrap()).unwrap();
+
+        image::RgbImage::from_pixel(2, 2, image::Rgb([0, 255, 0]))
+            .save_with_format(&path, image::ImageFormat::Png)
+            .unwrap();
+        let second_bytes = std::fs::read(&path).unwrap();
+        assert_eq!(first_bytes.len(), second_bytes.len());
+        assert_ne!(first_bytes, second_bytes);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+
+        let second_url = image_data_url_for_model(path.to_str().unwrap()).unwrap();
+        assert_ne!(second_url, first_url);
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(second_url.split_once(",").unwrap().1)
+            .unwrap();
+        assert_eq!(decoded, second_bytes);
     }
 
     #[test]

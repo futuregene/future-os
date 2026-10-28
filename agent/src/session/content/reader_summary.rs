@@ -44,8 +44,8 @@ impl Snapshot {
                     (SELECT count(*) FROM entries WHERE session_id=s.id AND entry_type='user'),
                     (SELECT content_json FROM entries WHERE session_id=s.id AND entry_type='user' ORDER BY position LIMIT 1),
                     (SELECT role FROM entries WHERE session_id=s.id AND entry_type='user' ORDER BY position LIMIT 1),
-                    (SELECT b.text FROM entries e JOIN message_blocks b ON b.session_id=e.session_id AND b.entry_position=e.position WHERE e.session_id=s.id AND e.entry_type='user' AND b.text IS NOT NULL ORDER BY e.position,b.ordinal LIMIT 1),
-                    (SELECT printf('%d|%d|%d|%s|%s',r.content_id,r.byte_offset,r.byte_length,r.encoding,r.field) FROM entries e JOIN content_references r ON r.session_id=e.session_id AND r.owner_id=e.entry_id WHERE e.session_id=s.id AND e.entry_type='user' AND r.owner_kind='entry' AND r.field LIKE '/content/%/text' AND e.position=(SELECT min(position) FROM entries WHERE session_id=s.id AND entry_type='user') LIMIT 1)
+                    (SELECT b.text FROM entries e JOIN message_blocks b ON b.session_id=e.session_id AND b.entry_position=e.position WHERE e.session_id=s.id AND e.entry_type='user' AND b.text IS NOT NULL AND e.position=(SELECT min(position) FROM entries WHERE session_id=s.id AND entry_type='user') ORDER BY e.position,b.ordinal LIMIT 1),
+                    (SELECT printf('%d|%d|%d|%s|%s',r.content_id,r.byte_offset,r.byte_length,r.encoding,r.field) FROM entries e JOIN content_references r ON r.session_id=e.session_id AND r.owner_id=e.entry_id WHERE e.session_id=s.id AND e.entry_type='user' AND r.owner_kind='entry' AND r.field LIKE '/content/%/text' AND e.position=(SELECT min(position) FROM entries WHERE session_id=s.id AND entry_type='user') ORDER BY length(r.field),r.field LIMIT 1)
                  FROM sessions s WHERE s.id=?1 AND s.revision>=0
                    AND NOT EXISTS(SELECT 1 FROM session_tombstones t WHERE t.session_id=s.id)",
             )?;
@@ -114,7 +114,7 @@ impl Snapshot {
                 if preview.is_none() && first_is_user {
                     if let Some((content_id, offset, length, encoding, _)) = reference.as_ref() {
                         if encoding == "text" {
-                            preview = Some(crate::session::title_preview::paged(
+                            let title = crate::session::title_preview::paged(
                                 usize::try_from(*length)?,
                                 |start, budget| {
                                     Ok(
@@ -127,7 +127,8 @@ impl Snapshot {
                                         .text,
                                     )
                                 },
-                            )?);
+                            )?;
+                            preview = (!title.is_empty()).then_some(title);
                         }
                     }
                 }
