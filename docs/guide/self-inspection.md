@@ -361,7 +361,8 @@ sub-session, which users may also call a subagent, a sub-agent or 子agent/子�
 
 ```sh
 future session new --parent <your-session-id> --name "<short task>" --json
-future run --no-wait --session <child> "<self-contained prompt>"
+future run --no-wait --session <child> \
+  --model <id> --thinking <level> "<self-contained prompt>"
 ```
 
 Recording the parent on the create command is what makes the child a child: the
@@ -373,6 +374,16 @@ delegate further. Everything in the section above — `--no-wait` and `wait`,
 `abort`/`delete` stop and remove one, and `future session approvals <child>`
 says whether a child is parked on an approval, which from the outside is
 indistinguishable from being slow.
+
+The model and thinking level do not come from the parent automatically: a child
+resolves them from the agent's default, because that is what every fresh session
+does. So hand the caller's own down on the dispatching `run` — `--model <id>
+--thinking <level>`, taken from the environment block the caller is running
+under — which is the recommendation when the child continues work the parent
+was doing. Both are recorded on the child, so its later runs keep them. Leaving
+them off is a legitimate choice when the default model is what the work wants:
+the child then starts on the agent's default model and `default` thinking
+level.
 
 Collecting the answer is a pull: the child answers, and `future session
 wait`/`transcript` reads that answer back. When the caller cannot wait that
