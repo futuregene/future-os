@@ -172,7 +172,7 @@ fn base() -> WorkbenchData {
             "docs/tui/workbench-spec.md".into(),
             "AGENTS.md".into(),
         ],
-        messages: Vec::new(),
+        messages: Default::default(),
         input: InputView {
             placeholder: t(
                 crate::workbench::i18n::Language::Zh,
@@ -319,7 +319,7 @@ pub fn preview_image() -> crate::workbench::state::PreviewView {
         pixels: crate::workbench::image_view::ImagePixels {
             width,
             height,
-            rgba,
+            rgba: rgba.into(),
         },
     }
 }
@@ -513,7 +513,8 @@ pub fn chat() -> WorkbenchData {
         style(p.muted, " read src/parser.rs"),
         style(p.muted, " $ cargo test -p parser --off-by-one"),
         String::new(),
-    ];
+    ]
+    .into();
     data
 }
 
