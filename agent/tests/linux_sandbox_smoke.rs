@@ -563,9 +563,16 @@ async fn production_request_fd_transport_reaches_both_helper_phases() {
 #[test]
 fn invalid_helper_request_fails_before_agent_singleton() {
     let home = tempfile::tempdir().unwrap();
+    // `FUTURE_HOME` outranks `HOME` for the agent's state root, so it is the one
+    // that must be redirected: a shell exporting it would otherwise point this
+    // child at the developer's real `~/.future`.
     let status = Command::new(env!("CARGO_BIN_EXE_future-agent"))
         .args(["--linux-sandbox-helper", "not-base64"])
         .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("FUTURE_HOME", home.path().join(".future"))
+        .env_remove("FUTURE_AGENT_SOCKET")
+        .env_remove("FUTURE_AGENT_GRPC_ADDR")
         .status()
         .unwrap();
     assert_eq!(status.code(), Some(125));
