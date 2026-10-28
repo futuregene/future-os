@@ -549,6 +549,11 @@ async fn an_isolated_recovery_refuses_direct_and_queued_work_before_any_model_or
     assert!(queued
         .to_string()
         .contains("session recovery requires repair"));
+    assert!(matches!(
+        queued.downcast_ref::<crate::runtime::RunQueueError>(),
+        Some(crate::runtime::RunQueueError::PersistenceUnavailable(reason))
+            if reason.contains("session recovery requires repair")
+    ));
     assert!(provider.requests.lock().unwrap().is_empty());
     assert!(fixture.session.runtime.snapshot().is_none());
     assert!(manager
