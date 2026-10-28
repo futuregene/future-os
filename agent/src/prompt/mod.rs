@@ -483,8 +483,15 @@ fn build_sessions_section(is_subsession: bool) -> String {
         // model's judgement: a prompt that assumes shared history, a turn that
         // ends while a child still runs, and a wait per spawn that serializes
         // work which was delegated precisely to run in parallel.
+        //
+        // The callback address is the one escape from "never end the turn with a
+        // child still running": the shell tool caps a single wait at 600s, so a
+        // long child outlives any in-turn wait, and without an address the
+        // parent's only options are abandoning it in silence or killing work it
+        // just paid for. Collecting the answer stays the default — it is what a
+        // turn that can wait should do, and a callback spends credits.
         parts.push(
-            "Work can also be handed to another conversation of your own — a sub-session, which the user may also call a subagent, a sub-agent, or 子会话 / 子agent / 子代理; treat those words as asking for one. Create it with the lineage recorded in the same step — `future session new --parent <this-session-id> --name \"<short task>\" --json` — then hand it the work with `future run --no-wait --session <child> \"<prompt>\"` (a long or non-ASCII prompt goes in a file passed as `--message-file <path>`, because `@<file>` would hand the child an attachment instead of the message): the ack returns at once and the run continues, and `future session wait <child> --timeout 4m` prints its answer when it ends. To see where it has got to, `future session status <child>` reports whether its run is still active and `future session transcript --session <child> --runs` its per-run outcomes; appending behind it, --steer, and the provenance/intent requirement are the same as for a referenced conversation. What neither covers: `future session abort <child>` stops its run and clears its queue, `future session delete <child>` removes it once its result is no longer wanted, `future session approvals <child>` lists the approvals it is parked on — a --no-wait child waiting there looks exactly like a slow one — and `future session list --parent <this-session-id> --json` lists your own children with their isStreaming flags. A child cannot see this conversation, so its prompt must stand alone: the goal, the files to touch, the acceptance check, and that it should return the result rather than a narration. Delegate only when the work is genuinely independent or long enough that its tool chatter would otherwise fill this conversation: the child is a full run on the user's credits, so do not spawn one to answer something you could read yourself, and a child cannot start its own child. Never end your turn with one still running — wait for it, or abort it and say so. Keep at most three in flight, launched first and awaited one at a time, because a blocking wait per spawn serializes the work and loses the point of delegating."
+            "Work can also be handed to another conversation of your own — a sub-session, which the user may also call a subagent, a sub-agent, or 子会话 / 子agent / 子代理; treat those words as asking for one. Create it with the lineage recorded in the same step — `future session new --parent <this-session-id> --name \"<short task>\" --json` — then hand it the work with `future run --no-wait --session <child> \"<prompt>\"` (a long or non-ASCII prompt goes in a file passed as `--message-file <path>`, because `@<file>` would hand the child an attachment instead of the message): the ack returns at once and the run continues, and `future session wait <child> --timeout 4m` prints its answer when it ends. To see where it has got to, `future session status <child>` reports whether its run is still active and `future session transcript --session <child> --runs` its per-run outcomes; appending behind it, --steer, and the provenance/intent requirement are the same as for a referenced conversation. What neither covers: `future session abort <child>` stops its run and clears its queue, `future session delete <child>` removes it once its result is no longer wanted, `future session approvals <child>` lists the approvals it is parked on — a --no-wait child waiting there looks exactly like a slow one — and `future session list --parent <this-session-id> --json` lists your own children with their isStreaming flags. A child cannot see this conversation, so its prompt must stand alone: the goal, the files to touch, the acceptance check, and that it should return the result rather than a narration. If you cannot stay to collect that answer — a run can outlast the shell tool's 600-second cap — put this session's id in the prompt and ask the child to report back with `future run --session <this-session-id>`, saying the report comes from this conversation: that call is a real run here and spends credits, so it is for answers that would otherwise land after the turn ends, not the normal path. Delegate only when the work is genuinely independent or long enough that its tool chatter would otherwise fill this conversation: the child is a full run on the user's credits, so do not spawn one to answer something you could read yourself, and a child cannot start its own child. Never end your turn with one still running — wait for it, or abort it and say so — unless you gave it this session's id to report back to, and then say in your reply that it is still going. Keep at most three in flight, launched first and awaited one at a time, because a blocking wait per spawn serializes the work and loses the point of delegating."
                 .to_string(),
         );
     }
@@ -1143,6 +1150,13 @@ mod tests {
         // ends while a child runs, and a wait per spawn that serializes it.
         assert!(prompt.contains("cannot see this conversation"));
         assert!(prompt.contains("Never end your turn with one still running"));
+        // Ending a turn with a child still running is the one failure mode with
+        // an escape: a wait the shell tool cannot hold (600s cap), handed to the
+        // child as an address to report back to. The address is this session's
+        // own id, so a parent that offers it does not need to know the child's.
+        assert!(prompt.contains("future run --session <this-session-id>`"));
+        assert!(prompt.contains("unless you gave it this session's id to report back to"));
+        assert!(prompt.contains("spends credits, so it is for answers"));
         assert!(prompt.contains("at most three in flight"));
         // It names its own commands instead of pointing at "the form above",
         // so the delegation paragraph is complete wherever the reference
@@ -1186,8 +1200,10 @@ mod tests {
         assert!(!sub.contains("at most three in flight"));
         assert!(sub.contains("cannot start one of its own"));
         // Reading and messaging an existing conversation still works from a
-        // child, so that half stays.
+        // child, so that half stays — and the send half is what makes a
+        // report back possible when the parent left its id in the prompt.
         assert!(sub.contains("futureos://session/<session-id>"));
+        assert!(sub.contains("future run --session <id>"));
 
         // Without a shell there is no way to run any of it.
         let read_only = build_prompt(&PromptOptions {

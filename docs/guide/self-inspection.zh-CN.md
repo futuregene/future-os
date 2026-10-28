@@ -315,6 +315,12 @@ future run --no-wait --session <子会话 id> "<自包含的提示词>"
 `abort` / `delete` 停掉并删除一个，`future session approvals <子会话>` 回答它是不是
 卡在审批上 —— 这在外部观察起来和「跑得慢」完全一样。
 
+取答案是「拉」：子会话给出答复，调用方用 `future session wait` / `transcript`
+把它读回来。若调用方等不起 —— Agent 的 shell 工具单次等待上限 600 秒 —— 就把
+自己的会话 id 写进子会话的提示词，让它用 `future run --session <父会话 id>`
+回报；那是在那个会话里真起一个 run、要花 credits。这也正是「子会话还在跑时结束
+本回合」唯一正确的场合：子会话仍然知道该往哪报。
+
 只允许一跳，而且是强制的、不是靠提示词劝阻：已经有父会话的会话不能再当父会话
 （`new_session` 与 `set_parent_session` 都拒绝），所以子会话无法再开孙会话。
 每多一跳，上面对下面那次工作的了解就被重新摘要一次；超过一跳，提出需求的那个会话

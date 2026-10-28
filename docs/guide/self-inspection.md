@@ -374,6 +374,15 @@ delegate further. Everything in the section above — `--no-wait` and `wait`,
 says whether a child is parked on an approval, which from the outside is
 indistinguishable from being slow.
 
+Collecting the answer is a pull: the child answers, and `future session
+wait`/`transcript` reads that answer back. When the caller cannot wait that
+long — the agent's shell tool caps a single wait at 600 seconds — it puts its
+own session id in the child's prompt and asks for a report back through
+`future run --session <parent>`, which is a real run in that conversation and
+spends credits. That is also the only case in which ending a turn with a child
+still running is the right call, because the child still knows where to
+report.
+
 One jump is the limit, and it is enforced rather than asked for: a session that
 already has a parent cannot become one (`new_session` and `set_parent_session`
 both refuse), so a child cannot spawn a grandchild. Each hop re-summarises the
