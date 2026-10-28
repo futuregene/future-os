@@ -13,7 +13,7 @@ use regex::Regex;
 
 use crate::components::diff::{self, DiffTheme};
 use crate::components::markdown::{MarkdownRenderer, MarkdownTheme, MarkdownThemePartial};
-use crate::theme::{bold, dim, fg, italic, Theme, DARK_THEME};
+use crate::theme::{bold, dim, fg, italic, Chrome, Theme, DARK_THEME};
 use crate::tui::{Component, RESET};
 use crate::utils::{
     apply_background_to_line, strip_ansi_codes, truncate_to_width, wrap_text_with_ansi,
@@ -59,7 +59,7 @@ pub enum ReplyDetail {
     /// `/tool-output`, exactly as at the other levels.
     Detailed,
     /// Half folded: finished calls and reasoning collapse where they happened
-    /// (a `▸ 12 tool calls · 3 thoughts` row, a `▸ thinking` marker), while
+    /// (a `▸ 🔧×12 · 🧠×3` row, a `▸ thinking` marker), while
     /// every piece of prose the model wrote — including the notes between its
     /// calls — stays on screen in order. This is the desktop's *live* shape
     /// kept for a settled reply.
@@ -125,27 +125,30 @@ struct ReplyFold {
     burst: bool,
 }
 
+/// The glyphs a folded count row is drawn with: the desktop's wrench for tool
+/// calls and its brain for reasoning, so the row reads `▸ 🔧×12 · 🧠×3` — the
+/// same two marks, in the same order, the desktop puts beside those numbers
+/// (`Wrench`/`Brain` in its `ReplySteps`). Counting with a glyph instead of a
+/// noun is what keeps the row quiet and language-neutral: there is no `tool
+/// calls`/`工具调用` to translate, and nothing in it competes with the prose it
+/// stands for.
+const TOOL_GLYPH: &str = "🔧";
+const THOUGHT_GLYPH: &str = "🧠";
+
 /// The words a transcript's own process rows are drawn in.
 ///
-/// The counts and markers of a folded reply are the terminal's chrome, not the
-/// model's words, so they follow the interface language like every other label
-/// on the surface: a Chinese session must not say `51 tool calls · 27 thoughts`
-/// in an otherwise Chinese frame. The words arrive from the workbench's copy
-/// (one `{}` per template, filled with the count) rather than being looked up
-/// here, because a component has no business reading the settings file — and
-/// the English defaults keep a caller that never sets them — a unit test, a
-/// transcript drawn off-screen — rendering exactly what it always did.
+/// The markers of a folded reply are the terminal's chrome, not the model's
+/// words, so they follow the interface language like every other label on the
+/// surface: a Chinese session must not say `▸ thinking` in an otherwise Chinese
+/// frame. The words arrive from the workbench's copy rather than being looked up
+/// here, because a component has no business reading the settings file — and the
+/// English defaults keep a caller that never sets them (a unit test, a
+/// transcript drawn off-screen) rendering exactly what it always did.
+///
+/// The counts themselves need no words: see [`TOOL_GLYPH`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FoldWords {
-    /// One call: `{} tool call` / `{} 次工具调用`.
-    pub tool_call: &'static str,
-    /// Several: `{} tool calls` / `{} 次工具调用`.
-    pub tool_calls: &'static str,
-    /// One thought: `{} thought` / `{} 段思考`.
-    pub thought: &'static str,
-    /// Several: `{} thoughts` / `{} 段思考`.
-    pub thoughts: &'static str,
-    /// The marker standing in for hidden reasoning.
+    /// The marker standing in for hidden reasoning (`思考` / `thinking`).
     pub thinking: &'static str,
     /// The label a summary row falls back on when it counts nothing (a fold
     /// that only hid prose).
@@ -155,20 +158,9 @@ pub struct FoldWords {
 impl Default for FoldWords {
     fn default() -> Self {
         Self {
-            tool_call: "{} tool call",
-            tool_calls: "{} tool calls",
-            thought: "{} thought",
-            thoughts: "{} thoughts",
             thinking: "thinking",
             process: "process",
         }
-    }
-}
-
-impl FoldWords {
-    /// One counted word with `{}` replaced by `count`.
-    fn counted(template: &'static str, count: usize) -> String {
-        template.replace("{}", &count.to_string())
     }
 }
 
@@ -2538,42 +2530,36 @@ impl ChatArea {
     /// every client. It rides on the slice below it: the answer, or the call the
     /// reply is running right now.
     ///
-    /// The words come from [`FoldWords`], so a Chinese surface says
-    /// `工具调用 12 · 思考 3` rather than the English the model never wrote.
+    /// The counts are a glyph and a number ([`TOOL_GLYPH`]), the way the
+    /// desktop's `ReplySteps` row draws them, so this row holds no word at all
+    /// in either language.
     fn push_reply_summary(&mut self, summary: FoldSummary) {
-        let words = self.fold_words;
         let mut parts: Vec<String> = Vec::new();
         if summary.tools > 0 {
-            parts.push(FoldWords::counted(
-                if summary.tools == 1 {
-                    words.tool_call
-                } else {
-                    words.tool_calls
-                },
-                summary.tools,
-            ));
+            parts.push(format!("{TOOL_GLYPH}×{}", summary.tools));
         }
         if summary.thoughts > 0 {
-            parts.push(FoldWords::counted(
-                if summary.thoughts == 1 {
-                    words.thought
-                } else {
-                    words.thoughts
-                },
-                summary.thoughts,
-            ));
+            parts.push(format!("{THOUGHT_GLYPH}×{}", summary.thoughts));
         }
         let label = if parts.is_empty() {
-            words.process.to_string()
+            self.fold_words.process.to_string()
         } else {
             parts.join(" · ")
         };
-        let text = format!(" {} {}", dim(FOLD_MARKER), italic(&label));
+        // Upright, not italic: the desktop's counts are plain and its icons have
+        // no italic to give, and slanted digits would pull the eye to the one
+        // row that is meant to sit behind the prose.
+        let text = format!(" {} {}", dim(FOLD_MARKER), label);
         // A summary row is text like any other: a terminal too narrow for it
         // clips it instead of spilling past the last column.
         let text = truncate_to_width(&text, self.width, &TruncateOptions::default());
+        // The faintest ink the chrome has (the default palette's `241`, one step
+        // under the `245` of body dim text): the row is a note about work that
+        // already happened, and it should recede behind the answer it stands
+        // above.
+        let ink = Chrome::from_theme(&self.theme).muted;
         self.rendered_lines.push(RenderedLine {
-            text: fg(self.theme.dim as u8, &text),
+            text: fg(ink, &text),
             dim: true,
         });
     }
@@ -3005,7 +2991,7 @@ mod tests {
             "{lines:?}"
         );
         assert!(
-            lines.iter().any(|l| l.contains("thought")),
+            lines.iter().any(|l| l.contains("🧠×1")),
             "the fold counts the thought: {lines:?}"
         );
         assert!(lines.iter().any(|l| l.contains("answer")));
@@ -3583,11 +3569,7 @@ mod tests {
         let lines = compact_lines(&mut chat);
         assert_eq!(
             lines,
-            vec![
-                "fix the parser",
-                "▸ 1 tool call · 1 thought",
-                "Fixed the off-by-one.",
-            ],
+            vec!["fix the parser", "▸ 🔧×1 · 🧠×1", "Fixed the off-by-one.",],
             "{lines:?}"
         );
         assert_matches_fresh_render(&mut chat);
@@ -3617,7 +3599,12 @@ mod tests {
             lines.iter().any(|l| l.contains("Fixed the off-by-one.")),
             "{lines:?}"
         );
-        assert!(!lines.iter().any(|l| l.contains("tool call")), "{lines:?}");
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.contains('\u{1F527}') || l.contains('\u{1F9E0}')),
+            "detail draws no fold row — {lines:?}"
+        );
         // The call's body stays behind /tool-output at either reading level.
         assert!(!lines.iter().any(|l| l.contains("body")), "{lines:?}");
         assert_matches_fresh_render(&mut chat);
@@ -3647,7 +3634,7 @@ mod tests {
             lines,
             vec![
                 "fix the parser",
-                "▸ 1 tool call · 1 thought",
+                "▸ 🔧×1 · 🧠×1",
                 "I read the parser.",
                 "Fixed",
             ],
@@ -3663,11 +3650,7 @@ mod tests {
         let lines = compact_lines(&mut chat);
         assert_eq!(
             lines,
-            vec![
-                "fix the parser",
-                "▸ 1 tool call · 1 thought",
-                "Fixed the off-by-one.",
-            ],
+            vec!["fix the parser", "▸ 🔧×1 · 🧠×1", "Fixed the off-by-one.",],
             "{lines:?}"
         );
         assert_matches_fresh_render(&mut chat);
@@ -3701,9 +3684,9 @@ mod tests {
             lines,
             vec![
                 "go",
-                "▸ 1 tool call · 1 thought",
+                "▸ 🔧×1 · 🧠×1",
                 "Let me compare both files.",
-                "▸ 1 tool call · 1 thought",
+                "▸ 🔧×1 · 🧠×1",
                 "Both fold the same way.",
             ],
             "{lines:?}"
@@ -3715,11 +3698,7 @@ mod tests {
         let lines = compact_lines(&mut chat);
         assert_eq!(
             lines,
-            vec![
-                "go",
-                "▸ 2 tool calls · 2 thoughts",
-                "Both fold the same way.",
-            ],
+            vec!["go", "▸ 🔧×2 · 🧠×2", "Both fold the same way.",],
             "{lines:?}"
         );
         assert_matches_fresh_render(&mut chat);
@@ -3802,11 +3781,7 @@ mod tests {
         // The finished call folded into the count; the running one is the row
         // the reader is watching.
         let live = compact_lines(&mut chat);
-        assert_eq!(
-            live,
-            vec!["go", "▸ 1 tool call · 1 thought", "read /b.rs"],
-            "{live:?}"
-        );
+        assert_eq!(live, vec!["go", "▸ 🔧×1 · 🧠×1", "read /b.rs"], "{live:?}");
 
         // The answer arriving moves the summary onto it — the counts do not
         // wait for the run to end.
@@ -3815,7 +3790,7 @@ mod tests {
         let lines = compact_lines(&mut chat);
         assert_eq!(
             lines,
-            vec!["go", "▸ 2 tool calls · 1 thought", "the answer",],
+            vec!["go", "▸ 🔧×2 · 🧠×1", "the answer",],
             "{lines:?}"
         );
         assert_matches_fresh_render(&mut chat);
@@ -3836,10 +3811,13 @@ mod tests {
         let lines = compact_lines(&mut chat);
         // No answer to ride on, so the summary rides on the call the turn
         // stopped at; the reasoning is counted rather than drawn as a marker.
-        assert!(lines.iter().any(|l| l == "▸ 1 thought"), "{lines:?}");
+        assert!(lines.iter().any(|l| l == "▸ 🧠×1"), "{lines:?}");
         assert!(!lines.iter().any(|l| l.contains("where to look")));
         assert!(lines.iter().any(|l| l.contains("read /a.rs")), "{lines:?}");
-        assert!(!lines.iter().any(|l| l.contains("tool call")), "{lines:?}");
+        assert!(
+            !lines.iter().any(|l| l.contains('\u{1F527}')),
+            "the call keeps its own row, so the count is the thought alone — {lines:?}"
+        );
     }
 
     #[test]
@@ -3860,10 +3838,7 @@ mod tests {
         let lines = compact_lines(&mut chat);
         // The newest reply is still streaming, so it is not folded: its call is
         // a row, and its reasoning is the collapsed marker.
-        assert!(
-            lines.iter().any(|l| l == "▸ 1 tool call · 1 thought"),
-            "{lines:?}"
-        );
+        assert!(lines.iter().any(|l| l == "▸ 🔧×1 · 🧠×1"), "{lines:?}");
         assert!(
             !lines.iter().any(|l| l.contains("running the suite")),
             "{lines:?}"
@@ -3884,7 +3859,7 @@ mod tests {
             ],
         );
         let lines = compact_lines(&mut chat);
-        assert_eq!(lines, vec!["hi", "▸ 1 thought", "Hello!"], "{lines:?}");
+        assert_eq!(lines, vec!["hi", "▸ 🧠×1", "Hello!"], "{lines:?}");
     }
 
     #[test]
@@ -3904,7 +3879,7 @@ mod tests {
         assert_eq!(chat.toggle_reply_detail(), ReplyDetail::Steps);
         let half = compact_lines(&mut chat);
         assert!(
-            half.iter().any(|line| line == "▸ 1 tool call · 1 thought"),
+            half.iter().any(|line| line == "▸ 🔧×1 · 🧠×1"),
             "the half-folded level counts the work — {half:?}"
         );
         assert!(
@@ -3939,11 +3914,7 @@ mod tests {
         // The reasoning folded into a count as soon as the answer started, and
         // the reasoning text never reaches the screen.
         let live = compact_lines(&mut chat);
-        assert_eq!(
-            live,
-            vec!["go", "▸ 1 tool call · 1 thought", "the answer"],
-            "{live:?}"
-        );
+        assert_eq!(live, vec!["go", "▸ 🔧×1 · 🧠×1", "the answer"], "{live:?}");
         assert!(
             !live.iter().any(|line| line.contains("weighing it")),
             "{live:?}"
@@ -3953,7 +3924,7 @@ mod tests {
         let lines = compact_lines(&mut chat);
         assert_eq!(
             lines,
-            vec!["go", "▸ 1 tool call · 1 thought", "the answer"],
+            vec!["go", "▸ 🔧×1 · 🧠×1", "the answer"],
             "{lines:?}"
         );
         assert_matches_fresh_render(&mut chat);
@@ -4006,11 +3977,7 @@ mod tests {
         let settled = compact_lines(&mut chat);
         assert_eq!(
             settled,
-            vec![
-                "go",
-                "▸ 2 tool calls · 1 thought",
-                "Both fold the same way.",
-            ],
+            vec!["go", "▸ 🔧×2 · 🧠×1", "Both fold the same way.",],
             "{settled:?}"
         );
         assert_matches_fresh_render(&mut chat);
@@ -4052,11 +4019,7 @@ mod tests {
             settled.len() < live.len(),
             "ending the run is what folds the reply — {settled:?} vs {live:?}"
         );
-        assert_eq!(
-            settled,
-            vec!["go", "▸ 3 tool calls", "step 2"],
-            "{settled:?}"
-        );
+        assert_eq!(settled, vec!["go", "▸ 🔧×3", "step 2"], "{settled:?}");
         assert_matches_fresh_render(&mut chat);
     }
 
@@ -4086,7 +4049,7 @@ mod tests {
         let live = compact_lines(&mut chat);
         assert_eq!(
             live,
-            vec!["go", "▸ 1 tool call · 2 thoughts", "Second file next."],
+            vec!["go", "▸ 🔧×1 · 🧠×2", "Second file next."],
             "the thought is counted, not a second uncounted marker row — {live:?}"
         );
         assert!(
@@ -4100,7 +4063,7 @@ mod tests {
         let settled = compact_lines(&mut chat);
         assert_eq!(
             settled,
-            vec!["go", "▸ 1 tool call · 2 thoughts", "Second file next."],
+            vec!["go", "▸ 🔧×1 · 🧠×2", "Second file next."],
             "{settled:?}"
         );
     }
@@ -4130,7 +4093,7 @@ mod tests {
             live,
             vec![
                 "go",
-                "▸ 1 tool call · 1 thought",
+                "▸ 🔧×1 · 🧠×1",
                 "Looking at a.rs.",
                 "▸ thinking",
                 "Second file next.",
@@ -4145,7 +4108,7 @@ mod tests {
         let settled = compact_lines(&mut chat);
         assert_eq!(
             settled,
-            vec!["go", "▸ 1 tool call · 2 thoughts", "Second file next."],
+            vec!["go", "▸ 🔧×1 · 🧠×2", "Second file next."],
             "{settled:?}"
         );
     }
@@ -4164,7 +4127,7 @@ mod tests {
             lines,
             vec![
                 "fix the parser",
-                "▸ 1 tool call · 1 thought",
+                "▸ 🔧×1 · 🧠×1",
                 "I read the parser.",
                 "Fixed the off-by-one.",
             ],
@@ -4179,17 +4142,18 @@ mod tests {
         assert_matches_fresh_render(&mut chat);
     }
 
-    /// The process rows are chrome, so they read in the reader's language: a
-    /// Chinese surface says `2 次工具调用 · 1 段思考`, not `2 tool calls`.
+    /// What the process rows say in each language: the counts are glyphs and
+    /// read the same, the reasoning marker is a word and does not.
+    ///
+    /// The counts used to be nouns (`2 tool calls · 1 thought`) and had to be
+    /// translated; the desktop draws a wrench and a brain beside them instead,
+    /// and a glyph needs no language — so what is left to translate is the
+    /// marker of a thought that stands on its own.
     #[test]
     fn the_process_rows_follow_the_interface_language() {
         let mut chat = new_chat();
         chat.render(W);
         chat.set_fold_words(FoldWords {
-            tool_call: "{} 次工具调用",
-            tool_calls: "{} 次工具调用",
-            thought: "{} 段思考",
-            thoughts: "{} 段思考",
             thinking: "思考",
             process: "过程",
         });
@@ -4207,12 +4171,45 @@ mod tests {
         chat.append_to_last_message("看完了");
 
         let lines = compact_lines(&mut chat);
-        assert_eq!(
-            lines,
-            vec!["开始", "▸ 2 次工具调用 · 1 段思考", "看完了"],
-            "{lines:?}"
-        );
+        assert_eq!(lines, vec!["开始", "▸ 🔧×2 · 🧠×1", "看完了"], "{lines:?}");
         assert_matches_fresh_render(&mut chat);
+
+        // The English defaults draw the same counts and the English marker.
+        let mut english = new_chat();
+        english.render(W);
+        english.add_message(ChatMessage::new("u".into(), ChatRole::User, "go"));
+        english.begin_reply_run();
+        english.start_thinking();
+        english.append_thinking_delta("looking");
+        assert_eq!(compact_lines(&mut english), vec!["go", "▸ thinking…"]);
+    }
+
+    /// The count row is the faintest ink the chrome has — one step under the
+    /// body's dim text — and upright: it is a note about work that already
+    /// happened, and it must recede behind the answer under it.
+    #[test]
+    fn the_count_row_sits_behind_the_body_ink() {
+        let mut chat = new_chat();
+        chat.render(W);
+        set_messages(&mut chat, settled_turn_messages());
+        let row = chat
+            .render_all(W)
+            .into_iter()
+            .find(|line| strip(line).contains("🔧×1"))
+            .unwrap_or_else(|| panic!("no count row"));
+        let faint = Chrome::from_theme(&DARK_THEME).muted;
+        assert!(
+            row.contains(&format!("38;5;{faint}m")),
+            "the row is drawn in the chrome's faint ink ({faint}); got {row:?}"
+        );
+        assert!(
+            faint < DARK_THEME.dim as u8,
+            "…which is darker than the body's dim text"
+        );
+        assert!(
+            !row.contains("\x1b[3m") && !row.contains("\x1b[;3m"),
+            "upright, not italic: {row:?}"
+        );
     }
 
     /// One turn as the workbench builds it from the event stream: the empty
@@ -4260,7 +4257,7 @@ mod tests {
     /// point leaves every settled reply as one summary row.
     #[test]
     fn the_reading_level_folds_history_loaded_from_the_store() {
-        const FOLDED_TURN: &str = "▸ 1 tool call · 1 thought";
+        const FOLDED_TURN: &str = "▸ 🔧×1 · 🧠×1";
         fn assert_folded(chat: &mut ChatArea, turns: usize, stage: &str) {
             let lines = compact_lines(chat);
             assert_eq!(
@@ -4363,7 +4360,7 @@ mod tests {
     }
 
     fn folded_rows(chat: &mut ChatArea) -> usize {
-        const FOLDED: &str = "\u{25b8} 1 tool call \u{00b7} 1 thought";
+        const FOLDED: &str = "\u{25b8} \u{1F527}\u{00d7}1 \u{00b7} \u{1F9E0}\u{00d7}1";
         compact_lines(chat)
             .iter()
             .filter(|line| line.as_str() == FOLDED)
@@ -4487,7 +4484,8 @@ mod tests {
     // work above it becomes a count. That is the same row a running reply
     // shows, which is what keeps the transcript from unfolding at the moment a
     // run ends (the report behind this: the terminal was the one client that
-    // painted every call while the desktop showed `4 tool calls · 2 thoughts`).
+    // painted every call while the desktop showed its counts (the numbers the
+    // wrench and brain glyphs now carry).
     // The call that ends the turn keeps its row — one row is what tells a reader
     // the work stopped there — and `ctrl+e` still replays every slice.
 
@@ -4504,7 +4502,7 @@ mod tests {
         // unanswered one onto the call it stopped at.
         assert_eq!(folded_rows(&mut chat), 1, "{lines:?}");
         assert!(
-            lines.iter().any(|l| l.contains("▸ 1 thought")),
+            lines.iter().any(|l| l.contains("▸ 🧠×1")),
             "the unanswered turn counts its reasoning: {lines:?}"
         );
         assert!(
@@ -4539,7 +4537,7 @@ mod tests {
             "the slice the stored turn stopped at keeps its row — {lines:?}"
         );
         assert!(
-            lines.iter().any(|line| line.contains("▸ 1 thought")),
+            lines.iter().any(|line| line.contains("▸ 🧠×1")),
             "its stored reasoning is a count — {lines:?}"
         );
     }
@@ -4593,7 +4591,7 @@ mod tests {
         );
         assert_eq!(
             compact_lines(&mut chat),
-            vec!["fix the parser", "▸ 3 tool calls", "Fixed the off-by-one.",]
+            vec!["fix the parser", "▸ 🔧×3", "Fixed the off-by-one.",]
         );
         assert_matches_fresh_render(&mut chat);
 
