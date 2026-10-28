@@ -505,10 +505,9 @@ pub fn chat() -> WorkbenchData {
         style(p.accent, " ❯ 看看 parser 的 off-by-one，顺手补个回归测试"),
         String::new(),
         // The process row the conversation renderer draws at the default
-        // level, in the interface language of this demo (Chinese): the counts
-        // are chrome, so they read `2 次工具调用 · 1 段思考`, never
-        // `2 tool calls · 1 thought`.
-        style(p.muted, " ▸ 2 次工具调用 · 1 段思考"),
+        // level: the desktop's wrench and brain beside the counts, so the row
+        // reads the same in every language (only its `思考` marker is a word).
+        style(p.muted, " ▸ 🔧×2 · 🧠×1"),
         String::new(),
         style(p.fg, " 循环用的是 `<=`，最后一位会越界读一个字节。"),
         style(p.fg, "改成 `<` 之后 41 个用例都过了。"),
@@ -604,7 +603,7 @@ mod tests {
             .map(|line| crate::utils::strip_ansi_codes(line))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("2 次工具调用 · 1 段思考"), "{text}");
+        assert!(text.contains("🔧×2 · 🧠×1"), "{text}");
         assert!(text.contains("41 个用例都过了"), "{text}");
     }
 

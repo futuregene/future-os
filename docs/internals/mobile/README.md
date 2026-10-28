@@ -96,6 +96,19 @@ development and distribution maintenance.
   and reads, so late replies cannot undo a newer pin state.
 - Paginated history loading, deduplication by `(runId, idx)`, and real-time
   event backfill via `get_events_since` after reconnection.
+- The 15-second "loading messages" state is a **display-only guard**, and what it
+  covers is narrower than it looks. It spans one conversation's *first commit* —
+  the whole `get_state → history → replay` sequence — not a single request. It
+  cancels nothing: the lane keeps retrying behind it, no request is aborted, and
+  the button under the timeout message is what actually restarts the lane. And it
+  is disarmed the moment anything is committed, because the cold open publishes a
+  history preview before replay is awaited; a stall after that shows the sync
+  notice above the transcript, never the spinner and this timeout again. Reading
+  it as "the lane gave up" is therefore wrong in both directions: a spinner that
+  never becomes this message means the first commit never happened *and* the
+  guard is not running (a backgrounded screen defers `restart`, which makes
+  Retry a no-op), while a timeout followed by messages on its own is the lane
+  recovering normally.
 - Pick images from the system photo library or shoot with the system camera;
   add file attachments through the system file picker; a message carries at most
   10 attachments in total, images included; download session attachments and

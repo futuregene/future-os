@@ -4102,20 +4102,19 @@ impl Live {
     pub fn set_language(&mut self, preference: LanguagePreference) -> Language {
         self.lang = preference.resolve();
         self.draft.placeholder = t(self.lang, Key::InputHintLaunchpad).into();
-        // The transcript's own process rows (`12 tool calls · 3 thoughts`) are
-        // chrome, not model output: they follow the interface language too.
+        // The transcript's own process rows are chrome, not model output: the
+        // one word they can hold (`思考` / `thinking`, the marker of a folded
+        // thought) follows the interface language; the counts are glyphs (see
+        // `fold_words`).
         self.chat.set_fold_words(fold_words(self.lang));
         self.lang
     }
 }
 
-/// The words a transcript's folded-process rows are drawn in.
+/// The words a transcript's process rows are drawn in. The counts beside them
+/// are glyphs, which no language translates (see `FoldWords`).
 fn fold_words(lang: Language) -> FoldWords {
     FoldWords {
-        tool_call: t(lang, Key::ChatFoldToolCall),
-        tool_calls: t(lang, Key::ChatFoldToolCalls),
-        thought: t(lang, Key::ChatFoldThought),
-        thoughts: t(lang, Key::ChatFoldThoughts),
         thinking: t(lang, Key::ChatThinkingLabel),
         process: t(lang, Key::ChatProcessLabel),
     }
@@ -5694,7 +5693,7 @@ mod tests {
             "the settled reply is its answer and the counts — {settled:?}"
         );
         assert!(
-            settled.iter().any(|line| line.contains("▸ 1 tool call")),
+            settled.iter().any(|line| line.contains("▸ 🔧×1")),
             "{settled:?}"
         );
         assert!(
@@ -5703,18 +5702,17 @@ mod tests {
         );
     }
 
-    /// The process rows are chrome: the transcript draws them in the interface
-    /// language, and a Chinese surface must not say `2 tool calls`.
+    /// The process rows are chrome: the marker of a folded thought is a word
+    /// and follows the interface language, while the counts are glyphs and read
+    /// the same in every language.
     #[test]
     fn the_process_rows_are_drawn_in_the_interface_language() {
         let zh = fold_words(Language::Zh);
-        assert_eq!(zh.tool_calls, "{} 次工具调用");
-        assert_eq!(zh.thoughts, "{} 段思考");
         assert_eq!(zh.thinking, "思考");
         assert_eq!(zh.process, "过程");
         let en = fold_words(Language::En);
-        assert_eq!(en.tool_calls, "{} tool calls");
         assert_eq!(en.thinking, "thinking");
+        assert_eq!(en.process, "process");
 
         // And a transcript drawn with them says what it means.
         let mut chat = ChatArea::new(120, None);
@@ -5734,11 +5732,11 @@ mod tests {
             .collect();
         assert!(
             rows.iter().any(|line| line.contains("▸ 思考")),
-            "the reasoning marker is Chinese too — {rows:?}"
+            "the reasoning marker is Chinese — {rows:?}"
         );
         assert!(
-            rows.iter().any(|line| line.contains("▸ 1 段思考")),
-            "and so is the count row — {rows:?}"
+            rows.iter().any(|line| line.contains("▸ 🧠×1")),
+            "the count row is the desktop's glyph and needs no word — {rows:?}"
         );
         assert!(
             !rows.iter().any(|line| line.contains("thought")),
