@@ -2908,6 +2908,48 @@ async fn idle_session_releases_cached_history_and_reloads_it_on_demand() {
         .any(|message| message.text().contains("remember me")));
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_after_idle_release_restores_history_before_persisting() {
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("first answer"), text_turn("second answer")]),
+        "idle-history-prompt",
+    );
+    let mut session = fixture.session;
+    session
+        .prompt("first question", &[], &[], None, None)
+        .unwrap();
+    wait_for_run_end(&session).await;
+    assert!(session.release_idle_history_if_unused());
+    assert!(session.messages.read().is_empty());
+
+    // Deliberately do not call ensure_history_loaded here. prompt_internal is
+    // the last boundary that can close the admission/idle-release race for both
+    // direct and scheduled starts.
+    session
+        .prompt("second question", &[], &[], None, None)
+        .unwrap();
+    wait_for_run_end(&session).await;
+
+    let stored = session.session_manager.load(&session.session_id).unwrap();
+    let text = stored
+        .entries
+        .iter()
+        .filter_map(|entry| entry.content.as_ref())
+        .map(serde_json::Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("first question"),
+        "old user history was lost: {text}"
+    );
+    assert!(
+        text.contains("first answer"),
+        "old assistant history was lost: {text}"
+    );
+    assert!(text.contains("second question"));
+    assert!(text.contains("second answer"));
+}
+
 #[test]
 fn checkpoint_survives_a_run_boundary_after_the_transcript_changes_on_disk() {
     use crate::session::{checkpoint_to_entry, Session, SessionEntry};
