@@ -21,8 +21,13 @@ pub fn spawn_provider_config_observer() {
 async fn run() {
     let mut last_revision: Option<i64> = None;
     let mut backoff = Duration::from_millis(250);
-    loop {
+    while !crate::request_scope::is_stopping() {
         let result = observe_once(&mut last_revision, &mut backoff).await;
+        // Agent shutdown closes these streams before background tasks drain.
+        // Exit normally instead of logging a disconnect or reattaching to it.
+        if crate::request_scope::is_stopping() {
+            break;
+        }
         if let Err(error) = result {
             eprintln!("FutureOS provider config observer reconnecting: {error}");
         }
@@ -112,6 +117,44 @@ async fn observe_once(
 mod tests {
     use super::super::test_support::{mock_agent, stream_event, StreamScript};
     use super::*;
+
+    #[tokio::test]
+    async fn shutdown_does_not_start_a_subscription() {
+        let _home = crate::test_support::agent::TestHome::new("config_observer-already-stopping");
+        let mock = mock_agent();
+        let _stopping = crate::request_scope::close_admission_guard_for_test();
+        tokio::time::timeout(Duration::from_millis(100), run())
+            .await
+            .expect("an observer must exit when the host is already stopping");
+        assert!(mock.stream_requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_during_backoff_prevents_another_subscription() {
+        let _home = crate::test_support::agent::TestHome::new("config_observer-stop-backoff");
+        let mock = mock_agent();
+        mock.push_plain_stream(crate::test_support::agent::StreamScript::AttachError(
+            tonic::Code::Unavailable,
+            "subscription ended",
+        ));
+        let observer = run();
+        tokio::pin!(observer);
+        // Drive the observer only until its first attach reaches the server.
+        // Manual polls prevent a slow CI scheduler from running a retry first.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while mock.stream_requests().is_empty() {
+                assert!(futures::poll!(&mut observer).is_pending());
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the first subscription must reach the mock");
+        let _stopping = crate::request_scope::close_admission_guard_for_test();
+        tokio::time::timeout(Duration::from_secs(1), &mut observer)
+            .await
+            .expect("shutdown must end the retry loop");
+        assert_eq!(mock.stream_requests().len(), 1);
+    }
 
     #[tokio::test]
     async fn observe_once_ping_snapshot_invalidates_and_ends() {

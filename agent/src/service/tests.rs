@@ -126,7 +126,9 @@ async fn cli_prompt_and_follow_up_use_real_run_finalization_without_dequeuing_on
     }
     assert_eq!(handle.activity_snapshot().unwrap().queued, 1);
     // The lifecycle invariant is ownership release, not filesystem flush speed.
-    let report = handle.shutdown(Duration::from_secs(10)).await;
+    // Windows CI runs thousands of tests in parallel, so allow its SQLite and
+    // journal cleanup enough time without weakening the final-state assertions.
+    let report = handle.shutdown(Duration::from_secs(30)).await;
     assert_eq!(
         report.status,
         ShutdownStatus::Stopped,
@@ -200,7 +202,7 @@ async fn global_activity_includes_queue_approval_compaction_and_blocking_work() 
         .store(false, Ordering::Release);
     drop(blocking);
     drop(native);
-    let report = handle.shutdown(Duration::from_secs(3)).await;
+    let report = handle.shutdown(Duration::from_secs(30)).await;
     assert_eq!(
         report.status,
         ShutdownStatus::Stopped,

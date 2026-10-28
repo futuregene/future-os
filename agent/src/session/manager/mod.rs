@@ -122,11 +122,13 @@ impl Manager {
             // Emitted where the work actually happens, so the CLI's own
             // initialization paths report the same progress. `agent.db` and the
             // legacy history can both live on slow shared storage.
+            cancellation.report(crate::service::StartupStage::OpeningStorage);
             tracing::info!(
                 database = %self.database_path().display(),
                 "session storage: opening"
             );
             let store = SqliteStore::open_cancellable(&self.database_path(), cancellation.clone())?;
+            cancellation.report(crate::service::StartupStage::RecoveringSessions);
             store.import_legacy_cancellable(&self.dir, None, cancellation)?;
             store.recover_hidden_forks(cancellation)?;
             store.recover_content_operations(cancellation)?;
