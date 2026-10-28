@@ -100,16 +100,52 @@ describe("useAgentStatus", () => {
     hook.unmount();
   });
 
-  it("classifies an Agent that is still starting after fifteen seconds as timed out", async () => {
-    vi.mocked(getAgentStatus).mockResolvedValue({
+  it("keeps a responsive 25-second upgrade pending and admits it when ready", async () => {
+    vi.mocked(getAgentStatus).mockImplementation(async () => ({
       phase: "starting",
       desktopVersion: "1.1.8",
       agentVersion: null,
-    });
+      startup: { stage: "backing_up_storage", elapsedMs: 24000 },
+    }));
     const hook = renderHook(useAgentStatus);
     await flushAsync();
+    await act(async () => vi.advanceTimersByTimeAsync(25000));
+    expect(hook.current.phase).toBe("starting");
+    expect(hook.current.startup?.stage).toBe("backing_up_storage");
+    vi.mocked(getAgentStatus).mockResolvedValue({ phase: "ready", desktopVersion: "1.1.8", agentVersion: "1.1.8" });
+    await act(async () => vi.advanceTimersByTimeAsync(600));
+    expect(hook.current.phase).toBe("ready");
+    expect(hook.current.admitted).toBe(true);
+    hook.unmount();
+  });
 
-    act(() => vi.advanceTimersByTime(AGENT_STARTUP_TIMEOUT_MS));
+  it("times out missing responses, keeps probing, and recovers without a restart", async () => {
+    let resolveOld: ((status: Awaited<ReturnType<typeof getAgentStatus>>) => void) | undefined;
+    vi.mocked(getAgentStatus).mockImplementationOnce(() => new Promise((resolve) => {
+      resolveOld = resolve;
+    }));
+    const hook = renderHook(useAgentStatus);
+    await act(async () => vi.advanceTimersByTimeAsync(AGENT_STARTUP_TIMEOUT_MS - 1));
+    expect(hook.current.phase).toBe("checking");
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(hook.current.phase).toBe("startup_timeout");
+    await act(async () => vi.advanceTimersByTimeAsync(600));
+    expect(hook.current.phase).toBe("ready");
+    // An older invoke finishing late must not replace the recovered status.
+    await act(async () => resolveOld?.({ phase: "starting", desktopVersion: "1.1.8", agentVersion: null }));
+    expect(hook.current.phase).toBe("ready");
+    hook.unmount();
+  });
+
+  it("measures silence from the last successful response and includes rejected probes", async () => {
+    vi.mocked(getAgentStatus).mockResolvedValue({ phase: "starting", desktopVersion: "1.1.8", agentVersion: null });
+    const hook = renderHook(useAgentStatus);
+    await flushAsync();
+    await act(async () => vi.advanceTimersByTimeAsync(12000));
+    vi.mocked(getAgentStatus).mockRejectedValue(new Error("invoke unavailable"));
+    await act(async () => vi.advanceTimersByTimeAsync(AGENT_STARTUP_TIMEOUT_MS - 1));
+    expect(hook.current.phase).toBe("starting");
+    await act(async () => vi.advanceTimersByTimeAsync(1));
     expect(hook.current.phase).toBe("startup_timeout");
     hook.unmount();
   });

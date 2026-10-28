@@ -33,22 +33,31 @@ export function AgentStatusGate({ status, showWait = false }: AgentStatusGatePro
     );
   }
   const pending = status.phase === "checking" || status.phase === "starting" || status.phase === "recovering";
-  const statusKey = status.phase === "incompatible"
-    ? "agentStatus.incompatible"
-    : "agentStatus.failed";
-  const actionKey = status.phase === "incompatible"
-    ? "agentStatus.fixIncompatible"
-    : pending
-      ? "agentStatus.wait"
-      : "agentStatus.fixFailed";
+  const noResponse = status.phase === "startup_timeout";
+  const statusKey = noResponse
+    ? "agentStatus.noResponse"
+    : status.phase === "incompatible"
+      ? "agentStatus.incompatible"
+      : "agentStatus.failed";
+  const actionKey = noResponse
+    ? "agentStatus.noResponseHint"
+    : status.phase === "incompatible"
+      ? "agentStatus.fixIncompatible"
+      : pending
+        ? "agentStatus.wait"
+        : "agentStatus.fixFailed";
 
+  const hintKey = pending && status.startup
+    ? `agentStatus.startupStages.${status.startup.stage}` as const
+    : actionKey;
   return (
     <div className="flex h-full items-center justify-center bg-canvas px-6 text-center text-ink">
       <div className="flex max-w-lg flex-col items-center gap-3">
         {pending ? <Loader2 aria-hidden="true" className="size-6 animate-spin text-accent" /> : null}
         {!pending ? <p className="text-lg font-medium">{t(statusKey)}</p> : null}
         {!pending && status.error ? <p role="alert" className="text-sm text-ink-muted">{status.error}</p> : null}
-        {!pending || showWait ? <p className="text-sm text-ink-muted">{t(actionKey)}</p> : null}
+        {!pending || showWait ? <p className="text-sm text-ink-muted">{t(hintKey)}</p> : null}
+        {pending && showWait && (status.startup?.elapsedMs ?? 0) >= 15000 ? <p className="text-sm text-ink-muted">{t("agentStatus.takingLonger")}</p> : null}
       </div>
     </div>
   );
