@@ -485,9 +485,13 @@ pub enum Key {
     NotificationTitle,
     NotificationBody,
     ChatNewOutput,
-    /// The transcript's process rows: the marker standing in for hidden
-    /// reasoning, and the label a count row falls back on. The counts
-    /// themselves are glyphs (`⚒×12 · ✻×3`), so they need no translation.
+    /// The transcript's process rows. `{}` in the count templates is the
+    /// number, so a language that puts the noun first (`工具调用 61 次`) and one
+    /// that puts it last (`61 tool calls`) only differ in the template.
+    ChatFoldToolCall,
+    ChatFoldToolCalls,
+    ChatFoldThought,
+    ChatFoldThoughts,
     ChatThinkingLabel,
     ChatProcessLabel,
     CmdSessions,
@@ -931,8 +935,13 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         NotificationTitle => ("FutureOS：运行完成", "FutureOS: run complete"),
         NotificationBody => ("本轮已成功完成。", "This turn finished successfully."),
         ChatNewOutput => ("↓ 新输出 · esc 回到最新", "↓ new output · esc returns to latest"),
-        // The counts are glyphs (`⚒×12 · ✻×3`, the desktop's wrench and
-        // brain), so only these two labels are words at all.
+        // The transcript's own counts, worded as the reader's language words
+        // them: Chinese puts the noun first and counts with 次, English puts
+        // the number first and pluralizes.
+        ChatFoldToolCall => ("工具调用 {} 次", "{} tool call"),
+        ChatFoldToolCalls => ("工具调用 {} 次", "{} tool calls"),
+        ChatFoldThought => ("思考 {} 次", "{} thought"),
+        ChatFoldThoughts => ("思考 {} 次", "{} thoughts"),
         ChatThinkingLabel => ("思考", "thinking"),
         ChatProcessLabel => ("过程", "process"),
         CmdSessions => ("浏览并切换会话", "Browse and switch sessions"),
@@ -1341,7 +1350,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 320] = {
+    const ALL_KEYS: [Key; 324] = {
         use Key::*;
         [
             TabTodo,
@@ -1552,6 +1561,10 @@ mod tests {
             NotificationTitle,
             NotificationBody,
             ChatNewOutput,
+            ChatFoldToolCall,
+            ChatFoldToolCalls,
+            ChatFoldThought,
+            ChatFoldThoughts,
             ChatThinkingLabel,
             ChatProcessLabel,
             CmdSessions,
