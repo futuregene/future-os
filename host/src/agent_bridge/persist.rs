@@ -55,6 +55,8 @@ pub fn persist_run_event(run_id: Option<&str>, event_type: &str, payload: &str, 
             payload: Some(payload.to_string()),
             sequence,
             created_at: store::now_millis(),
+            // This path folds live lifecycle events, not a replayed window.
+            truncated: false,
         };
         store::advance_tool_projection(run_id, std::slice::from_ref(&record));
     }

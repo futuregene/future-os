@@ -173,6 +173,15 @@ impl Projection {
         self.closed.push(std::sync::Arc::new(event.clone()));
     }
 
+    /// The oldest cursor this projection can still describe, or `None` when it
+    /// holds nothing yet. Cheaper than materializing it for a single header read.
+    pub(super) fn first_idx(&self) -> Option<i64> {
+        self.closed
+            .first()
+            .map(|event| event.idx)
+            .or_else(|| self.pending.as_ref().map(|(event, _)| event.idx))
+    }
+
     /// Capture references under the sequencing lock; materialize after release.
     pub(super) fn view(&self) -> ProjectionView {
         ProjectionView {

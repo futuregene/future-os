@@ -1,4 +1,4 @@
-import type { AgentMessage, AssistantRunProjection, RunProjector } from "@future-os/thread-projection";
+import type { AgentMessage, AssistantRunProjection, MessageSegment, RunProjector } from "@future-os/thread-projection";
 import type { Dispatch, SetStateAction } from "react";
 import { compactionCheckpoints, createRunProjector } from "@future-os/thread-projection";
 import { listRunEventsSince } from "../../../integrations/storage/threadStore";
@@ -22,6 +22,29 @@ const LIVE_PROJECTION_CACHE_MAX = 8;
 
 const liveProjectionCache = new Map<string, LiveProjectionEntry>();
 
+/**
+ * Runs already re-projected from their whole log once.
+ *
+ * A repair costs a full read of the run, and the conditions that ask for one can
+ * persist (a journal that genuinely lost its head, a call whose completion never
+ * existed at all). Once per run is what keeps that cost bounded; an explicit
+ * reset clears the mark because the state that justified the repair is gone.
+ */
+const repairedRuns = new Set<string>();
+const REPAIRED_RUNS_MAX = 64;
+
+function markRepaired(runId: string) {
+  repairedRuns.delete(runId);
+  repairedRuns.add(runId);
+  while (repairedRuns.size > REPAIRED_RUNS_MAX) {
+    const oldest = repairedRuns.values().next().value;
+    /* v8 ignore next 2 -- size > MAX (>= 1) guarantees a first key exists */
+    if (oldest === undefined)
+      break;
+    repairedRuns.delete(oldest);
+  }
+}
+
 const FILE_TREE_INVALIDATING_EVENTS = new Set([
   "toolcall_start",
   "tool_start",
@@ -39,6 +62,38 @@ const FILE_TREE_INVALIDATING_EVENTS = new Set([
  */
 export function resetRunProjection(runId: string) {
   liveProjectionCache.delete(runId);
+  repairedRuns.delete(runId);
+}
+
+/**
+ * Whether a projected reply still claims a call is running that cannot be.
+ *
+ * A running row is honest while nothing has settled after it. The Agent executes
+ * a step's calls strictly in order — `execute_tools_sequential` is the only mode,
+ * because parallel tools need write-conflict semantics it does not have — so a
+ * *settled* call after a running one is impossible unless the running row's
+ * completion never reached this projector. Observed on a real run: a reply showed
+ * a "running" row for minutes after that call ended, and it only healed when the
+ * turn settled and was re-projected from the journal, too late to stop the lie
+ * from being read.
+ *
+ * Reasoning or prose after a running row is *not* evidence: one assistant message
+ * may announce a call and keep streaming its own text, and `compaction` dividers
+ * say nothing about calls at all.
+ */
+export function hasStaleRunningTool(segments: readonly MessageSegment[]): boolean {
+  let running = false;
+  for (const segment of segments) {
+    if (segment.kind !== "activity")
+      continue;
+    if (segment.item.status === "running") {
+      running = true;
+      continue;
+    }
+    if (running)
+      return true;
+  }
+  return false;
 }
 
 /**
@@ -46,10 +101,15 @@ export function resetRunProjection(runId: string) {
  * `shouldApply` guard (a stale async result is dropped by returning null). Emits
  * `file-tree-refresh` when tool activity appears — the agent may have created or
  * modified files. Shared prologue of the two live-preview writers below.
+ *
+ * `attempt.rebuilt` marks the one recursive pass that starts from the run's
+ * whole log: it stops the repairs below from chasing each other when the journal
+ * itself is the reason the projection looks wrong.
  */
 async function projectRunForLivePreview(
   runId: string,
   shouldApply: () => boolean,
+  attempt: { rebuilt?: boolean } = {},
 ): Promise<AssistantRunProjection | null> {
   const cached = liveProjectionCache.get(runId) ?? null;
   const since = cached?.projector.lastSequence ?? -1;
@@ -61,7 +121,19 @@ async function projectRunForLivePreview(
   // Never ingest that tail into a new empty projector: its prefix would be
   // permanently missing even though subsequent sequence numbers look valid.
   if (cached && liveProjectionCache.get(runId) !== cached)
-    return projectRunForLivePreview(runId, shouldApply);
+    return projectRunForLivePreview(runId, shouldApply, attempt);
+
+  // The Agent says this window does not continue from the cursor it was asked
+  // for: whatever fell outside it is gone. Appending it would step the
+  // projector's watermark over the hole and never look back — a tool call whose
+  // completion sat in the hole then reads "running" for the rest of the turn.
+  // Rebuild from the run's whole log instead, once per run.
+  if (!attempt.rebuilt && since >= 0 && !repairedRuns.has(runId)
+    && events.some(event => event.truncated === true)) {
+    markRepaired(runId);
+    liveProjectionCache.delete(runId);
+    return projectRunForLivePreview(runId, shouldApply, { rebuilt: true });
+  }
 
   if (cached && events.length > 0 && events[0]!.sequence <= since) {
     // Sequence regressed under us — the agent realigned mid-stream (e.g. its
@@ -91,8 +163,31 @@ async function projectRunForLivePreview(
 
   const previousSequence = entry.projector.lastSequence;
   const unseen = events.filter(event => event.sequence > previousSequence);
-  if (unseen.length > 0 || !entry.projection)
-    entry.projection = entry.projector.ingest(unseen);
+  if (unseen.length > 0 || !entry.projection) {
+    try {
+      entry.projection = entry.projector.ingest(unseen);
+    }
+    catch (error) {
+      // A payload that cannot be applied — a content range whose prefix this
+      // projector never saw — costs the rest of the batch and leaves the
+      // watermark behind where the failure happened. Only a rebuild knows what
+      // the reply actually did, so take it once rather than re-reading the same
+      // window forever.
+      liveProjectionCache.delete(runId);
+      if (attempt.rebuilt)
+        throw error;
+      return projectRunForLivePreview(runId, shouldApply, { rebuilt: true });
+    }
+    // A call the reply has already written past cannot still be running: see
+    // `hasStaleRunningTool`. Its completion never reached this projector, so the
+    // row would read "running" until the turn settles — repair it now.
+    if (!attempt.rebuilt && !repairedRuns.has(runId)
+      && hasStaleRunningTool(entry.projection.segments)) {
+      markRepaired(runId);
+      liveProjectionCache.delete(runId);
+      return projectRunForLivePreview(runId, shouldApply, { rebuilt: true });
+    }
+  }
   // Historical tool activity stays in every snapshot. Text/thinking/argument
   // deltas are not filesystem changes: invalidating on that history rescanned
   // every expanded directory every 2s for the remainder of a long reply.

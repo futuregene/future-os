@@ -295,3 +295,61 @@ fn events_since_beyond_ring_reads_disk_journal() {
     let event_count = events.len();
     assert!(event_count > 2000, "full history from disk: {event_count}");
 }
+
+/// The head this Agent can still serve is the union of its two sources. A ring
+/// that dropped its oldest events does not lose the head while the journal still
+/// holds them — and telling a consumer its window is incomplete when it is not
+/// would cost it a pointless full rebuild.
+#[test]
+fn earliest_cursor_prefers_a_journal_that_still_holds_the_head() {
+    let dir = tempfile::tempdir().unwrap();
+    let broadcaster = SseBroadcaster::new();
+    broadcaster
+        .configure_legacy_journal(
+            "s1".to_string(),
+            &crate::session::Manager::new(dir.path().to_path_buf()),
+        )
+        .unwrap();
+    broadcaster.start_run("run-journaled".to_string(), 1);
+    // Durable event kinds: buffered deltas would be folded on the way to disk and
+    // the stored head would then be a merged row rather than idx 0.
+    for i in 0..2100 {
+        broadcaster.broadcast(SseEvent::new("usage", serde_json::json!({"i": i})));
+    }
+
+    // The ring dropped 0..99; the journal still has them.
+    assert_eq!(
+        broadcaster.earliest_cursor("run-journaled", 0).unwrap(),
+        Some(0)
+    );
+    // Inside the ring's reach the journal is not consulted at all: the answer is
+    // served from memory, whose front is the head.
+    assert_eq!(
+        broadcaster.earliest_cursor("run-journaled", 2_099).unwrap(),
+        Some(100)
+    );
+    assert!(broadcaster
+        .earliest_cursor("run-unknown", 0)
+        .unwrap()
+        .is_none());
+}
+
+/// Without a journal the ring is the whole archive: once it drops the prefix, the
+/// oldest cursor the Agent can serve moves with it, and a cursor below that is a
+/// window that lost its head.
+#[test]
+fn earliest_cursor_follows_a_ring_that_dropped_its_head() {
+    let broadcaster = SseBroadcaster::new();
+    broadcaster.start_run("run-ring-only".to_string(), 1);
+    for i in 0..2100 {
+        broadcaster.broadcast(SseEvent::new("usage", serde_json::json!({"i": i})));
+    }
+    assert_eq!(
+        broadcaster.earliest_cursor("run-ring-only", 0).unwrap(),
+        Some(100)
+    );
+    assert!(broadcaster
+        .earliest_cursor("run-unknown", 0)
+        .unwrap()
+        .is_none());
+}
