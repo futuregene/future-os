@@ -312,16 +312,22 @@ model picker commits the model **and** the slider's level together (`SetModel` +
 state (connection dot, version) stays, the transcript goes, and the first
 message creates the session with whatever model/effort the launchpad shows.
 
-A launchpad with nothing staged names the **product defaults**, not the values of
-the conversation `/new` left behind: the plain chat (no workspace — the agent's
-own `agent/workspace`, the directory the rail's 对话会话 section files, created on
-the way), the agent's default model and the level that model starts at (both read
-from `list_models`: `isDefault`, `defaultThinkingLevel` — the same resolution
-`new_session` performs), and 完全访问 (`off`). Carrying the previous
-conversation's directory, model and approval into the next one made `/new` a copy
-of what came before instead of a fresh start — and the default approval is
-applied to the created session rather than only named, so a chip never names a
-mode the session will not run under.
+The launchpad's workspace comes from one of two places: `/new` (`ctrl+n`)
+**inherits the workspace the conversation was just in** — a new conversation
+starts in the project the reader was working in — while a chat is not inherited,
+because the next message mints its own chat directory. A fresh start uses the
+**TUI process's start directory** (`cd project && future tui`), and a launch
+from one of the app's own scratch directories (or an explicit 对话会话 choice) is
+the **plain chat**: no workspace, running under the desktop app's own
+`~/.future/workspaces/chat/<session id>` (the directory the rail's 对话会话
+section files; the TUI mints the id and creates the directory when the session is
+created). The model and effort chips still name the **product defaults**, not the
+previous conversation's values (both read from `list_models`: `isDefault`,
+`defaultThinkingLevel` — the same resolution `new_session` performs), and
+approval is 完全访问 (`off`). Carrying the previous conversation's model and
+approval into the next one made `/new` a copy of what came before instead of a
+fresh start — and the default approval is applied to the created session rather
+than only named, so a chip never names a mode the session will not run under.
 
 With no session attached — the launchpad, or a TUI started against an agent that
 has none — `enter` in a picker **stages** the choice instead of sending it: the
@@ -341,17 +347,19 @@ well. `/thinking` lists the six levels, `/mode` the desktop composer's four
 approval tiers with their one-line explanations, and `/workspace` every
 directory this client has a conversation in plus a first row that creates one
 from the path typed into its search line (`enter` there is `set_cwd`, the same
-verb as choosing an existing one). Under that typed row sits the one row that is
-not a directory: 对话会话, a plain chat — the conversation nobody picked a
-workspace for. `enter` there parks the session in the agent's own
-`agent/workspace` (the directory the rail's 对话会话 section already names), or
-stages it for the session the next message creates, and the app makes that
-directory itself: a directory the reader typed is theirs to have created, and a
-typo deserves the agent's error, but this path is nobody's to make. The
-approval tiers are the desktop's own
-values — manual / sandboxed / automatic review / full access; there is no
-separate TUI "permission level" chip, because no other client offers that
-choice.
+verb as choosing an existing one); `/workspace <path>` prefills that search line
+with the argument, so the command lands on the directory it names rather than on
+an empty list. Under that typed row sits the one row that is not a directory:
+对话会话, a plain chat — the conversation nobody picked a workspace for. `enter`
+there stages "no workspace" while nothing is attached (the first message mints
+`~/.future/workspaces/chat/<id>`, the TUI's own id, and creates the directory),
+or moves an attached session to its own chat directory named the same way — the
+prefix the rail's 对话会话 section recognises. The app makes that directory
+itself: a directory the reader typed is theirs to have created, and a typo
+deserves the agent's error, but this path is nobody's to make. The approval tiers
+are the desktop's own values — manual / sandboxed / automatic review / full
+access; there is no separate TUI "permission level" chip, because no other client
+offers that choice.
 
 Rows are painted and registered as hit regions from one list and one geometry
 (`screen::picker_box` over `box_geometry`), which is what makes a click land on

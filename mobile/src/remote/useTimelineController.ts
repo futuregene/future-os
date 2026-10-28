@@ -599,8 +599,17 @@ export function useTimelineController({
           retryInMs: failure.retryInMs,
           error: diagnosticError(failure.error),
         });
+        // The log answers "where did it die" for whoever can read it; the beat
+        // answers it for the machine the phone is talking to, which is the only
+        // place the person staring at the spinner can look. Both, because
+        // neither is visible from the other end.
+        clientRef.current?.setSyncStage?.(failure.stage);
       },
       onRecovered: (sessionId) => {
+        // The lane that was stuck has reconciled, so the report is no longer
+        // true. Clear it rather than leave the device looking stuck until its
+        // next failure.
+        clientRef.current?.setSyncStage?.(null);
         setTimelineErrors((previous) => {
           if (!previous[sessionId]) return previous;
           const next = { ...previous };
