@@ -1008,6 +1008,53 @@ mod tests {
         (dir, state)
     }
 
+    fn resident_session(state: &AppState, id: &str) -> ServerSession {
+        ServerSession::new_with_queue_budget(
+            id.to_string(),
+            Arc::new(tokio::sync::RwLock::new(
+                state.loop_template.independent_copy(),
+            )),
+            state.session_manager.clone(),
+            "/tmp",
+            Arc::new(SseBroadcaster::new()),
+            state.approval_gate.clone(),
+            state.model_registry.clone(),
+            state.queue_budget.clone(),
+        )
+    }
+
+    #[test]
+    fn idle_session_lookup_preserves_process_local_permission_state() {
+        let (_dir, state) = bare_app_state();
+        let mut protected = resident_session(&state, "permission-pinned");
+        protected.set_permission_level("none");
+        state.create_session(protected);
+        state
+            .session_manager
+            .save(&crate::session::Session::snapshot(
+                "permission-pinned".into(),
+                "/tmp".into(),
+                "test-model".into(),
+                String::new(),
+                String::new(),
+                vec![crate::session::SessionEntry::session_info(
+                    serde_json::json!({"cwd":"/tmp","model":"test-model"}),
+                    "test-model".into(),
+                    "default".into(),
+                )],
+            ))
+            .unwrap();
+
+        // Resident handles are not caches for process-local policy. Keep enough
+        // other sessions here to catch reintroducing an LRU that rehydrates the
+        // protected handle with the default, broader permission level.
+        for index in 0..70 {
+            state.create_session(resident_session(&state, &format!("other-{index:02}")));
+        }
+        let restored = state.get_session("permission-pinned").unwrap();
+        assert_eq!(restored.read().get_permission_level(), "none");
+    }
+
     #[test]
     fn get_session_hydrates_disk_session_without_model() {
         // Sink subscriber so the set_model-failure warn! region is evaluated.

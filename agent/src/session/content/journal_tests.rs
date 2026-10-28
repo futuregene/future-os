@@ -653,6 +653,50 @@ fn canonical_replay_enforces_byte_budget_before_constructing_a_whole_run() {
 }
 
 #[test]
+fn replay_byte_budget_does_not_surface_a_corrupted_tail_from_the_next_page() {
+    let (_root, store) = store();
+    let mut writer = Writer::default();
+    let fragment = "x".repeat(super::WRITE_BYTES);
+    for cursor in 0..140 {
+        writer
+            .persist(
+                &store,
+                "s",
+                &[event(
+                    cursor,
+                    "text_chunk",
+                    json!({
+                        "content_key":"long","content_offset":cursor*super::WRITE_BYTES as i64,
+                        "content_bytes":fragment.len(),"content_first_idx":cursor,"text":fragment,
+                    }),
+                )],
+            )
+            .unwrap();
+    }
+    store
+        .db
+        .call(|db| {
+            let tail: i64 = db.query_row(
+                "SELECT content_id FROM stream_changes WHERE last_cursor=139",
+                [],
+                |row| row.get(0),
+            )?;
+            db.execute(
+                "DELETE FROM content_segments WHERE content_id=?1 AND byte_offset=(SELECT max(byte_offset) FROM content_segments WHERE content_id=?1)",
+                [tail],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    let first = store
+        .segmented_replay("s", "r", -1, false, Some(50_001))
+        .unwrap();
+    assert!(first.events.len() < 140);
+    assert!(store.segmented_replay("s", "r", -1, false, None).is_err());
+}
+
+#[test]
 fn replay_reads_all_inline_bodies_in_one_bounded_job() {
     let (_root, store) = store();
     let mut writer = Writer::default();

@@ -681,9 +681,15 @@ impl ServerSession {
             cwd_path,
             crate::utils::is_future_managed_dir(cwd_path),
         )?;
-        // Normal command admission has already loaded history (and therefore the
-        // latest checkpoint); this is a one-time fallback for direct/scheduled
-        // entry points, never a per-prompt full transcript read.
+        // Command admission normally loaded history already, but it drops the
+        // session write lock before this handler runs. The idle-release worker
+        // can clear the cache in that gap, and scheduled starts do not pass
+        // through command admission at all. Restore it while this run holds the
+        // write lock; otherwise an empty cache would be mistaken for a new
+        // session and the initial full save could replace the old transcript.
+        self.ensure_history_loaded()?;
+        // A cold handle may have loaded neither history nor its checkpoint.
+        // Both are no-ops on the normal hot path.
         self.ensure_checkpoint_loaded()?;
         let (system_prompt, verbose, mut run_loop) = if let Some(snapshot) = accepted_snapshot {
             let mut run_loop = snapshot.run_loop;

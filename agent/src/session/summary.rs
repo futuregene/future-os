@@ -118,7 +118,14 @@ impl Manager {
             summary.query_count = query_count;
             summaries.push(summary);
         }
-        summaries.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
+        // ids() is id-ordered. Preserve that deterministic tie-break across
+        // the separate canonical/legacy assembly paths as well as timestamps.
+        summaries.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
         Ok(summaries)
     }
 }
@@ -243,6 +250,75 @@ mod tests {
             .first_message
             .as_deref()
             .is_some_and(|title| title.starts_with("needle 长文本")));
+    }
+
+    #[test]
+    fn bulk_listing_matches_exact_titles_for_image_only_and_multiple_text_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Manager::new(dir.path().join("sessions"));
+        let store = manager.storage().unwrap();
+        let info = |id: &str| serde_json::json!({"id":format!("{id}-info"),"type":"session_info","timestamp":"2026-10-26T00:00:00Z","content":{"cwd":"/bulk","model":"mock"}});
+
+        store.reserve_segmented("image-first").unwrap();
+        store
+            .replace(
+                "image-first",
+                vec![
+                    info("image-first"),
+                    serde_json::json!({"id":"image","type":"user","role":"user","timestamp":"2026-10-26T00:00:01Z","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}}]}),
+                    serde_json::json!({"id":"later","type":"user","role":"user","timestamp":"2026-10-26T00:00:02Z","content":"not the first title"}),
+                ],
+            )
+            .unwrap();
+
+        let mut blocks = (0..11)
+            .map(|index| serde_json::json!({"type":"future_block","index":index}))
+            .collect::<Vec<_>>();
+        blocks[2] =
+            serde_json::json!({"type":"text","text":format!("first text {}", "一".repeat(8_000))});
+        blocks[10] =
+            serde_json::json!({"type":"text","text":format!("later text {}", "二".repeat(8_000))});
+        store.reserve_segmented("numeric-fields").unwrap();
+        store
+            .replace(
+                "numeric-fields",
+                vec![
+                    info("numeric-fields"),
+                    serde_json::json!({"id":"many","type":"user","role":"user","timestamp":"2026-10-26T00:00:01Z","content":blocks}),
+                ],
+            )
+            .unwrap();
+
+        store.reserve_segmented("blank-reference").unwrap();
+        store
+            .replace(
+                "blank-reference",
+                vec![
+                    info("blank-reference"),
+                    serde_json::json!({"id":"blank","type":"user","role":"user","timestamp":"2026-10-26T00:00:01Z","content":"\n ".repeat(12_000)}),
+                ],
+            )
+            .unwrap();
+
+        let listed = manager.list_all().unwrap();
+        for id in ["image-first", "numeric-fields", "blank-reference"] {
+            let exact = super::super::content::reader::Snapshot::summary(store, id).unwrap();
+            let bulk = listed.iter().find(|summary| summary.id == id).unwrap();
+            assert_eq!(
+                bulk.first_message, exact.first_message,
+                "title mismatch for {id}"
+            );
+        }
+        assert_eq!(
+            listed
+                .iter()
+                .find(|summary| summary.id == "numeric-fields")
+                .unwrap()
+                .first_message
+                .as_deref()
+                .map(|title| &title[.."first text".len()]),
+            Some("first text")
+        );
     }
 
     fn temp_manager(tag: &str) -> (std::path::PathBuf, Manager) {

@@ -215,15 +215,26 @@ mod imp {
 
         /// A socket the caller can talk to exactly once, answering with `reply`
         /// and then closing. The path is returned so the test can unlink it.
+        ///
+        /// Every test in this module calls this, and they run in parallel: four
+        /// calls are in flight at once. The clock alone does not tell them
+        /// apart — two of them can read the same tick and then `bind` fails with
+        /// `AlreadyExists(17)` before the behaviour under test is reached, which
+        /// is a broken fixture rather than a failing assertion. A process-wide
+        /// sequence number alongside the clock and the process id makes the path
+        /// unique per call.
         #[cfg(unix)]
         async fn serve_and_close(reply: &'static [u8]) -> (SocketSpec, std::path::PathBuf) {
+            use std::sync::atomic::{AtomicU64, Ordering};
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            static NEXT: AtomicU64 = AtomicU64::new(0);
             let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock")
                 .as_nanos();
+            let seq = NEXT.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
-                "future-socket-http-{}-{nanos}.sock",
+                "future-socket-http-{}-{nanos}-{seq}.sock",
                 std::process::id()
             ));
             let listener = tokio::net::UnixListener::bind(&path).expect("bind");
