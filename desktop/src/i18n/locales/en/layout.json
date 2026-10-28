@@ -161,8 +161,8 @@
       "loading_models": "Loading models and credentials",
       "reserving_endpoint": "Preparing the local connection",
       "opening_storage": "Checking conversation data",
-      "backing_up_storage": "Backing up data before upgrading",
-      "upgrading_storage": "Upgrading conversation data",
+      "backing_up_storage": "Backing up data before upgrading. Do not close the app.",
+      "upgrading_storage": "Upgrading conversation data. Do not close the app.",
       "recovering_sessions": "Recovering conversations",
       "binding_endpoint": "Starting the Agent service"
     },

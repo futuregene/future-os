@@ -63,9 +63,17 @@ describe("agent status gate", () => {
     const progress = { stage: "upgrading_storage" as const, elapsedMs: 24000 };
     expect(renderStatus("starting", false, undefined, undefined, progress)).toBe("");
     const text = renderStatus("starting", true, undefined, undefined, progress);
-    expect(text).toContain("Upgrading conversation data");
+    expect(text).toContain("Upgrading conversation data. Do not close the app.");
     expect(text).toContain("Startup is taking longer");
     expect(text).not.toContain("could not start");
+  });
+
+  it("shows the backup close warning only after the waiting hint delay", () => {
+    const progress = { stage: "backing_up_storage" as const, elapsedMs: 6000 };
+    expect(renderStatus("starting", false, undefined, undefined, progress)).toBe("");
+    const text = renderStatus("starting", true, undefined, undefined, progress);
+    expect(text).toContain("Backing up data before upgrading. Do not close the app.");
+    expect(text).not.toContain("Startup is taking longer");
   });
 
   it("describes missing status responses without claiming a startup failure", () => {

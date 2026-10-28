@@ -161,8 +161,8 @@
       "loading_models": "正在加载模型和凭据",
       "reserving_endpoint": "正在准备本地连接",
       "opening_storage": "正在检查会话数据",
-      "backing_up_storage": "正在备份升级前的数据",
-      "upgrading_storage": "正在升级会话数据",
+      "backing_up_storage": "正在备份升级前的数据，请勿关闭程序。",
+      "upgrading_storage": "正在升级会话数据，请勿关闭程序。",
       "recovering_sessions": "正在恢复会话",
       "binding_endpoint": "正在启动 Agent 服务"
     },
