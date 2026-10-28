@@ -5,6 +5,7 @@
 //! installation-wide device id is owned by `device_identity`; pairing stores a
 //! copy because the server credential is bound to that exact identity.
 
+use crate::console;
 #[cfg(test)]
 use crate::remote::pairing::{error_code, is_invalid_or_revoked_error, public_key};
 #[cfg(test)]
@@ -487,7 +488,7 @@ async fn clear_stale_invitations(desktop_id: &str, shown: &[String]) -> Vec<Stri
     let devices = match list_devices().await {
         Ok(devices) => devices,
         Err(error) => {
-            eprintln!("remote: could not list invitations to clear: {error}");
+            console::eprintln!("remote: could not list invitations to clear: {error}");
             return Vec::new();
         }
     };
@@ -500,12 +501,12 @@ async fn clear_stale_invitations(desktop_id: &str, shown: &[String]) -> Vec<Stri
         match delete_device(&device.pair_id).await {
             Ok(()) => cleared.push(device.pair_id),
             Err(error) => {
-                eprintln!("remote: could not clear a stale invitation: {error}");
+                console::eprintln!("remote: could not clear a stale invitation: {error}");
             }
         }
     }
     if !cleared.is_empty() {
-        eprintln!(
+        console::eprintln!(
             "remote: cleared {} stale invitation(s) to make room for a device",
             cleared.len()
         );
@@ -769,7 +770,7 @@ pub(crate) fn queue_revoke(creds: &PairingCreds) -> Result<(), crate::Error> {
         let creds = creds.clone();
         crate::runtime::spawn(async move {
             if let Err(error) = crate::remote::relay::revoke(&creds).await {
-                eprintln!("remote: could not delete the relay room: {error}");
+                console::eprintln!("remote: could not delete the relay room: {error}");
             }
         });
         return Ok(());
@@ -827,7 +828,7 @@ fn retire_pending_revoke(pair_id: &str, platform: &str) {
         })
     })();
     if let Err(error) = result {
-        eprintln!(
+        console::eprintln!(
             "remote: could not retire the queued revoke for the replacement invitation: {error}"
         );
     }

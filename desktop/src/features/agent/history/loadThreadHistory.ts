@@ -16,9 +16,11 @@ import {
   applyJournalRunOutcomes,
   applyRunMetadata,
   buildStreamingPreview,
+  ensureLiveReply,
   mergeStreamingPreview,
   recoverAbortedTurns,
   recoverFailedRuns,
+  warnLivePreviewFallback,
 } from "../threadRunProjection";
 
 export type AgentLoadResult
@@ -109,18 +111,32 @@ export async function loadThreadHistory(
     // have persisted for this exchange (mergeStreamingPreview). Verified
     // against the run row so a settle that raced the reload never resurrects
     // a bubble for a finished run.
-    const liveBubble = activeRunId
-      ? await getRun(activeRunId)
-          .then(run =>
-            run && !matchesSettledRun(run.status)
-              ? buildStreamingPreview(activeRunId, activeRunStartedAt ?? null)
-              : null,
-          )
-          .catch(() => null)
+    const runId = activeRunId ?? null;
+    const activeRun = runId
+      ? await getRun(runId).catch((error) => {
+          warnLivePreviewFallback(runId, "run row read failed", error);
+          return null;
+        })
       : null;
-    const finalMessages = liveBubble
+    const runActive = !!activeRun && !matchesSettledRun(activeRun.status);
+    const runStartedAt = activeRunStartedAt ?? activeRun?.startedAt ?? activeRun?.createdAt ?? null;
+    const liveBubble = runActive && runId
+      ? await buildStreamingPreview(runId, runStartedAt).catch((error) => {
+          warnLivePreviewFallback(runId, "run events unavailable", error);
+          return null;
+        })
+      : null;
+    const mergedMessages = liveBubble
       ? mergeStreamingPreview(withFailures, liveBubble)
       : withFailures;
+    // An active run whose preview produced nothing (or was suppressed by a
+    // persisted message that already carries the run) must still read as a run
+    // in progress: committed as plain history, the mid-run snapshot below looks
+    // like a finished reply — no generating dot, no elapsed time, no stop
+    // button — while the agent keeps executing it.
+    const finalMessages = runActive && runId && mergedMessages === withFailures
+      ? ensureLiveReply(withFailures, runId, runStartedAt)
+      : mergedMessages;
     return {
       status: "loaded",
       ...(result.history ? { history: result.history } : {}),

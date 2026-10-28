@@ -143,9 +143,14 @@ pub const ALLOW: &[Allow] = &[
         "Context compacted: {before} → {after} tokens (estimated)",
         "the same marker, carrying the token counts",
     ),
-    // The conversation area's own words. Pluralisation happens inline in
-    // English (`tool call` / `tool calls`), which a bilingual table cannot
-    // express — the Chinese spelling does not inflect.
+    // The conversation area's own words. The process-row counters are the one
+    // place where pluralisation cannot live in the table alone: English spells
+    // the two counts differently (`tool call` / `tool calls`) and Chinese does
+    // not inflect, so `Key` carries one template per spelling and the language
+    // picks between them. `FoldWords::default()` is the English fallback for a
+    // `ChatArea` built without any words (a unit test, a transcript drawn
+    // off-screen); the workbench overwrites every field from the table before
+    // it draws (`workbench/live.rs::fold_words`), so a reader never sees these.
     Allow::known_gap(
         "components/chat_area.rs",
         "merged into the previous run",
@@ -156,15 +161,15 @@ pub const ALLOW: &[Allow] = &[
         "delivery not acknowledged",
         "a run state's description in the conversation",
     ),
-    Allow::known_gap(
+    Allow::not_chrome(
         "components/chat_area.rs",
-        "tool call",
-        "the reply summary counts tools in English, pluralised inline",
+        "{} tool call",
+        "the `FoldWords` default a bare `ChatArea` is built with — the workbench sets the table's words first",
     ),
-    Allow::known_gap(
+    Allow::not_chrome(
         "components/chat_area.rs",
-        "tool calls",
-        "the plural half of the same count",
+        "{} tool calls",
+        "the plural half of the same default, never drawn once the workbench sets the words",
     ),
     Allow::known_gap(
         "components/chat_area.rs",

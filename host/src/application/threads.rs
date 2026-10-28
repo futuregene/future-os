@@ -1,5 +1,6 @@
 //! Shared conversation and session operations.
 
+use crate::console;
 use crate::{agent_bridge, store};
 
 pub async fn fork_thread(
@@ -247,7 +248,7 @@ pub async fn list_streaming_thread_ids() -> Result<Vec<String>, crate::Error> {
 /// Extracted so the defensive failure log is testable with a broken store.
 fn sync_title_best_effort(thread_id: &str, name: &str) {
     if let Err(error) = store::sync_thread_title(thread_id, name) {
-        eprintln!("FutureOS thread title sync failed for {thread_id}: {error}");
+        console::eprintln!("FutureOS thread title sync failed for {thread_id}: {error}");
     }
 }
 

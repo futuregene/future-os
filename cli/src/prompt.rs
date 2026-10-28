@@ -12,6 +12,7 @@
 //! else: the signal keys stay, so Ctrl+C still aborts the command, and a guard
 //! restores the previous mode on every path out, a panic included.
 
+use future_agent::console;
 use std::io::{IsTerminal, Write};
 
 /// What one key decided.
@@ -49,7 +50,7 @@ pub fn ask_yes_no(question: &str) -> Result<bool, String> {
         // Restored before the answer is echoed, so the echo goes to a terminal
         // that is already back in its normal mode.
         drop(raw);
-        eprintln!("{}", if answer { "y" } else { "n" });
+        console::eprintln!("{}", if answer { "y" } else { "n" });
         return Ok(answer);
     }
     // The terminal refused the mode change (an unusual tty, or a stdin that
@@ -59,7 +60,7 @@ pub fn ask_yes_no(question: &str) -> Result<bool, String> {
 }
 
 fn write_prompt(question: &str) {
-    eprint!("{question} [y/N] ");
+    console::eprint!("{question} [y/N] ");
     std::io::stderr().flush().ok();
 }
 

@@ -530,6 +530,76 @@ fn page_events_tail_oversized_first_event_still_progresses() {
 }
 
 #[test]
+fn get_events_since_flags_a_window_whose_head_the_journal_lost() {
+    let state = make_legacy_app_state();
+    let session = state.get_session("default").expect("default session");
+    session
+        .read()
+        .broadcaster
+        .configure_legacy_journal("default", &state.session_manager)
+        .expect("bind the session journal");
+    // The journal keeps idx 100..=104 only — a reclaimed prefix. A consumer
+    // holding 0..0 asks for a window whose start no longer exists.
+    let store = state.session_manager.storage().expect("session storage");
+    let rows: Vec<serde_json::Value> = (100..=104)
+        .map(|idx| {
+            serde_json::json!({
+                "event_type": "text_chunk",
+                "data": serde_json::json!({"text": format!("chunk-{idx}")}).to_string(),
+                "run_id": "run-gap",
+                "epoch": 1,
+                "idx": idx,
+                "session_id": "default",
+                "event_id": format!("default:run-gap:1:{idx}"),
+                "timestamp": "2026-01-01T00:00:00Z",
+                "session_idx": -1,
+                "run_sequence": 1,
+            })
+        })
+        .collect();
+    store
+        .db
+        .call(move |db| {
+            let tx = db.transaction()?;
+            for row in rows {
+                crate::session::sqlite_store::insert_event_record(&tx, "default", row)?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+        .expect("seed the journal");
+
+    let mut cmd = make_cmd("get_events_since");
+    cmd.run_id = "run-gap".to_string();
+    cmd.since_idx = 0;
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true);
+    let data = &resp["data"];
+    assert_eq!(
+        data["events"].as_array().expect("events").len(),
+        5,
+        "the window itself is still served"
+    );
+    assert_eq!(
+        data["truncated"], true,
+        "a window that starts above the requested cursor must say so"
+    );
+
+    // The cursor the journal still honours is a plain continuation.
+    let mut cmd = make_cmd("get_events_since");
+    cmd.run_id = "run-gap".to_string();
+    cmd.since_idx = 100;
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true);
+    assert_eq!(
+        resp["data"]["events"].as_array().expect("events").len(),
+        4,
+        "the tail after the cursor"
+    );
+    assert_eq!(resp["data"]["truncated"], false);
+}
+
+#[test]
 fn get_events_since_pages_a_live_run_with_max_events() {
     let state = make_app_state();
     let session = state.get_session("default").expect("default session");

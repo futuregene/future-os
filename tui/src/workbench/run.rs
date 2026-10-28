@@ -17,7 +17,6 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
-use crate::components::chat_area::ReplyDetail;
 use crate::rpc::types::AgentEvent;
 use crate::settings::TuiSettings;
 use crate::terminal::Terminal;
@@ -827,11 +826,9 @@ async fn quit(
                     return Ok(false);
                 }
                 Some(super::preferences::Action::ReplyDetail) => {
-                    let next = match live.detail() {
-                        ReplyDetail::Default => ReplyDetail::Detailed,
-                        ReplyDetail::Detailed => ReplyDetail::Default,
-                    };
-                    live.set_detail(next);
+                    // The same cycle `/reply-detail` walks: everything, the
+                    // work folded, the process folded too.
+                    live.set_detail(live.detail().next());
                     // A view toggle, not a preference: nothing is written back,
                     // so the next start opens folded again whatever the reader
                     // peeked at here (see `ReplyDetail`).

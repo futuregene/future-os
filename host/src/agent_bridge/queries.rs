@@ -428,6 +428,41 @@ pub async fn get_session_entries_before_with_client(
     }))
 }
 
+/// Whether a session holds any record a reader can open.
+///
+/// A task run reads this when it settles: a conversation the run opened and
+/// never wrote into is a shell — a name in the sidebar and nothing behind it —
+/// because the prompt never reached the Agent (or the Agent refused it). Any
+/// record at all keeps the conversation; the criterion is "no records", not how
+/// long the run took or how often it called a model.
+///
+/// Every session is born with a `session_info` snapshot, so that one entry is
+/// what a session with nothing in it contains — it is metadata, not a record
+/// (`future session transcript` shows the same session as empty). The page also
+/// reports whether it was cut short: a page with more behind it is never an
+/// empty session, whatever its first entries happen to be.
+///
+/// `Err` means the Agent could not be asked, which callers must treat as *not*
+/// empty: a read failure is not evidence, and deleting a conversation on one
+/// would throw away a run's only record.
+pub async fn session_has_entries(session_id: &str) -> Result<bool, crate::Error> {
+    const PAGE: i64 = 8;
+    let client = connect_agent().await?;
+    let page = read_history_page_with_client(
+        &client,
+        get_session_entries_page_command(session_id.to_string(), 0, PAGE),
+    )
+    .await?;
+    if page.has_more {
+        return Ok(true);
+    }
+    Ok(page
+        .entries
+        .iter()
+        .any(|entry| entry.kind != future_agent::session::ENTRY_TYPE_SESSION_INFO))
+}
+
+/// Fetch all of a session's entries, paged.
 pub(super) async fn fetch_all_session_entries_with_client(
     client: &mut super::client::AgentClient,
     session_id: &str,
@@ -678,15 +713,22 @@ pub async fn provision_agent_session(
     model_id: Option<String>,
     thinking_level: Option<String>,
 ) -> Result<String, crate::Error> {
-    provision_agent_session_with_policy(thread_id, model_id, thinking_level, "workspace", None)
+    provision_agent_session_with_policy(thread_id, "", model_id, thinking_level, "workspace", None)
         .await
 }
 
 /// Provision an agent session with an explicit permission level and sandbox
 /// tier. Used by tasks (full permission, no approval prompts) — the default
 /// `provision_agent_session` keeps the GUI's workspace-level default.
+///
+/// `session_name` is the title the session is created with. Empty leaves the
+/// Agent to title it from the first user message (right for a conversation a
+/// person starts); a task run passes its own name, because its first message is
+/// the `── future_tasks_run_envelope_v1 ──` envelope — the sidebar would
+/// otherwise show that header as the conversation's name.
 pub async fn provision_agent_session_with_policy(
     thread_id: &str,
+    session_name: &str,
     model_id: Option<String>,
     thinking_level: Option<String>,
     permission_level: &str,
@@ -694,10 +736,11 @@ pub async fn provision_agent_session_with_policy(
 ) -> Result<String, crate::Error> {
     let cwd = workspace_path_for_thread(thread_id)?;
     let mut client = connect_agent().await?;
-    let ensured = ensure_agent_session(
+    let ensured = ensure_named_agent_session(
         &mut client,
         "",
         &cwd,
+        session_name,
         model_id.as_deref(),
         thinking_level.as_deref(),
     )

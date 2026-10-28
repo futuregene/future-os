@@ -1,4 +1,5 @@
 //! Opt-in fixture timings, written outside HOME so fixture resets cannot erase them.
+use crate::console;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
@@ -76,7 +77,7 @@ impl FixtureTiming {
             writeln!(file, "{row}")
         })();
         if let Err(error) = result {
-            eprintln!("Host fixture timing could not be recorded: {error}");
+            console::eprintln!("Host fixture timing could not be recorded: {error}");
         }
     }
 }

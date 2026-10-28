@@ -7,6 +7,11 @@ mod error;
 
 pub use error::Error;
 
+// Terminal writes that drop a failed write instead of panicking (see
+// `future_agent::console`). Re-exported so a host or Desktop file can take
+// `crate::console::eprintln` over the prelude's and keep its call sites.
+pub use future_agent::console;
+
 pub mod approval_rules;
 mod git_diff_parse;
 mod proc;

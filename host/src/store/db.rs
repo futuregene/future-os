@@ -2,6 +2,7 @@
 //! factory, schema application — plus a handful of small cross-domain row
 //! lookups shared by several store modules.
 
+use crate::console;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{fs, path::PathBuf};
 
@@ -249,7 +250,7 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::Error> {
     // the Agent/file-tool main flow; read paths project its missing column as
     // NULL and the archive action reports its own unavailable error.
     if let Err(error) = apply_versioned_migrations(conn) {
-        eprintln!("FutureOS migration: optional run-archive migration failed: {error}");
+        console::eprintln!("FutureOS migration: optional run-archive migration failed: {error}");
     }
     // Rename columns on databases created before the N-3 rename. `CREATE TABLE
     // IF NOT EXISTS` can't do it, and without this the store reads/writes
@@ -286,7 +287,7 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::Error> {
     let _ = conn.execute_batch("PRAGMA foreign_keys = OFF;");
     for table in DROPPED_TABLES {
         if let Err(e) = conn.execute(&format!("DROP TABLE IF EXISTS {table}"), []) {
-            eprintln!("FutureOS migration: DROP TABLE {table} failed: {e}");
+            console::eprintln!("FutureOS migration: DROP TABLE {table} failed: {e}");
         }
     }
     let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
@@ -297,7 +298,7 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::Error> {
             if let Err(error) = conn.execute(&sql, []) {
                 // DROP COLUMN can fail if the column is referenced by an index
                 // or is the last column — log and continue.
-                eprintln!("FutureOS migration: failed to drop {table}.{column}: {error}");
+                console::eprintln!("FutureOS migration: failed to drop {table}.{column}: {error}");
             }
         }
     }

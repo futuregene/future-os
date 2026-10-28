@@ -1,5 +1,6 @@
 //! A prepared native helper owns its execution environment before services stop.
 //! EOF before COMMIT cancels; after COMMIT the helper completes independently.
+use future_host::console;
 use serde::{Deserialize, Serialize};
 #[cfg(not(target_os = "windows"))]
 use std::{
@@ -113,7 +114,7 @@ impl Drop for PreparedProcess {
 }
 #[cfg(not(target_os = "windows"))]
 pub(super) fn await_commit() -> Result<bool, String> {
-    println!("READY");
+    console::println!("READY");
     std::io::stdout().flush().map_err(|e| e.to_string())?;
     let mut line = String::new();
     std::io::stdin()
@@ -123,7 +124,7 @@ pub(super) fn await_commit() -> Result<bool, String> {
 }
 #[cfg(not(target_os = "windows"))]
 pub(super) fn complete(result: &Completion) -> Result<(), String> {
-    println!(
+    console::println!(
         "{}",
         serde_json::to_string(result).map_err(|e| e.to_string())?
     );

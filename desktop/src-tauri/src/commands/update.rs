@@ -6,6 +6,7 @@
 //! `assets` map used for manual downloads; Tauri ignores those additional
 //! fields and selects only the current entry under `platforms`.
 
+use future_host::console;
 use serde::Serialize;
 use serde_json::Value;
 use std::time::Duration;
@@ -98,7 +99,7 @@ pub fn dispatch_update_helper(args: &[String]) -> Option<Result<(), String>> {
 #[cfg(not(target_os = "windows"))]
 fn helper_result(result: Result<(), String>) -> Result<(), String> {
     if let Err(error) = &result {
-        println!("ERROR {}", serde_json::to_string(error).unwrap_or_default());
+        console::println!("ERROR {}", serde_json::to_string(error).unwrap_or_default());
     }
     result
 }

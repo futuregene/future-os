@@ -12,6 +12,7 @@
 //! invitation token. A deployment that deletes it makes every phone re-pair,
 //! which is also the only way to revoke a device the desktop cannot reach.
 
+use future_agent::console;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -229,7 +230,7 @@ impl RoomStore {
                 std::fs::rename(&tmp, &path).map_err(|error| error.to_string())
             });
         if let Err(error) = outcome {
-            eprintln!(
+            console::eprintln!(
                 "future-relay: could not persist {}: {error}",
                 path.display()
             );

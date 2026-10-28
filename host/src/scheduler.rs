@@ -4,6 +4,7 @@
 //! runs an overdue job once after it resumes, then schedules the next run from
 //! that actual start time; missed intervals are never replayed in a burst.
 
+use crate::console;
 use std::future::Future;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -175,7 +176,7 @@ where
         Ok(balance) => BalancePass::Balance(balance),
         Err(error) => {
             let rejected = crate::future_login::is_auth_rejection(&error);
-            eprintln!("FutureOS scheduled balance refresh failed: {error}");
+            console::eprintln!("FutureOS scheduled balance refresh failed: {error}");
             if rejected {
                 BalancePass::AccountChanged
             } else {
@@ -209,12 +210,12 @@ async fn refresh_future_catalogue_if_signed_in() {
         return;
     }
     match crate::agent_bridge::sync_future_models().await {
-        Ok(result) if result.synced => eprintln!(
+        Ok(result) if result.synced => console::eprintln!(
             "FutureOS: Future model catalogue refreshed ({} models).",
             result.model_count
         ),
         Ok(_) => {}
-        Err(error) => eprintln!("FutureOS scheduled model refresh failed: {error}"),
+        Err(error) => console::eprintln!("FutureOS scheduled model refresh failed: {error}"),
     }
 }
 

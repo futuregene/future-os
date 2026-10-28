@@ -12,6 +12,7 @@
 //! dispatched from main() BEFORE the CLI's runtime is entered (nested
 //! runtimes would panic). Everything else runs inside `dispatch` as before.
 
+use future_agent::console;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -23,7 +24,7 @@ fn main() -> ExitCode {
 fn run_from_args(args: &[String]) -> ExitCode {
     // Discovery must never initialize storage, logs, an Agent or a runtime.
     if args == ["version", "--json"] {
-        print!("{}", future_cli::version::build_info_json());
+        console::print!("{}", future_cli::version::build_info_json());
         return ExitCode::SUCCESS;
     }
     // Hidden helper entry also works for renamed/staged unified CLI artifacts.
@@ -62,7 +63,7 @@ fn run_host(args: &[String]) -> ExitCode {
     use future_cli::headless::{Launch, Options, HELP};
     let result = match Options::parse(args) {
         Ok(Launch::Help) => {
-            println!("{HELP}");
+            console::println!("{HELP}");
             return ExitCode::SUCCESS;
         }
         Ok(Launch::Headless(options)) => future_cli::headless::run(options),
@@ -71,7 +72,7 @@ fn run_host(args: &[String]) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("FutureOS: {error}");
+            console::eprintln!("FutureOS: {error}");
             ExitCode::FAILURE
         }
     }
@@ -82,7 +83,7 @@ fn run_agent(args: &[String]) -> ExitCode {
     match future_agent::cli::run_from_args(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("Error: {err}");
+            console::eprintln!("Error: {err}");
             ExitCode::from(1)
         }
     }
@@ -99,7 +100,7 @@ fn run_channel(args: &[String]) -> ExitCode {
     match future_channel::run(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("Error: {err}");
+            console::eprintln!("Error: {err}");
             ExitCode::from(1)
         }
     }
@@ -110,7 +111,7 @@ fn run_goal(args: &[String]) -> ExitCode {
     match future_goal::console::run("future goal", args.to_vec()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("Error: {err}");
+            console::eprintln!("Error: {err}");
             ExitCode::from(1)
         }
     }
@@ -123,7 +124,7 @@ fn run_relay(args: &[String]) -> ExitCode {
     match future_cli::relay::cli::run(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("Error: {err:#}");
+            console::eprintln!("Error: {err:#}");
             ExitCode::from(1)
         }
     }

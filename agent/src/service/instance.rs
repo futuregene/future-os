@@ -1,5 +1,6 @@
 //! The existing per-data-root singleton and installer-compatible metadata.
 
+use crate::console;
 use anyhow::{Context, Result};
 use future_rpc::instance_lock::{host_name, lock_conflict_message};
 use std::fs::{File, OpenOptions};
@@ -43,7 +44,7 @@ impl InstanceFile {
         let metadata = match write_metadata(&self.path, future_home) {
             Ok(metadata) => Some(metadata),
             Err(error) => {
-                eprintln!("Future Agent: could not publish instance metadata: {error:#}");
+                console::eprintln!("Future Agent: could not publish instance metadata: {error:#}");
                 None
             }
         };
@@ -67,7 +68,7 @@ impl Drop for InstanceMetadata {
     fn drop(&mut self) {
         if let Err(error) = std::fs::remove_file(&self.0) {
             if error.kind() != std::io::ErrorKind::NotFound {
-                eprintln!("Future Agent: could not remove instance metadata: {error}");
+                console::eprintln!("Future Agent: could not remove instance metadata: {error}");
             }
         }
     }

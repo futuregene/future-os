@@ -1101,3 +1101,65 @@ describe("useThreadMessages history cache hand-off", () => {
     expect(current.messages.map(message => message.content)).toEqual(["new-thread"]);
   });
 });
+
+describe("active run whose live preview is unavailable", () => {
+  /**
+   * A page holding the in-flight exchange: a user turn and the agent's mid-run
+   * assistant snapshot, stamped with the run that is still executing.
+   */
+  function inFlightPage(atMs: number) {
+    return {
+      entries: [
+        { blocks: [{ kind: "text", text: "look into it" }], createdAtMs: atMs, id: "u1", kind: "user", role: "user" },
+        { blocks: [{ kind: "text", text: "still working" }], createdAtMs: atMs + 1000, id: "a1", kind: "assistant", role: "assistant", runId: "R1" },
+      ],
+      hasMore: false,
+      nextOffset: 0,
+    };
+  }
+
+  it("keeps the mid-run snapshot marked running instead of committing it as history", async () => {
+    // The agent saves an assistant entry after every model call, so a reload
+    // during a run surfaces a reply that reads as finished — no generating dot,
+    // no elapsed time, no stop button — while the run keeps billing. When the
+    // journal read that would paint the live bubble fails, the committed
+    // messages must still say the run is executing.
+    const atMs = Date.parse("2026-06-01T00:00:00Z");
+    storage.getSessionEntriesPage.mockResolvedValue(inFlightPage(atMs));
+    const running = { createdAt: atMs, id: "R1", startedAt: atMs, status: "running", threadId: "T1", updatedAt: atMs };
+    storage.getLatestRun.mockResolvedValue(running);
+    storage.getRun.mockResolvedValue(running);
+    tauri.invokeCommand.mockImplementation((name: string) => name === "list_run_events_since"
+      ? Promise.reject(new Error("ipc"))
+      : Promise.resolve({ runId: "R1" }));
+
+    await mount();
+
+    const reply = current.messages[current.messages.length - 1]!;
+    expect(reply).toMatchObject({
+      content: "still working",
+      role: "assistant",
+      runId: "R1",
+      status: "streaming",
+    });
+    // Marked in place: the work already on screen is not duplicated.
+    expect(current.messages.filter(message => message.role === "assistant")).toHaveLength(1);
+    // The elapsed-time anchor the footer needs is restored too.
+    expect(reply.runStartedAt).toBe(atMs);
+  });
+
+  it("leaves the snapshot settled once the run has actually ended", async () => {
+    // boundary: the same page with a terminal run row must stay a finished
+    // reply — marking it running would resurrect a run nobody started.
+    const atMs = Date.parse("2026-06-01T00:00:00Z");
+    storage.getSessionEntriesPage.mockResolvedValue(inFlightPage(atMs));
+    const settled = { createdAt: atMs, endedAt: atMs + 5000, id: "R1", startedAt: atMs, status: "completed", threadId: "T1", updatedAt: atMs + 5000 };
+    storage.getLatestRun.mockResolvedValue(settled);
+    storage.getRun.mockResolvedValue(settled);
+
+    await mount();
+
+    const reply = current.messages[current.messages.length - 1]!;
+    expect(reply.status).toBe("complete");
+  });
+});

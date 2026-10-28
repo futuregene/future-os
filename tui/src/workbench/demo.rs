@@ -504,7 +504,9 @@ pub fn chat() -> WorkbenchData {
     data.messages = vec![
         style(p.accent, " ❯ 看看 parser 的 off-by-one，顺手补个回归测试"),
         String::new(),
-        style(p.muted, " ▸ 2 tool calls · 1 thought"),
+        // The process row the conversation renderer draws at the default level,
+        // worded in the interface language of this demo (Chinese).
+        style(p.muted, " ▸ 工具调用 2 次 · 思考 1 次"),
         String::new(),
         style(p.fg, " 循环用的是 `<=`，最后一位会越界读一个字节。"),
         style(p.fg, "改成 `<` 之后 41 个用例都过了。"),
@@ -600,7 +602,7 @@ mod tests {
             .map(|line| crate::utils::strip_ansi_codes(line))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("2 tool calls"), "{text}");
+        assert!(text.contains("工具调用 2 次 · 思考 1 次"), "{text}");
         assert!(text.contains("41 个用例都过了"), "{text}");
     }
 
