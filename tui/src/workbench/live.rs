@@ -76,8 +76,9 @@ struct Paging {
 /// ([`super::Workbench::surface_command`]) and this list have to account for
 /// every entry exactly once. That is the check whose absence let five entries
 /// advertise themselves and then answer `Unknown command`.
-pub const APP_COMMANDS: [&str; 21] = [
+pub const APP_COMMANDS: [&str; 22] = [
     "/new",
+    "/stop",
     "/reply-detail",
     "/tool-output",
     "/export",
@@ -1786,6 +1787,7 @@ impl Live {
         let arg = parts.next().unwrap_or("").trim().to_string();
         match name.as_str() {
             "quit" => return Outcome::Quit,
+            "stop" => self.abort().await,
             "queue" => self.refresh_state().await,
             "copy" | "mouse" => {}
             "paste" => self.paste_clipboard().await,
