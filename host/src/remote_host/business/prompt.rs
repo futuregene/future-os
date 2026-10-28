@@ -241,24 +241,20 @@ fn continue_refused(reason: &str) -> crate::Error {
     format!("{CONTINUE_REFUSED_CODE}: {reason}").into()
 }
 
-/// A run a continuation may resume: one that stopped without finishing.
+/// A continuation is not a free-form prompt alias: it may only resume a run
+/// that belongs to the addressed session. This keeps a stale mobile outbox entry
+/// (including one from a previous pairing) from creating or steering an
+/// unrelated conversation.
 ///
-/// `failed` is the obvious shape. The second is the `cancelled` row a restart
-/// leaves behind (`error_type = "interrupted"`, set by startup convergence and
-/// the Agent reconciliation): the reply really did stop mid-way, and the
-/// failure text tells the user to "restart the software, then click Continue"
-/// — refusing that continuation makes the advice a dead end. A run the user
-/// stopped themselves stays out of reach (its `cancelled` row carries
-/// `error_type = "cancelled"`), as does any run that completed.
-fn is_continuable_run(run: &crate::store::RunRecord) -> bool {
-    run.status == "failed"
-        || (run.status == "cancelled" && run.error_type.as_deref() == Some("interrupted"))
-}
-
-/// A continuation is not a free-form prompt alias: it may only resume the
-/// half-finished run that belongs to the addressed session. This keeps a stale
-/// mobile outbox entry (including one from a previous pairing) from creating or
-/// steering an unrelated conversation.
+/// **Identity only — never the reason the run stopped.** Any run of this
+/// conversation can be picked up from: a failure, a user stop, a stream the
+/// Agent or the app cut off, a restart that interrupted it. The rule used to
+/// read "only a `failed` run can be continued", which turned the one thing a
+/// client can offer after a restart (Continue — startup convergence settles
+/// that run `cancelled`/`interrupted`, not `failed`) into a permanent dead end,
+/// and asked the server to judge a decision the user had already made by tapping
+/// the button. The desktop's own Continue never consulted the run at all: it
+/// re-sends a prompt either way.
 pub(crate) fn validate_continue_source(session_id: &str, run_id: &str) -> Result<(), crate::Error> {
     if session_id.trim().is_empty() || run_id.trim().is_empty() {
         return Err(continue_refused(
@@ -267,11 +263,6 @@ pub(crate) fn validate_continue_source(session_id: &str, run_id: &str) -> Result
     }
     let run = crate::store::get_run(run_id)?
         .ok_or_else(|| continue_refused("The source run no longer exists."))?;
-    if !is_continuable_run(&run) {
-        return Err(continue_refused(
-            "Only a run that failed or was interrupted can be continued.",
-        ));
-    }
     let thread = crate::store::get_thread(&run.thread_id)?
         .ok_or_else(|| continue_refused("The source run's conversation no longer exists."))?;
     let run_session_id = thread
@@ -485,20 +476,16 @@ mod tests {
         }
     }
 
-    /// A continuation may resume a run that stopped without finishing — and a
-    /// restart leaves exactly that run `cancelled`, not `failed`. The failure
-    /// text tells the user to restart and then click Continue, so refusing this
-    /// shape makes that advice a dead end: the phone's button always answered
-    /// "Only a failed run can be continued." and the user saw only a generic
-    /// "message failed to send".
-    ///
-    /// A run that did finish, and one the user stopped themselves, are still
-    /// refused: neither is something to pick up from.
+    /// Every reason a run can stop is resumable — the guard is identity, not
+    /// outcome. The old reading ("only a `failed` run can be continued") made
+    /// the phone's Continue a dead end for exactly the run a restart leaves
+    /// behind (`cancelled`/`interrupted`), while the desktop's own Continue
+    /// re-sent a prompt without ever consulting the run.
     #[test]
-    fn a_restart_interrupted_run_is_continuable_but_a_finished_or_user_stopped_one_is_not() {
+    fn every_terminal_run_of_the_session_is_a_continuation_source() {
         use crate::remote::test_support::{raw_store_connection, HomeGuard};
 
-        let _home = HomeGuard::new("business-prompt-continue-interrupted");
+        let _home = HomeGuard::new("business-prompt-continue-any-reason");
         crate::remote::test_support::init_store();
         {
             let conn = raw_store_connection();
@@ -519,23 +506,26 @@ mod tests {
             .expect("seed the source runs");
         }
 
-        for run_id in ["run_failed", "run_interrupted"] {
+        for run_id in [
+            "run_failed",
+            "run_interrupted",
+            "run_completed",
+            "run_stopped",
+        ] {
             validate_continue_source("sess_rst", run_id)
                 .unwrap_or_else(|error| panic!("{run_id} must be continuable: {error}"));
         }
-        for (run_id, expected) in [
-            ("run_completed", "failed or was interrupted"),
-            ("run_stopped", "failed or was interrupted"),
-        ] {
-            let error = validate_continue_source("sess_rst", run_id)
-                .expect_err("a settled run is not a continuation source")
-                .to_string();
-            assert!(
-                error.starts_with(CONTINUE_REFUSED_CODE),
-                "the phone maps this token to its own text: {run_id} -> {error}"
-            );
-            assert!(error.contains(expected), "{run_id} -> {error}");
-        }
+
+        // The one thing still refused: a run that belongs to another
+        // conversation, which would steer text into a chat the user is not in.
+        let error = validate_continue_source("another-session", "run_failed")
+            .expect_err("a foreign run is not a continuation source")
+            .to_string();
+        assert!(
+            error.starts_with(CONTINUE_REFUSED_CODE),
+            "the phone maps this token to its own text: {error}"
+        );
+        assert!(error.contains("does not belong"), "{error}");
     }
 
     /// A prompt addressed to a conversation this desktop does not have must be

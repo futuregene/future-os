@@ -1,6 +1,6 @@
 import { classifyAgentError } from "@future-os/thread-projection";
 import { describe, expect, it } from "vitest";
-import { canContinueResponse, isCompletedWithoutReply, responseTerminationError } from "./agentMessageFormatters";
+import { isCompletedWithoutReply, responseTerminationError } from "./agentMessageFormatters";
 
 describe("response outcomes", () => {
   it.each([
@@ -23,8 +23,6 @@ describe("response outcomes", () => {
   it("shows a neutral empty-reply notice only after completion without useful output", () => {
     const message = { id: "synthetic", role: "assistant" as const, status: "complete" as const, content: "", authorKey: "author.researchCopilot", createdAt: "2026-01-01", segments: [{ id: "thinking", kind: "thinking" as const, text: "synthetic draft" }] };
     expect(isCompletedWithoutReply(message)).toBe(true);
-    expect(canContinueResponse({ ...message, runError: "[MODEL_PAUSED]" })).toBe(false);
-    expect(canContinueResponse({ ...message, runError: "[OUTPUT_LIMIT]" })).toBe(true);
     expect(isCompletedWithoutReply({ ...message, content: "answer" })).toBe(false);
     expect(isCompletedWithoutReply({ ...message, status: "streaming" })).toBe(false);
     expect(isCompletedWithoutReply({ ...message, status: "failed" })).toBe(false);
