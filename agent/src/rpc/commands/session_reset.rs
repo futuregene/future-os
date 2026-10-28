@@ -214,7 +214,7 @@ pub(crate) fn handle_reset_session_history(
         // because the store ran the same selection and load-time repair.
         let mut sess = session.write();
         sess.broadcaster.forget_idle_replay();
-        sess.history_loaded = false;
+        sess.mark_history_stale();
         if let Err(error) = sess.ensure_history_loaded() {
             return fail(
                 id,

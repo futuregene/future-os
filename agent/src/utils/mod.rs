@@ -1,7 +1,63 @@
 //! Utility functions — matching Go internal/utils
 
+use std::collections::VecDeque;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+use std::time::UNIX_EPOCH;
+
+const IMAGE_CACHE_ENTRIES: usize = 32;
+const IMAGE_CACHE_BYTES: usize = 64 * 1024 * 1024;
+const IMAGE_CACHE_MAX_ENTRY_BYTES: usize = 8 * 1024 * 1024;
+
+type ImageCacheKey = (PathBuf, u128, u64);
+
+#[derive(Default)]
+struct ImageUrlCache {
+    entries: VecDeque<(ImageCacheKey, String)>,
+    bytes: usize,
+}
+
+static IMAGE_URL_CACHE: LazyLock<parking_lot::Mutex<ImageUrlCache>> =
+    LazyLock::new(Default::default);
+
+fn cached_image_url(key: &ImageCacheKey) -> Option<String> {
+    let mut cache = IMAGE_URL_CACHE.lock();
+    let index = cache
+        .entries
+        .iter()
+        .position(|(candidate, _)| candidate == key)?;
+    let entry = cache.entries.remove(index)?;
+    let url = entry.1.clone();
+    cache.entries.push_back(entry);
+    Some(url)
+}
+
+fn remember_image_url(key: ImageCacheKey, url: &str) {
+    if url.len() > IMAGE_CACHE_MAX_ENTRY_BYTES {
+        return;
+    }
+    let mut cache = IMAGE_URL_CACHE.lock();
+    if let Some(index) = cache
+        .entries
+        .iter()
+        .position(|(candidate, _)| candidate == &key)
+    {
+        if let Some((_, old)) = cache.entries.remove(index) {
+            cache.bytes = cache.bytes.saturating_sub(old.len());
+        }
+    }
+    while !cache.entries.is_empty()
+        && (cache.entries.len() >= IMAGE_CACHE_ENTRIES
+            || cache.bytes.saturating_add(url.len()) > IMAGE_CACHE_BYTES)
+    {
+        if let Some((_, old)) = cache.entries.pop_front() {
+            cache.bytes = cache.bytes.saturating_sub(old.len());
+        }
+    }
+    cache.bytes = cache.bytes.saturating_add(url.len());
+    cache.entries.push_back((key, url.to_owned()));
+}
 
 /// Standard UUID v4 for new application-owned identities. Time is stored in
 /// record metadata, not embedded in the identity. All 122 random bits remain.
@@ -96,10 +152,38 @@ pub fn image_data_url_for_model(path: &str) -> Option<String> {
     // Projected base64 length is ~4/3 of the raw byte count.
     let fits_base64 = |len: usize| len.div_ceil(3) * 4 <= MAX_BASE64_BYTES;
 
-    if std::fs::metadata(path).ok()?.len() > MAX_SOURCE_BYTES {
+    let metadata = std::fs::metadata(path).ok()?;
+    if metadata.len() > MAX_SOURCE_BYTES {
         return None;
     }
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let key = (PathBuf::from(path), modified, metadata.len());
+    if let Some(url) = cached_image_url(&key) {
+        return Some(url);
+    }
     let bytes = std::fs::read(path).ok()?;
+    // Read dimensions from the header first. The common case sends the original
+    // bytes unchanged, so decoding the full image before this check spent tens of
+    // milliseconds per screenshot for a value the header already contains.
+    let dimensions_reader = image::ImageReader::new(std::io::Cursor::new(&bytes))
+        .with_guessed_format()
+        .ok()?;
+    let format = dimensions_reader.format()?;
+    let (width, height) = dimensions_reader.into_dimensions().ok()?;
+
+    // Small enough already: send the original bytes, keeping the source format
+    // (e.g. PNG transparency) instead of forcing a JPEG re-encode.
+    if width <= MAX_DIM && height <= MAX_DIM && fits_base64(bytes.len()) {
+        let url = data_url(format.to_mime_type(), &bytes);
+        remember_image_url(key, &url);
+        return Some(url);
+    }
+
     // Cap the decoder's allocation so a decompression bomb (a tiny file that
     // decodes to a huge bitmap) can't OOM the agent. 512MB comfortably fits any
     // legitimate photo/screenshot while rejecting absurd dimensions.
@@ -109,15 +193,8 @@ pub fn image_data_url_for_model(path: &str) -> Option<String> {
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(512 * 1024 * 1024);
     reader.limits(limits);
-    let format = reader.format()?;
     let img = reader.decode().ok()?;
     let (width, height) = (img.width(), img.height());
-
-    // Small enough already: send the original bytes, keeping the source format
-    // (e.g. PNG transparency) instead of forcing a JPEG re-encode.
-    if width <= MAX_DIM && height <= MAX_DIM && fits_base64(bytes.len()) {
-        return Some(data_url(format.to_mime_type(), &bytes));
-    }
 
     // Downscale to fit MAX_DIM (aspect-preserving), then JPEG-compress at
     // decreasing quality until the payload fits.
@@ -131,7 +208,7 @@ pub fn image_data_url_for_model(path: &str) -> Option<String> {
     // quality too big, or the encoder failed) means the caller skips the
     // image — with the current caps a 2000px JPEG at q40 is always far under
     // 5 MiB, so in practice this only triggers on an encoder error.
-    [80u8, 70, 60, 50, 40].into_iter().find_map(|quality| {
+    let url = [80u8, 70, 60, 50, 40].into_iter().find_map(|quality| {
         let mut buf = Vec::new();
         let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality);
         let encoded = image::ImageEncoder::write_image(
@@ -143,7 +220,9 @@ pub fn image_data_url_for_model(path: &str) -> Option<String> {
         )
         .is_ok();
         (encoded && fits_base64(buf.len())).then(|| data_url("image/jpeg", &buf))
-    })
+    })?;
+    remember_image_url(key, &url);
+    Some(url)
 }
 
 /// Version string — injected at build time via build.rs from FUTURE_VERSION
