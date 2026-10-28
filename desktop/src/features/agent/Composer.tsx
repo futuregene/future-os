@@ -221,7 +221,7 @@ function ComposerImpl({
   const [installingSkill, setInstallingSkill] = useState(false);
   const editorRef = useRef<MentionEditorHandle | null>(null);
   const captureOperation = useOperationLifetime(draftKey);
-  const { attachments, attachmentsRef, setAttachments, attachError, setAttachError, dragState, addAttachmentPaths, attachPastedFiles, handleAttachFiles, removeAttachment }
+  const { attachments, attachmentsRef, setAttachments, attachError, setAttachError, dragState, addAttachmentPaths, attachPastedFiles, attachNativeClipboardImage, handleAttachFiles, removeAttachment }
     = useComposerAttachments({ disabled, onDragStateChange, captureOperation });
   const sendStateRef = useCommittedRef({ disabled, sending, compactionPending, onSend });
   useEffect(() => {
@@ -713,6 +713,7 @@ function ComposerImpl({
         onContextToolSelect={handleContextToolSelect}
         onPasteAttachmentPaths={paths => void addAttachmentPaths(paths)}
         onPasteFiles={files => void attachPastedFiles(files)}
+        onPasteEmpty={() => void attachNativeClipboardImage()}
         // Kept off the dictation layer: there the box holds one spoken sentence
         // at a time and the arrows belong to the remote control.
         history={triggers ? historyCursor : undefined}

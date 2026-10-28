@@ -1040,6 +1040,7 @@ mod gui {
                 read_text_file_preview,
                 inspect_attachment,
                 read_native_clipboard_file_paths,
+                read_native_clipboard_image,
                 validate_image_attachment,
                 prepare_image_preview,
                 generate_image_thumbnail,
