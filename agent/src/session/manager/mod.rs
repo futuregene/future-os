@@ -142,11 +142,11 @@ impl Manager {
                 store.recover_content_operations(cancellation)
             })?;
             let receipts = startup::step(&database, "recover_queued_receipts", || {
-                store.recover_queued_receipts(None, false)
+                store.recover_queued_receipts_cancellable(None, false, cancellation)
             })?;
             tracing::info!(receipts, "session storage: queued receipts recovered");
             startup::step(&database, "recover_segmented_runs", || {
-                store.recover_segmented_runs()
+                store.recover_segmented_runs_cancellable(cancellation)
             })?;
             cancellation.check()?;
             let _ = self.store.set(store);
@@ -157,6 +157,27 @@ impl Manager {
 
     pub fn retry_legacy_import(&self, id: &str) -> Result<()> {
         self.storage()?.import_legacy(&self.dir, Some(id))
+    }
+
+    /// Explicit maintenance while the caller owns the Agent instance lock.
+    /// Retry never executes models/tools and snapshots all original data first.
+    pub fn retry_session_recovery(&self, id: &str) -> Result<()> {
+        self.storage()?.retry_segmented_recovery(id)
+    }
+
+    /// History remains addressable, but a failed recovery must never become
+    /// model input or authorize new tools from a silently truncated prefix.
+    pub fn ensure_execution_allowed(&self, session: &str) -> Result<()> {
+        let session = session.to_owned();
+        self.storage()?.db.read(move |db| {
+            use rusqlite::OptionalExtension;
+            let session = super::identity::BoundIdentity::session(db, &session)?;
+            let failed: Option<super::identity::BoundIdentity> = db.query_row(
+                "SELECT run_id FROM runs WHERE session_id=?1 AND status='recovery_failed' LIMIT 1",
+                [&session], |row| row.get(0)).optional()?;
+            anyhow::ensure!(failed.is_none(), "session recovery requires repair; original history is preserved (session={session}, run={})", failed.map(|run|run.to_string()).unwrap_or_default());
+            Ok(())
+        })
     }
 
     pub fn import_records(&self) -> Result<Vec<super::ImportRecord>> {
@@ -353,6 +374,9 @@ impl Manager {
         state: &str,
         reason: &str,
     ) -> Result<serde_json::Value> {
+        // A watchdog/abort fallback must not turn quarantined, unverified
+        // history into a synthetic terminal and accidentally remove its fence.
+        self.ensure_execution_allowed(id)?;
         let (id, run_id, state, reason) = (
             id.to_owned(),
             run_id.to_owned(),

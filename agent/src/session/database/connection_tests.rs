@@ -1,6 +1,21 @@
 use super::*;
 
 #[test]
+fn a_startup_token_cannot_interrupt_the_ready_database_writer() {
+    let root = tempfile::tempdir().unwrap();
+    let cancellation = crate::service::StartupCancellation::default();
+    let database =
+        Database::open_cancellable(&root.path().join("agent.db"), cancellation.clone()).unwrap();
+    cancellation.cancel();
+    database
+        .call(|db| {
+            db.execute("INSERT INTO sessions(id) VALUES ('ordinary-write')", [])?;
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
 fn a_foreign_or_unrecognized_database_is_refused_instead_of_adopted() {
     let dir = tempfile::tempdir().unwrap();
 

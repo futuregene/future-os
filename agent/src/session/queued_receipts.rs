@@ -130,9 +130,19 @@ impl super::sqlite_store::SqliteStore {
         session: Option<&str>,
         only_cancelled: bool,
     ) -> Result<usize> {
+        self.recover_queued_receipts_cancellable(session, only_cancelled, &Default::default())
+    }
+
+    pub(crate) fn recover_queued_receipts_cancellable(
+        &self,
+        session: Option<&str>,
+        only_cancelled: bool,
+        cancellation: &crate::service::StartupCancellation,
+    ) -> Result<usize> {
         let session = session.map(str::to_owned);
         let mut total = 0;
         loop {
+            cancellation.check()?;
             let session = session.clone();
             let count = self.db.call(move |db| {
                 let tx = super::database::begin_write_transaction(db)?;
@@ -178,6 +188,7 @@ impl super::sqlite_store::SqliteStore {
                 tx.commit()?;
                 Ok(count)
             })?;
+            cancellation.record_progress();
             total += count;
             if count == 0 {
                 return Ok(total);

@@ -58,6 +58,30 @@ impl StartupCancellation {
         self.progress.snapshot()
     }
 
+    /// Time since actual startup work advanced. Observing status does not
+    /// renew this lease; a healthy long upgrade may outlive the initial wait.
+    pub fn idle_for(&self) -> std::time::Duration {
+        self.progress.idle_for()
+    }
+
+    /// Record a completed unit of initialization work, not a timer tick or a
+    /// status read. Hosts may use this for their own bounded preflight work.
+    pub fn record_progress(&self) {
+        self.progress.activity();
+    }
+
+    pub(crate) fn monitor_sqlite(&self, connection: &rusqlite::Connection) -> Result<()> {
+        let cancellation = self.clone();
+        connection.progress_handler(
+            10_000,
+            Some(move || {
+                cancellation.record_progress();
+                cancellation.cancelled.load(Ordering::Acquire)
+            }),
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn report(&self, stage: StartupStage) {
         self.progress.report(stage);
     }
