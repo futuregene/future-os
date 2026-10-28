@@ -52,6 +52,14 @@ Quitting an embedded owner cancels all its clients' work; attached external
 owners survive Desktop exit. See the [lifecycle guide](../../guide/desktop-agent.md)
 and [implementation plan](../../architecture/embedded-agent-development.md).
 
+During embedded startup the Agent reports preparation, backup, upgrade and
+conversation recovery stages before its business RPC endpoint is ready. The
+startup screen keeps its existing animation; stage hints appear only after five
+seconds, with a longer-wait hint after fifteen seconds. A responsive startup
+never becomes a timeout merely because an upgrade takes longer: only fifteen
+seconds without a successful status response shows a no-response hint, and
+probing continues so the screen can recover automatically.
+
 ## 3. Product principles
 
 ### 3.1 The GUI is the primary experience

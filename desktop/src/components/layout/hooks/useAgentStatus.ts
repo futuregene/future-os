@@ -42,33 +42,50 @@ export function useAgentStatus(): AgentStartupStatus {
       }
     });
     const waitHintTimer = window.setTimeout(setShowWait, AGENT_WAIT_HINT_DELAY_MS, true);
-    const startupTimeoutTimer = window.setTimeout(() => {
-      setStatus(current => (
-        current.phase === "checking" || current.phase === "starting"
-          ? { ...current, phase: "startup_timeout" }
-          : current
-      ));
-    }, AGENT_STARTUP_TIMEOUT_MS);
+    // Only missing status responses time out. A responsive worker may spend
+    // minutes verifying/backing up an existing database before it can serve RPCs.
+    let responseTimer: number;
+    let requestTimer: number | undefined;
+    const armResponseTimeout = () => {
+      window.clearTimeout(responseTimer);
+      responseTimer = window.setTimeout(() => {
+        if (cancelled)
+          return;
+        setStatus(current => (
+          current.phase === "checking" || current.phase === "starting"
+            ? { ...current, phase: "startup_timeout" }
+            : current
+        ));
+      }, AGENT_STARTUP_TIMEOUT_MS);
+    };
+    armResponseTimeout();
 
     const probe = async () => {
       let next: AgentStatus;
       try {
-        next = await getAgentStatus();
+        // A hung invoke must not prevent the next probe or a later recovery.
+        next = await Promise.race([
+          getAgentStatus(),
+          new Promise<never>((_, reject) => {
+            requestTimer = window.setTimeout(() => reject(new Error("Agent status did not respond")), AGENT_STARTUP_TIMEOUT_MS);
+          }),
+        ]);
+        if (!cancelled)
+          armResponseTimeout();
       }
       catch {
-        next = { ...INITIAL_STATUS, phase: "unavailable" };
+        if (!cancelled)
+          timer = window.setTimeout(probe, 600);
+        return;
+      }
+      finally {
+        window.clearTimeout(requestTimer);
       }
       if (cancelled)
         return;
       const commit = () => {
         if (cancelled)
           return;
-        if (
-          (next.phase === "checking" || next.phase === "starting")
-          && Date.now() - splashStartedAt >= AGENT_STARTUP_TIMEOUT_MS
-        ) {
-          next = { ...next, phase: "startup_timeout" };
-        }
         if (next.phase === "ready")
           setAdmitted(true);
         setStatus(current => (
@@ -78,6 +95,7 @@ export function useAgentStatus(): AgentStartupStatus {
               && current.desktopVersion === next.desktopVersion
               && current.agentVersion === next.agentVersion
               && current.error === next.error
+              && JSON.stringify(current.startup) === JSON.stringify(next.startup)
               && JSON.stringify(current.shutdown) === JSON.stringify(next.shutdown)
               ? current
               : next
@@ -106,7 +124,8 @@ export function useAgentStatus(): AgentStartupStatus {
       if (timer !== undefined)
         window.clearTimeout(timer);
       window.clearTimeout(waitHintTimer);
-      window.clearTimeout(startupTimeoutTimer);
+      window.clearTimeout(responseTimer);
+      window.clearTimeout(requestTimer);
     };
   }, [splashStartedAt]);
 

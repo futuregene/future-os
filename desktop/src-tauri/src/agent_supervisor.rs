@@ -18,6 +18,8 @@ pub struct AgentStatus {
     pub shutdown: Option<crate::desktop_shutdown::StopSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub startup: Option<future_agent::service::StartupProgress>,
 }
 
 pub fn start_agent_supervision<R: tauri::Runtime>(
@@ -138,6 +140,7 @@ pub async fn agent_status() -> AgentStatus {
         agent_version: None,
         shutdown: crate::desktop_shutdown::snapshot(),
         error: None,
+        startup: None,
     };
     if let Some(shutdown) = &status.shutdown {
         status.phase = "stopping".into();
@@ -158,6 +161,7 @@ pub async fn agent_status() -> AgentStatus {
     match crate::agent_host::host().phase() {
         crate::agent_host::Phase::Starting => {
             status.phase = "starting".into();
+            status.startup = Some(crate::agent_host::host().startup_progress());
             return status;
         }
         crate::agent_host::Phase::Failed(error) => {
@@ -469,6 +473,7 @@ mod tests {
             agent_version: None,
             shutdown: None,
             error: None,
+            startup: None,
         };
         let value = serde_json::to_value(&status).unwrap();
         assert_eq!(value["phase"], "unavailable");
@@ -485,12 +490,14 @@ mod tests {
             value.get("error").is_none(),
             "an absent error is omitted, not null: {value}"
         );
+        assert!(value.get("startup").is_none());
         let busy = AgentStatus {
             phase: "incompatible".into(),
             desktop_version: "1.2.3".into(),
             agent_version: Some("9.9.9".into()),
             shutdown: None,
             error: Some("protocol mismatch".into()),
+            startup: None,
         };
         let value = serde_json::to_value(&busy).unwrap();
         assert_eq!(value["agentVersion"], "9.9.9");
@@ -637,6 +644,10 @@ mod block_fixtures {
             };
             let status = block_on(agent_status());
             assert_eq!(status.phase, "starting");
+            assert_eq!(
+                status.startup.as_ref().unwrap().stage,
+                future_agent::service::StartupStage::Preparing,
+            );
             assert!(status.error.is_none());
             assert!(status.shutdown.is_none());
             // Starting is *not* "no work": the count cannot be read yet, so the

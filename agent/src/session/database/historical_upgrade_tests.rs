@@ -145,8 +145,13 @@ fn every_released_schema_upgrades_with_history_backup_and_idempotent_reopen() {
         seed_history(&connection, version);
         drop(connection);
 
-        let database =
-            Database::open(&path).unwrap_or_else(|error| panic!("schema {version}: {error:#}"));
+        let startup = crate::service::StartupCancellation::default();
+        let database = Database::open_cancellable(&path, startup.clone())
+            .unwrap_or_else(|error| panic!("schema {version}: {error:#}"));
+        assert_eq!(
+            startup.progress().stage,
+            crate::service::StartupStage::UpgradingStorage
+        );
         database
             .call(move |connection| {
                 assert_history(connection, version);
