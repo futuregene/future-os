@@ -2,6 +2,7 @@ import type { Msg, NatsConnection, Status } from "@nats-io/nats-core";
 import { QueuedIteratorImpl } from "@nats-io/nats-core/internal";
 import { SecureChannel, replyContext } from "@future-os/remote-crypto";
 import { RemoteClient, type RemoteClientCallbacks } from "../src/client";
+import { RemoteApiError } from "../src/connectionState";
 import { TaskScope } from "../src/taskScope";
 import { downloadPrepared } from "../src/transfer";
 import type { ClientHost } from "../src/host";
@@ -291,4 +292,23 @@ test("a synchronous refreshing-state stop cannot start a new credential service 
   expect(await f.client.waitTasks(100)).toEqual({ complete: true, pendingTasks: [] });
   expect(f.refreshCredentials).not.toHaveBeenCalled();
   expect(f.connect).toHaveBeenCalledTimes(1);
+});
+
+test("a fatal open leaves connectionState failed, so a runtime rebuilds instead of probing", async () => {
+  const f = fixture();
+  try {
+    expect(f.client.connectionState).toBe("unpaired");
+    f.connect.mockRejectedValueOnce(
+      new RemoteApiError("misconfigured", "remote_service_misconfigured", 500),
+    );
+    await f.client.open().catch(() => undefined);
+    // The state machine keeps this client terminal: every request now answers
+    // `communication_frozen`, and the runtime has to see that rather than keep
+    // probing. A retry inside the same object recovers nothing.
+    expect(f.client.connectionState).toBe("failed");
+    await f.client.recoverNow("request-failure");
+    expect(f.connect).toHaveBeenCalledTimes(1);
+  } finally {
+    await f.client.close();
+  }
 });

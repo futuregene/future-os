@@ -17,6 +17,7 @@ impl Manager {
                 ("deletedSessions", "SELECT count(*) FROM session_tombstones"),
                 ("failedImports", "SELECT count(*) FROM legacy_imports WHERE status='skipped'"),
                 ("unrecoverableQueuedInputs", "SELECT count(*) FROM queued_run_receipts WHERE status='recovery_failed'"),
+                ("failedRunRecoveries", "SELECT count(*) FROM runs WHERE status='recovery_failed'"),
                 ("pendingQueuedInputs", "SELECT count(*) FROM queued_run_receipts WHERE status IN ('queued','cancel_requested')"),
                 ("catalogueConflicts", "SELECT count(*) FROM session_tombstones t JOIN sessions s ON s.id=t.session_id WHERE s.revision>=0"),
             ] {

@@ -124,6 +124,9 @@ impl SqliteStore {
                 tx.execute("DELETE FROM sessions WHERE id=?1 AND revision=-1",[&id])?;
                 tx.commit()?;Ok(true)
             })?;
+            if let Some(cancellation) = cancellation {
+                cancellation.record_progress();
+            }
             if done {
                 self.db.request_space_reclamation();
                 return Ok(());

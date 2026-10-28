@@ -156,6 +156,9 @@ pub(super) fn handle(state: &AppState, cmd: &RpcCommand) -> String {
             "en" => "English",
             _ => bail!("Unsupported title language"),
         };
+        state
+            .session_manager
+            .ensure_execution_allowed(&cmd.session_id)?;
         let stored = state.session_manager.load(&cmd.session_id)?;
         // Do not hydrate a cold session: hydration can replace and persist its model.
         let model_id = state

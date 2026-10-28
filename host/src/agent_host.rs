@@ -320,7 +320,6 @@ impl AgentHost {
                 }
             }
         }
-        let deadline = Instant::now() + start_timeout();
         let mut state = self.0.state();
         loop {
             match &state.phase {
@@ -336,7 +335,9 @@ impl AgentHost {
                 },
                 _ => return Err("Agent startup was cancelled".into()),
             }
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            // SQLite progress and bounded recovery checkpoints renew this
+            // budget. Merely polling status never makes a stalled start live.
+            let remaining = start_timeout().saturating_sub(state.cancel.idle_for());
             if remaining.is_zero() {
                 state.cancel.cancel();
                 state.probe_cancel.notify_one();
@@ -346,7 +347,7 @@ impl AgentHost {
             state = self
                 .0
                 .changed
-                .wait_timeout(state, remaining)
+                .wait_timeout(state, remaining.min(Duration::from_secs(1)))
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .0;
         }
@@ -651,8 +652,8 @@ fn stop_timeout_message(budget: Duration) -> String {
     }
 }
 
-/// How long `start` waits before it cancels a worker that has not published a
-/// phase. Production always uses `START_TIMEOUT`; the re-exec fixtures can shorten
+/// How long startup may make no progress before its worker is cancelled.
+/// Production always uses `START_TIMEOUT`; the re-exec fixtures can shorten
 /// it through their own case environment, which is the only way to observe the
 /// deadline arm without holding a start for three minutes. The override is
 /// compiled out of every non-test build.
@@ -691,6 +692,11 @@ mod block_fixtures {
     #[test]
     fn a_start_that_never_becomes_ready_fails_at_the_startup_deadline() {
         run_case("timeout");
+    }
+
+    #[test]
+    fn progressing_startup_can_outlive_the_initial_wait_budget() {
+        run_case("progress");
     }
 
     #[cfg(unix)]
@@ -744,6 +750,9 @@ mod block_fixtures {
             .stderr(Stdio::piped());
         if case == "timeout" {
             command.env("FUTURE_AGENT_HOST_TEST_START_MS", "300");
+        }
+        if case == "progress" {
+            command.env("FUTURE_AGENT_HOST_TEST_START_MS", "1000");
         }
         let mut child = command.spawn().unwrap();
         // The cleanup-deadline case spends `STOP_TIMEOUT` waiting on purpose.
@@ -822,6 +831,22 @@ mod block_fixtures {
         };
         test_driver::install();
         let host = AgentHost::default();
+        if case == "progress" {
+            host.0.state().phase = Phase::Starting;
+            let starter = host.clone();
+            let thread = std::thread::spawn(move || starter.start("auto".into()));
+            // Simulate bounded upgrade work lasting longer than the entire
+            // initial budget, without depending on disk or model load timing.
+            for _ in 0..6 {
+                std::thread::sleep(Duration::from_millis(250));
+                host.0.state().cancel.record_progress();
+                assert!(!thread.is_finished(), "active upgrade timed out");
+            }
+            host.0.state().phase = Phase::Ready;
+            host.0.changed.notify_all();
+            thread.join().unwrap().unwrap();
+            return;
+        }
         if case == "stopping" {
             // Closing producer admission is synchronous: `start` must observe
             // it before scheduling a worker. Desktop tests cover coordinator wiring.

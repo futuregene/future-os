@@ -64,7 +64,7 @@ image = { version = "0.25", default-features = false, features = [
     "bmp",
 ] }
 fd-lock = "4"
-rusqlite = { version = "0.40", features = ["bundled", "functions"] }
+rusqlite = { version = "0.40", features = ["bundled", "functions", "hooks"] }
 signal-hook = "0.4"
 
 async-trait.workspace = true

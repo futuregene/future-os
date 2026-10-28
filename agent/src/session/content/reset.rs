@@ -220,6 +220,9 @@ impl SqliteStore {
                 if changed == 0 { tx.execute("DELETE FROM content_operations WHERE operation_id=?1",[operation])?; }
                 tx.commit()?; Ok(changed==0)
             })?;
+            if let Some(cancellation) = cancellation {
+                cancellation.record_progress();
+            }
             if complete {
                 return Ok(());
             }
