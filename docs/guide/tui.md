@@ -106,7 +106,8 @@ the browser, which is the wrong door for a file and for a conversation link.
 
 An image is placed by the terminal's *graphics protocol*: a real bitmap at a cell
 (kitty's `a=T` placement, transmitted once per source and only re-placed on later
-frames), not a character mosaic. The preview box (`enter` on an image in 文件, or
+frames; iTerm2's inline-image protocol, re-sent only when its cells are rewritten
+or the shown crop changes), not a character mosaic. The preview box (`enter` on an image in 文件, or
 `/preview` for an attachment) puts its controls in the frame's first row —
 `[zoom out] [2x] [zoom in] [fit]` and `[previous] 2/5 [next]`, every one of them
 clickable — and answers `+`/`-` (or the wheel) up to 6×, `[`/`]` for the
@@ -116,7 +117,9 @@ graphics protocol gets the dimensions and a sentence saying so instead of an
 approximation, and a folder holding one picture shows no step buttons at all.
 Documents — Markdown rendered, anything else as lines — scroll with `↑`/`↓` and
 `pageUp`/`pageDown` instead. A file it cannot show says why rather than opening
-an empty box.
+an empty box. The bytes are read and decoded on a background thread: the box
+opens at once with a loading row, and an encoded picture past 64 MB is refused
+with its size instead of being loaded.
 
 The rail is a *task* panel, in two tabs. **最近** (the default) lists every
 conversation — its name, then the workspace it is filed under and when it was
@@ -187,6 +190,16 @@ prefixes of `screen` and `tmux`; `ctrl+z` is suspend everywhere else; and
 a delete asks first and is rare enough to live on `/delete` and the rail's own
 `delete` key. Every chord is rebindable in `/preferences`, and the help overlay
 lists them grouped by what they do rather than in one flat list.
+
+## Files and mentions
+
+`@` completes files from the conversation's workspace into the draft. A path
+with spaces is inserted quoted (`@"docs/my note.md"`), and submission reads that
+as one path. The agent receives the files' contents in `<file>` blocks (at most
+eight files, 256 KiB each); a file that is too large, binary or unreadable is
+named with the reason instead of being silently dropped. Ordinary prose that
+merely contains an `@` — an e-mail address, for example — is not a mention.
+The same completion popup offers `#` for conversations.
 
 Two breakpoints, both from the contract:
 
@@ -354,7 +367,7 @@ Mouse reporting is SGR 1006 and starts with the persisted preference (enabled by
 
 The conversation follows new output by default. Scrolling up detaches from the tail; further output leaves the reading position unchanged and shows a new-output badge. Scroll back to the bottom or press `esc` to follow again.
 
-The driver only repaints dirty frames: there is no idle 120ms repaint timer. Streaming and spinner updates coalesce at 80ms, input and resize repaint immediately, and transcript rendering is cached by width/content revision. Reduced-motion does not schedule animation repaints; actual stream and state changes still repaint.
+The driver only repaints dirty frames: there is no idle 120ms repaint timer. Streaming and spinner updates coalesce at 80ms, input and resize repaint immediately, and transcript rendering is cached by width/content revision. Within a frame only changed rows are written (a width or height change is a full repaint), so streamed tokens do not retransmit the screen. Reduced-motion does not schedule animation repaints; actual stream and state changes still repaint.
 
 ## What is wired to the agent
 
@@ -390,15 +403,14 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 
 ## What is not here yet
 
-- **`@` file mentions** — not implemented; pasted image paths and folded pastes use `tui/src/paste.rs`.
 - **A preview is a preview.** The picture is placed over the cells the box has, at up to 6× the fitted size. For pixel-level work open it in the system image viewer; the TUI decodes locally and sends the picture nowhere.
 - **The command palette** lists the commands the adapter implements. Provider
   and tool management is intentionally compact (`/providers` and `/tools`);
   `/skills` remains the installed-skills list in the palette. Approval allow
   rules are runtime-only; persistent approval-rule file editing remains in the
   desktop.
-- Further enhancements: timeline rail, image preview, full-screen session
-  manager, full-screen draft editor.
+- Further enhancements: timeline rail, full-screen session manager and
+  full-screen draft editor.
 
 ## Where the code lives
 

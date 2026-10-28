@@ -1,4 +1,11 @@
-# FutureOS Workbench TUI — Design and Implementation Spec v1 (frozen contract)
+# FutureOS Workbench TUI — Design and Implementation Spec v1 (historical design record)
+
+> **Historical design record.** This page preserves the v1 contract used to build
+> the full-screen workbench. The implementation has since amended it in several
+> places (sidebar width, header bands, image protocols, panel inventory), so its
+> constants and P1 status are not the current acceptance contract. For the
+> shipped behaviour use [the TUI guide](../guide/tui.md); for the source of truth
+> read `tui/src/workbench/` and its tests.
 
 > Goal: on top of the existing `future-tui` (Rust, hand-rolled ANSI rendering,
 > gRPC client), add a **full-screen workbench** interface that matches the core
@@ -6,9 +13,9 @@
 > multiple sessions / skills / remote). **The agent's gRPC interface is not
 > changed.**
 
-This file is the frozen contract between workers: type names, file names, layout
-constants, key bindings and acceptance commands may not diverge. The
-implementation may extend it, but may not change its meaning.
+This file was the v1 frozen contract between workers: type names, file names,
+layout constants, key bindings and acceptance commands. It is kept to explain the
+original decisions; the current guide and code supersede the values below.
 
 ---
 
