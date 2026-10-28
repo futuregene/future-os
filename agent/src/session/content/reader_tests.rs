@@ -70,6 +70,27 @@ fn paged_reader_matches_lossless_compatibility_view_then_works_without_that_view
 }
 
 #[test]
+fn full_transcript_hydration_is_bounded_by_pages_not_entries() {
+    let (_dir, store) = store();
+    let messages = (0..100)
+        .map(|index| {
+            json!({"id":format!("m{index:03}"),"type":"user","role":"user",
+                "timestamp":"2026-10-26T00:00:01Z","content":format!("message {index}")})
+        })
+        .collect::<Vec<_>>();
+    store.append("s", messages).unwrap();
+    let before = store.db.metrics()["readerJob"]["count"].as_u64().unwrap();
+    let entries = store.entries("s").unwrap();
+    let after = store.db.metrics()["readerJob"]["count"].as_u64().unwrap();
+    assert_eq!(entries.len(), 101);
+    assert!(
+        after - before <= 12,
+        "100 entries used {} read jobs; expected paged metadata/body assembly",
+        after - before
+    );
+}
+
+#[test]
 fn appends_preserve_the_captured_prefix_but_a_rewrite_invalidates_it() {
     let (_dir, store) = store();
     store.append("s", vec![message("a")]).unwrap();

@@ -153,7 +153,7 @@ impl Snapshot {
         let scope = self.clone();
         self.read(store, move |db| {
             let tx=db.savepoint()?;scope.check(&tx)?;
-            let mut query=tx.prepare("SELECT position,entry_id FROM entries WHERE session_id=?1 AND position>?2 AND position<=?3 ORDER BY position LIMIT 64")?;
+            let mut query=tx.prepare_cached("SELECT position,entry_id FROM entries WHERE session_id=?1 AND position>?2 AND position<=?3 ORDER BY position LIMIT 64")?;
             let rows=query.query_map(params![scope.session,after,scope.until],|row|Ok(Entry {position:row.get(0)?,id:row.get(1)?}))?.collect::<rusqlite::Result<Vec<_>>>()?;
             ensure!(rows.iter().map(|entry|entry.id.len()+16).sum::<usize>()<=READ_BYTES,"entry identity page exceeds budget");
             drop(query);tx.commit()?;Ok(rows)
@@ -162,6 +162,251 @@ impl Snapshot {
 
     pub(crate) fn entry(&self, store: &SqliteStore, entry: &Entry) -> Result<Value> {
         self.entry_impl(store, entry, Hydration::Full)
+    }
+
+    /// Hydrate one identity page in one scoped read job. Ordinary transcript
+    /// loading does not need a separate job for every header, column, block and
+    /// reference; the same lossless assembly runs here against one savepoint.
+    pub(crate) fn entries_page(&self, store: &SqliteStore, page: &[Entry]) -> Result<Vec<Value>> {
+        if page.is_empty() {
+            return Ok(Vec::new());
+        }
+        let scope = self.clone();
+        let entries = page.to_vec();
+        let (values, metadata_generation) = self.read(store, move |db| {
+            let tx = db.savepoint()?;
+            scope.check(&tx)?;
+            let first = entries.iter().map(|entry| entry.position).min().unwrap_or(-1);
+            let last = entries.iter().map(|entry| entry.position).max().unwrap_or(-1);
+            let wanted = entries
+                .iter()
+                .map(|entry| (entry.position, entry.id.clone()))
+                .collect::<std::collections::HashMap<_, _>>();
+
+            let mut rows = std::collections::HashMap::new();
+            {
+                let mut query = tx.prepare_cached(
+                    "SELECT e.position,e.entry_id,e.entry_type,e.role,e.run_id,e.metadata_json,e.content_json,coalesce(v.metadata_generation,0),s.current_metadata_json FROM entries e JOIN sessions s ON s.id=e.session_id LEFT JOIN content_history_versions v ON v.session_id=e.session_id WHERE e.session_id=?1 AND e.position>=?2 AND e.position<=?3 ORDER BY e.position",
+                )?;
+                let mapped = query.query_map(params![scope.session, first, last], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, BoundIdentity>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<BoundIdentity>>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, Option<String>>(8)?,
+                    ))
+                })?;
+                for row in mapped {
+                    let (position, id, kind, role, run, metadata, content, generation, current) =
+                        row?;
+                    if wanted.get(&position) != Some(&id) {
+                        continue;
+                    }
+                    rows.insert(
+                        position,
+                        (id, kind, role, run, metadata, content, generation, current),
+                    );
+                }
+            }
+            ensure!(
+                rows.len() == entries.len(),
+                "entry page changed during metadata read"
+            );
+
+            let mut blocks = std::collections::HashMap::<i64, Vec<Value>>::new();
+            {
+                let mut query = tx.prepare_cached(
+                    "SELECT entry_position,ordinal,kind,text,tool_call_id,tool_name,arguments_json,is_error,metadata_json FROM message_blocks WHERE session_id=?1 AND entry_position>=?2 AND entry_position<=?3 ORDER BY entry_position,ordinal",
+                )?;
+                let mapped = query.query_map(params![scope.session, first, last], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<BoundIdentity>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<bool>>(7)?,
+                        row.get::<_, String>(8)?,
+                    ))
+                })?;
+                for row in mapped {
+                    let (
+                        position,
+                        ordinal,
+                        kind,
+                        text,
+                        tool_call_id,
+                        name,
+                        arguments,
+                        is_error,
+                        metadata,
+                    ) = row?;
+                    if !wanted.contains_key(&position) {
+                        continue;
+                    }
+                    let list = blocks.entry(position).or_default();
+                    ensure!(
+                        ordinal == i64::try_from(list.len())?,
+                        "message block order has a gap"
+                    );
+                    let mut block: Value = serde_json::from_str(&metadata)?;
+                    if let Some(kind) = &kind {
+                        block["type"] = json!(kind);
+                    }
+                    if let Some(text) = text {
+                        block[if kind.as_deref() == Some("tool_result") {
+                            "content"
+                        } else {
+                            "text"
+                        }] = json!(text);
+                    }
+                    if let Some(id) = tool_call_id {
+                        block[if kind.as_deref() == Some("tool_result") {
+                            "tool_call_id"
+                        } else {
+                            "id"
+                        }] = json!(id);
+                    }
+                    if let Some(name) = name {
+                        block["name"] = json!(name);
+                    }
+                    if let Some(arguments) = arguments {
+                        block["args"] = serde_json::from_str(&arguments)?;
+                    }
+                    if let Some(error) = is_error {
+                        block["is_error"] = json!(error);
+                    }
+                    list.push(block);
+                }
+            }
+
+            let mut references = std::collections::HashMap::<i64, Vec<(String, ContentRange, Encoding)>>::new();
+            {
+                let mut query = tx.prepare_cached(
+                    "SELECT e.position,r.field,r.content_id,r.byte_offset,r.byte_length,r.encoding FROM content_references r JOIN entries e ON e.session_id=r.session_id AND e.entry_id=r.owner_id WHERE r.session_id=?1 AND e.position>=?2 AND e.position<=?3 AND r.owner_kind='entry' ORDER BY e.position,r.field",
+                )?;
+                let mapped = query.query_map(params![scope.session, first, last], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                })?;
+                for row in mapped {
+                    let (position, field, id, offset, length, encoding) = row?;
+                    if !wanted.contains_key(&position) {
+                        continue;
+                    }
+                    references.entry(position).or_default().push((
+                        field,
+                        ContentRange { id, offset, length },
+                        Encoding::parse(&encoding)?,
+                    ));
+                }
+            }
+
+            let mut values = Vec::with_capacity(entries.len());
+            let mut metadata_generation = None;
+            for entry in &entries {
+                let (id, kind, role, run, metadata, content, generation, current) =
+                    rows.remove(&entry.position)
+                        .context("entry disappeared during page read")?;
+                ensure!(
+                    id == entry.id,
+                    "entry identity changed during page read"
+                );
+                let mut value: Value = serde_json::from_str(&metadata)?;
+                ensure!(value.is_object(), "entry metadata is not an object");
+                value["id"] = json!(entry.id);
+                value["type"] = json!(kind);
+                if let Some(role) = role {
+                    value["role"] = json!(role);
+                }
+                if let Some(run) = run.filter(|_| {
+                    !matches!(kind.as_str(), "run_started" | "run_terminal")
+                }) {
+                    ensure!(
+                        value["meta"].is_null() || value["meta"].is_object(),
+                        "canonical entry has invalid run metadata; refusing to overwrite it"
+                    );
+                    if !value["meta"].is_object() {
+                        value["meta"] = json!({});
+                    }
+                    value["meta"]["run_id"] = json!(run);
+                }
+                if kind == "session_info" {
+                    if let Some(expected) = metadata_generation {
+                        ensure!(
+                            expected == generation,
+                            "session metadata generation changed within an entry page"
+                        );
+                    } else {
+                        metadata_generation = Some(generation);
+                    }
+                    value["content"] = current
+                        .map(|content| serde_json::from_str(&content))
+                        .transpose()?
+                        .unwrap_or(Value::Null);
+                } else if let Some(content) = content {
+                    if content == "[]" {
+                        value["content"] = Value::Array(
+                            blocks.remove(&entry.position).unwrap_or_default(),
+                        );
+                    } else {
+                        value["content"] = serde_json::from_str(&content)?;
+                    }
+                }
+                if let Some(entry_references) = references.remove(&entry.position) {
+                    for (field, range, encoding) in entry_references {
+                        let mut offset = range.offset;
+                        let end = range
+                            .offset
+                            .checked_add(range.length)
+                            .context("content range overflow")?;
+                        let mut raw = String::new();
+                        while offset < end {
+                            let budget = usize::try_from(end - offset)?.min(READ_BYTES);
+                            let page = super::read(&tx, range.id, offset, budget)?;
+                            ensure!(
+                                !page.text.is_empty(),
+                                "canonical range is incomplete"
+                            );
+                            offset = page.next_offset;
+                            raw.push_str(&page.text);
+                        }
+                        set_field(&mut value, &field, decode(encoding, raw)?)?;
+                    }
+                }
+                values.push(value);
+            }
+            tx.commit()?;
+            Ok((values, metadata_generation))
+        })?;
+        self.verify(store)?;
+        if let Some(expected) = metadata_generation {
+            let scope = self.clone();
+            self.read(store, move |db| {
+                let tx = db.savepoint()?;
+                scope.check(&tx)?;
+                ensure!(
+                    super::metadata::generation(&tx, &scope.session)? == expected,
+                    "session metadata changed during paged read"
+                );
+                tx.commit()?;
+                Ok(())
+            })?;
+        }
+        Ok(values)
     }
 
     pub(crate) fn header(&self, store: &SqliteStore, entry: &Entry) -> Result<Value> {
@@ -188,8 +433,9 @@ impl Snapshot {
         let (scope, locator) = (self.clone(), entry.clone());
         let header=self.read(store, move |db| {
             let tx=db.savepoint()?;scope.check(&tx)?;
-            let header=tx.query_row("SELECT e.entry_type,e.role,e.run_id,coalesce(v.metadata_generation,0) FROM entries e LEFT JOIN content_history_versions v ON v.session_id=e.session_id WHERE e.session_id=?1 AND e.position=?2 AND e.entry_id=?3",
-                params![scope.session,locator.position,locator.id],|row|Ok(Header {kind:row.get(0)?,role:row.get(1)?,run:row.get(2)?,metadata_generation:row.get(3)?}))?;
+            let mut statement=tx.prepare_cached("SELECT e.entry_type,e.role,e.run_id,coalesce(v.metadata_generation,0) FROM entries e LEFT JOIN content_history_versions v ON v.session_id=e.session_id WHERE e.session_id=?1 AND e.position=?2 AND e.entry_id=?3")?;
+            let header=statement.query_row(params![scope.session,locator.position,locator.id],|row|Ok(Header {kind:row.get(0)?,role:row.get(1)?,run:row.get(2)?,metadata_generation:row.get(3)?}))?;
+            drop(statement);
             tx.commit()?;Ok(header)
         })?;
         let metadata = self
@@ -378,7 +624,9 @@ impl Snapshot {
                 }
                 let extra=if ordinal.is_some() {""} else {" AND ?6 IS NULL"};
                 let sql=format!("SELECT length(CAST({expression} AS BLOB)),substr(CAST({expression} AS BLOB),?4+1,?5) FROM entries e {join} WHERE e.session_id=?1 AND e.position=?2 AND e.entry_id=?3 {extra}");
-                let result:Option<(Option<i64>,Option<Vec<u8>>)>=tx.query_row(&sql,params![scope.session,entry.position,entry.id,offset,READ_BYTES as i64,ordinal],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+                let mut statement=tx.prepare_cached(&sql)?;
+                let result:Option<(Option<i64>,Option<Vec<u8>>)>=statement.query_row(params![scope.session,entry.position,entry.id,offset,READ_BYTES as i64,ordinal],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+                drop(statement);
                 let result=result.context("entry changed during metadata read")?;
                 tx.commit()?;Ok(result)
             })?;
@@ -419,7 +667,7 @@ impl Snapshot {
             let (scope, locator) = (self.clone(), entry.clone());
             let rows=self.read(store, move |db| {
                 let tx=db.savepoint()?;scope.check(&tx)?;
-                let mut query=tx.prepare("SELECT b.ordinal,b.kind,b.tool_call_id,b.tool_name,b.is_error FROM message_blocks b JOIN entries e ON e.session_id=b.session_id AND e.position=b.entry_position WHERE e.session_id=?1 AND e.entry_id=?2 AND e.position=?3 AND b.ordinal>?4 ORDER BY b.ordinal LIMIT 64")?;
+                let mut query=tx.prepare_cached("SELECT b.ordinal,b.kind,b.tool_call_id,b.tool_name,b.is_error FROM message_blocks b JOIN entries e ON e.session_id=b.session_id AND e.position=b.entry_position WHERE e.session_id=?1 AND e.entry_id=?2 AND e.position=?3 AND b.ordinal>?4 ORDER BY b.ordinal LIMIT 64")?;
                 let rows=query.query_map(params![scope.session,locator.id,locator.position,after],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,Option<String>>(2)?,row.get::<_,Option<String>>(3)?,row.get::<_,Option<bool>>(4)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
                 ensure!(rows.iter().map(|(_,kind,id,name,_)|kind.as_ref().map_or(0,String::len)+id.as_ref().map_or(0,String::len)+name.as_ref().map_or(0,String::len)+40).sum::<usize>()<=READ_BYTES,"block identity page exceeds budget");
                 drop(query);tx.commit()?;Ok(rows)
@@ -480,7 +728,7 @@ impl Snapshot {
         let (scope, entry, after) = (self.clone(), entry.clone(), after.to_owned());
         self.read(store, move |db| {
             let tx=db.savepoint()?;scope.check(&tx)?;
-            let mut query=tx.prepare("SELECT r.field,r.content_id,r.byte_offset,r.byte_length,r.encoding FROM content_references r JOIN entries e ON e.session_id=r.session_id AND e.entry_id=r.owner_id WHERE r.session_id=?1 AND e.position=?2 AND e.entry_id=?3 AND r.owner_kind='entry' AND r.field>?4 ORDER BY r.field LIMIT 64")?;
+            let mut query=tx.prepare_cached("SELECT r.field,r.content_id,r.byte_offset,r.byte_length,r.encoding FROM content_references r JOIN entries e ON e.session_id=r.session_id AND e.entry_id=r.owner_id WHERE r.session_id=?1 AND e.position=?2 AND e.entry_id=?3 AND r.owner_kind='entry' AND r.field>?4 ORDER BY r.field LIMIT 64")?;
             let mut cursor=query.query(params![scope.session,entry.position,entry.id,after])?;
             let mut rows=Vec::new();let mut bytes=0usize;
             while let Some(row)=cursor.next()? {
@@ -560,8 +808,14 @@ impl Snapshot {
 
     fn check_reference(&self, db: &Connection, entry: &Entry, reference: &Reference) -> Result<()> {
         self.check(db)?;
-        let current:Option<(i64,i64,i64,String)>=db.query_row("SELECT r.content_id,r.byte_offset,r.byte_length,r.encoding FROM content_references r JOIN entries e ON e.session_id=r.session_id AND e.entry_id=r.owner_id WHERE r.session_id=?1 AND e.position=?2 AND e.entry_id=?3 AND r.owner_kind='entry' AND r.field=?4",
-            params![self.session,entry.position,entry.id,reference.field],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?;
+        let mut statement=db.prepare_cached("SELECT r.content_id,r.byte_offset,r.byte_length,r.encoding FROM content_references r JOIN entries e ON e.session_id=r.session_id AND e.entry_id=r.owner_id WHERE r.session_id=?1 AND e.position=?2 AND e.entry_id=?3 AND r.owner_kind='entry' AND r.field=?4")?;
+        let current: Option<(i64, i64, i64, String)> = statement
+            .query_row(
+                params![self.session, entry.position, entry.id, reference.field],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+        drop(statement);
         ensure!(
             current
                 == Some((

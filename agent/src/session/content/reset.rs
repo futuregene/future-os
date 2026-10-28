@@ -250,7 +250,8 @@ impl SqliteStore {
                 if ActiveOperation::is_active(&operation) {
                     continue;
                 }
-                self.cleanup_operation_cancellable(&operation, Some(cancellation))?;
+                self.cleanup_operation_cancellable(&operation, Some(cancellation))
+                    .with_context(|| format!("recover content operation={operation}"))?;
                 self.db.request_space_reclamation();
             }
         }
