@@ -151,6 +151,11 @@ pub const ALLOW: &[Allow] = &[
         "merged into the previous run",
         "a run state's description in the conversation",
     ),
+    Allow::not_chrome(
+        "components/chat_area.rs",
+        "delivery not acknowledged",
+        "a run state's description in the conversation",
+    ),
     Allow::known_gap(
         "components/chat_area.rs",
         "tool call",
@@ -185,11 +190,6 @@ pub const ALLOW: &[Allow] = &[
         "workbench/live.rs",
         "Approve tool execution",
         "notice: the approval card's title",
-    ),
-    Allow::known_gap(
-        "workbench/live.rs",
-        "Failed to send: {error}",
-        "notice: the prompt failed to send",
     ),
     Allow::known_gap(
         "workbench/live.rs",
@@ -355,4 +355,4 @@ pub const FILES: &[FileExempt] = &[FileExempt {
 /// are git's own diff format, read and never written: the row on screen is the
 /// line git printed, so a Chinese reader seeing `new file mode` is seeing their
 /// repository, not the surface failing to translate itself.
-pub const BUDGET: usize = 49;
+pub const BUDGET: usize = 51;

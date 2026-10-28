@@ -68,7 +68,7 @@ fn frame_bytes(rows: &[String]) -> String {
 fn paint(workbench: &mut Workbench, chat: &mut ChatArea) -> usize {
     let frame = frame_of();
     let mut data = demo::data(demo::Scenario::Chat);
-    data.messages = chat.render_all(frame.inner);
+    data.messages = chat.render_all(frame.inner).into();
     let rows = workbench.render(&data, frame.width, frame.height);
     frame_bytes(&rows).len()
 }
@@ -224,7 +224,7 @@ fn loop_cost_before_and_after() {
         let rows_of_transcript = chat.render_all(frame.inner).len();
         let (cache_ms, _) = per(50, &mut chat, |chat| chat.render_all(frame.inner).len());
         let mut data = demo::data(demo::Scenario::Chat);
-        data.messages = chat.render_all(frame.inner);
+        data.messages = chat.render_all(frame.inner).into();
         let (compose_ms, _) = per(50, &mut chat, |_| {
             let rows = workbench.render(&data, W, H);
             rows.len()

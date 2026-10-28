@@ -531,7 +531,10 @@ pub struct WorkbenchData {
     /// Already-rendered ANSI rows of the conversation (see `ChatArea`). The
     /// workbench never parses markdown itself: the same renderer the inline TUI
     /// uses produces these, so a reply looks the same in both.
-    pub messages: Vec<String>,
+    ///
+    /// Shared rather than owned: one keystroke composes the frame several times
+    /// and a long transcript must not be copied for each pass.
+    pub messages: std::sync::Arc<[String]>,
     pub input: InputView,
     pub activity: Activity,
     /// A failed request or command, shown in place of the hint row until
@@ -574,6 +577,12 @@ pub struct WorkbenchData {
 /// make `+` feel like a disk seek.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreviewView {
+    /// The driver has asked for the bytes and is waiting for them. Keeping this
+    /// as state is what lets the box open immediately instead of freezing the
+    /// frame until a large picture has been decoded.
+    Loading {
+        path: String,
+    },
     Image {
         path: String,
         pixels: ImagePixels,
@@ -582,7 +591,7 @@ pub enum PreviewView {
     /// levels follow the theme in force like the transcript does.
     Markdown {
         path: String,
-        text: String,
+        text: std::sync::Arc<str>,
     },
     Text {
         path: String,
@@ -607,7 +616,8 @@ impl PreviewView {
     /// The path this preview is about — what the box's title names.
     pub fn path(&self) -> &str {
         match self {
-            Self::Image { path, .. }
+            Self::Loading { path }
+            | Self::Image { path, .. }
             | Self::Markdown { path, .. }
             | Self::Text { path, .. }
             | Self::Unavailable { path, .. } => path,

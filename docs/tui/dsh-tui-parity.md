@@ -1,5 +1,9 @@
 # dsh-TUI 0.17 parity inventory and FutureOS gap analysis
 
+> **Historical analysis (2026).** The comparison below is a dated snapshot of the
+> workbench's gaps. “Missing” and “partial” rows are not current status; see the
+> [TUI guide](../guide/tui.md) and the tests for what is implemented now.
+
 What dsh-TUI 0.17 actually is, what makes it feel like a workbench, and where
 `future-tui` now stands against it. This is the **evidence and gap** document.
 The frozen implementation contract (type names, module layout, layout constants,

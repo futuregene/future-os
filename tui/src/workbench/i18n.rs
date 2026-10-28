@@ -552,6 +552,9 @@ pub enum Key {
     PreviewNext,
     PreviewHintImage,
     PreviewHintText,
+    PreviewLoading,
+    PreviewImageTooLarge,
+    PreviewImageChanged,
     PreviewNothing,
     PreviewImageUnsupported,
     PreviewTruncated,
@@ -562,6 +565,9 @@ pub enum Key {
     NoticeClipboardEmpty,
     NoticeClipboardUnavailable,
     NoticeSessionNotStarted,
+    NoticeSendUnacknowledged,
+    NoticeSettingsLoadFailed,
+    NoticeSettingsSaveFailed,
     HelpGroupSessions,
     HelpGroupChoice,
     HelpGroupPanels,
@@ -1027,6 +1033,15 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "↑↓ 滚动 · pageUp/pageDown 翻页 · esc 关闭",
             "↑↓ scroll · pageUp/pageDown page · esc closes",
         ),
+        PreviewLoading => ("正在读取…", "Loading…"),
+        PreviewImageTooLarge => (
+            "图片有 {} MB；预览最多接受 {} MB",
+            "image is {} MB; the preview accepts at most {} MB",
+        ),
+        PreviewImageChanged => (
+            "图片在读取过程中变大了，超出预览上限",
+            "the image grew past the preview limit while it was being read",
+        ),
         PreviewNothing => ("没有可预览的内容", "nothing to preview"),
         PreviewImageUnsupported => (
             "这个终端不能显示图片。在终端之外打开这个文件就能看到它。",
@@ -1043,6 +1058,18 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         NoticeSessionNotStarted => (
             "没能开启新会话：代理没有返回可用的会话（草稿还在，可以直接再发一次）",
             "Could not start a session: the agent returned none (the draft is kept, try again)",
+        ),
+        NoticeSendUnacknowledged => (
+            "发送未得到确认：{}。代理可能已经收到，请先刷新核对，再决定是否重发",
+            "Send was not acknowledged: {}. The agent may have received it; refresh before retrying",
+        ),
+        NoticeSettingsLoadFailed => (
+            "读取偏好设置失败，正在使用默认值：{}",
+            "Could not read the TUI settings; defaults are in use: {}",
+        ),
+        NoticeSettingsSaveFailed => (
+            "保存偏好设置失败：{}",
+            "Could not save the TUI settings: {}",
         ),
         HelpGroupSessions => ("会话", "Chats"),
         HelpGroupChoice => ("选择", "Choices"),
@@ -1299,7 +1326,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 312] = {
+    const ALL_KEYS: [Key; 318] = {
         use Key::*;
         [
             TabTodo,
@@ -1577,6 +1604,9 @@ mod tests {
             PreviewNext,
             PreviewHintImage,
             PreviewHintText,
+            PreviewLoading,
+            PreviewImageTooLarge,
+            PreviewImageChanged,
             PreviewNothing,
             PreviewImageUnsupported,
             PreviewTruncated,
@@ -1585,6 +1615,9 @@ mod tests {
             NoticeClipboardEmpty,
             NoticeClipboardUnavailable,
             NoticeSessionNotStarted,
+            NoticeSendUnacknowledged,
+            NoticeSettingsLoadFailed,
+            NoticeSettingsSaveFailed,
             HelpGroupSessions,
             HelpGroupChoice,
             HelpGroupPanels,
