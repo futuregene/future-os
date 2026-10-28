@@ -47,6 +47,7 @@ use self::transport::*;
 #[allow(unused_imports)]
 pub use self::types::*;
 use self::web_server::*;
+use crate::console;
 #[cfg(test)]
 use future_remote_server::health::*;
 
@@ -113,7 +114,7 @@ pub fn remember_switch(on: bool) {
         auto_connect_remote: Some(on),
         ..Default::default()
     }) {
-        eprintln!("remote: could not store the switch state: {error}");
+        console::eprintln!("remote: could not store the switch state: {error}");
     }
 }
 

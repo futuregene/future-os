@@ -79,6 +79,7 @@
 //! rather than `pairId`, because both roles call their own identifier a pair id
 //! and they mean different pairings.
 
+use crate::console;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -581,12 +582,12 @@ pub fn spawn_host() {
         let directory = match directory() {
             Ok(directory) => directory,
             Err(error) => {
-                eprintln!("remote: cannot serve device requests: {error}");
+                console::eprintln!("remote: cannot serve device requests: {error}");
                 return;
             }
         };
         if let Err(error) = std::fs::create_dir_all(&directory) {
-            eprintln!(
+            console::eprintln!(
                 "remote: cannot serve device requests in {}: {error}",
                 directory.display()
             );
@@ -727,7 +728,7 @@ async fn serve_one(path: &Path) {
         Err(error) => {
             // Nothing can be written back: without a readable request there is no
             // reply path. The asker times out and says so.
-            eprintln!(
+            console::eprintln!(
                 "remote: ignoring an unreadable device request ({}): {error}",
                 path.display()
             );
@@ -744,7 +745,7 @@ async fn serve_one(path: &Path) {
         answer(&request, perform(&request)).await
     };
     if let Err(error) = write_reply(Path::new(&request.reply), &reply) {
-        eprintln!("remote: cannot answer a device request: {error}");
+        console::eprintln!("remote: cannot answer a device request: {error}");
     }
     let _ = std::fs::remove_file(&claimed);
 }
@@ -979,7 +980,7 @@ fn perform_peer(
             // pairing is gone either way, and re-pairing is a new invitation.
             OP_PEER_REMOVE => {
                 if let Some(note) = crate::remote_peer::runtime::unpair(&desktop_id).await? {
-                    eprintln!(
+                    console::eprintln!(
                         "remote: removed the pairing for {desktop_id}, but the platform could \
                          not be told: {note}"
                     );

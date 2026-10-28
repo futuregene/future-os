@@ -12,6 +12,7 @@
 //! update. Another Desktop has the same `createdBy` category but a different
 //! creator id, so its sessions are imported normally.
 
+use crate::console;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -43,7 +44,7 @@ async fn run() {
             break;
         }
         if let Err(error) = result {
-            eprintln!("FutureOS session events observer reconnecting: {error}");
+            console::eprintln!("FutureOS session events observer reconnecting: {error}");
         }
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(Duration::from_secs(5));
@@ -94,7 +95,7 @@ async fn handle_session_created(data: &str) {
     let payload: serde_json::Value = match serde_json::from_str(data) {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("FutureOS: malformed session_created payload: {error}");
+            console::eprintln!("FutureOS: malformed session_created payload: {error}");
             return;
         }
     };
@@ -103,7 +104,7 @@ async fn handle_session_created(data: &str) {
         .and_then(|value| value.as_str())
         .filter(|id| !id.is_empty())
     else {
-        eprintln!("FutureOS: session_created payload omitted sessionId");
+        console::eprintln!("FutureOS: session_created payload omitted sessionId");
         return;
     };
     let created_by = payload
@@ -132,7 +133,7 @@ async fn handle_session_created(data: &str) {
                 // binding from this installation's in-flight create. The
                 // reconnect/periodic reconciliation will retry after the
                 // original thread has had a chance to persist its binding.
-                eprintln!(
+                console::eprintln!(
                     "FutureOS deferred session {session_id} while device identity is unavailable: {error}"
                 );
                 return;
@@ -141,13 +142,13 @@ async fn handle_session_created(data: &str) {
     }
     match super::observer::reconcile_discovered_session(session_id).await {
         Ok(true) => {
-            eprintln!(
+            console::eprintln!(
                 "FutureOS imported session {session_id} announced by client {created_by:?} creator {creator_id:?}"
             );
         }
         Ok(false) => {}
         Err(error) => {
-            eprintln!("FutureOS could not import announced session {session_id}: {error}")
+            console::eprintln!("FutureOS could not import announced session {session_id}: {error}")
         }
     }
 }
@@ -162,7 +163,7 @@ fn handle_session_deleted(data: &str) {
     let payload: serde_json::Value = match serde_json::from_str(data) {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("FutureOS: malformed session_deleted payload: {error}");
+            console::eprintln!("FutureOS: malformed session_deleted payload: {error}");
             return;
         }
     };
@@ -171,7 +172,7 @@ fn handle_session_deleted(data: &str) {
         .and_then(|value| value.as_str())
         .filter(|id| !id.is_empty())
     else {
-        eprintln!("FutureOS: session_deleted payload omitted sessionId");
+        console::eprintln!("FutureOS: session_deleted payload omitted sessionId");
         return;
     };
     if let Some(database) = payload["databaseId"].as_str().filter(|id| !id.is_empty()) {
@@ -182,33 +183,35 @@ fn handle_session_deleted(data: &str) {
                 .map(Option::flatten)
         }) {
             Ok(Some((source, _))) if source != database => {
-                eprintln!("FutureOS: ignored deletion from another Agent database");
+                console::eprintln!("FutureOS: ignored deletion from another Agent database");
                 return;
             }
             Ok(None) => {
-                eprintln!("FutureOS: preserving conversation without a verified deletion source");
+                console::eprintln!(
+                    "FutureOS: preserving conversation without a verified deletion source"
+                );
                 return;
             }
             Err(error) => {
-                eprintln!("FutureOS: could not verify deletion source: {error}");
+                console::eprintln!("FutureOS: could not verify deletion source: {error}");
                 return;
             }
             _ => {}
         }
     } else {
-        eprintln!(
+        console::eprintln!(
             "FutureOS: preserving conversation after deletion event without database identity"
         );
         return;
     }
     match super::observer::reconcile_deleted_session(session_id) {
         Ok(true) => {
-            eprintln!("FutureOS: removed session {session_id} deleted outside the GUI");
+            console::eprintln!("FutureOS: removed session {session_id} deleted outside the GUI");
             crate::emit_threads_updated();
         }
         Ok(false) => {}
         Err(error) => {
-            eprintln!("FutureOS: could not remove deleted session {session_id}: {error}")
+            console::eprintln!("FutureOS: could not remove deleted session {session_id}: {error}")
         }
     }
 }

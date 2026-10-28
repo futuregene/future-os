@@ -11,6 +11,7 @@
 //! read-modify-write cycles are serialized on a process-wide lock because
 //! gRPC commands may be handled concurrently.
 
+use crate::console;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -373,7 +374,7 @@ fn restore_file(path: &Path, snapshot: Option<&[u8]>, owner_only: bool) {
     };
     if let Err(error) = result {
         // A `NotFound` remove just means the file was never created — fine.
-        eprintln!(
+        console::eprintln!(
             "FutureOS: config rollback could not restore {}: {error}",
             path.display()
         );

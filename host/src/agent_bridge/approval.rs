@@ -6,6 +6,7 @@ use super::client::{
     add_session_rule_command, approval_decision_command, connect_agent, get_state_command,
     RpcResponseExt,
 };
+use crate::console;
 use crate::store;
 
 /// Inject a same-run "allow in this workspace/chat" rule into the thread's live
@@ -282,7 +283,7 @@ fn heal_pending_approval_from_agent(
             .and_then(|value| value.as_str())
             .map(str::to_string),
     }) {
-        eprintln!("FutureOS approval heal failed for {approval_request_id}: {error}");
+        console::eprintln!("FutureOS approval heal failed for {approval_request_id}: {error}");
         return;
     }
     // Same CAS as the live persist path: the parked run awaits this decision.
@@ -292,7 +293,9 @@ fn heal_pending_approval_from_agent(
         error_message: None,
         error_type: None,
     });
-    eprintln!("FutureOS rebuilt missing approval card {approval_request_id} from agent state");
+    console::eprintln!(
+        "FutureOS rebuilt missing approval card {approval_request_id} from agent state"
+    );
 }
 
 fn compact_json(value: &serde_json::Value) -> String {

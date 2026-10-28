@@ -1,5 +1,6 @@
 //! GUI adapter over the shared in-process Agent host. External Agents retain
 //! their ownership; successful full cleanup is required before relaunch.
+use future_host::console;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Manager;
@@ -349,7 +350,7 @@ pub(crate) fn request_quit<R: tauri::Runtime>(app: tauri::AppHandle<R>, force: b
     if let Err(error) = std::thread::Builder::new().name("desktop-quit".into()).spawn(move || {
         let result = operation.wait();
         if let Err(error) = result {
-            eprintln!("FutureOS exit cleanup failed: {error}");
+            console::eprintln!("FutureOS exit cleanup failed: {error}");
             if !FORCE_QUIT_REQUESTED.load(Ordering::Acquire) {
                 app.dialog().message(format!("FutureOS could not complete cleanup: {error}. Exit the process anyway?"))
                     .title("Cleanup failed")

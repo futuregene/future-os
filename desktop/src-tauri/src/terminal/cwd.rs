@@ -16,6 +16,7 @@
 //! in the session info, so a skipped configured path stays visible instead of
 //! silent.
 
+use future_host::console;
 use std::path::{Path, PathBuf};
 
 use crate::store;
@@ -172,7 +173,7 @@ pub fn resolve_initial_cwd(configured: Option<&str>) -> Result<ResolvedCwd, CwdE
                 })
             }
             Err(error) => {
-                eprintln!(
+                console::eprintln!(
                     "FutureOS: terminal cwd {trimmed} is unusable ({error}); starting in home"
                 );
             }

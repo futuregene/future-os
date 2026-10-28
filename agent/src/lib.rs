@@ -6,6 +6,7 @@ pub mod auth;
 pub mod cli;
 pub mod compaction;
 pub mod config;
+pub mod console;
 pub mod engine;
 pub mod grpc;
 pub mod http;

@@ -3,6 +3,7 @@
 //! the persistence projection. Returns the assembled assistant text once the
 //! agent signals `agent_end`.
 
+use crate::console;
 use tokio::time::{sleep, timeout, Duration};
 use tonic::Code;
 
@@ -227,7 +228,7 @@ pub(super) async fn collect_agent_response(
             Err(AttachFailure::Fatal(reason)) => return Err(reason.into()),
             Err(AttachFailure::Transient(stream_error)) => {
                 reconnect_attempt = reconnect_attempt.saturating_add(1);
-                eprintln!(
+                console::eprintln!(
                     "FutureOS reattaching Agent run {canonical_run_id} after idx {last_idx} \
                      (attempt {reconnect_attempt}): {stream_error}"
                 );
@@ -415,7 +416,7 @@ pub(super) async fn collect_agent_response(
         };
 
         reconnect_attempt = reconnect_attempt.saturating_add(1);
-        eprintln!(
+        console::eprintln!(
             "FutureOS reattaching Agent run {canonical_run_id} after idx {last_idx} \
              (attempt {reconnect_attempt}): {stream_error}"
         );

@@ -1,6 +1,7 @@
 //! Foreground CLI application entry backed by the shared GUI-free Host library.
 mod agent;
 
+use future_agent::console;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -131,7 +132,7 @@ pub fn run(options: Options) -> Result<(), String> {
     // each startup phase to that file as well as this terminal, and on a host
     // that kills the process for exceeding a memory or per-user CPU budget the
     // file is the only surviving evidence.
-    eprintln!(
+    console::eprintln!(
         "FutureOS: startup progress is logged to {} and mirrored in this terminal.",
         future_host::environment::log_file_path().display()
     );
@@ -272,7 +273,7 @@ async fn until_shutdown(
 }
 
 async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
-    eprintln!("FutureOS host - foreground mode. Press Ctrl+C to stop.");
+    console::eprintln!("FutureOS host - foreground mode. Press Ctrl+C to stop.");
     // Fail on corrupt credentials rather than silently replacing the account.
     future_host::auth_store::read()?;
     // The Future account is what the *remote desktop* runs on; it is not a
@@ -298,7 +299,7 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
     // pinned still stops the run, exactly as it always did.
     let mut refused: Option<String> = None;
     let mut account = if let Some(url) = relay.as_deref() {
-        eprintln!(
+        console::eprintln!(
             "Self-hosted relay ({url}). No Future account is used for phone pairing; \
              existing pairings keep using the relay that issued them."
         );
@@ -315,14 +316,16 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
             Ok(key) => match future_login::fetch_profile().await {
                 Ok(_) => {
                     let account = Account::pin(key);
-                    eprintln!("Platform account signed in ({}).", account.platform);
+                    console::eprintln!("Platform account signed in ({}).", account.platform);
                     refresh_catalogue().await;
                     Some(account)
                 }
                 Err(AppError::Remote {
                     status: 401 | 403, ..
                 }) => {
-                    eprintln!("Platform authorization is no longer valid. Please sign in again.");
+                    console::eprintln!(
+                        "Platform authorization is no longer valid. Please sign in again."
+                    );
                     refused = Some(key);
                     None
                 }
@@ -331,7 +334,7 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
                 Err(error) => return Err(error),
             },
             Err(_) => {
-                eprintln!(
+                console::eprintln!(
                     "Not signed in to FutureOS: serving local runs, tasks and the Agent. The \
                      remote desktop stays closed until an account signs in — run `future auth \
                      login` from another terminal and this entry starts serving it without a \
@@ -376,7 +379,7 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
     // moment it is launched. This entry therefore serves the devices already in
     // the pairing book and grows the book only on request.
     let mut status = if !switch_on {
-        eprintln!(
+        console::eprintln!(
             "The remote desktop switch is off, so this entry serves nothing yet. It stays up as \
              the machine's control endpoint: turn the switch on with `future remote enable` \
              (no restart needed), or in the window's Remote page."
@@ -388,7 +391,7 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
         // signs in.
         remote::status()
     } else {
-        eprintln!("Preparing the remote connection...");
+        console::eprintln!("Preparing the remote connection...");
         remote::enable().await?
     };
     // `future remote devices add` asks this process for an invitation: only a
@@ -435,7 +438,7 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
                 AccountAction::Adopt => {
                     let key = stored.expect("adoption needs a stored key");
                     let adopted = Account::pin(key);
-                    eprintln!(
+                    console::eprintln!(
                         "Platform account signed in ({}): starting the remote desktop for it.",
                         adopted.platform
                     );
@@ -461,7 +464,7 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
             }
         );
         if state != previous_state {
-            eprintln!("Remote: {state}");
+            console::eprintln!("Remote: {state}");
             previous_state = state;
         }
         // What this run has to serve the remote desktop with: an account, or a
@@ -484,7 +487,7 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
             PhaseAction::NeedsAccount => {
                 if !said_signed_out {
                     said_signed_out = true;
-                    eprintln!(
+                    console::eprintln!(
                         "The remote desktop needs a FutureOS account: sign in with `future auth \
                          login` (from another terminal) and this entry starts serving it without a \
                          restart. Everything local keeps working meanwhile."
@@ -507,7 +510,7 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
         if idle {
             was_paired = false;
             if !said_idle {
-                eprintln!(
+                console::eprintln!(
                     "Remote desktop is off (the switch is off). Turn it on with `future remote \
                      enable` — this entry keeps running and serves again without a restart."
                 );
@@ -521,7 +524,7 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
         }
         let paired = future_host::remote::pairing::load_creds_checked()?.is_some();
         if paired && !was_paired && status.phase == remote::RemotePhase::Ready {
-            eprintln!("Phone pairing saved. Remote access is open; connect with the paired FutureOS app. Ctrl+C closes this entry.");
+            console::eprintln!("Phone pairing saved. Remote access is open; connect with the paired FutureOS app. Ctrl+C closes this entry.");
             was_paired = true;
         }
         // Nothing paired and nothing to serve is the ordinary first launch: say
@@ -531,7 +534,7 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
         if paired {
             said_unpaired = false;
         } else if !said_unpaired && status.phase == remote::RemotePhase::Enabled {
-            eprintln!(
+            console::eprintln!(
                 "No device is paired yet. Pair one from another terminal with `future remote \
                  devices add` — this entry keeps running and starts serving as soon as a phone \
                  claims the invitation."
@@ -582,7 +585,7 @@ async fn starting_with_notice<T>(
     tokio::select! {
         result = start.as_mut() => result,
         _ = notice.as_mut() => {
-            eprintln!("{}", slow_startup_notice(log));
+            console::eprintln!("{}", slow_startup_notice(log));
             start.await
         }
     }
@@ -650,7 +653,7 @@ fn account_action(
 /// server whose platform is unreachable must not stop over a catalogue refresh.
 async fn refresh_catalogue() {
     if let Err(error) = future_host::scheduler::refresh_future_models_now().await {
-        eprintln!(
+        console::eprintln!(
             "Model catalog refresh failed; existing configured models remain available: {error}"
         );
     }
@@ -722,7 +725,7 @@ async fn bootstrap_builtin_skills() {
     let executable = match maintenance_executable() {
         Ok(executable) => executable,
         Err(error) => {
-            eprintln!("Skipping built-in skill setup: {error}");
+            console::eprintln!("Skipping built-in skill setup: {error}");
             return;
         }
     };
@@ -735,7 +738,7 @@ async fn bootstrap_builtin_skills() {
     let output = match output {
         Ok(output) => output,
         Err(error) => {
-            eprintln!("Could not run {} init: {error}", executable.display());
+            console::eprintln!("Could not run {} init: {error}", executable.display());
             return;
         }
     };
@@ -743,13 +746,13 @@ async fn bootstrap_builtin_skills() {
     // reserved for the authorization and pairing material this entry point
     // prints when it is attached to a terminal.
     for line in String::from_utf8_lossy(&output.stdout).lines() {
-        eprintln!("[skills] {line}");
+        console::eprintln!("[skills] {line}");
     }
     for line in String::from_utf8_lossy(&output.stderr).lines() {
-        eprintln!("[skills] {line}");
+        console::eprintln!("[skills] {line}");
     }
     if !output.status.success() {
-        eprintln!(
+        console::eprintln!(
             "FutureOS: skill bootstrap did not complete ({}).",
             output.status
         );

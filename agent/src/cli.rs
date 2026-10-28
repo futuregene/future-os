@@ -6,6 +6,7 @@
 
 mod shutdown;
 
+use crate::console;
 #[cfg(test)]
 use crate::service::config::parse_tcp_bind;
 use crate::Manager;
@@ -211,7 +212,7 @@ pub fn run_from_args(args: &[String]) -> Result<()> {
     apply_future_home()?;
     if cli.probe_sandbox {
         let result = crate::sandbox::platform_sandbox_probe_product()?;
-        println!("{}", serde_json::to_string(&result)?);
+        console::println!("{}", serde_json::to_string(&result)?);
         return Ok(());
     }
     if cli.probe_windows_sandbox {
@@ -219,12 +220,12 @@ pub fn run_from_args(args: &[String]) -> Result<()> {
         if result.diagnostic().is_some() {
             tracing::debug!(code = result.code, "Windows sandbox host probe unavailable");
         }
-        println!("{}", serde_json::to_string(&result)?);
+        console::println!("{}", serde_json::to_string(&result)?);
         return Ok(());
     }
     if cli.reset_windows_sandbox {
         let removed = crate::sandbox::reset_windows_sandbox_capabilities()?;
-        println!("{{\"removedCapabilities\":{removed}}}");
+        console::println!("{{\"removedCapabilities\":{removed}}}");
         return Ok(());
     }
     // Maintenance commands above are deliberately sessionless and must remain
@@ -251,7 +252,7 @@ pub fn run_from_args(args: &[String]) -> Result<()> {
                 manager.retry_legacy_import(id)?;
             }
             let report = manager.import_records()?;
-            println!("{}", serde_json::to_string(&report)?);
+            console::println!("{}", serde_json::to_string(&report)?);
             if let Some(id) = cli.retry_session_import.as_deref() {
                 if !report
                     .iter()

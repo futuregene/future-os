@@ -68,6 +68,8 @@ pub use commands::dispatch_update_helper;
 #[cfg(feature = "gui")]
 use commands::*;
 use error::AppError;
+#[cfg(feature = "gui")]
+use future_host::console;
 
 /// Process-wide lock for tests that mutate the global `HOME` env var
 /// (`auth_store` and the shadow-review smoke test). `HOME` is process-global, so
@@ -992,7 +994,7 @@ mod gui {
                 if let Err(error) =
                     menu::build_macos_menu(app.handle()).and_then(|m| app.set_menu(m).map(|_| ()))
                 {
-                    eprintln!("FutureOS menu setup failed: {error}");
+                    console::eprintln!("FutureOS menu setup failed: {error}");
                 }
                 #[cfg(target_os = "macos")]
                 set_macos_dock_icon();
@@ -1250,7 +1252,7 @@ mod gui {
         store::initialize_app_store()?;
         startup.enter("terminal server");
         if let Err(error) = terminal::server::bind() {
-            eprintln!("FutureOS terminal server bind failed: {error}");
+            console::eprintln!("FutureOS terminal server bind failed: {error}");
         }
         Ok(())
     }
@@ -1283,7 +1285,7 @@ mod gui {
                 let handle = app_handle.clone();
                 crate::runtime::spawn_native(move || {
                     if let Err(error) = agent_supervisor::start_agent_supervision(&handle) {
-                        eprintln!("FutureOS Agent startup failed: {error}");
+                        console::eprintln!("FutureOS Agent startup failed: {error}");
                         return;
                     }
                     if crate::desktop_shutdown::is_stopping() {
@@ -1292,7 +1294,7 @@ mod gui {
                     start_backend_background(handle);
                 });
                 if let Err(error) = terminal::server::serve() {
-                    eprintln!("FutureOS terminal server failed to start: {error}");
+                    console::eprintln!("FutureOS terminal server failed to start: {error}");
                 }
             }
             // ⌘Q / the menu's "Quit FutureOS" / a programmatic `app.exit()` come
@@ -1380,7 +1382,7 @@ mod gui {
             // doesn't query sessions that no longer exist. Self-gates on
             // agent reachability (skips when the agent is down).
             if let Err(error) = store::reconcile_orphan_sessions().await {
-                eprintln!("FutureOS orphan-session reconcile failed: {error}");
+                console::eprintln!("FutureOS orphan-session reconcile failed: {error}");
             }
             // Rows mirrored by older builds for sessions that were
             // created but never prompted are empty conversations
@@ -1389,11 +1391,11 @@ mod gui {
             match store::reconcile_empty_conversations().await {
                 Ok(0) => {}
                 Ok(removed) => {
-                    eprintln!("FutureOS: removed {removed} empty conversation(s)");
+                    console::eprintln!("FutureOS: removed {removed} empty conversation(s)");
                     crate::emit_threads_updated();
                 }
                 Err(error) => {
-                    eprintln!("FutureOS empty-conversation reconcile failed: {error}")
+                    console::eprintln!("FutureOS empty-conversation reconcile failed: {error}")
                 }
             }
             // Rows produced by older startup convergence builds are
@@ -1443,13 +1445,13 @@ mod gui {
         crate::runtime::spawn(async {
             match remote::enable().await {
                 Ok(status) if matches!(status.phase, remote::RemotePhase::Ready) => {
-                    eprintln!("FutureOS remote auto-connect: connected")
+                    console::eprintln!("FutureOS remote auto-connect: connected")
                 }
-                Ok(status) => eprintln!(
+                Ok(status) => console::eprintln!(
                     "FutureOS remote auto-connect: deferred ({:?})",
                     status.reason
                 ),
-                Err(error) => eprintln!("FutureOS remote auto-connect failed: {error}"),
+                Err(error) => console::eprintln!("FutureOS remote auto-connect failed: {error}"),
             }
         });
     }
