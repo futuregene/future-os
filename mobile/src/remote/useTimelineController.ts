@@ -15,7 +15,21 @@ import { emptyTimeline, markApprovalDecision, mergeHistoryAttachments, timelineF
 import type { HistoryEntry, RemoteSessionState, StreamEvent } from "./types";
 export { compactionTerminalOf, COMPACTION_TERMINAL_TIMEOUT_MS } from "./timeline/useCompactionOutcomes";
 
+// A cold open is one lane across `get_state -> history -> replay`, and the guard
+// below is what the reader sees while the first commit is missing. It must not
+// fire on a lane that is still inside its own budget: one `request` attempt may
+// take up to REQUEST_TIMEOUT_MS (10 s) and a read retries it twice more, so a
+// 15 s wall clock replaces the spinner with an error while the client is still
+// working — which is how a slow link turns into "the conversation timed out".
+//
+// The guard therefore reports at TIMELINE_LOAD_TIMEOUT_MS only when the lane has
+// actually failed an attempt, or when no attempt is in flight at all (nothing
+// was ever started — a backgrounded screen defers `restart`, so there is no
+// signal to wait for). A lane that is mid-attempt keeps waiting up to a ceiling
+// that covers one full attempt chain, and that ceiling is what stops a wedged
+// attempt from spinning forever.
 const TIMELINE_LOAD_TIMEOUT_MS = 15_000;
+const TIMELINE_LOAD_CEILING_MS = 45_000;
 
 interface TimelineControllerOptions {
   clientRef: MutableRefObject<RemoteClient | null>;
@@ -57,6 +71,13 @@ export function useTimelineController({
   const historyPagingRef = useRef<Record<string, HistoryPagingState>>({});
   const committedHistoryRef = useRef<Record<string, TimelineState["historyWindow"]>>({});
   const historyEpochRef = useRef(0);
+  // Sessions whose lane has reported a failed reconcile attempt, and when. A
+  // failure is the only evidence the open is not merely slow, so the timeout
+  // guard above is gated on it.
+  const syncFailureRef = useRef<Record<string, number>>({});
+  // The lane's status as the guard reads it. The rendered copy is state; this
+  // one answers a timer callback, which must not close over a stale render.
+  const syncStatusRef = useRef<Record<string, TimelineSyncStatus>>({});
   const { compactionWaitersRef, compactionTerminalsRef, cancelCompactionWaiters, awaitCompactionOutcome }
     = useCompactionOutcomes({ clientRef, selectedRef, syncEngineRef, historyEpochRef });
   const olderRequestRef = useRef<{
@@ -488,6 +509,9 @@ export function useTimelineController({
       olderRequestRef.current?.controller.abort();
       historyEpochRef.current += 1;
       pruneTimelines(sessionId);
+      // A navigation starts a fresh attempt chain for this conversation: a
+      // failure recorded against the previous open must not fail this one early.
+      delete syncFailureRef.current[sessionId];
       // Explicit navigation starts a bounded latest window. Only an in-place
       // refresh bridges a gap back to already displayed history.
       const nextPaging = { ...historyPagingRef.current };
@@ -574,6 +598,7 @@ export function useTimelineController({
         return { ...merged, events: merged.events ?? [] };
       },
       onSyncStatus: (sessionId, status) => {
+        syncStatusRef.current[sessionId] = status;
         setSyncStatuses((previous) =>
           previous[sessionId] === status
             ? previous
@@ -604,12 +629,14 @@ export function useTimelineController({
         // place the person staring at the spinner can look. Both, because
         // neither is visible from the other end.
         clientRef.current?.setSyncStage?.(failure.stage);
+        syncFailureRef.current[failure.sessionId] = Date.now();
       },
       onRecovered: (sessionId) => {
         // The lane that was stuck has reconciled, so the report is no longer
         // true. Clear it rather than leave the device looking stuck until its
         // next failure.
         clientRef.current?.setSyncStage?.(null);
+        delete syncFailureRef.current[sessionId];
         setTimelineErrors((previous) => {
           if (!previous[sessionId]) return previous;
           const next = { ...previous };
@@ -640,6 +667,9 @@ export function useTimelineController({
     return () => {
       unsubscribe();
       syncEngineRef.current = null;
+      // Lanes die with the engine, and with them every reason to report them.
+      syncFailureRef.current = {};
+      syncStatusRef.current = {};
       engine.clear();
     };
   }, [clientRef, compactionWaitersRef, loadHistory, selectedRef]);
@@ -704,6 +734,8 @@ export function useTimelineController({
     setHistoryPaging({});
     olderFailureRef.current = {};
     setOlderFailure({});
+    syncFailureRef.current = {};
+    syncStatusRef.current = {};
     parkOlderPage(null);
   }, [cancelCompactionWaiters, parkOlderPage]);
 
@@ -738,22 +770,48 @@ export function useTimelineController({
   useEffect(() => {
     if (!timelinePending || !selectedSessionId || timelineError) return;
     const sessionId = selectedSessionId;
-    const timer = setTimeout(() => {
-      if (
-        selectedRef.current !== sessionId ||
-        timelinesRef.current[sessionId] !== undefined
-      )
-        return;
+    const startedAt = Date.now();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const fail = () => {
       console.error("[remote] session timeline load timed out", {
         sessionId,
-        timeoutMs: TIMELINE_LOAD_TIMEOUT_MS,
+        timeoutMs: Date.now() - startedAt,
+        attemptFailed: (syncFailureRef.current[sessionId] ?? 0) > 0,
+        attemptInFlight:
+          syncStatusRef.current[sessionId] === "syncing" ||
+          syncStatusRef.current[sessionId] === "retrying",
+        ceilingMs: TIMELINE_LOAD_CEILING_MS,
       });
       setTimelineErrors((previous) => ({
         ...previous,
         [sessionId]: "timeout",
       }));
-    }, TIMELINE_LOAD_TIMEOUT_MS);
-    return () => clearTimeout(timer);
+    };
+    const check = () => {
+      // A commit landed, or the reader moved on: nothing is waiting for this.
+      if (
+        selectedRef.current !== sessionId ||
+        timelinesRef.current[sessionId] !== undefined
+      )
+        return;
+      const elapsed = Date.now() - startedAt;
+      // Three things justify the error, and a merely slow reconcile is none of
+      // them: an attempt that already failed, a lane with no attempt in flight
+      // (nothing was started, so there is nothing to wait for), and the ceiling
+      // that covers one full attempt chain.
+      const failed = (syncFailureRef.current[sessionId] ?? 0) > 0;
+      const status = syncStatusRef.current[sessionId];
+      const attemptInFlight = status === "syncing" || status === "retrying";
+      if (failed || !attemptInFlight || elapsed >= TIMELINE_LOAD_CEILING_MS) {
+        fail();
+        return;
+      }
+      timer = setTimeout(check, Math.max(0, TIMELINE_LOAD_CEILING_MS - elapsed));
+    };
+    timer = setTimeout(check, TIMELINE_LOAD_TIMEOUT_MS);
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
   }, [selectedRef, selectedSessionId, timelineError, timelinePending]);
 
   const retryTimeline = useCallback(async () => {
@@ -766,6 +824,9 @@ export function useTimelineController({
       return next;
     });
     console.warn("[remote] retrying session timeline sync", { sessionId });
+    // The retry starts a fresh attempt chain, so it gets the whole budget: a
+    // failure recorded against the previous chain must not fail this one early.
+    delete syncFailureRef.current[sessionId];
     const client = clientRef.current;
     if (client) {
       try {
@@ -788,6 +849,7 @@ export function useTimelineController({
   const reloadTimeline = useCallback(() => {
     const sessionId = selectedRef.current;
     if (!sessionId) return;
+    delete syncFailureRef.current[sessionId];
     syncEngineRef.current?.restart(sessionId, "open");
   }, [selectedRef]);
 
