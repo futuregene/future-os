@@ -2184,6 +2184,12 @@ mod bridge_tests {
             .call(json!({ "id": unique("cmd"), "type": "prompt", "sessionId": session, "message": "too soon" }))
             .await;
         assert_eq!(reply["success"], json!(false));
+        // The token is what a client turns into its own sentence; the sentence
+        // behind it stays readable in the desktop's logs.
+        assert!(reply["error"]
+            .as_str()
+            .unwrap()
+            .starts_with(crate::remote_host::business::SESSION_BUSY_CODE));
         assert!(reply["error"].as_str().unwrap().contains("still running"));
 
         bridge.stop().await;

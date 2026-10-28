@@ -1,6 +1,7 @@
 import { useCallback, useMemo, type Dispatch, type SetStateAction } from "react";
 import type { TFunction } from "i18next";
 import { File } from "expo-file-system";
+import { classifyNatsError } from "@future-os/remote-client/natsErrors";
 import { mimeFor } from "../../remote/files";
 import { useRemote } from "../../remote/RemoteContext";
 import type { MobileAttachment, SessionReferenceMap, TimelineItem } from "../../remote/types";
@@ -22,6 +23,41 @@ export interface SendMessageApi {
   continueMessage: (item: TimelineItem) => void;
   /** Fork the conversation at a settled reply's turn and open the child. */
   forkMessage: (item: TimelineItem) => void;
+}
+
+type FailureText = { key: string; params?: Record<string, unknown> };
+
+/**
+ * Say what actually happened instead of one catch-all sentence.
+ *
+ * "Message failed to send" was covering four different things — the desktop
+ * refusing because a run is still in flight, this device having no connection,
+ * a reply that can no longer be continued, and a genuine send fault — so the
+ * only thing a reader could do with it was guess. Everything the clients can
+ * recognize gets its own line now; the unknown remainder keeps the old one.
+ */
+function sendFailureText(error: unknown, holder: string | undefined): FailureText {
+  const code = error instanceof Error ? error.message : "";
+  // `superseded` is the desktop refusing because another device holds it. The
+  // composer's own notice says so while the pointer already reads standby; this
+  // branch is the race — control moved a moment ago.
+  if (code === "superseded")
+    return holder
+      ? { key: "chat.standbyCannotSend", params: { name: holder } }
+      : { key: "chat.standbyCannotSendUnknown" };
+  if (code.includes("session_busy")) return { key: "chat.sessionBusy" };
+  if (code.includes("continue_unavailable")) return { key: "chat.continueUnavailable" };
+  if (code.includes("session_not_on_desktop")) return { key: "chat.sessionNotOnDesktop" };
+  if (code === "send_compacting") return { key: "chat.compacting" };
+  if (code === "prompt_too_large") return { key: "chat.promptTooLarge" };
+  if (code === "send_busy") return { key: "chat.sendInFlight" };
+  // Nothing leaves this device without the pairing: that is a connection
+  // problem, not something wrong with what the user typed — and a request that
+  // timed out or lost its socket is the same story.
+  if (code === "not_connected" || code === "pairing_changed"
+    || code === "remote_access_changed") return { key: "chat.sendOffline" };
+  if (classifyNatsError(error)) return { key: "chat.sendOffline" };
+  return { key: "chat.sendFailed" };
 }
 
 export interface SendMessageOptions {
@@ -60,20 +96,8 @@ export function useSendMessage(options: SendMessageOptions): SendMessageApi {
     } catch (error) {
       if (!isCurrent()) return;
       if (sameText()) setMessage(draftValue);
-      const key = error instanceof Error ? error.message : "";
-      // `superseded` is the desktop refusing because another device holds it.
-      // The composer's own notice says so while the pointer already reads
-      // standby; this branch is the race — control moved a moment ago — and
-      // "message failed to send" there leaves the user with no cause at all.
-      const holder = remote.presence?.holder?.name?.trim();
-      showToast(key === "superseded"
-        ? (holder
-            ? t("chat.standbyCannotSend", { name: holder })
-            : t("chat.standbyCannotSendUnknown"))
-        : key === "send_compacting" ? t("chat.compacting")
-          : key === "prompt_too_large" ? t("chat.promptTooLarge")
-            : key.includes("session_not_on_desktop") ? t("chat.sessionNotOnDesktop")
-              : t("chat.sendFailed"));
+      const failure = sendFailureText(error, remote.presence?.holder?.name?.trim());
+      showToast(t(failure.key, failure.params));
     } finally {
       if (isCurrent()) setTransferProgress(null);
     }
@@ -123,7 +147,11 @@ export function useSendMessage(options: SendMessageOptions): SendMessageApi {
               });
             }
             if (isCurrent()) await remote.sendMessage(prev.text, retryAttachments);
-          })().catch(() => { if (isCurrent()) showToast(t("chat.sendFailed")); });
+          })().catch((error: unknown) => {
+            if (!isCurrent()) return;
+            const failure = sendFailureText(error, undefined);
+            showToast(t(failure.key, failure.params));
+          });
           return;
         }
       }
@@ -142,15 +170,8 @@ export function useSendMessage(options: SendMessageOptions): SendMessageApi {
         .continueRun(remote.selectedSessionId, item.runId)
         .catch((error: unknown) => {
           if (!isCurrent()) return;
-          // The desktop prefixes a refused continuation with a stable token
-          // (`continue_unavailable`): it received the tap and said no — the
-          // reply finished, or the run it points at is gone. Reading that as
-          // "message failed to send" sends the user to retry a button that
-          // cannot work; the reason is the whole message.
-          const key = error instanceof Error ? error.message : "";
-          showToast(t(key.includes("continue_unavailable")
-            ? "chat.continueUnavailable"
-            : "chat.sendFailed"));
+          const failure = sendFailureText(error, remote.presence?.holder?.name?.trim());
+          showToast(t(failure.key, failure.params));
         });
     },
     [captureOperation, inputRef],

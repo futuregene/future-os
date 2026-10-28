@@ -470,6 +470,12 @@ export const resources = {
          * problem and invite a tap that cannot work.
          */
         continueUnavailable: "This reply cannot be continued. Send it again.",
+        /** The desktop still has a run in flight for this conversation. */
+        sessionBusy: "This reply is still being generated — send again once it finishes.",
+        /** A previous send from this device has not settled yet. */
+        sendInFlight: "The previous message is still sending — a moment and it will be clear.",
+        /** No reachable desktop: nothing was sent, and it is not the text's fault. */
+        sendOffline: "The connection to your desktop dropped, so this message was not sent. Try again in a moment.",
         /**
          * Shown in the conversation while another device holds this desktop:
          * the status dot explains the refusal, but only to someone who taps it,
@@ -1463,6 +1469,9 @@ export const resources = {
         loadFailed: "无法加载会话。",
         sendFailed: "消息发送失败。",
         continueUnavailable: "这条回复已经无法继续，请重新发送。",
+        sessionBusy: "这条回复还在生成中，等它跑完再发。",
+        sendInFlight: "上一条还在发送，稍等一下就好了。",
+        sendOffline: "与桌面的连接断了，这条消息没有发出去，请稍后重试。",
         standbyCannotSend: "已被 {{name}} 接管，现在发不出去。",
         standbyCannotSendUnknown: "已被另一台设备接管，现在发不出去。",
         sessionNotOnDesktop: "该会话不在当前连接的设备上。请到拥有它的那台设备上打开。",

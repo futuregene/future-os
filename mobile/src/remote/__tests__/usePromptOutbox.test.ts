@@ -108,7 +108,6 @@ describe("usePromptOutbox recovery", () => {
     };
     const credentialsRef = { current: credentials as RemoteCredentials | null };
     const selectedRef = { current: "session-1" };
-    const streamingRef = { current: {} };
     const conversationEpochRef = { current: 1 };
     const syncEngineRef = { current: null };
     const setSelectedSessionId = jest.fn();
@@ -123,7 +122,6 @@ describe("usePromptOutbox recovery", () => {
         clientRef,
         credentialsRef,
         selectedRef,
-        streamingRef,
         compactingRef: { current: {} },
         conversationEpochRef,
         syncEngineRef,
@@ -334,7 +332,6 @@ describe("usePromptOutbox readiness edges", () => {
     const refreshSessions = jest.fn(async () => {});
     const reconcileSession = jest.fn();
     const selectedRef = { current: "session-1" };
-    const streamingRef = { current: {} };
     const compactingRef = { current: {} };
     const conversationEpochRef = { current: 1 };
     const syncEngineRef = { current: null };
@@ -346,7 +343,6 @@ describe("usePromptOutbox readiness edges", () => {
         clientRef,
         credentialsRef,
         selectedRef,
-        streamingRef,
         compactingRef,
         conversationEpochRef,
         syncEngineRef,
@@ -528,7 +524,6 @@ describe("usePromptOutbox sendMessage", () => {
     const clientRef = { current: client as RemoteClient | null };
     const credentialsRef = { current: credentials };
     const selectedRef = { current: "session-1" };
-    const streamingRef = { current: {} as Record<string, boolean> };
     const compactingRef = { current: {} as Record<string, boolean> };
     const conversationEpochRef = { current: 1 };
     const syncEngineRef = { current: (opts.engine ?? null) as SyncEngine | null };
@@ -547,7 +542,6 @@ describe("usePromptOutbox sendMessage", () => {
         clientRef,
         credentialsRef,
         selectedRef,
-        streamingRef,
         compactingRef,
         conversationEpochRef,
         syncEngineRef,
@@ -583,7 +577,6 @@ describe("usePromptOutbox sendMessage", () => {
       clientRef,
       credentialsRef,
       selectedRef,
-      streamingRef,
       compactingRef,
       conversationEpochRef,
       syncEngineRef,
@@ -700,10 +693,17 @@ describe("usePromptOutbox sendMessage", () => {
     expect(mockedUploadAttachments).not.toHaveBeenCalled();
   });
 
-  it("rejects a send while the target session is streaming", async () => {
+  // A stale "still streaming" flag used to refuse every later message with a
+  // generic failure toast: the projection lags a run that already ended, and
+  // with automatic resume retired (#1355) nothing ever cleared it. The send now
+  // proceeds and the desktop answers for itself.
+  it("sends even while this client still believes the session is streaming", async () => {
     const h = await mountSend();
-    h.streamingRef.current["session-1"] = true;
-    await expect(h.result.sendMessage("hi")).rejects.toThrow("send_streaming");
+    await act(async () => h.result.sendMessage("hi"));
+    expect(h.requestRetry).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "prompt" }),
+      "session-1",
+    );
   });
 
   it("stops delivery when pairing changes during an attachment upload", async () => {
@@ -996,7 +996,6 @@ describe("usePromptOutbox continueRun", () => {
     const clientRef = { current: client as RemoteClient | null };
     const credentialsRef = { current: credentials };
     const selectedRef = { current: "session-1" };
-    const streamingRef = { current: {} as Record<string, boolean> };
     const conversationEpochRef = { current: 1 };
     const syncEngineRef = { current: null as SyncEngine | null };
     const setSelectedSessionId = jest.fn();
@@ -1014,7 +1013,6 @@ describe("usePromptOutbox continueRun", () => {
         clientRef,
         credentialsRef,
         selectedRef,
-        streamingRef,
         compactingRef: { current: {} },
         conversationEpochRef,
         syncEngineRef,
@@ -1172,7 +1170,6 @@ describe("usePromptOutbox recovery error handling", () => {
     const clientRef = { current: client as RemoteClient | null };
     const credentialsRef = { current: credentials };
     const selectedRef = { current: "session-1" };
-    const streamingRef = { current: {} as Record<string, boolean> };
     const conversationEpochRef = { current: 1 };
     const syncEngineRef = { current: null as SyncEngine | null };
     const setSelectedSessionId = jest.fn();
@@ -1189,7 +1186,6 @@ describe("usePromptOutbox recovery error handling", () => {
         clientRef,
         credentialsRef,
         selectedRef,
-        streamingRef,
         compactingRef: { current: {} },
         conversationEpochRef,
         syncEngineRef,
@@ -1412,7 +1408,6 @@ describe("usePromptOutbox delivery edges", () => {
         clientRef,
         credentialsRef,
         selectedRef,
-        streamingRef: { current: {} },
         compactingRef: { current: {} },
         conversationEpochRef: { current: 1 },
         syncEngineRef,
