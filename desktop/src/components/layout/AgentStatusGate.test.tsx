@@ -12,12 +12,12 @@ afterEach(() => {
     mounted.pop()?.();
 });
 
-function renderStatus(phase: AgentStatus["phase"], showWait = false, error?: string, shutdown?: ShutdownProgress) {
+function renderStatus(phase: AgentStatus["phase"], showWait = false, error?: string, shutdown?: ShutdownProgress, startup?: AgentStatus["startup"]) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
   act(() => root.render(
-    <AgentStatusGate showWait={showWait} status={{ phase, desktopVersion: "1.1.8", agentVersion: null, ...(error ? { error } : {}), ...(shutdown ? { shutdown } : {}) }} />,
+    <AgentStatusGate showWait={showWait} status={{ phase, desktopVersion: "1.1.8", agentVersion: null, ...(error ? { error } : {}), ...(shutdown ? { shutdown } : {}), ...(startup ? { startup } : {}) }} />,
   ));
   mounted.push(() => {
     act(() => root.unmount());
@@ -56,6 +56,21 @@ describe("agent status gate", () => {
   it("keeps showing progress while automatic recovery runs", () => {
     const text = renderStatus("recovering", true);
     expect(text).toContain("Please wait a moment.");
+    expect(text).not.toContain("could not start");
+  });
+
+  it("reveals upgrade progress only after the waiting hint delay", () => {
+    const progress = { stage: "upgrading_storage" as const, elapsedMs: 24000 };
+    expect(renderStatus("starting", false, undefined, undefined, progress)).toBe("");
+    const text = renderStatus("starting", true, undefined, undefined, progress);
+    expect(text).toContain("Upgrading conversation data");
+    expect(text).toContain("Startup is taking longer");
+    expect(text).not.toContain("could not start");
+  });
+
+  it("describes missing status responses without claiming a startup failure", () => {
+    const text = renderStatus("startup_timeout");
+    expect(text).toContain("No startup status received for 15 seconds");
     expect(text).not.toContain("could not start");
   });
 

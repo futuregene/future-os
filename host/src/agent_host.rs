@@ -92,6 +92,11 @@ impl AgentHost {
     pub fn phase(&self) -> Phase {
         self.0.state.lock().unwrap().phase.clone()
     }
+    /// Read the worker's reported stage without taking any Agent storage lock.
+    pub fn startup_progress(&self) -> future_agent::service::StartupProgress {
+        self.0.state.lock().unwrap().cancel.progress()
+    }
+
     pub fn owns_agent(&self) -> bool {
         self.0.state.lock().unwrap().owned
     }

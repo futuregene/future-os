@@ -153,6 +153,19 @@
     "communitySubtitle": "配置自己的模型服务，即可开始使用。"
   },
   "agentStatus": {
+    "noResponse": "Future Agent 暂未响应",
+    "noResponseHint": "已连续 15 秒未收到启动状态，正在继续尝试连接。",
+    "takingLonger": "启动耗时较长，仍在处理中，请稍候。",
+    "startupStages": {
+      "preparing": "正在准备 Future Agent",
+      "loading_models": "正在加载模型和凭据",
+      "reserving_endpoint": "正在准备本地连接",
+      "opening_storage": "正在检查会话数据",
+      "backing_up_storage": "正在备份升级前的数据",
+      "upgrading_storage": "正在升级会话数据",
+      "recovering_sessions": "正在恢复会话",
+      "binding_endpoint": "正在启动 Agent 服务"
+    },
     "wait": "请稍候",
     "failed": "Future Agent 启动失败",
     "fixFailed": "请根据错误提示检查后重启 FutureOS。使用外部 Agent 时，请检查其可用性和版本。",

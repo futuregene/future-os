@@ -133,7 +133,7 @@ describe("useAgentStatus", () => {
     vi.useRealTimers();
   });
 
-  it("converts a probe that stays in `checking` past the startup budget into a timeout", async () => {
+  it("keeps a responsive status pending past the startup budget", async () => {
     vi.useFakeTimers();
     mocks.getStatus.mockResolvedValue({ agentVersion: null, desktopVersion: "1.0", phase: "checking" });
     const harness = renderHook(() => useAgentStatus());
@@ -145,7 +145,7 @@ describe("useAgentStatus", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(16_000);
     });
-    expect(harness.current.phase).toBe("startup_timeout");
+    expect(harness.current.phase).toBe("checking");
     harness.unmount();
     vi.useRealTimers();
   });
