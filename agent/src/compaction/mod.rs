@@ -205,8 +205,8 @@ pub struct PromptContext {
     /// Per-message token costs, parallel to `messages`. Computing these once when
     /// the projection is built keeps budget admission, the compaction gate and
     /// the planner from converting and walking the whole conversation again.
-    /// A mismatch (a caller replaced `messages` directly) falls back to a fresh
-    /// calculation, so the cache can never make a decision on stale costs.
+    /// A length mismatch falls back to a fresh calculation. Callers replacing
+    /// message contents directly must clear this cache when they do so.
     pub message_tokens: Vec<u64>,
     pub usage: ContextUsage,
 }
@@ -425,11 +425,15 @@ pub fn project_prompt_context(
             source_entry_ids,
         }
     }));
+    let mut estimated_input_tokens = 0_u64;
     let message_tokens = projected
         .iter()
-        .map(|projected| semantic::projected_message_token_cost(&projected.message))
+        .map(|projected| {
+            let (body, total) = semantic::projected_message_token_costs(&projected.message);
+            estimated_input_tokens = estimated_input_tokens.saturating_add(body);
+            total
+        })
         .collect::<Vec<_>>();
-    let estimated_input_tokens = message_tokens.iter().copied().sum();
     PromptContext {
         messages: projected,
         message_tokens,

@@ -343,7 +343,10 @@ pub(super) fn projected_token_cost_message(message: &AgentMessage) -> u64 {
 /// same accounting `AgentMessage -> Message` + `estimate_tokens` performed, but
 /// without cloning the message, serializing image base64 into a throwaway JSON
 /// value, or allocating a text-piece vector.
-pub(super) fn projected_message_token_cost(message: &AgentMessage) -> u64 {
+/// Return the legacy body-only estimate and the full compaction cost in one
+/// block walk. The initial projection historically exposed the former; request
+/// budgeting and compaction planning use the latter.
+pub(super) fn projected_message_token_costs(message: &AgentMessage) -> (u64, u64) {
     let mut body = 0_u64;
     let mut images = 0_u64;
     let mut reasoning = 0_u64;
@@ -384,7 +387,14 @@ pub(super) fn projected_message_token_cost(message: &AgentMessage) -> u64 {
     } else {
         0
     };
-    body + reasoning + 6 + (images + attachment_images) * 2_048
+    (
+        body,
+        body + reasoning + 6 + (images + attachment_images) * 2_048,
+    )
+}
+
+pub(super) fn projected_message_token_cost(message: &AgentMessage) -> u64 {
+    projected_message_token_costs(message).1
 }
 
 pub(super) fn projected_token_cost(projected: &ProjectedMessage) -> u64 {
@@ -1120,6 +1130,22 @@ mod tests {
                 message.role
             );
         }
+    }
+
+    #[test]
+    fn initial_projection_keeps_the_legacy_body_only_estimate() {
+        let message = AgentMessage {
+            role: "user".into(),
+            content: vec![
+                ContentBlock::text("four"),
+                ContentBlock::image("data:image/png;base64,AAAA"),
+                ContentBlock::reasoning("not part of the body estimate", Default::default()),
+            ],
+            ..Default::default()
+        };
+        let prompt = crate::compaction::project_prompt_context(&[message], None, None, 8_000);
+        assert_eq!(prompt.usage.estimated_input_tokens, 1);
+        assert_eq!(prompt.message_tokens[0], 1 + 6 + 2_048 + 8);
     }
 
     #[test]
