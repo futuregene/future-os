@@ -485,14 +485,9 @@ pub enum Key {
     NotificationTitle,
     NotificationBody,
     ChatNewOutput,
-    /// The process rows a folded reply draws (the counts and the `thinking`
-    /// marker of a folded reply). `{}` is the count, so a language that words
-    /// the row differently (`12 次工具调用` against `12 tool calls`) only differs
-    /// in its template — the terminal never composes the sentence itself.
-    ChatFoldToolCall,
-    ChatFoldToolCalls,
-    ChatFoldThought,
-    ChatFoldThoughts,
+    /// The transcript's process rows: the marker standing in for hidden
+    /// reasoning, and the label a count row falls back on. The counts
+    /// themselves are glyphs (`🔧×12 · 🧠×3`), so they need no translation.
     ChatThinkingLabel,
     ChatProcessLabel,
     CmdSessions,
@@ -936,12 +931,8 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         NotificationTitle => ("FutureOS：运行完成", "FutureOS: run complete"),
         NotificationBody => ("本轮已成功完成。", "This turn finished successfully."),
         ChatNewOutput => ("↓ 新输出 · esc 回到最新", "↓ new output · esc returns to latest"),
-        // The counts are the terminal's chrome, not the model's words: a
-        // Chinese surface says `12 次工具调用 · 3 段思考`, never `12 tool calls`.
-        ChatFoldToolCall => ("{} 次工具调用", "{} tool call"),
-        ChatFoldToolCalls => ("{} 次工具调用", "{} tool calls"),
-        ChatFoldThought => ("{} 段思考", "{} thought"),
-        ChatFoldThoughts => ("{} 段思考", "{} thoughts"),
+        // The counts are glyphs (`🔧×12 · 🧠×3`, the desktop's wrench and
+        // brain), so only these two labels are words at all.
         ChatThinkingLabel => ("思考", "thinking"),
         ChatProcessLabel => ("过程", "process"),
         CmdSessions => ("浏览并切换会话", "Browse and switch sessions"),
@@ -1350,7 +1341,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 324] = {
+    const ALL_KEYS: [Key; 320] = {
         use Key::*;
         [
             TabTodo,
@@ -1561,10 +1552,6 @@ mod tests {
             NotificationTitle,
             NotificationBody,
             ChatNewOutput,
-            ChatFoldToolCall,
-            ChatFoldToolCalls,
-            ChatFoldThought,
-            ChatFoldThoughts,
             ChatThinkingLabel,
             ChatProcessLabel,
             CmdSessions,
