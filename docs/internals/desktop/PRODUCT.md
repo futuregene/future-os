@@ -531,6 +531,11 @@ Attachment sources and upload paths:
   Linux file managers' URI lists. After resolving to a real absolute path, the
   backend checks protected paths, existence, directory-ness, and readability;
   on success only the path is recorded — the file is not copied.
+- WebKitGTK (the Linux webview) hands the page an empty `DataTransfer` for a
+  clipboard image, so a paste carrying neither text nor files asks the native
+  pasteboard for the image (arboard), encodes it as PNG, and attaches it through
+  the same pasted-image path. macOS/Windows webviews already deliver the image
+  as a pasted `File` and never take that fallback.
 - At most 4 images per message; non-image files have no count or size limit. A
   single image is at most 25 MiB, validated on select, drag, and paste.
 - Images must be successfully read and decoded before sending; on failure the

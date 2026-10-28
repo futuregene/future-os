@@ -4,7 +4,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { deleteTempAttachment, readNativeClipboardFilePaths, savePastedFile, savePastedImage } from "../../../integrations/storage/threadStore";
+import { deleteTempAttachment, readNativeClipboardFilePaths, readNativeClipboardImage, savePastedFile, savePastedImage } from "../../../integrations/storage/threadStore";
 import { formatBytes } from "../../../lib/format";
 import { useCommittedRef } from "../../../lib/useCommittedRef";
 import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, MAX_IMAGES_PER_TURN, READ_SOURCE_MAX_BYTES } from "../attachments";
@@ -164,6 +164,32 @@ export function useComposerAttachments({ disabled, onDragStateChange, captureOpe
       setAttachError(t("composer.attachIgnored", { items: rejected.join("，") }));
   }
 
+  /**
+   * Attach an image the WebView could not see. WebKitGTK dispatches a paste
+   * event whose `DataTransfer` is empty for a clipboard image, so the paste
+   * handler falls back here; the backend reads the native pasteboard, encodes
+   * PNG and writes the same temporary attachment the byte path would.
+   */
+  async function attachNativeClipboardImage() {
+    if (disabled)
+      return;
+    const isCurrent = captureOperation();
+    const saved = await readNativeClipboardImage().catch(() => null);
+    if (!saved) {
+      return;
+    }
+    if (!isCurrent()) {
+      await deleteTempAttachment(saved.path).catch(() => {});
+      return;
+    }
+    await addAttachmentPaths([saved.path], true, undefined, isCurrent);
+    // Rejected by classification or the per-message image cap: the draft no
+    // longer references the file, so reclaim it (same rule as the byte path).
+    const accepted = new Set(attachmentsRef.current.map(attachment => attachment.path));
+    if (!accepted.has(saved.path))
+      await deleteTempAttachment(saved.path).catch(() => {});
+  }
+
   async function handleAttachFiles() {
     if (disabled)
       return;
@@ -249,5 +275,5 @@ export function useComposerAttachments({ disabled, onDragStateChange, captureOpe
     };
   }, [addAttachmentPathsRef, disabled, setDrag]);
 
-  return { attachments, attachmentsRef, setAttachments, attachError, setAttachError, dragState, addAttachmentPaths, attachPastedFiles, handleAttachFiles, removeAttachment };
+  return { attachments, attachmentsRef, setAttachments, attachError, setAttachError, dragState, addAttachmentPaths, attachPastedFiles, attachNativeClipboardImage, handleAttachFiles, removeAttachment };
 }
