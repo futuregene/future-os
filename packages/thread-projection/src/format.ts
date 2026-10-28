@@ -72,6 +72,13 @@ export function classifyAgentError(raw: string): FriendlyAgentError {
   // users to debug the wrong thing.
   if (/\[AGENT_INTERRUPTED\]|Unable to (?:connect to|send prompt to) Future Agent|Future Agent (?:event stream|response timed out|run ended|run no longer active|rejected the prompt)|prompt acknowledgement omitted/i.test(message))
     return { key: "agent:failure.agentInterrupted" };
+  // A restart is not a model failure. Startup convergence settles the run the
+  // app was in the middle of as `cancelled`/`interrupted` with exactly this
+  // sentence, and the reply can be picked up with Continue — so it must not be
+  // titled "the model service failed" (that sends the user to retry the model
+  // or the network when neither was at fault).
+  if (/interrupted by application restart|interrupted because future agent restarted/i.test(message))
+    return { key: "agent:failure.runInterrupted" };
   if (message.includes("[CTX_LIMIT]"))
     return { key: "agent:failure.contextLimit" };
 

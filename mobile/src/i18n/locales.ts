@@ -600,6 +600,8 @@ export const resources = {
         agentInterrupted: "Restart the app, then click Continue to resume.",
         agentInterruptedTitle:
           "Background service interrupted; this response could not finish",
+        runInterrupted: "An app restart interrupted this reply. Tap Continue to pick it up where it stopped.",
+        runInterruptedTitle: "An app restart interrupted this reply",
         userStopped:
           "You stopped this response manually. The content generated so far has been kept.",
       },
@@ -1570,6 +1572,8 @@ export const resources = {
         softwareErrorTitle: "软件处理或保存回复失败",
         agentInterrupted: "请重启软件，然后点击“继续”接着处理。",
         agentInterruptedTitle: "后台服务异常中断，本次回复未能完成",
+        runInterrupted: "本次回复因应用重启中断。你可以点按“继续”接着处理。",
+        runInterruptedTitle: "应用重启中断了本次回复",
         userStopped: "你已手工停止本次回复，已生成的内容已保留。",
       },
       approval: {
