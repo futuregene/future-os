@@ -74,12 +74,15 @@ impl Database {
                     return;
                 }
                 let mut reclaim_error_reported = false;
+                let mut next_reclaim = std::time::Instant::now();
                 loop {
                     match receiver.recv_timeout(Duration::from_millis(50)) {
                         Ok(job) => job(&mut connection),
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                         Err(mpsc::RecvTimeoutError::Timeout) => {
-                            if worker_reclaim.load(Ordering::Acquire) {
+                            if worker_reclaim.load(Ordering::Acquire)
+                                && std::time::Instant::now() >= next_reclaim
+                            {
                                 match reclaim_space_when_idle(&mut connection) {
                                     Ok(done) => {
                                         reclaim_error_reported = false;
@@ -92,6 +95,11 @@ impl Database {
                                         }
                                     }
                                 }
+                                // A slice can issue many FULL-sync per-page commits.
+                                // Give foreground jobs a quiet window before the
+                                // next slice instead of retrying on every 50ms tick.
+                                next_reclaim =
+                                    std::time::Instant::now() + Duration::from_millis(250);
                             }
                         }
                     }
