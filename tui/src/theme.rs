@@ -18,7 +18,7 @@ pub const C: ColorConstants = ColorConstants {
     dark_gray: 240,      // #505050
     accent: 109,         // #8abeb7
     selected_bg: 237,    // #3a3a4a
-    user_msg_bg: 59,     // #343541
+    user_msg_bg: 237,    // #3a3a3a — muted card surface (the TS bubble was 59/#5f5f5f)
     tool_pending_bg: 17, // #00005f
     tool_success_bg: 22, // #005f00
     tool_error_bg: 52,   // #5f0000
@@ -556,7 +556,7 @@ mod tests {
         assert_eq!(DARK_THEME.bg, -1);
         assert_eq!(DARK_THEME.assistant_bg, -1);
         assert_eq!(DARK_THEME.fg, 252);
-        assert_eq!(DARK_THEME.user_bg, 59);
+        assert_eq!(DARK_THEME.user_bg, 237);
     }
 
     #[test]
