@@ -101,9 +101,9 @@ fn short_model(model: &str) -> String {
 }
 
 /// The 工作区 chip's value: the workspace's own name, or 对话会话 when the next
-/// session is a plain chat — `agent/workspace` is the directory a chat runs in,
-/// and printing its last segment would name the app's own scratch folder as if
-/// it were a project.
+/// session is a plain chat — a chat's placeholder directory is the app's own
+/// `agent/workspace`, and printing its last segment would name that scratch
+/// folder as if it were a project.
 fn workspace_value(data: &WorkbenchData, lang: Language) -> String {
     if data.session.chat {
         return t(lang, Key::WorkspaceChat).to_string();
