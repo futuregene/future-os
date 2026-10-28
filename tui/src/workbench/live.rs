@@ -78,8 +78,9 @@ struct Paging {
 /// ([`super::Workbench::surface_command`]) and this list have to account for
 /// every entry exactly once. That is the check whose absence let five entries
 /// advertise themselves and then answer `Unknown command`.
-pub const APP_COMMANDS: [&str; 21] = [
+pub const APP_COMMANDS: [&str; 22] = [
     "/new",
+    "/stop",
     "/reply-detail",
     "/tool-output",
     "/export",
@@ -163,6 +164,10 @@ pub struct Live {
     /// rebuilt from the new page.
     shown_page: Option<ShownPage>,
     sessions: SessionList,
+    /// A conversation listing that is out with the agent (see
+    /// [`Self::begin_sessions_refresh`]). The driver's clock drains it, so a
+    /// slow answer costs a frame's worth of staleness instead of a freeze.
+    sessions_refresh: Option<tokio::sync::oneshot::Receiver<Result<Vec<SessionSummary>, String>>>,
     /// Bumped when the pinned workspaces change (a pin reorders and re-files the
     /// 工作区 tab, so the view it feeds is stale from that moment).
     pins_rev: u64,
@@ -337,6 +342,7 @@ impl Live {
             cached: VecDeque::new(),
             shown_page: None,
             sessions: SessionList::default(),
+            sessions_refresh: None,
             pins_rev: 0,
             session_view: None,
             session_view_builds: 0,
@@ -572,11 +578,61 @@ impl Live {
     /// The answer is what lets the driver poll (see `run::SESSIONS_POLL`)
     /// without repainting a list that is already on screen: only a real change
     /// owes a frame.
+    ///
+    /// This waits for the agent, so it belongs on the paths that *mean* to wait
+    /// (the attach, a switch, the tests); the periodic poll uses
+    /// [`Self::begin_sessions_refresh`] instead.
     pub async fn refresh_sessions(&mut self) -> bool {
         let Ok(sessions) = self.client.list_sessions().await else {
             return false;
         };
         self.sessions.replace(sessions)
+    }
+
+    /// Ask the agent for the conversation list *without* waiting for the answer,
+    /// and answer whether this call started a listing (false: one is already
+    /// out).
+    ///
+    /// The rail re-reads its list on a clock (`run::SESSIONS_POLL`), and the
+    /// answer is a listing of every conversation the agent holds: awaiting it
+    /// inside the driver loop froze the surface — no keys, no repaint, the
+    /// activity row's seconds stuck — for as long as the agent took. Measured
+    /// 2026-10-28 against a 67-conversation store: 6.9 s per listing, once every
+    /// five seconds. Off the loop the same answer costs a frame's worth of
+    /// staleness instead (see [`Self::poll_sessions`]).
+    pub fn begin_sessions_refresh(&mut self) -> bool {
+        if self.sessions_refresh.is_some() {
+            return false;
+        }
+        let client = Arc::clone(&self.client);
+        let (send, receive) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let _ = send.send(client.list_sessions().await);
+        });
+        self.sessions_refresh = Some(receive);
+        true
+    }
+
+    /// Install a listing that has landed: `None` while it is still out,
+    /// `Some(changed)` once it has — whether the rail owes a frame.
+    ///
+    /// Called from the driver's clock, beside [`Self::poll_local_reads`]: the
+    /// loop that owns the tick is the one place that decides a frame is owed.
+    pub fn poll_sessions(&mut self) -> Option<bool> {
+        // The listing's answer holds no borrow of the receiver, so the slot is
+        // free to take the next one as soon as this frame is installed.
+        let received = match self.sessions_refresh.as_mut()?.try_recv() {
+            Ok(result) => result,
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return None,
+            // The task went away without answering (a panic, or a runtime
+            // shutting down): the rail keeps its last list.
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Err(String::new()),
+        };
+        self.sessions_refresh = None;
+        Some(match received {
+            Ok(sessions) => self.sessions.replace(sessions),
+            Err(_) => false,
+        })
     }
 
     /// Is any listed conversation still writing? The rail's spinner animates on
@@ -1752,6 +1808,7 @@ impl Live {
         let arg = parts.next().unwrap_or("").trim().to_string();
         match name.as_str() {
             "quit" => return Outcome::Quit,
+            "stop" => self.abort().await,
             "queue" => self.refresh_state().await,
             "copy" | "mouse" => {}
             "paste" => self.paste_clipboard().await,
@@ -4865,6 +4922,58 @@ mod tests {
         assert!(!data.sessions[0].streaming);
     }
 
+    /// The rail's listing is *started* on the clock and drained a tick later,
+    /// never awaited inside the loop: a slow agent costs a frame's worth of
+    /// staleness instead of a frozen surface (the freeze this replaced: 6.9 s
+    /// of no keys and no repaint, every five seconds).
+    #[tokio::test]
+    async fn a_slow_listing_is_started_and_drained_instead_of_awaited() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_slow(
+            &[("list_sessions", r#"{"sessions":[]}"#)],
+            250,
+        );
+        let table = mock.data_by_type.clone();
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the slow test agent");
+        assert!(live.sessions.is_empty(), "the attach read an empty list");
+
+        // The answer this listing will carry, moved before it is asked for.
+        table.lock().unwrap().insert(
+            "list_sessions".into(),
+            r#"{"sessions":[{"id":"s-late","cwd":"/work/alpha","updatedAtMs":1700000000000,"createdAtMs":1700000000000,"model":"m","sessionName":"late"}]}"#.into(),
+        );
+        let started = std::time::Instant::now();
+        assert!(live.begin_sessions_refresh(), "the clock starts a listing");
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(150),
+            "starting a listing does not wait for the agent ({:?})",
+            started.elapsed()
+        );
+        assert!(!live.begin_sessions_refresh(), "one listing is already out");
+        assert_eq!(live.poll_sessions(), None, "nothing has landed yet");
+
+        let landed = loop {
+            if let Some(changed) = live.poll_sessions() {
+                break changed;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        };
+        assert!(landed, "the listing moved the rail");
+        let data = live.data(&frame());
+        assert!(
+            data.sessions.iter().any(|row| row.id == "s-late"),
+            "the drained listing is on screen: {:?}",
+            data.sessions.iter().map(|row| &row.id).collect::<Vec<_>>()
+        );
+        assert!(
+            live.begin_sessions_refresh(),
+            "the slot frees once the listing is drained"
+        );
+        live.client.disconnect();
+    }
+
     /// `最近` carries two stretches on two clocks. 活跃 (a run in flight) is
     /// ordered by when each conversation started — the one stamp a streaming run
     /// does not rewrite, so a running row keeps its place instead of trading
@@ -6147,7 +6256,8 @@ mod tests {
             let cold = start.elapsed().as_secs_f64() * 1000.0;
             assert!(live.session_view_builds() > rebuild, "the list moved");
 
-            // The rail's 5 s poll, which the driver awaits in the loop.
+            // The rail's 5 s poll, priced as the round trip the driver starts
+            // off the loop (`Live::begin_sessions_refresh`).
             let start = std::time::Instant::now();
             for _ in 0..20 {
                 live.refresh_sessions().await;

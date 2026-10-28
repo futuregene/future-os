@@ -3988,8 +3988,9 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
 /// The command palette's entries: `(command, description)`. Kept here rather
 /// than in the app so the palette, the help overlay and the tests share one
 /// list.
-pub const COMMANDS: [(&str, Key); 34] = [
+pub const COMMANDS: [(&str, Key); 35] = [
     ("/new", Key::CmdNew),
+    ("/stop", Key::CmdStop),
     ("/delete", Key::CmdDelete),
     ("/queue", Key::CmdQueue),
     ("/copy", Key::CmdCopy),

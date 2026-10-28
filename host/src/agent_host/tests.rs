@@ -78,6 +78,11 @@ fn a_panicked_start_can_recover_only_after_service_retirement() {
 }
 
 #[test]
+fn startup_failure_keeps_the_storage_step_and_underlying_database_error_in_the_log() {
+    run_case("storage-error-chain");
+}
+
+#[test]
 fn an_attached_host_does_not_stop_the_external_owner() {
     run_case("external");
 }
@@ -143,6 +148,31 @@ fn host_fixture() {
     let root = future_rpc::home::future_home();
     test_driver::install();
     let host = AgentHost::default();
+    if case == "storage-error-chain" {
+        crate::environment::prepare_process();
+        crate::environment::start_logging().unwrap();
+        let database = root.join("agent/agent.db");
+        std::fs::create_dir_all(database.parent().unwrap()).unwrap();
+        std::fs::write(&database, b"not sqlite").unwrap();
+        let error = host.start("auto".into()).unwrap_err().to_string();
+        for expected in [
+            "initialize Agent SQLite storage",
+            "open_database",
+            "not a database",
+        ] {
+            assert!(error.contains(expected), "missing {expected:?} in {error}");
+        }
+        let log = std::fs::read_to_string(crate::environment::log_file_path()).unwrap();
+        for expected in [
+            "session storage step: failed",
+            "open_database",
+            "not a database",
+        ] {
+            assert!(log.contains(expected), "missing {expected:?} in {log}");
+        }
+        assert_eq!(std::fs::read(database).unwrap(), b"not sqlite");
+        return;
+    }
     if case == "recover-panic" {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("panic-once"), "").unwrap();

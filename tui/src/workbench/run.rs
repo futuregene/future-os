@@ -456,10 +456,17 @@ async fn event_loop(
                 // `list_sessions`, and the agent tells no push channel about
                 // it: the list is re-read on this clock or the row's spinner
                 // would freeze and its 活跃 stretch never empty.
-                let mut changed = false;
-                if frame.layout.sidebar.is_some() && sessions_poll.elapsed() >= SESSIONS_POLL {
+                //
+                // The listing itself runs off the loop
+                // (`Live::begin_sessions_refresh`) and lands here a tick later:
+                // awaiting it put the whole surface behind one agent answer,
+                // which at 67 conversations was 6.9 s every five seconds.
+                let changed = live.poll_sessions().unwrap_or(false);
+                if frame.layout.sidebar.is_some()
+                    && sessions_poll.elapsed() >= SESSIONS_POLL
+                    && live.begin_sessions_refresh()
+                {
                     sessions_poll = Instant::now();
-                    changed = live.refresh_sessions().await;
                 }
                 // The workspace's branch and the `@` menu's files are read on
                 // their own threads (see `Live::poll_local_reads`): a workspace
@@ -525,8 +532,12 @@ const IDLE_REFRESH: Duration = Duration::from_secs(60);
 ///
 /// Five seconds is the trade the two uses agree on: a run that starts elsewhere
 /// shows up in the time it takes to look at the rail, and an idle terminal pays
-/// one cheap local call every five seconds — none of them a repaint (the poll
+/// one local call every five seconds — none of them a repaint (the poll
 /// repaints only when the list it read differs from the one on screen).
+///
+/// The call is started, never awaited, in the loop (`Live::begin_sessions_refresh`):
+/// its cost is the agent's to decide, and a listing that blocks the surface is
+/// the one bill a clock this frequent cannot pay.
 const SESSIONS_POLL: Duration = Duration::from_secs(5);
 
 /// How many already-queued agent events one iteration applies before painting.

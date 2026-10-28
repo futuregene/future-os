@@ -381,6 +381,7 @@ pub enum Key {
     WorkspaceNone,
     // ── the palette's verbs ───────────────────────────────────────────
     CmdNew,
+    CmdStop,
     CmdDiff,
     CmdApproval,
     CmdThinking,
@@ -813,6 +814,7 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ),
 
         CmdNew => ("新建会话", "New chat"),
+        CmdStop => ("停止当前生成", "Stop the current run"),
         CmdDiff => ("审查工作区改动", "Review working-tree changes"),
         CmdApproval => ("查看完整审批详情", "Inspect the pending approval"),
         CmdHistory => ("搜索历史会话", "Search session history"),
@@ -1350,7 +1352,8 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 324] = {
+
+    const ALL_KEYS: [Key; 325] = {
         use Key::*;
         [
             TabTodo,
@@ -1469,6 +1472,7 @@ mod tests {
             WorkspaceChatDetail,
             WorkspaceNone,
             CmdNew,
+            CmdStop,
             CmdDiff,
             CmdApproval,
             CmdThinking,
