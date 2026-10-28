@@ -23,25 +23,24 @@ const LIVE_PROJECTION_CACHE_MAX = 8;
 const liveProjectionCache = new Map<string, LiveProjectionEntry>();
 
 /**
- * Runs already re-projected from their whole log once.
- *
- * A repair costs a full read of the run, and the conditions that ask for one can
- * persist (a journal that genuinely lost its head, a call whose completion never
- * existed at all). Once per run is what keeps that cost bounded; an explicit
- * reset clears the mark because the state that justified the repair is gone.
+ * Runs already re-projected from their whole log once, and runs whose rebuild
+ * itself failed. Both outcomes stop automatic repairs: a bad durable payload
+ * does not improve when every preview tick rereads it. An explicit reset clears
+ * the outcome because the state that justified it is gone.
  */
-const repairedRuns = new Set<string>();
-const REPAIRED_RUNS_MAX = 64;
+type RepairOutcome = "repaired" | "failed";
+const repairOutcomes = new Map<string, RepairOutcome>();
+const REPAIR_OUTCOMES_MAX = 64;
 
-function markRepaired(runId: string) {
-  repairedRuns.delete(runId);
-  repairedRuns.add(runId);
-  while (repairedRuns.size > REPAIRED_RUNS_MAX) {
-    const oldest = repairedRuns.values().next().value;
+function markRepairOutcome(runId: string, outcome: RepairOutcome) {
+  repairOutcomes.delete(runId);
+  repairOutcomes.set(runId, outcome);
+  while (repairOutcomes.size > REPAIR_OUTCOMES_MAX) {
+    const oldest = repairOutcomes.keys().next().value;
     /* v8 ignore next 2 -- size > MAX (>= 1) guarantees a first key exists */
     if (oldest === undefined)
       break;
-    repairedRuns.delete(oldest);
+    repairOutcomes.delete(oldest);
   }
 }
 
@@ -62,7 +61,7 @@ const FILE_TREE_INVALIDATING_EVENTS = new Set([
  */
 export function resetRunProjection(runId: string) {
   liveProjectionCache.delete(runId);
-  repairedRuns.delete(runId);
+  repairOutcomes.delete(runId);
 }
 
 /**
@@ -111,6 +110,10 @@ async function projectRunForLivePreview(
   shouldApply: () => boolean,
   attempt: { rebuilt?: boolean } = {},
 ): Promise<AssistantRunProjection | null> {
+  // A rebuild that itself rejected the durable log is terminal until an
+  // explicit reset. Retrying it would read the whole broken log every tick.
+  if (repairOutcomes.get(runId) === "failed")
+    return null;
   const cached = liveProjectionCache.get(runId) ?? null;
   const since = cached?.projector.lastSequence ?? -1;
   let events = await listRunEventsSince(runId, since);
@@ -128,9 +131,9 @@ async function projectRunForLivePreview(
   // projector's watermark over the hole and never look back — a tool call whose
   // completion sat in the hole then reads "running" for the rest of the turn.
   // Rebuild from the run's whole log instead, once per run.
-  if (!attempt.rebuilt && since >= 0 && !repairedRuns.has(runId)
+  if (!attempt.rebuilt && since >= 0 && !repairOutcomes.has(runId)
     && events.some(event => event.truncated === true)) {
-    markRepaired(runId);
+    markRepairOutcome(runId, "repaired");
     liveProjectionCache.delete(runId);
     return projectRunForLivePreview(runId, shouldApply, { rebuilt: true });
   }
@@ -174,16 +177,19 @@ async function projectRunForLivePreview(
       // the reply actually did, so take it once rather than re-reading the same
       // window forever.
       liveProjectionCache.delete(runId);
-      if (attempt.rebuilt)
+      if (attempt.rebuilt || repairOutcomes.has(runId)) {
+        markRepairOutcome(runId, "failed");
         throw error;
+      }
+      markRepairOutcome(runId, "repaired");
       return projectRunForLivePreview(runId, shouldApply, { rebuilt: true });
     }
     // A call the reply has already written past cannot still be running: see
     // `hasStaleRunningTool`. Its completion never reached this projector, so the
     // row would read "running" until the turn settles — repair it now.
-    if (!attempt.rebuilt && !repairedRuns.has(runId)
+    if (!attempt.rebuilt && !repairOutcomes.has(runId)
       && hasStaleRunningTool(entry.projection.segments)) {
-      markRepaired(runId);
+      markRepairOutcome(runId, "repaired");
       liveProjectionCache.delete(runId);
       return projectRunForLivePreview(runId, shouldApply, { rebuilt: true });
     }
