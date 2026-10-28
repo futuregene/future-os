@@ -240,6 +240,34 @@ impl SqliteStore {
         })
     }
 
+    /// The earliest cursor this store can still produce for `run`, over every
+    /// epoch that has not been retired.
+    ///
+    /// A reader that asks for an older cursor than this is missing a prefix the
+    /// journal no longer holds — the replay must say so instead of returning the
+    /// surviving tail as if it were the whole window (a consumer folding that
+    /// tail into its own projection would silently skip whatever fell outside).
+    pub(crate) fn run_first_cursor(&self, session: &str, run: &str) -> Result<Option<i64>> {
+        let (session, run) = (session.to_owned(), run.to_owned());
+        self.db.read(move |db| {
+            if crate::session::content::format(db, &session)? == crate::session::content::FORMAT_VERSION {
+                let run=crate::session::identity::BoundIdentity::run(db,&session,&run)?;
+                let session=crate::session::identity::BoundIdentity::session(db,&session)?;
+                Ok(db.query_row(
+                    "SELECT min(c.first_cursor) FROM stream_changes c JOIN stream_runs r ON r.id=c.stream_id WHERE r.session_id=?1 AND r.run_id=?2 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=r.id)",
+                    params![session,run],
+                    |row| row.get::<_,Option<i64>>(0),
+                ).optional()?.flatten())
+            } else {
+                Ok(db.query_row(
+                    "SELECT min(cursor) FROM (SELECT min(idx) AS cursor FROM run_events WHERE session_id=?1 AND run_id=?2 UNION ALL SELECT min(cursor) FROM run_snapshots WHERE session_id=?1 AND run_id=?2)",
+                    params![session,run],
+                    |row| row.get::<_,Option<i64>>(0),
+                ).optional()?.flatten())
+            }
+        })
+    }
+
     pub fn append_event(&self, session: &str, event: Value) -> Result<()> {
         self.append_events(session, vec![event])
     }

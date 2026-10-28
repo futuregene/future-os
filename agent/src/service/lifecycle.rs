@@ -1,4 +1,6 @@
 //! Existing startup/exit sandbox cleanup, called within the instance lifetime.
+#[cfg(target_os = "windows")]
+use crate::console;
 use anyhow::Result;
 
 struct CleanupGuard<F: FnOnce()>(Option<F>);
@@ -38,11 +40,15 @@ pub(super) fn cleanup_windows_sandbox_on_startup() {
     #[cfg(target_os = "windows")]
     match crate::sandbox::reset_windows_sandbox_capabilities() {
         Ok(removed) if removed > 0 => {
-            eprintln!("Future Agent: cleaned {removed} stale Windows sandbox permission(s)")
+            console::eprintln!(
+                "Future Agent: cleaned {removed} stale Windows sandbox permission(s)"
+            )
         }
         Ok(_) => {}
         Err(error) => {
-            eprintln!("Future Agent: could not clean stale Windows sandbox permissions: {error}")
+            console::eprintln!(
+                "Future Agent: could not clean stale Windows sandbox permissions: {error}"
+            )
         }
     }
 }

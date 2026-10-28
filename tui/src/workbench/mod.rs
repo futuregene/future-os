@@ -4485,7 +4485,8 @@ mod tests {
         assert!(text.contains("future-tui v0.11.0"), "{text}");
         assert!(text.contains("修复 parser 的 off-by-one"), "{text}");
         assert!(text.contains("dev-huichen"), "{text}");
-        assert!(text.contains("2 tool calls"), "{text}");
+        // The demo frame is Chinese, so its process row is too (see `demo`).
+        assert!(text.contains("工具调用 2 次 · 思考 1 次"), "{text}");
         assert!(text.contains("deepseek-flash"), "{text}");
         assert!(text.contains("ctx"), "{text}");
         assert!(text.contains("最近"), "the sidebar's tabs: {text}");
@@ -4501,7 +4502,7 @@ mod tests {
         assert!(text.contains("新会话"), "{text}");
         assert!(text.contains("模型"), "{text}");
         // None of the conversation surface's rows are behind it.
-        assert!(!text.contains("2 tool calls"), "{text}");
+        assert!(!text.contains("工具调用"), "{text}");
         assert!(
             !text.contains("输入 · enter 发送"),
             "the conversation's input band is not drawn under it: {text}"

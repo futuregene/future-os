@@ -6,6 +6,7 @@
 //! endpoints are unauthenticated). Used by the post-login onboarding flow; runs
 //! on a background thread since it blocks on the CLI child process.
 
+use future_host::console;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
@@ -26,7 +27,7 @@ pub fn run_builtin_skills<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let (rx, child) = match command.spawn() {
         Ok(pair) => pair,
         Err(error) => {
-            eprintln!("FutureOS: failed to start skill bootstrap: {error}");
+            console::eprintln!("FutureOS: failed to start skill bootstrap: {error}");
             return;
         }
     };
@@ -80,7 +81,7 @@ fn drain_skill_events(
         crate::runtime::record_cleanup_error("CLI bootstrap termination was not confirmed".into());
     }
     if exit_code != Some(0) {
-        eprintln!("FutureOS: skill bootstrap did not complete (exit {exit_code:?})");
+        console::eprintln!("FutureOS: skill bootstrap did not complete (exit {exit_code:?})");
     }
     exit_code
 }
@@ -91,10 +92,10 @@ fn drain_skill_events(
 fn handle_skill_event(event: CommandEvent, exit_code: &mut Option<i32>) {
     match event {
         CommandEvent::Stdout(bytes) | CommandEvent::Stderr(bytes) => {
-            eprint!("[skills] {}", String::from_utf8_lossy(&bytes));
+            console::eprint!("[skills] {}", String::from_utf8_lossy(&bytes));
         }
         CommandEvent::Error(error) => {
-            eprintln!("FutureOS: skill bootstrap error: {error}");
+            console::eprintln!("FutureOS: skill bootstrap error: {error}");
         }
         CommandEvent::Terminated(payload) => {
             *exit_code = payload.code;

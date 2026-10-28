@@ -1,4 +1,4 @@
-import type { AgentMessage, AssistantRunProjection, RunProjector } from "@future-os/thread-projection";
+import type { AgentMessage, AssistantRunProjection, MessageSegment, RunProjector } from "@future-os/thread-projection";
 import type { Dispatch, SetStateAction } from "react";
 import { compactionCheckpoints, createRunProjector } from "@future-os/thread-projection";
 import { listRunEventsSince } from "../../../integrations/storage/threadStore";
@@ -22,6 +22,28 @@ const LIVE_PROJECTION_CACHE_MAX = 8;
 
 const liveProjectionCache = new Map<string, LiveProjectionEntry>();
 
+/**
+ * Runs already re-projected from their whole log once, and runs whose rebuild
+ * itself failed. Both outcomes stop automatic repairs: a bad durable payload
+ * does not improve when every preview tick rereads it. An explicit reset clears
+ * the outcome because the state that justified it is gone.
+ */
+type RepairOutcome = "repaired" | "failed";
+const repairOutcomes = new Map<string, RepairOutcome>();
+const REPAIR_OUTCOMES_MAX = 64;
+
+function markRepairOutcome(runId: string, outcome: RepairOutcome) {
+  repairOutcomes.delete(runId);
+  repairOutcomes.set(runId, outcome);
+  while (repairOutcomes.size > REPAIR_OUTCOMES_MAX) {
+    const oldest = repairOutcomes.keys().next().value;
+    /* v8 ignore next 2 -- size > MAX (>= 1) guarantees a first key exists */
+    if (oldest === undefined)
+      break;
+    repairOutcomes.delete(oldest);
+  }
+}
+
 const FILE_TREE_INVALIDATING_EVENTS = new Set([
   "toolcall_start",
   "tool_start",
@@ -39,6 +61,38 @@ const FILE_TREE_INVALIDATING_EVENTS = new Set([
  */
 export function resetRunProjection(runId: string) {
   liveProjectionCache.delete(runId);
+  repairOutcomes.delete(runId);
+}
+
+/**
+ * Whether a projected reply still claims a call is running that cannot be.
+ *
+ * A running row is honest while nothing has settled after it. The Agent executes
+ * a step's calls strictly in order — `execute_tools_sequential` is the only mode,
+ * because parallel tools need write-conflict semantics it does not have — so a
+ * *settled* call after a running one is impossible unless the running row's
+ * completion never reached this projector. Observed on a real run: a reply showed
+ * a "running" row for minutes after that call ended, and it only healed when the
+ * turn settled and was re-projected from the journal, too late to stop the lie
+ * from being read.
+ *
+ * Reasoning or prose after a running row is *not* evidence: one assistant message
+ * may announce a call and keep streaming its own text, and `compaction` dividers
+ * say nothing about calls at all.
+ */
+export function hasStaleRunningTool(segments: readonly MessageSegment[]): boolean {
+  let running = false;
+  for (const segment of segments) {
+    if (segment.kind !== "activity")
+      continue;
+    if (segment.item.status === "running") {
+      running = true;
+      continue;
+    }
+    if (running)
+      return true;
+  }
+  return false;
 }
 
 /**
@@ -46,11 +100,20 @@ export function resetRunProjection(runId: string) {
  * `shouldApply` guard (a stale async result is dropped by returning null). Emits
  * `file-tree-refresh` when tool activity appears — the agent may have created or
  * modified files. Shared prologue of the two live-preview writers below.
+ *
+ * `attempt.rebuilt` marks the one recursive pass that starts from the run's
+ * whole log: it stops the repairs below from chasing each other when the journal
+ * itself is the reason the projection looks wrong.
  */
 async function projectRunForLivePreview(
   runId: string,
   shouldApply: () => boolean,
+  attempt: { rebuilt?: boolean } = {},
 ): Promise<AssistantRunProjection | null> {
+  // A rebuild that itself rejected the durable log is terminal until an
+  // explicit reset. Retrying it would read the whole broken log every tick.
+  if (repairOutcomes.get(runId) === "failed")
+    return null;
   const cached = liveProjectionCache.get(runId) ?? null;
   const since = cached?.projector.lastSequence ?? -1;
   let events = await listRunEventsSince(runId, since);
@@ -61,7 +124,19 @@ async function projectRunForLivePreview(
   // Never ingest that tail into a new empty projector: its prefix would be
   // permanently missing even though subsequent sequence numbers look valid.
   if (cached && liveProjectionCache.get(runId) !== cached)
-    return projectRunForLivePreview(runId, shouldApply);
+    return projectRunForLivePreview(runId, shouldApply, attempt);
+
+  // The Agent says this window does not continue from the cursor it was asked
+  // for: whatever fell outside it is gone. Appending it would step the
+  // projector's watermark over the hole and never look back — a tool call whose
+  // completion sat in the hole then reads "running" for the rest of the turn.
+  // Rebuild from the run's whole log instead, once per run.
+  if (!attempt.rebuilt && since >= 0 && !repairOutcomes.has(runId)
+    && events.some(event => event.truncated === true)) {
+    markRepairOutcome(runId, "repaired");
+    liveProjectionCache.delete(runId);
+    return projectRunForLivePreview(runId, shouldApply, { rebuilt: true });
+  }
 
   if (cached && events.length > 0 && events[0]!.sequence <= since) {
     // Sequence regressed under us — the agent realigned mid-stream (e.g. its
@@ -91,8 +166,34 @@ async function projectRunForLivePreview(
 
   const previousSequence = entry.projector.lastSequence;
   const unseen = events.filter(event => event.sequence > previousSequence);
-  if (unseen.length > 0 || !entry.projection)
-    entry.projection = entry.projector.ingest(unseen);
+  if (unseen.length > 0 || !entry.projection) {
+    try {
+      entry.projection = entry.projector.ingest(unseen);
+    }
+    catch (error) {
+      // A payload that cannot be applied — a content range whose prefix this
+      // projector never saw — costs the rest of the batch and leaves the
+      // watermark behind where the failure happened. Only a rebuild knows what
+      // the reply actually did, so take it once rather than re-reading the same
+      // window forever.
+      liveProjectionCache.delete(runId);
+      if (attempt.rebuilt || repairOutcomes.has(runId)) {
+        markRepairOutcome(runId, "failed");
+        throw error;
+      }
+      markRepairOutcome(runId, "repaired");
+      return projectRunForLivePreview(runId, shouldApply, { rebuilt: true });
+    }
+    // A call the reply has already written past cannot still be running: see
+    // `hasStaleRunningTool`. Its completion never reached this projector, so the
+    // row would read "running" until the turn settles — repair it now.
+    if (!attempt.rebuilt && !repairOutcomes.has(runId)
+      && hasStaleRunningTool(entry.projection.segments)) {
+      markRepairOutcome(runId, "repaired");
+      liveProjectionCache.delete(runId);
+      return projectRunForLivePreview(runId, shouldApply, { rebuilt: true });
+    }
+  }
   // Historical tool activity stays in every snapshot. Text/thinking/argument
   // deltas are not filesystem changes: invalidating on that history rescanned
   // every expanded directory every 2s for the remainder of a long reply.
@@ -211,6 +312,91 @@ export function mergeStreamingPreview(
   return [...base.filter(message => message.id !== preview.id), preview];
 }
 
+/** Runs whose live preview already reported a fallback (one warning per run). */
+const previewFallbackWarned = new Set<string>();
+
+/**
+ * Record a live-preview fallback once per run.
+ *
+ * The fallback below keeps an active run's reply on screen as running, so a
+ * failed projection is no longer silent — but the events themselves are still
+ * missing, and that has to be visible to whoever debugs "the reply never grew"
+ * instead of vanishing into a bare `catch`.
+ */
+export function warnLivePreviewFallback(runId: string, reason: string, error?: unknown) {
+  if (previewFallbackWarned.has(runId))
+    return;
+  previewFallbackWarned.add(runId);
+  console.warn(`[agent] live preview unavailable for run ${runId} (${reason}); showing history with a running reply`, error ?? "");
+}
+
+/**
+ * Give the in-flight exchange its running state back when the live projection
+ * produced no bubble for a run that is still executing.
+ *
+ * The agent saves an assistant entry after every model call, so a reload during
+ * a run surfaces a mid-run snapshot as ordinary history: a `complete` reply
+ * whose work folds into one row, no generating dot, no elapsed time, and — the
+ * part that actually hurts — no stop button, because the whole view believes
+ * the conversation is idle while the run keeps billing. This marks that
+ * exchange, or opens the bubble the run would have started with when no entry
+ * has landed yet, so the view tells the truth until `upsertStreamingPreview`
+ * takes the same row over (it looks the reply up by runId + streaming).
+ */
+export function ensureLiveReply(
+  messages: AgentMessage[],
+  runId: string,
+  runStartedAt: number | null,
+): AgentMessage[] {
+  // A live bubble already owns this run's reply: never re-mark or duplicate it.
+  if (messages.some(message => message.role === "assistant"
+    && message.status === "streaming"
+    && message.runId === runId)) {
+    return messages;
+  }
+  const lastAssistantIdx = lastIndexOfRole(messages, "assistant");
+  const lastUserIdx = lastIndexOfRole(messages, "user");
+  // Only the assistant AFTER the last user turn belongs to the in-flight
+  // exchange; an earlier one is a settled reply this run did not write.
+  if (lastAssistantIdx > lastUserIdx) {
+    return messages.map((message, index): AgentMessage => (index === lastAssistantIdx
+      // The snapshot's own content, segments and activity are kept — the reader
+      // should not watch the work already on screen disappear — and only its
+      // completion state is corrected.
+      ? {
+          ...message,
+          status: "streaming",
+          runId,
+          runStartedAt: runStartedAt ?? message.runStartedAt,
+          // A settle-time verdict cannot stand on a reply that is still being
+          // written; the run's own outcome replaces it when the run ends.
+          stopped: false,
+          terminationNotice: undefined,
+          terminationTitle: undefined,
+          createdAt: runStartedAt != null ? new Date(runStartedAt).toISOString() : message.createdAt,
+        }
+      : message));
+  }
+  // Nothing in the transcript belongs to this run yet (entries are only saved
+  // after a model call): show the bubble the run opened with.
+  return [
+    ...messages,
+    {
+      id: `stream_${runId}`,
+      role: "assistant",
+      authorKey: "author.researchCopilot",
+      content: "",
+      status: "streaming",
+      createdAt: new Date(runStartedAt ?? Date.now()).toISOString(),
+      activityItems: [],
+      segments: [],
+      thinkingActive: true,
+      runStartedAt: runStartedAt ?? undefined,
+      runId,
+    },
+  ];
+}
+
 /**
  * Render an in-flight run's live events as a streaming assistant bubble, keyed by
  * a stable `stream_<runId>` id. Unlike {@link updatePendingMessageFromRunEvents}
@@ -245,8 +431,15 @@ export async function upsertStreamingPreview(
         content,
         compactionCheckpoints([{ segments: projection.segments }]),
       );
-      if (!base)
-        return current;
+      if (!base) {
+        // Suppression means a persisted message already carries this run: the
+        // settled-reload case when the run has ended, but a frozen mid-run
+        // snapshot when it has not. This path only runs while the run is active,
+        // so hand the row its running state back instead of rendering it as a
+        // finished reply that cannot be stopped.
+        warnLivePreviewFallback(runId, "persisted reply carries the run");
+        return ensureLiveReply(current, runId, runStartedAt);
+      }
 
       const existingIndex = base.findIndex(message => message.id === bubbleId);
 
@@ -273,9 +466,14 @@ export async function upsertStreamingPreview(
       return base.map((message, index) => (index === existingIndex ? updated : message));
     });
   }
-  catch {
-    // Live preview is best-effort; the final assistant message still lands when
-    // the run settles and the thread reloads.
+  catch (error) {
+    // Live preview is best-effort: the final assistant message still lands when
+    // the run settles and the thread reloads. Best-effort must not mean silent,
+    // though — a run with no preview renders as a finished reply, so keep the
+    // reply marked running and record why the projection was missing.
+    warnLivePreviewFallback(runId, "projection threw", error);
+    if (shouldApply())
+      setMessages(current => ensureLiveReply(current, runId, runStartedAt));
   }
 }
 

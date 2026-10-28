@@ -15,6 +15,8 @@
 //!   [`with_config_lock`] serializes the read-modify-write of a given path within
 //!   the process so concurrent host operations don't lose each other's update.
 
+#[cfg(any(test, feature = "test-support"))]
+use crate::console;
 use std::collections::HashMap;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -172,7 +174,7 @@ pub fn restore_file(path: &Path, snapshot: Option<&[u8]>, owner_only: bool) {
     };
     if let Err(error) = result {
         // A NotFound remove just means the file was never created — fine.
-        eprintln!(
+        console::eprintln!(
             "FutureOS: config rollback could not restore {}: {error}",
             path.display()
         );

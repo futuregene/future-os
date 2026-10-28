@@ -1,6 +1,7 @@
 //! Synthetic public-lifecycle workloads shaped by aggregate historical counts.
 //! Contains no user prompts, generated text, provider identifiers or arguments.
 use super::*;
+use crate::console;
 
 fn id(n: usize) -> String {
     format!("00000000-0000-4000-8000-{n:012x}")
@@ -279,7 +280,7 @@ fn run_sized(tool_calls: usize, large_tool_bytes: Option<usize>) -> Value {
 #[test]
 fn historical_distribution_valid_transcripts() {
     let report = json!({"workload":"historical-distribution-valid-UUID-transcripts","cases":[run(20),run(150)],"limitations":"Synthetic aggregate-shaped inputs, not replay of private history. Direct admitted batches, not timer/admission/UI latency. First read uses a reopened store with warm OS file cache. Complete transcript reads return the same logical messages/bodies; serialized envelope byte sizes may differ. No compression, VACUUM or history rewrite."});
-    println!("REALISTIC_STORAGE_REPORT={report}");
+    console::println!("REALISTIC_STORAGE_REPORT={report}");
     if let Some(path) = std::env::var_os("FUTURE_REALISTIC_STORAGE_REPORT") {
         std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     }
@@ -288,7 +289,7 @@ fn historical_distribution_valid_transcripts() {
 #[test]
 fn large_tool_outputs_reuse_durable_bodies() {
     let report = json!({"workload":"valid-UUID-large-tool-outputs","cases":[run_sized(1,Some(1024*1024)),run_sized(1,Some(10*1024*1024))],"limitations":"Direct synthetic tool_end facts; explicit full transcript export reads, not inline UI transport. One sample per size; no latency percentile claim. Body hash verification is off the ordered database writer; no body compression or completion-time copying."});
-    println!("LARGE_TOOL_STORAGE_REPORT={report}");
+    console::println!("LARGE_TOOL_STORAGE_REPORT={report}");
     if let Some(path) = std::env::var_os("FUTURE_LARGE_TOOL_STORAGE_REPORT") {
         std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     }

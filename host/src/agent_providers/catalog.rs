@@ -8,6 +8,7 @@
 //! that response also carries each provider's human-readable display name, so
 //! the GUI has no independent id→name map to keep in sync.
 
+use crate::console;
 use std::collections::BTreeMap;
 #[cfg(test)]
 use std::path::PathBuf;
@@ -82,7 +83,7 @@ async fn fetch_builtin_catalog() -> Result<BTreeMap<String, CatalogProviderSumma
 /// still shows FutureGene and custom providers, and write-command validation
 /// refuses what it cannot check rather than trusting an empty set.
 pub(super) fn catalog_unavailable(error: crate::Error) -> BTreeMap<String, CatalogProviderSummary> {
-    eprintln!("FutureOS: built-in provider catalog unavailable from the agent: {error}");
+    console::eprintln!("FutureOS: built-in provider catalog unavailable from the agent: {error}");
     BTreeMap::new()
 }
 

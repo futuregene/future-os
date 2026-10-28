@@ -20,6 +20,7 @@
 //! Output never leaves this process: the buffer lives in memory, no request
 //! body is logged, and nothing is written to the store.
 
+use future_host::console;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
@@ -138,7 +139,7 @@ pub fn serve() -> Result<(), String> {
         let listener = match TcpListener::from_std(std_listener) {
             Ok(listener) => listener,
             Err(error) => {
-                eprintln!("terminal: listener registration failed: {error}");
+                console::eprintln!("terminal: listener registration failed: {error}");
                 return;
             }
         };

@@ -41,6 +41,7 @@
 // by this session.
 #![allow(clippy::await_holding_lock)]
 
+use crate::console;
 use std::borrow::Cow;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -1224,7 +1225,7 @@ async fn run_fixture(broker: Broker, label: &str) {
     assert_history_undeclared(&withdrawn_pages.full, &entries, "withdrawn full");
     assert_history_undeclared(&withdrawn_pages.paged, &entries, "withdrawn paged");
 
-    println!(
+    console::println!(
         "VERIFY_E2E_FIXTURE {}",
         json!({
             "live": { "undeclared": full.summary(), "declared": lean_capture.summary() },
@@ -1320,7 +1321,7 @@ async fn measure_catalog_activity_lane() {
     let saving = 1.0
         - declared["payloadBytes"].as_f64().unwrap_or_default()
             / undeclared["payloadBytes"].as_f64().unwrap_or(1.0).max(1.0);
-    println!(
+    console::println!(
         "CATALOG_ACTIVITY {}",
         json!({
             "rows": rows,
@@ -1557,7 +1558,7 @@ async fn run_real_traffic_with(
         phone_bytes < coalesced_bytes || live_phone.received.len() <= live_coalesced.received.len(),
         "the phone's lane may not grow when lean is added ({phone_bytes} vs {coalesced_bytes})"
     );
-    println!(
+    console::println!(
         "VERIFY_E2E_LIVE_PHONE {}",
         json!({
             "session": session,
@@ -1599,7 +1600,7 @@ async fn run_real_traffic_with(
         "the lean paged page must not carry fewer entries ({lean_paged_entries} vs {undeclared_paged_entries})"
     );
 
-    println!(
+    console::println!(
         "VERIFY_E2E_LIVE {}",
         json!({
             "session": session,
@@ -1609,7 +1610,7 @@ async fn run_real_traffic_with(
             "declared": live_lean.summary(),
         })
     );
-    println!(
+    console::println!(
         "VERIFY_E2E_HISTORY {}",
         json!({
             "session": session,
@@ -1702,7 +1703,7 @@ async fn run_real_traffic_with(
             .all(|(_, _, bytes)| *bytes == 0),
         "the lean paged page must carry none of them"
     );
-    println!(
+    console::println!(
         "VERIFY_E2E_LAZY_FETCH {}",
         json!({
             "session": session,
@@ -1807,7 +1808,7 @@ fn assert_broker_accounting(
     // The event subject is what every per-message protocol frame carries, so
     // its length is what the framing arithmetic in the report needs.
     let evt_subject = format!("p.{pair_id}.evt.{session}");
-    println!(
+    console::println!(
         "VERIFY_E2E_NATS_ACCOUNTING {}",
         json!({
             "receivedMessages": receipt.messages,

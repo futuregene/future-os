@@ -68,6 +68,12 @@ export interface StoredRunEvent {
   payload?: string | null;
   sequence: number;
   createdAt: number;
+  /**
+   * The Agent could not serve this window in full: everything outside it is
+   * gone, so it does not continue from the cursor it was asked for and must not
+   * be appended to an existing projection. Present only on such answers.
+   */
+  truncated?: boolean;
 }
 
 export interface StoredToolCall {

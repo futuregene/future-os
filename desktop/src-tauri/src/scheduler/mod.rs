@@ -6,6 +6,8 @@ use crate::commands::UpdateStatus;
 #[cfg(feature = "gui")]
 use crate::AppError;
 #[cfg(feature = "gui")]
+use future_host::console;
+#[cfg(feature = "gui")]
 pub(crate) use future_host::scheduler::refresh_future_balance_now;
 #[cfg(feature = "gui")]
 pub(crate) use future_host::scheduler::refresh_future_models_now;
@@ -69,7 +71,7 @@ async fn emit_app_update_result<R: tauri::Runtime>(
         Ok(status) => {
             let _ = app.emit(APP_UPDATE_EVENT, status);
         }
-        Err(error) => eprintln!("FutureOS scheduled app update check failed: {error}"),
+        Err(error) => console::eprintln!("FutureOS scheduled app update check failed: {error}"),
     }
 }
 
@@ -101,7 +103,7 @@ async fn emit_models_result<R: tauri::Runtime>(
             let _ = app.emit(FUTURE_MODELS_EVENT, result);
         }
         Ok(_) => {}
-        Err(error) => eprintln!("FutureOS scheduled model refresh failed: {error}"),
+        Err(error) => console::eprintln!("FutureOS scheduled model refresh failed: {error}"),
     }
 }
 

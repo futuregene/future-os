@@ -2,6 +2,7 @@
 
 use crate::remote;
 use crate::remote::{is_on, remember_switch};
+use future_host::console;
 use serde::Serialize;
 
 #[tauri::command]
@@ -16,7 +17,7 @@ pub async fn remote_start(
     match remote::enable().await {
         Ok(status) => {
             if let Some(reason) = &status.reason {
-                eprintln!("remote: start completed in {:?} [{reason:?}]", status.phase);
+                console::eprintln!("remote: start completed in {:?} [{reason:?}]", status.phase);
             }
             // A start that came up failed or revoked is not an "on" switch, so
             // it must not be remembered as one: the next launch must not replay
@@ -29,7 +30,7 @@ pub async fn remote_start(
         Err(error) => {
             // The GUI collapses this into a generic banner; keep the real cause
             // in the app's stderr so a failed start is debuggable.
-            eprintln!("remote: start failed (local fault): {error}");
+            console::eprintln!("remote: start failed (local fault): {error}");
             Err(error)
         }
     }

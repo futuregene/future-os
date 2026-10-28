@@ -84,6 +84,10 @@ async fn agent_events(
         .unwrap_or_else(|| run.thread_id.clone());
     let replay =
         agent_bridge::get_events_since_payload(sid, run_id.to_string(), since_sequence).await?;
+    // The Agent answers a cursor it can no longer honour with a window that does
+    // not continue from it. That fact has to reach the consumer: folding such a
+    // tail into an existing projection silently skips whatever fell outside.
+    let truncated = replay.truncated;
     let records: Vec<store::RunEventRecord> = replay_events(replay, since_sequence)
         .into_iter()
         .enumerate()
@@ -100,6 +104,7 @@ async fn agent_events(
             created_at: chrono::DateTime::parse_from_rfc3339(&e.timestamp)
                 .map(|value| value.timestamp_millis())
                 .unwrap_or(0),
+            truncated,
         })
         .collect();
     Ok(records)
@@ -395,6 +400,73 @@ mod tests {
         assert_eq!(events[1].payload, None);
         assert_eq!(events[1].sequence, 1);
         assert_eq!(events[1].created_at, 0);
+        script_mock_agent(MockScript::default());
+    }
+
+    /// The Agent's "this window does not continue from your cursor" has to reach
+    /// the record: the live preview that folded a gapped tail skipped a call's
+    /// completion, and its row read "running" until the turn settled.
+    #[tokio::test]
+    async fn list_run_events_carries_the_agents_truncation_flag() {
+        use crate::test_support::command_agent::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_events_truncated");
+        create_run(run_input(&thread.id, "run_truncated")).expect("create run");
+        create_run(run_input(&thread.id, "run_whole")).expect("create run");
+        crate::test_support::command_agent::ensure_mock_agent();
+
+        // The Agent could not honour the cursor: this window does not continue
+        // from it. Losing that fact made the live preview append a gapped tail,
+        // which skipped a call's completion and left its row reading "running"
+        // until the turn settled.
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "get_events_since".to_string(),
+                serde_json::json!({
+                    "events": [{
+                        "eventId": "e1",
+                        "type": "tool_start",
+                        "data": "{}",
+                        "idx": 0,
+                        "timestamp": "2024-01-01T00:00:00Z",
+                    }],
+                    "truncated": true,
+                })
+                .to_string(),
+            )]),
+            ..Default::default()
+        });
+        let truncated = list_run_events("run_truncated".into())
+            .await
+            .expect("events");
+        assert_eq!(truncated.len(), 1);
+        assert!(
+            truncated[0].truncated,
+            "the Agent's truncation must reach the record"
+        );
+
+        // A whole window is not truncated, so a consumer keeps folding it.
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "get_events_since".to_string(),
+                serde_json::json!({
+                    "events": [{
+                        "eventId": "e1",
+                        "type": "tool_start",
+                        "data": "{}",
+                        "idx": 0,
+                        "timestamp": "2024-01-01T00:00:00Z",
+                    }],
+                })
+                .to_string(),
+            )]),
+            ..Default::default()
+        });
+        let whole = list_run_events("run_whole".into()).await.expect("events");
+        assert_eq!(whole.len(), 1);
+        assert!(!whole[0].truncated);
         script_mock_agent(MockScript::default());
     }
 

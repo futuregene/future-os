@@ -213,19 +213,26 @@ pub fn strip_ansi(text: &str) -> String {
 }
 
 /// `eprint!` equivalent that also mirrors into the log file (ANSI-stripped).
+///
+/// The file takes the text first. The terminal is the copy that can fail — a
+/// Desktop launched from a terminal keeps that terminal's pty as fd 2, and
+/// closing the terminal makes every later write fail with `EIO` — so the run
+/// loop's streamed output has to reach the log even after the terminal is gone.
 pub fn eprint_mirror(args: std::fmt::Arguments) {
-    eprint!("{args}");
     if let Some(mirror) = get() {
         mirror.write_stripped(&args.to_string());
     }
+    crate::console::write_err(args);
 }
 
 /// `eprintln!` equivalent that also mirrors into the log file (ANSI-stripped).
 pub fn eprintln_mirror(args: std::fmt::Arguments) {
-    eprintln!("{args}");
     if let Some(mirror) = get() {
         mirror.write_stripped(&format!("{args}\n"));
     }
+    // One write, newline included, so a concurrent writer cannot land between
+    // the line and its terminator.
+    crate::console::write_err(format_args!("{args}\n"));
 }
 
 /// Print to stderr AND the log file (if enabled via `--log-file`).
