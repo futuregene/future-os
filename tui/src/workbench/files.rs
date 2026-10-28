@@ -321,8 +321,7 @@ pub fn preview_kind(path: &Path) -> PreviewKind {
     if !meta.is_file() {
         return PreviewKind::Opaque;
     }
-    let head = read_head(path, 12);
-    if let Some(_format) = crate::paste::sniff_image_format(&head) {
+    if is_image_file(path) {
         return PreviewKind::Image;
     }
     if meta.len() > MAX_TEXT_PREVIEW_BYTES {
@@ -363,7 +362,7 @@ pub fn image_siblings(path: &str) -> (Vec<String>, usize) {
         .flatten()
         .filter_map(|entry| {
             let candidate = entry.path();
-            if !candidate.is_file() || preview_kind(&candidate) != PreviewKind::Image {
+            if !candidate.is_file() || !is_image_file(&candidate) {
                 return None;
             }
             let name = entry.file_name().to_string_lossy().to_lowercase();
@@ -385,6 +384,13 @@ pub fn image_siblings(path: &str) -> (Vec<String>, usize) {
         Some(index) => (paths, index),
         None => (Vec::new(), 0),
     }
+}
+
+/// Is the first handful of bytes an image signature? Twelve bytes are enough
+/// to tell every format the preview supports from text, without reading the
+/// text sample `preview_kind` needs for its second question.
+fn is_image_file(path: &Path) -> bool {
+    crate::paste::sniff_image_format(&read_head(path, 12)).is_some()
 }
 
 fn read_head(path: &Path, limit: usize) -> Vec<u8> {

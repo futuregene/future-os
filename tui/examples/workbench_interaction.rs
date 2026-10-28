@@ -598,7 +598,11 @@ fn audit_page(
             .iter()
             .any(|(_, id)| id.starts_with("sidebar.tab."))
         {
-            let actions = narrow.handle(WbEvent::Key("ctrl+b".into()), data);
+            let sidebar_key = narrow
+                .keys
+                .key(future_tui::workbench::preferences::Action::Sidebar)
+                .to_string();
+            let actions = narrow.handle(WbEvent::Key(sidebar_key.clone()), data);
             narrow.render(data, w, h);
             // The panel takes the body instead of a rail: either overlay is
             // the answer, but the keys must reach it and its rows must be
@@ -611,7 +615,7 @@ fn audit_page(
                     .any(|(_, id)| id.starts_with("sidebar.row."));
             if !reached {
                 issues.push(format!(
-                    "{name}: ctrl+b cannot reach the panel when narrow ({actions:?})"
+                    "{name}: {sidebar_key} cannot reach the panel when narrow ({actions:?})"
                 ));
             }
         }
@@ -638,6 +642,7 @@ fn is_page(id: &str) -> bool {
         || id == "input"
         || id == "divider"
         || id.starts_with("sidebar.")
+        || id.starts_with("header.")
         || id.starts_with("launchpad.")
 }
 
