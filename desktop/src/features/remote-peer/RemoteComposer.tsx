@@ -442,8 +442,9 @@ export function RemoteComposer({
     if (!data || busy || uploading || held)
       return;
     const files = [...data.files];
+    const text = data.getData("text/plain");
     const hasUriList = data.types.includes("text/uri-list") && !!data.getData("text/uri-list");
-    if (files.length === 0 && !hasUriList) {
+    if (files.length === 0 && !hasUriList && text.length === 0) {
       // The one payload the webview cannot report: WebKitGTK dispatches a paste
       // event with an empty DataTransfer for a clipboard image, so the native
       // pasteboard is asked for it. A text paste still belongs to the field.

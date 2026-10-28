@@ -663,6 +663,22 @@ it("leaves a text paste to the input", async () => {
   await view.unmount();
 });
 
+it("prefers editable text when the native clipboard also holds an image", async () => {
+  nativeImage.mockResolvedValue({ name: "preview.png", path: "/tmp/preview.png" });
+  const view = await mount();
+
+  const event = pasteEvent({ text: "keep this text" });
+  await act(async () => {
+    view.input.dispatchEvent(event);
+  });
+  await settle();
+
+  expect(nativeImage).not.toHaveBeenCalled();
+  expect(upload).not.toHaveBeenCalled();
+  expect(event.defaultPrevented).toBe(false);
+  await view.unmount();
+});
+
 /**
  * WebKitGTK reports a clipboard image as a paste with an empty `DataTransfer`,
  * so the only payload the webview never sees is read from the native pasteboard
@@ -815,11 +831,17 @@ it("reports a pasted file the host refused", async () => {
 });
 
 /** A clipboard carrying a file URI but no `File` is still a file copy. */
-function pasteEvent(input: { files?: File[]; uriList?: string } = {}): Event {
+function pasteEvent(input: { files?: File[]; text?: string; uriList?: string } = {}): Event {
   const event = new Event("paste", { bubbles: true, cancelable: true });
   const data = {
     files: input.files ?? [],
-    getData: (type: string) => (type === "text/uri-list" ? input.uriList ?? "" : ""),
+    getData: (type: string) => {
+      if (type === "text/uri-list")
+        return input.uriList ?? "";
+      if (type === "text/plain")
+        return input.text ?? "";
+      return "";
+    },
     types: input.uriList ? ["text/uri-list"] : [],
   };
   Object.defineProperty(event, "clipboardData", { value: data });
