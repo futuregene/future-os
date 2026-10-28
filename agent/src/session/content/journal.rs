@@ -612,7 +612,7 @@ fn read_inline_bodies(
     stream: &StreamIdentity,
     identity: &future_rpc::content_range::StorageIdentity,
     requests: Vec<InlineBody>,
-) -> Result<std::collections::HashMap<(usize, String), String>> {
+) -> Result<std::collections::HashMap<(usize, String), Result<String>>> {
     if requests.is_empty() {
         return Ok(std::collections::HashMap::new());
     }
@@ -644,33 +644,39 @@ fn read_inline_bodies(
         )?;
         let mut bodies = std::collections::HashMap::with_capacity(requests.len());
         for request in requests {
-            let current: Option<ContentRange> = statement
-                .query_row(
-                    rusqlite::params![session, run, epoch, request.body.cursor, request.field,],
-                    |row| {
-                        Ok(ContentRange {
-                            id: row.get(0)?,
-                            offset: row.get(1)?,
-                            length: row.get(2)?,
-                        })
-                    },
-                )
-                .optional()?;
-            ensure!(
-                current == Some(request.body.range),
-                "event content reference changed while reading"
-            );
-            let page = super::read(
-                &tx,
-                request.body.range.id,
-                request.body.range.offset,
-                request.body.range.length.try_into()?,
-            )?;
-            ensure!(
-                page.next_offset == request.body.range.offset + request.body.range.length,
-                "inline event content is incomplete"
-            );
-            bodies.insert((request.change, request.field), page.text);
+            // A replay response may cut this change off by its byte budget.
+            // Stage the outcome, not an early page-wide failure; the caller
+            // decides whether this body is actually returned.
+            let body = (|| -> Result<String> {
+                let current: Option<ContentRange> = statement
+                    .query_row(
+                        rusqlite::params![session, run, epoch, request.body.cursor, request.field,],
+                        |row| {
+                            Ok(ContentRange {
+                                id: row.get(0)?,
+                                offset: row.get(1)?,
+                                length: row.get(2)?,
+                            })
+                        },
+                    )
+                    .optional()?;
+                ensure!(
+                    current == Some(request.body.range),
+                    "event content reference changed while reading"
+                );
+                let page = super::read(
+                    &tx,
+                    request.body.range.id,
+                    request.body.range.offset,
+                    request.body.range.length.try_into()?,
+                )?;
+                ensure!(
+                    page.next_offset == request.body.range.offset + request.body.range.length,
+                    "inline event content is incomplete"
+                );
+                Ok(page.text)
+            })();
+            bodies.insert((request.change, request.field), body);
         }
         drop(statement);
         tx.commit()?;
@@ -685,26 +691,37 @@ fn materialize_page(
     stream: &StreamIdentity,
     identity: &future_rpc::content_range::StorageIdentity,
     changes: Vec<StoredChange>,
-) -> Result<Vec<Value>> {
+) -> Result<Vec<Result<Value>>> {
     let requests = inline_body_requests(&changes);
+    let planned = requests
+        .iter()
+        .map(|request| (request.change, request.field.clone()))
+        .collect::<std::collections::HashSet<_>>();
     let mut bodies = read_inline_bodies(store, stream, identity, requests)?;
-    changes
+    Ok(changes
         .into_iter()
         .enumerate()
         .map(|(index, change)| {
-            materialize_with(stream, identity, change, |field, _| {
-                bodies
-                    .remove(&(index, field.to_owned()))
-                    .context("inline event body was not staged")
-            })
+            materialize_with(
+                stream,
+                identity,
+                change,
+                |field| planned.contains(&(index, field.to_owned())),
+                |field, _| {
+                    bodies
+                        .remove(&(index, field.to_owned()))
+                        .context("inline event body was not staged")?
+                },
+            )
         })
-        .collect()
+        .collect())
 }
 
 fn materialize_with(
     stream: &StreamIdentity,
     identity: &future_rpc::content_range::StorageIdentity,
     change: StoredChange,
+    should_inline: impl Fn(&str) -> bool,
     mut read_body: impl FnMut(&str, BodyCursor) -> Result<String>,
 ) -> Result<Value> {
     ensure!(
@@ -716,18 +733,8 @@ fn materialize_with(
     if event["data"].get("content_key").is_some() {
         event["data"]["content_first_idx"] = json!(change.first_cursor);
     }
-    let fragment = matches!(
-        change.event_type.as_str(),
-        "text_chunk" | "thinking_delta" | "tool_delta"
-    );
-    let mut inline_bytes = 0usize;
     for (field, range, encoding) in change.bodies {
-        let size = usize::try_from(range.length)?;
-        if !fragment
-            && (size > super::transport::INLINE_FIELD_BYTES
-                || inline_bytes.saturating_add(size.saturating_mul(6))
-                    > super::transport::INLINE_EVENT_BYTES / 2)
-        {
+        if !should_inline(&field) {
             let name = field
                 .strip_prefix("/data/")
                 .context("invalid event body field")?
@@ -740,7 +747,6 @@ fn materialize_with(
             continue;
         }
         let text = read_body(&field, BodyCursor { range, cursor })?;
-        inline_bytes = inline_bytes.saturating_add(text.len().saturating_mul(6));
         let value = match encoding {
             Encoding::Text => json!(text),
             Encoding::Json => serde_json::from_str(&text)?,
@@ -825,7 +831,7 @@ impl SqliteStore {
         let mut events = Vec::new();
         let mut bytes = 0usize;
         for event in materialize_page(self, stream, &identity, page.changes)? {
-            let event: crate::rpc::SseEvent = serde_json::from_value(event)?;
+            let event: crate::rpc::SseEvent = serde_json::from_value(event?)?;
             bytes += event.data.len() + super::transport::EVENT_WIRE_OVERHEAD;
             events.push(event);
             if bytes > super::transport::REPLAY_PAGE_BYTES {
@@ -927,7 +933,7 @@ impl SqliteStore {
                 let values = materialize_page(self, &stream, &storage_identity, page.changes)?;
                 for (value, last_cursor) in values.into_iter().zip(cursors) {
                     cursor = last_cursor;
-                    let event: crate::rpc::SseEvent = serde_json::from_value(value)?;
+                    let event: crate::rpc::SseEvent = serde_json::from_value(value?)?;
                     bytes = bytes
                         .saturating_add(event.data.len() + super::transport::EVENT_WIRE_OVERHEAD);
                     events.push(event);
