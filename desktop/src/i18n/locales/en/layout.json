@@ -153,6 +153,19 @@
     "communitySubtitle": "Configure your own model provider to get started."
   },
   "agentStatus": {
+    "noResponse": "Future Agent is not responding yet",
+    "noResponseHint": "No startup status received for 15 seconds. Still trying to connect.",
+    "takingLonger": "Startup is taking longer. Work is still in progress; please wait.",
+    "startupStages": {
+      "preparing": "Preparing Future Agent",
+      "loading_models": "Loading models and credentials",
+      "reserving_endpoint": "Preparing the local connection",
+      "opening_storage": "Checking conversation data",
+      "backing_up_storage": "Backing up data before upgrading",
+      "upgrading_storage": "Upgrading conversation data",
+      "recovering_sessions": "Recovering conversations",
+      "binding_endpoint": "Starting the Agent service"
+    },
     "wait": "Please wait a moment.",
     "failed": "Future Agent could not start",
     "fixFailed": "Restart FutureOS and check the reported error. If using an external Agent, check its availability and version.",
