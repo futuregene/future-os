@@ -1,5 +1,6 @@
 //! Admission, independent upgrade snapshots and the versioned schema contract.
 //! The historical migration chain keeps its released identities and transactions.
+use crate::console;
 use std::{collections::HashSet, path::PathBuf};
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -122,7 +123,7 @@ pub(super) fn initialize(conn: &Connection) -> Result<(), Error> {
         validate_core(conn)?;
         // Optional metadata can retry independently without replaying old cleanup.
         super::db::apply_versioned_migrations(conn).unwrap_or_else(|error| {
-            eprintln!("FutureOS migration: optional metadata unavailable: {error}");
+            console::eprintln!("FutureOS migration: optional metadata unavailable: {error}");
         });
         return Ok(());
     }
@@ -240,7 +241,7 @@ fn snapshot_before_upgrade(conn: &Connection) -> Result<Option<PathBuf>, Error> 
         .join("backups");
     let path = future_agent::session::create_database_snapshot(conn, &directory, "app-before-schema-upgrade")
         .map_err(|error| Error::from(format!("Cannot create a verified Desktop pre-upgrade snapshot: {error}; migration was not started.")))?;
-    eprintln!(
+    console::eprintln!(
         "FutureOS: preserved Desktop pre-upgrade snapshot at {}",
         path.display()
     );

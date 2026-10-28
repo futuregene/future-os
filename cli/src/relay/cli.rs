@@ -6,6 +6,7 @@
 //! its own executable: same code, one fewer artifact to install, and an
 //! operator already has `future` wherever the desktop is.
 
+use future_agent::console;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -70,7 +71,7 @@ is recorded per pairing.";
 
 pub fn run(args: &[String]) -> anyhow::Result<()> {
     if args.is_empty() || matches!(args[0].as_str(), "--help" | "-h" | "help") {
-        println!("{HELP}");
+        console::println!("{HELP}");
         return Ok(());
     }
     match args[0].as_str() {
@@ -270,19 +271,19 @@ fn init(args: &[String]) -> anyhow::Result<()> {
     };
     config.save(&paths.config)?;
 
-    println!("Relay trust setup written to {}", args.dir.display());
-    println!("  operator public key : {}", operator.public_key());
-    println!("  account  public key : {}", account.public_key());
-    println!();
-    println!("Next:");
-    println!("  1. nats-server -c {}", paths.nats_conf.display());
-    println!(
+    console::println!("Relay trust setup written to {}", args.dir.display());
+    console::println!("  operator public key : {}", operator.public_key());
+    console::println!("  account  public key : {}", account.public_key());
+    console::println!();
+    console::println!("Next:");
+    console::println!("  1. nats-server -c {}", paths.nats_conf.display());
+    console::println!(
         "  2. future relay serve --config {}",
         paths.config.display()
     );
-    println!();
-    println!("Keep operator.seed and account.seed private: the account seed signs every");
-    println!("NATS credential this relay issues. Never commit or share them.");
+    console::println!();
+    console::println!("Keep operator.seed and account.seed private: the account seed signs every");
+    console::println!("NATS credential this relay issues. Never commit or share them.");
     Ok(())
 }
 
@@ -479,7 +480,7 @@ pub fn serve(args: &[String]) -> anyhow::Result<()> {
         None
     };
     if tls.is_none() && config.public_url.trim_start().starts_with("https://") {
-        eprintln!(
+        console::eprintln!(
             "future relay: public URL {} is https but no certificate is configured; \
              serving plaintext and relying on a TLS terminator in front of this listener",
             config.public_url
@@ -489,14 +490,14 @@ pub fn serve(args: &[String]) -> anyhow::Result<()> {
     let rooms_path = config_path.with_file_name("rooms.json");
     let relay = Arc::new(Relay::new(config, Some(&rooms_path))?);
     match &tls {
-        Some((cert, _, _)) => println!(
+        Some((cert, _, _)) => console::println!(
             "future relay listening on https://{listen} (cert {}, account {}, public {}, rooms {})",
             cert.display(),
             relay.account_public_key(),
             relay.config.public_url,
             relay.rooms.len()
         ),
-        None => println!(
+        None => console::println!(
             "future relay listening on http://{listen} (account {}, public {}, rooms {})",
             relay.account_public_key(),
             relay.config.public_url,
@@ -517,7 +518,7 @@ pub fn serve(args: &[String]) -> anyhow::Result<()> {
                 tick.tick().await;
                 let dropped = rooms.purge(now());
                 if dropped > 0 {
-                    eprintln!("future relay: pruned {dropped} expired room(s)");
+                    console::eprintln!("future relay: pruned {dropped} expired room(s)");
                 }
             }
         });
@@ -584,7 +585,7 @@ async fn serve_tls(
                 // A failed accept (e.g. `EMFILE` during a burst) must not stop a
                 // relay that every paired phone depends on; back off briefly
                 // instead of spinning on the same condition.
-                eprintln!("future relay: accept failed: {error}");
+                console::eprintln!("future relay: accept failed: {error}");
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 continue;
             }

@@ -6,6 +6,7 @@
 //! desktop reuses the same executor with notifications downgraded to ledger
 //! writes (no webview).
 
+use crate::console;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -149,7 +150,7 @@ async fn run_loop(notify: Notifier) {
     // reconciliation the GUI already does for agent runs.
     if let Ok(store) = Store::open(&future_home()) {
         if let Err(error) = store.mark_interrupted_runs(now_ms()) {
-            eprintln!("FutureOS tasks: interrupted-run reconciliation failed: {error}");
+            console::eprintln!("FutureOS tasks: interrupted-run reconciliation failed: {error}");
         }
     }
     let mut interval = tokio::time::interval(TICK_INTERVAL);
@@ -166,7 +167,7 @@ async fn run_loop(notify: Notifier) {
             _ = wake_signal().notified() => {}
         }
         if let Err(error) = tick(&notify).await {
-            eprintln!("FutureOS tasks tick failed: {error}");
+            console::eprintln!("FutureOS tasks tick failed: {error}");
         }
     }
 }
@@ -225,12 +226,12 @@ async fn tick(notify: &Notifier) -> Result<(), String> {
             let store = match Store::open(&future_home()) {
                 Ok(s) => s,
                 Err(error) => {
-                    eprintln!("FutureOS tasks: could not open store for run: {error}");
+                    console::eprintln!("FutureOS tasks: could not open store for run: {error}");
                     return;
                 }
             };
             if let Err(error) = execute(&notify, store, task, run).await {
-                eprintln!("FutureOS task execution failed: {error}");
+                console::eprintln!("FutureOS task execution failed: {error}");
             }
         });
     }
@@ -322,7 +323,7 @@ impl Drop for InterruptedTask {
             Ok::<_, String>(())
         })();
         if let Err(error) = result {
-            eprintln!("FutureOS task interruption persistence failed: {error}");
+            console::eprintln!("FutureOS task interruption persistence failed: {error}");
             if crate::request_scope::is_stopping() {
                 crate::runtime::record_cleanup_error(error);
             }
@@ -435,7 +436,7 @@ async fn execute(
                 // there and still openable, which is a better outcome than a
                 // ledger that claims a delete that did not happen. The next run
                 // is unaffected (each run has its own conversation).
-                Err(error) => eprintln!(
+                Err(error) => console::eprintln!(
                     "FutureOS tasks: could not delete the conversation of run {}: {error}",
                     run.id
                 ),

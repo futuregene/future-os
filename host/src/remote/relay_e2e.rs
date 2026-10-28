@@ -33,6 +33,7 @@
 
 #![cfg(test)]
 
+use crate::console;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde_json::json;
@@ -127,7 +128,7 @@ async fn a_client_pairs_and_works_through_a_self_hosted_relay() {
         .bridge_instance_id
         .clone()
         .expect("the host's bridge identity");
-    println!(
+    console::println!(
         "RELAY_E2E_PAIRED {}",
         json!({
             "relay": relay,

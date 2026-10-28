@@ -7,6 +7,7 @@
 //! running a build: the previous 3-second deadline failed 33 times in this
 //! machine's own log, and refusing to distinguish "slow" from "absent" turned
 //! load into a reported outage.
+use crate::console;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -92,7 +93,7 @@ pub(crate) async fn monitor() {
                 && last_warning
                     .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(300))
             {
-                eprintln!("remote: Agent availability probe failed [LC003]: {result:?}");
+                console::eprintln!("remote: Agent availability probe failed [LC003]: {result:?}");
                 last_warning = Some(now);
             }
             previous = Some(reported);

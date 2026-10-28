@@ -5,6 +5,8 @@
 )]
 
 #[cfg(not(test))]
+use future_host::console;
+#[cfg(not(test))]
 use futureos_lib::launch::{self, Launch};
 
 #[cfg(not(test))]
@@ -22,7 +24,7 @@ fn main() -> std::process::ExitCode {
         return match result {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(error) => {
-                eprintln!("{error}");
+                console::eprintln!("{error}");
                 std::process::ExitCode::FAILURE
             }
         };
@@ -32,19 +34,19 @@ fn main() -> std::process::ExitCode {
         return match result {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(error) => {
-                eprintln!("{error}");
+                console::eprintln!("{error}");
                 std::process::ExitCode::FAILURE
             }
         };
     }
     match Launch::parse(&args) {
         Ok(Launch::Help) => {
-            println!("{}", launch::HELP);
+            console::println!("{}", launch::HELP);
             std::process::ExitCode::SUCCESS
         }
         Ok(Launch::Gui) => start_desktop(),
         Err(error) => {
-            eprintln!("{error}\n\n{}", launch::HELP);
+            console::eprintln!("{error}\n\n{}", launch::HELP);
             std::process::ExitCode::FAILURE
         }
     }
@@ -58,14 +60,14 @@ fn start_desktop() -> std::process::ExitCode {
         match futureos_lib::run() {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(error) => {
-                eprintln!("FutureOS: {error}");
+                console::eprintln!("FutureOS: {error}");
                 std::process::ExitCode::FAILURE
             }
         }
     }
     #[cfg(not(feature = "gui"))]
     {
-        eprintln!("This build has no graphical interface. Run future host instead.");
+        console::eprintln!("This build has no graphical interface. Run future host instead.");
         std::process::ExitCode::FAILURE
     }
 }

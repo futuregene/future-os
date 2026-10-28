@@ -64,10 +64,15 @@ pub fn log_file_path() -> std::path::PathBuf {
 
 pub fn report(message: &str) {
     let line = report_line(message);
-    eprint!("{line}");
+    // The file copy goes first: it is the copy that survives a launch with no
+    // terminal, and it is the one a later investigation reads. Measured
+    // 2026-10-28: the old order wrote the terminal first, so every diagnostic
+    // emitted after the Desktop's pty was revoked panicked here and never
+    // reached this file at all.
     if let Some(mirror) = future_agent::logfile::get() {
         mirror.write_stripped(&line);
     }
+    crate::console::write_err(format_args!("{line}"));
 }
 
 /// A report stamped exactly the way the tracing rows in the same file are, so a
@@ -327,5 +332,109 @@ mod tests {
         // on its first read on Unix; either way there is nothing to preserve.
         let directory = tempfile::tempdir().unwrap();
         assert!(preserve_previous_log(directory.path(), 10).is_err());
+    }
+
+    /// Environment naming the child half of the lost-terminal tests.
+    const FIXTURE_TERMINAL_LOST: &str = "FUTURE_TERMINAL_LOST_FIXTURE";
+
+    /// A launch whose terminal is gone keeps launching.
+    ///
+    /// A Desktop started from a terminal holds that terminal's pty as fds
+    /// 0/1/2, and closing the terminal revokes the pty slave: every later write
+    /// to fd 2 fails with `EIO` (`Input/output error (os error 5)`), which is
+    /// what `app/logs/crash.log` recorded 171 times on 2026-10-27/28. `eprint!`
+    /// turns that into a panic, so a diagnostic ended the thread that emitted
+    /// it.
+    ///
+    /// The child's stderr is a pipe whose read end is closed *before* its first
+    /// write — it waits for the byte this test writes to its stdin, so there is
+    /// no sleep and no race. The error a dead pipe reports is `EPIPE` and a
+    /// revoked pty reports `EIO`, but `std::io::stdio::print_to` panics on
+    /// either, so the failure and its fix take the same path.
+    #[test]
+    fn a_launch_whose_terminal_is_gone_keeps_running_and_logging() {
+        let (status, home, _home_directory) = run_lost_terminal_fixture(FIXTURE_TERMINAL_LOST);
+        // Nothing panicked, so the process finished the launch it was in.
+        assert_eq!(status.code(), Some(0), "{status:?}");
+        assert!(
+            !home.join("app/logs/crash.log").exists(),
+            "a failed terminal write must not be recorded as a panic"
+        );
+        // The diagnostics it could not show still reached the file: this is
+        // what makes dropping the terminal write safe rather than lossy.
+        let log = std::fs::read_to_string(home.join("app/logs/desktop.log"))
+            .expect("the child's host log");
+        assert!(log.contains("the terminal is gone"), "{log}");
+        // The Agent run loop's streaming path writes to both sinks; the file
+        // half must survive the terminal half failing.
+        assert!(log.contains("[output] streamed delta"), "{log}");
+    }
+
+    /// Spawn the child half with a stderr nobody is reading.
+    ///
+    /// The fixture's home is returned with it: assertions read it after the
+    /// child exits, so the temporary directory has to outlive the call.
+    fn run_lost_terminal_fixture(
+        flag: &str,
+    ) -> (
+        std::process::ExitStatus,
+        std::path::PathBuf,
+        tempfile::TempDir,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path().join(".future");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "environment::tests::the_lost_terminal_fixture",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(flag, "1")
+            .env("HOME", directory.path())
+            .env("USERPROFILE", directory.path())
+            .env("FUTURE_HOME", &home)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("run the lost-terminal fixture");
+        // Close the read end before the child can write: it blocks on stdin
+        // until the byte below arrives.
+        let mut stdin = child.stdin.take().expect("the fixture's stdin");
+        drop(child.stderr.take());
+        stdin.write_all(b"\n").expect("release the fixture");
+        drop(stdin);
+        let status = child.wait().expect("wait for the fixture");
+        (status, home, directory)
+    }
+
+    /// The child half of [`a_launch_whose_terminal_is_gone_keeps_running_and_logging`].
+    ///
+    /// It prepares the process the way a real entry point does — crash hook,
+    /// tracing, host log — and then writes to the terminal through every path
+    /// the host and the embedded Agent actually use.
+    #[test]
+    fn the_lost_terminal_fixture() {
+        if std::env::var_os(FIXTURE_TERMINAL_LOST).is_none() {
+            return;
+        }
+        // Wait for the parent: it closes the read end of our stderr pipe first.
+        let mut release = [0u8; 1];
+        let _ = std::io::Read::read(&mut std::io::stdin(), &mut release);
+        prepare_process();
+        // Record panics the way a real launch does, so a write that does panic
+        // leaves the same evidence in crash.log that the production failure
+        // left behind.
+        let _armed = crate::crash_log::ReportingArmed::arm();
+        start_logging().expect("the host log opens");
+        report("the terminal is gone");
+        // Every remaining writer in the process, in the shape it has in the
+        // host: `crate::console::*` is what a file imports over the prelude,
+        // and `eprintln_mirror` is the Agent run loop's streaming path.
+        crate::console::eprintln!("FutureOS: worker diagnostic on a dead stderr");
+        crate::console::println!("host: worker output on a dead stdout");
+        future_agent::logfile::eprintln_mirror(format_args!("[output] streamed delta"));
+        tracing::info!("a tracing row with no terminal");
     }
 }

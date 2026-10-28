@@ -1,4 +1,5 @@
 use super::*;
+use crate::console;
 
 /// Cap on concurrent accepted web-client connections. Acquired BEFORE `accept`
 /// so a flood of idle sockets can't exhaust file descriptors (the accept loop
@@ -81,7 +82,7 @@ pub(super) fn lan_ip() -> Option<String> {
 pub(super) async fn run_web_server(listener: tokio::net::TcpListener, port: u16) {
     let web_dir = web_dir();
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(WEB_MAX_CONNECTIONS));
-    eprintln!(
+    console::eprintln!(
         "remote: web client at http://localhost:{port} (serving {})",
         web_dir.display()
     );
