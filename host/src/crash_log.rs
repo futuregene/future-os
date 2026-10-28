@@ -14,9 +14,10 @@
 //!
 //! The hook appends to `<future home>/app/logs/crash.log`: beside the host log,
 //! but never trimmed and never rotated, so it still describes a death that
-//! happened several launches ago. It keeps the default hook's stderr output
-//! (a terminal launch sees what it always saw) and adds the panic location,
-//! the startup step the launch was in, and a best-effort backtrace.
+//! happened several launches ago. The file copy is written *before* the default
+//! hook's stderr output — a chained hook that panics aborts the process, so a
+//! report written after it may never be written at all — and adds the panic
+//! location, the startup step the launch was in, and a best-effort backtrace.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -40,25 +41,37 @@ pub fn install() {
     INSTALL.call_once(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            // The default text stays on stderr, so a launch from a terminal
-            // keeps the message it always had. Only the file copy is new.
-            previous(info);
-            if !reporting_armed() || REPORTING.swap(true, Ordering::SeqCst) {
-                return;
+            // The record goes first, and that order is the whole guarantee. A
+            // hook that panics while reporting a panic cannot be rescued: std
+            // aborts the process at the nested panic ("thread panicked while
+            // processing panic. aborting") before any `catch_unwind` in here
+            // could see it. So whatever the chained call below does, it must
+            // not come before the file copy.
+            // Measured 2026-10-28: this log held 171 entries written by the old
+            // order, every one of them naming the failed stderr write and none
+            // naming the panic it was reporting.
+            if reporting_armed() && !REPORTING.swap(true, Ordering::SeqCst) {
+                let payload = payload_text(info.payload());
+                let location = info.location().map(ToString::to_string);
+                let text = render(
+                    &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    std::process::id(),
+                    std::thread::current().name(),
+                    location.as_deref(),
+                    &payload,
+                    crate::startup::global().current(),
+                    &std::backtrace::Backtrace::force_capture(),
+                );
+                append(&crash_log_path(), &text);
+                REPORTING.store(false, Ordering::SeqCst);
             }
-            let payload = payload_text(info.payload());
-            let location = info.location().map(ToString::to_string);
-            let text = render(
-                &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-                std::process::id(),
-                std::thread::current().name(),
-                location.as_deref(),
-                &payload,
-                crate::startup::global().current(),
-                &std::backtrace::Backtrace::force_capture(),
-            );
-            append(&crash_log_path(), &text);
-            REPORTING.store(false, Ordering::SeqCst);
+            // The default text stays on stderr, so a launch from a terminal
+            // keeps the message it always had. Std's own hook tolerates a write
+            // that fails (a terminal whose owner is gone answers EIO), which is
+            // why chaining onto it is safe for an ordinary panic; a hook that
+            // does panic here ends the process, but the report above is already
+            // on disk by then.
+            previous(info);
         }));
     });
 }
@@ -314,6 +327,9 @@ mod tests {
     /// in an ordinary suite run, where that fixture is a no-op.
     const FIXTURE_HOME: &str = "FUTURE_CRASH_LOG_FIXTURE_HOME";
 
+    /// Environment telling that fixture its stderr is about to be unusable.
+    const FIXTURE_BROKEN_STDERR: &str = "FUTURE_CRASH_LOG_FIXTURE_BROKEN_STDERR";
+
     /// The end-to-end case, and the only one that exercises the hook itself:
     /// every test above renders or appends by hand, so a hook that is never
     /// installed — or installed before the file can be resolved — still looks
@@ -358,17 +374,81 @@ mod tests {
         assert!(stderr.contains("fixture panic from the child"), "{stderr}");
     }
 
-    /// The child half of [`a_panicking_process_writes_the_report_it_could_not_show`].
+    /// A report that has to survive a terminal that cannot be written to.
+    ///
+    /// The record is written before the chained hook runs, because a hook that
+    /// panics while reporting a panic takes the process down with it: std aborts
+    /// at the nested panic, and no `catch_unwind` inside the hook can reach it.
+    /// Measured 2026-10-28: the developer's crash.log held 171 records from the
+    /// old order, every one naming the failed stderr write and none naming the
+    /// panic it was reporting.
+    ///
+    /// The child's stderr is a pipe whose read end is closed before it panics,
+    /// so the hook it chains to fails the same way a vanished terminal does.
+    #[test]
+    fn the_report_is_written_before_the_terminal_copy() {
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path().join(".future");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "crash_log::tests::the_panicking_fixture",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(FIXTURE_HOME, &home)
+            .env(FIXTURE_BROKEN_STDERR, "1")
+            .env("HOME", directory.path())
+            .env("USERPROFILE", directory.path())
+            .env("FUTURE_HOME", &home)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("run the panicking fixture");
+        // No reader: the fixture's stderr write fails, which is the point.
+        drop(child.stderr.take());
+        let status = child.wait().expect("wait for the panicking fixture");
+        // The chained hook panics on the dead pipe, so the child cannot exit
+        // cleanly; that is the failure the ordering has to survive.
+        assert!(!status.success(), "{status:?}");
+        let log = std::fs::read_to_string(home.join("app/logs/crash.log"))
+            .expect("a panic with an unusable terminal must still leave a report");
+        // The panic that actually happened, not the write that failed to
+        // report it: `stdio.rs` is where a failed `print_to` panics.
+        assert!(log.contains(&format!("{}:", file!())), "{log}");
+        assert!(log.contains("fixture panic from the child"), "{log}");
+        assert!(
+            !log.contains("stdio.rs"),
+            "the record must name the panic, not the stderr write: {log}"
+        );
+    }
+
+    /// The child half of [`a_panicking_process_writes_the_report_it_could_not_show`],
+    /// and of [`the_report_is_written_before_the_terminal_copy`].
     #[test]
     fn the_panicking_fixture() {
         if std::env::var_os(FIXTURE_HOME).is_none() {
             return;
+        }
+        let broken_stderr = std::env::var_os(FIXTURE_BROKEN_STDERR).is_some();
+        if broken_stderr {
+            // The harness installs a hook that records the message for its own
+            // report instead of writing it, so it never touches stderr and
+            // could not show what a real launch does. Put a stderr-writing hook
+            // back first: writing to a terminal nobody is reading panics, and
+            // that is the hook `install` has to chain onto below.
+            std::panic::set_hook(Box::new(|info| eprintln!("{info}")));
         }
         // Installed here rather than by the harness: the hook is what is under
         // test, so it must be the fixture that installs it.
         install();
         let _armed = ReportingArmed::arm();
         crate::startup::global().enter("window");
+        if broken_stderr {
+            // Let the parent drop the read end of the pipe it handed us, so the
+            // stderr write below fails instead of filling a buffer.
+            std::thread::sleep(Duration::from_millis(500));
+        }
         panic!("fixture panic from the child");
     }
 }
