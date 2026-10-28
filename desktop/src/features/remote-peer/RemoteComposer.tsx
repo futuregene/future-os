@@ -9,7 +9,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { ArrowUp, Loader2, Paperclip, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { readNativeClipboardFilePaths, savePastedFile, savePastedImage } from "../../integrations/storage/threadStore";
+import { readNativeClipboardFilePaths, readNativeClipboardImage, savePastedFile, savePastedImage } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { EMPTY_EDITOR_ATTR } from "../../lib/editableTarget";
 import { errorMessage } from "../../lib/errors";
@@ -443,8 +443,17 @@ export function RemoteComposer({
       return;
     const files = [...data.files];
     const hasUriList = data.types.includes("text/uri-list") && !!data.getData("text/uri-list");
-    if (files.length === 0 && !hasUriList)
+    if (files.length === 0 && !hasUriList) {
+      // The one payload the webview cannot report: WebKitGTK dispatches a paste
+      // event with an empty DataTransfer for a clipboard image, so the native
+      // pasteboard is asked for it. A text paste still belongs to the field.
+      const image = await readNativeClipboardImage().catch(() => null);
+      if (!image)
+        return;
+      event.preventDefault();
+      await stage([image.path]);
       return;
+    }
     // Recovered paths are used when the platform hid them (WKWebView turns a
     // Finder copy into `File`s with no `path`), and image bytes are written to a
     // temporary file first because the host's upload command takes a path.
@@ -477,10 +486,18 @@ export function RemoteComposer({
     // Only now, with something to send: a paste of text or a link must still
     // reach the field it was aimed at.
     event.preventDefault();
-    // The count is decided before the uploads start, and the message is set with
-    // the reset rather than before it: setting it and then calling
-    // `setError(null)` wiped the warning in the same tick, so a paste of ten
-    // files staged four of them and said nothing at all about the other six.
+    await stage(paths);
+  }
+
+  /**
+   * Upload local paths to the host and list them as pending attachments.
+   *
+   * The count is decided before the uploads start, and the message is set with
+   * the reset rather than before it: setting it and then calling
+   * `setError(null)` wiped the warning in the same tick, so a paste of ten
+   * files staged four of them and said nothing at all about the other six.
+   */
+  async function stage(paths: string[]) {
     const staged = paths.slice(0, MAX_PASTED_FILES);
     const overLimit = paths.length > MAX_PASTED_FILES;
     setUploading(true);
