@@ -41,6 +41,14 @@ fn maintenance_reports_skips_and_retries_without_touching_sources() {
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
+    // The report goes through `console::println!`, whose only job beyond
+    // `println!` is to tolerate a failed write — it must still end its line, or
+    // a reader that consumes this stream by line waits for a delimiter that
+    // never comes.
+    assert!(
+        result.stdout.ends_with(b"\n"),
+        "maintenance JSON is a line protocol: println must keep its newline"
+    );
     let report: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
     assert_eq!(report[0]["status"], "skipped");
     assert_eq!(report[1]["status"], "imported");
