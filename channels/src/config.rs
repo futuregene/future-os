@@ -593,7 +593,18 @@ mod tests {
 
     #[test]
     fn default_path_contains_channels() {
+        // Pinned rather than read from whatever this machine exports: with an
+        // ambient `FUTURE_HOME` the "default" path is that root's, so the `.future`
+        // half of the assertion would be about the developer's shell instead of
+        // about the default this test names.
+        let _lock = crate::test_support::home_lock();
+        let home = crate::test_support::IsolatedHome::new("default-path");
         let path = ChannelConfig::default_path();
+        assert!(
+            path.starts_with(&home.path),
+            "the default path is the FutureOS root's: {}",
+            path.display()
+        );
         assert!(path.to_string_lossy().contains(".future"));
         assert!(path.to_string_lossy().contains("channels"));
         assert!(path.to_string_lossy().ends_with("config.json"));

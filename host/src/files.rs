@@ -826,36 +826,24 @@ mod tests {
 
     #[test]
     fn ensure_path_allowed_is_a_noop_without_a_home_dir() {
-        let lock = crate::TEST_HOME_LOCK
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        // Other tests can intentionally leave HOME unset. Preserve its exact
-        // prior state; USERPROFILE is a Windows-only fallback absent on
-        // macOS/Linux.
-        //
-        // The `else` arm below exists for a process that never had a HOME (a bare
-        // `cargo test`, without this campaign's HOME override). This suite always
-        // has one, so the precondition is produced here — the real value is kept
-        // and put back at the end, and `TEST_HOME_LOCK` is held throughout, so no
-        // other test can observe the window.
-        let real_home = std::env::var_os("HOME");
-        std::env::remove_var("HOME");
-        let old_home = std::env::var_os("HOME");
-        std::env::remove_var("USERPROFILE");
+        let home = crate::auth_store::test_support::HomeGuard::new("files-no-home");
+        // No home *at all* — the two user-home variables and the FutureOS root
+        // override together, since either one names a root. The guard restores
+        // whatever it withdrew.
+        home.withdraw_home();
+        // The premise is asserted, not assumed: with nothing to resolve there is
+        // no root to protect. With the fixture's `FUTURE_HOME` still in place
+        // this resolved and only the ordinary-file arm ran.
+        assert!(
+            crate::store::future_dir().is_err(),
+            "no home and no override leaves no FutureOS root"
+        );
 
         let file = write_under(&future_root("no_home"), "ok.txt");
-        assert!(ensure_path_allowed(&file).is_ok());
-
-        if let Some(old_home) = old_home {
-            std::env::set_var("HOME", old_home);
-        } else {
-            std::env::remove_var("HOME");
-        }
-        std::env::remove_var("USERPROFILE");
-        if let Some(real_home) = real_home {
-            std::env::set_var("HOME", real_home);
-        }
-        drop(lock);
+        assert!(
+            ensure_path_allowed(&file).is_ok(),
+            "an unresolvable home must not turn every path into an error"
+        );
     }
 
     #[test]

@@ -117,6 +117,8 @@
     "softwareErrorTitle": "Response processing or saving failed",
     "agentInterrupted": "Restart the app, then click Continue to resume.",
     "agentInterruptedTitle": "Background service interrupted; this response could not finish",
+    "runInterrupted": "An app restart interrupted this reply. Click Continue to pick it up where it stopped.",
+    "runInterruptedTitle": "An app restart interrupted this reply",
     "userStopped": "You stopped this response manually. The content generated so far has been kept."
   },
   "notice": {

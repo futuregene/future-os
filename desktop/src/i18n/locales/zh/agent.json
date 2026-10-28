@@ -118,6 +118,8 @@
     "softwareErrorTitle": "软件处理或保存回复失败",
     "agentInterrupted": "请重启软件，然后点击“继续”接着处理。",
     "agentInterruptedTitle": "后台服务异常中断，本次回复未能完成",
+    "runInterrupted": "本次回复因应用重启中断。你可以点击“继续”接着处理。",
+    "runInterruptedTitle": "应用重启中断了本次回复",
     "userStopped": "你已手工停止本次回复，已生成的内容已保留。"
   },
   "notice": {

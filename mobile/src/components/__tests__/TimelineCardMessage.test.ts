@@ -332,9 +332,13 @@ describe("the settled footer", () => {
     expect(onContinue).toHaveBeenCalledWith(item);
   });
 
-  test("a failed run the user stopped is not offered as recoverable", () => {
+  test("a run the user stopped is offered for recovery like any other", () => {
+    // The reason a reply stopped is not a gate: a stop, a failure, a truncated
+    // stream and the cancelled row a restart leaves behind all end the reply in
+    // a place the reader may want to pick it up from.
     render(message({ id: "latest", failed: true, stopped: true, runId: "run-1" }), { isLatestAssistant: true });
-    expect(hasText("Retry")).toBe(false);
+    expect(hasText("Retry")).toBe(true);
+    expect(hasText("Continue")).toBe(true);
   });
 
   test("a settled reply offers Fork and hands back its own item", () => {

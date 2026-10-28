@@ -99,14 +99,32 @@ fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
             // A held lock may be our own unresponsive embedded service. Only
             // its owner can drain it. An external owner's lock is never removed.
             let host = crate::agent_host::host();
+            if host.recovery_requires_restart() {
+                // Nothing in this process may start another Agent once the
+                // previous one failed its cleanup: the instance lock, its storage
+                // writer and its background work are all still held. Say so out
+                // loud instead of skipping the recovery in silence — measured
+                // 2026-10-28, that silence is what let the Desktop sit with no
+                // Agent for 40 minutes with only "restart Desktop" as the fix.
+                if last_notice.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(30)) {
+                    crate::host_environment::report(
+                        "Agent recovery blocked: the previous Agent did not finish its cleanup; \
+                         restart FutureOS",
+                    );
+                    last_notice = Some(now);
+                }
+                continue;
+            }
             if !loss.confirmed(now)
                 || !(matches!(observed, LocalAgentState::Startable) || host.owns_agent())
-                || host.recovery_requires_restart()
                 || !budget.allow(now)
             {
                 continue;
             }
             loss.reset();
+            crate::host_environment::report(
+                "Agent recovery: the Agent is gone; starting a replacement",
+            );
             if let Err(error) = host.recover(address) {
                 crate::host_environment::report(&format!("Agent recovery: {error}"));
             }

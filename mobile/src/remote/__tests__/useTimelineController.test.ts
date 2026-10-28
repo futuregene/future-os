@@ -2302,6 +2302,23 @@ describe("useTimelineController", () => {
       expect(request).not.toHaveBeenCalled();
     });
 
+    test("routes transport recovery through the runtime when it offers one", async () => {
+      options.selectedRef.current = "s1";
+      const recoverConnection = jest.fn(async () => {});
+      options.recoverConnection = recoverConnection;
+      render();
+      await act(async () => {
+        await result.current.retryTimeline();
+      });
+      // The runtime can replace a fatal client; `client.recoverNow` alone
+      // cannot, so it must not be the path a retry takes when both exist.
+      expect(recoverConnection).toHaveBeenCalledWith("request-failure");
+      const recoverNow = (
+        client().current as unknown as { recoverNow: jest.Mock }
+      ).recoverNow;
+      expect(recoverNow).not.toHaveBeenCalled();
+    });
+
     test("recovers the client and restarts the session sync", async () => {
       options.selectedRef.current = "s1";
       render();

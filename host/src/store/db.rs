@@ -1433,36 +1433,17 @@ mod tests {
 
     #[test]
     fn dropping_a_connection_without_a_home_or_pool_just_drops() {
-        use std::sync::MutexGuard;
+        let home = crate::auth_store::test_support::HomeGuard::new("db-no-home");
+        home.withdraw_home();
+        // `Drop` must never derive the pool identity from the current home (see
+        // `PooledConnection::drop`), so the fixture provides exactly the state
+        // such a lookup could not survive: no home and no override, no root to
+        // resolve. The guard restores all three variables.
+        assert!(
+            crate::store::future_dir().is_err(),
+            "no home and no override leaves no FutureOS root"
+        );
 
-        /// Removes HOME for the guard's lifetime (serialized against other
-        /// HOME-mutating tests).
-        struct NoHomeGuard {
-            previous: Option<String>,
-            _lock: MutexGuard<'static, ()>,
-        }
-        impl NoHomeGuard {
-            fn new() -> Self {
-                let lock = crate::TEST_HOME_LOCK
-                    .lock()
-                    .unwrap_or_else(|poison| poison.into_inner());
-                let previous = std::env::var("HOME").ok();
-                std::env::remove_var("HOME");
-                NoHomeGuard {
-                    previous,
-                    _lock: lock,
-                }
-            }
-        }
-        impl Drop for NoHomeGuard {
-            fn drop(&mut self) {
-                if let Some(value) = &self.previous {
-                    std::env::set_var("HOME", value);
-                }
-            }
-        }
-
-        let _no_home = NoHomeGuard::new();
         // The `conn: None` and mismatched-path drop arms.
         drop(PooledConnection {
             conn: None,

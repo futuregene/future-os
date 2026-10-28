@@ -421,20 +421,15 @@ mod tests {
     /// configuration fault rather than "this machine has no pairings".
     #[test]
     fn an_absent_home_is_an_error_not_an_empty_book() {
-        let _home = home("peer-book-no-home");
-        // `HOME` is process-global, so this runs under the same lock every other
-        // home-scoped test holds.
-        let previous = std::env::var("HOME").expect("the harness always has a HOME");
-        std::env::remove_var("HOME");
-        // `USERPROFILE` is the Windows spelling and is not set here, so removing
-        // it is the whole of its handling: restoring a value that never existed
-        // would invent one.
-        std::env::remove_var("USERPROFILE");
-        let result = load();
-        // Restore *unconditionally* before asserting: a panic here would
-        // otherwise leave every later test without a home.
-        std::env::set_var("HOME", previous);
-        let error = result.expect_err("an absent home cannot be resolved");
+        let home = home("peer-book-no-home");
+        // `HOME` is process-global, so the guard above holds the same lock every
+        // other home-scoped test does — and it restores what it withdrew.
+        // Every way to name the root goes, not just the user home: the fixture's
+        // own `FUTURE_HOME` would keep answering with a real path, and `load()`
+        // would then report "no pairings", the reading this test exists to
+        // reject.
+        home.withdraw_home();
+        let error = load().expect_err("an absent home cannot be resolved");
         assert!(error.to_string().contains("HOME/USERPROFILE"), "{error}");
     }
 

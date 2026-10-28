@@ -97,10 +97,57 @@ pub fn prepare_backward_entries_page_with_cap(
         "hasMore": agent_has_more || removed > 0,
         // The page shed whole oldest exchanges to fit the byte budget. A
         // chunked reader (mobile) uses this to backfill the missing exchanges
-        // instead of showing a window that silently starts mid-history.
+        // instead of showing a window that silently starts mid-history —
+        // the other bound that shortens a page reports the same flag, see
+        // [`mark_short_backward_page`].
         "trimmed": removed > 0,
         "entries": entries,
     })
+}
+
+/// Mark a backward page that is a *slice* of the window its client asked for
+/// rather than the window itself.
+///
+/// Two bounds shorten a backward page and only the requested exchange count can
+/// tell either from a complete page: [`prepare_backward_entries_page_with_cap`]
+/// drops whole oldest exchanges to fit the reply budget, and the Agent cuts a
+/// backward read at its own row and byte limits.
+///
+/// The second bound used to go unreported. Measured 2026-10-28 on a 213-row
+/// session (three exchanges, the newest one a 15-minute run with 50 tool calls):
+/// the Agent answered a three-exchange tail read with 64 tool rows and no prompt
+/// among them, the desktop's history assembly completed that prefix back to the
+/// prompt, and what the phone received was **one** exchange of 870 KB with
+/// `hasMore: true` and `trimmed: false` — the byte budget had nothing left to
+/// shed, because only one exchange was there. The phone installed it as its
+/// whole window and drew the newest reply with nothing above it; a pull re-read
+/// the same page. From the reader's side both bounds are one fact ("this page is
+/// not the window"), so both say `trimmed` and the client backfills the
+/// exchanges it asked for.
+///
+/// A page with no more history behind it is not short by construction — it is
+/// the whole conversation — and a page the caller asked to keep whole
+/// (`untrimmed`) is the caller's own business, so neither is marked.
+pub fn mark_short_backward_page(page: &mut Value, requested_exchanges: usize) {
+    if requested_exchanges == 0
+        || page.get("trimmed").and_then(Value::as_bool) == Some(true)
+        || page.get("hasMore").and_then(Value::as_bool) != Some(true)
+    {
+        return;
+    }
+    let held = page
+        .get("entries")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter(|entry| entry.get("role").and_then(Value::as_str) == Some("user"))
+                .count()
+        })
+        .unwrap_or_default();
+    if held < requested_exchanges {
+        page["trimmed"] = json!(true);
+    }
 }
 
 /// Page a full item list into a reply that fits the NATS payload cap.
@@ -423,6 +470,48 @@ mod tests {
         assert_eq!(kept.len() % 2, 0);
         assert_eq!(bounded["nextOffset"], 100 + 12 - kept.len());
         assert_eq!(bounded["hasMore"], true);
+    }
+
+    /// The budget is not the only bound that leaves a page short of what the
+    /// client asked for: the Agent cuts a backward read at its own row and byte
+    /// limits, so a tool-dense exchange arrives as a fragment of itself — and
+    /// once history assembly has completed that fragment back to its prompt, the
+    /// page is *one* exchange where the client asked for three, with `hasMore`
+    /// promising the rest. However it was shortened, the client has to be told
+    /// the page is not the window it asked for; measured 2026-10-28, a phone was
+    /// handed exactly that page (870 KB, one exchange, `trimmed` unset) and drew
+    /// the newest reply with nothing above it.
+    #[test]
+    fn a_page_cut_before_the_requested_exchanges_says_it_is_not_the_window() {
+        // The Agent's own row bound: the tail of one tool-dense exchange, with
+        // no prompt row in it at all.
+        let mut cut = json!({
+            "entries": [
+                {"id": "t1", "role": "tool", "blocks": []},
+                {"id": "a1", "role": "assistant", "blocks": []},
+            ],
+            "nextOffset": 149,
+            "hasMore": true,
+            "trimmed": false,
+        });
+        mark_short_backward_page(&mut cut, 3);
+        assert_eq!(cut["trimmed"], json!(true));
+
+        // The window itself: three complete exchanges, so nothing to report.
+        let mut complete = exchanges(3, 16);
+        complete["trimmed"] = json!(false);
+        mark_short_backward_page(&mut complete, 3);
+        assert_eq!(complete["trimmed"], json!(false));
+
+        // The end of the journal is not a shortened page, and a page the caller
+        // asked to keep whole (or asked for no exchanges of) is not this
+        // function's call either.
+        let mut exhausted = json!({"entries": [], "hasMore": false, "trimmed": false});
+        mark_short_backward_page(&mut exhausted, 3);
+        assert_eq!(exhausted["trimmed"], json!(false));
+        let mut no_exchange_budget = json!({"entries": [], "hasMore": true, "trimmed": false});
+        mark_short_backward_page(&mut no_exchange_budget, 0);
+        assert_eq!(no_exchange_budget["trimmed"], json!(false));
     }
 
     /// A single oversized *entry* — not page — is the case `cap_remote_item`

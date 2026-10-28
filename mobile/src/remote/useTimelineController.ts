@@ -6,7 +6,7 @@ import type { HistoryPagingState } from "./timeline/historyPaging";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState } from "react-native";
-import type { RemoteClient } from "./client";
+import type { RecoveryReason, RemoteClient } from "./client";
 import { fetchEventsSince, hydrateRemoteEvent } from "@future-os/remote-client/replay";
 
 import type { RunCursor } from "@future-os/thread-projection";
@@ -40,6 +40,12 @@ interface TimelineControllerOptions {
   refreshSessions(): Promise<void>;
   setTitleOverrides: Dispatch<SetStateAction<Record<string, string>>>;
   onSessionState?(sessionId: string, state: RemoteSessionState): void;
+  /**
+   * The runtime's own connection recovery. `client.recoverNow` is a no-op for a
+   * terminal client, so a retry that only calls it can never heal a fatal one:
+   * the runtime is what can replace the client outright.
+   */
+  recoverConnection?(reason: RecoveryReason): Promise<void>;
 }
 
 export function useTimelineController({
@@ -51,6 +57,7 @@ export function useTimelineController({
   refreshSessions,
   setTitleOverrides,
   onSessionState,
+  recoverConnection,
 }: TimelineControllerOptions) {
   const onSessionStateRef = useRef(onSessionState);
   useEffect(() => { onSessionStateRef.current = onSessionState; }, [onSessionState]);
@@ -236,18 +243,20 @@ export function useTimelineController({
       let entries = response.entries ?? [];
       let nextBefore = response.nextOffset ?? 0;
       let hasMore = response.hasMore === true && nextBefore > 0;
-      // A byte-trimmed tail page sheds whole oldest exchanges to fit the
-      // bridge's reply budget, so it can come back holding fewer exchanges
-      // than the window is meant to show (the tool-dense session that surfaced
-      // this returned a single exchange). The shed exchanges are still durable
-      // and still paged (hasMore stays true) — without backfilling them here
-      // they only ever reappear if the user manually pages up, which reads as
-      // "older messages were eaten". Backfill whole older exchanges until the
-      // window holds its full exchange count or the journal runs out. Only a
-      // page the bridge explicitly marked trimmed is short by construction; a
-      // genuinely short session must not trigger these extra reads. The
-      // backward byte budget only trims the newest page, so these gap reads
-      // return complete exchanges.
+      // A tail page can hold fewer exchanges than the window is meant to show,
+      // and the rest is still durable and still paged (hasMore stays true). Two
+      // bounds shorten one: the bridge sheds whole oldest exchanges to fit its
+      // reply budget, and the Agent cuts a backward read at its own row and byte
+      // limits — a tool-dense exchange then comes back as a single exchange of
+      // 870 KB, which the byte budget cannot shed any further. Measured
+      // 2026-10-28: a three-exchange tail read delivered one exchange, and the
+      // transcript drew the newest reply with nothing above it. Without
+      // backfilling here the shed exchanges only ever reappear if the user
+      // manually pages up, which reads as "older messages were eaten". So
+      // backfill until the window holds its full exchange count or the journal
+      // runs out. The host marks such a page `trimmed` — whichever bound
+      // shortened it — so a page it considers whole is not re-read; a genuinely
+      // short session ends in `hasMore: false` instead.
       const countUsers = (rows: HistoryEntry[]) =>
         rows.reduce((n, row) => n + (row.role === "user" ? 1 : 0), 0);
       let tailTrimmed = response.trimmed === true;
@@ -828,7 +837,16 @@ export function useTimelineController({
     // failure recorded against the previous chain must not fail this one early.
     delete syncFailureRef.current[sessionId];
     const client = clientRef.current;
-    if (client) {
+    if (recoverConnection) {
+      try {
+        await recoverConnection("request-failure");
+      } catch (error) {
+        console.error("[remote] timeline retry transport recovery failed", {
+          sessionId,
+          error: diagnosticError(error),
+        });
+      }
+    } else if (client) {
       try {
         await client.recoverNow("request-failure");
       } catch (error) {
@@ -840,7 +858,7 @@ export function useTimelineController({
     }
     if (selectedRef.current === sessionId)
       syncEngineRef.current?.restart(sessionId, "open");
-  }, [clientRef, selectedRef]);
+  }, [clientRef, recoverConnection, selectedRef]);
 
   // Pull-to-refresh: rebuild the visible window from durable history. This is
   // the explicit escape hatch for any sync state the automatic reconciles
