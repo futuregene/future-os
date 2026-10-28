@@ -73,7 +73,7 @@ pub use self::queries::{
 pub use self::queries::{
     get_event_content_range, get_events_since_page, get_events_since_page_until, get_run_snapshot,
     get_session_entries_before_with_client, get_session_entries_with_client, get_tool_call_args,
-    provision_agent_session, query_tools,
+    provision_agent_session, query_tools, session_has_entries,
 };
 pub use self::reconciliation::{
     attach_remote_stream, reconcile_interrupted_runs, reconcile_thread_workspace,
@@ -115,7 +115,10 @@ use self::reconciliation::{
 use self::replica::AGENT_REPLICAS;
 use self::run_control::{mark_run_completed_if_active, mark_run_failed_if_active};
 pub use self::session::workspace_path_for_thread;
-use self::session::{ensure_agent_session, set_agent_permission_level, set_agent_sandbox_policy};
+use self::session::{
+    ensure_agent_session, ensure_named_agent_session, set_agent_permission_level,
+    set_agent_sandbox_policy,
+};
 
 #[cfg(any(test, feature = "test-support"))]
 pub use observer::cancel_all_observers;

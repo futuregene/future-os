@@ -444,6 +444,55 @@ async fn execute(
         }
     }
 
+    // A conversation this run opened and never wrote anything into is a shell:
+    // a name in the sidebar with nothing behind it. Whatever stopped the run
+    // (the prompt never reached the Agent, or the Agent refused it), the ledger
+    // row is what should remain — not an empty conversation a reader can only
+    // click into. The criterion is the run's own session holding no records at
+    // all: one entry of any kind (even an error turn) keeps the conversation, so
+    // this can never take away evidence of what a run did.
+    //
+    // Only conversations the *run* created are candidates. A
+    // `session_policy = existing` run reuses the task's bound conversation, and
+    // deleting that would strand the binding the next run needs.
+    if !run.session_deleted && task.session_policy == SessionPolicy::New {
+        if let Some(session_id) = run.session_id.clone() {
+            match crate::agent_bridge::session_has_entries(&session_id).await {
+                Ok(false) => {
+                    if let Some(thread_id) = run.thread_id.clone() {
+                        match delete_run_conversation(&thread_id).await {
+                            Ok(()) => {
+                                store
+                                    .mark_run_conversation_deleted(&run.id)
+                                    .map_err(|e| e.to_string())?;
+                                run.session_deleted = true;
+                                run.thread_id = None;
+                                run.session_id = None;
+                            }
+                            // The empty conversation stays, and the ids with it:
+                            // an empty conversation is still a better record
+                            // than a ledger claiming a delete that did not
+                            // happen.
+                            Err(error) => eprintln!(
+                                "FutureOS tasks: could not remove the empty conversation of \
+                                 run {}: {error}",
+                                run.id
+                            ),
+                        }
+                    }
+                }
+                Ok(true) => {}
+                // A read failure is not evidence of emptiness — deleting on one
+                // would throw away a run's only record. Keep the conversation.
+                Err(error) => eprintln!(
+                    "FutureOS tasks: could not tell whether run {} left a conversation with \
+                     records; keeping it: {error}",
+                    run.id
+                ),
+            }
+        }
+    }
+
     // Notify the host (webview refresh; headless downgrades to a no-op).
     notify(run.thread_id.as_deref());
 
@@ -562,18 +611,25 @@ async fn run_inner(
     (store, read_answer(&session_id).await)
 }
 
-async fn create_new_session(task: &Task) -> Result<(String, String), String> {
-    let due = now_ms();
-    let title = format!(
+/// The title of a conversation a run opens: the task's name and the moment it
+/// started. Both the desktop thread and the Agent session take this same string,
+/// so the sidebar reads the task's name in either store — and two runs of the
+/// same task are still told apart.
+fn conversation_title(task: &Task, started_at_ms: i64) -> String {
+    format!(
         "{} · {}",
         task.name,
-        chrono::DateTime::from_timestamp_millis(due)
+        chrono::DateTime::from_timestamp_millis(started_at_ms)
             .map(|d| d
                 .with_timezone(&chrono::Local)
                 .format("%Y-%m-%d %H:%M")
                 .to_string())
             .unwrap_or_default()
-    );
+    )
+}
+
+async fn create_new_session(task: &Task) -> Result<(String, String), String> {
+    let title = conversation_title(task, now_ms());
     // A task's `conversation_mode` decides where the conversation is filed, and
     // — since a chat task needs no working directory of its own — where the
     // agent works. A chat conversation runs in the temporary workspace every
@@ -588,15 +644,21 @@ async fn create_new_session(task: &Task) -> Result<(String, String), String> {
     }
     let thread = crate::store::create_thread(crate::store::CreateThreadInput {
         mode: if chat { "chat" } else { "workspace" }.to_string(),
-        title: Some(title),
+        title: Some(title.clone()),
         workspace_id: None,
         workspace_path: if chat { None } else { Some(cwd.to_string()) },
         workspace_name: None,
         agent_session_id: None,
     })
     .map_err(|e| e.to_string())?;
+    // The same name goes onto the Agent session. Left empty, the Agent titles an
+    // unnamed session from its first user message — and a run's first message is
+    // the `── future_tasks_run_envelope_v1 ──` envelope, so the sidebar showed
+    // that header instead of the task, and a run that never wrote anything showed
+    // a header plus an empty conversation.
     let session_id = crate::agent_bridge::provision_agent_session_with_policy(
         &thread.id,
+        &title,
         task.model_id.clone(),
         task.thinking_level.clone(),
         "all",
@@ -706,7 +768,9 @@ async fn read_answer(session_id: &str) -> Result<RunAnswer, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::tasks::{script_agent_setup, task};
+    use crate::test_support::tasks::{
+        script_agent_setup, script_agent_setup_without_records, task,
+    };
     use future_tasks::{Task, TriggerKind};
     use tempfile::TempDir;
 
@@ -892,6 +956,57 @@ mod tests {
         );
     }
 
+    /// A run's conversation is named after the task. Left unnamed, the Agent
+    /// titles a session from its first user message — and a run's first message
+    /// is the `── future_tasks_run_envelope_v1 ──` envelope, so the sidebar read
+    /// a schema header instead of the task's name.
+    #[tokio::test]
+    async fn a_run_names_its_conversation_after_the_task() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-session-name");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+
+        let t = task("dev 分支 PR 合并");
+        store.insert_task(&t).unwrap();
+        let run = claim(&store, &t, ClaimReason::Explicit).unwrap();
+        script_agent_setup(&mock, "sess_named_after_task");
+        mock.push_stream(crate::agent_bridge::test_support::StreamScript::Events(
+            vec![crate::agent_bridge::test_support::stream_event(
+                "@attach",
+                0,
+                "agent_end",
+                r#"{"reason":"complete"}"#,
+            )],
+            None,
+        ));
+
+        let notify: Notifier = std::sync::Arc::new(|_| {});
+        execute(&notify, store, t.clone(), run.clone())
+            .await
+            .expect("execute");
+
+        let store = Store::open(dir.path()).unwrap();
+        let finished = store.get_run(&run.id).unwrap().unwrap();
+        assert_eq!(finished.status, RunStatus::Completed, "{finished:?}");
+        let thread_id = finished.thread_id.clone().expect("a conversation");
+        let thread = crate::store::get_thread(&thread_id).unwrap().unwrap();
+
+        // The Agent session is *created* with the task's name: it must not be
+        // left for the Agent to title from the envelope its first message opens
+        // with.
+        let created = mock.requests_of("new_session");
+        let name = &created.first().expect("one session was opened").name;
+        assert!(name.starts_with("dev 分支 PR 合并 · "), "{name}");
+        assert!(
+            !name.contains(future_tasks::TASK_ENVELOPE_SCHEMA_VERSION),
+            "the task's name, not the envelope header: {name}"
+        );
+        // Both stores carry that one name, so the sidebar cannot disagree with
+        // the session it opens.
+        assert_eq!(&thread.title, name, "thread and session agree");
+    }
+
     /// `session_retention = delete`: the run settles, its answer is saved on the
     /// ledger row, and the conversation goes — so a task that runs often does
     /// not leave one conversation per run behind without losing what each run
@@ -1015,6 +1130,117 @@ mod tests {
             "there was no conversation to delete: {finished:?}"
         );
         assert_eq!(store.run_output(&run.id).unwrap(), None);
+    }
+
+    /// A run that opened a conversation and put nothing in it leaves no
+    /// conversation behind. The criterion is the session's own entries: this run
+    /// never wrote one (its prompt was refused), so the ledger row keeps the
+    /// failure and the sidebar is spared a conversation whose only content is
+    /// its name.
+    #[tokio::test]
+    async fn a_run_that_leaves_an_empty_conversation_takes_it_with_it() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-empty-shell");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+
+        let t = task("empty-shell");
+        store.insert_task(&t).unwrap();
+        let run = claim(&store, &t, ClaimReason::Explicit).unwrap();
+        // The session was created, then the prompt was refused: nothing was ever
+        // written into it.
+        script_agent_setup_without_records(&mock, "sess_empty_shell");
+        mock.push(
+            "prompt",
+            crate::agent_bridge::test_support::Reply::Reject("quota exhausted".into()),
+        );
+
+        let notified = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = notified.clone();
+        let notify: Notifier = std::sync::Arc::new(move |thread_id| {
+            seen.lock().unwrap().push(thread_id.map(str::to_string));
+        });
+
+        execute(&notify, store, t.clone(), run.clone())
+            .await
+            .expect("execute records the failure instead of returning it");
+
+        let store = Store::open(dir.path()).unwrap();
+        let finished = store.get_run(&run.id).unwrap().unwrap();
+        assert_eq!(finished.status, RunStatus::Failed, "{finished:?}");
+        assert!(
+            finished
+                .error_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("quota exhausted"),
+            "the Agent's reason still reaches the run row: {finished:?}"
+        );
+        assert!(
+            finished.session_deleted,
+            "the empty conversation is gone: {finished:?}"
+        );
+        assert!(
+            finished.thread_id.is_none() && finished.session_id.is_none(),
+            "and the row no longer claims one: {finished:?}"
+        );
+        assert!(
+            crate::store::list_threads().unwrap().is_empty(),
+            "the sidebar is not given an empty shell"
+        );
+        assert_eq!(
+            mock.requests_of("delete_sessions").len(),
+            1,
+            "the Agent session behind it was dropped too"
+        );
+        // Announced while it existed, then announced as gone — the same shape a
+        // `session_retention = delete` run settles with.
+        let announcements = notified.lock().unwrap().clone();
+        assert_eq!(announcements.len(), 2, "{announcements:?}");
+        assert_eq!(announcements[1], None, "{announcements:?}");
+    }
+
+    /// One record is enough to keep the conversation: the run wrote its turn, and
+    /// that turn is the only place the run's work can be read. The criterion is
+    /// "no entries", never "how long it ran" or "how often it called a model".
+    #[tokio::test]
+    async fn a_run_that_wrote_anything_keeps_its_conversation() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-kept-shell");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+
+        let t = task("wrote-something");
+        store.insert_task(&t).unwrap();
+        let run = claim(&store, &t, ClaimReason::Explicit).unwrap();
+        script_agent_setup(&mock, "sess_kept");
+        mock.push_stream(crate::agent_bridge::test_support::StreamScript::Events(
+            vec![crate::agent_bridge::test_support::stream_event(
+                "@attach",
+                0,
+                "agent_end",
+                r#"{"reason":"complete"}"#,
+            )],
+            None,
+        ));
+
+        let notify: Notifier = std::sync::Arc::new(|_| {});
+        execute(&notify, store, t.clone(), run.clone())
+            .await
+            .expect("execute");
+
+        let store = Store::open(dir.path()).unwrap();
+        let finished = store.get_run(&run.id).unwrap().unwrap();
+        assert!(!finished.session_deleted, "{finished:?}");
+        let thread_id = finished.thread_id.clone().expect("a conversation");
+        assert!(
+            crate::store::get_thread(&thread_id).unwrap().is_some(),
+            "the conversation with the run's turn in it stays"
+        );
+        assert!(
+            mock.requests_of("delete_sessions").is_empty(),
+            "nothing was deleted"
+        );
     }
 
     /// A task that reuses one conversation keeps it whatever the retention

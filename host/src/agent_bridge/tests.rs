@@ -1057,6 +1057,49 @@ mod bridge_tests {
         assert_eq!(error.to_string(), "Thread could not be loaded.");
     }
 
+    // ── session_has_entries ───────────────────────────────────────────
+
+    /// A session that holds only the `session_info` snapshot it was born with
+    /// holds no record: that is the shell a task run leaves when its prompt never
+    /// reached the Agent (and what `future session transcript` reports as empty).
+    #[tokio::test]
+    async fn a_session_with_only_its_birth_snapshot_has_no_entries() {
+        let _home = TestHome::new("bridge-empty-session");
+        let mock = mock_agent();
+        mock.push_typed_data(
+            "get_session_entries",
+            serde_json::json!({"entries": [
+                {"id":"s1", "kind":"session_info", "role":"", "createdAtMs":1000, "blocks":[]}
+            ]}),
+        );
+        assert!(!session_has_entries("sess-born")
+            .await
+            .expect("history read"));
+    }
+
+    /// …and one record is enough. A page that reports more behind it is never an
+    /// empty session either, whatever its first entries are — reading one page
+    /// and calling it empty would throw a conversation away.
+    #[tokio::test]
+    async fn a_session_with_a_turn_has_entries_even_when_the_page_is_cut_short() {
+        let _home = TestHome::new("bridge-filled-session");
+        let mock = mock_agent();
+        for page in [
+            serde_json::json!({"entries": [
+                {"id":"s1", "kind":"session_info", "role":"", "createdAtMs":1000, "blocks":[]},
+                {"id":"u1", "kind":"user", "role":"user", "createdAtMs":1001, "blocks":[]}
+            ]}),
+            serde_json::json!({"hasMore": true, "entries": [
+                {"id":"s1", "kind":"session_info", "role":"", "createdAtMs":1000, "blocks":[]}
+            ]}),
+        ] {
+            mock.push_typed_data("get_session_entries", page);
+            assert!(session_has_entries("sess-filled")
+                .await
+                .expect("history read"));
+        }
+    }
+
     // ── delete outbox ─────────────────────────────────────────────────
 
     fn enqueue_delete(home: &TestHome, session_id: &str) {
