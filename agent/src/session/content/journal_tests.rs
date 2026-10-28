@@ -652,6 +652,40 @@ fn canonical_replay_enforces_byte_budget_before_constructing_a_whole_run() {
     assert!(store.segmented_replay("s", "r", -1, false, None).is_err());
 }
 
+#[test]
+fn replay_reads_all_inline_bodies_in_one_bounded_job() {
+    let (_root, store) = store();
+    let mut writer = Writer::default();
+    let fragment = "x".repeat(128);
+    for cursor in 0..64 {
+        writer
+            .persist(
+                &store,
+                "s",
+                &[event(
+                    cursor,
+                    "text_chunk",
+                    json!({
+                        "content_key":"short","content_offset":cursor*128,
+                        "content_bytes":fragment.len(),"content_first_idx":cursor,"text":fragment,
+                    }),
+                )],
+            )
+            .unwrap();
+    }
+    let before = store.db.metrics()["readerJob"]["count"].as_u64().unwrap();
+    let replay = store
+        .segmented_replay("s", "r", -1, false, Some(1_000))
+        .unwrap();
+    let after = store.db.metrics()["readerJob"]["count"].as_u64().unwrap();
+    assert_eq!(replay.events.len(), 64);
+    assert!(
+        after - before <= 5,
+        "64 inline replay events used {} read jobs",
+        after - before
+    );
+}
+
 fn start_recoverable_run(store: &SqliteStore) {
     store.commit("s",vec![json!({"id":"started","type":"run_started","role":"system","timestamp":"2026-10-26T00:00:00Z","content":{"run_id":"r","run_sequence":1,"epoch":1}})],vec![]).unwrap();
 }

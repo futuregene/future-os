@@ -176,6 +176,12 @@ impl SseBroadcaster {
         self.tx.subscribe()
     }
 
+    /// Whether a live consumer currently holds a receiver. Idle cleanup uses
+    /// this as a fence: a subscribed client may still need the run projection.
+    pub fn has_subscribers(&self) -> bool {
+        self.tx.receiver_count() > 0
+    }
+
     pub fn last_idx(&self) -> i64 {
         self.run.lock().idx.saturating_sub(1)
     }

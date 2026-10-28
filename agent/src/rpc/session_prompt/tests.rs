@@ -2881,6 +2881,33 @@ async fn prompt_empty_message_hits_empty_context_early_return() {
     wait_for_run_end(&session).await;
 }
 
+#[tokio::test]
+async fn idle_session_releases_cached_history_and_reloads_it_on_demand() {
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("persisted answer")]),
+        "idle-history",
+    );
+    let mut session = fixture.session;
+    session.prompt("remember me", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    assert!(!session.messages.read().is_empty());
+    let subscriber = session.broadcaster.subscribe();
+    assert!(
+        !session.release_idle_history_if_unused(),
+        "a live subscriber pins the in-memory projector/history"
+    );
+    drop(subscriber);
+    assert!(session.release_idle_history_if_unused());
+    assert!(session.messages.read().is_empty());
+    assert!(!session.history_loaded);
+    session.ensure_history_loaded().unwrap();
+    assert!(session
+        .messages
+        .read()
+        .iter()
+        .any(|message| message.text().contains("remember me")));
+}
+
 #[test]
 fn checkpoint_survives_a_run_boundary_after_the_transcript_changes_on_disk() {
     use crate::session::{checkpoint_to_entry, Session, SessionEntry};

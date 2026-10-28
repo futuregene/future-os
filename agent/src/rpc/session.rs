@@ -9,6 +9,21 @@ use super::{ApprovalGate, SseBroadcaster};
 /// session, until the session is dropped (Weak upgrade fails) or the
 /// completion sender hangs up. A free function (not an inline spawn closure)
 /// so the dropped-session exit is directly testable.
+const IDLE_HISTORY_RELEASE: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn schedule_idle_history_release(session: std::sync::Weak<parking_lot::RwLock<ServerSession>>) {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    handle.spawn(async move {
+        tokio::time::sleep(IDLE_HISTORY_RELEASE).await;
+        let Some(session) = session.upgrade() else {
+            return;
+        };
+        session.write().release_idle_history_if_unused();
+    });
+}
+
 async fn scheduler_wake_worker(
     session: std::sync::Weak<parking_lot::RwLock<ServerSession>>,
     mut receiver: tokio::sync::mpsc::UnboundedReceiver<crate::runtime::RunLease>,
@@ -18,6 +33,7 @@ async fn scheduler_wake_worker(
             return;
         };
         session.write().on_scheduled_run_finished(&finished);
+        schedule_idle_history_release(std::sync::Arc::downgrade(&session));
     }
 }
 
@@ -1754,6 +1770,27 @@ impl ServerSession {
         self.history_loaded = false;
         self.checkpoint_loaded
             .store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Drop the cached full transcript after a session has been idle. Every
+    /// command that needs model context calls `ensure_history_loaded` first, so
+    /// this only releases the duplicate working copy; disk remains authoritative.
+    /// Active runs, queued inputs, live subscribers and ephemeral sessions keep
+    /// their history.
+    pub(crate) fn release_idle_history_if_unused(&mut self) -> bool {
+        if self.ephemeral
+            || !self.history_loaded
+            || self.runtime.snapshot().is_some()
+            || self.runtime.has_owned_task()
+            || self.scheduler.active().is_some()
+            || !self.scheduler.queued().is_empty()
+            || self.broadcaster.has_subscribers()
+        {
+            return false;
+        }
+        self.messages.write().clear();
+        self.mark_history_stale();
+        true
     }
 
     /// Load this session's durable history into the in-memory message list,

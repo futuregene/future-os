@@ -560,18 +560,158 @@ impl Pending {
     }
 }
 
-/// Range materialization happens off the ordered writer, in bounded read jobs.
-/// Object IDs never escape the session-scoped change/reference lookup.
-pub(crate) fn materialize(
+#[derive(Clone, Copy)]
+struct BodyCursor {
+    range: ContentRange,
+    cursor: i64,
+}
+
+struct InlineBody {
+    change: usize,
+    field: String,
+    body: BodyCursor,
+}
+
+fn inline_body_requests(changes: &[StoredChange]) -> Vec<InlineBody> {
+    let mut requests = Vec::new();
+    for (index, change) in changes.iter().enumerate() {
+        let fragment = matches!(
+            change.event_type.as_str(),
+            "text_chunk" | "thinking_delta" | "tool_delta"
+        );
+        let mut inline_bytes = 0usize;
+        for (field, range, _) in &change.bodies {
+            let size = usize::try_from(range.length).unwrap_or(usize::MAX);
+            if !fragment
+                && (size > super::transport::INLINE_FIELD_BYTES
+                    || inline_bytes.saturating_add(size.saturating_mul(6))
+                        > super::transport::INLINE_EVENT_BYTES / 2)
+            {
+                continue;
+            }
+            inline_bytes = inline_bytes.saturating_add(size.saturating_mul(6));
+            requests.push(InlineBody {
+                change: index,
+                field: field.clone(),
+                body: BodyCursor {
+                    range: *range,
+                    cursor: change.last_cursor,
+                },
+            });
+        }
+    }
+    requests
+}
+
+/// Resolve and read every inline body for one replay page in a single read
+/// transaction. Each reference is compared with the range the page was decoded
+/// from, so a concurrently deleted/recycled object can never be served as
+/// authority for the old cursor.
+fn read_inline_bodies(
     store: &SqliteStore,
     stream: &StreamIdentity,
     identity: &future_rpc::content_range::StorageIdentity,
+    requests: Vec<InlineBody>,
+) -> Result<std::collections::HashMap<(usize, String), String>> {
+    if requests.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let (session_id, run_id, epoch) = (
+        stream.session_id.clone(),
+        stream.run_id.clone(),
+        stream.epoch,
+    );
+    let expected = identity.clone();
+    store.db.read(move |db| {
+        ensure!(
+            super::transport::storage_identity(db)? == expected,
+            "content database/restore identity changed"
+        );
+        ensure!(
+            super::format(db, &session_id)? == super::FORMAT_VERSION,
+            "conversation does not support canonical content ranges"
+        );
+        let tx = db.transaction()?;
+        let session = crate::session::identity::BoundIdentity::session(&tx, &session_id)?;
+        let run = crate::session::identity::BoundIdentity::run(&tx, &session_id, &run_id)?;
+        let mut statement = tx.prepare_cached(
+            "SELECT b.content_id,b.byte_offset,b.byte_length FROM stream_runs r \
+             JOIN stream_changes c ON c.stream_id=r.id \
+             JOIN stream_content_ranges b ON b.change_id=c.id \
+             WHERE r.session_id=?1 AND r.run_id=?2 AND r.epoch=?3 AND c.last_cursor=?4 \
+               AND c.last_cursor<=r.durable_cursor AND b.field=?5 \
+               AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=r.id)",
+        )?;
+        let mut bodies = std::collections::HashMap::with_capacity(requests.len());
+        for request in requests {
+            let current: Option<ContentRange> = statement
+                .query_row(
+                    rusqlite::params![session, run, epoch, request.body.cursor, request.field,],
+                    |row| {
+                        Ok(ContentRange {
+                            id: row.get(0)?,
+                            offset: row.get(1)?,
+                            length: row.get(2)?,
+                        })
+                    },
+                )
+                .optional()?;
+            ensure!(
+                current == Some(request.body.range),
+                "event content reference changed while reading"
+            );
+            let page = super::read(
+                &tx,
+                request.body.range.id,
+                request.body.range.offset,
+                request.body.range.length.try_into()?,
+            )?;
+            ensure!(
+                page.next_offset == request.body.range.offset + request.body.range.length,
+                "inline event content is incomplete"
+            );
+            bodies.insert((request.change, request.field), page.text);
+        }
+        drop(statement);
+        tx.commit()?;
+        Ok(bodies)
+    })
+}
+
+/// Materialize one page, reading all inline bodies in one transaction and doing
+/// JSON assembly after it commits.
+fn materialize_page(
+    store: &SqliteStore,
+    stream: &StreamIdentity,
+    identity: &future_rpc::content_range::StorageIdentity,
+    changes: Vec<StoredChange>,
+) -> Result<Vec<Value>> {
+    let requests = inline_body_requests(&changes);
+    let mut bodies = read_inline_bodies(store, stream, identity, requests)?;
+    changes
+        .into_iter()
+        .enumerate()
+        .map(|(index, change)| {
+            materialize_with(stream, identity, change, |field, _| {
+                bodies
+                    .remove(&(index, field.to_owned()))
+                    .context("inline event body was not staged")
+            })
+        })
+        .collect()
+}
+
+fn materialize_with(
+    stream: &StreamIdentity,
+    identity: &future_rpc::content_range::StorageIdentity,
     change: StoredChange,
+    mut read_body: impl FnMut(&str, BodyCursor) -> Result<String>,
 ) -> Result<Value> {
     ensure!(
         change.first_cursor <= change.last_cursor,
         "invalid canonical change range"
     );
+    let cursor = change.last_cursor;
     let mut event = change.metadata;
     if event["data"].get("content_key").is_some() {
         event["data"]["content_first_idx"] = json!(change.first_cursor);
@@ -581,9 +721,7 @@ pub(crate) fn materialize(
         "text_chunk" | "thinking_delta" | "tool_delta"
     );
     let mut inline_bytes = 0usize;
-    for (field, range, _) in change.bodies {
-        // Fragment ranges are already capped by WRITE_BYTES. Facts can be
-        // arbitrarily large and must never be hydrated just to page a replay.
+    for (field, range, encoding) in change.bodies {
         let size = usize::try_from(range.length)?;
         if !fragment
             && (size > super::transport::INLINE_FIELD_BYTES
@@ -597,57 +735,43 @@ pub(crate) fn materialize(
                 .replace("~0", "~");
             event["data"]["content_refs"][name] = json!({
                 "databaseId":identity.database_id,"restoreGeneration":identity.restore_generation,
-                "epoch":stream.epoch,"cursor":change.last_cursor,"field":field,"offset":0,"maxBytes":64*1024
+                "epoch":stream.epoch,"cursor":cursor,"field":field,"offset":0,"maxBytes":64*1024
             });
             continue;
         }
-        // Re-resolve the session/run/field in the SAME transaction as each
-        // body read. A concurrent delete must not turn a recycled object ID
-        // from the metadata page into authority for unrelated content.
-        let page = store.event_content_range(
-            &stream.session_id,
-            &stream.run_id,
-            future_rpc::content_range::ContentRequest {
-                database_id: identity.database_id.clone(),
-                restore_generation: identity.restore_generation.clone(),
-                epoch: stream.epoch,
-                cursor: change.last_cursor,
-                field: field.clone(),
-                offset: 0,
-                max_bytes: WRITE_BYTES as i64,
-            },
-        )?;
-        ensure!(
-            page["hasMore"] == false,
-            "inline event content exceeds its read budget"
-        );
-        let text = page["text"]
-            .as_str()
-            .context("invalid inline content page")?;
+        let text = read_body(&field, BodyCursor { range, cursor })?;
         inline_bytes = inline_bytes.saturating_add(text.len().saturating_mul(6));
+        let value = match encoding {
+            Encoding::Text => json!(text),
+            Encoding::Json => serde_json::from_str(&text)?,
+            Encoding::ShellSummary => json!(future_rpc::shell_result::model_summary(
+                &serde_json::from_str(&text)?
+            )),
+            Encoding::ToolArgumentsStringV1 => {
+                let mut value = json!(text);
+                future_rpc::tool_arguments::repair_string_v1(&mut value);
+                value
+            }
+        };
         *event
             .pointer_mut(&field)
-            .context("missing semantic content slot")? = if page["encoding"] == "json" {
-            serde_json::from_str(text)?
-        } else {
-            json!(text)
-        };
+            .context("missing semantic content slot")? = value;
     }
     event["data"]["content_format"] = json!(super::FORMAT_VERSION);
     let scoped = stream.run_id.is_empty() && stream.epoch == -1;
     event["session_id"] = json!(stream.session_id);
     event["run_id"] = json!(stream.run_id);
     event["epoch"] = json!(if scoped { 0 } else { stream.epoch });
-    event["idx"] = json!(if scoped { -1 } else { change.last_cursor });
-    event["session_idx"] = json!(if scoped { change.last_cursor } else { -1 });
+    event["idx"] = json!(if scoped { -1 } else { cursor });
+    event["session_idx"] = json!(if scoped { cursor } else { -1 });
     event["event_type"] = json!(change.event_type);
     if event.get("event_id").is_none() {
         event["event_id"] = json!(if scoped {
-            format!("{}:session:{}", stream.session_id, change.last_cursor)
+            format!("{}:session:{}", stream.session_id, cursor)
         } else {
             format!(
                 "{}:{}:{}:{}",
-                stream.session_id, stream.run_id, stream.epoch, change.last_cursor
+                stream.session_id, stream.run_id, stream.epoch, cursor
             )
         });
     }
@@ -692,15 +816,16 @@ impl SqliteStore {
             Ok((page, identity))
         })?;
         let page = page.decode()?;
+        ensure!(
+            page.changes
+                .iter()
+                .all(|change| change.last_cursor <= page.durable_cursor),
+            "change exceeds durable watermark"
+        );
         let mut events = Vec::new();
         let mut bytes = 0usize;
-        for change in page.changes {
-            ensure!(
-                change.last_cursor <= page.durable_cursor,
-                "change exceeds durable watermark"
-            );
-            let event: crate::rpc::SseEvent =
-                serde_json::from_value(materialize(self, stream, &identity, change)?)?;
+        for event in materialize_page(self, stream, &identity, page.changes)? {
+            let event: crate::rpc::SseEvent = serde_json::from_value(event)?;
             bytes += event.data.len() + super::transport::EVENT_WIRE_OVERHEAD;
             events.push(event);
             if bytes > super::transport::REPLAY_PAGE_BYTES {
@@ -788,18 +913,21 @@ impl SqliteStore {
                     Ok(page)
                 })?;
                 let page = page.decode()?;
-                for change in page.changes {
-                    ensure!(
-                        change.last_cursor <= page.durable_cursor,
-                        "change exceeds durable watermark"
-                    );
-                    cursor = change.last_cursor;
-                    let event: crate::rpc::SseEvent = serde_json::from_value(materialize(
-                        self,
-                        &stream,
-                        &storage_identity,
-                        change,
-                    )?)?;
+                ensure!(
+                    page.changes
+                        .iter()
+                        .all(|change| change.last_cursor <= page.durable_cursor),
+                    "change exceeds durable watermark"
+                );
+                let cursors = page
+                    .changes
+                    .iter()
+                    .map(|change| change.last_cursor)
+                    .collect::<Vec<_>>();
+                let values = materialize_page(self, &stream, &storage_identity, page.changes)?;
+                for (value, last_cursor) in values.into_iter().zip(cursors) {
+                    cursor = last_cursor;
+                    let event: crate::rpc::SseEvent = serde_json::from_value(value)?;
                     bytes = bytes
                         .saturating_add(event.data.len() + super::transport::EVENT_WIRE_OVERHEAD);
                     events.push(event);
