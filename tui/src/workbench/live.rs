@@ -1564,7 +1564,9 @@ impl Live {
             WbAction::Scroll(_) => {}
             WbAction::LoadOlder => self.load_older().await,
             WbAction::SwitchSession(id) => self.switch(&id).await,
-            WbAction::DeleteSession(id) => self.delete_session(&id).await,
+            // A delete also loads the successor. Keep that nested async state
+            // off the caller's stack, which is small on Windows.
+            WbAction::DeleteSession(id) => Box::pin(self.delete_session(&id)).await,
             WbAction::SetModel(id) => self.set_model(&id).await,
             WbAction::SetThinking(level) => self.set_thinking(&level).await,
             // No session to apply them to: stage, do not call.
