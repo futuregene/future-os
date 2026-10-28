@@ -4484,7 +4484,8 @@ mod tests {
         assert!(text.contains("future-tui v0.11.0"), "{text}");
         assert!(text.contains("修复 parser 的 off-by-one"), "{text}");
         assert!(text.contains("dev-huichen"), "{text}");
-        assert!(text.contains("2 tool calls"), "{text}");
+        // The demo frame is Chinese, so its process row is too (see `demo`).
+        assert!(text.contains("2 次工具调用 · 1 段思考"), "{text}");
         assert!(text.contains("deepseek-flash"), "{text}");
         assert!(text.contains("ctx"), "{text}");
         assert!(text.contains("最近"), "the sidebar's tabs: {text}");

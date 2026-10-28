@@ -485,6 +485,16 @@ pub enum Key {
     NotificationTitle,
     NotificationBody,
     ChatNewOutput,
+    /// The process rows a folded reply draws (the counts and the `thinking`
+    /// marker of a folded reply). `{}` is the count, so a language that words
+    /// the row differently (`12 次工具调用` against `12 tool calls`) only differs
+    /// in its template — the terminal never composes the sentence itself.
+    ChatFoldToolCall,
+    ChatFoldToolCalls,
+    ChatFoldThought,
+    ChatFoldThoughts,
+    ChatThinkingLabel,
+    ChatProcessLabel,
     CmdSessions,
     CmdModel,
     CmdLanguage,
@@ -926,10 +936,21 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         NotificationTitle => ("FutureOS：运行完成", "FutureOS: run complete"),
         NotificationBody => ("本轮已成功完成。", "This turn finished successfully."),
         ChatNewOutput => ("↓ 新输出 · esc 回到最新", "↓ new output · esc returns to latest"),
+        // The counts are the terminal's chrome, not the model's words: a
+        // Chinese surface says `12 次工具调用 · 3 段思考`, never `12 tool calls`.
+        ChatFoldToolCall => ("{} 次工具调用", "{} tool call"),
+        ChatFoldToolCalls => ("{} 次工具调用", "{} tool calls"),
+        ChatFoldThought => ("{} 段思考", "{} thought"),
+        ChatFoldThoughts => ("{} 段思考", "{} thoughts"),
+        ChatThinkingLabel => ("思考", "thinking"),
+        ChatProcessLabel => ("过程", "process"),
         CmdSessions => ("浏览并切换会话", "Browse and switch sessions"),
         CmdModel => ("选择模型", "Choose a model"),
         CmdLanguage => ("界面语言", "Interface language"),
-        CmdReplyDetail => ("最终输出 / 完整过程", "Final answer / full process"),
+        CmdReplyDetail => (
+            "过程展示：全展开 / 收起工具与思考 / 只留回答",
+            "Process detail: all / fold the work / answer only",
+        ),
         CmdToolOutput => ("工具调用正文：展开 / 收起", "Tool call bodies: expand / collapse"),
         CmdWorkspace => ("workspace 目录", "Workspace directory"),
         CmdTheme => ("切换主题", "Switch theme"),
@@ -987,7 +1008,10 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "Reference a conversation (inserts its link)",
         ),
         HelpKeyHelp => ("这份帮助", "This help"),
-        HelpKeyReplyDetail => ("最终输出 / 完整过程", "Final answer / full process"),
+        HelpKeyReplyDetail => (
+            "过程展示：全展开 → 收起工具与思考 → 只留回答",
+            "Process detail: all → fold the work → answer only",
+        ),
         HelpKeyReplyDetailSet => ("同上，直接设置", "The same, set directly"),
         HelpKeyPrevSession => ("上一个会话（侧栏随之切换）", "Previous conversation (the chat follows)"),
         HelpKeyNextSession => ("下一个会话（侧栏随之切换）", "Next conversation (the chat follows)"),
@@ -1326,7 +1350,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 318] = {
+    const ALL_KEYS: [Key; 324] = {
         use Key::*;
         [
             TabTodo,
@@ -1537,6 +1561,12 @@ mod tests {
             NotificationTitle,
             NotificationBody,
             ChatNewOutput,
+            ChatFoldToolCall,
+            ChatFoldToolCalls,
+            ChatFoldThought,
+            ChatFoldThoughts,
+            ChatThinkingLabel,
+            ChatProcessLabel,
             CmdSessions,
             CmdModel,
             CmdLanguage,
