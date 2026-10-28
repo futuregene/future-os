@@ -17,20 +17,39 @@ fn future(args: &[&str]) -> (Option<i32>, String, String) {
     )
 }
 
-/// Run `future` with an isolated HOME so the spawned agent cannot contend
+/// Point every FutureOS path input of `command` at `home`.
+///
+/// Isolating `HOME`/`USERPROFILE` alone is not isolation: `FUTURE_HOME` decides
+/// where FutureOS keeps its state — the agent's `auth.json` included — and it
+/// *outranks* the user home (`future_home_from` in `agent/src/utils`). A
+/// fixture that only redirected the home therefore wrote into the developer's
+/// real `~/.future` whenever their shell exported `FUTURE_HOME`: the
+/// `auth logout` cases below cleared the REAL `future.key`, and a Desktop on
+/// that machine then lost the account its remote desktop authenticates with.
+/// The endpoint variables are cleared for the same reason — this instance must
+/// own its own endpoint instead of attaching to the one a running Agent already
+/// holds.
+fn isolate(command: &mut Command, home: &Path) {
+    command
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("FUTURE_HOME", home.join(".future"))
+        .env_remove("FUTURE_AGENT_SOCKET")
+        .env_remove("FUTURE_AGENT_GRPC_ADDR");
+}
+
+/// Run `future` with an isolated home so the spawned agent cannot contend
 /// with other agent-spawning tests on the user-level singleton lock
 /// (`~/.future/agent/agent-instance.lock`). Two parallel tests racing on
 /// that lock produce the known CI flake where `agent run` exits with
 /// "already running for this user" before tracing init (empty stdout, exit 1
-/// without the expected message). HOME is the primary lookup (USERPROFILE is
-/// the Windows fallback), so both are isolated.
-fn future_with_home(args: &[&str], home: &std::path::Path) -> (Option<i32>, String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_future"))
-        .args(args)
-        .env("HOME", home)
-        .env("USERPROFILE", home)
-        .output()
-        .expect("spawn future binary");
+/// without the expected message). See [`isolate`] for why the FutureOS root is
+/// redirected too.
+fn future_with_home(args: &[&str], home: &Path) -> (Option<i32>, String, String) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_future"));
+    command.args(args);
+    isolate(&mut command, home);
+    let output = command.output().expect("spawn future binary");
     (
         output.status.code(),
         String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -83,15 +102,14 @@ fn config_without_a_tty_reports_closed_input() {
     // (the `StdioPrompter::read_line` EOF arm).
     use std::process::Stdio;
     let home = tempfile::tempdir().expect("tempdir");
-    let output = Command::new(env!("CARGO_BIN_EXE_future"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_future"));
+    command
         .arg("config")
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("run future config");
+        .stderr(Stdio::piped());
+    isolate(&mut command, home.path());
+    let output = command.output().expect("run future config");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
@@ -198,7 +216,8 @@ fn args_and_stdin_are_mutually_exclusive() {
     use std::io::Write;
     use std::process::Stdio;
     let home = tempfile::tempdir().expect("tempdir");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_future"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_future"));
+    command
         .args([
             "tools",
             "call",
@@ -207,13 +226,11 @@ fn args_and_stdin_are_mutually_exclusive() {
             r#"{"query":"x"}"#,
             "--stdin",
         ])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn future tools call");
+        .stderr(Stdio::piped());
+    isolate(&mut command, home.path());
+    let mut child = command.spawn().expect("spawn future tools call");
     child
         .stdin
         .as_mut()
@@ -235,20 +252,19 @@ fn tools_call_reads_args_from_stdin() {
     use std::process::Stdio;
     // `tools call web_search --stdin` reads the JSON args from stdin; the
     // call then fails without an API key, but the stdin path executed.
-    // Isolated HOME + cleared key env: a developer machine that is logged in
+    // Isolated home + cleared key env: a developer machine that is logged in
     // (or exports a key) would otherwise succeed and exit 0.
     let home = tempfile::tempdir().expect("tempdir");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_future"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_future"));
+    command
         .args(["tools", "call", "web_search", "--stdin"])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .env_remove("FUTURE_API_KEY")
         .env_remove("FUTURE_API_TEST_KEY")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn future");
+        .stderr(Stdio::piped());
+    isolate(&mut command, home.path());
+    let mut child = command.spawn().expect("spawn future");
     child
         .stdin
         .as_mut()
@@ -279,11 +295,10 @@ fn auth_logout_without_an_agent_clears_the_stored_key() {
 
     let run = |env_addr: Option<&str>| {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_future"));
-        cmd.args(["auth", "logout"])
-            .env("HOME", home.path())
-            .env("USERPROFILE", home.path())
-            // A dead loopback port: the probe must fail so the file path runs.
-            .env("FUTURE_AGENT_GRPC_ADDR", env_addr.unwrap_or("127.0.0.1:1"));
+        cmd.args(["auth", "logout"]);
+        isolate(&mut cmd, home.path());
+        // A dead loopback port: the probe must fail so the file path runs.
+        cmd.env("FUTURE_AGENT_GRPC_ADDR", env_addr.unwrap_or("127.0.0.1:1"));
         let out = cmd.output().expect("run future auth logout");
         (
             out.status.code(),
@@ -318,6 +333,116 @@ fn auth_logout_without_an_agent_clears_the_stored_key() {
     let (code, stdout, stderr) = run(None);
     assert_eq!(code, Some(0), "stderr: {stderr}");
     assert!(stdout.contains("Not logged in"), "{stdout}");
+}
+
+/// The precedence [`isolate`] exists for, asserted rather than assumed:
+/// `FUTURE_HOME` names the FutureOS root and it *outranks* the user home, so an
+/// `auth logout` in a process that only redirected `HOME` still clears the
+/// credential of whichever root the override names.
+///
+/// That is how a fixture isolating just `HOME` erased the developer's real
+/// `future.key` — and with it the account a running Desktop authenticates its
+/// remote desktop with — whenever their shell exported `FUTURE_HOME`. The two
+/// homes are separate temp dirs here so no real state is involved; the point is
+/// which one the command writes.
+#[test]
+fn auth_logout_follows_future_home_rather_than_the_user_home() {
+    let decoy = tempfile::tempdir().expect("tempdir");
+    let user_home = tempfile::tempdir().expect("tempdir");
+    let agent_dir = decoy.path().join("agent");
+    std::fs::create_dir_all(&agent_dir).expect("mkdir");
+    let auth = agent_dir.join("auth.json");
+    std::fs::write(
+        &auth,
+        r#"{"future":{"type":"api_key","key":"k-under-the-override"}}"#,
+    )
+    .expect("write auth.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_future"))
+        .args(["auth", "logout"])
+        .env("HOME", user_home.path())
+        .env("USERPROFILE", user_home.path())
+        .env("FUTURE_HOME", decoy.path())
+        // A dead loopback port: the probe must fail so the file path runs.
+        .env("FUTURE_AGENT_GRPC_ADDR", "127.0.0.1:1")
+        .env_remove("FUTURE_AGENT_SOCKET")
+        .output()
+        .expect("run future auth logout");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stored: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&auth).expect("read auth.json"))
+            .expect("auth.json is json");
+    assert!(
+        stored["future"].get("key").is_none(),
+        "the override names the root that gets cleared: {stored}"
+    );
+    assert!(
+        !user_home.path().join(".future/agent/auth.json").exists(),
+        "the user home is not the root when the override is set"
+    );
+}
+
+/// The other half of the same rule: a fixture whose shell already exports
+/// `FUTURE_HOME` must *override* it, not merely point `HOME` somewhere else —
+/// otherwise this very logout fixture clears the developer's real key while the
+/// temp home it seeded stays untouched. Modelled here by exporting the decoy
+/// root before [`isolate`] runs, which is the state the bug needed.
+#[test]
+fn the_logout_fixture_overrides_an_inherited_future_home() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let decoy = tempfile::tempdir().expect("tempdir");
+    let seed = |dir: &std::path::Path, key: &str| {
+        std::fs::create_dir_all(dir).expect("mkdir");
+        let file = dir.join("auth.json");
+        std::fs::write(
+            &file,
+            format!(r#"{{"future":{{"type":"api_key","key":"{key}"}}}}"#),
+        )
+        .expect("write auth.json");
+        file
+    };
+    // The fixture's root (`FUTURE_HOME` = `<home>/.future`) and the one an
+    // inherited override names (`FUTURE_HOME` = the root itself).
+    let own = seed(&home.path().join(".future/agent"), "k-fixture");
+    let inherited = seed(&decoy.path().join("agent"), "k-inherited");
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_future"));
+    command.args(["auth", "logout"]);
+    // The developer's shell, before the fixture gets a say.
+    command.env("FUTURE_HOME", decoy.path());
+    isolate(&mut command, home.path());
+    // A dead loopback port: the probe must fail so the file path runs.
+    command.env("FUTURE_AGENT_GRPC_ADDR", "127.0.0.1:1");
+    let output = command.output().expect("run future auth logout");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let cleared: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&own).expect("read the fixture's auth.json"))
+            .expect("auth.json is json");
+    assert!(
+        cleared["future"].get("key").is_none(),
+        "the fixture's own root is the one that is cleared: {cleared}"
+    );
+    let untouched: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&inherited).expect("read the inherited auth.json"),
+    )
+    .expect("auth.json is json");
+    assert_eq!(
+        untouched["future"]["key"], "k-inherited",
+        "an inherited FUTURE_HOME must not survive the fixture: {untouched}"
+    );
 }
 
 /// `future agent --probe-windows-sandbox` is one of the agent's sessionless
@@ -559,13 +684,12 @@ async fn auth_logout_through_a_running_agent_uses_the_sole_writer() {
     std::fs::write(&auth, stored).expect("write auth.json");
 
     let run = |addr: &str| {
-        let output = Command::new(env!("CARGO_BIN_EXE_future"))
-            .args(["auth", "logout"])
-            .env("HOME", home.path())
-            .env("USERPROFILE", home.path())
-            .env("FUTURE_AGENT_GRPC_ADDR", addr)
-            .output()
-            .expect("run future auth logout");
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_future"));
+        cmd.args(["auth", "logout"]);
+        isolate(&mut cmd, home.path());
+        // After [`isolate`], which clears an inherited endpoint.
+        cmd.env("FUTURE_AGENT_GRPC_ADDR", addr);
+        let output = cmd.output().expect("run future auth logout");
         (
             output.status.code(),
             String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -646,18 +770,23 @@ async fn auth_logout_through_a_running_agent_uses_the_sole_writer() {
 #[test]
 fn embedded_channel_invalid_config_errors() {
     // An existing-but-invalid channels config makes run() return Err → the
-    // main.rs error arm (exit 1) instead of starting the bridge.
+    // main.rs error arm (exit 1) instead of starting the bridge. The file is
+    // where the bridge actually reads it: `<FutureOS home>/channels`, with the
+    // home redirected below ([`isolate`]) rather than under the user home.
     let dir = tempfile::tempdir().expect("tempdir");
     let cfg_dir = dir.path().join(".future").join("channels");
     std::fs::create_dir_all(&cfg_dir).expect("mkdir");
     std::fs::write(cfg_dir.join("config.json"), "{not json").expect("write");
-    let output = Command::new(env!("CARGO_BIN_EXE_future"))
-        .args(["channel"])
-        .env("HOME", dir.path())
-        .env("FUTURE_HOME", dir.path())
-        .output()
-        .expect("run future channel");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_future"));
+    command.arg("channel");
+    isolate(&mut command, dir.path());
+    let output = command.output().expect("run future channel");
     assert_eq!(output.status.code(), Some(1));
+    // The parse error, not the "default config written" first-run path — which
+    // is what a fixture that put the file somewhere the bridge never looks
+    // reported instead, and still exited 1.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("Default config written"), "{stderr}");
 }
 
 // ── the shipped binary's `#[cfg(not(test))]` halves ─────────────────────────
@@ -805,9 +934,9 @@ fn run_under_a_pty(
         command
     };
 
+    isolate(&mut command, home);
+    // Applied after [`isolate`], so a case's own endpoint still wins.
     let mut child = command
-        .env("HOME", home)
-        .env("USERPROFILE", home)
         .envs(env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -854,12 +983,12 @@ fn config_wizard_reports_the_missing_console_at_the_secret_prompt() {
     let mut command = Command::new(env!("CARGO_BIN_EXE_future"));
     command
         .arg("config")
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
-        .env("FUTURE_AGENT_GRPC_ADDR", "127.0.0.1:1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    isolate(&mut command, home.path());
+    // After [`isolate`], which clears an inherited endpoint.
+    command.env("FUTURE_AGENT_GRPC_ADDR", "127.0.0.1:1");
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -1300,17 +1429,19 @@ fn login_against(
             .expect("disable the browser opener in the isolated application directory");
         copy
     };
-    let output = Command::new(executable)
-        .args(["auth", "login", "--url", base_url])
-        .env("HOME", home)
-        .env("USERPROFILE", home)
-        .env("PATH", &empty_path)
-        .env(
+    let output = {
+        let mut command = Command::new(executable);
+        command
+            .args(["auth", "login", "--url", base_url])
+            .env("PATH", &empty_path);
+        isolate(&mut command, home);
+        // After [`isolate`], which clears an inherited endpoint.
+        command.env(
             "FUTURE_AGENT_GRPC_ADDR",
             agent_addr.unwrap_or("127.0.0.1:1"),
-        )
-        .output()
-        .expect("run future auth login");
+        );
+        command.output().expect("run future auth login")
+    };
     (
         output.status.code(),
         String::from_utf8_lossy(&output.stdout).into_owned(),

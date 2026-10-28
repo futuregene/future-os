@@ -10,13 +10,37 @@ fn isolated_home() -> tempfile::TempDir {
     tempfile::tempdir().expect("temp home")
 }
 
+/// The `future-agent` binary, pointed at an isolated FutureOS home.
+fn agent(home: &std::path::Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_future-agent"));
+    isolate(&mut command, home);
+    command
+}
+
+/// Point every FutureOS path input of `command` at `home`.
+///
+/// `HOME`/`USERPROFILE` alone do not isolate a spawned agent: `FUTURE_HOME`
+/// decides where its state lives and it *outranks* the user home
+/// (`future_home_from` in `agent/src/utils`). A fixture that only redirected the
+/// home therefore read and wrote the developer's real `~/.future` — settings,
+/// `auth.json`, models, the session database and the logs — whenever their shell
+/// exported `FUTURE_HOME`. The endpoint variables are cleared for the same
+/// reason: this instance must own its own endpoint instead of attaching to the
+/// one a running Agent already holds.
+fn isolate(command: &mut Command, home: &std::path::Path) {
+    command
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("FUTURE_HOME", home.join(".future"))
+        .env_remove("FUTURE_AGENT_SOCKET")
+        .env_remove("FUTURE_AGENT_GRPC_ADDR");
+}
+
 #[test]
 fn agent_is_singleton_per_user_even_on_different_ports() {
     let home = isolated_home();
-    let mut first = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let mut first = agent(home.path())
         .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "30"])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .spawn()
         .expect("spawn first agent");
     let lock_path = home.path().join(".future/agent/agent-instance.lock");
@@ -48,10 +72,8 @@ fn agent_is_singleton_per_user_even_on_different_ports() {
         serde_json::from_slice(&std::fs::read(&metadata_path).unwrap()).unwrap();
     assert_eq!(identity["pid"], first.id());
 
-    let second = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let second = agent(home.path())
         .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .output()
         .expect("spawn second agent");
     assert!(!second.status.success());
@@ -61,10 +83,8 @@ fn agent_is_singleton_per_user_even_on_different_ports() {
         String::from_utf8_lossy(&second.stderr)
     );
 
-    let maintenance = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let maintenance = agent(home.path())
         .arg("--probe-windows-sandbox")
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .output()
         .expect("run maintenance probe beside live agent");
     assert!(
@@ -79,10 +99,8 @@ fn agent_is_singleton_per_user_even_on_different_ports() {
         metadata_path.exists(),
         "a force kill may leave stale metadata"
     );
-    let replacement = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let replacement = agent(home.path())
         .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .output()
         .expect("spawn replacement agent");
     assert!(
@@ -123,10 +141,8 @@ fn future_home_env_runs_a_second_isolated_instance() {
     // state root that is not derived from that home at all.
     let home = isolated_home();
     let isolated = isolated_home();
-    let mut default_agent = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let mut default_agent = agent(home.path())
         .args(["--profile-seconds", "60"])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .env_remove("FUTURE_HOME")
         .env_remove("XDG_RUNTIME_DIR")
         .env_remove("FUTURE_AGENT_SOCKET")
@@ -139,11 +155,9 @@ fn future_home_env_runs_a_second_isolated_instance() {
         || default_socket.exists(),
     );
 
-    let mut isolated_agent = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let mut isolated_agent = agent(home.path())
         .env("FUTURE_HOME", isolated.path())
         .args(["--profile-seconds", "60"])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .env_remove("XDG_RUNTIME_DIR")
         .env_remove("FUTURE_AGENT_SOCKET")
         .spawn()
@@ -183,10 +197,8 @@ fn agent_default_mode_binds_per_user_local_socket() {
     // The endpoint lives under the FutureOS home (~/.future/run/agent.sock);
     // XDG_RUNTIME_DIR is not consulted, but scrub it so a stale value that
     // once took precedence cannot mask regressions on Linux CI.
-    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let output = agent(home.path())
         .args(["--profile-seconds", "0"])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .env_remove("XDG_RUNTIME_DIR")
         .env_remove("FUTURE_AGENT_SOCKET")
         .output()
@@ -230,11 +242,9 @@ fn agent_default_mode_binds_per_user_local_socket() {
 fn agent_default_ipc_shuts_down_gracefully_and_releases_its_endpoint() {
     let home = isolated_home();
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        agent(home.path())
             .env("FUTURE_HOME", home.path())
             .args(["--profile-seconds", "0"])
-            .env("HOME", home.path())
-            .env("USERPROFILE", home.path())
             .env("RUST_LOG", "info")
             .env_remove("FUTURE_AGENT_SOCKET")
             .env_remove("XDG_RUNTIME_DIR")
@@ -317,10 +327,8 @@ fn agent_default_ipc_shuts_down_gracefully_and_releases_its_endpoint() {
 #[test]
 fn platform_sandbox_probe_is_machine_readable_and_sessionless() {
     let home = isolated_home();
-    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let output = agent(home.path())
         .arg("--probe-sandbox")
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .output()
         .expect("run platform sandbox probe");
     assert!(
@@ -342,7 +350,7 @@ fn platform_sandbox_probe_is_machine_readable_and_sessionless() {
 fn agent_starts_serves_and_shuts_down_via_profile_timer() {
     let home = isolated_home();
     let profile = home.path().join("flame.svg");
-    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let output = agent(home.path())
         .args([
             "--grpc-addr",
             "127.0.0.1:0",
@@ -352,8 +360,6 @@ fn agent_starts_serves_and_shuts_down_via_profile_timer() {
             profile.to_str().unwrap(),
             "--verbose",
         ])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .output()
         .expect("spawn future-agent");
     let log = format!(
@@ -395,7 +401,8 @@ fn agent_starts_serves_and_shuts_down_via_profile_timer() {
 
 #[test]
 fn agent_prints_version() {
-    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let home = isolated_home();
+    let output = agent(home.path())
         .arg("--version")
         .output()
         .expect("spawn future-agent");
@@ -406,7 +413,8 @@ fn agent_prints_version() {
 
 #[test]
 fn agent_rejects_unknown_flag() {
-    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let home = isolated_home();
+    let output = agent(home.path())
         .arg("--definitely-not-a-flag")
         .output()
         .expect("spawn future-agent");
@@ -424,11 +432,9 @@ fn agent_grpc_addr_forms_and_profile_default_path() {
         let home = isolated_home();
         let work = home.path().join("work");
         std::fs::create_dir_all(&work).unwrap();
-        let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        let output = agent(home.path())
             .args(["--grpc-addr", addr, "--profile-seconds", "0"])
             .current_dir(&work)
-            .env("HOME", home.path())
-            .env("USERPROFILE", home.path())
             .output()
             .expect("spawn future-agent");
         assert!(
@@ -446,7 +452,7 @@ fn agent_grpc_addr_forms_and_profile_default_path() {
 fn agent_log_file_and_heap_flag_paths() {
     let home = isolated_home();
     let log_file = home.path().join("custom-agent.log");
-    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let output = agent(home.path())
         .args([
             "--grpc-addr",
             "127.0.0.1:0",
@@ -459,8 +465,6 @@ fn agent_log_file_and_heap_flag_paths() {
             "--profile-heap",
             home.path().join("heap.out").to_str().unwrap(),
         ])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .env("RUST_LOG", "info")
         .output()
         .expect("spawn future-agent");
@@ -475,7 +479,7 @@ fn agent_log_file_and_heap_flag_paths() {
 
     // --log-file without a value uses the default under ~/.future.
     let home = isolated_home();
-    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let output = agent(home.path())
         .args([
             "--grpc-addr",
             "127.0.0.1:0",
@@ -483,8 +487,6 @@ fn agent_log_file_and_heap_flag_paths() {
             "0",
             "--log-file",
         ])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .output()
         .expect("spawn future-agent");
     assert!(
@@ -513,10 +515,8 @@ fn agent_reads_settings_auth_and_context_from_home() {
         r#"{"maxTurns": 7, "defaultModel": "openai/gpt-4o"}"#,
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let output = agent(home.path())
         .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .output()
         .expect("spawn future-agent");
     assert!(
@@ -538,10 +538,8 @@ fn agent_shuts_down_cleanly_on_sigint() {
         .local_addr()
         .unwrap()
         .port();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let mut child = agent(home.path())
         .args(["--grpc-addr", &format!("127.0.0.1:{port}")])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .spawn()
         .expect("spawn future-agent");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -569,20 +567,16 @@ fn agent_exits_nonzero_when_grpc_bind_fails() {
     // Hold the port so the agent's bind fails and async_main errors out.
     let blocker = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = blocker.local_addr().unwrap().port();
-    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let output = agent(home.path())
         .args(["--grpc-addr", &format!("127.0.0.1:{port}")])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .output()
         .expect("spawn future-agent");
     assert_eq!(output.status.code(), Some(1));
 
     // Runtime errors return through the lifecycle guard instead of calling
     // process::exit, so the user-level singleton lock is immediately reusable.
-    let replacement = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let replacement = agent(home.path())
         .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .output()
         .expect("spawn replacement after bind failure");
     assert!(
@@ -598,10 +592,8 @@ fn agent_warns_and_uses_defaults_on_corrupt_settings() {
     let agent_dir = home.path().join(".future/agent");
     std::fs::create_dir_all(&agent_dir).unwrap();
     std::fs::write(agent_dir.join("settings.json"), "{not json").unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let output = agent(home.path())
         .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .output()
         .expect("spawn future-agent");
     assert!(
@@ -637,10 +629,8 @@ fn agent_resolves_custom_provider_model_config() {
         r#"{"defaultModel": "custom/custom-model", "maxTurns": 9}"#,
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let output = agent(home.path())
         .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .output()
         .expect("spawn future-agent");
     assert!(
@@ -669,10 +659,8 @@ fn agent_prefers_future_model_when_future_is_configured() {
         }]}"#,
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let output = agent(home.path())
         .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .output()
         .expect("spawn future-agent");
     assert!(
@@ -690,10 +678,8 @@ fn agent_preserves_orphan_run_data_at_startup() {
     let orphan = home.path().join(".future/agent/run-events/orphan-session");
     std::fs::create_dir_all(&orphan).unwrap();
     std::fs::write(orphan.join("run-1.jsonl"), "{}").unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let output = agent(home.path())
         .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .output()
         .expect("spawn future-agent");
     assert!(
@@ -711,7 +697,7 @@ fn agent_preserves_orphan_run_data_at_startup() {
 #[test]
 fn agent_survives_unwritable_profile_path() {
     let home = isolated_home();
-    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let output = agent(home.path())
         .args([
             "--grpc-addr",
             "127.0.0.1:0",
@@ -720,8 +706,6 @@ fn agent_survives_unwritable_profile_path() {
             "--profile",
             "/nonexistent-dir-xyz/flame.svg",
         ])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .output()
         .expect("spawn future-agent");
     assert!(
@@ -736,7 +720,7 @@ fn agent_survives_unwritable_profile_path() {
 fn agent_profiler_build_failure_continues_without_profiling() {
     let home = isolated_home();
     let profile = home.path().join("flame.svg");
-    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let output = agent(home.path())
         .args([
             "--grpc-addr",
             "127.0.0.1:0",
@@ -745,8 +729,6 @@ fn agent_profiler_build_failure_continues_without_profiling() {
             "--profile",
             profile.to_str().unwrap(),
         ])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .env("FUTURE_TEST_PROFILER_FAIL_AT", "build")
         .output()
         .expect("spawn future-agent");
@@ -766,7 +748,7 @@ fn agent_profiler_build_failure_continues_without_profiling() {
 fn agent_profiler_report_failure_is_logged_and_ignored() {
     let home = isolated_home();
     let profile = home.path().join("flame.svg");
-    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let output = agent(home.path())
         .args([
             "--grpc-addr",
             "127.0.0.1:0",
@@ -775,8 +757,6 @@ fn agent_profiler_report_failure_is_logged_and_ignored() {
             "--profile",
             profile.to_str().unwrap(),
         ])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .env("FUTURE_TEST_PROFILER_FAIL_AT", "report")
         .output()
         .expect("spawn future-agent");
@@ -793,7 +773,7 @@ fn agent_profiler_report_failure_is_logged_and_ignored() {
 fn agent_profiler_write_failure_is_logged_and_ignored() {
     let home = isolated_home();
     let profile = home.path().join("flame.svg");
-    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let output = agent(home.path())
         .args([
             "--grpc-addr",
             "127.0.0.1:0",
@@ -802,8 +782,6 @@ fn agent_profiler_write_failure_is_logged_and_ignored() {
             "--profile",
             profile.to_str().unwrap(),
         ])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .env("FUTURE_TEST_PROFILER_FAIL_AT", "write")
         .output()
         .expect("spawn future-agent");
@@ -826,10 +804,8 @@ fn invalid_grpc_addresses_fail_without_panicking_or_binding_a_default_port() {
         "::1:1234",
     ] {
         let home = isolated_home();
-        let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        let output = agent(home.path())
             .args(["--grpc-addr", address, "--profile-seconds", "0"])
-            .env("HOME", home.path())
-            .env("USERPROFILE", home.path())
             .output()
             .expect("spawn future-agent");
         let diagnostic = format!(
@@ -872,10 +848,8 @@ fn agent_model_without_base_url_or_key_uses_builtin_defaults() {
         r#"{"defaultModel": "bare/bare-model"}"#,
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let output = agent(home.path())
         .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .output()
         .expect("spawn future-agent");
     assert!(
@@ -892,11 +866,9 @@ fn agent_skips_unreadable_project_context_file() {
     // CLAUDE.md exists but is a directory: read_to_string fails (EISDIR, even
     // for root) and the agent falls through to the next context file name.
     std::fs::create_dir_all(work.join("CLAUDE.md")).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let output = agent(home.path())
         .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
         .current_dir(&work)
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .output()
         .expect("spawn future-agent");
     assert!(
@@ -915,10 +887,8 @@ fn agent_preserves_unreadable_legacy_orphan_root() {
     let run_events = home.path().join(".future/agent/run-events");
     std::fs::create_dir_all(&run_events).unwrap();
     std::fs::set_permissions(&run_events, std::fs::Permissions::from_mode(0o000)).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+    let output = agent(home.path())
         .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .output()
         .expect("spawn future-agent");
     assert!(

@@ -590,7 +590,29 @@ export class SyncEngine {
       // against fresh state, not keep reusing a rejected/stale promise.
       const initialState = request.initialState;
       delete request.initialState;
-      const state = await (initialState ?? this.deps.requestGetState(lane.sessionId));
+      // A reconcile that is going to read durable history whatever the state
+      // answers (`open`, `reconnect`, or a lane with nothing established yet)
+      // reads it now, beside the state read rather than after it. The two
+      // requests are independent, and this is the reader's whole wait: a phone
+      // opening a conversation pays them over one relay link, one round trip
+      // after another. The history read keeps its own cancellation — a state
+      // rejection drops the result through `isCurrent` — so nothing is
+      // committed on behalf of a lane that has moved on.
+      const readsHistoryAnyway =
+        request.reason === "open" ||
+        request.reason === "reconnect" ||
+        lane.timeline === null;
+      // Issue the state read first: the pair is in flight together either way,
+      // and keeping `get_state` ahead of the history page on the wire leaves
+      // every ordered fixture — and every earlier reader of a trace — true.
+      const stateRead = initialState ?? this.deps.requestGetState(lane.sessionId);
+      const earlyHistory = readsHistoryAnyway
+        ? this.deps.requestHistory(lane.sessionId, isCurrent)
+        : null;
+      // If the state read fails first this chain is abandoned; it must not
+      // surface afterwards as an unhandled rejection.
+      earlyHistory?.catch(() => undefined);
+      const state = await stateRead;
       if (!isCurrent()) throw new Error("stale_sync_lane");
       let activeRunId = state.activeRun?.runId ?? "";
       // The reconcile target is the requested run (a snapshot-flip run that
@@ -601,7 +623,10 @@ export class SyncEngine {
       const refreshHistory = this.needsHistory(lane, targetRunId, request);
       if (refreshHistory) {
         enterStage("history");
-        const history = await this.deps.requestHistory(lane.sessionId, isCurrent);
+        // The stage label covers whichever read is still running: when the
+        // history read started beside the state read, this wait is only its
+        // tail, so `get_state` reports the overlap and `history` the remainder.
+        const history = await (earlyHistory ?? this.deps.requestHistory(lane.sessionId, isCurrent));
         if (!isCurrent()) throw new Error("stale_sync_lane");
         const settledReply = history.items.some(item =>
           item.kind === "message" && item.role === "assistant" && item.runId === targetRunId &&

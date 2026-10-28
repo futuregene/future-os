@@ -327,3 +327,31 @@ test("queued live events overlapping a warm replay are deduplicated, including a
   expect(h.engine.cursorFor("s").get("r")?.highWater).toBe(3);
   expect(h.onSyncStatus).toHaveBeenLastCalledWith("s", "idle");
 });
+
+test("a cold open reads durable history beside the state read, not after it", async () => {
+  // A phone opening a conversation pays `get_state` and `history` over one
+  // relay link. Neither answer is an input to the other read, so the open must
+  // not spend a whole round trip on the first before starting the second.
+  const calls: string[] = [];
+  let answerState!: (value: { activeRun?: { runId: string } | null }) => void;
+  const requestGetState = jest.fn(() => {
+    calls.push("get_state");
+    return new Promise<{ activeRun?: { runId: string } | null }>(resolve => { answerState = resolve; });
+  });
+  const requestHistory = jest.fn(async () => {
+    calls.push("history");
+    return emptyTimeline();
+  });
+  const engine = new SyncEngine({ requestGetState, requestHistory, fetchReplay: jest.fn() });
+  engines.push(engine);
+  const state = engine.open("s");
+  await jest.advanceTimersByTimeAsync(0);
+  // The history read is already in flight while the state answer is pending.
+  expect(calls).toEqual(["get_state", "history"]);
+  answerState({ activeRun: null });
+  await state;
+  await jest.advanceTimersByTimeAsync(0);
+  // Exactly one history read: the open consumes the early one.
+  expect(requestHistory).toHaveBeenCalledTimes(1);
+  expect(engine.timelineFor("s")).not.toBeNull();
+});

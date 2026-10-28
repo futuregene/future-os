@@ -12,6 +12,24 @@ fn bin() -> Command {
     command
 }
 
+fn bin_in(home: &std::path::Path) -> Command {
+    let mut command = bin();
+    // `HOME` alone does not isolate this process: `FUTURE_HOME` is the root that
+    // decides where the channel config lives, and it outranks the user home, so
+    // a fixture that only redirected the home read the developer's real
+    // `~/.future/channels` whenever their shell exported `FUTURE_HOME`. The
+    // endpoint is cleared for the same reason — the bridge takes its default
+    // `agent.grpc_addr` of `auto`, which would otherwise attach to the Agent
+    // already running on this machine.
+    command
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("FUTURE_HOME", home.join(".future"))
+        .env_remove("FUTURE_AGENT_SOCKET")
+        .env_remove("FUTURE_AGENT_GRPC_ADDR");
+    command
+}
+
 fn isolated_home(label: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir()
         .join("future-channel-bin-tests")
@@ -39,7 +57,7 @@ fn missing_config_writes_defaults_and_exits_nonzero() {
     // First run writes the default config and exits non-zero ("edit it and
     // restart") — the file now exists, so run_async returns the load error.
     let home = isolated_home("missing-config");
-    let out = bin().env("HOME", &home).output().expect("run binary");
+    let out = bin_in(&home).output().expect("run binary");
     assert!(!out.status.success());
     assert!(home.join(".future/channels/config.json").exists());
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -59,7 +77,7 @@ fn unwritable_home_warns_and_exits_ok() {
         perms.set_mode(0o555);
     }
     std::fs::set_permissions(&home, perms).unwrap();
-    let out = bin().env("HOME", &home).output().expect("run binary");
+    let out = bin_in(&home).output().expect("run binary");
     // Best-effort permission restore so cleanup works.
     let mut perms = std::fs::metadata(&home).unwrap().permissions();
     #[cfg(unix)]
@@ -80,7 +98,7 @@ fn unwritable_home_warns_and_exits_ok() {
 fn invalid_config_exits_nonzero() {
     let home = isolated_home("invalid-config");
     write_config(&home, "not json {{{");
-    let out = bin().env("HOME", &home).output().expect("run binary");
+    let out = bin_in(&home).output().expect("run binary");
     assert!(!out.status.success());
 }
 
@@ -88,7 +106,7 @@ fn invalid_config_exits_nonzero() {
 fn dingtalk_enabled_without_credentials_exits_nonzero() {
     let home = isolated_home("dt-no-creds");
     write_config(&home, r#"{"dingtalk": {"enabled": true}}"#);
-    let out = bin().env("HOME", &home).output().expect("run binary");
+    let out = bin_in(&home).output().expect("run binary");
     assert!(!out.status.success());
 }
 
@@ -166,8 +184,7 @@ fn sigint_scenario(
     loop {
         let home = isolated_home(label);
         write_config(&home, config);
-        let mut child = bin()
-            .env("HOME", &home)
+        let mut child = bin_in(&home)
             .stdin(if stdin_bytes.is_some() {
                 std::process::Stdio::piped()
             } else {
@@ -329,8 +346,7 @@ fn sigint_after_stdout_marker(
 ) -> (std::process::ExitStatus, String) {
     let home = isolated_home(label);
     write_config(&home, config);
-    let mut child = bin()
-        .env("HOME", &home)
+    let mut child = bin_in(&home)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -420,11 +436,7 @@ fn the_channel_diagnostics_run_without_a_bridge() {
     // writes a default config and exits non-zero.
     let home = isolated_home("cli-diagnostics");
     for args in [vec!["list"], vec!["status"]] {
-        let out = bin()
-            .env("HOME", &home)
-            .args(&args)
-            .output()
-            .expect("run binary");
+        let out = bin_in(&home).args(&args).output().expect("run binary");
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(out.status.success(), "{args:?} failed: {stdout}");
         assert!(!stdout.is_empty(), "{args:?} printed nothing");
@@ -432,8 +444,7 @@ fn the_channel_diagnostics_run_without_a_bridge() {
     // A missing config is reported, never written by a read-only command.
     assert!(!home.join(".future/channels/config.json").exists());
 
-    let json = bin()
-        .env("HOME", &home)
+    let json = bin_in(&home)
         .args(["status", "--format", "json"])
         .output()
         .expect("run binary");
@@ -453,8 +464,7 @@ fn a_proactive_send_can_read_its_text_from_stdin() {
         &home,
         r#"{"providers": {"cli": {"enabled": true, "dm_policy": "open"}}}"#,
     );
-    let mut child = bin()
-        .env("HOME", &home)
+    let mut child = bin_in(&home)
         // This binary takes the subcommand as its own first argument (see the
         // note in `the_channel_diagnostics_run_without_a_bridge`).
         .args(["send", "--channel", "cli", "--to", "c1", "--text", "-"])
@@ -481,8 +491,7 @@ fn a_proactive_send_can_read_its_text_from_stdin() {
 #[test]
 fn testing_an_unknown_channel_fails_with_a_readable_error() {
     let home = isolated_home("cli-test-unknown");
-    let out = bin()
-        .env("HOME", &home)
+    let out = bin_in(&home)
         .args(["test", "not-a-channel"])
         .output()
         .expect("run binary");

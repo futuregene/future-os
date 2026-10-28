@@ -39,16 +39,21 @@ test("reports state/history/replay timings without treating a failed attempt as 
     const opened = engine.open("s");
     await jest.advanceTimersByTimeAsync(150);
     await opened;
+    // The history read starts beside the state read, so one attempt is as long
+    // as the longest of the two rather than their sum: `history` measures only
+    // the part that outlived the state answer, and `elapsedMs` is the whole
+    // wait. That is the point of the overlap: 130 ms, not 150 ms, before a
+    // first paint over one relay link.
     expect(onTiming).toHaveBeenLastCalledWith({
       sessionId: "s", runId: "r", reason: "open", attempt: 1,
-      elapsedMs: 150, stagesMs: { get_state: 20, history: 30, replay: 100 }, outcome: "failure",
+      elapsedMs: 130, stagesMs: { get_state: 20, history: 10, replay: 100 }, outcome: "failure",
       replayPlan: { mode: "full", sinceIdx: -1, cachedHighWater: -1, prefixDecision: "no-cache" },
     });
     fail = false;
     await jest.advanceTimersByTimeAsync(650);
     expect(onTiming).toHaveBeenLastCalledWith({
       sessionId: "s", runId: "r", reason: "open", attempt: 2,
-      elapsedMs: 150, stagesMs: { get_state: 20, history: 30, replay: 100 }, outcome: "success",
+      elapsedMs: 130, stagesMs: { get_state: 20, history: 10, replay: 100 }, outcome: "success",
       // Early history is visible now, but the failed first attempt never
       // established a cursor/projector baseline.
       replayPlan: { mode: "full", sinceIdx: -1, cachedHighWater: -1, prefixDecision: "baseline-untrusted" },
