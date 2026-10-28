@@ -52,10 +52,12 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
  * (bytes written to a temporary file, because the host's upload takes a path).
  */
 const nativePaths = vi.fn<() => Promise<string[]>>();
+const nativeImage = vi.fn<() => Promise<{ name: string; path: string } | null>>();
 const saveImage = vi.fn<(input: { bytes: number[]; extension: string }) => Promise<{ path: string }>>();
 const saveFile = vi.fn<(input: { bytes: number[]; name: string }) => Promise<{ path: string }>>();
 vi.mock("../../integrations/storage/threadStore", () => ({
   readNativeClipboardFilePaths: () => nativePaths(),
+  readNativeClipboardImage: () => nativeImage(),
   savePastedFile: (input: { bytes: number[]; name: string }) => saveFile(input),
   savePastedImage: (input: { bytes: number[]; extension: string }) => saveImage(input),
 }));
@@ -192,6 +194,7 @@ beforeEach(() => {
   saveFile.mockReset();
   saveImage.mockReset();
   nativePaths.mockReset().mockResolvedValue([]);
+  nativeImage.mockReset().mockResolvedValue(null);
   saveFile.mockResolvedValue({ path: "/tmp/pasted" });
 
   listSkills.mockReset().mockResolvedValue([]);
@@ -655,6 +658,47 @@ it("leaves a text paste to the input", async () => {
   });
   await settle();
 
+  expect(upload).not.toHaveBeenCalled();
+  expect(event.defaultPrevented).toBe(false);
+  await view.unmount();
+});
+
+/**
+ * WebKitGTK reports a clipboard image as a paste with an empty `DataTransfer`,
+ * so the only payload the webview never sees is read from the native pasteboard
+ * and uploaded from there.
+ */
+it("stages a clipboard image the webview could not report", async () => {
+  nativeImage.mockResolvedValue({ name: "pasted-2.png", path: "/tmp/pasted-2.png" });
+  upload.mockResolvedValue({ contentHash: "h", name: "pasted-2.png", uploadId: "upload_20" });
+  const view = await mount();
+
+  const event = pasteEvent();
+  await act(async () => {
+    view.input.dispatchEvent(event);
+  });
+  await settle();
+
+  expect(nativeImage).toHaveBeenCalledTimes(1);
+  // The bytes were already written by the backend, so nothing is copied twice.
+  expect(saveImage).not.toHaveBeenCalled();
+  expect(upload).toHaveBeenCalledWith({ desktopId: "desktop_a", path: "/tmp/pasted-2.png" });
+  expect(view.text()).toContain("pasted-2.png");
+  await view.unmount();
+});
+
+/** No clipboard image means no payload at all: the field keeps the paste. */
+it("leaves an empty paste to the input when the pasteboard holds no image", async () => {
+  nativeImage.mockResolvedValue(null);
+  const view = await mount();
+
+  const event = pasteEvent();
+  await act(async () => {
+    view.input.dispatchEvent(event);
+  });
+  await settle();
+
+  expect(nativeImage).toHaveBeenCalledTimes(1);
   expect(upload).not.toHaveBeenCalled();
   expect(event.defaultPrevented).toBe(false);
   await view.unmount();
