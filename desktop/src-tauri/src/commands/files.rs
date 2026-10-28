@@ -54,6 +54,54 @@ pub fn read_native_clipboard_file_paths() -> Vec<String> {
     native_clipboard_file_paths()
 }
 
+/// Read an image from the current clipboard and persist it as a pasted attachment.
+///
+/// WebKitGTK dispatches a `paste` event whose `DataTransfer` is entirely empty
+/// when the clipboard holds only an image, so the WebView never sees the bytes
+/// and the composer's own paste handler has nothing to attach on Linux. The
+/// pasteboard itself still has them, so the WebView falls back to this command
+/// when a paste carried neither text nor files.
+#[cfg_attr(feature = "gui", tauri::command)]
+#[cfg(feature = "gui")]
+pub fn read_native_clipboard_image() -> Option<SavedAttachment> {
+    clipboard_image_attachment_with(read_clipboard_image_png)
+}
+
+/// Encode the clipboard image as PNG and hand it to the shared pasted-image
+/// persistence (which owns the size cap and the temp-directory layout).
+#[cfg(feature = "gui")]
+fn clipboard_image_attachment_with(
+    read: impl FnOnce() -> Option<Vec<u8>>,
+) -> Option<SavedAttachment> {
+    let png = read()?;
+    future_host::files::save_pasted_image(png, Some("png".to_string())).ok()
+}
+
+/// Decode the OS clipboard image into PNG bytes. `arboard` yields raw RGBA, so
+/// the encode happens here rather than in the WebView, which never received it.
+#[cfg(all(feature = "gui", target_os = "linux"))]
+fn read_clipboard_image_png() -> Option<Vec<u8>> {
+    let image = arboard::Clipboard::new().ok()?.get_image().ok()?;
+    let rgba = image::RgbaImage::from_raw(
+        image.width as u32,
+        image.height as u32,
+        image.bytes.into_owned(),
+    )?;
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(rgba)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .ok()?;
+    Some(png.into_inner())
+}
+
+/// WKWebView and WebView2 hand a pasted clipboard image to the page as a
+/// `File`, so the fallback never runs there and those graphs skip arboard's
+/// image support (see the `image-data` feature in Cargo.toml).
+#[cfg(all(feature = "gui", not(target_os = "linux")))]
+fn read_clipboard_image_png() -> Option<Vec<u8>> {
+    None
+}
+
 /// Validate one local image path and expose exactly that canonical file through
 /// Tauri's asset protocol. The WebView then reads the bytes directly instead of
 /// receiving a 1.33x Base64 string over JSON IPC.
@@ -270,6 +318,24 @@ mod tests {
             clipboard_file_paths_with(|| vec![relative, absolute.clone()]),
             vec![absolute.display().to_string()]
         );
+    }
+
+    #[cfg(feature = "gui")]
+    #[test]
+    fn a_clipboard_image_becomes_a_pasted_png_attachment() {
+        let rgba = image::RgbaImage::from_raw(2, 2, vec![0u8; 16]).expect("rgba buffer");
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(rgba)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .expect("encode png");
+        let saved = clipboard_image_attachment_with(|| Some(png.into_inner())).expect("saved");
+        // `SavedAttachment` keeps its fields private to the host crate; the JSON
+        // it serializes to is the same shape the WebView receives.
+        let value = serde_json::to_value(&saved).expect("serialized attachment");
+        assert!(value["name"].as_str().unwrap_or_default().ends_with(".png"));
+        assert!(Path::new(value["path"].as_str().unwrap_or_default()).is_file());
+        // No clipboard image (text-only or headless desktop) attaches nothing.
+        assert!(clipboard_image_attachment_with(|| None).is_none());
     }
 
     #[cfg(feature = "gui")]

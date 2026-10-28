@@ -251,6 +251,10 @@ impl ServerSession {
         {
             anyhow::bail!("session history reset is in progress");
         }
+        if !self.ephemeral {
+            self.session_manager
+                .ensure_execution_allowed(&self.session_id)?;
+        }
         let receipt_fingerprint = crate::session::compaction_ops::canonical_hash(
             &serde_json::json!({
                 "message":prompt.message,"modelContext":prompt.model_context,"images":images,"attachments":attachments
@@ -642,6 +646,10 @@ impl ServerSession {
         accepted_snapshot: Option<AcceptedRunSnapshot>,
         coalesced_run_ids: &[String],
     ) -> Result<crate::runtime::RunLease> {
+        if !self.ephemeral {
+            self.session_manager
+                .ensure_execution_allowed(&self.session_id)?;
+        }
         let accepted_settings = accepted_snapshot
             .as_ref()
             .map(|snapshot| &snapshot.settings);

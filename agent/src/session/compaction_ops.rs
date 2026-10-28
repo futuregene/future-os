@@ -35,6 +35,7 @@ impl Manager {
         policy: Value,
         operation_id: &str,
     ) -> Result<CompactionClaim> {
+        self.ensure_execution_allowed(session)?;
         let store = self.storage()?;
         if store.storage_format(session)? == super::content::FORMAT_VERSION {
             return store.claim_segmented_checkpoint(

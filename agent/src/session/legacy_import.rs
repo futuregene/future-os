@@ -7,7 +7,7 @@ use chrono::TimeZone;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 struct Source {
@@ -45,6 +45,7 @@ fn read_bytes(path: &Path, cancellation: &crate::service::StartupCancellation) -
             return Ok(result);
         }
         result.extend_from_slice(&buffer[..count]);
+        cancellation.record_progress();
     }
 }
 
@@ -215,6 +216,30 @@ impl SqliteStore {
                 bail!("only a skipped legacy session can be retried");
             }
         }
+        // One catalogue read replaces a writer round trip for every old file.
+        // The scan still discovers files restored since the last startup;
+        // completed imports and tombstones are fences, not a global skip bit.
+        let retrying = retry.is_some();
+        let progress = cancellation.clone();
+        let (known, complete) = self.db.read(move |db| {
+            let tx = db.transaction()?;
+            let known = {
+                let mut query = tx.prepare("SELECT session_id FROM legacy_imports WHERE status<>'skipped' OR ?1=0
+                    UNION ALL SELECT session_id FROM session_tombstones
+                    UNION ALL SELECT s.id FROM sessions s JOIN session_formats f ON f.session_id=s.id WHERE f.format=2")?;
+                let mut rows = query.query([retrying])?;
+                let mut known = HashSet::new();
+                while let Some(row) = rows.next()? {
+                    progress.check()?;
+                    known.insert(row.get::<_,crate::session::identity::BoundIdentity>(0)?.to_string());
+                    progress.record_progress();
+                }
+                known
+            };
+            let complete: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM storage_meta WHERE key='legacy_complete')", [], |row|row.get(0))?;
+            tx.commit()?;
+            Ok((known, complete))
+        })?;
         // Discover newly restored files on every startup. Per-session import
         // records below still fence successful, skipped and deleted sessions;
         // a global completion bit must not hide a backup restored later.
@@ -225,8 +250,17 @@ impl SqliteStore {
                     cancellation.check()?;
                     let path = file?.path();
                     if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
+                        if let Some(id) = path.file_stem().and_then(|s| s.to_str()) {
+                            if known.contains(id)
+                                || retry.as_ref().is_some_and(|wanted| wanted != id)
+                            {
+                                cancellation.record_progress();
+                                continue;
+                            }
+                        }
                         paths.push(path);
                     }
+                    cancellation.record_progress();
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -242,6 +276,13 @@ impl SqliteStore {
             }
         }
         let candidates = paths.len();
+        if candidates == 0 && complete {
+            tracing::info!(
+                known_sources = known.len(),
+                "session storage: legacy catalogue unchanged"
+            );
+            return Ok(());
+        }
         if candidates > 0 {
             tracing::info!(
                 candidates,
@@ -260,6 +301,7 @@ impl SqliteStore {
             }
             let key = id.clone();
             let status = self.db.call(move |db| import_status(db, &key))?;
+            cancellation.record_progress();
             if status
                 .as_deref()
                 .is_some_and(|s| s != "skipped" || retry.is_none())
@@ -336,6 +378,7 @@ impl SqliteStore {
             };
             cancellation.check()?;
             let cancellation = cancellation.clone();
+            let retrying = retry.is_some();
             self.db.call(move |db| {
                 // Reads the destination before it writes: take the write lock at
                 // BEGIN, or a concurrent connection's commit invalidates this
@@ -343,7 +386,7 @@ impl SqliteStore {
                 cancellation.check()?;
                 let tx = crate::session::database::begin_write_transaction(db)?;
                 cancellation.check()?;
-                if matches!(import_status(&tx,&id)?.as_deref(),Some("deleted"|"existing_canonical")) {
+                if import_status(&tx,&id)?.is_some_and(|status|status!="skipped" || !retrying) {
                     // A restored legacy source cannot acquire a second TEXT
                     // identity or block an already-authoritative native owner.
                     // Recheck under the writer lock in case admission raced the
@@ -393,7 +436,10 @@ impl SqliteStore {
         // The import is committed before asking the sole checkpoint worker to
         // reclaim its high-water allocation. Running TRUNCATE on the writer
         // raced the worker's PASSIVE checkpoint and silently ignored SQLITE_BUSY.
-        self.db.checkpoint_after_import()
+        if candidates > 0 {
+            self.db.checkpoint_after_import()?;
+        }
+        Ok(())
     }
 }
 
@@ -652,6 +698,43 @@ mod import_paths {
     fn write(dir: &Path, name: &str, body: &str) {
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(dir.join(name), body).unwrap();
+    }
+
+    #[test]
+    fn thousands_of_completed_sources_need_one_read_and_no_writer_jobs() {
+        let root = tempfile::tempdir().unwrap();
+        let sessions = root.path().join("sessions");
+        let store = store_in(root.path());
+        std::fs::create_dir(&sessions).unwrap();
+        for index in 0..2048 {
+            std::fs::write(
+                sessions.join(format!("known-{index}.jsonl")),
+                "completed source must not be parsed again",
+            )
+            .unwrap();
+        }
+        store.db.call(|db| {
+            let tx = crate::session::database::begin_write_transaction(db)?;
+            for index in 0..2048 {
+                tx.execute("INSERT INTO legacy_imports(session_id,status,fingerprint,warnings) VALUES (?1,'imported','fixture',0)", [format!("known-{index}")])?;
+            }
+            tx.execute("INSERT OR REPLACE INTO storage_meta VALUES ('legacy_complete','1')", [])?;
+            tx.commit()?;
+            Ok(())
+        }).unwrap();
+        let before = store.db.metrics();
+        store.import_legacy(&sessions, None).unwrap();
+        let after = store.db.metrics();
+        assert_eq!(after["writerJob"]["count"], before["writerJob"]["count"], "ordinary reopen must not queue one write job per source or checkpoint an unchanged catalogue");
+        assert_eq!(
+            after["readerJob"]["count"].as_u64().unwrap()
+                - before["readerJob"]["count"].as_u64().unwrap(),
+            1
+        );
+        // A later restored source is still discovered on the next scan.
+        write(&sessions, "restored.jsonl", &entry_line("restored-user"));
+        store.import_legacy(&sessions, None).unwrap();
+        assert!(store.contains("restored").unwrap());
     }
 
     #[test]

@@ -277,7 +277,6 @@ fn run_sized(tool_calls: usize, large_tool_bytes: Option<usize>) -> Value {
 }
 
 #[test]
-#[ignore = "final acceptance: valid UUID transcript with typical and 150-tool long-turn distributions"]
 fn historical_distribution_valid_transcripts() {
     let report = json!({"workload":"historical-distribution-valid-UUID-transcripts","cases":[run(20),run(150)],"limitations":"Synthetic aggregate-shaped inputs, not replay of private history. Direct admitted batches, not timer/admission/UI latency. First read uses a reopened store with warm OS file cache. Complete transcript reads return the same logical messages/bodies; serialized envelope byte sizes may differ. No compression, VACUUM or history rewrite."});
     println!("REALISTIC_STORAGE_REPORT={report}");
@@ -287,7 +286,6 @@ fn historical_distribution_valid_transcripts() {
 }
 
 #[test]
-#[ignore = "final acceptance: 1/10 MiB tool outputs, shared final publication and exact reopen reads"]
 fn large_tool_outputs_reuse_durable_bodies() {
     let report = json!({"workload":"valid-UUID-large-tool-outputs","cases":[run_sized(1,Some(1024*1024)),run_sized(1,Some(10*1024*1024))],"limitations":"Direct synthetic tool_end facts; explicit full transcript export reads, not inline UI transport. One sample per size; no latency percentile claim. Body hash verification is off the ordered database writer; no body compression or completion-time copying."});
     println!("LARGE_TOOL_STORAGE_REPORT={report}");
