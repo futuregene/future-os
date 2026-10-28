@@ -425,10 +425,14 @@ impl GrpcClient {
 
     // ─── Session management ────────────────────────────────────────────
 
-    /// `newSession(opts?)` — `new_session` with `createdBy: "tui"`; the
-    /// sessionId field is left empty so the agent generates a fresh ID.
+    /// `newSession(opts?)` — `new_session` with `createdBy: "tui"`.
+    ///
+    /// `session_id` is the id the caller wants the session to have; `None`
+    /// lets the agent mint one. A chat names its scratch directory after the
+    /// session id, so it has to mint the id itself (see `Live::new_session`).
     pub async fn new_session(
         &self,
+        session_id: Option<&str>,
         cwd: Option<&str>,
         model_id: Option<&str>,
         level: Option<&str>,
@@ -437,6 +441,7 @@ impl GrpcClient {
             .map(|p| p.display().to_string())
             .unwrap_or_default();
         let cmd = RpcCommand {
+            session_id: session_id.unwrap_or("").to_string(),
             cwd: cwd.unwrap_or(&default_cwd).to_string(),
             model_id: model_id.unwrap_or("").to_string(),
             level: level.unwrap_or("").to_string(),
@@ -2228,6 +2233,12 @@ pub(crate) mod tests {
             .unwrap_or_else(|| panic!("no {command_type} request was sent"))
     }
 
+    /// [`last_request`] for another test module: the surface lives in
+    /// `workbench::live`, and only this module can reach the mock's log.
+    pub(crate) fn last_request_of(mock: &ApiMock, command_type: &str) -> RpcCommand {
+        last_request(&mock.requests, command_type)
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn provider_configuration_calls_send_the_documented_wire_shape() {
         let mock = ApiMock {
@@ -3186,7 +3197,7 @@ pub(crate) mod tests {
 
         // new_session with a sessionId updates the current session.
         let v = client
-            .new_session(None, Some("m"), Some("high"))
+            .new_session(None, None, Some("m"), Some("high"))
             .await
             .unwrap();
         assert_eq!(v.get("sessionId").and_then(Value::as_str), Some("s-new"));
@@ -3231,7 +3242,7 @@ pub(crate) mod tests {
         let (client, _events, _conn) = GrpcClient::new(&addr);
         client.set_current_session_id("s-old");
 
-        client.new_session(None, None, None).await.unwrap();
+        client.new_session(None, None, None, None).await.unwrap();
         assert_eq!(client.get_current_session_id(), "s-new");
         // Other commands still inherit the current session id (routing).
         client.get_state().await.unwrap();
@@ -3246,6 +3257,35 @@ pub(crate) mod tests {
             seen.iter()
                 .any(|(t, sid)| t == "get_state" && sid == "s-new"),
             "other commands keep routing by session id, saw {seen:?}"
+        );
+        client.disconnect();
+    }
+
+    /// A chat names its scratch directory after the session id, so the id the
+    /// caller mints is the id the agent must open — not one of its own.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn new_session_sends_the_session_id_the_caller_minted() {
+        let seen_sessions = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let addr = spawn_api_mock(ApiMock {
+            data_by_type: Arc::new(std::sync::Mutex::new(StdHashMap::from([(
+                "new_session".into(),
+                "{\"sessionId\":\"minted-id\"}".into(),
+            )]))),
+            seen_sessions: seen_sessions.clone(),
+            ..Default::default()
+        })
+        .await;
+        let (client, _events, _conn) = GrpcClient::new(&addr);
+
+        client
+            .new_session(Some("minted-id"), Some("/work/chat/x"), None, None)
+            .await
+            .unwrap();
+        let seen = seen_sessions.lock().unwrap().clone();
+        assert!(
+            seen.iter()
+                .any(|(t, sid)| t == "new_session" && sid == "minted-id"),
+            "the minted id must reach the agent, saw {seen:?}"
         );
         client.disconnect();
     }

@@ -2108,6 +2108,15 @@ impl Live {
     /// start). A run still streaming in the session left behind is muted by the
     /// `launchpad` guard in `handle_event`.
     pub fn to_launchpad(&mut self) {
+        // `/new` starts where the conversation was: the workspace the reader is
+        // leaving is staged for the one the first message creates, so a new
+        // conversation does not silently fall back to the app's scratch tree.
+        // A chat stages no workspace at all — the next message mints its own
+        // chat directory (see [`Self::new_session`]).
+        let inherited = self.shown_cwd().filter(|cwd| {
+            let cwd = cwd.trim();
+            !cwd.is_empty() && !is_chat_directory(cwd)
+        });
         self.save_draft();
         self.launchpad = true;
         // The conversation being left keeps its rows for the way back: `/new`
@@ -2127,10 +2136,29 @@ impl Live {
         self.forget_run();
         self.approval = None;
         self.notice = None;
+        // The next conversation runs where this one ran; `None` is the chat
+        // default, whose directory the first message names after its session.
+        self.pending_cwd = inherited;
         // The launchpad's own directory (`@` and the files panel read it, see
-        // `refresh_local`): the chat the chip now names, not the workspace the
-        // reader just left.
+        // `refresh_local`): the workspace the chip now names.
         self.refresh_local();
+    }
+
+    /// Stage the directory this process was started from for the first
+    /// conversation — the launchpad's default, so `cd project && future tui`
+    /// creates that project's conversation.
+    ///
+    /// Called by the driver rather than by [`Self::attach`]: attaching is also
+    /// how tests and an embedding caller open the surface, and those must not
+    /// inherit whatever directory the process happens to run in.
+    pub fn stage_launch_workspace(&mut self) {
+        if !self.detached() {
+            return;
+        }
+        if let Some(workspace) = launch_workspace() {
+            self.pending_cwd = Some(workspace);
+            self.refresh_local();
+        }
     }
 
     /// Is the surface on the launchpad (no session attached)?
@@ -2227,9 +2255,10 @@ impl Live {
 
     /// The workspace the surface should name (see [`Self::shown_model`]).
     ///
-    /// A launchpad with nothing staged names the plain chat: a fresh screen is a
-    /// conversation with no workspace until the reader picks one, not a copy of
-    /// the directory `/new` just left behind (see [`chat_workspace`]).
+    /// A launchpad with nothing staged names the plain chat (see
+    /// [`chat_workspace`]); `/new` stages the workspace the last conversation
+    /// ran in, and a fresh terminal stages the directory `future tui` was
+    /// started from (see [`launch_workspace`]).
     fn shown_cwd(&self) -> Option<String> {
         if self.detached() {
             return Some(self.pending_cwd.clone().unwrap_or_else(chat_workspace));
@@ -2262,6 +2291,11 @@ impl Live {
         };
         push(&chat_workspace());
         for session in self.sessions.iter() {
+            // Every chat is the one 对话会话 entry above: the per-chat scratch
+            // directories are not workspaces the chip should cycle through.
+            if is_chat_directory(&session.cwd) {
+                continue;
+            }
             push(&session.cwd);
         }
         choices
@@ -2280,9 +2314,14 @@ impl Live {
             return;
         }
         let current = self.shown_cwd().unwrap_or_default();
+        // Every chat directory is the one 对话会话 choice, whichever session's
+        // scratch tree the conversation currently runs in.
         let next = choices
             .iter()
-            .position(|path| same_path(path, &current))
+            .position(|path| {
+                same_path(path, &current)
+                    || (is_chat_directory(path) && is_chat_directory(&current))
+            })
             .map(|index| (index + 1) % choices.len())
             .unwrap_or(0);
         let path = choices[next].clone();
@@ -2355,17 +2394,22 @@ impl Live {
         let cwd = self.shown_cwd().unwrap_or_default();
         // What the reader chose on the launchpad is what this session starts
         // with; with nothing staged those are the product defaults the chips
-        // already name — the agent's default model and starting level, the plain
-        // chat, 完全访问.
+        // already name — the agent's default model and starting level, the
+        // 对话会话 chat, 完全访问.
         let model = self.shown_model().unwrap_or_default();
         let level = self.wire_thinking_level(&self.shown_effort());
         let mode = crate::approval_mode::ApprovalMode::from_wire(&self.shown_mode());
-        // A chat runs in the app's own directory, which a fresh home does not
-        // have yet, and a session parked in a directory that is not there has no
-        // tool that works. Only a chat is created here: a directory the reader
-        // typed is theirs to have made, and a typo deserves the agent's error.
-        if !cwd.trim().is_empty() && is_chat_directory(&cwd) {
-            if let Err(error) = std::fs::create_dir_all(&cwd) {
+        // A chat's directory is named after its session id — the desktop app's
+        // own `~/.future/workspaces/chat/<id>` convention, so a chat created
+        // here is filed as a chat there instead of as a project called
+        // `workspace`. The id is minted here so the directory exists before the
+        // agent opens the session. A directory the reader typed is theirs to
+        // have made, and a typo deserves the agent's error.
+        let chat = cwd.trim().is_empty() || is_chat_directory(&cwd);
+        let (session_id, cwd) = if chat {
+            let id = crate::session_rows::random_id();
+            let directory = chat_dir_for(&id);
+            if let Err(error) = std::fs::create_dir_all(&directory) {
                 self.notice = Some(i18n::render(
                     self.lang,
                     Key::WorkflowFailed,
@@ -2373,10 +2417,14 @@ impl Live {
                 ));
                 return;
             }
-        }
+            (Some(id), directory)
+        } else {
+            (None, cwd)
+        };
         match self
             .client
             .new_session(
+                session_id.as_deref(),
                 (!cwd.is_empty()).then_some(cwd.as_str()),
                 (!model.is_empty()).then_some(model.as_str()),
                 (!level.is_empty()).then_some(level.as_str()),
@@ -2745,28 +2793,20 @@ impl Live {
     /// Move the session to no workspace at all — the plain chat the workspace
     /// picker lists above the directories.
     ///
-    /// Two roads again, decided by whether anything is attached: staged for the
-    /// session the next message creates, or moved with `set_cwd` and re-filed by
-    /// the rail under 对话会话. The directory is the agent's own scratch
-    /// workspace (see [`chat_workspace`]) and is created here rather than left to
-    /// the agent: a session parked in a directory that is not there has no tool
-    /// that works, and nobody else is going to make this one — a directory the
-    /// reader typed is theirs, a typo deserves the agent's error, but this path
-    /// is the app's.
+    /// Two roads again, decided by whether anything is attached. With no
+    /// session the chat is staged and the first message mints its directory
+    /// (see [`Self::new_session`]); with one, the agent moves it to *this
+    /// session's* chat directory, `~/.future/workspaces/chat/<id>` — the
+    /// desktop app's own convention, so the two surfaces file the conversation
+    /// in the same place. The directory is created here rather than left to the
+    /// agent: a session parked in a directory that is not there has no tool that
+    /// works, and nobody else is going to make this one — a directory the reader
+    /// typed is theirs, but this path is the app's.
     pub async fn select_chat_workspace(&mut self) {
         if !self.detached() && is_chat_directory(&self.state.cwd.clone().unwrap_or_default()) {
             // Already a chat: the row the reader would leave is the row they are
             // on, which is what `esc` gives too.
             self.notice = None;
-            return;
-        }
-        let path = chat_workspace();
-        if let Err(error) = std::fs::create_dir_all(&path) {
-            self.notice = Some(i18n::render(
-                self.lang,
-                Key::WorkflowFailed,
-                &[&error.to_string()],
-            ));
             return;
         }
         let notice = i18n::render(
@@ -2775,11 +2815,23 @@ impl Live {
             &[&t(self.lang, Key::WorkspaceChat)],
         );
         if self.detached() {
-            self.pending_cwd = Some(path);
+            // No session yet, so no id to name the chat directory after:
+            // staging no workspace *is* the chat, and the first message mints
+            // the directory.
+            self.pending_cwd = None;
             self.notice = Some(notice);
             // `@` and the files panel follow the directory the next session
             // will run in (see `refresh_local`).
             self.refresh_local();
+            return;
+        }
+        let path = chat_dir_for(&self.state.session_id);
+        if let Err(error) = std::fs::create_dir_all(&path) {
+            self.notice = Some(i18n::render(
+                self.lang,
+                Key::WorkflowFailed,
+                &[&error.to_string()],
+            ));
             return;
         }
         match self.client.set_cwd(&path).await {
@@ -3562,8 +3614,8 @@ fn same_path(left: &str, right: &str) -> bool {
 /// [`Live::build_session_view`] hoisted the clock and this). One read per
 /// rebuild, one comparison per row.
 struct ChatRoots {
-    /// `{state}/agent/workspace` — where a session started without a directory
-    /// lands.
+    /// `{state}/agent/workspace` — the placeholder a chat names before it has a
+    /// session, and where chats created by older clients still run.
     workspace: String,
     /// `{state}/workspaces/chat/` — the per-chat scratch tree the desktop makes.
     chat_prefix: String,
@@ -3623,19 +3675,53 @@ fn is_chat_directory(cwd: &str) -> bool {
     ChatRoots::detect().is_chat(cwd)
 }
 
-/// The directory a conversation with no workspace runs in: the same
-/// `agent/workspace` [`is_chat_directory`] names, spelled as a path this process
-/// can hand the agent.
+/// The placeholder a chat names before it has a session id, and where chats
+/// created before this client filed them under the app's scratch tree still
+/// run.
 ///
-/// It is the agent's own home rather than one the reader chose, which is why a
-/// chat is the one workspace this surface creates itself (see
-/// [`Live::select_chat_workspace`]).
+/// A chat's real directory is [`chat_dir_for`] — `<state>/workspaces/chat/<id>`,
+/// the desktop app's own convention — but the launchpad stages "no workspace"
+/// before the id exists, and the header, the `@` list and the files panel need
+/// some directory to read. This is that directory: the agent's own default
+/// workspace, which [`is_chat_directory`] still classifies as a chat.
 fn chat_workspace() -> String {
     crate::home::future_state_dir()
         .join("agent")
         .join("workspace")
         .to_string_lossy()
         .to_string()
+}
+
+/// The root of the app's per-conversation scratch tree — the same directory the
+/// desktop app files a chat under, so both surfaces name one conversation's
+/// directory the same way.
+fn chat_root() -> std::path::PathBuf {
+    crate::home::future_state_dir()
+        .join("workspaces")
+        .join("chat")
+}
+
+/// The directory a chat runs in: `<chat root>/<session id>`.
+///
+/// The id is the agent session id (see [`Live::new_session`]), which is also
+/// the name the desktop gives the imported chat workspace; the two surfaces
+/// therefore agree on where a conversation lives.
+fn chat_dir_for(session_id: &str) -> String {
+    chat_root().join(session_id).to_string_lossy().to_string()
+}
+
+/// The directory the TUI process was started from, when it can be a workspace.
+///
+/// `cd project && future tui` starts the first conversation in that project
+/// rather than in the app's scratch tree; a launch from one of those scratch
+/// directories is still a chat, and so is a directory that cannot be resolved.
+fn launch_workspace() -> Option<String> {
+    let dir = std::env::current_dir().ok()?;
+    let path = dir.to_string_lossy().to_string();
+    if path.trim().is_empty() || is_chat_directory(&path) {
+        return None;
+    }
+    Some(path)
 }
 
 /// Milliseconds since the epoch, read once per frame rather than once per row.
@@ -4047,13 +4133,17 @@ mod tests {
     /// silently — the reported "type on the home screen, press enter, nothing
     /// happens". The sequence below is that order, kept as the contract.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // FUTURE_HOME is process-global and must stay pinned across awaits.
     async fn a_launchpad_submit_creates_the_session_and_sends_the_prompt() {
+        let _guard = crate::test_env::lock();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_env::EnvVarGuard::set("FUTURE_HOME", home.path());
         let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
             ("new_session", r#"{"sessionId":"s-new"}"#),
             ("get_state", r#"{"sessionId":"s-new"}"#),
             ("prompt", r#"{"runId":"r-1","acceptedState":"running"}"#),
         ]);
-        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock.clone()).await;
 
         let (mut live, _events) = Live::attach(&addr, None, false, None)
             .await
@@ -4076,6 +4166,20 @@ mod tests {
             commands.iter().any(|command| command == "prompt"),
             "the prompt must reach the agent, saw {commands:?}"
         );
+        // A chat is filed where the desktop app files its own: under the app's
+        // chat tree, named after the session id this client minted.
+        let request = crate::rpc::grpc_client::tests::last_request_of(&mock, "new_session");
+        assert!(
+            !request.session_id.is_empty(),
+            "a chat mints its session id"
+        );
+        let directory = home
+            .path()
+            .join("workspaces")
+            .join("chat")
+            .join(&request.session_id);
+        assert_eq!(request.cwd, directory.to_string_lossy());
+        assert!(directory.is_dir(), "the chat directory is created for it");
         let painted = live.chat.render_all(80).join("\n");
         assert!(
             painted.contains("hello there"),
@@ -4207,7 +4311,11 @@ mod tests {
     /// whole point of the launchpad's first message is that it can be retried
     /// after whatever stopped the session is fixed.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // FUTURE_HOME is process-global and must stay pinned across awaits.
     async fn a_submit_that_cannot_start_a_session_keeps_the_draft() {
+        let _guard = crate::test_env::lock();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_env::EnvVarGuard::set("FUTURE_HOME", home.path());
         let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
             // A `new_session` that hands back no id, and a state with none
             // either: the adapter has nothing to send a prompt to.
@@ -4340,7 +4448,11 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // FUTURE_HOME is process-global and must stay pinned across awaits.
     async fn a_submit_still_sends_when_the_draft_holds_the_text() {
+        let _guard = crate::test_env::lock();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_env::EnvVarGuard::set("FUTURE_HOME", home.path());
         let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
             ("new_session", r#"{"sessionId":"s-new"}"#),
             ("get_state", r#"{"sessionId":"s-new"}"#),
@@ -4383,8 +4495,9 @@ mod tests {
 
     /// The workspace picker's "no workspace" row: a chat, staged while nothing
     /// is attached and applied once a session exists, in a directory this
-    /// surface makes itself — a fresh home has no `agent/workspace`, and a
-    /// session parked in a directory that is not there has no tool that works.
+    /// surface makes itself under the app's chat tree — a fresh home has none,
+    /// and a session parked in a directory that is not there has no tool that
+    /// works.
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // FUTURE_HOME is process-global and must stay pinned across awaits.
     async fn the_chat_row_stages_a_session_then_moves_it() {
@@ -4392,38 +4505,48 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let _home = crate::test_env::EnvVarGuard::set("FUTURE_HOME", home.path());
         let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
-        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock.clone()).await;
         let (mut live, _events) = Live::attach(&addr, None, false, None)
             .await
             .expect("attach to the test agent");
-        let scratch = home.path().join("agent").join("workspace");
+        let session_chat = home.path().join("workspaces").join("chat").join("s-1");
         let notice = i18n::render(
             live.lang,
             Key::WorkspaceChosen,
             &[&t(live.lang, Key::WorkspaceChat)],
         );
 
-        // Nothing attached: the directory is staged for the session the next
-        // message creates.
+        // Nothing attached: the chat is staged as *no workspace at all* — the
+        // first message mints the directory, named after the session it creates.
         live.to_launchpad();
         live.select_chat_workspace().await;
-        assert_eq!(
-            live.pending_cwd.as_deref(),
-            Some(scratch.to_string_lossy().as_ref())
+        assert_eq!(live.pending_cwd, None, "a chat stages no workspace");
+        assert!(
+            !session_chat.is_dir(),
+            "the directory is named after a session that does not exist yet"
         );
-        assert!(scratch.is_dir(), "the chat's directory is created for it");
         assert_eq!(live.notice.as_deref(), Some(notice.as_str()));
 
-        // A session attached: the agent is told to move, and the rail re-files
-        // the conversation under 对话会话 because the directory is the app's.
+        // A session attached: the agent is told to move to *this session's* chat
+        // directory, and the rail re-files the conversation under 对话会话
+        // because the directory is the app's own scratch tree.
         live.launchpad = false;
         live.state.session_id = "s-1".into();
         live.state.cwd = Some("/work/alpha".into());
         live.select_chat_workspace().await;
+        assert!(
+            session_chat.is_dir(),
+            "the chat's directory is created for it"
+        );
         let commands = seen.lock().unwrap().clone();
         assert!(
             commands.iter().any(|command| command == "set_cwd"),
             "a chat moves an attached session: {commands:?}"
+        );
+        assert_eq!(
+            crate::rpc::grpc_client::tests::last_request_of(&mock, "set_cwd").cwd,
+            session_chat.to_string_lossy(),
+            "the session moves to its own chat directory under the app's tree"
         );
         assert_eq!(live.notice.as_deref(), Some(notice.as_str()));
 
@@ -4437,7 +4560,7 @@ mod tests {
             .count();
         live.notice = None;
         live.state.session_id = "s-1".into();
-        live.state.cwd = Some(scratch.to_string_lossy().to_string());
+        live.state.cwd = Some(session_chat.to_string_lossy().to_string());
         live.select_chat_workspace().await;
         let after = seen
             .lock()
@@ -4473,6 +4596,11 @@ mod tests {
         let (mut live, _events) = Live::attach(&addr, None, false, None)
             .await
             .expect("attach to the test agent");
+        // A first launch with nothing to inherit: the state the client came
+        // from is not the next conversation's default (`/new` inherits it, a
+        // fresh start does not).
+        live.state.session_id.clear();
+        live.state.cwd = None;
         live.to_launchpad();
 
         let frame = crate::workbench::layout::Frame::new(
@@ -4517,6 +4645,7 @@ mod tests {
             row("s-2", Some("second"), "/work/alpha/"),
             row("s-3", Some("third"), "/other/beta"),
         ]);
+        live.state.session_id = "s-1".into();
         live.state.cwd = Some("/work/alpha".into());
         live.to_launchpad();
 
@@ -4539,10 +4668,11 @@ mod tests {
         assert!(names.contains(&"alpha"), "{names:?}");
         assert!(names.contains(&"beta"), "{names:?}");
 
-        // The chip starts on the plain chat: a fresh launchpad is a conversation
-        // with no workspace, not a copy of the directory `/new` left behind.
-        assert_eq!(data.session.cwd, chat_workspace());
-        assert!(data.session.chat, "the chip names it as 对话会话");
+        // `/new` stages the workspace the conversation was just in — a new
+        // conversation starts where the last one ran, not in a fixed scratch
+        // directory.
+        assert_eq!(data.session.cwd, "/work/alpha");
+        assert!(!data.session.chat, "a workspace is not a chat");
         assert_eq!(
             live.workspace_choices(),
             vec![
@@ -4554,20 +4684,23 @@ mod tests {
 
         // …cycles to the next *distinct* one…
         live.cycle_pending_workspace();
-        assert_eq!(live.pending_cwd.as_deref(), Some("/work/alpha"));
+        assert_eq!(live.pending_cwd.as_deref(), Some("/other/beta"));
         let data = live.data(&frame);
-        assert_eq!(data.session.cwd, "/work/alpha");
+        assert_eq!(data.session.cwd, "/other/beta");
         assert!(!data.session.chat, "a workspace is not a chat");
 
-        // …and the `@` list, the files panel and the header's branch follow it,
-        // not the directory `/new` left behind.
-        assert_eq!(live.local_cwd, "/work/alpha");
+        // …and the `@` list, the files panel and the header's branch follow it.
+        assert_eq!(live.local_cwd, "/other/beta");
 
-        // …and on to the next, then back to the chat it started on.
-        live.cycle_pending_workspace();
-        assert_eq!(live.pending_cwd.as_deref(), Some("/other/beta"));
+        // …and on to the chat row, which stages no workspace at all.
         live.cycle_pending_workspace();
         assert_eq!(live.pending_cwd.as_deref(), Some(chat_workspace().as_str()));
+        let data = live.data(&frame);
+        assert!(data.session.chat, "the chip names it as 对话会话");
+        // Standing on the chat, the next press leaves it again rather than
+        // staging the same choice twice.
+        live.cycle_pending_workspace();
+        assert_eq!(live.pending_cwd.as_deref(), Some("/work/alpha"));
     }
 
     /// With a single choice there is nothing to cycle: the chip says so instead
@@ -4589,6 +4722,60 @@ mod tests {
             live.notice.as_deref(),
             Some(t(live.lang, Key::WorkspaceNone))
         );
+    }
+
+    /// `cd project && future tui` opens that project: the driver stages the
+    /// directory the process was started from, so the first message does not
+    /// fall back to the app's scratch tree.
+    #[tokio::test]
+    async fn the_launchpad_stages_the_directory_the_tui_was_started_from() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        assert_eq!(live.pending_cwd, None, "attach stages nothing by itself");
+
+        live.stage_launch_workspace();
+        let started_from = std::env::current_dir().unwrap();
+        assert_eq!(
+            live.pending_cwd.as_deref(),
+            Some(started_from.to_string_lossy().as_ref()),
+            "the first conversation runs where the TUI was opened"
+        );
+        // A launch from one of the app's own scratch directories stays a chat
+        // (see `launch_workspace`), and a session already attached is not
+        // re-staged.
+        live.launchpad = false;
+        live.state.session_id = "s-1".into();
+        live.pending_cwd = None;
+        live.stage_launch_workspace();
+        assert_eq!(live.pending_cwd, None, "an attached session keeps its cwd");
+    }
+
+    /// `/new` starts the next conversation where the one on screen ran: a
+    /// project is inherited, a chat is not (the next message mints a fresh chat
+    /// directory of its own).
+    #[tokio::test]
+    async fn a_new_conversation_keeps_the_workspace_it_left() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+
+        live.state.session_id = "s-1".into();
+        live.state.cwd = Some("/work/alpha".into());
+        live.to_launchpad();
+        assert_eq!(live.pending_cwd.as_deref(), Some("/work/alpha"));
+
+        // A chat left behind stages no workspace: a new chat gets its own
+        // directory rather than the previous conversation's.
+        live.launchpad = false;
+        live.state.session_id = "s-2".into();
+        live.state.cwd = Some(chat_workspace());
+        live.to_launchpad();
+        assert_eq!(live.pending_cwd, None);
     }
 
     /// The rail's 活跃 stretch is the agent's own flag, not a run row of this

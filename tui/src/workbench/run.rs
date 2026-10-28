@@ -127,6 +127,9 @@ pub async fn run(options: Options) -> Result<(), String> {
     if options.continue_recent && options.session.is_none() {
         live.attach_most_recent().await;
     }
+    // `cd project && future tui` starts that project's conversation: the
+    // launchpad stages the working directory, not the app's scratch tree.
+    live.stage_launch_workspace();
 
     if let Some(prompt) = options
         .initial_prompt

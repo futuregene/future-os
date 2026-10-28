@@ -3857,12 +3857,21 @@ impl Workbench {
                 text: String::new(),
                 cursor: 0,
             }];
-            match (command.arg.is_empty())
-                .then(|| PickerKind::from_command(&command.name))
-                .flatten()
-            {
-                Some(kind) => actions.extend(self.open_picker(kind, data)),
-                None => actions.push(WbAction::Command(command.raw)),
+            match PickerKind::from_command(&command.name) {
+                // The workspace chooser takes its argument as the search line:
+                // `/workspace ../other` is a request for *that* directory, and a
+                // command that opened an empty list (its highlight on the
+                // current row) looked like a no-op.
+                Some(PickerKind::Workspace) => {
+                    actions.extend(self.open_picker(PickerKind::Workspace, data));
+                    for ch in command.arg.chars() {
+                        self.picker.push(ch, data);
+                    }
+                }
+                Some(kind) if command.arg.is_empty() => {
+                    actions.extend(self.open_picker(kind, data))
+                }
+                _ => actions.push(WbAction::Command(command.raw)),
             }
             return actions;
         }
@@ -4632,6 +4641,28 @@ mod tests {
         assert_eq!(
             workbench.apply_picker(PickerKind::Workspace, &data),
             vec![WbAction::SelectWorkspace("/work/gamma".into())]
+        );
+    }
+
+    /// `/workspace <path>` opens the chooser with the path already typed: the
+    /// argument names the row the reader wants, and a command that opened an
+    /// empty list (its highlight on the current row) read as a no-op.
+    #[test]
+    fn a_workspace_path_typed_after_the_command_lands_in_the_search_line() {
+        let mut data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        data.input.text = "/workspace /work/gamma".into();
+
+        workbench.handle(WbEvent::Key("enter".into()), &data);
+        assert_eq!(
+            workbench.overlay,
+            Some(Overlay::Picker(PickerKind::Workspace))
+        );
+        assert_eq!(workbench.picker.query, "/work/gamma");
+        assert_eq!(
+            workbench.apply_picker(PickerKind::Workspace, &data),
+            vec![WbAction::SelectWorkspace("/work/gamma".into())],
+            "enter applies the typed path, not the row the box opened on"
         );
     }
 

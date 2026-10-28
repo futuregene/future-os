@@ -210,9 +210,10 @@ agent 解析 `auth.json` 时会先读 `~/.future/agent/auth.json`，只有该文
 
 ## `~/.future/workspaces/chat/` — 聊天工作区
 
-GUI 的每线程聊天工作区，每个子目录以 agent 会话 id（已知时，例如从导入
-获得）或 GUI 线程 id 命名。用户自选的工作区位于别处，清理本目录时绝不会
-触碰它们。
+GUI 与 TUI 的每线程聊天工作区，每个子目录以 agent 会话 id（已知时，例如从导入
+获得）或 GUI 线程 id 命名。TUI 会自己生成聊天会话的 id，并在 agent 打开会话之前
+创建 `<chat root>/<id>`，所以两个界面把同一段对话归在同一个目录下。用户自选的
+工作区位于别处，清理本目录时绝不会触碰它们。
 
 ## goal 控制面 — 项目本地，不在 `~/.future/` 下
 

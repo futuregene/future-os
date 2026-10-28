@@ -10,7 +10,7 @@ The design contract is [`docs/tui/workbench-spec.md`](../tui/workbench-spec.md).
 ## Running it
 
 ```bash
-future tui                          # the terminal UI, attached to your agent
+future tui                          # the terminal UI (its start directory is the new conversation's workspace)
 future tui --session <id>           # open a specific conversation
 future tui --continue               # the most recently active one
 future tui "look at this failing test"   # send a first message on start
@@ -158,10 +158,14 @@ the prompt. The block teaches no key of its own: the footer's hint row already
 names them, and what the box takes beyond a sentence — `/` commands, `@` files,
 `#` sessions — is in the placeholder, where the reader is about to type it. The
 four chips are the desktop composer's own controls (model, thinking effort,
-approval mode) plus the workspace this TUI starts from. With nothing chosen they
-name the product defaults a fresh screen opens on, not the values of the
-conversation `/new` left behind: the plain chat — no workspace, which runs in the
-agent's own `agent/workspace` and is filed under 对话会话 — the agent's default
+approval mode) plus the workspace this TUI starts from. The workspace inherits:
+`cd project && future tui` opens on that **start directory** (so the first
+message creates the conversation there), a launch from one of the app's own
+scratch directories (or an explicit 对话会话 choice) is the **plain chat** — no
+workspace, filed under the app's own `~/.future/workspaces/chat/<session id>` —
+and `/new` (`ctrl+n`) keeps the workspace the conversation was just in (a chat is
+not inherited: the next message mints its own chat directory). The other three
+chips name the product defaults a fresh screen opens on: the agent's default
 model at the level that model starts at, and 完全访问 (full access). The first
 message creates the session with exactly what the chips name, so a chip never
 names something the session will not run under; there is no separate permission
@@ -335,7 +339,7 @@ click on the rail's tab strip are the doors to the same places.
 | 偏好设置 → 动态 | Toggle reduced motion (persisted; no chord) |
 | `ctrl+t` | Thinking effort: opens the six-level chooser (`/thinking`); on the launchpad the level is staged for the session the first message creates |
 | `ctrl+s` | Approval mode: opens the four-tier chooser, the desktop composer's own values — 手动审批 / 沙箱保护 / 自动审批 / 完全访问 |
-| `ctrl+l` | Workspaces: opens the workspace chooser — every directory this client has a conversation in, a row that creates one from the path typed into its search line, and a row that is a plain chat instead: no workspace at all, which runs in the agent's own `agent/workspace` and is filed under 对话会话 |
+| `ctrl+l` | Workspaces: opens the workspace chooser — every directory this client has a conversation in, a row that creates one from the path typed into its search line (`/workspace <path>` prefills that line), and a row that is a plain chat instead: no workspace at all, which mints `~/.future/workspaces/chat/<session id>` for the conversation and is filed under 对话会话 |
 | `ctrl+d` | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal. The rail's own `›` edge button does the same hide/show with one click. The show/hide choice is written to `sidebarVisible` and is where the next start begins (a first start begins hidden) |
 | `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run |
 | `ctrl+r` | Session picker (name, workspace and age of each conversation; the footer names the key) |
@@ -398,7 +402,7 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | Usage / context / cost | `get_state`'s usage block, refreshed on the same events |
 | `ctrl+n` / `/new`, `ctrl+x` stop, `/refresh` | |
 | Delete a conversation (`/delete`, or `delete` in the rail) | One confirm box, then `delete_session` for the id it named. The successor in the list opens, so the transcript never stays on a conversation that is gone; deleting the last one detaches to the launchpad. A refusal (the agent keeps a session a compaction holds) leaves everything as it was and says so in the notice row |
-| Launchpad chips | Click 工作区 / 模型 / 强度 / 审批 to cycle them. On the launchpad the workspace, model, effort and approval choices are staged for the session the first message creates (the agent has no session to set them on yet); with a session attached they go over the wire. With nothing chosen they name the product defaults — 对话会话 (no workspace), the agent's default model at the level it starts at, and 完全访问 — and the first message creates the session with exactly that. 工作区 cycles 对话会话 and the directories this client has conversations in, and the notice row names the full path it chose |
+| Launchpad chips | Click 工作区 / 模型 / 强度 / 审批 to cycle them. On the launchpad the workspace, model, effort and approval choices are staged for the session the first message creates (the agent has no session to set them on yet); with a session attached they go over the wire. The workspace defaults: the directory `future tui` was started from (`cd project && future tui`), or 对话会话 when launched from one of the app's scratch directories or chosen explicitly — a chat mints `~/.future/workspaces/chat/<session id>` when the session is created; `/new` inherits the workspace the previous conversation ran in (a chat is not inherited). The model and effort chips name the product defaults — the agent's default model at the level it starts at — and approval 完全访问; the first message creates the session with exactly that. 工作区 cycles 对话会话 and the directories this client has conversations in, and the notice row names the full path it chose |
 | Theme | Persisted in `~/.future/tui/settings.json` (`tui/src/settings.rs`); the reading level is deliberately not — `ctrl+e` is per run |
 
 ## What is not here yet
