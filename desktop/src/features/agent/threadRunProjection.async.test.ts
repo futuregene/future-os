@@ -88,13 +88,24 @@ describe("upsertStreamingPreview", () => {
     expect(setMessages).not.toHaveBeenCalled();
   });
 
-  it("does nothing when a persisted message already carries the run", async () => {
+  it("hands the row back to the run when a persisted message already carries it", async () => {
+    // The mid-run snapshot the agent saved for this exchange: it carries the
+    // run id, so the live bubble must not be added beside it — but the run is
+    // still executing, so the snapshot cannot stay a finished reply either.
     listRunEventsSince.mockResolvedValue(textEvents("r-up2", "hello"));
-    const persisted = message("m1", { runId: "r-up2", content: "final" });
+    const persisted = message("m1", { runId: "r-up2", content: "final", status: "complete" });
     const { setMessages, state } = collect([userMessage("u1"), persisted]);
-    await upsertStreamingPreview("r-up2", null, setMessages);
-    // Base is null → the state updater returns the list unchanged.
-    expect(state()[1]).toBe(persisted);
+    await upsertStreamingPreview("r-up2", 1000, setMessages);
+    const reply = state()[1];
+    expect(reply).toMatchObject({
+      id: "m1",
+      runId: "r-up2",
+      content: "final",
+      status: "streaming",
+      runStartedAt: 1000,
+    });
+    // No duplicate bubble beside the snapshot.
+    expect(state()).toHaveLength(2);
   });
 
   it("inserts a streaming bubble and updates it in place on the next push", async () => {
@@ -214,10 +225,12 @@ describe("upsertStreamingPreview", () => {
     expect(listRunEventsSince).toHaveBeenLastCalledWith("r-lru-0", -1);
   });
 
-  it("swallows projection failures", async () => {
+  it("keeps the reply marked running when the projection throws", async () => {
     listRunEventsSince.mockRejectedValue(new Error("ipc"));
-    const { setMessages } = collect([userMessage("u1")]);
-    await expect(upsertStreamingPreview("r-err", null, setMessages)).resolves.toBeUndefined();
+    const snapshot = message("m-err", { content: "partial", status: "complete" });
+    const { setMessages, state } = collect([userMessage("u1"), snapshot]);
+    await expect(upsertStreamingPreview("r-err", 2000, setMessages)).resolves.toBeUndefined();
+    expect(state()[1]).toMatchObject({ status: "streaming", runId: "r-err", content: "partial" });
   });
 });
 

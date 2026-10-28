@@ -211,6 +211,91 @@ export function mergeStreamingPreview(
   return [...base.filter(message => message.id !== preview.id), preview];
 }
 
+/** Runs whose live preview already reported a fallback (one warning per run). */
+const previewFallbackWarned = new Set<string>();
+
+/**
+ * Record a live-preview fallback once per run.
+ *
+ * The fallback below keeps an active run's reply on screen as running, so a
+ * failed projection is no longer silent — but the events themselves are still
+ * missing, and that has to be visible to whoever debugs "the reply never grew"
+ * instead of vanishing into a bare `catch`.
+ */
+export function warnLivePreviewFallback(runId: string, reason: string, error?: unknown) {
+  if (previewFallbackWarned.has(runId))
+    return;
+  previewFallbackWarned.add(runId);
+  console.warn(`[agent] live preview unavailable for run ${runId} (${reason}); showing history with a running reply`, error ?? "");
+}
+
+/**
+ * Give the in-flight exchange its running state back when the live projection
+ * produced no bubble for a run that is still executing.
+ *
+ * The agent saves an assistant entry after every model call, so a reload during
+ * a run surfaces a mid-run snapshot as ordinary history: a `complete` reply
+ * whose work folds into one row, no generating dot, no elapsed time, and — the
+ * part that actually hurts — no stop button, because the whole view believes
+ * the conversation is idle while the run keeps billing. This marks that
+ * exchange, or opens the bubble the run would have started with when no entry
+ * has landed yet, so the view tells the truth until `upsertStreamingPreview`
+ * takes the same row over (it looks the reply up by runId + streaming).
+ */
+export function ensureLiveReply(
+  messages: AgentMessage[],
+  runId: string,
+  runStartedAt: number | null,
+): AgentMessage[] {
+  // A live bubble already owns this run's reply: never re-mark or duplicate it.
+  if (messages.some(message => message.role === "assistant"
+    && message.status === "streaming"
+    && message.runId === runId)) {
+    return messages;
+  }
+  const lastAssistantIdx = lastIndexOfRole(messages, "assistant");
+  const lastUserIdx = lastIndexOfRole(messages, "user");
+  // Only the assistant AFTER the last user turn belongs to the in-flight
+  // exchange; an earlier one is a settled reply this run did not write.
+  if (lastAssistantIdx > lastUserIdx) {
+    return messages.map((message, index): AgentMessage => (index === lastAssistantIdx
+      // The snapshot's own content, segments and activity are kept — the reader
+      // should not watch the work already on screen disappear — and only its
+      // completion state is corrected.
+      ? {
+          ...message,
+          status: "streaming",
+          runId,
+          runStartedAt: runStartedAt ?? message.runStartedAt,
+          // A settle-time verdict cannot stand on a reply that is still being
+          // written; the run's own outcome replaces it when the run ends.
+          stopped: false,
+          terminationNotice: undefined,
+          terminationTitle: undefined,
+          createdAt: runStartedAt != null ? new Date(runStartedAt).toISOString() : message.createdAt,
+        }
+      : message));
+  }
+  // Nothing in the transcript belongs to this run yet (entries are only saved
+  // after a model call): show the bubble the run opened with.
+  return [
+    ...messages,
+    {
+      id: `stream_${runId}`,
+      role: "assistant",
+      authorKey: "author.researchCopilot",
+      content: "",
+      status: "streaming",
+      createdAt: new Date(runStartedAt ?? Date.now()).toISOString(),
+      activityItems: [],
+      segments: [],
+      thinkingActive: true,
+      runStartedAt: runStartedAt ?? undefined,
+      runId,
+    },
+  ];
+}
+
 /**
  * Render an in-flight run's live events as a streaming assistant bubble, keyed by
  * a stable `stream_<runId>` id. Unlike {@link updatePendingMessageFromRunEvents}
@@ -245,8 +330,15 @@ export async function upsertStreamingPreview(
         content,
         compactionCheckpoints([{ segments: projection.segments }]),
       );
-      if (!base)
-        return current;
+      if (!base) {
+        // Suppression means a persisted message already carries this run: the
+        // settled-reload case when the run has ended, but a frozen mid-run
+        // snapshot when it has not. This path only runs while the run is active,
+        // so hand the row its running state back instead of rendering it as a
+        // finished reply that cannot be stopped.
+        warnLivePreviewFallback(runId, "persisted reply carries the run");
+        return ensureLiveReply(current, runId, runStartedAt);
+      }
 
       const existingIndex = base.findIndex(message => message.id === bubbleId);
 
@@ -273,9 +365,14 @@ export async function upsertStreamingPreview(
       return base.map((message, index) => (index === existingIndex ? updated : message));
     });
   }
-  catch {
-    // Live preview is best-effort; the final assistant message still lands when
-    // the run settles and the thread reloads.
+  catch (error) {
+    // Live preview is best-effort: the final assistant message still lands when
+    // the run settles and the thread reloads. Best-effort must not mean silent,
+    // though — a run with no preview renders as a finished reply, so keep the
+    // reply marked running and record why the projection was missing.
+    warnLivePreviewFallback(runId, "projection threw", error);
+    if (shouldApply())
+      setMessages(current => ensureLiveReply(current, runId, runStartedAt));
   }
 }
 
