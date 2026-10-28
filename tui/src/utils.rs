@@ -1148,6 +1148,18 @@ mod tests {
         assert_eq!(grapheme_width("한"), 2);
     }
 
+    /// The fold row's glyphs are *text* presentation: one cell each, and they
+    /// take the foreground colour the row is drawn in (an emoji would keep its
+    /// own). Measured here because the row's alignment depends on it.
+    #[test]
+    fn the_process_glyphs_are_one_cell() {
+        assert_eq!(grapheme_width(crate::components::chat_area::TOOL_GLYPH), 1);
+        assert_eq!(
+            grapheme_width(crate::components::chat_area::THOUGHT_GLYPH),
+            1
+        );
+    }
+
     #[test]
     fn emoji_is_2_cells() {
         assert_eq!(grapheme_width("🦀"), 2);
