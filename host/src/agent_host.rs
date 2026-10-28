@@ -40,6 +40,27 @@ struct Shared {
     changed: Condvar,
     recovery: Mutex<()>,
 }
+
+impl Shared {
+    /// The host state as it is, poisoned or not.
+    ///
+    /// Poisoning says only that some thread panicked while holding this lock,
+    /// not that the state is unusable: every field is either a plain value or
+    /// a clone-able handle, and the values left behind still describe the
+    /// phase the worker reached. Refusing them instead turns one broken worker
+    /// into a host that can never be inspected, stopped or recovered again.
+    /// Measured 2026-10-28: a single panicking thread poisoned the state, every
+    /// later read panicked in turn, and the Desktop gave up on its own backend
+    /// with "the backend service did not start" while the process kept running.
+    ///
+    /// Callers must therefore re-read the state rather than assume it, which
+    /// they already do: it is shared with the worker thread.
+    fn state(&self) -> std::sync::MutexGuard<'_, State> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
 #[derive(Clone)]
 pub struct AgentHost(Arc<Shared>);
 impl Default for AgentHost {
@@ -90,14 +111,14 @@ pub fn host() -> &'static AgentHost {
 
 impl AgentHost {
     pub fn phase(&self) -> Phase {
-        self.0.state.lock().unwrap().phase.clone()
+        self.0.state().phase.clone()
     }
     pub fn owns_agent(&self) -> bool {
-        self.0.state.lock().unwrap().owned
+        self.0.state().owned
     }
 
     pub fn recovery_requires_restart(&self) -> bool {
-        let state = self.0.state.lock().unwrap();
+        let state = self.0.state();
         state.recovery_requires_restart
             || (state.owned
                 && state.finished
@@ -118,7 +139,7 @@ impl AgentHost {
             return Err("Desktop is stopping".into());
         }
         {
-            let state = self.0.state.lock().unwrap();
+            let state = self.0.state();
             if matches!(state.phase, Phase::Starting | Phase::Stopping) {
                 return Ok(());
             }
@@ -136,7 +157,7 @@ impl AgentHost {
                 let _ = self.stop_until(Instant::now() + STOP_TIMEOUT);
             }
             {
-                let mut state = self.0.state.lock().unwrap();
+                let mut state = self.0.state();
                 if !state.finished
                     || (state.owned
                         && !state
@@ -168,7 +189,7 @@ impl AgentHost {
     /// instance lock until a full stop, and pretending otherwise would let a
     /// second process start one. Returns whether the host changed state.
     pub fn detach_attached(&self) -> bool {
-        let mut state = self.0.state.lock().unwrap();
+        let mut state = self.0.state();
         if state.owned || state.phase != Phase::Ready {
             return false;
         }
@@ -179,7 +200,7 @@ impl AgentHost {
     /// Used only after an update executor is ready, immediately before stop.
     /// External Agents cannot be reserved or stopped by this application.
     pub fn reserve_idle_update(&self) -> Result<bool, crate::Error> {
-        let state = self.0.state.lock().unwrap();
+        let state = self.0.state();
         if !state.owned {
             return Ok(false);
         }
@@ -192,7 +213,7 @@ impl AgentHost {
     }
 
     pub fn activity(&self) -> Result<Option<future_agent::service::AgentActivity>, crate::Error> {
-        let state = self.0.state.lock().unwrap();
+        let state = self.0.state();
         if !state.owned {
             return Ok(None);
         }
@@ -225,7 +246,7 @@ impl AgentHost {
             return Err("Desktop is stopping".into());
         }
         {
-            let mut state = self.0.state.lock().unwrap();
+            let mut state = self.0.state();
             match &state.phase {
                 Phase::Ready => return Ok(()),
                 Phase::Starting => {}
@@ -252,7 +273,7 @@ impl AgentHost {
                                 }));
                             let result = result
                                 .unwrap_or_else(|_| Err("Embedded Agent worker panicked".into()));
-                            let mut state = host.0.state.lock().unwrap();
+                            let mut state = host.0.state();
                             if !matches!(state.phase, Phase::Failed(_)) {
                                 // A busy instance lock is a yield, not a fault: the
                                 // holder owns the Agent, so this process returns to
@@ -295,7 +316,7 @@ impl AgentHost {
             }
         }
         let deadline = Instant::now() + start_timeout();
-        let mut state = self.0.state.lock().unwrap();
+        let mut state = self.0.state();
         loop {
             match &state.phase {
                 Phase::Ready => return Ok(()),
@@ -317,7 +338,12 @@ impl AgentHost {
                 state.phase = Phase::Failed("Agent startup timed out; restart Desktop".into());
                 return Err("Agent startup timed out; restart Desktop".into());
             }
-            state = self.0.changed.wait_timeout(state, remaining).unwrap().0;
+            state = self
+                .0
+                .changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
         }
     }
 
@@ -331,7 +357,7 @@ impl AgentHost {
             return Err("FUTURE_DESKTOP_AGENT_MODE must be auto or external".into());
         }
         let (cancel, probe_cancel, starting) = {
-            let state = self.0.state.lock().unwrap();
+            let state = self.0.state();
             (
                 state.cancel.clone(),
                 state.probe_cancel.clone(),
@@ -390,7 +416,7 @@ impl AgentHost {
         let permit = match selection {
             future_rpc::connection::AgentSelection::External(_) => {
                 crate::future_platform::validate_external_environment()?;
-                let mut state = self.0.state.lock().unwrap();
+                let mut state = self.0.state();
                 if state.phase != Phase::Starting {
                     return Ok(());
                 }
@@ -406,7 +432,7 @@ impl AgentHost {
             }
         };
         {
-            let state = self.0.state.lock().unwrap();
+            let state = self.0.state();
             if state.phase != Phase::Starting {
                 return Ok(());
             }
@@ -414,7 +440,7 @@ impl AgentHost {
         let config = AgentConfig::default();
         AgentService::with_local_start(config, permit, |service| {
             {
-                let mut state = self.0.state.lock().unwrap();
+                let mut state = self.0.state();
                 if state.phase != Phase::Starting {
                     return Ok(());
                 }
@@ -449,7 +475,7 @@ impl AgentHost {
         let running = prepared.initialize().await?;
         let handle = running.handle();
         {
-            let mut state = self.0.state.lock().unwrap();
+            let mut state = self.0.state();
             state.handle = Some(handle.clone());
             if state.phase != Phase::Starting {
                 handle.request_shutdown(AGENT_STOP_GRACE);
@@ -484,7 +510,7 @@ impl AgentHost {
                         // that: the launch stays in `Starting` while the log
                         // write hangs, and nothing downstream can tell why.
                         let became_ready = {
-                            let mut state = self.0.state.lock().unwrap();
+                            let mut state = self.0.state();
                             let became_ready = state.phase == Phase::Starting;
                             if became_ready {
                                 state.phase = Phase::Ready;
@@ -524,7 +550,7 @@ impl AgentHost {
         // still inside the window it was handed.
         let budget = deadline.saturating_duration_since(now);
         let window = agent_stop_window(budget);
-        let mut state = self.0.state.lock().unwrap();
+        let mut state = self.0.state();
         if matches!(state.phase, Phase::Idle | Phase::Stopped) {
             state.yield_reason = None;
             return Ok(());
@@ -548,7 +574,12 @@ impl AgentHost {
                 state.phase = Phase::Failed(stop_timeout_message(budget));
                 break;
             }
-            state = self.0.changed.wait_timeout(state, remaining).unwrap().0;
+            state = self
+                .0
+                .changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
         }
         match &state.phase {
             Phase::Failed(error) => Err(error.clone().into()),
@@ -564,11 +595,11 @@ impl AgentHost {
     /// another process owns this data root's Agent. `None` for every other
     /// terminal phase, so a caller never reads a stale refusal.
     pub fn yield_reason(&self) -> Option<String> {
-        self.0.state.lock().unwrap().yield_reason.clone()
+        self.0.state().yield_reason.clone()
     }
 
     pub fn request_stop(&self) {
-        let mut state = self.0.state.lock().unwrap();
+        let mut state = self.0.state();
         if matches!(state.phase, Phase::Starting | Phase::Ready) {
             state.phase = Phase::Stopping;
         }

@@ -670,6 +670,10 @@ pub struct Workbench {
     /// The picture actually placed on screen: its terminal id, and the source
     /// bytes it was transmitted from. `None` means nothing is placed.
     pub painted_image: Option<PaintedImage>,
+    /// The source of the iTerm2 image currently in the text grid. iTerm2 has
+    /// no placement layer or image ids; it is retransmitted only when its cells
+    /// were rewritten or the shown crop changed.
+    pub painted_iterm: Option<u64>,
 }
 
 impl Default for Workbench {
@@ -760,6 +764,7 @@ impl Workbench {
             rail: panels::Filter::default(),
             image_request: None,
             painted_image: None,
+            painted_iterm: None,
         }
     }
 
@@ -1048,7 +1053,7 @@ impl Workbench {
                 // A bounded window: the menu is a picker, not a file browser.
                 .take(60)
                 .map(|path| MentionRow {
-                    insert: format!("@{path} "),
+                    insert: live::mention_insert(path),
                     label: path.clone(),
                     detail: String::new(),
                 })
@@ -3274,7 +3279,7 @@ impl Workbench {
                     grab_y: event.y,
                     pan: self.preview_pan,
                 });
-                Vec::new()
+                vec![WbAction::Redraw]
             }
             _ => {
                 if let Some(index) = id
@@ -4347,7 +4352,10 @@ mod tests {
     #[test]
     fn new_output_never_steals_a_manual_scroll_position() {
         let mut data = demo::chat();
-        data.messages = (0..100).map(|n| format!("line {n}")).collect();
+        data.messages = (0..100)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .into();
         let mut wb = workbench();
         wb.render(&data, 120, 38);
         wb.handle(WbEvent::Key("pageUp".into()), &data);
@@ -4715,7 +4723,8 @@ mod tests {
             md_link("https://example.com/a", "the site"),
             md_link("futureos://session/s-2", "that chat"),
             md_link(&file, "the source"),
-        )];
+        )]
+        .into();
         let (mut workbench, _rows) = frame(&data, 150, 38);
         let enter =
             |workbench: &mut Workbench| workbench.handle(WbEvent::Key("enter".into()), &data);
@@ -4746,7 +4755,8 @@ mod tests {
             "{} {}",
             md_link("https://example.com/a", "the site"),
             md_link("futureos://session/s-2", "that chat"),
-        )];
+        )]
+        .into();
         let mut workbench = workbench();
         assert_eq!(
             click_region(&mut workbench, &data, 150, 38, "chat.link.1"),
@@ -4773,7 +4783,8 @@ mod tests {
                 "prose"
             ),
             format!("then {}", md_link("https://example.com/b", "the second")),
-        ];
+        ]
+        .into();
         let (mut workbench, _rows) = frame(&data, 150, 38);
         workbench.handle(WbEvent::Key("tab".into()), &data);
         workbench.handle(WbEvent::Key("tab".into()), &data);
@@ -4803,7 +4814,7 @@ mod tests {
             md_link("https://example.com/top", "the oldest link")
         )];
         messages.extend((0..80).map(|n| format!("line {n}")));
-        data.messages = messages;
+        data.messages = messages.into();
         let (mut workbench, rows) = frame(&data, 120, 30);
         assert!(
             !plain(&rows).contains("the oldest link"),
@@ -4854,7 +4865,8 @@ mod tests {
             "read {} then {}",
             md_link("https://a.example", "the first"),
             md_link("https://b.example", "the second"),
-        )];
+        )]
+        .into();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         let step = |workbench: &mut Workbench, data: &WorkbenchData| {
             workbench.handle(WbEvent::Key("tab".into()), data);
@@ -6469,6 +6481,20 @@ mod tests {
     }
 
     #[test]
+    fn a_file_with_spaces_is_completed_as_one_quoted_mention() {
+        let mut data = demo::chat();
+        data.files = vec!["docs/my note.md".into()];
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let data = with_input(&data, "read @my");
+        workbench.render(&data, 120, 38);
+        let actions = workbench.handle(WbEvent::Key("enter".into()), &data);
+        let [WbAction::EditInput { text, .. }] = actions.as_slice() else {
+            panic!("{actions:?}");
+        };
+        assert_eq!(text, "read @\"docs/my note.md\" ");
+    }
+
+    #[test]
     fn a_sigil_inside_a_word_is_not_a_mention() {
         // An e-mail address and a channel name are text, not requests for a
         // menu — the menu is for a token that *starts* with the sigil.
@@ -7649,6 +7675,21 @@ mod tests {
         assert!(
             zoomed.crop.2 - zoomed.crop.0 < 96 || zoomed.crop.3 - zoomed.crop.1 < 64,
             "a zoomed window is a crop of the picture: {zoomed:?}"
+        );
+
+        // iTerm2's protocol is supported too; it is the same request, painted
+        // as an inline PNG by the driver rather than as a Kitty placement.
+        caps.install(TerminalCapabilities {
+            images: ImageProtocol::Iterm2,
+            true_color: true,
+            ..TerminalCapabilities::default()
+        });
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.overlay = Some(Overlay::FilePreview);
+        workbench.render(&data, 120, 38);
+        assert!(
+            workbench.image_request.is_some(),
+            "iTerm2 is a graphics protocol, not a fallback"
         );
 
         // A terminal without the protocol gets the facts and an honest

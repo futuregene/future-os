@@ -721,7 +721,8 @@ fn chat_link_row() -> Result<(), String> {
         "{} then {}",
         link("https://example.com/a", "the site"),
         link("futureos://session/sess-002", "that chat"),
-    )];
+    )]
+    .into();
     let mut wb = wb();
     wb.render(&data, 120, 38);
     let target = region(&wb, "chat.link.1")?;

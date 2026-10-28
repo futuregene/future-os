@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use regex::Regex;
 
@@ -106,6 +107,9 @@ pub enum RunState {
     /// own ever starts.
     Merged,
     LostOnAgentRestart,
+    /// The prompt was written but no acknowledgement came back. It may or may
+    /// not have reached the agent; a blind retry could run it twice.
+    NotAcknowledged,
 }
 
 impl RunState {
@@ -121,6 +125,7 @@ impl RunState {
             RunState::Superseded => "superseded",
             RunState::Merged => "merged into the previous run",
             RunState::LostOnAgentRestart => "lost_on_agent_restart",
+            RunState::NotAcknowledged => "delivery not acknowledged",
         }
     }
 }
@@ -576,6 +581,10 @@ pub struct ChatArea {
     viewport_top: usize,
     viewport_height: usize,
     rendered_lines: Vec<RenderedLine>,
+    /// The full transcript as flat owned rows, shared with the frame. Rebuilt
+    /// only when `rendered_lines` changes, so composing several frames for one
+    /// keystroke neither copies nor re-flattens the conversation.
+    flat_cache: Option<Arc<[String]>>,
     auto_scroll: bool,
     width: usize,
     /// `ctrl+e` (the full-process reading level) reveals the reasoning text;
@@ -639,6 +648,7 @@ impl ChatArea {
             viewport_top: 0,
             viewport_height: 20,
             rendered_lines: Vec::new(),
+            flat_cache: None,
             auto_scroll: true,
             width: max_width,
             // Reasoning starts collapsed, like the desktop: a streamed reply
@@ -940,6 +950,16 @@ impl ChatArea {
 
     pub fn set_message_run_state(&mut self, message_id: &str, run_state: RunState) {
         let Some(index) = self.messages.iter().position(|m| m.id == message_id) else {
+            return;
+        };
+        self.messages[index].run_state = Some(run_state);
+        self.rerender_message(index);
+    }
+
+    /// Mark the newest message — the one a submission just appended — after an
+    /// acknowledgement that never arrived.
+    pub fn mark_last_message_run_state(&mut self, run_state: RunState) {
+        let Some(index) = self.messages.len().checked_sub(1) else {
             return;
         };
         self.messages[index].run_state = Some(run_state);
@@ -1372,6 +1392,13 @@ impl ChatArea {
 
     /// Render ALL lines (bypass viewport) — seeds terminal scrollback.
     pub fn render_all(&mut self, width: usize) -> Vec<String> {
+        self.render_all_shared(width).as_ref().to_vec()
+    }
+
+    /// The whole transcript as a shared snapshot. [`Self::render_all`] owns a
+    /// copy for callers that mutate the rows; the workbench borrows the snapshot
+    /// and must not pay that copy once per `WorkbenchData`.
+    pub fn render_all_shared(&mut self, width: usize) -> Arc<[String]> {
         if width as i64 != self.last_render_width || self.dirty {
             self.last_render_width = width as i64;
             self.width = width;
@@ -1379,10 +1406,19 @@ impl ChatArea {
             self.rerender();
         }
         self.flush_pending_rerenders();
-        self.rendered_lines
-            .iter()
-            .map(|rl| rl.text.clone())
-            .collect()
+        if self.flat_cache.is_none() {
+            self.flat_cache = Some(
+                self.rendered_lines
+                    .iter()
+                    .map(|line| line.text.clone())
+                    .collect::<Vec<_>>()
+                    .into(),
+            );
+        }
+        self.flat_cache
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| Arc::from(Vec::new()))
     }
 
     /// How many times this area has rebuilt the whole transcript — the count
@@ -1750,6 +1786,7 @@ impl ChatArea {
     fn rerender(&mut self) {
         self.pending_rerender.clear();
         self.stream_caches.clear();
+        self.flat_cache = None;
         // Defer until first render() has set the correct terminal width.
         if self.last_render_width == -1 {
             self.dirty = true;
@@ -1822,6 +1859,7 @@ impl ChatArea {
         let new_len = new_lines.len();
         self.rendered_lines
             .splice(range.0..range.0 + old_len, new_lines);
+        self.flat_cache = None;
         let delta = new_len as i64 - old_len as i64;
         self.message_line_ranges[msg_idx] = (range.0, range.0 as i64 + new_len as i64 - 1);
         for i in msg_idx + 1..self.message_line_ranges.len() {
@@ -1863,6 +1901,7 @@ impl ChatArea {
             text: String::new(),
             dim: true,
         });
+        self.flat_cache = None;
         if self.auto_scroll {
             self.scroll_to_bottom();
         }
@@ -1955,6 +1994,8 @@ impl ChatArea {
                 | Some(RunState::Superseded)
                 | Some(RunState::Merged)
                 | Some(RunState::LostOnAgentRestart)
+                | Some(RunState::Failed)
+                | Some(RunState::NotAcknowledged)
         ) {
             let label = msg.run_state.unwrap().label();
             let t = format!(" {}", dim(label));
@@ -5411,6 +5452,22 @@ mod tests {
     // ─── RunState labels / helpers ────────────────────────────────────
 
     #[test]
+    fn a_shared_render_is_reused_until_the_transcript_changes() {
+        let mut chat = ChatArea::new(40, None);
+        chat.add_message(ChatMessage::new("u1".into(), ChatRole::User, "hello"));
+        let first = chat.render_all_shared(40);
+        let second = chat.render_all_shared(40);
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &second),
+            "an unchanged transcript must not be flattened again"
+        );
+        chat.add_message(ChatMessage::new("a1".into(), ChatRole::Assistant, "world"));
+        let third = chat.render_all_shared(40);
+        assert!(!std::sync::Arc::ptr_eq(&second, &third));
+        assert!(third.iter().any(|row| row.contains("world")));
+    }
+
+    #[test]
     fn run_state_labels_match_ts() {
         assert_eq!(RunState::Queued.label(), "queued");
         assert_eq!(RunState::Running.label(), "running");
@@ -5422,6 +5479,10 @@ mod tests {
         assert_eq!(
             RunState::LostOnAgentRestart.label(),
             "lost_on_agent_restart"
+        );
+        assert_eq!(
+            RunState::NotAcknowledged.label(),
+            "delivery not acknowledged"
         );
     }
 

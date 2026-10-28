@@ -2770,6 +2770,26 @@ pub(crate) mod tests {
         (mock, seen)
     }
 
+    /// The same mock, with one command answering `success: false`.
+    pub(crate) fn api_mock_failing(
+        pairs: &[(&str, &str)],
+        command: &str,
+        error: &str,
+    ) -> (ApiMock, Arc<std::sync::Mutex<Vec<String>>>) {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let data: StdHashMap<String, String> = pairs
+            .iter()
+            .map(|(kind, body)| ((*kind).to_string(), (*body).to_string()))
+            .collect();
+        let mock = ApiMock {
+            data_by_type: Arc::new(std::sync::Mutex::new(data)),
+            fail_with: StdHashMap::from([(command.to_string(), error.to_string())]),
+            seen: seen.clone(),
+            ..Default::default()
+        };
+        (mock, seen)
+    }
+
     /// A mock whose answer table the caller keeps, so one command can answer
     /// differently later in the same test — `get_state` before and after a
     /// session switch, say. The table starts empty (`api_mock_answering` fills

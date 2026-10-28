@@ -2984,6 +2984,10 @@ fn preview_box(
     let scroll = workbench.preview_scroll;
     let mut content: Vec<String> = Vec::new();
     let hint = match preview {
+        state::PreviewView::Loading { .. } => {
+            content.push(palette.dim(&format!(" {}", t(lang, Key::PreviewLoading))));
+            t(lang, Key::PreviewHintText)
+        }
         state::PreviewView::Image { path, pixels } => {
             // A picture is shown either at its own resolution, by the terminal's
             // image protocol, or not at all.
@@ -2995,8 +2999,11 @@ fn preview_box(
             // (`ImageRequest`, painted by the driver after this frame), and a
             // terminal that cannot gets the picture's facts and an honest
             // sentence instead of a mosaic.
-            let images = crate::terminal_image::get_capabilities().images
-                == crate::terminal_image::ImageProtocol::Kitty;
+            let images = matches!(
+                crate::terminal_image::get_capabilities().images,
+                crate::terminal_image::ImageProtocol::Kitty
+                    | crate::terminal_image::ImageProtocol::Iterm2
+            );
             // One row of the box is its controls: zoom, fit, and the folder's
             // previous/next picture. They are text, so the picture starts below
             // them — a bitmap cannot share a cell with a glyph.
@@ -3626,7 +3633,8 @@ mod tests {
             "parser 里有个 off-by-one".into(),
             "把 <= 改成 < 之后".into(),
             "四十一 个用例全过".into(),
-        ];
+        ]
+        .into();
         let mut workbench = Workbench::new();
         let mut editor = data.input.editor.clone();
         editor.set("#", 1);
@@ -3866,7 +3874,7 @@ mod tests {
     fn the_transcript_keeps_a_blank_row_above_the_prompt() {
         let mut workbench = Workbench::new();
         let mut data = crate::workbench::demo::chat();
-        data.messages = vec!["the only line".into()];
+        data.messages = vec!["the only line".into()].into();
         let rows = conversation(&mut workbench, &data, &FUTURE_DARK, Rect::new(0, 0, 60, 6));
         assert_eq!(rows.len(), 6);
         assert!(
