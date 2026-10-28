@@ -820,6 +820,7 @@ async fn check_sessions() -> CheckResult {
             for field in [
                 "failedImports",
                 "unrecoverableQueuedInputs",
+                "failedRunRecoveries",
                 "catalogueConflicts",
             ] {
                 let count = data[field].as_u64().unwrap_or(0);

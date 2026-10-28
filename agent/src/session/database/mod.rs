@@ -9,6 +9,12 @@ use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 8;
+
+/// Shared admission boundary for every entry opening agent.db. Structure and
+/// bootstrap identity are validated separately before any schema mutation.
+pub(crate) fn supports_schema_version(version: i64) -> bool {
+    matches!(version, 0 | 2..=CURRENT_SCHEMA_VERSION)
+}
 // Fail compilation if the storage owner and the client handshake drift.
 const _: () =
     assert!(CURRENT_SCHEMA_VERSION == future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION as i64);

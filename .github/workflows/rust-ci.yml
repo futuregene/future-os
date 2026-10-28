@@ -65,11 +65,28 @@ jobs:
       - name: Build
         if: inputs.mode == 'test'
         run: node scripts/ci/rust-checks.mjs build
+      - name: Prepare storage acceptance observations
+        if: inputs.mode == 'test' && contains(matrix.packages, 'future-agent')
+        env:
+          STORAGE_ACCEPTANCE_DIRECTORY: ${{ runner.temp }}/storage-acceptance
+        run: node -e "require('node:fs').mkdirSync(process.env.STORAGE_ACCEPTANCE_DIRECTORY, { recursive: true })"
       - name: Tests
         if: inputs.mode == 'test'
         env:
           FUTURE_HOST_FIXTURE_TIMINGS: ${{ format('{0}/ci-timings/host-fixture-timings.jsonl', runner.temp) }}
+          FUTURE_REALISTIC_STORAGE_REPORT: ${{ runner.temp }}/storage-acceptance/realistic.json
+          FUTURE_LARGE_TOOL_STORAGE_REPORT: ${{ runner.temp }}/storage-acceptance/large-tools.json
+          FUTURE_PACED_ADMISSION_REPORT: ${{ runner.temp }}/storage-acceptance/admission.json
+          FUTURE_STORAGE_CONCURRENCY_REPORT: ${{ runner.temp }}/storage-acceptance/concurrency.json
         run: node scripts/ci/rust-checks.mjs test
+      - name: Upload storage acceptance observations
+        if: always() && inputs.mode == 'test' && contains(matrix.packages, 'future-agent')
+        uses: actions/upload-artifact@v7
+        with:
+          name: storage-acceptance-${{ runner.os }}
+          path: ${{ runner.temp }}/storage-acceptance/
+          retention-days: 14
+          if-no-files-found: error
       - name: clippy
         if: inputs.mode == 'check'
         run: node scripts/ci/rust-checks.mjs clippy

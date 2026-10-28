@@ -596,7 +596,6 @@ fn migration_fault_child() {
 }
 
 #[test]
-#[ignore = "final acceptance: real process kills inside/after migrations and SQLITE_FULL for released schemas 2-7"]
 fn released_migrations_survive_process_kill_and_sqlite_full() {
     use std::io::{BufRead, BufReader};
     use std::process::{Command, Stdio};
@@ -659,7 +658,7 @@ fn released_migrations_survive_process_kill_and_sqlite_full() {
                         }
                     }
                 });
-                wait.recv_timeout(Duration::from_secs(15))
+                wait.recv_timeout(Duration::from_secs(60))
                     .expect("migration child never reached its gate");
                 if phase == "before-commit" {
                     let original = Connection::open_with_flags(

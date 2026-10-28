@@ -82,7 +82,7 @@ fn run_agent(args: &[String]) -> ExitCode {
     match future_agent::cli::run_from_args(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("Error: {err}");
+            eprintln!("Error: {err:#}");
             ExitCode::from(1)
         }
     }

@@ -27,6 +27,7 @@ impl Manager {
         &self,
         request: crate::session::ForkRequest,
     ) -> Result<crate::session::fork::ForkIdentity> {
+        self.ensure_execution_allowed(&request.parent_session_id)?;
         if request.request_id.trim().is_empty() {
             return Err(anyhow!("fork request id is required"));
         }

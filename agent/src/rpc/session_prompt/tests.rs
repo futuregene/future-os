@@ -515,6 +515,50 @@ fn text_turn(text: &str) -> Script {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn an_isolated_recovery_refuses_direct_and_queued_work_before_any_model_or_ack() {
+    let provider = ScriptedProvider::new(vec![text_turn("must never execute")]);
+    let mut fixture = run_fixture(provider.clone(), "recovery-execution-fence");
+    let manager = fixture.session.session_manager.clone();
+    manager.storage().unwrap().replace("s1", vec![
+        serde_json::json!({"id":"info","type":"session_info","timestamp":"2026-10-28T00:00:00Z","content":{"cwd":".","model":"mock"}}),
+        serde_json::json!({"id":"start","type":"run_started","timestamp":"2026-10-28T00:00:00Z","content":{"run_id":"broken","epoch":1}}),
+    ]).unwrap();
+    manager.storage().unwrap().db.call(|db| {
+        db.execute("UPDATE runs SET status='recovery_failed',error='fixture' WHERE session_id='s1' AND run_id='broken'", [])?;
+        Ok(())
+    }).unwrap();
+    let before = manager.storage().unwrap().entries("s1").unwrap();
+    let direct = fixture
+        .session
+        .prompt("do work", &[], &[], Some("next"), None)
+        .unwrap_err();
+    assert!(direct
+        .to_string()
+        .contains("session recovery requires repair"));
+    let queued = fixture
+        .session
+        .enqueue_prompt(
+            "queue work",
+            &[],
+            &[],
+            Some("queued"),
+            "recovery-request",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap_err();
+    assert!(queued
+        .to_string()
+        .contains("session recovery requires repair"));
+    assert!(provider.requests.lock().unwrap().is_empty());
+    assert!(fixture.session.runtime.snapshot().is_none());
+    assert!(manager
+        .queued_receipt("s1", "recovery-request")
+        .unwrap()
+        .is_none());
+    assert_eq!(manager.storage().unwrap().entries("s1").unwrap(), before);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn prompt_text_run_completes_and_persists() {
     let fixture = run_fixture(
         ScriptedProvider::new(vec![text_turn("the answer")]),
