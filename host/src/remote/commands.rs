@@ -4253,6 +4253,77 @@ mod bridge_tests {
         bridge.stop().await;
     }
 
+    /// A backward page can be shorter than the exchanges the phone asked for
+    /// without the byte budget having removed anything: the Agent cuts the read
+    /// at its own row and byte limits, so a tool-dense exchange is answered as a
+    /// fragment — and once history assembly completes that fragment back to its
+    /// prompt, the page holds one exchange where three were asked for, with
+    /// `hasMore` promising the rest. The reply has to say so, or the phone
+    /// installs that page as the whole conversation: measured 2026-10-28, a
+    /// three-exchange tail read was delivered as a single 870 KB exchange with
+    /// `trimmed` unset, and the transcript showed the newest reply with nothing
+    /// above it.
+    #[tokio::test]
+    async fn a_backward_page_short_of_the_requested_exchanges_is_marked_trimmed() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-short-page").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        // What the Agent answers for a tool-dense exchange: its own row bound
+        // cut the read before the page reached a prompt, and the journal still
+        // holds the rest behind the cursor.
+        let cut = unique("sess-cut");
+        agent.script_for(
+            "get_session_entries",
+            &cut,
+            true,
+            json!({
+                "entries": [
+                    {"id": "u9", "role": "user", "kind": "user", "createdAtMs": 1, "blocks": []},
+                    {"id": "t9", "role": "tool", "kind": "tool", "createdAtMs": 2, "blocks": []},
+                    {"id": "a9", "role": "assistant", "kind": "assistant", "createdAtMs": 3, "blocks": []},
+                ],
+                "hasMore": true,
+                "nextOffset": 135,
+            }),
+            "",
+        );
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"), "type": "get_session_entries", "sessionId": cut,
+                "before": i64::MAX, "limit": 3, "chunkedRead": true
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["trimmed"], json!(true), "got: {reply}");
+
+        // The window the phone asked for — one exchange, nothing behind it —
+        // says nothing, so a complete page is not re-read for no reason.
+        let whole = unique("sess-whole");
+        agent.script_for(
+            "get_session_entries",
+            &whole,
+            true,
+            json!({
+                "entries": [
+                    {"id": "u1", "role": "user", "kind": "user", "createdAtMs": 1, "blocks": []},
+                ],
+                "hasMore": false,
+                "nextOffset": 0,
+            }),
+            "",
+        );
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"), "type": "get_session_entries", "sessionId": whole,
+                "before": i64::MAX, "limit": 3, "chunkedRead": true
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["trimmed"], json!(false), "got: {reply}");
+        bridge.stop().await;
+    }
+
     /// A phone gap-fill asks for the untrimmed page and the reply says so, so
     /// the client can tell a page that ends flush with its cursor from one the
     /// bridge trimmed. The flag must not appear on a page nobody asked to keep
