@@ -51,6 +51,10 @@ describe("classifyAgentError", () => {
     ["Future Agent run no longer active", "agent:failure.agentInterrupted"],
     ["Future Agent rejected the prompt", "agent:failure.agentInterrupted"],
     ["prompt acknowledgement omitted", "agent:failure.agentInterrupted"],
+    // The row a restart leaves behind (startup convergence / Agent
+    // reconciliation): interrupted, not a model fault, and resumable.
+    ["Interrupted by application restart.", "agent:failure.runInterrupted"],
+    ["Interrupted because Future Agent restarted.", "agent:failure.runInterrupted"],
     ["[CTX_LIMIT] conversation too long", "agent:failure.contextLimit"],
     ["API request failed (HTTP 402).", "agent:failure.insufficientCredit"],
     ["Insufficient credit for this model", "agent:failure.insufficientCredit"],
