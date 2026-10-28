@@ -39,9 +39,9 @@ impl SqliteStore {
                 if page.is_empty() {
                     break;
                 }
-                for entry in page {
-                    after = entry.position;
-                    entries.push(serde_json::from_value(snapshot.entry(self, &entry)?)?);
+                after = page.last().map_or(after, |entry| entry.position);
+                for value in snapshot.entries_page(self, &page)? {
+                    entries.push(serde_json::from_value(value)?);
                 }
             }
             if entries.is_empty() {
