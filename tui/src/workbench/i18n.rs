@@ -487,7 +487,7 @@ pub enum Key {
     ChatNewOutput,
     /// The transcript's process rows: the marker standing in for hidden
     /// reasoning, and the label a count row falls back on. The counts
-    /// themselves are glyphs (`🔧×12 · 🧠×3`), so they need no translation.
+    /// themselves are glyphs (`⚒×12 · ✻×3`), so they need no translation.
     ChatThinkingLabel,
     ChatProcessLabel,
     CmdSessions,
@@ -931,7 +931,7 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         NotificationTitle => ("FutureOS：运行完成", "FutureOS: run complete"),
         NotificationBody => ("本轮已成功完成。", "This turn finished successfully."),
         ChatNewOutput => ("↓ 新输出 · esc 回到最新", "↓ new output · esc returns to latest"),
-        // The counts are glyphs (`🔧×12 · 🧠×3`, the desktop's wrench and
+        // The counts are glyphs (`⚒×12 · ✻×3`, the desktop's wrench and
         // brain), so only these two labels are words at all.
         ChatThinkingLabel => ("思考", "thinking"),
         ChatProcessLabel => ("过程", "process"),

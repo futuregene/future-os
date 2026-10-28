@@ -4486,7 +4486,7 @@ mod tests {
         assert!(text.contains("dev-huichen"), "{text}");
         // The demo's process row: the desktop's glyphs, which read the same in
         // every language (see `demo`).
-        assert!(text.contains("🔧×2 · 🧠×1"), "{text}");
+        assert!(text.contains("⚒×2 · ✻×1"), "{text}");
         assert!(text.contains("deepseek-flash"), "{text}");
         assert!(text.contains("ctx"), "{text}");
         assert!(text.contains("最近"), "the sidebar's tabs: {text}");
@@ -4502,7 +4502,7 @@ mod tests {
         assert!(text.contains("新会话"), "{text}");
         assert!(text.contains("模型"), "{text}");
         // None of the conversation surface's rows are behind it.
-        assert!(!text.contains("🔧×2"), "{text}");
+        assert!(!text.contains("⚒×2"), "{text}");
         assert!(
             !text.contains("输入 · enter 发送"),
             "the conversation's input band is not drawn under it: {text}"
