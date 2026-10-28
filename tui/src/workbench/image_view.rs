@@ -30,7 +30,7 @@ const MAX_CELLS_H: usize = 200;
 pub struct ImagePixels {
     pub width: usize,
     pub height: usize,
-    pub rgba: Vec<u8>,
+    pub rgba: std::sync::Arc<[u8]>,
 }
 
 impl std::fmt::Debug for ImagePixels {
@@ -111,7 +111,7 @@ mod tests {
         ImagePixels {
             width,
             height,
-            rgba,
+            rgba: rgba.into(),
         }
     }
 

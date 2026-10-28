@@ -63,6 +63,7 @@ struct DriverIo<'a> {
     terminal: &'a mut Terminal,
     notifications: &'a mut crate::notifications::NotifyCenter,
     theme_explicit: &'a mut bool,
+    update_rx: &'a mut Option<tokio::sync::oneshot::Receiver<Option<String>>>,
 }
 
 /// The layout a stored [`TuiSettings`] stands for, before the first frame.
@@ -94,7 +95,7 @@ fn layout_preferences(
 /// Run the workbench until the reader quits. Returns an error only for a
 /// failure that makes the surface impossible (no TTY, no agent).
 pub async fn run(options: Options) -> Result<(), String> {
-    let mut settings = load_settings(&options.settings_path);
+    let (mut settings, settings_warning) = load_settings_report(&options.settings_path);
     let mut theme_explicit = settings.theme_id.is_some();
     let (mut live, mut agent_events) = Live::attach(
         &options.addr,
@@ -104,6 +105,13 @@ pub async fn run(options: Options) -> Result<(), String> {
     )
     .await?;
     let mut workbench = Workbench::new();
+    if let Some(error) = settings_warning {
+        live.notice = Some(super::i18n::render(
+            live.language(),
+            super::i18n::Key::NoticeSettingsLoadFailed,
+            &[&error],
+        ));
+    }
     let mouse_capture = settings.mouse_capture.unwrap_or(true);
     live.set_mouse_capture(mouse_capture);
     workbench.set_theme(&live.theme_id);
@@ -127,14 +135,19 @@ pub async fn run(options: Options) -> Result<(), String> {
         live.apply(WbAction::Submit(prompt)).await;
     }
 
-    // The startup update notice: best effort, never blocks the surface, and
-    // skipped with `--offline`. It lands on the notice row, which is where a
-    // reader looks for "something the surface wants to tell you".
-    if !options.offline {
-        if let Some(notice) = crate::update::check(crate::version::VERSION).await {
-            live.notice = Some(notice);
-        }
-    }
+    // The startup update notice runs beside the surface. Waiting for the
+    // network before the first frame made a slow or unreachable manifest look
+    // like a terminal that had not started at all.
+    let update_rx = if options.offline {
+        None
+    } else {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let _ = tx.send(crate::update::check(crate::version::VERSION).await);
+        });
+        Some(rx)
+    };
+    let mut update_rx = update_rx;
 
     let mut terminal = Terminal::new().map_err(|error| format!("terminal: {error}"))?;
     // The workbench is clickable, so it owns mouse reporting for as long as the
@@ -170,6 +183,7 @@ pub async fn run(options: Options) -> Result<(), String> {
             terminal: &mut terminal,
             notifications: &mut notifications,
             theme_explicit: &mut theme_explicit,
+            update_rx: &mut update_rx,
         },
         &mut workbench,
         &mut live,
@@ -192,12 +206,19 @@ pub async fn run(options: Options) -> Result<(), String> {
     }
     // The reading level is deliberately not written: `ctrl+e` expands the
     // transcript for this run only, so the next terminal opens folded.
-    persist_preferences(&workbench, &mut settings, &options.settings_path);
-    let _ = workbench.keys.save(&super::preferences::keybindings_path(
-        &options.settings_path,
-    ));
+    let preferences_saved = persist_preferences(&workbench, &mut settings, &options.settings_path);
+    let keys_saved = workbench
+        .keys
+        .save(&super::preferences::keybindings_path(
+            &options.settings_path,
+        ))
+        .map_err(|error| format!("save keybindings: {error}")); // i18n: process exit diagnostic, never drawn
 
-    outcome
+    match (outcome, preferences_saved.and(keys_saved)) {
+        (Err(error), _) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
+    }
 }
 
 async fn event_loop(
@@ -213,6 +234,7 @@ async fn event_loop(
         terminal,
         notifications,
         theme_explicit,
+        update_rx,
     } = io;
     // The first frame is composed for the size the terminal has *now*. The
     // cached size dates from `Terminal::new()`/`start()`, and a pane a terminal
@@ -243,6 +265,7 @@ async fn event_loop(
     // A stepped conversation the reader has not stopped on yet (see
     // [`OPEN_SETTLE`]).
     let mut pending_open: Option<PendingOpen> = None;
+    let mut painted = FrameCache::default();
 
     loop {
         // The frame's own metrics, computed once: the surface composes for
@@ -252,7 +275,7 @@ async fn event_loop(
         // whole transcript on every event.
         let frame = frame_of(terminal, workbench);
         if paint {
-            draw(terminal, workbench, live, &frame)?;
+            draw(terminal, workbench, live, &frame, &mut painted)?;
             clock.painted(workbench.spinner_frame(), Instant::now());
         }
         let open_due = pending_open.as_ref().map(|open| open.due);
@@ -303,12 +326,12 @@ async fn event_loop(
                     // they have already left. A step from this same burst counts
                     // — the cursor is already on it.
                     if let Some(open) = pending_open.take() {
-                        show_conversation(&open.id, terminal, workbench, live, &frame, &mut clock)
+                        show_conversation(&open.id, terminal, workbench, live, &frame, &mut clock, &mut painted)
                             .await?;
                     } else if let Some(id) =
                         resolve_step(&mut session_steps, workbench, live, &frame)
                     {
-                        show_conversation(&id, terminal, workbench, live, &frame, &mut clock)
+                        show_conversation(&id, terminal, workbench, live, &frame, &mut clock, &mut painted)
                             .await?;
                     }
                     if quit(workbench, live, event, &frame, &mut InputIo { terminal, settings, settings_path, theme_explicit }).await? {
@@ -323,7 +346,7 @@ async fn event_loop(
                     // it passed through (see [`OPEN_SETTLE`]).
                     if live.is_cached(&id) {
                         pending_open = None;
-                        show_conversation(&id, terminal, workbench, live, &frame, &mut clock)
+                        show_conversation(&id, terminal, workbench, live, &frame, &mut clock, &mut painted)
                             .await?;
                     } else {
                         pending_open = Some(PendingOpen::stepped(id, Instant::now()));
@@ -335,7 +358,7 @@ async fn event_loop(
                     open_due.unwrap_or_else(Instant::now),
                 )), if open_due.is_some() => {
                 if let Some(open) = pending_open.take() {
-                    show_conversation(&open.id, terminal, workbench, live, &frame, &mut clock)
+                    show_conversation(&open.id, terminal, workbench, live, &frame, &mut clock, &mut painted)
                         .await?;
                 }
                 paint = true;
@@ -408,6 +431,11 @@ async fn event_loop(
                 paint = true;
             }
             _ = ticker.tick() => {
+                // Connection edges arrive on a watch channel beside the stream;
+                // the tick is the one wake-up that already exists, so the
+                // header's dot is refreshed there instead of adding another
+                // select arm that would have to disarm itself.
+                let connected = live.connection_changed();
                 // The two spinners are the only animation a tick owns — the
                 // activity row's, and the one a streaming conversation draws in
                 // the rail. They turn on the same frame, so one counter drives
@@ -436,15 +464,41 @@ async fn event_loop(
                 // that moved pays no process spawn in the loop, and this clock
                 // is what puts the answer on screen when it arrives.
                 let arrived = live.poll_local_reads();
+                let preview_arrived = live.poll_preview();
+                if preview_arrived {
+                    if let Some(siblings) = live.take_preview_siblings() {
+                        workbench.set_preview_siblings(siblings);
+                    }
+                }
                 paint = clock.tick(
                     animating,
                     workbench.spinner_frame(),
                     ages_on_screen(&frame),
                     Instant::now(),
                 ) || changed
-                    || arrived;
+                    || arrived
+                    || connected
+                    || preview_arrived;
+            }
+            notice = update_notice(update_rx) => {
+                if let Some(notice) = notice {
+                    live.notice = Some(notice);
+                }
+                **update_rx = None;
+                paint = true;
             }
         }
+    }
+}
+
+/// Await the startup update check, or never resolve when `--offline` removed
+/// it. The arm is disabled after its one answer (`update_rx = None`).
+async fn update_notice(
+    rx: &mut Option<tokio::sync::oneshot::Receiver<Option<String>>>,
+) -> Option<String> {
+    match rx {
+        Some(rx) => rx.await.ok().flatten(),
+        None => std::future::pending().await,
     }
 }
 
@@ -586,12 +640,13 @@ async fn show_conversation(
     live: &mut Live,
     frame: &Frame,
     clock: &mut TickClock,
+    painted: &mut FrameCache,
 ) -> Result<(), String> {
     if live.already_showing(id) {
         return Ok(());
     }
     if live.begin_switch(id) {
-        draw(terminal, workbench, live, frame)?;
+        draw(terminal, workbench, live, frame, painted)?;
         clock.painted(workbench.spinner_frame(), Instant::now());
     }
     live.finish_switch(id).await;
@@ -748,7 +803,9 @@ async fn quit(
                 }
                 Some(super::preferences::Action::ReduceMotion) => {
                     let _ = workbench.handle(WbEvent::Key(key.clone()), &live.data(frame));
-                    persist_preferences(workbench, settings, settings_path);
+                    if let Err(error) = persist_preferences(workbench, settings, settings_path) {
+                        settings_error_notice(live, &error);
+                    }
                     return Ok(false);
                 }
                 Some(super::preferences::Action::Stop) => {
@@ -968,7 +1025,7 @@ async fn quit(
             live.theme_id = id.clone();
             settings.theme_id = Some(id.clone());
             **theme_explicit = true;
-            save_settings(settings_path, settings);
+            save_settings_notice(settings_path, settings, live);
             continue;
         }
         // Same rule for the language: the surface and the adapter both switch
@@ -977,7 +1034,7 @@ async fn quit(
             workbench.set_language(preference);
             live.set_language(preference);
             settings.language = Some(preference.as_wire().to_string());
-            save_settings(settings_path, settings);
+            save_settings_notice(settings_path, settings, live);
             continue;
         }
         // "Restore defaults" hands the palette back to the terminal: the stored
@@ -989,7 +1046,7 @@ async fn quit(
             live.theme_id = palette.id.to_string();
             settings.theme_id = None;
             **theme_explicit = false;
-            save_settings(settings_path, settings);
+            save_settings_notice(settings_path, settings, live);
             continue;
         }
         if matches!(
@@ -1001,12 +1058,21 @@ async fn quit(
                 live.set_mouse_capture(mouse);
                 terminal.set_mouse_mode(mouse);
             }
-            persist_preferences(workbench, settings, settings_path);
+            if let Err(error) = persist_preferences(workbench, settings, settings_path) {
+                settings_error_notice(live, &error);
+            }
         }
         if matches!(action, WbAction::SetKeybindings) {
-            let _ = workbench
+            if let Err(error) = workbench
                 .keys
-                .save(&super::preferences::keybindings_path(settings_path));
+                .save(&super::preferences::keybindings_path(settings_path))
+            {
+                live.notice = Some(super::i18n::render(
+                    live.language(),
+                    super::i18n::Key::NoticeSettingsSaveFailed,
+                    &[&error.to_string()],
+                ));
+            }
         }
         // A pinned workspace is a preference of this client's rail, so the
         // surface's pin lands in `settings.json` beside the layout — and the
@@ -1014,18 +1080,18 @@ async fn quit(
         if let WbAction::SetWorkspacePinned { path, pinned } = &action {
             live.notice = Some(live.set_workspace_pinned(path, *pinned));
             settings.pinned_workspaces = Some(live.pinned_workspaces().to_vec());
-            save_settings(settings_path, settings);
+            save_settings_notice(settings_path, settings, live);
             continue;
         }
         // The preview box is the driver's to open: the adapter reads the bytes
         // and the surface paints them, but only this loop knows both.
         if let WbAction::PreviewFile(path) = &action {
-            live.load_preview(path).await;
+            live.start_preview(path);
             workbench.reset_preview();
-            // The pictures beside this one, so the box can step through the
-            // folder with its own buttons — the reader opened a row, and the
-            // rows around it are the neighbours they expect.
-            workbench.set_preview_siblings(super::files::image_siblings(path));
+            // The pictures beside this one arrive with the decoded image, on
+            // the same background thread; the box opens now with a loading
+            // row rather than freezing the frame on a large file.
+            workbench.set_preview_siblings((Vec::new(), 0));
             // Opened *over* the panel the row came from: `esc` from the box
             // walks back to that panel (see `Workbench::open_preview`).
             workbench.open_preview();
@@ -1235,7 +1301,7 @@ async fn quit(
 /// Called after every applied action and writes only on a change — a staging
 /// action is rare, and a launchpad chip that cycles through the list would
 /// otherwise rewrite the file on each step.
-fn persist_pending(live: &Live, settings: &mut TuiSettings, path: &Path) {
+fn persist_pending(live: &mut Live, settings: &mut TuiSettings, path: &Path) {
     let mut changed = false;
     if let Some(model) = live.pending_model() {
         if settings.default_model.as_deref() != Some(model) {
@@ -1250,8 +1316,24 @@ fn persist_pending(live: &Live, settings: &mut TuiSettings, path: &Path) {
         }
     }
     if changed {
-        save_settings(path, settings);
+        save_settings_notice(path, settings, live);
     }
+}
+
+/// Persist a choice, leaving the failure visible on the notice row instead of
+/// pretending a preference the next start will not see was saved.
+fn save_settings_notice(path: &Path, settings: &TuiSettings, live: &mut Live) {
+    if let Err(error) = save_settings(path, settings) {
+        settings_error_notice(live, &error);
+    }
+}
+
+fn settings_error_notice(live: &mut Live, error: &str) {
+    live.notice = Some(super::i18n::render(
+        live.language(),
+        super::i18n::Key::NoticeSettingsSaveFailed,
+        &[&error],
+    ));
 }
 
 /// Split one chunk of terminal input into workbench events.
@@ -1543,18 +1625,22 @@ fn toggle_mouse(
     workbench.mouse_capture = enabled;
     terminal.set_mouse_mode(enabled);
     settings.mouse_capture = Some(enabled);
-    save_settings(settings_path, settings);
-    live.notice = Some(
-        super::i18n::t(
-            live.language(),
-            if enabled {
-                super::i18n::Key::MouseOn
-            } else {
-                super::i18n::Key::MouseOff
-            },
-        )
-        .into(),
-    );
+    match save_settings(settings_path, settings) {
+        Ok(()) => {
+            live.notice = Some(
+                super::i18n::t(
+                    live.language(),
+                    if enabled {
+                        super::i18n::Key::MouseOn
+                    } else {
+                        super::i18n::Key::MouseOff
+                    },
+                )
+                .into(),
+            );
+        }
+        Err(error) => settings_error_notice(live, &error),
+    }
 }
 
 fn alert_id(event: &AgentEvent) -> String {
@@ -1587,6 +1673,7 @@ fn draw(
     workbench: &mut Workbench,
     live: &mut Live,
     frame: &Frame,
+    painted: &mut FrameCache,
 ) -> Result<(), String> {
     let data = live.data(frame);
     let rows = workbench.render(&data, frame.width, frame.height);
@@ -1596,8 +1683,16 @@ fn draw(
         workbench.palette.fg,
         workbench.palette.bg,
     );
-    terminal.write(&frame_bytes(&canvas, workbench.cursor()));
-    paint_image(terminal, workbench, &data);
+    let bytes = frame_bytes_since(
+        &canvas,
+        usize::from(frame.width),
+        workbench.cursor(),
+        painted,
+    );
+    if !bytes.is_empty() {
+        terminal.write(&bytes);
+    }
+    paint_image(terminal, workbench, &data, !painted.rows_written);
     Ok(())
 }
 
@@ -1683,18 +1778,59 @@ fn repaint_after_resets(line: &str, paint: &str) -> String {
 /// hundred bytes instead of a megabyte. Re-placing every frame is what keeps a
 /// picture on screen: the frame under it is rewritten each paint, and a placed
 /// image is not part of that text.
-fn paint_image(terminal: &mut Terminal, workbench: &mut Workbench, data: &super::WorkbenchData) {
+fn paint_image(
+    terminal: &mut Terminal,
+    workbench: &mut Workbench,
+    data: &super::WorkbenchData,
+    rows_intact: bool,
+) {
     let request = workbench.image_request;
     let Some(request) = request else {
         if let Some(painted) = workbench.painted_image.take() {
             terminal.write(&crate::terminal_image::delete_kitty_image(painted.id));
         }
+        workbench.painted_iterm = None;
         return;
     };
     // The pixels are the box's own preview: the same image the frame drew.
     let Some(super::state::PreviewView::Image { pixels, .. }) = data.preview.as_ref() else {
         return;
     };
+    let protocol = crate::terminal_image::get_capabilities().images;
+    if protocol == crate::terminal_image::ImageProtocol::Iterm2 {
+        // iTerm2 images are inline text, not an independently addressable layer:
+        // a frame that rewrites any cell over the picture erases it, so the
+        // image is placed again only then (or when the shown crop changes).
+        if rows_intact && workbench.painted_iterm == Some(request.source) {
+            return;
+        }
+        let (rgb, w, h) = transmit_bitmap(
+            pixels,
+            request.crop,
+            request.columns as usize,
+            request.rows as usize,
+        );
+        let Some(sequence) = crate::terminal_image::encode_iterm2_rgb_png(
+            &rgb,
+            w as u32,
+            h as u32,
+            request.columns as usize,
+            request.rows as usize,
+        ) else {
+            return;
+        };
+        let mut out = format!("\x1b[{};{}H{sequence}", request.y + 1, request.x + 1);
+        if let Some((x, y)) = workbench.cursor() {
+            out.push_str(&format!("\x1b[{};{}H", y + 1, x + 1));
+        }
+        terminal.write(&out);
+        workbench.painted_iterm = Some(request.source);
+        return;
+    }
+    if protocol != crate::terminal_image::ImageProtocol::Kitty {
+        workbench.painted_iterm = None;
+        return;
+    }
     let mut out = String::new();
     match workbench.painted_image {
         Some(painted) if painted.source == request.source => {
@@ -1841,31 +1977,69 @@ fn crop_rgb(
 /// Absolute addressing makes a size mismatch harmless: rows beyond the terminal
 /// are simply not drawn (`CUP` to a row past the end leaves the cursor at the
 /// last row and writes nothing else), and no write ever scrolls the screen.
+#[cfg(test)]
 fn frame_bytes(rows: &[String], cursor: Option<(u16, u16)>) -> String {
-    let mut frame = String::with_capacity(rows.len() * 64);
+    let mut cache = FrameCache::default();
+    frame_bytes_since(rows, 0, cursor, &mut cache)
+}
+
+/// The rows and cursor the terminal was last written, so a frame can send the
+/// rows that changed instead of the whole screen.
+#[derive(Default)]
+struct FrameCache {
+    rows: Vec<String>,
+    width: usize,
+    cursor: Option<(u16, u16)>,
+    /// Did the last call erase and rewrite any cell? iTerm2 images live in the
+    /// text grid, so only a row write invalidates one.
+    rows_written: bool,
+}
+
+/// The bytes needed to turn `cache` into `rows` at `width`.
+///
+/// A width or height change is a full repaint: the frame's geometry moved, and
+/// a row that happens to compare equal at a different width still occupies
+/// different cells. Otherwise only changed rows are addressed. Each written row
+/// is still absolute and erased first, preserving the no-scroll contract.
+fn frame_bytes_since(
+    rows: &[String],
+    width: usize,
+    cursor: Option<(u16, u16)>,
+    cache: &mut FrameCache,
+) -> String {
+    let full = cache.width != width || cache.rows.len() != rows.len();
+    let mut frame = String::new();
     frame.push_str("\x1b[?25l");
+    let mut wrote = false;
     for (index, row) in rows.iter().enumerate() {
-        // `CSI row;1H` — absolute, 1-based. The reset first so a row's styling
-        // cannot bleed into the positioning sequence.
+        if !full && cache.rows.get(index) == Some(row) {
+            continue;
+        }
+        wrote = true;
         frame.push_str(&format!("\x1b[0m\x1b[{};1H", index + 1));
-        // Erase the row before writing it. A frame is exactly as wide as the
-        // terminal was when it was composed, and this half of the pair is the
-        // other way round from a row past the end: a terminal *wider* than the
-        // frame keeps whatever the previous frame left in the columns beyond
-        // it — the last line of the conversation beside the composer, a session
-        // row where the draft continues — and the reset makes `EL` erase with
-        // the canvas colour, so a short row leaves nothing legible behind.
         frame.push_str("\x1b[K");
         frame.push_str(row);
     }
+    if !wrote && cursor == cache.cursor {
+        cache.rows_written = false;
+        return String::new();
+    }
+    cache.rows_written = wrote;
     frame.push_str("\x1b[0m");
     if let Some((x, y)) = cursor {
         frame.push_str(&format!("\x1b[{};{}H\x1b[?25h", y + 1, x + 1));
     }
+    cache.rows = rows.to_vec();
+    cache.width = width;
+    cache.cursor = cursor;
     frame
 }
 
-fn persist_preferences(workbench: &Workbench, settings: &mut TuiSettings, path: &Path) {
+fn persist_preferences(
+    workbench: &Workbench,
+    settings: &mut TuiSettings,
+    path: &Path,
+) -> Result<(), String> {
     let preferences = workbench.preferences();
     settings.sidebar_position = Some(preferences.sidebar_position.as_wire().into());
     settings.sidebar_width = Some(preferences.sidebar_width);
@@ -1876,21 +2050,29 @@ fn persist_preferences(workbench: &Workbench, settings: &mut TuiSettings, path: 
     // Which workspaces the reader folded shut survives a restart; the search text
     // does not (see `TuiSettings::folded_workspaces`).
     settings.folded_workspaces = Some(workbench.folded_workspaces());
-    save_settings(path, settings);
+    save_settings(path, settings)
 }
 
+#[cfg(test)]
 pub(crate) fn load_settings(path: &Path) -> TuiSettings {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
-    let value: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-    TuiSettings::from_json(&value)
+    load_settings_report(path).0
 }
 
-pub(crate) fn save_settings(path: &Path, settings: &TuiSettings) {
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+/// Read the settings with the reason a broken file was not used.
+///
+/// A corrupt file is not silently replaced in memory and then overwritten on
+/// the next preference change: the caller gets the defaults *and* a sentence
+/// that says the file could not be read.
+pub(crate) fn load_settings_report(path: &Path) -> (TuiSettings, Option<String>) {
+    match future_host::config_io::read_json_object(path) {
+        Ok(value) => (TuiSettings::from_json(&value), None),
+        Err(error) => (TuiSettings::default(), Some(error.to_string())),
     }
-    let value = serde_json::to_string_pretty(&settings.to_json()).unwrap_or_default();
-    let _ = std::fs::write(path, value);
+}
+
+pub(crate) fn save_settings(path: &Path, settings: &TuiSettings) -> Result<(), String> {
+    future_host::config_io::write_json_atomic(path, &settings.to_json(), false)
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -2172,7 +2354,7 @@ mod tests {
         let pixels = ImagePixels {
             width: 3,
             height: 2,
-            rgba,
+            rgba: rgba.into(),
         };
         // The middle column only.
         let rgb = crop_rgb(&pixels, (1, 0, 2, 2));
@@ -2197,7 +2379,7 @@ mod tests {
         let pixels = super::super::image_view::ImagePixels {
             width: 400,
             height: 400,
-            rgba,
+            rgba: rgba.into(),
         };
         // Fitted into 20 cells at ten pixels a cell: 200 px, half the source.
         let (rgb, w, h) = transmit_bitmap(&pixels, (0, 0, 400, 400), 20, 20);
@@ -2388,6 +2570,73 @@ mod tests {
         assert!(!layout_preferences(&hidden, true).sidebar_visible);
     }
 
+    /// Preferences are written atomically, and a corrupt file is reported
+    /// instead of being read as an empty document with no explanation.
+    #[test]
+    fn settings_are_written_atomically_and_a_broken_file_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let settings = TuiSettings {
+            theme_id: Some("nord".into()),
+            ..TuiSettings::default()
+        };
+        save_settings(&path, &settings).expect("atomic save");
+        assert_eq!(load_settings(&path).theme_id.as_deref(), Some("nord"));
+        assert!(
+            !std::fs::read_dir(dir.path())
+                .unwrap()
+                .flatten()
+                .any(|entry| entry.file_name().to_string_lossy().contains(".tmp.")),
+            "the temporary sibling is renamed away"
+        );
+
+        std::fs::write(&path, "{ not json").unwrap();
+        let (fallback, warning) = load_settings_report(&path);
+        assert!(fallback.theme_id.is_none());
+        assert!(
+            warning.is_some(),
+            "the reader is told why defaults are in use"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "{ not json",
+            "loading must not rewrite the broken file behind the reader's back"
+        );
+
+        // A parent that is a file is a save failure, not a silently lost choice.
+        let blocking = dir.path().join("not-a-dir");
+        std::fs::write(&blocking, "x").unwrap();
+        assert!(save_settings(&blocking.join("settings.json"), &settings).is_err());
+    }
+
+    /// Only changed rows cross the pty; a geometry change falls back to a full
+    /// repaint, and an unchanged frame with the same cursor writes nothing.
+    #[test]
+    fn a_repaint_sends_only_rows_that_changed() {
+        let first = vec!["one".to_string(), "two".to_string(), "three".to_string()];
+        let mut cache = FrameCache::default();
+        let full = frame_bytes_since(&first, 20, Some((3, 1)), &mut cache);
+        assert!(full.contains("\x1b[1;1H") && full.contains("\x1b[2;1H"));
+
+        let same = frame_bytes_since(&first, 20, Some((3, 1)), &mut cache);
+        assert!(
+            same.is_empty(),
+            "an unchanged frame writes nothing: {same:?}"
+        );
+
+        let mut changed = first.clone();
+        changed[1] = "TWO".into();
+        let patch = frame_bytes_since(&changed, 20, Some((3, 1)), &mut cache);
+        assert!(patch.contains("\x1b[2;1H") && patch.contains("TWO"));
+        assert!(!patch.contains("\x1b[1;1H") && !patch.contains("\x1b[3;1H"));
+
+        let resized = frame_bytes_since(&changed, 21, Some((3, 1)), &mut cache);
+        assert!(
+            resized.contains("\x1b[1;1H") && resized.contains("\x1b[3;1H"),
+            "a width change repaints every row"
+        );
+    }
+
     /// The workspaces the reader folded shut survive a restart through the same
     /// file the layout uses.
     #[test]
@@ -2398,7 +2647,7 @@ mod tests {
         let mut workbench = super::super::Workbench::new();
         workbench.set_folded_workspaces(["/src/future-os".to_string(), "/src/mobile".into()]);
         let mut settings = TuiSettings::default();
-        persist_preferences(&workbench, &mut settings, &path);
+        persist_preferences(&workbench, &mut settings, &path).expect("settings save");
 
         // Read the file back, not the value the writer kept: the point is that a
         // *next start* sees the folds.

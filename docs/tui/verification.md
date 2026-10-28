@@ -1,5 +1,10 @@
 # Workbench TUI — verification record
 
+> **Historical record (2026).** This page records what was checked for a particular
+> workbench build. Figures and tables are not the current acceptance suite; run
+> the commands in the [TUI guide](../guide/tui.md) and `cargo test -p future-tui`
+> for today's behaviour.
+
 What was checked, what the screens show, and what is still wrong. Every row of
 §2 names its figure, and every frame in `docs/tui/assets/` was captured from a
 **live** `future-tui` against an isolated agent — no mock, no demo data.

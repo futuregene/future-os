@@ -22,7 +22,7 @@ use std::time::Instant;
 
 use serde_json::Value;
 
-use crate::components::chat_area::{ChatArea, ChatMessage, ChatRole, ReplyDetail};
+use crate::components::chat_area::{ChatArea, ChatMessage, ChatRole, ReplyDetail, RunState};
 use crate::paste;
 use crate::rpc::types::{
     AgentEvent, ModelInfo, PendingApprovalState, RpcSessionState, SessionEntriesPage,
@@ -267,6 +267,32 @@ pub struct Live {
     /// The clipboard reader. Holds the directory its temporary images go to; a
     /// capture that finds no image leaves nothing behind.
     clipboard: paste::ClipboardCapture,
+    /// The header's dot: the event stream's latest answer, or a successful
+    /// startup read when this client has not subscribed yet (a launchpad owns
+    /// no session to subscribe to).
+    connected: bool,
+    /// The gRPC stream's own edges, watched so a disconnect reaches the dot.
+    connection: tokio::sync::watch::Receiver<bool>,
+    /// False once the watch's sender is gone, so a closed channel cannot wake
+    /// the driver in a tight loop.
+    connection_open: bool,
+    /// One preview being read and decoded on a blocking thread. Starting a
+    /// second load replaces it; an answer for an older request is dropped.
+    preview_read: Option<(u64, std::sync::mpsc::Receiver<PreviewLoaded>)>,
+    preview_revision: u64,
+    /// The one file-tree read in flight, keyed by the revision that asked for
+    /// it. An answer for an older request is dropped.
+    tree_read: Option<(u64, std::sync::mpsc::Receiver<super::files::FileTree>)>,
+    tree_revision: u64,
+    /// The siblings a finished preview brought, waiting for the driver to hand
+    /// them to the preview box (`take_preview_siblings`).
+    preview_siblings: Option<(Vec<String>, usize)>,
+}
+
+struct PreviewLoaded {
+    revision: u64,
+    view: PreviewView,
+    siblings: (Vec<String>, usize),
 }
 
 impl Live {
@@ -279,7 +305,7 @@ impl Live {
         no_context_files: bool,
         settings: Option<&crate::settings::TuiSettings>,
     ) -> Result<(Self, tokio::sync::mpsc::UnboundedReceiver<AgentEvent>), String> {
-        let (client, events, _connection) = GrpcClient::new(addr);
+        let (client, events, connection) = GrpcClient::new(addr);
         let client = Arc::new(client.with_no_context_files(no_context_files));
 
         // The reading level is not persisted: every terminal starts folded, and
@@ -352,17 +378,42 @@ impl Live {
             tree: crate::workbench::files::FileTree::default(),
             preview: None,
             clipboard: paste::ClipboardCapture::default(),
+            connection,
+            connected: false,
+            connection_open: true,
+            preview_read: None,
+            preview_revision: 0,
+            tree_read: None,
+            tree_revision: 0,
+            preview_siblings: None,
         };
 
         if let Some(id) = session.filter(|id| !id.is_empty()) {
             live.client.switch_session(id).await?;
         }
-        live.refresh_state().await;
+        // The first screen waits for these three reads. They do not depend on
+        // one another, so they go out together instead of costing three
+        // deadlines in sequence on a slow link.
+        let (state, sessions, models) = tokio::join!(
+            live.client.get_state(),
+            live.client.list_sessions(),
+            live.client.list_models()
+        );
+        if let Ok(state) = state {
+            live.install_state(state);
+            live.connected = true;
+        }
+        if let Ok(sessions) = sessions {
+            live.sessions.replace(sessions);
+            live.connected = true;
+        }
+        if let Ok(models) = models {
+            live.models = models;
+            live.connected = true;
+        }
         // A conversation that is already writing when the terminal attaches
         // owns the row from the first frame (see [`Live::adopt_run`]).
         live.adopt_run();
-        live.refresh_sessions().await;
-        live.refresh_models().await;
         live.load_tail().await;
         Ok((live, events))
     }
@@ -454,7 +505,7 @@ impl Live {
     /// keystrokes still reaches the screen.
     pub fn poll_local_reads(&mut self) -> bool {
         let Some(reads) = self.local_reads.as_mut() else {
-            return false;
+            return self.poll_tree_read();
         };
         let cwd = reads.cwd.clone();
         let mut landed = false;
@@ -472,14 +523,44 @@ impl Live {
             match rx.try_recv() {
                 Ok((files, tree)) => {
                     self.files = files;
-                    self.tree = tree;
+                    // An explicit tree read the reader started while this
+                    // workspace scan was running is newer: do not let the
+                    // slower startup answer paint over it.
+                    if self.tree_read.is_none() {
+                        self.tree = tree;
+                    }
                     landed = true;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => reads.files = Some(rx),
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
             }
         }
-        landed
+        landed || self.poll_tree_read()
+    }
+
+    fn poll_tree_read(&mut self) -> bool {
+        let Some((revision, rx)) = self.tree_read.as_ref() else {
+            return false;
+        };
+        let revision = *revision;
+        match rx.try_recv() {
+            Ok(tree) => {
+                self.tree_read = None;
+                if revision != self.tree_revision {
+                    return false;
+                }
+                if let Some(error) = tree.error.clone() {
+                    self.notice = Some(error);
+                }
+                self.tree = tree;
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.tree_read = None;
+                false
+            }
+        }
     }
 
     /// Re-read the conversation list, and answer whether anything the rail
@@ -970,6 +1051,33 @@ impl Live {
         std::mem::take(&mut self.state_refresh_pending)
     }
 
+    /// Is the agent reachable right now?
+    pub fn connected(&self) -> bool {
+        self.connected
+    }
+
+    /// Consume a connection-state edge for the driver, which owes a frame when
+    /// this answers `true`. A closed watch is reported once and then stays
+    /// quiet instead of waking the loop forever.
+    pub fn connection_changed(&mut self) -> bool {
+        if !self.connection_open {
+            return false;
+        }
+        match self.connection.has_changed() {
+            Ok(changed) => {
+                if changed {
+                    let connected = *self.connection.borrow_and_update();
+                    self.connected = connected;
+                }
+                changed
+            }
+            Err(_) => {
+                self.connection_open = false;
+                true
+            }
+        }
+    }
+
     /// Is the agent parked on an approval right now?
     pub fn approval(&self) -> Option<&ApprovalPrompt> {
         self.approval.as_ref()
@@ -1221,7 +1329,7 @@ impl Live {
 
     pub fn data(&mut self, frame: &Frame) -> WorkbenchData {
         let state = self.state.clone();
-        let messages = self.chat.render_all(frame.inner);
+        let messages = self.chat.render_all_shared(frame.inner);
         let activity = self.activity_snapshot();
         let input = self.draft.clone();
         // The rail's rows and its 工作区 filing, built only when one of their
@@ -1265,7 +1373,7 @@ impl Live {
         WorkbenchData {
             app_name: "future-tui".into(),
             version: crate::version::VERSION.to_string(),
-            connected: true,
+            connected: self.connected(),
             session: SessionMeta {
                 id: if self.launchpad {
                     String::new()
@@ -1438,7 +1546,7 @@ impl Live {
             WbAction::RefreshFiles => self.refresh_tree(),
             // The preview itself is opened by the driver, which owns the
             // overlay; loading the bytes is ours.
-            WbAction::PreviewFile(path) => self.load_preview(&path).await,
+            WbAction::PreviewFile(path) => self.start_preview(&path),
             WbAction::PasteClipboard => self.paste_clipboard().await, // The box is the driver's to open (`run::quit`): this layer reads
             // the bytes, the surface paints them.
             WbAction::PreviewAttachment => {}
@@ -1589,12 +1697,19 @@ impl Live {
                 }
             }
             Err(error) => {
-                self.notice = Some(format!("Failed to send: {error}"));
-                self.draft.editor.replace(&original_text, pending);
-                self.draft = InputView::from_editor(
-                    self.draft.editor.clone(),
-                    self.draft.placeholder.clone(),
-                );
+                // The request may have reached the agent before the reply was
+                // lost. Keeping the message on screen preserves what the reader
+                // said; restoring the draft as well made a retry look harmless
+                // and could send the same prompt twice. The marker says the
+                // acknowledgement never arrived, and the notice says to check
+                // before retrying.
+                self.chat
+                    .mark_last_message_run_state(RunState::NotAcknowledged);
+                self.notice = Some(i18n::render(
+                    self.lang,
+                    Key::NoticeSendUnacknowledged,
+                    &[&error],
+                ));
                 self.activity = Activity::default();
                 self.activity_start = None;
             }
@@ -2719,21 +2834,6 @@ impl Live {
 
     // ─── the 文件 panel, the preview box and the clipboard ──────────────
 
-    /// Open or close a directory in the tree.
-    ///
-    /// The toggle is the *adapter's* because it reads the disk: the surface asked
-    /// for it by path (that is `WbAction::ToggleFolder`), and the next frame
-    /// paints whatever came back.
-    pub fn toggle_folder(&mut self, path: &str) {
-        let path = std::path::Path::new(path);
-        self.tree.toggle(path);
-        if let Some(error) = self.tree.error.clone() {
-            // A directory that cannot be read is worth a notice; the tree keeps
-            // the rest of its rows.
-            self.notice = Some(error);
-        }
-    }
-
     /// Hand a link to the desktop's own handler — a browser for an address, a
     /// mail client for `mailto:`.
     ///
@@ -2750,31 +2850,85 @@ impl Live {
         }
     }
 
-    /// Read a file for the preview box.
-    pub async fn load_preview(&mut self, path: &str) {
+    /// Open or close a directory in the tree.
+    ///
+    /// The read happens on a blocking thread; the panel keeps the rows it has
+    /// until the answer lands (`poll_local_reads`).
+    pub fn toggle_folder(&mut self, path: &str) {
+        let mut tree = self.tree.clone();
+        let path = std::path::PathBuf::from(path);
+        self.tree_revision = self.tree_revision.wrapping_add(1);
+        let revision = self.tree_revision;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            tree.toggle(&path);
+            let _ = tx.send(tree);
+        });
+        self.tree_read = Some((revision, rx));
+    }
+
+    /// Read a file for the preview box. The box opens immediately with a
+    /// loading row; `poll_preview` installs the bytes when the blocking read
+    /// finishes.
+    pub fn start_preview(&mut self, path: &str) {
         let path = path.to_string();
-        let kind = super::files::preview_kind(std::path::Path::new(&path));
-        let loaded = tokio::task::spawn_blocking(move || read_preview(&path, kind)).await;
-        match loaded {
-            Ok(view) => {
-                self.preview = Some(view);
-                self.notice = None;
+        self.preview_revision = self.preview_revision.wrapping_add(1);
+        let revision = self.preview_revision;
+        self.preview = Some(PreviewView::Loading { path: path.clone() });
+        self.notice = None;
+        let lang = self.lang;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let kind = super::files::preview_kind(std::path::Path::new(&path));
+            let view = read_preview_lang(&path, kind, lang);
+            let siblings = if matches!(view, PreviewView::Image { .. }) {
+                super::files::image_siblings(&path)
+            } else {
+                (Vec::new(), 0)
+            };
+            let _ = tx.send(PreviewLoaded {
+                revision,
+                view,
+                siblings,
+            });
+        });
+        self.preview_read = Some((revision, rx));
+    }
+
+    /// Install a finished preview and answer whether the frame changed.
+    pub fn poll_preview(&mut self) -> bool {
+        let Some((_revision, rx)) = self.preview_read.as_ref() else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(loaded) => {
+                self.preview_read = None;
+                if loaded.revision != self.preview_revision {
+                    return false;
+                }
+                self.preview = Some(loaded.view);
+                self.preview_siblings = Some(loaded.siblings);
+                true
             }
-            Err(error) => {
-                self.preview = Some(PreviewView::Unavailable {
-                    path: String::new(),
-                    reason: error.to_string(),
-                });
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.preview_read = None;
+                false
             }
         }
     }
 
+    /// Take the sibling list a finished preview brought, for the preview box's
+    /// step buttons. Kept here until the driver asks for it.
+    pub fn take_preview_siblings(&mut self) -> Option<(Vec<String>, usize)> {
+        self.preview_siblings.take()
+    }
+
     /// Show the newest image already attached to the draft.
     ///
-    /// Nothing is read from the clipboard here: the attachment's path came from
-    /// the paste (a capture's own file, or a path the reader pasted), and the
-    /// preview loader takes it from there. Returns whether a preview was set, so
-    /// the driver knows whether there is a box to open.
+    /// The bytes are read on a blocking thread by [`Self::start_preview`]; the
+    /// box opens at once with its loading row. Returns whether there is a box
+    /// to open.
     pub fn load_attachment(&mut self) -> bool {
         let attachments = self.draft.editor.pending().attachments().to_vec();
         match attachments
@@ -2783,14 +2937,7 @@ impl Live {
             .find(|attachment| attachment.kind == "image")
         {
             Some(attachment) => {
-                let path = attachment.path.clone();
-                // The load is synchronous here so the key has one meaning: the
-                // box is about to open, and a preview that arrives a frame later
-                // would open empty. A picture that big is already capped by the
-                // decoder's own downscale.
-                let kind = super::files::preview_kind(std::path::Path::new(&path));
-                self.preview = Some(read_preview(&path, kind));
-                self.notice = None;
+                self.start_preview(&attachment.path);
                 true
             }
             None => {
@@ -2846,9 +2993,18 @@ impl Live {
         }
     }
 
-    /// Re-read the tree, keeping the open directories (`alt+r`).
+    /// Re-read the tree in the background, keeping the open directories.
     pub fn refresh_tree(&mut self) {
-        self.tree.rescan();
+        let tree = self.tree.clone();
+        self.tree_revision = self.tree_revision.wrapping_add(1);
+        let revision = self.tree_revision;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut tree = tree;
+            tree.rescan();
+            let _ = tx.send(tree);
+        });
+        self.tree_read = Some((revision, rx));
     }
 
     pub async fn create_worktree_with<F>(&mut self, create: F)
@@ -3218,17 +3374,47 @@ fn open_external(target: &str) -> std::io::Result<()> {
 /// when zoomed and nothing at all when fitted.
 pub const MAX_PREVIEW_IMAGE_PX: u32 = 2048;
 
-/// Read `path` as the preview box will show it.
-///
-/// Runs on a blocking thread (see [`Live::load_preview`]): reading a file and
-/// decoding a picture are both disk/CPU work, and the event loop must keep
-/// painting while they happen.
+/// Largest encoded picture the preview will load. Decoding dimensions are
+/// bounded below, but the compressed bytes arrive before that check: an
+/// arbitrarily large file must not become an arbitrarily large allocation just
+/// to be refused.
+const MAX_PREVIEW_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Read an image file without trusting its size on disk.
+fn read_image_bytes(path: &str, lang: Language) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let meta = std::fs::metadata(path).map_err(|error| error.to_string())?;
+    if meta.len() > MAX_PREVIEW_IMAGE_BYTES {
+        return Err(i18n::render(
+            lang,
+            Key::PreviewImageTooLarge,
+            &[
+                &(meta.len() / (1024 * 1024)).to_string(),
+                &(MAX_PREVIEW_IMAGE_BYTES / (1024 * 1024)).to_string(),
+            ],
+        ));
+    }
+    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    file.take(MAX_PREVIEW_IMAGE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > MAX_PREVIEW_IMAGE_BYTES {
+        return Err(i18n::render(lang, Key::PreviewImageChanged, &[]));
+    }
+    Ok(bytes)
+}
+
 pub fn read_preview(path: &str, kind: super::files::PreviewKind) -> PreviewView {
+    read_preview_lang(path, kind, Language::En)
+}
+
+fn read_preview_lang(path: &str, kind: super::files::PreviewKind, lang: Language) -> PreviewView {
     use super::files::PreviewKind;
     let preview = || -> Result<PreviewView, String> {
         match kind {
             PreviewKind::Image => {
-                let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+                let bytes = read_image_bytes(path, lang)?;
                 let image = image::load_from_memory(&bytes).map_err(|error| error.to_string())?;
                 let image = if image.width() > MAX_PREVIEW_IMAGE_PX
                     || image.height() > MAX_PREVIEW_IMAGE_PX
@@ -3247,7 +3433,7 @@ pub fn read_preview(path: &str, kind: super::files::PreviewKind) -> PreviewView 
                     pixels: super::image_view::ImagePixels {
                         width: rgba.width() as usize,
                         height: rgba.height() as usize,
-                        rgba: rgba.into_raw(),
+                        rgba: rgba.into_raw().into(),
                     },
                 })
             }
@@ -3255,7 +3441,7 @@ pub fn read_preview(path: &str, kind: super::files::PreviewKind) -> PreviewView 
                 let (text, _) = read_text(path)?;
                 Ok(PreviewView::Markdown {
                     path: path.to_string(),
-                    text,
+                    text: text.into(),
                 })
             }
             PreviewKind::Text => {
@@ -3493,13 +3679,37 @@ pub fn persisted_language(settings: &crate::settings::TuiSettings) -> LanguagePr
     LanguagePreference::from_wire(settings.language.as_deref().unwrap_or("system"))
 }
 
+/// The text a completed file mention inserts into the draft.
+///
+/// A path with whitespace, a quote or a backslash is quoted, because the
+/// submission parser has to be able to tell where the path ends. Escape and
+/// quote are the only characters that need `\\` inside the quotes.
+pub(crate) fn mention_insert(path: &str) -> String {
+    if path
+        .chars()
+        .any(|ch| ch.is_whitespace() || matches!(ch, '"' | '\\'))
+    {
+        let mut quoted = String::with_capacity(path.len() + 4);
+        for ch in path.chars() {
+            if matches!(ch, '"' | '\\') {
+                quoted.push('\\');
+            }
+            quoted.push(ch);
+        }
+        format!("@\"{quoted}\" ")
+    } else {
+        format!("@{path} ")
+    }
+}
+
 /// A draft with its `@path` mentions inlined.
 ///
 /// `@` completion is a *local* affordance: the agent receives a prompt, not a
 /// path it would resolve itself, and only this side knows which directory the
 /// reader means. So every `@path` that names a readable file under the session's
 /// working directory becomes a `<file name="…">…</file>` block — exactly the
-/// shape `future run @README.md` sends.
+/// shape `future run @README.md` sends. A path with spaces is written
+/// `@"my file.md"`; the quotes are syntax, not part of the path.
 ///
 /// The limits are stated rather than silent: at most [`MAX_MENTION_FILES`] files
 /// and [`MAX_MENTION_BYTES`] each; a file that is skipped (too large, binary,
@@ -3516,12 +3726,18 @@ pub fn expand_mentions(text: &str, cwd: &str) -> String {
     let root = std::path::Path::new(cwd);
     let mut out = String::with_capacity(text.len());
     let mut inlined = 0usize;
-    for (index, token) in text.split(' ').enumerate() {
-        if index > 0 {
-            out.push(' ');
+    let mut at = 0usize;
+    while at < text.len() {
+        let ch = text[at..].chars().next().unwrap_or(' ');
+        if ch.is_whitespace() {
+            out.push(ch);
+            at += ch.len_utf8();
+            continue;
         }
-        let Some(rest) = token.strip_prefix('@') else {
-            out.push_str(token);
+        let (end, raw, value) = mention_word(text, at);
+        let Some(rest) = value.strip_prefix('@') else {
+            out.push_str(raw);
+            at = end;
             continue;
         };
         // Trailing punctuation belongs to the sentence, not the path — and it is
@@ -3529,7 +3745,8 @@ pub fn expand_mentions(text: &str, cwd: &str) -> String {
         let path = rest.trim_end_matches([',', '。', ':', ';', ')']);
         let tail = &rest[path.len()..];
         if path.is_empty() || inlined >= MAX_MENTION_FILES {
-            out.push_str(token);
+            out.push_str(raw);
+            at = end;
             continue;
         }
         let absolute = if std::path::Path::new(path).is_absolute() {
@@ -3537,22 +3754,21 @@ pub fn expand_mentions(text: &str, cwd: &str) -> String {
         } else {
             root.join(path)
         };
-        match std::fs::read(&absolute) {
-            Ok(bytes) if bytes.len() > MAX_MENTION_BYTES => {
-                // What the *model* reads, never what the screen draws.
+        match read_mention(&absolute, MAX_MENTION_BYTES) {
+            Ok(MentionRead::TooLarge(bytes)) => {
                 out.push_str(&format!(
                     "[{path}: {} KB, not inlined - read it in pieces]", // i18n: prompt text for the model
-                    bytes.len() / 1024
+                    bytes / 1024
                 ));
                 out.push_str(tail);
             }
-            Ok(bytes) if bytes.iter().take(4096).any(|byte| *byte == 0) => {
+            Ok(MentionRead::Binary) => {
                 out.push_str(&format!(
                     "[{path}: binary, not inlined]" // i18n: prompt text for the model
                 ));
                 out.push_str(tail);
             }
-            Ok(bytes) => {
+            Ok(MentionRead::Text(bytes)) => {
                 out.push_str(&format!(
                     "<file name=\"{}\">\n{}\n</file>",
                     absolute.display(),
@@ -3561,15 +3777,81 @@ pub fn expand_mentions(text: &str, cwd: &str) -> String {
                 out.push_str(tail);
                 inlined += 1;
             }
-            Err(_) => out.push_str(token),
+            Err(_) => out.push_str(raw),
         }
+        at = end;
     }
     out
 }
 
+/// One whitespace-delimited word, with quoted runs allowed to contain spaces.
+///
+/// Returns `(byte offset after the word, raw source slice, unquoted value)`.
+/// Only `\"` and `\\` are escapes, and only inside quotes: every other
+/// backslash belongs to the path exactly as typed.
+fn mention_word(text: &str, start: usize) -> (usize, &str, String) {
+    let mut at = start;
+    let mut value = String::new();
+    let mut quoted = false;
+    while at < text.len() {
+        let ch = text[at..].chars().next().unwrap_or(' ');
+        if ch == '"' {
+            quoted = !quoted;
+            at += 1;
+            continue;
+        }
+        if ch == '\\' && quoted {
+            at += 1;
+            if at < text.len() {
+                let escaped = text[at..].chars().next().unwrap_or('\\');
+                value.push(escaped);
+                at += escaped.len_utf8();
+            } else {
+                value.push('\\');
+            }
+            continue;
+        }
+        if !quoted && ch.is_whitespace() {
+            break;
+        }
+        value.push(ch);
+        at += ch.len_utf8();
+    }
+    (at, &text[start..at], value)
+}
+
+enum MentionRead {
+    Text(Vec<u8>),
+    TooLarge(u64),
+    Binary,
+}
+
+/// Read a mention without trusting the file's size: metadata decides whether a
+/// file is too large before a byte is allocated, and the read itself is capped.
+fn read_mention(path: &std::path::Path, limit: usize) -> std::io::Result<MentionRead> {
+    use std::io::Read;
+    let meta = std::fs::metadata(path)?;
+    if !meta.is_file() {
+        return Err(std::io::Error::other("not a file")); // i18n: internal control flow, never drawn
+    }
+    if meta.len() > limit as u64 {
+        return Ok(MentionRead::TooLarge(meta.len()));
+    }
+    let file = std::fs::File::open(path)?;
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Ok(MentionRead::TooLarge(bytes.len() as u64));
+    }
+    if bytes.iter().take(4096).any(|byte| *byte == 0) {
+        return Ok(MentionRead::Binary);
+    }
+    Ok(MentionRead::Text(bytes))
+}
+
 #[cfg(test)]
 mod mention_tests {
-    use super::expand_mentions;
+    use super::{expand_mentions, mention_insert};
 
     fn workspace() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("a scratch directory");
@@ -3581,6 +3863,36 @@ mod mention_tests {
 
     /// The prompt the agent reads is the CLI's `<file>` block, not a path it has
     /// to go and open itself: the reader's sentence stays, the token does not.
+    #[test]
+    fn a_quoted_mention_keeps_a_path_with_spaces_in_one_piece() {
+        let dir = workspace();
+        std::fs::write(dir.path().join("my note.md"), "quoted contents").unwrap();
+        let cwd = dir.path().display().to_string();
+        let prompt = expand_mentions("read @\"my note.md\", please", &cwd);
+        assert!(
+            prompt.contains("<file name=\"") && prompt.contains("my note.md\">\nquoted contents"),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("@\"my"), "the token is consumed: {prompt}");
+
+        assert_eq!(mention_insert("src/main.rs"), "@src/main.rs ");
+        assert_eq!(mention_insert("my note.md"), "@\"my note.md\" ");
+        assert_eq!(mention_insert("a\\b.md"), "@\"a\\\\b.md\" ");
+    }
+
+    /// The byte cap is decided from metadata and the read itself is bounded:
+    /// a huge file is never allocated just to be rejected.
+    #[test]
+    fn an_oversized_mention_is_named_without_reading_the_whole_file() {
+        let dir = workspace();
+        let huge = dir.path().join("huge.txt");
+        let file = std::fs::File::create(&huge).unwrap();
+        file.set_len(300 * 1024).unwrap();
+        let prompt = expand_mentions("@huge.txt", &dir.path().display().to_string());
+        assert!(prompt.contains("not inlined"), "{prompt}");
+        assert!(!prompt.contains("<file"), "{prompt}");
+    }
+
     #[test]
     fn a_mention_becomes_the_same_file_block_the_cli_sends() {
         let dir = workspace();
@@ -3937,6 +4249,96 @@ mod tests {
 
     /// The same submission with the draft intact — the ordinary path once the
     /// driver stops clearing it first — attaches the folded pastes it carries.
+    /// A prompt whose acknowledgement was lost is not silently retried: the
+    /// message stays visible, the draft is not restored alongside it, and the
+    /// row says the delivery is unconfirmed.
+    #[tokio::test]
+    async fn a_prompt_without_an_acknowledgement_is_marked_not_retried() {
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_failing(
+            &[("get_state", r#"{"sessionId":"s-1"}"#)],
+            "prompt",
+            "connection reset after the request",
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        live.set_draft("say this once".into(), 12);
+        live.apply(WbAction::Submit("say this once".into())).await;
+
+        assert_eq!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|c| *c == "prompt")
+                .count(),
+            1
+        );
+        assert!(
+            live.draft.text.is_empty(),
+            "restoring the draft invites a second copy of a prompt that may have arrived"
+        );
+        let last = live.chat.last_message().expect("the message stays visible");
+        assert_eq!(last.role, ChatRole::User);
+        assert_eq!(last.run_state, Some(RunState::NotAcknowledged));
+        let notice = live.notice.as_deref().unwrap_or_default();
+        assert!(notice.contains("not acknowledged") || notice.contains("未得到确认"));
+        assert!(notice.contains("refresh") || notice.contains("刷新"));
+    }
+
+    /// The preview box opens now and fills itself when the blocking read lands;
+    /// the event loop never waits for the decode.
+    #[tokio::test]
+    async fn a_preview_opens_while_its_bytes_are_read_off_thread() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[(
+            "get_state",
+            r#"{"sessionId":"s-1"}"#,
+        )]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None).await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("shot.png");
+        std::fs::write(&png, png_bytes()).unwrap();
+        let path = png.to_string_lossy().to_string();
+
+        live.start_preview(&path);
+        assert!(matches!(live.preview, Some(PreviewView::Loading { .. })));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !live.poll_preview() {
+            assert!(std::time::Instant::now() < deadline, "preview never landed");
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(matches!(live.preview, Some(PreviewView::Image { .. })));
+        let siblings = live.take_preview_siblings().expect("picture neighbours");
+        assert_eq!(siblings.1, 0);
+        assert_eq!(siblings.0.len(), 1);
+    }
+
+    /// A launchpad has no session to subscribe to, but a successful attach
+    /// still means the agent is there. A later stream edge is what turns the
+    /// dot dark.
+    #[tokio::test]
+    async fn the_connection_dot_follows_the_stream_and_starts_from_attach() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[(
+            "get_state",
+            r#"{"sessionId":"s-1"}"#,
+        )]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None).await.unwrap();
+        assert!(live.connected(), "a successful attach reached the agent");
+
+        let (tx, rx) = tokio::sync::watch::channel(true);
+        live.connection = rx;
+        live.connection_open = true;
+        tx.send(false).unwrap();
+        assert!(live.connection_changed());
+        assert!(!live.connected());
+        assert!(!live.data(&frame()).connected);
+        tx.send(true).unwrap();
+        assert!(live.connection_changed());
+        assert!(live.connected());
+    }
+
     #[tokio::test]
     async fn a_submit_still_sends_when_the_draft_holds_the_text() {
         let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
@@ -5131,7 +5533,7 @@ mod tests {
     }
 
     fn rows_on_screen(live: &mut Live) -> Vec<String> {
-        live.data(&frame()).messages
+        live.data(&frame()).messages.to_vec()
     }
 
     /// A click on the row the transcript already shows reads nothing at all.

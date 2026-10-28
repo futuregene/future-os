@@ -690,3 +690,43 @@ fn host_fixture() {
         host.stop().unwrap();
     }
 }
+
+/// A panic on another thread must not make the host unreadable.
+///
+/// The state is shared with the worker that starts and stops the Agent, so a
+/// panic under that lock — a failed write to a terminal, an assertion in the
+/// driver — poisons it. Every later read used to panic in turn, which is what
+/// turned one broken worker into a Desktop that could no longer read its own
+/// backend's phase (measured 2026-10-28: `agent_host.rs:93` panicked on the
+/// poisoned lock and the app showed "the backend service did not start" while
+/// the process kept running). A poisoned state is stale, not unusable: the
+/// values left behind still say what the worker last reached.
+#[test]
+fn a_poisoned_state_is_still_readable() {
+    let host = AgentHost::default();
+    let shared = Arc::clone(&host.0);
+    let poisoner = std::thread::spawn(move || {
+        let _guard = shared.state.lock().unwrap();
+        panic!("poison the host state from a worker thread");
+    });
+    assert!(poisoner.join().is_err());
+    assert!(host.0.state.is_poisoned());
+
+    // The reads a caller makes while deciding whether to recover.
+    assert_eq!(host.phase(), Phase::Idle);
+    assert!(!host.owns_agent());
+    assert!(!host.recovery_requires_restart());
+    assert_eq!(host.yield_reason(), None);
+
+    // The write paths and the Condvar wait have to survive it too: recovery
+    // stops the host first, and that is where the poison was hit in the field.
+    // A worker that never closes out its stop must report a timeout, not panic.
+    {
+        let mut state = host.0.state();
+        state.phase = Phase::Starting;
+        state.finished = false;
+    }
+    let outcome = host.stop_until(Instant::now() + Duration::from_millis(200));
+    assert!(outcome.is_err(), "an unfinished worker must time out");
+    assert!(matches!(host.phase(), Phase::Failed(_)));
+}

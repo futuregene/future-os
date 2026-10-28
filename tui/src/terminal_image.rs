@@ -433,6 +433,38 @@ pub fn encode_iterm2(base64_data: &str, options: &Iterm2EncodeOptions) -> String
     format!("\x1b]1337;File={}:{}\x07", params.join(";"), base64_data)
 }
 
+/// Encode raw RGB pixels as an inline iTerm2 image for a cell box.
+///
+/// iTerm2's protocol carries a real image file, not a raw framebuffer, so the
+/// RGB bytes the preview already computed are encoded as PNG once and then
+/// base64-wrapped. `width`/`height` stay in cells, the same units the workbench
+/// lays the picture out in.
+pub fn encode_iterm2_rgb_png(
+    rgb: &[u8],
+    width: u32,
+    height: u32,
+    columns: usize,
+    rows: usize,
+) -> Option<String> {
+    use base64::Engine as _;
+    let image = image::RgbImage::from_raw(width, height, rgb.to_vec())?;
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgb8(image)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
+    let payload = base64::engine::general_purpose::STANDARD.encode(png);
+    Some(encode_iterm2(
+        &payload,
+        &Iterm2EncodeOptions {
+            width: Some(columns.to_string()),
+            height: Some(rows.to_string()),
+            name: None,
+            preserve_aspect_ratio: Some(false),
+            inline: Some(true),
+        },
+    ))
+}
+
 pub fn calculate_image_rows(
     image_dimensions: ImageDimensions,
     target_width_cells: usize,
@@ -1025,6 +1057,17 @@ mod tests {
     fn delete_kitty_sequences() {
         assert_eq!(delete_kitty_image(42), "\x1b_Ga=d,d=I,i=42,q=2\x1b\\");
         assert_eq!(delete_all_kitty_images(), "\x1b_Ga=d,d=A,q=2\x1b\\");
+    }
+
+    #[test]
+    fn encode_iterm2_rgb_png_wraps_rgb_as_an_inline_picture() {
+        let rgb = vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255];
+        let sequence = encode_iterm2_rgb_png(&rgb, 2, 2, 10, 5).expect("png encode");
+        assert!(sequence.starts_with("\x1b]1337;File="));
+        assert!(sequence.contains("width=10"));
+        assert!(sequence.contains("height=5"));
+        assert!(sequence.contains("preserveAspectRatio=0"));
+        assert!(sequence.ends_with('\x07'));
     }
 
     #[test]
