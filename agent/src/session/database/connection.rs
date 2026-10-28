@@ -90,6 +90,7 @@ pub(super) fn open_connection_cancellable(
             .parent()
             .context("Agent database has no parent")?
             .join("backups");
+        cancellation.report(crate::service::StartupStage::BackingUpStorage);
         let snapshot = crate::session::create_database_snapshot(
             &connection,
             &directory,
@@ -109,6 +110,9 @@ pub(super) fn open_connection_cancellable(
     connection.pragma_update(None, "wal_autocheckpoint", 0)?;
     connection.pragma_update(None, "journal_size_limit", 8 * 1024 * 1024)?;
     cancellation.check()?;
+    if version != super::CURRENT_SCHEMA_VERSION && application != 0 {
+        cancellation.report(crate::service::StartupStage::UpgradingStorage);
+    }
     super::schema::initialize_schema(&mut connection, cancellation)?;
     cancellation.check()?;
     Ok(connection)

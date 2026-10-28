@@ -35,8 +35,13 @@ pub fn spawn_session_events_observer() {
 
 async fn run() {
     let mut backoff = Duration::from_millis(250);
-    loop {
+    while !crate::request_scope::is_stopping() {
         let result = observe_once(&mut backoff).await;
+        // Agent shutdown closes these streams before background tasks drain.
+        // Exit normally instead of logging a disconnect or reattaching to it.
+        if crate::request_scope::is_stopping() {
+            break;
+        }
         if let Err(error) = result {
             eprintln!("FutureOS session events observer reconnecting: {error}");
         }
@@ -217,6 +222,44 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn shutdown_does_not_start_a_subscription() {
+        let _home = crate::test_support::agent::TestHome::new("session_events-already-stopping");
+        let mock = mock_agent();
+        let _stopping = crate::request_scope::close_admission_guard_for_test();
+        tokio::time::timeout(Duration::from_millis(100), run())
+            .await
+            .expect("an observer must exit when the host is already stopping");
+        assert!(mock.stream_requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_during_backoff_prevents_another_subscription() {
+        let _home = crate::test_support::agent::TestHome::new("session_events-stop-backoff");
+        let mock = mock_agent();
+        mock.push_plain_stream(crate::test_support::agent::StreamScript::AttachError(
+            tonic::Code::Unavailable,
+            "subscription ended",
+        ));
+        let observer = run();
+        tokio::pin!(observer);
+        // Drive the observer only until its first attach reaches the server.
+        // Manual polls prevent a slow CI scheduler from running a retry first.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while mock.stream_requests().is_empty() {
+                assert!(futures::poll!(&mut observer).is_pending());
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the first subscription must reach the mock");
+        let _stopping = crate::request_scope::close_admission_guard_for_test();
+        tokio::time::timeout(Duration::from_secs(1), &mut observer)
+            .await
+            .expect("shutdown must end the retry loop");
+        assert_eq!(mock.stream_requests().len(), 1);
+    }
+
+    #[tokio::test]
     async fn handle_session_created_skips_own_creator_and_malformed_payloads() {
         let _home = TestHome::new("session-events-skip");
         let _mock = mock_agent();
@@ -324,7 +367,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    /// `run` is the process-lifetime loop: it never returns, so what the test
+    /// `run` lives until host shutdown, so what this test
     /// can prove is that a failed attachment is logged and retried on a longer
     /// backoff instead of ending the observer. The timeout is the assertion.
     #[tokio::test]
