@@ -213,4 +213,33 @@ describe("live projection repairs", () => {
     expect(cursors()).toEqual([-1, 0, -1]);
     expect(state().find(message => message.role === "assistant")?.content).toBe("firstsecond");
   });
+
+  it("does not keep rereading the whole log after the rebuild itself fails", async () => {
+    const runId = "run-unrepairable-content";
+    resetRunProjection(runId);
+    // The durable log itself starts in the middle of a content body. Both the
+    // initial projection and its full rebuild must reject the same payload.
+    listRunEventsSince.mockImplementation(async () => events(runId, [[
+      "text_chunk",
+      {
+        text: "orphan",
+        content_key: "body",
+        content_offset: 64,
+        content_bytes: 6,
+      },
+    ]]));
+    const { setMessages } = collect([]);
+
+    await upsertStreamingPreview(runId, 1000, setMessages);
+    await upsertStreamingPreview(runId, 1000, setMessages);
+    await upsertStreamingPreview(runId, 1000, setMessages);
+
+    expect(cursors()).toEqual([-1, -1]);
+
+    // A backend reset explicitly invalidates that failure and permits one new
+    // attempt; without it, every preview tick above stays cheap.
+    resetRunProjection(runId);
+    await upsertStreamingPreview(runId, 1000, setMessages);
+    expect(cursors()).toEqual([-1, -1, -1, -1]);
+  });
 });
