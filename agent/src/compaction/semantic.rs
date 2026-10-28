@@ -1,9 +1,9 @@
 pub(super) mod evidence;
 
 use super::{
-    estimate_tokens, AgentMessage, CompactionPhase, CompactionTrigger, ContentBlock,
-    ContextCheckpoint, ContextError, ContextManager, ContextPreparation, ContextUsage,
-    ConvertToLLM, ProjectedMessage, PromptContext,
+    AgentMessage, CompactionPhase, CompactionTrigger, ContentBlock, ContextCheckpoint,
+    ContextError, ContextManager, ContextPreparation, ContextUsage, ProjectedMessage,
+    PromptContext,
 };
 use crate::llm::schema::{FinishReason, ModelRequest, ModelStreamEvent};
 use crate::types::LLMProvider;
@@ -134,10 +134,7 @@ fn plan(
     }
 
     let estimated = prompt
-        .messages
-        .iter()
-        .map(projected_token_cost)
-        .sum::<u64>()
+        .total_message_tokens()
         .saturating_add(prompt.usage.fixed_input_tokens)
         .max(prompt.usage.estimated_input_tokens);
     let tokens_before = estimated.max(prompt.usage.input_tokens.unwrap_or(0));
@@ -165,11 +162,7 @@ fn plan(
     if threshold_gated && tokens_before < threshold {
         return Ok(PlannedPreparation::Unchanged(prompt));
     }
-    let costs = prompt
-        .messages
-        .iter()
-        .map(projected_token_cost)
-        .collect::<Vec<_>>();
+    let costs = prompt.message_token_costs().into_owned();
     let compact_all_when_every_turn_fits = trigger == CompactionTrigger::Manual;
     let keep_recent_tokens = if compact_all_when_every_turn_fits {
         (manager.keep_recent_tokens.max(1) as u64).min(MANUAL_RECENT_TAIL_MAX_TOKENS)
@@ -343,26 +336,40 @@ fn plan(
 /// Token cost of a bare message, for callers that hold messages rather than
 /// projection entries.
 pub(super) fn projected_token_cost_message(message: &AgentMessage) -> u64 {
-    projected_token_cost(&ProjectedMessage {
-        message: message.clone(),
-        source_entry_ids: Vec::new(),
-    })
+    projected_message_token_cost(message)
 }
 
-pub(super) fn projected_token_cost(projected: &ProjectedMessage) -> u64 {
-    let body: u64 = ConvertToLLM(std::slice::from_ref(&projected.message))
-        .iter()
-        .map(|message| estimate_tokens(message).max(0) as u64)
-        .sum();
-    let images = projected
-        .message
-        .content
-        .iter()
-        .filter(|b| matches!(b, ContentBlock::Image { .. }))
-        .count() as u64;
+/// Token cost of one message, computed directly from its blocks. This is the
+/// same accounting `AgentMessage -> Message` + `estimate_tokens` performed, but
+/// without cloning the message, serializing image base64 into a throwaway JSON
+/// value, or allocating a text-piece vector.
+pub(super) fn projected_message_token_cost(message: &AgentMessage) -> u64 {
+    let mut body = 0_u64;
+    let mut images = 0_u64;
+    let mut reasoning = 0_u64;
+    for block in &message.content {
+        match block {
+            ContentBlock::Text { text } => body = body.saturating_add(estimate_text_tokens(text)),
+            ContentBlock::Image { .. } => images += 1,
+            ContentBlock::ToolResult { content, .. } => {
+                body = body.saturating_add(estimate_text_tokens(content))
+            }
+            ContentBlock::Reasoning { text, .. } => {
+                reasoning = reasoning.saturating_add(estimate_text_tokens(text))
+            }
+            ContentBlock::ToolCall { name, args, .. } if message.role == "assistant" => {
+                body = body.saturating_add(estimate_text_tokens(name));
+                let arguments = match args {
+                    serde_json::Value::String(value) => value.clone(),
+                    other => other.to_string(),
+                };
+                body = body.saturating_add(estimate_text_tokens(&arguments));
+            }
+            ContentBlock::ToolCall { .. } => {}
+        }
+    }
     let attachment_images = if images == 0 {
-        projected
-            .message
+        message
             .metadata
             .as_ref()
             .and_then(|m| m.get("attachments"))
@@ -377,16 +384,11 @@ pub(super) fn projected_token_cost(projected: &ProjectedMessage) -> u64 {
     } else {
         0
     };
-    let reasoning = projected
-        .message
-        .content
-        .iter()
-        .filter_map(|b| match b {
-            ContentBlock::Reasoning { text, .. } => Some(estimate_text_tokens(text)),
-            _ => None,
-        })
-        .sum::<u64>();
     body + reasoning + 6 + (images + attachment_images) * 2_048
+}
+
+pub(super) fn projected_token_cost(projected: &ProjectedMessage) -> u64 {
+    projected_message_token_cost(&projected.message)
 }
 
 fn turn_aware_cut(
@@ -954,10 +956,11 @@ fn finalize(
         source_entry_ids: vec![entry_id.clone()],
     });
     compacted_messages.extend(plan.retained.iter().cloned());
-    let history_after = compacted_messages
+    let message_tokens = compacted_messages
         .iter()
         .map(projected_token_cost)
-        .sum::<u64>();
+        .collect::<Vec<_>>();
+    let history_after = message_tokens.iter().copied().sum::<u64>();
     let tokens_after = history_after.saturating_add(plan.usage.fixed_input_tokens);
     if history_after > plan.target_tokens
         || tokens_after > manager.input_limit_for_usage(&plan.usage)
@@ -996,6 +999,7 @@ fn finalize(
     Ok(ContextPreparation::Compacted {
         prompt: PromptContext {
             messages: compacted_messages,
+            message_tokens,
             usage: ContextUsage {
                 input_tokens: None,
                 estimated_input_tokens: tokens_after,
@@ -1026,6 +1030,109 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, SummaryCallError::Cancelled));
+    }
+
+    /// The direct block walk must produce exactly the cost of the retired
+    /// `AgentMessage -> Message -> estimate_tokens` path. This is the guard that
+    /// lets the projection cache costs without letting compaction thresholds drift.
+    #[test]
+    fn direct_message_cost_matches_the_llm_projection() {
+        use crate::types::{ContentBlock, ConvertToLLM};
+
+        fn legacy_cost(message: &AgentMessage) -> u64 {
+            let body: u64 = ConvertToLLM(std::slice::from_ref(message))
+                .iter()
+                .map(|message| crate::compaction::estimate_tokens(message).max(0) as u64)
+                .sum();
+            let images = message
+                .content
+                .iter()
+                .filter(|block| matches!(block, ContentBlock::Image { .. }))
+                .count() as u64;
+            let attachment_images = if images == 0 {
+                message
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("attachments"))
+                    .and_then(serde_json::Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter(|item| {
+                                item.get("kind").and_then(serde_json::Value::as_str)
+                                    == Some("image")
+                            })
+                            .count() as u64
+                    })
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            let reasoning = message
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Reasoning { text, .. } => {
+                        Some(super::super::estimate_text_tokens(text) as u64)
+                    }
+                    _ => None,
+                })
+                .sum::<u64>();
+            body + reasoning + 6 + (images + attachment_images) * 2_048
+        }
+
+        let mut tool = AgentMessage::new_user(
+            "assistant",
+            serde_json::json!([{"type":"text","text":"hello 你好"}]),
+        );
+        tool.content.push(ContentBlock::tool_call(
+            "call-1",
+            "read",
+            serde_json::json!({"path":"src/lib.rs","line":7}),
+            Default::default(),
+        ));
+        let mut result = AgentMessage::new_user("tool", serde_json::json!("result"));
+        result.content = vec![ContentBlock::tool_result("call-1", "output 输出", false)];
+        let mut image = AgentMessage::new_user("user", serde_json::json!("image"));
+        image.content.push(ContentBlock::image(
+            "data:image/png;base64,AAAAAAAAAAAAAAAAAAAAAAAA",
+        ));
+        let mut attachment = AgentMessage::new_user("user", serde_json::json!("attached"));
+        attachment.metadata = Some(
+            [(
+                "attachments".to_string(),
+                serde_json::json!([{"kind":"image","path":"/tmp/a.png"}]),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let reasoning = AgentMessage {
+            role: "assistant".into(),
+            content: vec![ContentBlock::reasoning("thinking 思考", Default::default())],
+            ..Default::default()
+        };
+
+        for message in [tool, result, image, attachment, reasoning] {
+            assert_eq!(
+                projected_message_token_cost(&message),
+                legacy_cost(&message),
+                "cost changed for {}",
+                message.role
+            );
+        }
+    }
+
+    #[test]
+    fn projection_caches_one_cost_per_message() {
+        let mut first = AgentMessage::new_user("user", serde_json::json!("first 世界"));
+        first.ensure_journal_entry_id();
+        let second = AgentMessage::new_user("assistant", serde_json::json!("second"));
+        let prompt = crate::compaction::project_prompt_context(&[first, second], None, None, 8_000);
+        assert_eq!(prompt.message_tokens.len(), prompt.messages.len());
+        assert_eq!(
+            prompt.message_tokens.iter().copied().sum::<u64>(),
+            prompt.total_message_tokens()
+        );
     }
 
     /// The raw journal a projection was built from. These tests used to reach the legacy
@@ -1082,6 +1189,7 @@ mod tests {
                 projected("assistant", "old result", "e2"),
                 projected("user", "recent instruction", "e3"),
             ],
+            message_tokens: Vec::new(),
             usage: ContextUsage {
                 input_tokens: Some(10_000),
                 estimated_input_tokens: 10_000,
@@ -1245,6 +1353,7 @@ mod tests {
                 projected("user", &"x".repeat(oversized_original_len()), "u"),
                 projected("assistant", "answer", "a"),
             ],
+            message_tokens: Vec::new(),
             usage: ContextUsage::default(),
         };
         let result = manager.prepare_evidence(
@@ -1275,6 +1384,7 @@ mod tests {
                 projected("assistant", &"x".repeat(oversized_original_len()), "a"),
                 projected("user", "latest question", "new"),
             ],
+            message_tokens: Vec::new(),
             usage: ContextUsage::default(),
         };
         let (prompt, checkpoint) = into_compacted(
@@ -1471,6 +1581,7 @@ mod tests {
                     "e3",
                 ),
             ],
+            message_tokens: Vec::new(),
             usage: ContextUsage {
                 input_tokens: Some(10_000),
                 estimated_input_tokens: 10_000,
@@ -1509,6 +1620,7 @@ mod tests {
     async fn pre_turn_compaction_does_not_replace_an_unseen_user_prompt() {
         let prompt = PromptContext {
             messages: vec![projected("user", &"x".repeat(40_000), "e1")],
+            message_tokens: Vec::new(),
             usage: ContextUsage {
                 input_tokens: Some(10_000),
                 estimated_input_tokens: 10_000,
@@ -1645,6 +1757,7 @@ mod tests {
                 projected("user", "写一首长诗", "e5"),
                 projected("assistant", "这是完整长诗", "e6"),
             ],
+            message_tokens: Vec::new(),
             usage: ContextUsage {
                 input_tokens: Some(5_143),
                 estimated_input_tokens: 5_143,
@@ -1701,6 +1814,7 @@ mod tests {
                 projected("user", marker_like_text, "e1"),
                 projected("assistant", "I will explain it", "e2"),
             ],
+            message_tokens: Vec::new(),
             usage: ContextUsage {
                 input_tokens: Some(100),
                 estimated_input_tokens: 100,
@@ -1741,6 +1855,7 @@ mod tests {
             };
             let prompt = PromptContext {
                 messages: vec![projected("user", "hello", "e1")],
+                message_tokens: Vec::new(),
                 usage: ContextUsage {
                     input_tokens: Some(10),
                     estimated_input_tokens: 10,
@@ -1781,6 +1896,7 @@ mod tests {
         };
         let mut prompt = PromptContext {
             messages: vec![projected("user", "hi", "e1")],
+            message_tokens: Vec::new(),
             usage: ContextUsage::default(),
         };
         super::super::set_request_budget(

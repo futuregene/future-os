@@ -9,7 +9,7 @@ impl Manager {
     /// Extract the display text of a user entry's content (first text block),
     /// rendered as plain text and truncated to ~40 visible columns for the
     /// session list.
-    fn summary_first_message(entry: &SessionEntry) -> Option<String> {
+    pub(crate) fn summary_first_message(entry: &SessionEntry) -> Option<String> {
         let content_val = entry.content.as_ref()?;
         let text: String = if let Some(arr) = content_val.as_array() {
             // First text block only — a later one is the agent-injected
@@ -87,14 +87,22 @@ impl Manager {
     }
 
     pub fn list_all(&self) -> Result<Vec<SessionSummary>> {
-        let mut summaries = Vec::new();
-        for id in self.storage()?.ids(false)? {
-            let store = self.storage()?;
-            if store.storage_format(&id)? == super::content::FORMAT_VERSION {
-                summaries.push(super::content::reader::Snapshot::summary(store, &id)?);
-                continue;
+        let store = self.storage()?;
+        let (batch, legacy) =
+            super::content::reader::Snapshot::batch_summaries(store, store.ids(false)?)?;
+        let mut summaries = Vec::with_capacity(batch.len() + legacy.len());
+        for row in batch {
+            if row.needs_preview_fallback {
+                summaries.push(super::content::reader::Snapshot::summary(
+                    store,
+                    &row.summary.id,
+                )?);
+            } else {
+                summaries.push(row.summary);
             }
-            let (rows, timestamp, query_count) = self.storage()?.summary_rows(&id)?;
+        }
+        for id in legacy {
+            let (rows, timestamp, query_count) = store.summary_rows(&id)?;
             let mut entries = rows
                 .into_iter()
                 .map(|row| serde_json::from_str::<SessionEntry>(&row))
@@ -147,6 +155,94 @@ mod tests {
             manager.load("s").is_err(),
             "unused fields in the fixture must actually be unreadable"
         );
+    }
+
+    #[test]
+    fn canonical_listing_uses_bounded_read_jobs_instead_of_one_per_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Manager::new(dir.path().join("sessions"));
+        let store = manager.storage().unwrap();
+        for index in 0..40 {
+            let id = format!("bulk-{index:02}");
+            store.reserve_segmented(&id).unwrap();
+            store
+                .replace(
+                    &id,
+                    vec![
+                        serde_json::json!({"id":format!("{id}-info"),"type":"session_info","timestamp":"2026-10-26T00:00:00Z","content":{"cwd":"/bulk","model":"mock"}}),
+                        serde_json::json!({"id":format!("{id}-user"),"type":"user","role":"user","timestamp":"2026-10-26T00:00:01Z","content":format!("question {index}")}),
+                    ],
+                )
+                .unwrap();
+        }
+        let (batch, legacy) = super::super::content::reader::Snapshot::batch_summaries(
+            store,
+            store.ids(false).unwrap(),
+        )
+        .unwrap();
+        assert!(legacy.is_empty());
+        assert_eq!(batch.len(), 40);
+        assert_eq!(
+            batch
+                .iter()
+                .filter(|row| row.needs_preview_fallback)
+                .count(),
+            0,
+            "plain inline titles must not fall back"
+        );
+        assert!(batch
+            .iter()
+            .any(|row| row.summary.first_message.as_deref() == Some("question 39")));
+        let before = store.db.metrics()["readerJob"]["count"].as_u64().unwrap();
+        let summaries = manager.list_all().unwrap();
+        let after = store.db.metrics()["readerJob"]["count"].as_u64().unwrap();
+        assert_eq!(summaries.len(), 40);
+        assert!(summaries
+            .iter()
+            .any(|summary| summary.first_message.as_deref() == Some("question 39")));
+        assert!(
+            after - before <= 3,
+            "40 canonical summaries used {} read jobs; expected listing and id enumeration only",
+            after - before
+        );
+    }
+
+    #[test]
+    fn bulk_listing_reads_a_referenced_first_message_without_a_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Manager::new(dir.path().join("sessions"));
+        let store = manager.storage().unwrap();
+        store.reserve_segmented("referenced-title").unwrap();
+        let title = format!("needle {}", "长文本".repeat(8_000));
+        store
+            .replace(
+                "referenced-title",
+                vec![
+                    serde_json::json!({"id":"info","type":"session_info","timestamp":"2026-10-26T00:00:00Z","content":{"cwd":"/bulk","model":"mock"}}),
+                    serde_json::json!({"id":"u","type":"user","role":"user","timestamp":"2026-10-26T00:00:01Z","content":[{"type":"text","text":title}]}),
+                ],
+            )
+            .unwrap();
+        let exact =
+            super::super::content::reader::Snapshot::summary(store, "referenced-title").unwrap();
+        let (batch, legacy) = super::super::content::reader::Snapshot::batch_summaries(
+            store,
+            store.ids(false).unwrap(),
+        )
+        .unwrap();
+        assert!(legacy.is_empty());
+        assert!(!batch[0].needs_preview_fallback);
+        let listed = manager
+            .list_all()
+            .unwrap()
+            .into_iter()
+            .find(|summary| summary.id == "referenced-title")
+            .unwrap();
+        assert_eq!(listed.first_message, exact.first_message);
+        assert!(listed
+            .first_message
+            .as_deref()
+            .is_some_and(|title| title.starts_with("needle 长文本")));
     }
 
     fn temp_manager(tag: &str) -> (std::path::PathBuf, Manager) {

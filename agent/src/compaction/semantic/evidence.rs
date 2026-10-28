@@ -502,13 +502,6 @@ pub(in crate::compaction) async fn prepare_with_handoff_summary(
     on_usage: Option<&(dyn Fn(&crate::types::Usage) + Sync)>,
     on_fallback: Option<&(dyn Fn(&str) + Sync)>,
 ) -> Result<ContextPreparation, ContextError> {
-    // The summary reads exactly what the model last saw, so the request reuses a
-    // prefix the session has already sent and paid for.
-    let live = prompt
-        .messages
-        .iter()
-        .map(|projected| projected.message.clone())
-        .collect::<Vec<_>>();
     let staged = stage(
         manager,
         prompt,
@@ -528,6 +521,15 @@ pub(in crate::compaction) async fn prepare_with_handoff_summary(
             summary_reserve,
         } => (plan, evidence, summary_reserve),
     };
+    // Only a real compaction needs the live projection, and the plan's removed +
+    // retained slices are exactly the prompt this run sent. Building it here avoids
+    // deep-copying every message on the overwhelmingly common unchanged path.
+    let live = plan
+        .removed
+        .iter()
+        .chain(plan.retained.iter())
+        .map(|projected| projected.message.clone())
+        .collect::<Vec<_>>();
     let mut fallback_reason = if provider.is_none() {
         Some("no provider available for a model summary".to_string())
     } else if reserve == 0 {

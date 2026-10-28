@@ -324,12 +324,16 @@ impl crate::types::LLMProvider for Client {
                     .header("anthropic-version", version)
             }
         };
-        let req = builder.json(&body).build()?;
-        let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
+        // Serialize once. `RequestBuilder::json` would serialize the body again
+        // just so the diagnostics below could report its length, which costs a
+        // full pass and an extra copy on every model step.
+        let body_bytes = serde_json::to_vec(&body)?;
+        let body_len = body_bytes.len();
+        let req = builder.body(body_bytes).build()?;
         info!(
             protocol = target.protocol.protocol().canonical_name(),
             model = %request.model,
-            body_kb = body_bytes.len() / 1024,
+            body_kb = body_len / 1024,
             "LLM request"
         );
         let resp = self.http.execute(req).await.map_err(|error| {
@@ -346,7 +350,7 @@ impl crate::types::LLMProvider for Client {
                 status.as_u16(),
                 &text,
                 &request.model,
-                body_bytes.len(),
+                body_len,
             ));
         }
 
