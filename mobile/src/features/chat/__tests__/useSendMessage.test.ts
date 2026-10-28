@@ -394,6 +394,19 @@ describe("continuing a truncated answer", () => {
     expect(toast).toHaveBeenCalledWith("t:chat.sendFailed");
   });
 
+  // The desktop answered "no" instead of dropping the request: the reply is no
+  // longer resumable, so the toast must not read as a send/network failure.
+  test("a continuation the desktop refuses says why, not \"send failed\"", async () => {
+    const remote = remoteFor({
+      continueRun: jest.fn(async () => {
+        throw new Error("continue_unavailable: Only a run that failed or was interrupted can be continued.");
+      }),
+    });
+    mount({ remote });
+    await act(async () => { api.continueMessage(assistant({ id: "a1" })); await Promise.resolve(); });
+    expect(toast).toHaveBeenCalledWith("t:chat.continueUnavailable");
+  });
+
   test("an answer with no run to resume is not continued", async () => {
     const remote = remoteFor();
     mount({ remote });

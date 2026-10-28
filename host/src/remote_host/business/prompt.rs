@@ -231,23 +231,49 @@ pub(crate) fn build_continue_prompt(run_id: &str) -> String {
     lines.join("\n")
 }
 
+/// The stable token a refused continuation carries, so a client can say *why*
+/// instead of reporting a generic send failure (the same pattern as
+/// [`UNKNOWN_SESSION_CODE`]). Prefixed to the human sentence: the phone's toast
+/// maps the token, the text stays readable in the desktop's own logs.
+pub(crate) const CONTINUE_REFUSED_CODE: &str = "continue_unavailable";
+
+fn continue_refused(reason: &str) -> crate::Error {
+    format!("{CONTINUE_REFUSED_CODE}: {reason}").into()
+}
+
+/// A run a continuation may resume: one that stopped without finishing.
+///
+/// `failed` is the obvious shape. The second is the `cancelled` row a restart
+/// leaves behind (`error_type = "interrupted"`, set by startup convergence and
+/// the Agent reconciliation): the reply really did stop mid-way, and the
+/// failure text tells the user to "restart the software, then click Continue"
+/// — refusing that continuation makes the advice a dead end. A run the user
+/// stopped themselves stays out of reach (its `cancelled` row carries
+/// `error_type = "cancelled"`), as does any run that completed.
+fn is_continuable_run(run: &crate::store::RunRecord) -> bool {
+    run.status == "failed"
+        || (run.status == "cancelled" && run.error_type.as_deref() == Some("interrupted"))
+}
+
 /// A continuation is not a free-form prompt alias: it may only resume the
-/// failed run that belongs to the addressed session. This keeps a stale mobile
-/// outbox entry (including one from a previous pairing) from creating or
+/// half-finished run that belongs to the addressed session. This keeps a stale
+/// mobile outbox entry (including one from a previous pairing) from creating or
 /// steering an unrelated conversation.
 pub(crate) fn validate_continue_source(session_id: &str, run_id: &str) -> Result<(), crate::Error> {
     if session_id.trim().is_empty() || run_id.trim().is_empty() {
-        return Err("A continuation requires a session and source run."
-            .to_string()
-            .into());
+        return Err(continue_refused(
+            "A continuation requires a session and source run.",
+        ));
     }
     let run = crate::store::get_run(run_id)?
-        .ok_or_else(|| "The source run no longer exists.".to_string())?;
-    if run.status != "failed" {
-        return Err("Only a failed run can be continued.".to_string().into());
+        .ok_or_else(|| continue_refused("The source run no longer exists."))?;
+    if !is_continuable_run(&run) {
+        return Err(continue_refused(
+            "Only a run that failed or was interrupted can be continued.",
+        ));
     }
     let thread = crate::store::get_thread(&run.thread_id)?
-        .ok_or_else(|| "The source run's conversation no longer exists.".to_string())?;
+        .ok_or_else(|| continue_refused("The source run's conversation no longer exists."))?;
     let run_session_id = thread
         .agent_session_id
         .as_deref()
@@ -255,9 +281,9 @@ pub(crate) fn validate_continue_source(session_id: &str, run_id: &str) -> Result
         .filter(|value| !value.is_empty())
         .unwrap_or(&thread.id);
     if run_session_id != session_id {
-        return Err("The source run does not belong to this session."
-            .to_string()
-            .into());
+        return Err(continue_refused(
+            "The source run does not belong to this session.",
+        ));
     }
     Ok(())
 }
@@ -456,6 +482,59 @@ mod tests {
                 error.contains("requires a session and source run"),
                 "session {session:?} run {run:?} -> {error}"
             );
+        }
+    }
+
+    /// A continuation may resume a run that stopped without finishing — and a
+    /// restart leaves exactly that run `cancelled`, not `failed`. The failure
+    /// text tells the user to restart and then click Continue, so refusing this
+    /// shape makes that advice a dead end: the phone's button always answered
+    /// "Only a failed run can be continued." and the user saw only a generic
+    /// "message failed to send".
+    ///
+    /// A run that did finish, and one the user stopped themselves, are still
+    /// refused: neither is something to pick up from.
+    #[test]
+    fn a_restart_interrupted_run_is_continuable_but_a_finished_or_user_stopped_one_is_not() {
+        use crate::remote::test_support::{raw_store_connection, HomeGuard};
+
+        let _home = HomeGuard::new("business-prompt-continue-interrupted");
+        crate::remote::test_support::init_store();
+        {
+            let conn = raw_store_connection();
+            conn.execute_batch(
+                "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                     VALUES ('ws_rst', 'WS', 'user', '/tmp/ws', 1, 1);
+                 INSERT INTO threads (id, workspace_id, mode, title, agent_session_id,
+                                      created_at, updated_at)
+                     VALUES ('th_rst', 'ws_rst', 'chat', 'T', 'sess_rst', 1, 1);
+                 INSERT INTO runs (id, thread_id, status, error_message, error_type,
+                                   created_at, updated_at) VALUES
+                     ('run_failed', 'th_rst', 'failed', 'boom', 'model_failed', 1, 1),
+                     ('run_interrupted', 'th_rst', 'cancelled',
+                      'Interrupted by application restart.', 'interrupted', 1, 1),
+                     ('run_completed', 'th_rst', 'completed', NULL, NULL, 1, 1),
+                     ('run_stopped', 'th_rst', 'cancelled', 'Run was cancelled.', 'cancelled', 1, 1);",
+            )
+            .expect("seed the source runs");
+        }
+
+        for run_id in ["run_failed", "run_interrupted"] {
+            validate_continue_source("sess_rst", run_id)
+                .unwrap_or_else(|error| panic!("{run_id} must be continuable: {error}"));
+        }
+        for (run_id, expected) in [
+            ("run_completed", "failed or was interrupted"),
+            ("run_stopped", "failed or was interrupted"),
+        ] {
+            let error = validate_continue_source("sess_rst", run_id)
+                .expect_err("a settled run is not a continuation source")
+                .to_string();
+            assert!(
+                error.starts_with(CONTINUE_REFUSED_CODE),
+                "the phone maps this token to its own text: {run_id} -> {error}"
+            );
+            assert!(error.contains(expected), "{run_id} -> {error}");
         }
     }
 

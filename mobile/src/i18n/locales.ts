@@ -464,6 +464,13 @@ export const resources = {
         loadFailed: "Could not load the conversation.",
         sendFailed: "Message failed to send.",
         /**
+         * A continuation the desktop refused because the reply it points at can
+         * no longer be picked up (it finished, it was stopped, or its restart
+         * record is gone). "Message failed to send" would read as a network
+         * problem and invite a tap that cannot work.
+         */
+        continueUnavailable: "This reply cannot be continued. Send it again.",
+        /**
          * Shown in the conversation while another device holds this desktop:
          * the status dot explains the refusal, but only to someone who taps it,
          * and here the user is looking at the composer.
@@ -1453,6 +1460,7 @@ export const resources = {
         tokens: "{{formattedCount}} tokens",
         loadFailed: "无法加载会话。",
         sendFailed: "消息发送失败。",
+        continueUnavailable: "这条回复已经无法继续，请重新发送。",
         standbyCannotSend: "已被 {{name}} 接管，现在发不出去。",
         standbyCannotSendUnknown: "已被另一台设备接管，现在发不出去。",
         sessionNotOnDesktop: "该会话不在当前连接的设备上。请到拥有它的那台设备上打开。",

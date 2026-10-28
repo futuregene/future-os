@@ -140,7 +140,18 @@ export function useSendMessage(options: SendMessageOptions): SendMessageApi {
       if (item.kind !== "message" || item.role !== "assistant" || !item.runId) return;
       void remote
         .continueRun(remote.selectedSessionId, item.runId)
-        .catch(() => { if (isCurrent()) showToast(t("chat.sendFailed")); });
+        .catch((error: unknown) => {
+          if (!isCurrent()) return;
+          // The desktop prefixes a refused continuation with a stable token
+          // (`continue_unavailable`): it received the tap and said no — the
+          // reply finished, or the run it points at is gone. Reading that as
+          // "message failed to send" sends the user to retry a button that
+          // cannot work; the reason is the whole message.
+          const key = error instanceof Error ? error.message : "";
+          showToast(t(key.includes("continue_unavailable")
+            ? "chat.continueUnavailable"
+            : "chat.sendFailed"));
+        });
     },
     [captureOperation, inputRef],
   );

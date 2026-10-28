@@ -3113,7 +3113,10 @@ mod bridge_tests {
             .call(json!({ "id": unique("cmd"), "type": "continue_run", "sessionId": session, "runId": completed.id }))
             .await;
         assert_eq!(nonfailed["success"], json!(false));
-        assert!(nonfailed["error"].as_str().unwrap().contains("failed run"));
+        assert!(nonfailed["error"]
+            .as_str()
+            .unwrap()
+            .contains("failed or was interrupted"));
 
         let failed = crate::store::create_run(crate::store::CreateRunInput {
             id: Some(unique("run-failed")),
@@ -3138,6 +3141,62 @@ mod bridge_tests {
             .as_str()
             .unwrap()
             .contains("does not belong"));
+
+        bridge.stop().await;
+    }
+
+    /// The shape the phone actually hits: an app restart settles the run
+    /// `cancelled` with `error_type = "interrupted"`, and the failure text tells
+    /// the user to restart and click Continue. That continuation must reach the
+    /// Agent — the source guard used to accept only `failed`, so the button was
+    /// refused every time (and the phone showed only "message failed to send").
+    #[tokio::test]
+    async fn continue_run_accepts_a_restart_interrupted_run() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-continue-interrupted").await;
+        let agent = ensure_mock_agent();
+        let session = unique("sess");
+
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("Interrupted".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some(session.clone()),
+        })
+        .unwrap();
+        let run = crate::store::create_run(crate::store::CreateRunInput {
+            id: Some(unique("run-interrupted")),
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .unwrap();
+        crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+            run_id: run.id.clone(),
+            status: "cancelled".to_string(),
+            error_message: Some("Interrupted by application restart.".to_string()),
+            error_type: Some("interrupted".to_string()),
+        })
+        .unwrap();
+
+        // Refuse the prompt itself so the ack never looks like a successful
+        // continuation: what this test is about is reaching the Agent at all.
+        agent.script_for("prompt", &session, false, json!(null), "rejected");
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "continue_run", "sessionId": session, "runId": run.id }))
+            .await;
+        assert_eq!(reply["success"], json!(false), "got: {reply}");
+        assert!(
+            reply["error"].as_str().unwrap().contains("rejected"),
+            "the source guard must not refuse a restart-interrupted run: {reply}"
+        );
+        assert!(
+            agent.served("prompt", &session),
+            "the continuation must reach the Agent"
+        );
 
         bridge.stop().await;
     }
