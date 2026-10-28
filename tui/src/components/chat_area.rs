@@ -13,7 +13,7 @@ use regex::Regex;
 
 use crate::components::diff::{self, DiffTheme};
 use crate::components::markdown::{MarkdownRenderer, MarkdownTheme, MarkdownThemePartial};
-use crate::theme::{bold, dim, fg, italic, Theme, DARK_THEME};
+use crate::theme::{bold, dim, fg, italic, Color, Theme, DARK_THEME};
 use crate::tui::{Component, RESET};
 use crate::utils::{
     apply_background_to_line, strip_ansi_codes, truncate_to_width, wrap_text_with_ansi,
@@ -1962,19 +1962,33 @@ impl ChatArea {
         end - msg_idx
     }
 
-    // ─── User message (markdown + full-width background Box) ────────────
+    // ─── User message (markdown on a padded, full-width surface) ────────
+
+    /// Columns between the user block's coloured edge and its text. The wrap
+    /// width loses twice this, so a full line ends with the same inset on the
+    /// right that it starts with on the left and the text never hugs the edge.
+    const USER_CARD_INSET: usize = 2;
 
     fn render_user_message(&mut self, msg: &ChatMessage) {
+        let bg = self.theme.user_bg;
+        // The block is a surface, not a tinted row: one empty row of its own
+        // colour above and below the text. Those rows are the card's padding —
+        // the transcript's blank separator rows stay terminal background and
+        // sit outside it.
+        self.push_user_card_row("", bg);
+        // Below four columns the card's inset has nowhere to go: those layouts
+        // bottom out at the one-column gutter every other row keeps.
+        let inset = if self.width >= Self::USER_CARD_INSET * 2 {
+            Self::USER_CARD_INSET
+        } else {
+            1
+        };
+        let indent = " ".repeat(inset);
         let rendered = self
             .md
-            .render_text(&msg.content, self.width.saturating_sub(2).max(1));
+            .render_text(&msg.content, self.width.saturating_sub(inset * 2).max(1));
         for line in rendered {
-            let text = format!(" {line}");
-            let bg_line = apply_background_to_line(&text, self.width, self.theme.user_bg);
-            self.rendered_lines.push(RenderedLine {
-                text: bg_line,
-                dim: false,
-            });
+            self.push_user_card_row(&format!("{indent}{line}"), bg);
         }
         if msg.run_state == Some(RunState::Queued) {
             let suffix = match msg.queue_position {
@@ -1982,11 +1996,8 @@ impl ChatArea {
                 None => String::new(),
             };
             // TS: dim(`queued${suffix}`) — suffix inside the dim.
-            let t = format!(" {}", dim(&format!("queued{suffix}")));
-            self.rendered_lines.push(RenderedLine {
-                text: apply_background_to_line(&t, self.width, self.theme.user_bg),
-                dim: true,
-            });
+            let t = format!("{indent}{}", dim(&format!("queued{suffix}")));
+            self.push_user_card_row(&t, bg);
         }
         if matches!(
             msg.run_state,
@@ -1998,12 +2009,23 @@ impl ChatArea {
                 | Some(RunState::NotAcknowledged)
         ) {
             let label = msg.run_state.unwrap().label();
-            let t = format!(" {}", dim(label));
-            self.rendered_lines.push(RenderedLine {
-                text: apply_background_to_line(&t, self.width, self.theme.user_bg),
-                dim: true,
-            });
+            let t = format!("{indent}{}", dim(label));
+            self.push_user_card_row(&t, bg);
         }
+        self.push_user_card_row("", bg);
+    }
+
+    /// One row of the user block: `text` on the block's background, padded out
+    /// to the full width so the colour runs edge to edge and every row of a
+    /// message — text, padding, run state — carries the same surface.
+    fn push_user_card_row(&mut self, text: &str, bg: Color) {
+        // `.max(3)`: below three columns the layout bottoms out (one gutter
+        // column plus one content column), and the card's empty rows follow the
+        // same floor so every degenerate width renders identical rows.
+        self.rendered_lines.push(RenderedLine {
+            text: apply_background_to_line(text, self.width.max(3), bg),
+            dim: false,
+        });
     }
 
     // ─── Assistant message (markdown, thinking first) ───────────────────
@@ -5237,7 +5259,17 @@ mod tests {
         chat.render(W);
         chat.add_message(ChatMessage::new("u".into(), ChatRole::User, "hi there"));
         let lines = chat.render_all(W);
-        assert!(lines[0].starts_with("\x1b[48;5;59m"));
+        let bg = format!("\x1b[48;5;{}m", DARK_THEME.user_bg);
+        // Card padding row, the text row, and the padding row under it — then
+        // the transcript's trailing spacer.
+        let (card, tail) = lines.split_at(3);
+        assert_eq!(tail.len(), 1, "{lines:?}");
+        for line in card {
+            assert!(line.starts_with(&bg), "every block row carries the surface");
+        }
+        // The text is inset from the surface's left edge — the block is a card,
+        // not a highlighted row.
+        assert!(strip(&card[1]).starts_with("  hi there"));
     }
 
     #[test]
@@ -5271,8 +5303,9 @@ mod tests {
         assert_eq!(
             line,
             format!(
-                "\x1b[48;5;59m \x1b[2mqueued (#3)\x1b[0m\x1b[48;5;59m\x1b[0m\x1b[48;5;59m{}\x1b[0m",
-                " ".repeat(W - 12)
+                "{bg}  \x1b[2mqueued (#3)\x1b[0m{bg}\x1b[0m{bg}{}\x1b[0m",
+                " ".repeat(W - 13),
+                bg = format!("\x1b[48;5;{}m", DARK_THEME.user_bg)
             )
         );
     }
