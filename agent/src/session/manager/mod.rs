@@ -119,21 +119,35 @@ impl Manager {
         }
         let _guard = self.initialization.lock();
         if self.store.get().is_none() {
+            let database = self.database_path();
             // Emitted where the work actually happens, so the CLI's own
             // initialization paths report the same progress. `agent.db` and the
             // legacy history can both live on slow shared storage.
             cancellation.report(crate::service::StartupStage::OpeningStorage);
             tracing::info!(
-                database = %self.database_path().display(),
+                database = %database.display(),
                 "session storage: opening"
             );
-            let store = SqliteStore::open_cancellable(&self.database_path(), cancellation.clone())?;
+            let store = startup::step(&database, "open_database", || {
+                SqliteStore::open_cancellable(&database, cancellation.clone())
+            })?;
             cancellation.report(crate::service::StartupStage::RecoveringSessions);
-            store.import_legacy_cancellable(&self.dir, None, cancellation)?;
-            store.recover_hidden_forks(cancellation)?;
-            store.recover_content_operations(cancellation)?;
-            store.recover_queued_receipts(None, false)?;
-            store.recover_segmented_runs()?;
+            startup::step(&database, "import_legacy_sessions", || {
+                store.import_legacy_cancellable(&self.dir, None, cancellation)
+            })?;
+            startup::step(&database, "recover_hidden_forks", || {
+                store.recover_hidden_forks(cancellation)
+            })?;
+            startup::step(&database, "recover_content_operations", || {
+                store.recover_content_operations(cancellation)
+            })?;
+            let receipts = startup::step(&database, "recover_queued_receipts", || {
+                store.recover_queued_receipts(None, false)
+            })?;
+            tracing::info!(receipts, "session storage: queued receipts recovered");
+            startup::step(&database, "recover_segmented_runs", || {
+                store.recover_segmented_runs()
+            })?;
             cancellation.check()?;
             let _ = self.store.set(store);
             tracing::info!("session storage: ready");
@@ -459,6 +473,7 @@ mod display_cache;
 mod fork;
 mod loading;
 mod metadata;
+mod startup;
 use display_cache::DisplayProjectionCacheEntry;
 #[cfg(test)]
 mod tests;
