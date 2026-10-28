@@ -165,7 +165,7 @@ impl Snapshot {
             let check = scope.clone();
             let rows=store.db.read(move |db| {
                 let tx=db.transaction()?;check.check(&tx)?;
-                let mut statement=tx.prepare("SELECT position,entry_id,role,run_id,timestamp_ms FROM entries WHERE session_id=?1 AND position<?2 AND entry_type IN ('user','assistant','tool') ORDER BY position DESC LIMIT 64")?;
+                let mut statement=tx.prepare_cached("SELECT position,entry_id,role,run_id,timestamp_ms FROM entries WHERE session_id=?1 AND position<?2 AND entry_type IN ('user','assistant','tool') ORDER BY position DESC LIMIT 64")?;
                 let rows=statement.query_map(params![check.session,before],|row|Ok((Entry {position:row.get(0)?,id:row.get(1)?},row.get::<_,Option<String>>(2)?,row.get::<_,Option<BoundIdentity>>(3)?,row.get::<_,Option<i64>>(4)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
                 ensure!(rows.iter().map(|(entry,role,run,_)|entry.id.len()+role.as_ref().map_or(0,String::len)+run.as_ref().map_or(0,|id|id.len())+32).sum::<usize>()<=READ_BYTES,"history search identity page exceeds budget");
                 drop(statement);tx.commit()?;Ok(rows)
@@ -277,7 +277,7 @@ impl Snapshot {
             let (scope, locator) = (self.clone(), entry.clone());
             let rows=store.db.read(move |db| {
                 let tx=db.transaction()?;scope.check(&tx)?;
-                let mut query=tx.prepare("SELECT b.ordinal,b.kind,b.tool_call_id,b.tool_name,b.is_error,
+                let mut query=tx.prepare_cached("SELECT b.ordinal,b.kind,b.tool_call_id,b.tool_name,b.is_error,
                     coalesce(length(CAST(CASE WHEN b.kind='tool_call' THEN b.arguments_json ELSE b.text END AS BLOB)),0),
                     r.field,r.content_id,r.byte_offset,r.byte_length,r.encoding
                     FROM entries e JOIN message_blocks b ON b.session_id=e.session_id AND b.entry_position=e.position

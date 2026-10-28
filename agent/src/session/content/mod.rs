@@ -472,7 +472,7 @@ pub(crate) fn read(db: &Connection, id: i64, offset: i64, max_bytes: usize) -> R
     )?;
     ensure!(offset <= total, "content read starts past durable bytes");
     let end = offset.saturating_add(i64::try_from(max_bytes)?).min(total);
-    let mut stmt=db.prepare("SELECT byte_offset,body FROM content_segments WHERE content_id=?1 AND byte_offset>=?2 AND byte_offset<?3 ORDER BY byte_offset")?;
+    let mut stmt=db.prepare_cached("SELECT byte_offset,body FROM content_segments WHERE content_id=?1 AND byte_offset>=?2 AND byte_offset<?3 ORDER BY byte_offset")?;
     let mut rows = stmt.query(params![
         id,
         offset.saturating_sub(i64::try_from(SEGMENT_BYTES)?).max(0),

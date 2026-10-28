@@ -153,7 +153,7 @@ impl Snapshot {
         let scope = self.clone();
         self.read(store, move |db| {
             let tx=db.savepoint()?;scope.check(&tx)?;
-            let mut query=tx.prepare("SELECT position,entry_id FROM entries WHERE session_id=?1 AND position>?2 AND position<=?3 ORDER BY position LIMIT 64")?;
+            let mut query=tx.prepare_cached("SELECT position,entry_id FROM entries WHERE session_id=?1 AND position>?2 AND position<=?3 ORDER BY position LIMIT 64")?;
             let rows=query.query_map(params![scope.session,after,scope.until],|row|Ok(Entry {position:row.get(0)?,id:row.get(1)?}))?.collect::<rusqlite::Result<Vec<_>>>()?;
             ensure!(rows.iter().map(|entry|entry.id.len()+16).sum::<usize>()<=READ_BYTES,"entry identity page exceeds budget");
             drop(query);tx.commit()?;Ok(rows)
@@ -188,8 +188,9 @@ impl Snapshot {
         let (scope, locator) = (self.clone(), entry.clone());
         let header=self.read(store, move |db| {
             let tx=db.savepoint()?;scope.check(&tx)?;
-            let header=tx.query_row("SELECT e.entry_type,e.role,e.run_id,coalesce(v.metadata_generation,0) FROM entries e LEFT JOIN content_history_versions v ON v.session_id=e.session_id WHERE e.session_id=?1 AND e.position=?2 AND e.entry_id=?3",
-                params![scope.session,locator.position,locator.id],|row|Ok(Header {kind:row.get(0)?,role:row.get(1)?,run:row.get(2)?,metadata_generation:row.get(3)?}))?;
+            let mut statement=tx.prepare_cached("SELECT e.entry_type,e.role,e.run_id,coalesce(v.metadata_generation,0) FROM entries e LEFT JOIN content_history_versions v ON v.session_id=e.session_id WHERE e.session_id=?1 AND e.position=?2 AND e.entry_id=?3")?;
+            let header=statement.query_row(params![scope.session,locator.position,locator.id],|row|Ok(Header {kind:row.get(0)?,role:row.get(1)?,run:row.get(2)?,metadata_generation:row.get(3)?}))?;
+            drop(statement);
             tx.commit()?;Ok(header)
         })?;
         let metadata = self
@@ -378,7 +379,9 @@ impl Snapshot {
                 }
                 let extra=if ordinal.is_some() {""} else {" AND ?6 IS NULL"};
                 let sql=format!("SELECT length(CAST({expression} AS BLOB)),substr(CAST({expression} AS BLOB),?4+1,?5) FROM entries e {join} WHERE e.session_id=?1 AND e.position=?2 AND e.entry_id=?3 {extra}");
-                let result:Option<(Option<i64>,Option<Vec<u8>>)>=tx.query_row(&sql,params![scope.session,entry.position,entry.id,offset,READ_BYTES as i64,ordinal],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+                let mut statement=tx.prepare_cached(&sql)?;
+                let result:Option<(Option<i64>,Option<Vec<u8>>)>=statement.query_row(params![scope.session,entry.position,entry.id,offset,READ_BYTES as i64,ordinal],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+                drop(statement);
                 let result=result.context("entry changed during metadata read")?;
                 tx.commit()?;Ok(result)
             })?;
@@ -419,7 +422,7 @@ impl Snapshot {
             let (scope, locator) = (self.clone(), entry.clone());
             let rows=self.read(store, move |db| {
                 let tx=db.savepoint()?;scope.check(&tx)?;
-                let mut query=tx.prepare("SELECT b.ordinal,b.kind,b.tool_call_id,b.tool_name,b.is_error FROM message_blocks b JOIN entries e ON e.session_id=b.session_id AND e.position=b.entry_position WHERE e.session_id=?1 AND e.entry_id=?2 AND e.position=?3 AND b.ordinal>?4 ORDER BY b.ordinal LIMIT 64")?;
+                let mut query=tx.prepare_cached("SELECT b.ordinal,b.kind,b.tool_call_id,b.tool_name,b.is_error FROM message_blocks b JOIN entries e ON e.session_id=b.session_id AND e.position=b.entry_position WHERE e.session_id=?1 AND e.entry_id=?2 AND e.position=?3 AND b.ordinal>?4 ORDER BY b.ordinal LIMIT 64")?;
                 let rows=query.query_map(params![scope.session,locator.id,locator.position,after],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,Option<String>>(2)?,row.get::<_,Option<String>>(3)?,row.get::<_,Option<bool>>(4)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
                 ensure!(rows.iter().map(|(_,kind,id,name,_)|kind.as_ref().map_or(0,String::len)+id.as_ref().map_or(0,String::len)+name.as_ref().map_or(0,String::len)+40).sum::<usize>()<=READ_BYTES,"block identity page exceeds budget");
                 drop(query);tx.commit()?;Ok(rows)
@@ -480,7 +483,7 @@ impl Snapshot {
         let (scope, entry, after) = (self.clone(), entry.clone(), after.to_owned());
         self.read(store, move |db| {
             let tx=db.savepoint()?;scope.check(&tx)?;
-            let mut query=tx.prepare("SELECT r.field,r.content_id,r.byte_offset,r.byte_length,r.encoding FROM content_references r JOIN entries e ON e.session_id=r.session_id AND e.entry_id=r.owner_id WHERE r.session_id=?1 AND e.position=?2 AND e.entry_id=?3 AND r.owner_kind='entry' AND r.field>?4 ORDER BY r.field LIMIT 64")?;
+            let mut query=tx.prepare_cached("SELECT r.field,r.content_id,r.byte_offset,r.byte_length,r.encoding FROM content_references r JOIN entries e ON e.session_id=r.session_id AND e.entry_id=r.owner_id WHERE r.session_id=?1 AND e.position=?2 AND e.entry_id=?3 AND r.owner_kind='entry' AND r.field>?4 ORDER BY r.field LIMIT 64")?;
             let mut cursor=query.query(params![scope.session,entry.position,entry.id,after])?;
             let mut rows=Vec::new();let mut bytes=0usize;
             while let Some(row)=cursor.next()? {
@@ -560,8 +563,14 @@ impl Snapshot {
 
     fn check_reference(&self, db: &Connection, entry: &Entry, reference: &Reference) -> Result<()> {
         self.check(db)?;
-        let current:Option<(i64,i64,i64,String)>=db.query_row("SELECT r.content_id,r.byte_offset,r.byte_length,r.encoding FROM content_references r JOIN entries e ON e.session_id=r.session_id AND e.entry_id=r.owner_id WHERE r.session_id=?1 AND e.position=?2 AND e.entry_id=?3 AND r.owner_kind='entry' AND r.field=?4",
-            params![self.session,entry.position,entry.id,reference.field],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?;
+        let mut statement=db.prepare_cached("SELECT r.content_id,r.byte_offset,r.byte_length,r.encoding FROM content_references r JOIN entries e ON e.session_id=r.session_id AND e.entry_id=r.owner_id WHERE r.session_id=?1 AND e.position=?2 AND e.entry_id=?3 AND r.owner_kind='entry' AND r.field=?4")?;
+        let current: Option<(i64, i64, i64, String)> = statement
+            .query_row(
+                params![self.session, entry.position, entry.id, reference.field],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+        drop(statement);
         ensure!(
             current
                 == Some((
