@@ -59,6 +59,49 @@ pub fn write_out(args: Arguments<'_>) {
     }
 }
 
+/// Write one *line* to stderr: `args`, then the newline that ends it.
+///
+/// The line-shaped macros have to write their own newline, because nothing
+/// downstream will. A reader that consumes this output by line —
+/// `BufReader::lines`, which is every log tail and every test that watches a
+/// launch start — holds an unterminated tail back until the *next* write
+/// supplies a delimiter, and if the process then goes quiet the text is never
+/// delivered at all. Measured 2026-10-28: `future host` on a signed-out machine
+/// wrote `Not signed in to FutureOS` and `Remote: Stopped` without their
+/// newlines, so `cli/tests/headless_cli.rs` blocked on both for its whole 300 s
+/// budget with the text sitting in the pipe, and every diagnostic that followed
+/// was glued onto the previous line.
+pub fn write_err_line(args: Arguments<'_>) {
+    let written = {
+        let mut stderr = std::io::stderr().lock();
+        write_line(&mut stderr, args)
+    };
+    // The lock is released first: the note goes through tracing, which writes to
+    // this same stream.
+    if let Err(error) = written {
+        note_once(&STDERR_LOST, "stderr", &error);
+    }
+}
+
+/// The stdout half of [`write_err_line`].
+pub fn write_out_line(args: Arguments<'_>) {
+    let written = {
+        let mut stdout = std::io::stdout().lock();
+        write_line(&mut stdout, args)
+    };
+    if let Err(error) = written {
+        note_once(&STDOUT_LOST, "stdout", &error);
+    }
+}
+
+/// Write `args` and then `\n`, holding `writer`'s lock across both so another
+/// thread's line cannot land between them and a full pipe blocks a whole line
+/// rather than half of one.
+fn write_line<W: Write>(writer: &mut W, args: Arguments<'_>) -> std::io::Result<()> {
+    writer.write_fmt(args)?;
+    writer.write_all(b"\n")
+}
+
 /// Say once that a stream is gone, then never again.
 ///
 /// The note goes through tracing, so it lands in the host log and not only on
@@ -83,14 +126,15 @@ fn note_once(reported: &AtomicBool, stream: &str, error: &std::io::Error) {
 // and `grep -rn "eprintln!"` tell the tolerant writes from the remaining
 // standard ones without depending on any of the local names.
 
-/// `eprintln!` that cannot panic on a failed write.
+/// `eprintln!` that cannot panic on a failed write, and that ends its line the
+/// way `eprintln!` does (see [`write_err_line`]).
 #[macro_export]
 macro_rules! console_eprintln {
     () => {
-        $crate::console::write_err(format_args!("\n"))
+        $crate::console::write_err_line(format_args!(""))
     };
     ($($arg:tt)*) => {
-        $crate::console::write_err(format_args!($($arg)*))
+        $crate::console::write_err_line(format_args!($($arg)*))
     };
 }
 
@@ -106,10 +150,10 @@ macro_rules! console_eprint {
 #[macro_export]
 macro_rules! console_println {
     () => {
-        $crate::console::write_out(format_args!("\n"))
+        $crate::console::write_out_line(format_args!(""))
     };
     ($($arg:tt)*) => {
-        $crate::console::write_out(format_args!($($arg)*))
+        $crate::console::write_out_line(format_args!($($arg)*))
     };
 }
 
@@ -125,3 +169,115 @@ pub use crate::console_eprint as eprint;
 pub use crate::console_eprintln as eprintln;
 pub use crate::console_print as print;
 pub use crate::console_println as println;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader};
+    use std::time::{Duration, Instant};
+
+    /// A writer that accepts exactly one write and then fails.
+    struct Broken {
+        accepted: usize,
+    }
+
+    impl Write for Broken {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.accepted == 0 {
+                self.accepted = buf.len();
+                Ok(buf.len())
+            } else {
+                Err(std::io::Error::other("gone"))
+            }
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The line writer ends the line it was given, and nothing else.
+    #[test]
+    fn a_line_ends_with_exactly_one_newline() {
+        let mut buf = Vec::new();
+        write_line(
+            &mut buf,
+            format_args!("Remote: {} (Agent {})", "Stopped", "unavailable"),
+        )
+        .expect("write to a Vec");
+        assert_eq!(buf, b"Remote: Stopped (Agent unavailable)\n");
+
+        // An empty line is a newline, not nothing.
+        let mut buf = Vec::new();
+        write_line(&mut buf, format_args!("")).expect("write to a Vec");
+        assert_eq!(buf, b"\n");
+
+        // The newline is part of the same write: a stream that only accepts the
+        // text must report the failure rather than look successful.
+        let mut broken = Broken { accepted: 0 };
+        assert!(write_line(&mut broken, format_args!("text")).is_err());
+    }
+
+    /// Environment naming the child half of [`a_console_line_arrives_whole`].
+    const FIXTURE_LINE: &str = "FUTURE_CONSOLE_LINE_FIXTURE";
+
+    /// A line written by the macro reaches a pipe reader that reads *lines*.
+    ///
+    /// This is the regression: `console::eprintln!` wrote its text and no
+    /// newline, so `BufReader::lines` on the other end of the pipe held the
+    /// whole line back waiting for a delimiter that never came — and
+    /// `cli/tests/headless_cli.rs` waited 300 s for "Not signed in to
+    /// FutureOS" and "Remote: Stopped" while the text sat in the pipe. The
+    /// child below writes one line and exits, so nothing after it can supply
+    /// the missing newline: it fails before the fix and passes after it.
+    #[test]
+    fn a_console_line_arrives_whole() {
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "console::tests::the_line_fixture",
+                "--test-threads=1",
+            ])
+            .env(FIXTURE_LINE, "1")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("run the line fixture");
+        let stderr = child.stderr.take().expect("the fixture's stderr");
+        let mut reader = BufReader::new(stderr);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut seen = String::new();
+        let line = loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "no line arrived; saw:\n{seen}");
+            let mut line = String::new();
+            // A blocking read, so the deadline is a budget for the whole loop:
+            // the fixture exits, which ends the read even without a newline.
+            if reader
+                .read_line(&mut line)
+                .expect("read the fixture's stderr")
+                == 0
+            {
+                panic!("the fixture's stderr ended without its line; saw:\n{seen}");
+            }
+            if line.contains("console-line-fixture") {
+                break line;
+            }
+            seen.push_str(&line);
+        };
+        let status = child.wait().expect("wait for the fixture");
+        assert!(status.success(), "{status}");
+        assert_eq!(line, "console-line-fixture 7\n");
+    }
+
+    /// The child half of [`a_console_line_arrives_whole`]: one line, then a
+    /// clean exit, so no later write can end it.
+    #[test]
+    fn the_line_fixture() {
+        if std::env::var_os(FIXTURE_LINE).is_none() {
+            return;
+        }
+        crate::console::eprintln!("console-line-fixture {}", 7);
+        crate::console::println!("a stdout line that is captured and never read");
+    }
+}
