@@ -2781,6 +2781,23 @@ pub(crate) mod tests {
         (mock, seen)
     }
 
+    /// The same mock, taking `delay_ms` to answer each unary command: the slow
+    /// agent a surface has to stay usable against. The answer table is the same
+    /// `pub(crate)` field, so a test can move it between calls.
+    pub(crate) fn api_mock_slow(
+        pairs: &[(&str, &str)],
+        delay_ms: u64,
+    ) -> (ApiMock, Arc<std::sync::Mutex<Vec<String>>>) {
+        let (mock, seen) = api_mock_answering(pairs);
+        (
+            ApiMock {
+                unary_delay_ms: delay_ms,
+                ..mock
+            },
+            seen,
+        )
+    }
+
     /// The same mock, with one command answering `success: false`.
     pub(crate) fn api_mock_failing(
         pairs: &[(&str, &str)],
