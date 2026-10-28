@@ -267,9 +267,12 @@ Nothing here is data: it is how a running process and a terminal find each other
 
 ## `~/.future/workspaces/chat/` — chat workspaces
 
-Per-thread chat workspaces for the GUI, one subdir per agent session id (when
-known, e.g. from an import) or GUI thread id. User-chosen workspaces live
-elsewhere and are never touched by reclamation of this directory.
+Per-thread chat workspaces for the GUI and the TUI, one subdir per agent session
+id (when known, e.g. from an import) or GUI thread id. The TUI mints a chat
+session's id itself and creates `<chat root>/<id>` before the agent opens the
+session, so both surfaces file the same conversation under the same directory.
+User-chosen workspaces live elsewhere and are never touched by reclamation of
+this directory.
 
 ## Goal control plane — project-local, not under `~/.future/`
 

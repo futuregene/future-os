@@ -23,6 +23,8 @@ import {
   deviceLabel,
   deviceReady,
   deviceState,
+  deviceSyncStageLabel,
+  deviceVersionLabel,
   formatCountdown,
   formatPairId,
 } from "./remoteHostFormat";
@@ -473,6 +475,7 @@ export function RemoteHostSection({
                         <ul className="divide-y divide-line-soft">
                           {devices.map((device) => {
                             const state = deviceState(device, t);
+                            const syncStage = deviceSyncStageLabel(device, t);
                             return (
                               <li
                                 className="flex flex-wrap items-center gap-2 px-4 py-2"
@@ -492,6 +495,24 @@ export function RemoteHostSection({
                                   {deviceLabel(device, t)}
                                 </span>
                                 <span className="shrink-0 text-xs text-ink-muted">{formatPairId(device.pairId)}</span>
+                                {/* What the device said it runs. Next to the pair
+                                    id rather than behind a details view: the one
+                                    question a remote conversation that will not
+                                    load raises is "is that end older than this
+                                    machine?", and a person should not have to
+                                    open anything to answer it. "Unknown" is a
+                                    real answer — every device that predates the
+                                    field reports nothing. */}
+                                <span className="shrink-0 text-xs text-ink-muted">
+                                  {deviceVersionLabel(device, t)}
+                                </span>
+                                {/* Where that device's conversation sync is stuck,
+                                    when it says. It names the step
+                                    (`get_state`/`history`/`replay`), which is
+                                    the half a version cannot tell. */}
+                                {syncStage
+                                  ? <Badge tone="warning">{syncStage}</Badge>
+                                  : null}
                                 <Badge tone={state.tone}>{state.label}</Badge>
                                 {device.control === "standby" && deviceReady(device)
                                   ? (

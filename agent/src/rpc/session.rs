@@ -9,6 +9,21 @@ use super::{ApprovalGate, SseBroadcaster};
 /// session, until the session is dropped (Weak upgrade fails) or the
 /// completion sender hangs up. A free function (not an inline spawn closure)
 /// so the dropped-session exit is directly testable.
+const IDLE_HISTORY_RELEASE: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn schedule_idle_history_release(session: std::sync::Weak<parking_lot::RwLock<ServerSession>>) {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    handle.spawn(async move {
+        tokio::time::sleep(IDLE_HISTORY_RELEASE).await;
+        let Some(session) = session.upgrade() else {
+            return;
+        };
+        session.write().release_idle_history_if_unused();
+    });
+}
+
 async fn scheduler_wake_worker(
     session: std::sync::Weak<parking_lot::RwLock<ServerSession>>,
     mut receiver: tokio::sync::mpsc::UnboundedReceiver<crate::runtime::RunLease>,
@@ -18,6 +33,7 @@ async fn scheduler_wake_worker(
             return;
         };
         session.write().on_scheduled_run_finished(&finished);
+        schedule_idle_history_release(std::sync::Arc::downgrade(&session));
     }
 }
 
@@ -79,6 +95,16 @@ pub struct ServerSession {
     /// Full message history as persisted to/loaded from the session JSONL.
     pub messages: Arc<parking_lot::RwLock<Vec<crate::types::AgentMessage>>>,
     pub(crate) history_loaded: bool,
+    /// Latest compaction checkpoint, shared by the session's control-plane loop
+    /// and every run snapshot minted from it. A run that commits a checkpoint
+    /// updates this cell directly, so the next prompt never has to reload the
+    /// complete transcript to recover it.
+    pub(crate) active_checkpoint:
+        Arc<parking_lot::Mutex<Option<crate::compaction::ContextCheckpoint>>>,
+    /// Whether `active_checkpoint` reflects the durable history. A cold handle
+    /// must load once; `None` with this set means "loaded, and there is no
+    /// checkpoint", which is different from "not loaded yet".
+    pub(crate) checkpoint_loaded: std::sync::atomic::AtomicBool,
     /// Canonical model identifier for this session (e.g. "deepseek-v4-pro").
     /// Updated by `set_model`; read by prompt construction and compaction.
     pub model: String,
@@ -252,13 +278,14 @@ impl ServerSession {
             tracing::error!(session_id, "failed to configure event journal: {error:#}");
         }
         // Clone token counter Arcs and queue senders from the agent loop for lock-free access
-        let (ti, to, tcr, tcw, lpt) = if let Ok(loop_) = agent_loop.try_read() {
+        let (ti, to, tcr, tcw, lpt, active_checkpoint) = if let Ok(loop_) = agent_loop.try_read() {
             (
                 loop_.cumulative_input_tokens.clone(),
                 loop_.cumulative_output_tokens.clone(),
                 loop_.cumulative_cache_read_tokens.clone(),
                 loop_.cumulative_cache_write_tokens.clone(),
                 loop_.last_prompt_tokens.clone(),
+                loop_.active_checkpoint.clone(),
             )
         } else {
             (
@@ -267,6 +294,7 @@ impl ServerSession {
                 Arc::new(std::sync::atomic::AtomicI64::new(0)),
                 Arc::new(std::sync::atomic::AtomicI64::new(0)),
                 Arc::new(std::sync::atomic::AtomicI64::new(0)),
+                Arc::new(parking_lot::Mutex::new(None)),
             )
         };
         let is_streaming = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -294,6 +322,8 @@ impl ServerSession {
             agent_loop,
             messages: Arc::new(parking_lot::RwLock::new(vec![])),
             history_loaded: true,
+            active_checkpoint,
+            checkpoint_loaded: std::sync::atomic::AtomicBool::new(true),
             model: String::new(),
             thinking_level: DEFAULT_THINKING_LEVEL.to_string(),
             auto_compaction: true,
@@ -401,7 +431,7 @@ impl ServerSession {
                 .session_manager
                 .finish_cancelled_receipts(&self.session_id)
             {
-                Ok(count) if count > 0 => self.history_loaded = false,
+                Ok(count) if count > 0 => self.mark_history_stale(),
                 Ok(_) => {}
                 Err(error) => {
                     tracing::error!(%error,"scheduler paused while preserving cancelled inputs");
@@ -509,7 +539,7 @@ impl ServerSession {
                 .session_manager
                 .finish_cancelled_receipts(&self.session_id)
             {
-                Ok(count) if count > 0 => self.history_loaded = false,
+                Ok(count) if count > 0 => self.mark_history_stale(),
                 Ok(_) => {}
                 Err(error) => tracing::error!(%error,"cancelled input preservation deferred"),
             }
@@ -997,6 +1027,7 @@ impl ServerSession {
         // `/压缩` would incorrectly report "nothing to compact" for a visible
         // conversation. Keep the restored cache for the next prompt as well.
         let mut messages = self.messages.read().clone();
+        let mut loaded_checkpoint = None;
         if !self.ephemeral || messages.is_empty() {
             if let Ok(session) = self.session_manager.load(&self.session_id) {
                 let supports_images = self
@@ -1005,6 +1036,10 @@ impl ServerSession {
                     .request_model_accepts_images(&self.model);
                 messages =
                     crate::session::entries_to_agent_messages(&session.entries, supports_images);
+                loaded_checkpoint = crate::session::latest_context_checkpoint(&session.entries);
+                *self.active_checkpoint.lock() = loaded_checkpoint.clone();
+                self.checkpoint_loaded
+                    .store(true, std::sync::atomic::Ordering::Release);
                 if !messages.is_empty() {
                     *self.messages.write() = messages.clone();
                 }
@@ -1012,11 +1047,7 @@ impl ServerSession {
         }
         let (reserve_tokens, keep_tokens) =
             crate::compaction::context_token_budgets(context_window);
-        let active_checkpoint = self
-            .session_manager
-            .load(&self.session_id)
-            .ok()
-            .and_then(|session| crate::session::latest_context_checkpoint(&session.entries));
+        let active_checkpoint = loaded_checkpoint.or_else(|| self.active_checkpoint.lock().clone());
         let reported = self
             .last_prompt_tokens
             .load(Ordering::Relaxed)
@@ -1322,6 +1353,7 @@ impl ServerSession {
                 {
                     tracing::warn!(%error, "checkpoint committed but usage-baseline persistence failed");
                 }
+                *self.active_checkpoint.lock() = Some((*checkpoint).clone());
                 if let Ok(loop_) = self.agent_loop.try_write() {
                     *loop_.active_checkpoint.lock() = Some((*checkpoint).clone());
                 }
@@ -1715,6 +1747,52 @@ impl ServerSession {
         Ok(())
     }
 
+    /// Recover the latest checkpoint once per cold handle. Normal prompts arrive
+    /// with history already loaded (command admission calls
+    /// `ensure_history_loaded` first), so this is a no-op on the hot path and a
+    /// one-time fallback for direct/scheduled paths.
+    pub(crate) fn ensure_checkpoint_loaded(&mut self) -> Result<()> {
+        if self
+            .checkpoint_loaded
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Ok(());
+        }
+        let session = self.session_manager.load(&self.session_id)?;
+        *self.active_checkpoint.lock() =
+            crate::session::latest_context_checkpoint(&session.entries);
+        self.checkpoint_loaded
+            .store(true, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
+    pub(crate) fn mark_history_stale(&mut self) {
+        self.history_loaded = false;
+        self.checkpoint_loaded
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Drop the cached full transcript after a session has been idle. Every
+    /// command that needs model context calls `ensure_history_loaded` first, so
+    /// this only releases the duplicate working copy; disk remains authoritative.
+    /// Active runs, queued inputs, live subscribers and ephemeral sessions keep
+    /// their history.
+    pub(crate) fn release_idle_history_if_unused(&mut self) -> bool {
+        if self.ephemeral
+            || !self.history_loaded
+            || self.runtime.snapshot().is_some()
+            || self.runtime.has_owned_task()
+            || self.scheduler.active().is_some()
+            || !self.scheduler.queued().is_empty()
+            || self.broadcaster.has_subscribers()
+        {
+            return false;
+        }
+        self.messages.write().clear();
+        self.mark_history_stale();
+        true
+    }
+
     /// Load this session's durable history into the in-memory message list,
     /// whether or not this handle thinks it already has it.
     ///
@@ -1731,7 +1809,11 @@ impl ServerSession {
             .request_model_accepts_images(&self.model);
         *self.messages.write() =
             crate::session::entries_to_agent_messages(&session.entries, supports_images);
+        *self.active_checkpoint.lock() =
+            crate::session::latest_context_checkpoint(&session.entries);
         self.history_loaded = true;
+        self.checkpoint_loaded
+            .store(true, std::sync::atomic::Ordering::Release);
         Ok(())
     }
 
@@ -1883,6 +1965,16 @@ impl ServerSession {
             }
             *self.messages.write() = msgs;
             self.history_loaded = load_history;
+            if load_history {
+                *self.active_checkpoint.lock() =
+                    crate::session::latest_context_checkpoint(&session.entries);
+                self.checkpoint_loaded
+                    .store(true, std::sync::atomic::Ordering::Release);
+            } else {
+                *self.active_checkpoint.lock() = None;
+                self.checkpoint_loaded
+                    .store(false, std::sync::atomic::Ordering::Release);
+            }
             self.session_id = id.to_string();
             self.scheduler = Arc::new(crate::runtime::InMemoryRunQueue::with_limits_and_global(
                 id,

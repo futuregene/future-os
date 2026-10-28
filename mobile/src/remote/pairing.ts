@@ -9,6 +9,7 @@ import { decodePairingCode, jwtExpiry, parsePairingInvitation, randomId } from "
 import { RemoteApiError } from "@future-os/remote-client/connectionState";
 import { loadDeviceId, saveDeviceId, type PendingRevoke } from "./storage";
 import type { RemoteCredentials } from "./types";
+import { VERSION } from "../version.generated";
 
 interface ClaimResponse {
   pair_id: string;
@@ -78,6 +79,18 @@ async function deviceId(): Promise<string> {
 
 export function deviceName(): string {
   return Device.modelName ?? `${Platform.OS} device`;
+}
+
+/**
+ * The build this app is running, as the desktop should hear it.
+ *
+ * `VERSION` is baked in at build time (`scripts/version.mjs`), so this is what
+ * the installed package actually is — the one fact a phone cannot report from
+ * its own package metadata at runtime and a desktop could never infer, since a
+ * disconnection leaves no version behind on the other end.
+ */
+export function deviceVersion(): string {
+  return VERSION;
 }
 
 export async function claimPairingCode(

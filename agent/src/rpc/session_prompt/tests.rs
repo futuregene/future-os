@@ -2881,6 +2881,149 @@ async fn prompt_empty_message_hits_empty_context_early_return() {
     wait_for_run_end(&session).await;
 }
 
+#[tokio::test]
+async fn idle_session_releases_cached_history_and_reloads_it_on_demand() {
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("persisted answer")]),
+        "idle-history",
+    );
+    let mut session = fixture.session;
+    session.prompt("remember me", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    assert!(!session.messages.read().is_empty());
+    let subscriber = session.broadcaster.subscribe();
+    assert!(
+        !session.release_idle_history_if_unused(),
+        "a live subscriber pins the in-memory projector/history"
+    );
+    drop(subscriber);
+    assert!(session.release_idle_history_if_unused());
+    assert!(session.messages.read().is_empty());
+    assert!(!session.history_loaded);
+    session.ensure_history_loaded().unwrap();
+    assert!(session
+        .messages
+        .read()
+        .iter()
+        .any(|message| message.text().contains("remember me")));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_after_idle_release_restores_history_before_persisting() {
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("first answer"), text_turn("second answer")]),
+        "idle-history-prompt",
+    );
+    let mut session = fixture.session;
+    session
+        .prompt("first question", &[], &[], None, None)
+        .unwrap();
+    wait_for_run_end(&session).await;
+    assert!(session.release_idle_history_if_unused());
+    assert!(session.messages.read().is_empty());
+
+    // Deliberately do not call ensure_history_loaded here. prompt_internal is
+    // the last boundary that can close the admission/idle-release race for both
+    // direct and scheduled starts.
+    session
+        .prompt("second question", &[], &[], None, None)
+        .unwrap();
+    wait_for_run_end(&session).await;
+
+    let stored = session.session_manager.load(&session.session_id).unwrap();
+    let text = stored
+        .entries
+        .iter()
+        .filter_map(|entry| entry.content.as_ref())
+        .map(serde_json::Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("first question"),
+        "old user history was lost: {text}"
+    );
+    assert!(
+        text.contains("first answer"),
+        "old assistant history was lost: {text}"
+    );
+    assert!(text.contains("second question"));
+    assert!(text.contains("second answer"));
+}
+
+#[test]
+fn checkpoint_survives_a_run_boundary_after_the_transcript_changes_on_disk() {
+    use crate::session::{checkpoint_to_entry, Session, SessionEntry};
+
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("unused")]),
+        "checkpoint-cache",
+    );
+    let mut session = fixture.session;
+    let id = "checkpoint-cache";
+    let mut info = SessionEntry::session_info(
+        serde_json::json!({"cwd": ".", "model": "mock"}),
+        "mock".into(),
+        "default".into(),
+    );
+    info.id = "info".into();
+    let mut user = SessionEntry::new_user("user", serde_json::json!("old request"));
+    user.id = "u1".into();
+    let mut assistant = SessionEntry::new_assistant(serde_json::json!("old answer"), Vec::new());
+    assistant.id = "a1".into();
+    let mut checkpoint = test_checkpoint("cp-entry", "cp-cache");
+    checkpoint.covered_from_entry_id = Some("u1".into());
+    checkpoint.cutoff_entry_id = Some("a1".into());
+    let checkpoint_entry = checkpoint_to_entry(&checkpoint);
+    let base = Session::snapshot(
+        id.into(),
+        ".".into(),
+        "mock".into(),
+        String::new(),
+        String::new(),
+        vec![
+            info.clone(),
+            user.clone(),
+            assistant.clone(),
+            checkpoint_entry,
+        ],
+    );
+    session.session_manager.save(&base).unwrap();
+    session.switch_session_metadata(id).unwrap();
+    session.ensure_history_loaded().unwrap();
+    assert_eq!(
+        session
+            .active_checkpoint
+            .lock()
+            .as_ref()
+            .map(|checkpoint| checkpoint.checkpoint_id.as_str()),
+        Some("cp-cache")
+    );
+
+    // If a prompt went back to disk for the checkpoint, this replacement would
+    // erase it. The cache is loaded once per handle, not once per run.
+    let replaced = Session::snapshot(
+        id.into(),
+        ".".into(),
+        "mock".into(),
+        String::new(),
+        String::new(),
+        vec![info, user, assistant],
+    );
+    session.session_manager.save(&replaced).unwrap();
+    let agent_loop = session.agent_loop.clone();
+    let mut loop_ = agent_loop.try_write().unwrap();
+    session.wire_auto_compaction(&mut loop_, true, "mock");
+    assert_eq!(
+        loop_
+            .active_checkpoint
+            .lock()
+            .as_ref()
+            .map(|checkpoint| checkpoint.checkpoint_id.as_str()),
+        Some("cp-cache"),
+        "run wiring must reuse the loaded checkpoint instead of reading the transcript"
+    );
+}
+
 #[test]
 fn wire_auto_compaction_reports_no_valid_boundary() {
     use std::sync::atomic::Ordering;

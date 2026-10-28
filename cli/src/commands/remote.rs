@@ -1427,11 +1427,24 @@ impl Observed {
                         .get("kind")
                         .and_then(Value::as_str)
                         .unwrap_or_default();
-                    if kind.is_empty() {
+                    let mut described = if kind.is_empty() {
                         name.to_string()
                     } else {
                         format!("{name} ({kind})")
+                    };
+                    // What the device said it runs, and where its sync is stuck
+                    // if it said that too. Both are absent for a device that
+                    // predates the fields — an empty column is the honest
+                    // rendering, and this is the only place a terminal can see
+                    // which build is on the other end of a conversation that
+                    // will not load.
+                    if let Some(version) = client.get("version").and_then(Value::as_str) {
+                        described.push_str(&format!(", build {version}"));
                     }
+                    if let Some(stage) = client.get("syncStage").and_then(Value::as_str) {
+                        described.push_str(&format!(", sync stuck at {stage}"));
+                    }
+                    described
                 }
                 _ => "—".to_string(),
             };
@@ -1444,7 +1457,7 @@ impl Observed {
                 _ => "unpaired invitation".to_string(),
             };
             lines.push(format!(
-                "  {:>2}  {:<id_width$}  {:<8}  {:<10}  {:<20}  {}",
+                "  {:>2}  {:<id_width$}  {:<8}  {:<10}  {:<32}  {}",
                 index + 1,
                 ids[index],
                 control,

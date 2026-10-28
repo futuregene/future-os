@@ -681,6 +681,16 @@ impl ServerSession {
             cwd_path,
             crate::utils::is_future_managed_dir(cwd_path),
         )?;
+        // Command admission normally loaded history already, but it drops the
+        // session write lock before this handler runs. The idle-release worker
+        // can clear the cache in that gap, and scheduled starts do not pass
+        // through command admission at all. Restore it while this run holds the
+        // write lock; otherwise an empty cache would be mistaken for a new
+        // session and the initial full save could replace the old transcript.
+        self.ensure_history_loaded()?;
+        // A cold handle may have loaded neither history nor its checkpoint.
+        // Both are no-ops on the normal hot path.
+        self.ensure_checkpoint_loaded()?;
         let (system_prompt, verbose, mut run_loop) = if let Some(snapshot) = accepted_snapshot {
             let mut run_loop = snapshot.run_loop;
             self.swap_token_counters_into_loop(&mut run_loop);
@@ -728,6 +738,10 @@ impl ServerSession {
             snapshot.active_checkpoint = shared.active_checkpoint.clone();
             (system_prompt, shared.verbose, snapshot)
         };
+        // Every run snapshot updates the session-owned checkpoint cell directly.
+        // A queued/accepted snapshot may predate the previous run's checkpoint,
+        // so reconnect it here rather than trusting its independent copy.
+        run_loop.active_checkpoint = self.active_checkpoint.clone();
         run_loop.session_id = self.session_id.clone();
         run_loop.cumulative_input_tokens = self.tokens_in.clone();
         run_loop.cumulative_output_tokens = self.tokens_out.clone();
@@ -1807,12 +1821,6 @@ impl ServerSession {
         // compaction and, because it lives on the per-run snapshot, cannot
         // affect an already streaming response.
         r#loop.preflight_context_check = true;
-        let checkpoint = self
-            .session_manager
-            .load(&self.session_id)
-            .ok()
-            .and_then(|session| crate::session::latest_context_checkpoint(&session.entries));
-        *r#loop.active_checkpoint.lock() = checkpoint;
     }
 
     /// Read cwd-scoped context fresh for a run or explicit config reload.
