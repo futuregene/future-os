@@ -58,13 +58,19 @@ impl SqliteStore {
 
     /// Summary inputs only: use the kind index to skip assistant/tool bodies.
     /// Read the tail timestamp separately so ordering includes all entry kinds.
+    ///
+    /// The statement is cached: `entry_records` is a deep view (five CTEs and
+    /// per-row json/correlated work), and compiling it costs ~25 ms — a
+    /// per-session listing of a few hundred conversations therefore spent ten
+    /// seconds in the SQLite parser alone, blocking the TUI's first frame and
+    /// every rail refresh. Executing the compiled statement is microseconds.
     pub(crate) fn summary_rows(&self, session: &str) -> Result<(Vec<String>, String, usize)> {
         let session = session.to_owned();
         self.db.read(move |db| {
             let tx = db.transaction()?;
             let session=crate::session::identity::BoundIdentity::session(&tx,&session)?;
             let rows = {
-                let mut stmt = tx.prepare("SELECT payload FROM entry_records WHERE session_id=?1 AND position IN (
+                let mut stmt = tx.prepare_cached("SELECT payload FROM entry_records WHERE session_id=?1 AND position IN (
                     SELECT min(position) FROM entries WHERE session_id=?1 AND entry_type='user'
                     UNION SELECT max(position) FROM entries WHERE session_id=?1 AND entry_type='model_change'
                     UNION SELECT position FROM entries WHERE session_id=?1 AND entry_type='session_info'
@@ -180,8 +186,11 @@ impl SqliteStore {
 
 fn read_entry_rows(db: &Connection, session: &str) -> Result<Vec<String>> {
     let stored_session = crate::session::identity::session_key(db, session)?;
-    let mut statement =
-        db.prepare("SELECT payload FROM entry_records WHERE session_id=?1 ORDER BY position")?;
+    // Compiled once per connection, like `summary_rows`: the view is expensive
+    // to prepare and cheap to run.
+    let mut statement = db.prepare_cached(
+        "SELECT payload FROM entry_records WHERE session_id=?1 ORDER BY position",
+    )?;
     let values = statement
         .query_map([&stored_session], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -198,7 +207,7 @@ pub(crate) fn read_run_marker_headers(db: &Connection, session: &str) -> Result<
     }
     // The latest start supersedes earlier runs. Only its latest start, stop
     // and terminal can affect admission/resume; bodies and old runs are skipped.
-    let mut query = db.prepare("SELECT payload FROM entry_header_records WHERE session_id=?1 AND position IN (
+    let mut query = db.prepare_cached("SELECT payload FROM entry_header_records WHERE session_id=?1 AND position IN (
         SELECT max(position) FROM entries WHERE session_id=?1 AND run_id=(
             SELECT run_id FROM entries WHERE session_id=?1 AND entry_type='run_started' ORDER BY position DESC LIMIT 1)
         AND entry_type IN ('run_started','run_terminal','run_stop_requested') GROUP BY entry_type) ORDER BY position")?;
@@ -212,7 +221,7 @@ pub(crate) fn read_run_marker_headers(db: &Connection, session: &str) -> Result<
 
 fn run_marker_rows(db: &Connection, session: &str, source: &str) -> Result<Vec<Value>> {
     let stored_session = crate::session::identity::session_key(db, session)?;
-    let mut statement=db.prepare(&format!("SELECT payload FROM {source} WHERE session_id=?1 AND entry_type IN ('run_started','run_terminal','run_stop_requested') ORDER BY position"))?;
+    let mut statement=db.prepare_cached(&format!("SELECT payload FROM {source} WHERE session_id=?1 AND entry_type IN ('run_started','run_terminal','run_stop_requested') ORDER BY position"))?;
     let rows = statement
         .query_map([&stored_session], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
