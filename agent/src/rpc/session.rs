@@ -3625,17 +3625,35 @@ mod tests {
         // Refuse the append-only commit once. The fallback rewrite must heal
         // the snapshot without erasing the current lifecycle boundary.
         session.persistence.fail_next_commit();
+        // Wait on the runtime's own settled signal rather than polling the
+        // control state against a wall clock. The monitor that owns a run's task
+        // slot sends this lease once the run task has returned, its terminal
+        // record (here: the healing rewrite) has been committed, `finish` has
+        // released the session and that slot has been dropped — the same
+        // boundary this test used to approximate by polling `snapshot()`.
+        //
+        // The 5 s budget it replaced measured the machine, not the run: the
+        // terminal commit fsyncs inside `spawn_blocking`, and a parallel run of
+        // this crate can push that past any fixed number while the run is making
+        // progress the whole time (`Elapsed(())` here and on `main`).
+        let (settled_tx, mut settled_rx) = tokio::sync::mpsc::unbounded_channel();
+        session.runtime.set_completion_sender(settled_tx);
         session
             .prompt("heal the journal", &[], &[], Some("run-healed"), None)
             .unwrap();
 
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while session.runtime.snapshot().is_some() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
+        // A guard for a genuine hang — a run that never settles — not a budget
+        // the success path races: a slow machine cannot make this fire while the
+        // run is still moving towards its terminal record.
+        let settled = tokio::time::timeout(std::time::Duration::from_secs(120), settled_rx.recv())
+            .await
+            .expect("the run never reported that it settled")
+            .expect("the run's completion signal was dropped without a lease");
+        assert_eq!(settled.run_id, "run-healed");
+        assert!(
+            session.runtime.snapshot().is_none(),
+            "a settled run must have released the session"
+        );
 
         let loaded = session.session_manager.load(&session.session_id).unwrap();
         assert!(loaded.entries.iter().any(|entry| {
