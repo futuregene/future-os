@@ -14,6 +14,7 @@ mod approval_tests;
 pub(crate) mod config;
 mod instance;
 mod lifecycle;
+mod progress;
 mod shutdown;
 mod startup;
 #[cfg(test)]
@@ -23,6 +24,7 @@ pub(crate) mod work;
 pub use activity::{ActivityUnavailable, AgentActivity};
 use anyhow::Result;
 pub use config::AgentConfig;
+pub use progress::{StartupProgress, StartupStage};
 pub use shutdown::{ShutdownReport, ShutdownStatus};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -34,7 +36,10 @@ pub use work::ServiceWork;
 /// Cooperative startup cancellation, including checkpoints around synchronous
 /// initialization. It never force-kills a thread or releases another owner.
 #[derive(Clone, Debug, Default)]
-pub struct StartupCancellation(Arc<AtomicBool>);
+pub struct StartupCancellation {
+    cancelled: Arc<AtomicBool>,
+    progress: progress::Progress,
+}
 
 #[derive(Debug, thiserror::Error)]
 #[error("Agent startup cancelled")]
@@ -42,11 +47,19 @@ pub struct StartupCancelled;
 
 impl StartupCancellation {
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    pub fn progress(&self) -> StartupProgress {
+        self.progress.snapshot()
+    }
+
+    pub(crate) fn report(&self, stage: StartupStage) {
+        self.progress.report(stage);
     }
 
     pub(crate) fn check(&self) -> Result<()> {
-        if self.0.load(Ordering::Acquire) {
+        if self.cancelled.load(Ordering::Acquire) {
             return Err(StartupCancelled.into());
         }
         Ok(())
@@ -210,7 +223,9 @@ impl AgentService<'_> {
         if self.preparation_started.swap(true, Ordering::AcqRel) {
             anyhow::bail!("Agent service initialization has already been started");
         }
+        cancellation.report(StartupStage::Preparing);
         self.startup_cleanup();
+        cancellation.report(StartupStage::LoadingModels);
         tracing::info!("Agent startup: loading the model catalogue and credentials");
         // Registered BEFORE the cold registry build: that build spawns the
         // background Future-models fetch, and a fast fetch can land (and fire
