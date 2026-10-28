@@ -251,18 +251,19 @@ impl ServerSession {
         {
             anyhow::bail!("session history reset is in progress");
         }
+        let persistence_unavailable = |error: anyhow::Error| {
+            crate::runtime::RunQueueError::PersistenceUnavailable(format!("{error:#}"))
+        };
         if !self.ephemeral {
             self.session_manager
-                .ensure_execution_allowed(&self.session_id)?;
+                .ensure_execution_allowed(&self.session_id)
+                .map_err(persistence_unavailable)?;
         }
         let receipt_fingerprint = crate::session::compaction_ops::canonical_hash(
             &serde_json::json!({
                 "message":prompt.message,"modelContext":prompt.model_context,"images":images,"attachments":attachments
             }),
         )?;
-        let persistence_unavailable = |error: anyhow::Error| {
-            crate::runtime::RunQueueError::PersistenceUnavailable(error.to_string())
-        };
         if !self.ephemeral && !self.scheduler.knows_request(client_request_id) {
             if let Some((run, sequence, fingerprint)) = self
                 .session_manager
