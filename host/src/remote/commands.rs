@@ -792,9 +792,10 @@ mod bridge_tests {
             desktop_nonce: &desktop_nonce,
         });
         let signature = client_key.sign(transcript.as_bytes()).unwrap();
-        // No HOME → the credential persist fails and the error surfaces.
-        std::env::remove_var("HOME");
-        std::env::remove_var("USERPROFILE");
+        // No home at all → the credential persist fails and the error surfaces.
+        // Withdrawing only `HOME` would leave the fixture's `FUTURE_HOME` root
+        // in charge, and the save would succeed.
+        home.withdraw_home();
         let reply = bridge
             .call(json!({
                 "id": unique("cmd"),
@@ -5066,22 +5067,23 @@ mod bridge_tests {
     /// the desktop could not write its bookkeeping.
     #[tokio::test]
     async fn an_unpair_that_cannot_persist_is_still_acknowledged() {
-        let _home = HomeGuard::new("cmd-unpair-persist-failure");
+        let home = HomeGuard::new("cmd-unpair-persist-failure");
         init_store();
         crate::remote::pairing::save_creds(&secure_bridge_creds()).expect("seed a pairing");
-        // The HOME the pairing lives under disappears between the ack and the
-        // spawned cleanup, so the destructive work cannot be recorded.
-        let previous_userprofile = std::env::var("USERPROFILE").ok();
-        std::env::remove_var("HOME");
-        std::env::remove_var("USERPROFILE");
-        // The premise is asserted, not assumed: with no HOME the local unpair
+        // The root the pairing lives under disappears between the ack and the
+        // spawned cleanup, so the destructive work cannot be recorded. Every way
+        // to name a root has to go, `FUTURE_HOME` included: withdrawing `HOME`
+        // alone leaves the fixture's own root in charge and the persist
+        // succeeds, which is the opposite of the premise below.
+        home.withdraw_home();
+        // The premise is asserted, not assumed: with no home the local unpair
         // cannot record anything, which is the only reason the spawned cleanup
         // below can fail. The generation this first call stops is a throwaway —
         // the connection under test is admitted under the epoch captured after
         // it.
         assert!(
             crate::remote::unpair().await.is_err(),
-            "a pairing under an unset HOME must fail to persist"
+            "a pairing with no home to record under must fail to persist"
         );
 
         let nats = FakeNats::start().await;
@@ -5114,10 +5116,6 @@ mod bridge_tests {
         // The acknowledgement is published before the cleanup runs; yield so the
         // spawned task observably reaches the failure while HOME is still gone.
         tokio::task::yield_now().await;
-        // `home_dir` ignores an empty override exactly as it ignores an absent
-        // one, so restoring to the empty string needs no branch on whether this
-        // process happened to carry a USERPROFILE.
-        std::env::set_var("USERPROFILE", previous_userprofile.unwrap_or_default());
     }
 
     /// A phone-initiated unpair acknowledges first and does the destructive work
