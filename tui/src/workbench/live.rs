@@ -5001,7 +5001,11 @@ mod tests {
     /// approval in a project directory) — which is exactly what must not leak
     /// into a fresh screen.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // FUTURE_HOME is process-global and must stay pinned across awaits.
     async fn a_fresh_launchpad_names_the_product_defaults() {
+        // The expected chat directory is read from the process environment, as
+        // the screen reads it: a peer test's swap must not answer for it.
+        let _guard = crate::test_env::lock();
         let state = r#"{"sessionId":"s-1","cwd":"/work/alpha","model":"future/old","thinkingLevel":"high","sandboxTier":"manual"}"#;
         let models = r#"{"models":[
             {"id":"old","label":"old","provider":"future","thinkingLevel":"default",
@@ -5101,7 +5105,11 @@ mod tests {
     /// has room for. On the launchpad the 工作区 chip stages the directory the
     /// next session is created in.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // FUTURE_HOME is process-global and must stay pinned across awaits.
     async fn the_rail_names_workspaces_and_the_chip_stages_the_next_one() {
+        // The chat row is named from the process environment, so this test
+        // reads it under the same lock as a peer test's swap of `FUTURE_HOME`.
+        let _guard = crate::test_env::lock();
         let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
         let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
         let (mut live, _events) = Live::attach(&addr, None, false, None)
@@ -5283,6 +5291,7 @@ mod tests {
     /// remembered as a workspace.
     #[test]
     fn the_apps_own_scratch_directory_is_never_the_launch_workspace() {
+        let _guard = crate::test_env::lock();
         let remembered = tempfile::tempdir().unwrap();
         let remembered = remembered.path().to_string_lossy();
         let chat = chat_workspace();
@@ -5298,6 +5307,11 @@ mod tests {
     /// not.
     #[test]
     fn ambient_directories_are_the_ones_a_shell_sits_in() {
+        // Every path below is derived from `HOME`/`FUTURE_HOME` at read time,
+        // so a peer test's `EnvVarGuard` must be resting while this runs: a
+        // scratch tree under the swapped root is ambient, and the last
+        // assertion below would fail for a directory this test never chose.
+        let _guard = crate::test_env::lock();
         assert!(is_ambient_directory("/"), "the filesystem root");
         assert!(is_ambient_directory("/tmp"));
         assert!(is_ambient_directory("/tmp/"), "a trailing separator");
@@ -5360,7 +5374,11 @@ mod tests {
     /// project is inherited, a chat is not (the next message mints a fresh chat
     /// directory of its own).
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // FUTURE_HOME is process-global and must stay pinned across awaits.
     async fn a_new_conversation_keeps_the_workspace_it_left() {
+        // `chat_workspace()` is read here and classified by the launchpad: a
+        // swap in between would make the two name different directories.
+        let _guard = crate::test_env::lock();
         let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
         let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
         let (mut live, _events) = Live::attach(&addr, None, false, None)
@@ -5646,6 +5664,7 @@ mod tests {
 
     #[test]
     fn a_workspace_is_shown_home_relative() {
+        let _guard = crate::test_env::lock();
         let home = crate::home::home_dir_or_default().display().to_string();
         if home.is_empty() {
             return;
@@ -5698,6 +5717,10 @@ mod tests {
     /// even when it is not the freshest.
     #[test]
     fn conversations_are_filed_by_the_directory_they_ran_in() {
+        // The scratch tree is read from the process environment twice — once
+        // for the fixture, once by `ChatRoots::detect()` — and only a stable
+        // environment makes the two the same directory.
+        let _guard = crate::test_env::lock();
         // The scratch tree belongs to *this* home, so the fixture builds it the
         // way the app does rather than pasting another machine's path.
         let scratch = crate::home::future_state_dir()
@@ -5799,6 +5822,10 @@ mod tests {
     /// two scratch directories are chats, a directory the reader chose is not.
     #[test]
     fn the_hoisted_roots_answer_which_directories_are_chats() {
+        // The roots and the directories compared against them are both
+        // read from the process environment, so they must be read apart from a
+        // peer test's swap of it.
+        let _guard = crate::test_env::lock();
         let roots = ChatRoots::detect();
         let state = crate::home::future_state_dir();
         let default_workspace = state.join("agent").join("workspace").display().to_string();
@@ -5998,6 +6025,7 @@ mod tests {
     /// `thread-20261026-121352-6627dd` came to read like a project in the rail.
     #[test]
     fn a_plain_chat_names_no_workspace() {
+        let _guard = crate::test_env::lock();
         let scratch = crate::home::future_state_dir()
             .join("workspaces")
             .join("chat")
