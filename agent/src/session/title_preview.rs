@@ -1,24 +1,54 @@
 //! Bounded title extraction over paged UTF-8. Uses the shared title grammar
-//! (links/images contribute labels; conversation references are addressing),
-//! without allocating all source characters or the complete rendered text.
+//! (links/images contribute labels; conversation references and composer
+//! placeholders are addressing; markdown syntax is flattened away by
+//! [`future_rpc::title::flatten_markup`]), without allocating all source
+//! characters or the complete rendered text.
 use anyhow::{ensure, Context, Result};
 
 const PAGE_BYTES: usize = 4096;
+/// Columns of title kept after the syntax is flattened away.
 const MAX_COLUMNS: usize = 40;
+/// The scan keeps more than the title's final width: emphasis marks, bullets
+/// and code fences are dropped after the scan, and text that was cut off here
+/// cannot be recovered by flattening it.
+const SCAN_COLUMNS: usize = MAX_COLUMNS * 4;
 // Zero-width scalars must not turn a 40-column preview into an unlimited value.
 const MAX_PREVIEW_BYTES: usize = 1024;
 const SESSION_REFERENCE: &str = "futureos://session/";
+/// A composer placeholder (`[Image #1]`, `[Pasted Content 2000 chars]`) is
+/// shorter than this, and the probe stops at the first character that could not
+/// belong to one.
+const PLACEHOLDER_PROBE_CHARS: usize = 48;
 
-#[derive(Default)]
 struct Output {
     text: String,
     columns: usize,
+    limit: usize,
     space: bool,
     closed: bool,
 }
 impl Output {
+    fn new(limit: usize) -> Self {
+        Self {
+            text: String::new(),
+            columns: 0,
+            limit,
+            space: false,
+            closed: false,
+        }
+    }
     fn character(&mut self, ch: char) {
         if self.closed {
+            return;
+        }
+        // A line break stays a line break: flattening a title needs to know
+        // where a line started to tell a heading or a bullet from prose, and
+        // the marks themselves are only dropped after the scan.
+        if ch == '\n' {
+            self.space = false;
+            if !self.text.is_empty() && !self.text.ends_with('\n') {
+                self.text.push('\n');
+            }
             return;
         }
         if ch.is_whitespace() {
@@ -36,7 +66,7 @@ impl Output {
             return;
         }
         let columns = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if self.columns + columns > MAX_COLUMNS
+        if self.columns + columns > self.limit
             || self.text.len() + ch.len_utf8() > MAX_PREVIEW_BYTES
         {
             self.closed = true;
@@ -88,6 +118,21 @@ impl<F: FnMut(usize, usize) -> Result<String>> Text<F> {
                 .next()
                 .context("empty title character")?,
         ))
+    }
+    /// Byte length of a composer placeholder (`[Image #1]`,
+    /// `[Pasted Content 2000 chars]`) starting at `from`, read through the page
+    /// and recognised by the shared rule rather than by a second copy of it.
+    fn placeholder(&mut self, from: usize) -> Result<Option<usize>> {
+        let mut probe = String::new();
+        let mut at = from;
+        let mut characters = 0;
+        while characters < PLACEHOLDER_PROBE_CHARS {
+            let Some(ch) = self.character(at)? else { break };
+            probe.push(ch);
+            at += ch.len_utf8();
+            characters += 1;
+        }
+        Ok(future_rpc::title::placeholder_len(&probe))
     }
     fn label_end(&mut self, from: usize) -> Result<Option<usize>> {
         if let Some(scan) = self.label {
@@ -181,8 +226,8 @@ pub(crate) fn paged(
         page: String::new(),
         label: None,
     };
-    let mut primary = Output::default();
-    let mut fallback = Output::default();
+    let mut primary = Output::new(SCAN_COLUMNS);
+    let mut fallback = Output::new(SCAN_COLUMNS);
     let mut at = 0usize;
     while let Some(ch) = source.character(at)? {
         let bracket = if ch == '!' && source.character(at + 1)? == Some('[') {
@@ -191,6 +236,12 @@ pub(crate) fn paged(
             (ch == '[').then_some(at)
         };
         if let Some(bracket) = bracket {
+            // A composer placeholder names nothing a reader can use, so it is
+            // skipped before it can spend any of the width budget.
+            if let Some(length) = source.placeholder(bracket)? {
+                at = bracket + length;
+                continue;
+            }
             if let Some(end) = source.label_end(bracket + 1)? {
                 if let Some(target) = source.target(end)? {
                     let mut label = bracket + 1;
@@ -221,11 +272,18 @@ pub(crate) fn paged(
         }
         at += ch.len_utf8();
     }
-    Ok(if primary.text.is_empty() {
+    let scanned = if primary.text.is_empty() {
         fallback.text
     } else {
         primary.text
-    })
+    };
+    // Markdown marks and any placeholder the scan did not reach are dropped
+    // here, before the width the title is shown in is applied: a cut taken
+    // first would leave half a `**` or half a placeholder behind.
+    Ok(crate::session::projection::truncate_visible(
+        &future_rpc::title::flatten_markup(&scanned),
+        MAX_COLUMNS,
+    ))
 }
 
 pub(crate) fn from_str(text: &str) -> String {

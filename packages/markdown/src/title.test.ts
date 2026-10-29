@@ -29,14 +29,44 @@ describe("plainTitleText", () => {
   });
 
   it("leaves text that is not a link untouched", () => {
-    // Brackets without a target, an array index, an emphasis pair — none of
-    // these are links, and a title must not eat them.
+    // Brackets without a target, an array index — neither is a link, and a
+    // title must not eat them.
     expect(plainTitleText("[pending] 待办")).toBe("[pending] 待办");
     expect(plainTitleText("items[0] = 3")).toBe("items[0] = 3");
-    expect(plainTitleText("**加粗** 一下")).toBe("**加粗** 一下");
-    expect(plainTitleText("a_b_c 命名")).toBe("a_b_c 命名");
     // An unclosed link is not a link either.
     expect(plainTitleText("[标题](futureos://session/s-3")).toBe("[标题](futureos://session/s-3");
+  });
+
+  it("drops a composer placeholder, which names nothing", () => {
+    expect(plainTitleText("[Image #1]现在 tui 中显示展示思考中")).toBe("现在 tui 中显示展示思考中");
+    expect(plainTitleText("[Image #1][Image #2]")).toBe("");
+    expect(plainTitleText("看 [Image #3] 这张图里的报错")).toBe("看 这张图里的报错");
+    expect(plainTitleText("[Pasted Content 2000 chars] 帮我看看")).toBe("帮我看看");
+    expect(plainTitleText("[Pasted Content 2000 chars #2] 帮我看看")).toBe("帮我看看");
+    // Only the exact forms the composers write are placeholders.
+    expect(plainTitleText("[Image #] 说明")).toBe("[Image #] 说明");
+    expect(plainTitleText("[image #1] 说明")).toBe("[image #1] 说明");
+  });
+
+  it("flattens markdown syntax and keeps its text", () => {
+    expect(plainTitleText("**加粗** 一下")).toBe("加粗 一下");
+    expect(plainTitleText("__加粗__ 一下")).toBe("加粗 一下");
+    expect(plainTitleText("*斜体* 与 ~~删除线~~")).toBe("斜体 与 删除线");
+    expect(plainTitleText("看看 `cargo test` 的输出")).toBe("看看 cargo test 的输出");
+    expect(plainTitleText("# 标题\n正文")).toBe("标题 正文");
+    expect(plainTitleText("### 修复登录")).toBe("修复登录");
+    expect(plainTitleText("> 引用的一句话")).toBe("引用的一句话");
+    expect(plainTitleText("- 第一条\n- 第二条")).toBe("第一条 第二条");
+    expect(plainTitleText("1. 第一步\n2) 第二步")).toBe("第一步 第二步");
+    expect(plainTitleText("---\n正文")).toBe("正文");
+    expect(plainTitleText("```rust\nfn main() {}\n```")).toBe("fn main() {}");
+  });
+
+  it("keeps unpaired or intraword delimiters as text", () => {
+    expect(plainTitleText("a_b_c 命名")).toBe("a_b_c 命名");
+    expect(plainTitleText("2 * 3 = 6")).toBe("2 * 3 = 6");
+    expect(plainTitleText("未闭合的 **加粗")).toBe("未闭合的 **加粗");
+    expect(plainTitleText("C# 与 ~/future-os")).toBe("C# 与 ~/future-os");
   });
 
   it("collapses whitespace to one line", () => {
