@@ -4699,6 +4699,55 @@ mod tests {
         assert_eq!(first_painted(&mut wb), 0, "the oldest row is on top");
     }
 
+    /// The footer teaches `esc` exactly while there is a transcript to walk back
+    /// down to — the one state where the key does something this surface can
+    /// name. At the tail there is nothing to return to, so the row keeps the keys
+    /// it always shows; and a menu that answers `esc` before the transcript does
+    /// takes the hint back, because the box that owns the key prints its own.
+    #[test]
+    fn the_footer_hints_esc_only_while_the_transcript_is_scrolled_back() {
+        let mut data = demo::chat();
+        data.messages = (0..100)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .into();
+        let mut wb = workbench();
+        let footer = |wb: &mut Workbench| -> String {
+            let rows = wb.render(&data, 120, 38);
+            plain(&rows[rows.len() - 1..])
+        };
+        let tail = footer(&mut wb);
+        assert!(tail.contains("新会话"), "{tail:?}");
+        assert!(
+            !tail.contains("esc"),
+            "nothing to return to at the tail: {tail:?}"
+        );
+
+        wb.handle(WbEvent::Key("pageUp".into()), &data);
+        assert!(!wb.following_latest());
+        let scrolled = footer(&mut wb);
+        assert!(scrolled.contains("esc 回到最新"), "{scrolled:?}");
+        // The contextual key costs the reader nothing permanent: the four hints
+        // the row always carries are still on it beside the return.
+        for hint in ["侧栏", "命令", "偏好设置", "新会话"] {
+            assert!(scrolled.contains(hint), "{hint} left the row: {scrolled:?}");
+        }
+
+        // The English row spells the same promise in its own words.
+        wb.set_language(crate::workbench::i18n::LanguagePreference::En);
+        let english = footer(&mut wb);
+        assert!(english.contains("esc Back to the newest"), "{english:?}");
+
+        // A menu that answers `esc` first keeps the key: its own hint row is
+        // where that meaning is taught (`MentionHintFile`).
+        wb.set_language(crate::workbench::i18n::LanguagePreference::Zh);
+        let typing = with_input(&data, "@src");
+        let rows = wb.render(&typing, 120, 38);
+        assert!(wb.mention.is_some(), "the mention menu is up");
+        let with_menu = plain(&rows[rows.len() - 1..]);
+        assert!(!with_menu.contains("回到最新"), "{with_menu:?}");
+    }
+
     #[test]
     fn preferences_edit_the_frame_and_configurable_keys_drive_actions() {
         let data = demo::chat();

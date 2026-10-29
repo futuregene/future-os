@@ -344,6 +344,7 @@ pub enum Key {
     ActivityStreaming,
     ActivityTools,
     HintBackToChat,
+    HintLatest,
     HintSidebar,
     HintSessions,
     HintFocus,
@@ -738,6 +739,7 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         // from, a panel to the chat — so the hint names the walk, not one of
         // its stops.
         HintBackToChat => ("返回上一级 / 回到聊天", "Back one level / to the chat"),
+        HintLatest => ("回到最新", "Back to the newest"),
         HintSidebar => ("侧栏", "Sidebar"),
         HintSessions => ("会话", "Sessions"),
         HintFocus => ("焦点", "Focus"),
@@ -1355,7 +1357,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 327] = {
+    const ALL_KEYS: [Key; 328] = {
         use Key::*;
         [
             TabTodo,
@@ -1439,6 +1441,7 @@ mod tests {
             ActivityStreaming,
             ActivityTools,
             HintBackToChat,
+            HintLatest,
             HintSidebar,
             HintSessions,
             HintFocus,

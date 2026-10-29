@@ -1589,22 +1589,34 @@ fn hint_row(
     // beside the title spells `[ctrl+r] 会话`, so a hint here would be the same
     // key taught twice on one screen. Its cells went to the entries above.
     //
-    // `esc` is not listed either: it is the key that leaves *whatever the reader
-    // is in* — an overlay, the queue, a scrolled-back transcript — so a hint
-    // that spelled it named one of the five things it does, and the boxes that
-    // answer it print it in their own hint row (`FilesHint`, `PickerHint*`).
+    // `esc` is listed only in the one state where it has something to do
+    // *here*: a transcript the reader scrolled away from, where it walks back to
+    // the newest message. It goes first, so a narrow terminal drops the keys
+    // around it rather than the one the reader needs right now — and it is the
+    // only entry whose key changes with the frame, because a permanent one would
+    // promise a key that has nothing to act on: every other thing `esc` answers
+    // (an overlay, the queue, the mention menu, a picker) prints it in that box's
+    // own hint row (`FilesHint`, `PickerHint*`, `HelpFooter`).
     //
     // `?` is a literal rather than `Action::Help`'s chord: help has no chord on
     // purpose (a printable key that opens a box cannot also be typed into the
     // draft), so the row names the character that opens it, as the help
     // overlay's own inline table does.
-    let wide = [
+    let mut wide: Vec<(&str, Key)> = Vec::new();
+    // Whether the row is claiming `esc` this frame: the one entry that comes and
+    // goes with the state the frame paints.
+    let scrolled_back =
+        !workbench.following_latest() && workbench.overlay.is_none() && workbench.mention.is_none();
+    if scrolled_back {
+        wide.push(("esc", Key::HintLatest));
+    }
+    wide.extend([
         (workbench.keys.key(Action::Sidebar), Key::HintSidebar),
         (workbench.keys.key(Action::Palette), Key::HintCommands),
         (workbench.keys.key(Action::Preferences), Key::HintSettings),
         (workbench.keys.key(Action::NewSession), Key::HintNewChat),
         ("?", Key::HintHelp),
-    ];
+    ]);
     // A rebindable action whose chord the reader cleared (`preferences`, see
     // `default_key`) would otherwise be hinted as " 布局" — a hint with no key
     // is not a hint.
@@ -1613,7 +1625,11 @@ fn hint_row(
         .filter(|(key, _)| !key.is_empty())
         .collect();
     let parts: &[(&str, Key)] = if compact {
-        &wide[..4.min(wide.len())]
+        // The contextual `esc` does not cost the reader a permanent hint: at the
+        // tail this row is the four cells it always was, and only a scrolled-back
+        // transcript spends one more on the way back down.
+        let budget = if scrolled_back { 5 } else { 4 };
+        &wide[..budget.min(wide.len())]
     } else {
         &wide
     };
