@@ -510,7 +510,6 @@ pub enum Key {
     CmdTranscript,
     CmdFusion,
     CmdFusionLog,
-    FusionEnabled,
     FusionLogTitle,
     FusionPreparing,
     FusionAnalyzing,
@@ -992,7 +991,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         CmdExport => ("导出会话", "Export the session"),
         CmdFusion => ("启用 Fusion 讨论工具", "Enable the Fusion discussion tool"),
         CmdFusionLog => ("查看 Fusion 讨论进度", "Inspect Fusion discussion progress"),
-        FusionEnabled => ("Fusion 工具已启用：输入任务后发送；讨论只读，主流程照常执行", "Fusion enabled: enter a task; discussion is read-only, main flow retains execution"),
         FusionLogTitle => ("Fusion 讨论记录（只读）", "Fusion discussion record (read-only)"),
         FusionPreparing => ("准备讨论", "Preparing discussion"),
         FusionAnalyzing => ("独立思考", "Independent thinking"),
@@ -1402,7 +1400,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 350] = {
+    const ALL_KEYS: [Key; 349] = {
         use Key::*;
         [
             TabTodo,
@@ -1633,7 +1631,6 @@ mod tests {
             CmdTranscript,
             CmdFusion,
             CmdFusionLog,
-            FusionEnabled,
             FusionLogTitle,
             FusionPreparing,
             FusionAnalyzing,
