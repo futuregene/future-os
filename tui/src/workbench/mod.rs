@@ -4816,9 +4816,11 @@ mod tests {
         assert_eq!(wb.overlay, Some(Overlay::Palette));
         wb.overlay = None;
         wb.open_preferences();
-        // The first row is the rail position: `right` moves the rail, and the
-        // frame follows it on the next paint.
+        // The cursor opens on the first row (the language); the rail's
+        // position is the row this test drives: `right` moves the rail, and
+        // the frame follows it on the next paint.
         assert_eq!(wb.preferences_index, 0);
+        wb.preferences_index = preferences::PreferenceRow::Position.index();
         wb.handle(WbEvent::Key("right".into()), &data);
         assert_eq!(wb.sidebar_position, preferences::SidebarPosition::Left);
         let _ = wb.render(&data, 120, 38);
