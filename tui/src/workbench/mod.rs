@@ -998,6 +998,9 @@ impl Workbench {
             }
             WbEvent::Resize(_, _) => vec![WbAction::Redraw],
             WbEvent::Paste(text) => {
+                // A paste is the reader typing: the prompt owns the keys, so the
+                // `enter` that follows sends it (see `handle_key`).
+                self.blur_rail();
                 let mut view = data.input.editor.clone();
                 view.paste(&text);
                 vec![WbAction::EditEditor(Box::new(view))]
@@ -1265,7 +1268,14 @@ impl Workbench {
             // palette's own entry is what the key runs.
             Some(preferences::Action::Git) => return vec![WbAction::OpenGit],
             // The clipboard: an image becomes an attachment, text is pasted.
-            Some(preferences::Action::PasteImage) => return vec![WbAction::PasteClipboard],
+            Some(preferences::Action::PasteImage) => {
+                // What lands is the draft's, so the prompt takes the keys with
+                // it — the rail must not answer the `enter` that follows a
+                // paste (a picture pasted into a prompt used to send the reader
+                // into the rail's selected conversation instead).
+                self.blur_rail();
+                return vec![WbAction::PasteClipboard];
+            }
             Some(preferences::Action::PreviewAttachment) => {
                 return vec![WbAction::PreviewAttachment]
             }
@@ -1386,6 +1396,14 @@ impl Workbench {
             "escape" if self.sidebar_focus && !self.rail.query.is_empty() => {
                 self.clear_rail_search(data)
             }
+            // A second `escape` hands the keys back to the prompt. Without it a
+            // reader who stepped into the rail had only `ctrl+d` (or the mouse)
+            // to get out, and every `enter` in the meantime opened the row under
+            // the cursor instead of sending the draft.
+            "escape" if self.sidebar_focus => {
+                self.blur_rail();
+                vec![WbAction::Redraw]
+            }
             // The rail's destructive verb, spelled the way a file tree's delete
             // is spelled everywhere else. `ctrl+d` is the rebindable chord
             // above; this is the door a reader finds first, and both ask before
@@ -1411,6 +1429,13 @@ impl Workbench {
             | "ctrl+z" | "ctrl+-" | "ctrl+/" | "ctrl+_" | "ctrl+shift+z" | "alt+y"
             | "alt+backspace" | "alt+d" | "alt+delete" | "ctrl+left" | "ctrl+right"
             | "alt+left" | "alt+right" | "shift+enter" | "alt+enter" | "ctrl+enter" | "ctrl+j" => {
+                // An editing chord is the reader typing, so the prompt owns the
+                // keys from here on. A rail that kept them answered the next
+                // `enter` by opening its selected conversation — the draft was
+                // typed but never sent. None of the arms above this one reach
+                // here while the rail is focused (`up`/`down`/`left`/`right`,
+                // `delete`, `p` and `/` are the rail's own).
+                self.blur_rail();
                 let mut view = data.input.editor.clone();
                 view.resize(self.composer_width);
                 view.key(key);
@@ -1419,6 +1444,9 @@ impl Workbench {
             // Space is a character in the draft, not the "select" key the
             // menus use: the prompt has to be able to contain words.
             "space" => {
+                // Space is text, so it takes the keys back to the prompt the
+                // way every other character does (see the `other` arm).
+                self.blur_rail();
                 let mut view = data.input.editor.clone();
                 view.paste(" ");
                 vec![WbAction::EditEditor(Box::new(view))]
@@ -1440,6 +1468,10 @@ impl Workbench {
                     if data.on_launchpad() {
                         self.launch_field = LaunchField::Prompt;
                     }
+                    // …and the rail stops holding the keys with it: a character
+                    // in the draft means the next `enter` sends that draft, not
+                    // the row the rail happens to light up.
+                    self.blur_rail();
                     let mut view = data.input.editor.clone();
                     view.paste(other);
                     vec![WbAction::EditEditor(Box::new(view))]
@@ -5111,11 +5143,21 @@ mod tests {
     fn a_focused_rail_deletes_its_cursor_row_not_the_one_on_screen() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
-        // `x` stays a letter in the draft even with the rail focused: the rail
-        // takes the list keys, not the alphabet.
+        // `ctrl+d` shows the rail and gives it the keys.
         workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
+        assert!(workbench.sidebar_focus);
+        // `x` stays a letter in the draft: the rail takes the list keys, not
+        // the alphabet — and the letter takes the keys back with it, so the
+        // next `enter` would send the draft rather than delete a conversation
+        // nobody named (see `input_that_reaches_the_draft_takes_the_keys_back_from_the_rail`).
         workbench.handle(WbEvent::Key("x".into()), &data);
         assert_eq!(workbench.overlay, None);
+        assert!(!workbench.sidebar_focus, "the letter belongs to the draft");
+        // Back in the rail (the second `ctrl+d` only gives it the keys), the
+        // cursor lands on the conversation on screen and `delete` walks from
+        // there.
+        workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
+        assert!(workbench.sidebar_focus);
         workbench.handle(WbEvent::Key("down".into()), &data);
         workbench.handle(WbEvent::Key("delete".into()), &data);
         assert_eq!(workbench.overlay, Some(Overlay::DeleteSession));
@@ -5909,6 +5951,83 @@ mod tests {
         assert!(workbench
             .handle(WbEvent::Key("enter".into()), &empty)
             .is_empty());
+    }
+
+    /// Input that lands in the draft takes the keys back from the rail.
+    ///
+    /// The rail can hold the keys while the prompt is on screen (a click in it,
+    /// or `ctrl+b` until `esc`). Text, a paste and the clipboard chord all still
+    /// reach the draft — they are the reader typing — so `enter` after one of
+    /// them has to send it. Before this, `enter` stayed the rail's and opened
+    /// its selected conversation instead: a prompt with a pasted picture
+    /// "sent" by landing on somebody else's streaming session.
+    #[test]
+    fn input_that_reaches_the_draft_takes_the_keys_back_from_the_rail() {
+        // Text.
+        let data = demo::launchpad();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.sidebar_visible = true;
+        workbench.sidebar_focus = true;
+        let actions = workbench.handle(WbEvent::Key("h".into()), &data);
+        assert!(matches!(actions.as_slice(), [WbAction::EditEditor(_)]));
+        assert!(!workbench.sidebar_focus, "typing is the prompt's");
+        let rail = data.sessions[0].id.clone();
+        let mut typed = data.clone();
+        typed.input.text = "h".into();
+        typed.input.cursor = 1;
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &typed),
+            vec![WbAction::Submit("h".into())],
+            "enter sends the draft, not {rail}"
+        );
+
+        // A bracketed paste.
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.sidebar_visible = true;
+        workbench.sidebar_focus = true;
+        let actions = workbench.handle(WbEvent::Paste("pasted".into()), &data);
+        assert!(matches!(actions.as_slice(), [WbAction::EditEditor(_)]));
+        assert!(!workbench.sidebar_focus, "a paste is the prompt's");
+
+        // The clipboard chord (ctrl+v): the draft reads the clipboard, so the
+        // prompt is where the reader's next key belongs — including a picture.
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.sidebar_visible = true;
+        workbench.sidebar_focus = true;
+        assert_eq!(
+            workbench.handle(WbEvent::Key("ctrl+v".into()), &data),
+            vec![WbAction::PasteClipboard]
+        );
+        assert!(!workbench.sidebar_focus, "the clipboard goes to the draft");
+    }
+
+    /// `escape` hands the keys back from the rail to the prompt.
+    ///
+    /// A rail a reader could only leave with `ctrl+d` (or the mouse) is a trap,
+    /// and every `enter` typed at it in the meantime opened the row under the
+    /// cursor. A search line still answers its own `escape` first — clearing the
+    /// filter keeps the rail, and the next one leaves it.
+    #[test]
+    fn escape_hands_the_keys_back_from_the_rail_to_the_prompt() {
+        let data = demo::launchpad();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
+        assert!(workbench.sidebar_focus);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("escape".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert!(!workbench.sidebar_focus);
+        // With a filter in force, the first `escape` only puts the list back.
+        workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        workbench.handle(WbEvent::Key("h".into()), &data);
+        assert!(!workbench.rail.query.is_empty());
+        workbench.handle(WbEvent::Key("escape".into()), &data);
+        assert!(workbench.rail.query.is_empty());
+        assert!(workbench.sidebar_focus, "the filter went, the rail stays");
+        workbench.handle(WbEvent::Key("escape".into()), &data);
+        assert!(!workbench.sidebar_focus);
     }
 
     /// On the launchpad `tab` walks the prompt and the parameter chips, `enter`
