@@ -127,6 +127,21 @@ impl RowAction {
             Self::Thinking { .. } => RowKind::Thinking,
         }
     }
+
+    /// The message the row's reveal flag lives on.
+    ///
+    /// Not always the message that *draws* the row: an opened fold's header is
+    /// the first row of the reply's tree, while the fold itself is remembered
+    /// against the reply's head — one flag, whichever of the two rows the
+    /// reader presses.
+    fn message(&self) -> usize {
+        match self {
+            Self::Process { msg }
+            | Self::Burst { msg }
+            | Self::Tool { msg }
+            | Self::Thinking { msg } => *msg,
+        }
+    }
 }
 
 /// Which of a message's rows a reader opened. A message draws at most one row
@@ -276,10 +291,31 @@ struct FoldPlan {
     heads: Vec<usize>,
     /// Summary rows, keyed by the message that draws them.
     folds: HashMap<usize, ReplyFold>,
+    /// Folds the reader opened, keyed by the message that draws each of their
+    /// rows (see [`OpenedTree`]).
+    trees: HashMap<usize, OpenedTree>,
     /// Messages whose reasoning a summary row already counts, so that they draw
     /// no `▸ thinking` marker of their own (the marker would be a second,
     /// uncounted row for the same thought).
     counted: BTreeSet<usize>,
+}
+
+/// A fold the reader opened: every row it stood for is back, indented under one
+/// header row that folds them away again.
+///
+/// An opened fold has to keep a row of its own, or opening one would be a state
+/// with no way back: the summary row used to *become* the rows it hid, so the
+/// only thing that could close them was gone. The header is that row — the same
+/// counts, one press away from folding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OpenedTree {
+    /// The message the fold's reveal flag lives on: the reply's head for a
+    /// settled reply's process, the burst's first slice for a burst.
+    head: usize,
+    /// Which flag that is — [`RowKind::Process`] or [`RowKind::Burst`].
+    kind: RowKind,
+    /// What the header counts. Only the fold's first row draws it.
+    banner: Option<FoldSummary>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -382,6 +418,15 @@ struct StreamRenderCache {
 /// Marks a folded row — a run of calls or thinking standing in for many rows.
 const FOLD_MARKER: &str = "▸";
 
+/// Marks the header of a fold the reader opened: the same row as
+/// [`FOLD_MARKER`], turned down, and pressing it folds the work away again.
+const OPEN_MARKER: &str = "▾";
+
+/// The gutter an opened fold's rows hang under. Two columns wide: the rail and
+/// the space that keeps the rows' own one-column inset.
+const TREE_RAIL: &str = "│";
+const TREE_GUTTER: usize = 2;
+
 /// What kind of thing a message folds into. Folding is per kind: two reads fold
 /// together, a read and a shell call do not (the same rule the desktop's
 /// collapsed bursts use, so a fold always means one homogeneous run).
@@ -391,6 +436,23 @@ enum FoldKind {
     Tool(String),
     /// A thinking block with no visible answer text of its own.
     Thinking,
+}
+
+/// Put `gutter` in front of a rendered row — inside the row's background when it
+/// has one, so a call's band still starts in column 1 with the rest of the
+/// transcript and the rail is painted *on* the band instead of beside it.
+///
+/// The row is laid out one gutter narrower (see `render_message`), so the result
+/// is exactly as wide as any other row.
+fn with_gutter(text: &str, gutter: &str) -> String {
+    const BAND: &str = "\x1b[48;5;";
+    let Some(rest) = text.strip_prefix(BAND) else {
+        return format!("{gutter}{text}");
+    };
+    match rest.find('m') {
+        Some(end) => format!("{BAND}{}{gutter}{}", &rest[..=end], &rest[end + 1..]),
+        None => format!("{gutter}{text}"),
+    }
 }
 
 /// Does this message fold into the run above it?
@@ -857,6 +919,11 @@ pub struct ChatArea {
     /// settled answer. Keyed by the message that *renders* the summary, and
     /// empty for messages that fold nothing.
     reply_folds: HashMap<usize, ReplyFold>,
+    /// Folds the reader opened, keyed by the message drawing each of their rows
+    /// (see [`OpenedTree`]): their rows hang under one header that folds them
+    /// away again. Kept beside [`Self::reply_folds`] — the two are halves of one
+    /// layout, so a row that moves or a level that flips keeps its state.
+    opened_trees: HashMap<usize, OpenedTree>,
     /// One bitfield per message holding the only message state a fold can
     /// depend on (see [`fold_flags`]). A streaming delta changes a message's
     /// text but not these bits, which is what lets the hot path skip the
@@ -908,6 +975,7 @@ impl ChatArea {
             counted_reasoning: BTreeSet::new(),
             compact_layout: Vec::new(),
             reply_folds: HashMap::new(),
+            opened_trees: HashMap::new(),
             fold_bits: Vec::new(),
             on_change: None,
             message_line_ranges: Vec::new(),
@@ -1543,11 +1611,16 @@ impl ChatArea {
             if to < from as i64 {
                 continue;
             }
-            let Some(id) = self.messages.get(*msg).map(|msg| msg.id.as_str()) else {
-                continue;
-            };
-            let open = self.revealed.get(id).copied().unwrap_or_default();
             for (offset, action, start, end) in rows {
+                // The reveal flag lives on the message the action names: a
+                // fold's header hangs off the first row of its tree, but it
+                // opens and closes the reply it stands for.
+                let open = self
+                    .messages
+                    .get(action.message())
+                    .and_then(|msg| self.revealed.get(msg.id.as_str()))
+                    .copied()
+                    .unwrap_or_default();
                 stops.push(RowStop {
                     row: from + offset,
                     start: *start,
@@ -1567,26 +1640,33 @@ impl ChatArea {
     ///
     /// Opening is per row, and the state is kept by message id, so a row that
     /// moves (a reply above it grew) or a level flip does not lose it. The
-    /// returned row is the first stop at or after the pressed one: a summary
-    /// row that opened turns into the rows it hid, and the cursor has to stay
-    /// somewhere the reader can see.
+    /// returned row is where the *same* row went: opening a fold moves its
+    /// header to the top of the work it stands for (and closing it moves the
+    /// header back), and a reader who pressed `enter` expects the cursor to
+    /// follow what they pressed rather than stay on a line that now says
+    /// something else.
     pub fn toggle_row(&mut self, row: usize) -> Option<usize> {
         let msg = self.message_at_row(row)?;
         let (from, _) = self.message_line_ranges[msg];
-        let kind = self.row_meta.get(&msg).and_then(|rows| {
+        let action = self.row_meta.get(&msg).and_then(|rows| {
             rows.iter()
                 .find(|(offset, _, _, _)| from + offset == row)
-                .map(|(_, action, _, _)| action.kind())
+                .map(|(_, action, _, _)| action.clone())
         })?;
-        let id = self.messages[msg].id.clone();
-        self.revealed.entry(id).or_default().toggle(kind);
+        let id = self
+            .messages
+            .get(action.message())
+            .map(|msg| msg.id.clone())?;
+        self.revealed.entry(id).or_default().toggle(action.kind());
         // The transcript's height changes by however much was opened or
         // folded, which invalidates the scroll offset the reader was holding.
         self.rerender();
         self.set_auto_scroll(true);
-        self.row_stops()
-            .into_iter()
-            .find(|stop| stop.row >= row)
+        let stops = self.row_stops();
+        stops
+            .iter()
+            .find(|stop| stop.action == action)
+            .or_else(|| stops.iter().find(|stop| stop.row >= row))
             .map(|stop| stop.row)
     }
 
@@ -2018,13 +2098,21 @@ impl ChatArea {
             // The reply is already just its output: nothing to stand in for.
             return;
         }
-        // The reader opened this reply's process row: it replays in place, every
-        // slice with its own row — the same transcript `detailed` would have
-        // shown, without changing the level for the rest of the conversation.
+        // The reader opened this reply's process row: it replays as a tree
+        // under a header that folds it away again (see [`Self::open_tree`]).
         if revealed
             .get(messages[head].id.as_str())
             .is_some_and(|open| open.get(RowKind::Process))
         {
+            Self::open_tree(
+                &mut plan.trees,
+                messages,
+                start,
+                end,
+                head,
+                RowKind::Process,
+                summary,
+            );
             return;
         }
         for index in folded {
@@ -2037,6 +2125,53 @@ impl ChatArea {
                 burst: false,
             },
         );
+    }
+
+    /// Lay a fold the reader opened out as a tree.
+    ///
+    /// Every row the fold stood for gets its own row back, hung under one header
+    /// that counts them and folds them away again — an opened fold with no
+    /// header is a state with no way out, because the summary row used to *turn
+    /// into* the rows it hid.
+    ///
+    /// `head` is the slice the fold rode on. An **answer** stays outside the
+    /// tree, at the transcript's own column: it is the reply's output rather
+    /// than part of its process, and the answer's own reasoning then reads as
+    /// its `▸ thinking` marker again, so the header stops counting it. A reply
+    /// that never wrote prose has no such row — its head is just the newest
+    /// slice, which joins the tree like every other one.
+    fn open_tree(
+        trees: &mut HashMap<usize, OpenedTree>,
+        messages: &[ChatMessage],
+        start: usize,
+        end: usize,
+        head: usize,
+        kind: RowKind,
+        summary: FoldSummary,
+    ) {
+        let answer_outside =
+            messages[head].role == ChatRole::Assistant && !messages[head].content.trim().is_empty();
+        let mut banner = summary;
+        if answer_outside && has_reasoning(&messages[head]) && !reasoning_only(&messages[head]) {
+            // The answer's reasoning is a marker of its own again (it is outside
+            // the tree), so it is no longer one of the header's counts.
+            banner.thoughts = banner.thoughts.saturating_sub(1);
+        }
+        let mut first = true;
+        for index in start..end {
+            if index == head && answer_outside {
+                continue;
+            }
+            trees.insert(
+                index,
+                OpenedTree {
+                    head,
+                    kind,
+                    banner: if first { Some(banner) } else { None },
+                },
+            );
+            first = false;
+        }
     }
 
     /// Fold a reply that is still running: each burst of adjacent work —
@@ -2124,11 +2259,21 @@ impl ChatArea {
                 }
             }
             // A burst the reader opened is not a fold: its calls and thoughts
-            // are rows of their own again (each one opens its own detail).
+            // are rows of their own again (each one opens its own detail), hung
+            // under the header that folds them back together.
             if revealed
                 .get(messages[burst].id.as_str())
                 .is_some_and(|open| open.get(RowKind::Burst))
             {
+                Self::open_tree(
+                    &mut plan.trees,
+                    messages,
+                    burst,
+                    fold_end,
+                    burst,
+                    RowKind::Burst,
+                    summary,
+                );
                 continue;
             }
             for head in plan.heads.iter_mut().take(fold_end).skip(burst + 1) {
@@ -2190,6 +2335,14 @@ impl ChatArea {
                 // join a run either: folding it into a later row would take
                 // the summary off screen with it.
                 if plan.folds.contains_key(&i) {
+                    run = None;
+                    continue;
+                }
+                // A row hanging under an opened fold's header is out of play
+                // for the same reason: a compact run would swallow the tree's
+                // rows into a row of its own, outside the header that counts
+                // them.
+                if plan.trees.contains_key(&i) {
                     run = None;
                     continue;
                 }
@@ -2266,6 +2419,10 @@ impl ChatArea {
                 .reply_folds
                 .keys()
                 .all(|idx| *idx < self.messages.len())
+            && self
+                .opened_trees
+                .keys()
+                .all(|idx| *idx < self.messages.len())
         {
             return false;
         }
@@ -2279,10 +2436,12 @@ impl ChatArea {
         // too, so the transcript is rebuilt rather than spliced.
         if fold_layout_extends(&self.compact_layout, &plan.heads)
             && plan.folds == self.reply_folds
+            && plan.trees == self.opened_trees
             && plan.counted == self.counted_reasoning
         {
             self.compact_layout = plan.heads;
             self.reply_folds = plan.folds;
+            self.opened_trees = plan.trees;
             self.counted_reasoning = plan.counted;
             return false;
         }
@@ -2305,6 +2464,7 @@ impl ChatArea {
         let plan = self.layout();
         self.compact_layout = plan.heads;
         self.reply_folds = plan.folds;
+        self.opened_trees = plan.trees;
         self.counted_reasoning = plan.counted;
         self.fold_bits = Self::fold_flags(&self.messages);
         self.rendered_lines = Vec::new();
@@ -2312,6 +2472,7 @@ impl ChatArea {
         // A folded message renders nothing and takes no separator with it, so
         // the transcript stays as tight as the summary row implies.
         let mut rendered_any = false;
+        let mut above: Option<usize> = None;
         for i in 0..self.messages.len() {
             if self.is_folded(i) {
                 let at = self.rendered_lines.len();
@@ -2319,16 +2480,16 @@ impl ChatArea {
                 continue;
             }
             if rendered_any {
-                self.rendered_lines.push(RenderedLine {
-                    text: String::new(),
-                    dim: true,
-                });
+                if let Some(above) = above {
+                    self.push_message_separator(i, above);
+                }
             }
             let start = self.rendered_lines.len();
             self.render_message(i);
             self.message_line_ranges
                 .push((start, self.rendered_lines.len() as i64 - 1));
             rendered_any = true;
+            above = Some(i);
         }
         self.rendered_lines.push(RenderedLine {
             text: String::new(),
@@ -2396,10 +2557,7 @@ impl ChatArea {
         }
         self.rendered_lines.pop();
         if self.messages.len() > 1 {
-            self.rendered_lines.push(RenderedLine {
-                text: String::new(),
-                dim: true,
-            });
+            self.push_message_separator(self.messages.len() - 1, self.messages.len() - 2);
         }
         let start = self.rendered_lines.len();
         self.render_message(self.messages.len() - 1);
@@ -2440,6 +2598,22 @@ impl ChatArea {
         let origin = self.rendered_lines.len();
         let run = self.compact_run(msg_idx);
         let fold = self.reply_folds.get(&msg_idx).copied();
+        let tree = self.opened_trees.get(&msg_idx).copied();
+        // An opened fold draws its header first — the row that folds it away
+        // again — and hangs every row it stands for under that header.
+        if let Some(tree) = tree {
+            if let Some(summary) = tree.banner {
+                self.push_fold_header(msg_idx, summary, tree, origin);
+            }
+        }
+        // The rows below the header are laid out one gutter narrower and hung
+        // under the rail once they are drawn: markdown wrapping, a call's band
+        // and its body all have to fit inside the tree's column.
+        let body = self.rendered_lines.len();
+        let width = self.width;
+        if tree.is_some() {
+            self.width = width.saturating_sub(TREE_GUTTER).max(1);
+        }
         let msg = self.messages[msg_idx].clone();
         match msg.role {
             ChatRole::User => self.render_user_message(&msg),
@@ -2462,6 +2636,63 @@ impl ChatArea {
             ChatRole::Tool if run > 1 => self.render_tool_run(msg_idx, run, origin),
             ChatRole::Tool => self.render_tool_message(msg_idx, &msg, origin),
             ChatRole::System => self.render_system_message(&msg),
+        }
+        self.width = width;
+        if tree.is_some() {
+            // The header is the tree's own row; everything after it hangs.
+            self.hang_under_rail(body, msg_idx, body - origin);
+        }
+    }
+
+    /// Look the rows just drawn hang under: the rail in column 1 of each, with
+    /// the rows' own widths already laid out one gutter narrower.
+    fn hang_under_rail(&mut self, from: usize, msg_idx: usize, skipped: usize) {
+        let rail = self.rail();
+        for row in &mut self.rendered_lines[from..] {
+            if row.text.is_empty() {
+                // A blank row inside the row's own text (a paragraph break)
+                // stays blank: a rail there would read as an empty row.
+                continue;
+            }
+            row.text = with_gutter(&row.text, &rail);
+        }
+        if let Some(rows) = self.row_meta.get_mut(&msg_idx) {
+            for (offset, _, start, end) in rows.iter_mut() {
+                if *offset < skipped {
+                    continue;
+                }
+                *start += TREE_GUTTER;
+                *end += TREE_GUTTER;
+            }
+        }
+    }
+
+    /// The gutter an opened fold's rows hang under, in the chrome's faint ink.
+    /// The foreground is given back with `39` rather than a full reset: a reset
+    /// would drop the background a call's band is painted on.
+    fn rail(&self) -> String {
+        format!(
+            "\x1b[38;5;{}m{TREE_RAIL}\x1b[39m ",
+            Chrome::from_theme(&self.theme).muted
+        )
+    }
+
+    /// The row that separates the message at `index` from the one above it: a
+    /// blank, or the tree's rail when both hang under one opened fold's header —
+    /// a blank row there would cut the tree in two.
+    fn push_message_separator(&mut self, index: usize, above: usize) {
+        let same_tree = match (self.opened_trees.get(&above), self.opened_trees.get(&index)) {
+            (Some(above), Some(index)) => above.head == index.head,
+            _ => false,
+        };
+        if same_tree {
+            let text = self.rail().trim_end().to_string();
+            self.rendered_lines.push(RenderedLine { text, dim: true });
+        } else {
+            self.rendered_lines.push(RenderedLine {
+                text: String::new(),
+                dim: true,
+            });
         }
     }
 
@@ -2818,7 +3049,7 @@ impl ChatArea {
         // has always had) — both stated once, for the whole row, by
         // `push_quiet_row`.
         let ink = self.theme.thinking_text as u8;
-        self.push_quiet_row(&label, ink, true);
+        self.push_quiet_row(FOLD_MARKER, &label, ink, true);
         self.mark_last_row(msg_idx, origin, RowAction::Thinking { msg: msg_idx });
     }
 
@@ -2867,7 +3098,7 @@ impl ChatArea {
     /// colour it was given, and the frame's row painter re-arms the body ink
     /// after it — so the counts that followed a `dim(▸)` used to arrive in the
     /// bright body colour while only the marker wore the faint ink.
-    fn push_quiet_row(&mut self, label: &str, ink: u8, italic_label: bool) {
+    fn push_quiet_row(&mut self, marker: &str, label: &str, ink: u8, italic_label: bool) {
         // A row is text like any other: a terminal too narrow for it clips it
         // instead of spilling past the last column. The marker and its two
         // spaces stay whole; the label takes what is left.
@@ -2877,7 +3108,7 @@ impl ChatArea {
             &TruncateOptions::default(),
         );
         let mut text = fg_raw(ink, " ");
-        text.push_str(&dim_raw(FOLD_MARKER));
+        text.push_str(&dim_raw(marker));
         text.push_str("\x1b[22m ");
         if italic_label {
             text.push_str(&italic_raw(&label));
@@ -2904,6 +3135,49 @@ impl ChatArea {
         burst: bool,
         origin: usize,
     ) {
+        let label = self.fold_summary_label(summary);
+        // Upright, not italic: the desktop's counts are plain, and slanted
+        // digits would pull the eye to the one row that is meant to sit behind
+        // the prose.
+        //
+        // The faintest ink the chrome has (the default palette's `241`, one step
+        // under the `245` of body dim text): the row is a note about work that
+        // already happened, and it should recede behind the answer it stands
+        // above.
+        let ink = Chrome::from_theme(&self.theme).muted;
+        self.push_quiet_row(FOLD_MARKER, &label, ink, false);
+        let action = if burst {
+            RowAction::Burst { msg: msg_idx }
+        } else {
+            RowAction::Process { msg: msg_idx }
+        };
+        self.mark_last_row(msg_idx, origin, action);
+    }
+
+    /// The header an opened fold's rows hang under: the same counts as the
+    /// closed summary row, with the marker turned down. Pressing it (`enter`, or
+    /// a click) folds the tree away again.
+    fn push_fold_header(
+        &mut self,
+        msg_idx: usize,
+        summary: FoldSummary,
+        tree: OpenedTree,
+        origin: usize,
+    ) {
+        let label = self.fold_summary_label(summary);
+        let ink = Chrome::from_theme(&self.theme).muted;
+        self.push_quiet_row(OPEN_MARKER, &label, ink, false);
+        let action = match tree.kind {
+            RowKind::Burst => RowAction::Burst { msg: tree.head },
+            _ => RowAction::Process { msg: tree.head },
+        };
+        self.mark_last_row(msg_idx, origin, action);
+    }
+
+    /// `12 tool calls · 3 thoughts` / `工具调用 12 次 · 思考 3 次`, in the order
+    /// [`FoldWords`] gives them; a fold that counted nothing (a burst of notes)
+    /// falls back on the plain name for what it hides.
+    fn fold_summary_label(&self, summary: FoldSummary) -> String {
         let words = self.fold_words;
         let mut parts: Vec<String> = Vec::new();
         if summary.tools > 0 {
@@ -2926,27 +3200,11 @@ impl ChatArea {
                 summary.thoughts,
             ));
         }
-        let label = if parts.is_empty() {
+        if parts.is_empty() {
             words.process.to_string()
         } else {
             parts.join(" · ")
-        };
-        // Upright, not italic: the desktop's counts are plain, and slanted
-        // digits would pull the eye to the one row that is meant to sit behind
-        // the prose.
-        //
-        // The faintest ink the chrome has (the default palette's `241`, one step
-        // under the `245` of body dim text): the row is a note about work that
-        // already happened, and it should recede behind the answer it stands
-        // above.
-        let ink = Chrome::from_theme(&self.theme).muted;
-        self.push_quiet_row(&label, ink, false);
-        let action = if burst {
-            RowAction::Burst { msg: msg_idx }
-        } else {
-            RowAction::Process { msg: msg_idx }
-        };
-        self.mark_last_row(msg_idx, origin, action);
+        }
     }
 
     fn render_tool_message(&mut self, msg_idx: usize, msg: &ChatMessage, origin: usize) {
@@ -3584,6 +3842,23 @@ mod tests {
             .collect()
     }
 
+    /// [`compact_lines`] with the tree's rail taken off, so a test can read an
+    /// opened fold as the rows it stands for.
+    fn rail_stripped(chat: &mut ChatArea) -> Vec<String> {
+        render_trimmed(chat)
+            .iter()
+            .map(|line| strip(line))
+            .map(|line| {
+                line.trim_start()
+                    .strip_prefix(TREE_RAIL)
+                    .unwrap_or(line.trim_start())
+                    .trim()
+                    .to_string()
+            })
+            .filter(|line| !line.is_empty())
+            .collect()
+    }
+
     #[test]
     fn compact_view_folds_a_run_of_calls_to_one_row() {
         let mut chat = detailed_chat();
@@ -4039,6 +4314,270 @@ mod tests {
         // level.
         assert!(!lines.iter().any(|l| l.contains("body")), "{lines:?}");
         assert_matches_fresh_render(&mut chat);
+    }
+
+    /// An opened process is a tree: one header that folds it again, and every
+    /// slice it stood for hung under a rail beneath it.
+    #[test]
+    fn an_opened_process_hangs_its_rows_under_one_header() {
+        let mut chat = new_chat();
+        chat.render(W);
+        set_messages(&mut chat, settled_turn_messages());
+        let stop = chat
+            .row_stops()
+            .into_iter()
+            .find(|stop| matches!(stop.action, RowAction::Process { .. }))
+            .expect("the fold draws a stop");
+        chat.toggle_row(stop.row).expect("the fold opens");
+
+        // The rows the fold stood for, in reply order, each under the rail.
+        assert_eq!(
+            rail_stripped(&mut chat),
+            vec![
+                "fix the parser",
+                "▾ 1 tool call · 1 thought",
+                "▸ thinking",
+                "read /src/parser.rs",
+                "I read the parser.",
+                "Fixed the off-by-one.",
+            ],
+        );
+        // …and the answer is outside the tree: it is the reply's output, not
+        // part of its process. Everything between the header and it hangs.
+        let rows: Vec<String> = render_trimmed(&mut chat)
+            .iter()
+            .map(|line| strip(line))
+            .collect();
+        let header = rows.iter().position(|row| row.contains("▾")).unwrap();
+        let answer = rows
+            .iter()
+            .position(|row| row.contains("off-by-one"))
+            .unwrap();
+        assert!(
+            rows[header + 1..answer - 1]
+                .iter()
+                .all(|row| row.trim_start().starts_with(TREE_RAIL)),
+            "every row between the header and the answer hangs: {rows:?}"
+        );
+        assert!(
+            rows[answer - 1].trim().is_empty(),
+            "a blank row separates the tree from the answer: {rows:?}"
+        );
+        assert_matches_fresh_render(&mut chat);
+
+        // The rail is paid for by the layout, not added on top of it: no row of
+        // the tree is wider than the terminal, and a call's band still runs edge
+        // to edge with the rail painted on it.
+        for width in [W, 64, 40] {
+            let rendered = chat.render_all(width);
+            for row in &rendered {
+                assert!(
+                    visible_width_of(row) <= width,
+                    "a tree row is wider than the terminal ({width}): {row:?}"
+                );
+            }
+            let band = rendered
+                .iter()
+                .find(|row| strip(row).contains("/src/parser.rs"))
+                .expect("the call is on screen");
+            assert_eq!(visible_width_of(band), width, "the band reaches both edges");
+            assert_matches_fresh_render_at(&mut chat, width);
+        }
+    }
+
+    /// The header is the way back out: pressing it folds the tree onto its
+    /// counts again. Before it existed an opened fold had no exit at all — the
+    /// summary row *became* the rows it hid, so the only row that could close
+    /// them was gone.
+    #[test]
+    fn the_tree_header_folds_its_rows_away_again() {
+        let mut chat = new_chat();
+        chat.render(W);
+        set_messages(&mut chat, settled_turn_messages());
+        let folded = compact_lines(&mut chat);
+
+        let summary = chat
+            .row_stops()
+            .into_iter()
+            .find(|stop| matches!(stop.action, RowAction::Process { .. }))
+            .expect("the fold draws a stop");
+        chat.toggle_row(summary.row).expect("the fold opens");
+
+        let header = chat
+            .row_stops()
+            .into_iter()
+            .find(|stop| matches!(stop.action, RowAction::Process { .. }))
+            .expect("the opened fold keeps a row to close it");
+        assert!(header.expanded, "the header reports the fold open");
+        let landed = chat.toggle_row(header.row).expect("the header closes it");
+        assert_eq!(
+            compact_lines(&mut chat),
+            folded,
+            "closing the tree restores the folded transcript"
+        );
+        // The cursor stays on the fold rather than on whatever line it used to
+        // occupy: closing moves the header down onto the answer.
+        assert_eq!(
+            landed,
+            chat.row_stops()
+                .into_iter()
+                .find(|stop| matches!(stop.action, RowAction::Process { .. }))
+                .expect("the fold draws a stop")
+                .row
+        );
+        assert_matches_fresh_render(&mut chat);
+    }
+
+    /// A reply that never wrote prose has no answer to keep outside the tree: its
+    /// head is just the newest slice, so every row hangs under the header.
+    #[test]
+    fn an_opened_reply_without_an_answer_hangs_every_row() {
+        let mut chat = new_chat();
+        chat.render(W);
+        set_messages(
+            &mut chat,
+            vec![
+                ChatMessage::new("u1".into(), ChatRole::User, "go"),
+                read_of("/a.rs"),
+                read_of("/b.rs"),
+            ],
+        );
+        let stop = chat
+            .row_stops()
+            .into_iter()
+            .find(|stop| matches!(stop.action, RowAction::Process { .. }))
+            .expect("the fold draws a stop");
+        chat.toggle_row(stop.row).expect("the fold opens");
+        assert_eq!(
+            rail_stripped(&mut chat),
+            vec!["go", "▾ 1 tool call", "read /a.rs", "read /b.rs"],
+        );
+        let rows: Vec<String> = render_trimmed(&mut chat)
+            .iter()
+            .map(|line| strip(line))
+            .collect();
+        let header = rows.iter().position(|row| row.contains("▾")).unwrap();
+        assert!(
+            rows[header + 1..]
+                .iter()
+                .filter(|row| !row.trim().is_empty())
+                .all(|row| row.trim_start().starts_with(TREE_RAIL)),
+            "nothing follows the tree when the reply has no answer: {rows:?}"
+        );
+        assert_matches_fresh_render(&mut chat);
+    }
+
+    /// The same for a burst of work folded where it happened: its header closes
+    /// it, and the call the reader is watching stays outside the tree.
+    #[test]
+    fn an_opened_burst_closes_from_its_header() {
+        let mut chat = detailed_chat();
+        chat.render(W);
+        chat.add_message(ChatMessage::new("u".into(), ChatRole::User, "go"));
+        chat.add_message(ChatMessage::new("a0".into(), ChatRole::Assistant, ""));
+        chat.start_thinking();
+        chat.append_thinking_delta("weighing it");
+        chat.end_thinking();
+        chat.add_tool_start("c1", "read", Some(r#"{"path":"/a.rs"}"#.into()));
+        chat.finish_tool("c1", None, false);
+        chat.add_tool_start("c2", "read", Some(r#"{"path":"/b.rs"}"#.into()));
+
+        let folded = compact_lines(&mut chat);
+        let burst = chat
+            .row_stops()
+            .into_iter()
+            .find(|stop| matches!(stop.action, RowAction::Burst { .. }))
+            .expect("the burst draws a stop");
+        chat.toggle_row(burst.row).expect("the burst opens");
+        assert_eq!(
+            rail_stripped(&mut chat),
+            vec![
+                "go",
+                "▾ 1 tool call · 1 thought",
+                "▸ thinking",
+                "read /a.rs",
+                "read /b.rs",
+            ],
+        );
+        // The call in flight is the row the reader is watching, not part of what
+        // the header counts.
+        assert!(
+            render_trimmed(&mut chat)
+                .iter()
+                .map(|line| strip(line))
+                .any(|row| !row.contains(TREE_RAIL) && row.contains("/b.rs")),
+            "the newest call stays outside the tree"
+        );
+
+        let header = chat
+            .row_stops()
+            .into_iter()
+            .find(|stop| matches!(stop.action, RowAction::Burst { .. }))
+            .expect("the opened burst keeps a row to close it");
+        assert!(header.expanded);
+        chat.toggle_row(header.row).expect("the header closes it");
+        assert_eq!(compact_lines(&mut chat), folded);
+        assert_matches_fresh_render(&mut chat);
+    }
+
+    /// A call opened inside a tree keeps its body under it, indented like the
+    /// rest of the tree.
+    #[test]
+    fn a_call_inside_a_tree_opens_its_body_in_place() {
+        let mut chat = new_chat();
+        chat.render(W);
+        set_messages(&mut chat, settled_turn_messages());
+        let summary = chat
+            .row_stops()
+            .into_iter()
+            .find(|stop| matches!(stop.action, RowAction::Process { .. }))
+            .expect("the fold draws a stop");
+        chat.toggle_row(summary.row).expect("the fold opens");
+
+        let call = chat
+            .row_stops()
+            .into_iter()
+            .find(|stop| matches!(stop.action, RowAction::Tool { .. }))
+            .expect("the call is a row of the tree");
+        assert!(call.start >= TREE_GUTTER, "the row hangs under the rail");
+        chat.toggle_row(call.row).expect("the call opens");
+
+        let rows: Vec<String> = render_trimmed(&mut chat)
+            .iter()
+            .map(|line| strip(line))
+            .collect();
+        let body = rows
+            .iter()
+            .position(|row| row.contains("body"))
+            .unwrap_or_else(|| panic!("the call's body is on screen: {rows:?}"));
+        assert!(
+            rows[body].trim_start().starts_with(TREE_RAIL),
+            "the body is part of the tree: {rows:?}"
+        );
+        assert_matches_fresh_render(&mut chat);
+        // A body is laid out in the tree's column too: no row spills past the
+        // terminal, whatever the width.
+        for width in [W, 40] {
+            for row in &chat.render_all(width) {
+                assert!(
+                    visible_width_of(row) <= width,
+                    "a body row is wider than the terminal ({width}): {row:?}"
+                );
+            }
+            assert_matches_fresh_render_at(&mut chat, width);
+        }
+    }
+
+    /// The rail goes in front of a row, inside its band when it has one: a call's
+    /// background runs edge to edge like every other row, so the tree's rail is
+    /// painted *on* it rather than beside it.
+    #[test]
+    fn the_rail_is_painted_inside_a_call_band() {
+        assert_eq!(
+            with_gutter("\x1b[48;5;236m read a.rs \x1b[0m", "│ "),
+            "\x1b[48;5;236m│  read a.rs \x1b[0m"
+        );
+        assert_eq!(with_gutter(" ▸ thinking", "│ "), "│  ▸ thinking");
     }
 
     /// Opening the settled summary replays the reply's process in place: the

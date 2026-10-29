@@ -991,8 +991,8 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ),
         HelpKeySidebar => ("侧栏：打开 / 聚焦 / 收起", "Sidebar: show / focus / hide"),
         HelpKeyFocus => (
-            "在对话里逐个选中链接与图片，⏎ 打开",
-            "Step through the conversation's links and pictures, enter opens one",
+            "在对话里逐个选中链接与图片，⏎ 打开、再按一次收起",
+            "Step through the conversation's links and pictures: enter opens one, enter again folds it",
         ),
         HelpKeyScroll => ("滚动聊天，或侧栏列表", "Scroll the chat, or the sidebar's list"),
         HelpKeyPage => ("整页滚动聊天", "Scroll the chat a page at a time"),
