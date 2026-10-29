@@ -24,6 +24,10 @@ pub struct Manager {
     display_projection_cache: parking_lot::Mutex<Vec<DisplayProjectionCacheEntry>>,
     pub(in crate::session) history_fragments:
         parking_lot::Mutex<super::history::fragment_cache::FragmentCache>,
+    /// Bounded cache of materialized history pages, keyed by revision (see
+    /// `history::paging`). A switch re-reads the tail page to find out whether
+    /// the conversation moved on, so the same page is asked for again and again.
+    pub(in crate::session) history_pages: parking_lot::Mutex<super::history::paging::PageCache>,
     /// Test-only save-failure injection (number of saves left to fail).
     #[cfg(test)]
     pub(crate) fail_saves_remaining: std::sync::atomic::AtomicU64,
@@ -38,6 +42,7 @@ impl Manager {
             initialization: parking_lot::Mutex::new(()),
             display_projection_cache: parking_lot::Mutex::new(Vec::new()),
             history_fragments: parking_lot::Mutex::new(Default::default()),
+            history_pages: parking_lot::Mutex::new(super::history::paging::PageCache::new()),
             #[cfg(test)]
             fail_saves_remaining: std::sync::atomic::AtomicU64::new(0),
         }

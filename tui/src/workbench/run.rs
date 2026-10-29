@@ -585,6 +585,15 @@ const IDLE_REFRESH: Duration = Duration::from_secs(60);
 /// The call is started, never awaited, in the loop (`Live::begin_sessions_refresh`):
 /// its cost is the agent's to decide, and a listing that blocks the surface is
 /// the one bill a clock this frequent cannot pay.
+///
+/// Measured 2026-10-30 on a 147-conversation store (`agent.db` at 1.7 GB), so
+/// this clock is not the agent's own busy signal: **30–50 ms** steady — 0.6–1 %
+/// of one of the two read workers — and **10 s on the first call of an agent
+/// process whose pages have gone cold** (hours idle), which is a one-off: it
+/// warms the same pages the next five seconds re-read. An incremental listing
+/// (a revision token, a TTL memo) was therefore not built: it would trade a
+/// staleness rule for a call that is already free when it matters. The long
+/// tail is the cold read, and that one is the store's size, not the polling.
 const SESSIONS_POLL: Duration = Duration::from_secs(5);
 
 /// How many already-queued agent events one iteration applies before painting.

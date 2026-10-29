@@ -4,7 +4,7 @@
 mod display_index;
 mod display_projection;
 pub(super) mod fragment_cache;
-mod paging;
+pub(super) mod paging;
 mod recall;
 mod recovery;
 
