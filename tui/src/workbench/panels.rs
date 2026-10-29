@@ -3,9 +3,9 @@
 //! Two of them are the rail's tabs, and both list *conversations*: 最近 lists
 //! every conversation by when it was last refreshed — a run still in flight
 //! first, under its own heading — and 工作区 files the same conversations the way
-//! the desktop does — pinned workspaces first, then the workspaces themselves,
-//! then the plain chats. Nothing else lives here: the usage figures are on the
-//! status bar, and skills are the palette's business.
+//! the desktop does — the conversations the reader pinned first, then the
+//! workspaces themselves, then the plain chats. Nothing else lives here: the
+//! usage figures are on the status bar, and skills are the palette's business.
 //!
 //! The third, [`PanelId::Files`], is not a tab: it is the session workspace as a
 //! tree, painted inside the files overlay (`screen::files_box`). It shares the
@@ -148,7 +148,7 @@ impl Row {
 /// touch", so it stays most recently spoken first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
-    /// Conversations of the workspaces the reader pinned.
+    /// The conversations the reader pinned (`/pin`).
     Pinned,
     /// Every other workspace, most recently worked on first.
     Workspaces,
@@ -178,12 +178,12 @@ impl Section {
     /// Does this heading caption a flat block of conversations, rather than
     /// head a run of workspaces?
     ///
-    /// 最近's two stretches do, so their heading carries the count (`活跃 3`) —
-    /// the desktop's caption, in the rail's shape. 工作区's sections head
-    /// workspaces instead, and a workspace heading already counts what sits
-    /// under it.
+    /// 最近's two stretches and 工作区's 置顶 (a pin names a conversation) do, so
+    /// their heading carries the count (`活跃 3`) — the desktop's caption, in the
+    /// rail's shape. The other 工作区 sections head workspaces instead, and a
+    /// workspace heading already counts what sits under it.
     fn counts_sessions(self) -> bool {
-        matches!(self, Self::Active | Self::Earlier)
+        matches!(self, Self::Active | Self::Earlier | Self::Pinned)
     }
 }
 
@@ -235,37 +235,51 @@ pub fn rows_with(panel: PanelId, data: &WorkbenchData, folded: &Folded) -> Vec<R
         PanelId::Files => (0..data.tree.rows().len()).map(Row::File).collect(),
         PanelId::Workspaces => {
             let mut rows: Vec<Row> = Vec::new();
-            // One heading per section, not one per group inside it: the pinned
-            // workspaces share one 置顶 block however many there are.
-            for (pinned, kind) in [(true, Section::Pinned), (false, Section::Workspaces)] {
-                let mut headed = false;
-                for index in 0..data.workspaces.len() {
-                    let workspace = &data.workspaces[index];
-                    if workspace.pinned != pinned {
-                        continue;
-                    }
-                    let listed: Vec<usize> = workspace
-                        .session_ids
-                        .iter()
-                        .filter_map(|id| data.sessions.iter().position(|row| &row.id == id))
-                        .collect();
-                    if !headed {
-                        rows.push(Row::Section(kind));
-                        headed = true;
-                    }
-                    rows.push(Row::Workspace(index));
-                    // A folded workspace is its heading alone, which is what
-                    // makes a rail with two hundred conversations scrollable:
-                    // one line per group instead of one per conversation.
-                    if folded.contains(&workspace.path) {
-                        continue;
-                    }
-                    rows.extend(listed.into_iter().map(Row::Session));
-                }
+            // The pinned conversations lead, flat: a pin names a conversation,
+            // so it is lifted out of whichever workspace would have filed it
+            // (the desktop's tree view does the same, and its groups are the
+            // unpinned rest). One heading for the block, however many it holds,
+            // and none at all when nothing is pinned.
+            let pinned: Vec<usize> = (0..data.sessions.len())
+                .filter(|index| data.sessions[*index].pinned)
+                .collect();
+            if !pinned.is_empty() {
+                rows.push(Row::Section(Section::Pinned));
+                rows.extend(pinned.into_iter().map(Row::Session));
             }
+            // Then the workspaces in the order their newest conversation was
+            // spoken, each with what a pin did not lift out. A group with
+            // nothing left to hold is not drawn: a heading is here because
+            // conversations sit under it.
+            let mut headed = false;
+            for index in 0..data.workspaces.len() {
+                let workspace = &data.workspaces[index];
+                let listed = filed_sessions(data, &workspace.session_ids);
+                if listed.is_empty() {
+                    continue;
+                }
+                if !headed {
+                    rows.push(Row::Section(Section::Workspaces));
+                    headed = true;
+                }
+                rows.push(Row::Workspace(index));
+                // A folded workspace is its heading alone, which is what
+                // makes a rail with two hundred conversations scrollable:
+                // one line per group instead of one per conversation.
+                if folded.contains(&workspace.path) {
+                    continue;
+                }
+                rows.extend(listed.into_iter().map(Row::Session));
+            }
+            // …and the conversations that belong to no workspace, a pinned one
+            // again left to 置顶.
             let mut headed = false;
             for id in &data.chats {
-                if let Some(at) = data.sessions.iter().position(|row| &row.id == id) {
+                if let Some(at) = data
+                    .sessions
+                    .iter()
+                    .position(|row| &row.id == id && !row.pinned)
+                {
                     if !headed {
                         rows.push(Row::Section(Section::Chats));
                         headed = true;
@@ -276,6 +290,20 @@ pub fn rows_with(panel: PanelId, data: &WorkbenchData, folded: &Folded) -> Vec<R
             rows
         }
     }
+}
+
+/// The conversations a workspace heading draws under itself: the ids still in
+/// the list, minus the ones a pin lifted into 置顶.
+///
+/// The lift happens here rather than in the filing because 置顶 is a shape of
+/// the *rail*, not a fact about a directory: the same list is drawn as 最近 (a
+/// pin changes nothing there) and as this tab (it leads), and a filing that had
+/// already dropped the pinned rows could not serve both.
+fn filed_sessions(data: &WorkbenchData, ids: &[String]) -> Vec<usize> {
+    ids.iter()
+        .filter_map(|id| data.sessions.iter().position(|row| &row.id == id))
+        .filter(|index| !data.sessions[*index].pinned)
+        .collect()
 }
 
 /// The first row the cursor can stand on, starting at `from` and wrapping; `None`
@@ -529,6 +557,9 @@ fn item_rows(
             Row::Workspace(at) => match data.workspaces.get(*at) {
                 Some(workspace) => vec![workspace_row(
                     workspace,
+                    // What the heading actually draws under itself: a
+                    // conversation the reader pinned is in 置顶, not here.
+                    filed_sessions(data, &workspace.session_ids).len(),
                     // `▸` over rows that are not there: a fold of a group the
                     // list is showing whole.
                     folded.contains(&workspace.path),
@@ -697,8 +728,10 @@ fn section_row(
 
 /// A workspace's heading: the fold marker, its name, and how many
 /// conversations sit under it.
+#[allow(clippy::too_many_arguments)] // one painted row, one argument per fact it draws
 fn workspace_row(
     workspace: &crate::workbench::state::WorkspaceGroup,
+    count: usize,
     folded: bool,
     selected: bool,
     palette: &Palette,
@@ -706,7 +739,7 @@ fn workspace_row(
     lang: Language,
     tail: TailColumns,
 ) -> String {
-    let units = workspace.session_ids.len();
+    let units = count;
     // Both halves are padded to their column, so the `·` sits in one cell down
     // the list and the age keeps its own column beside it — `313 会话 · now`
     // over `5 会话 · 26m`.
@@ -1143,7 +1176,10 @@ mod tests {
 
     #[test]
     fn the_workspace_panel_files_pinned_then_workspaces_then_chats() {
-        let data = demo::chat();
+        let mut data = demo::chat();
+        // A pin names one conversation and lifts it out of the workspace that
+        // would have filed it — the desktop's tree view does the same.
+        data.sessions[1].pinned = true;
         let model = rows(PanelId::Workspaces, &data);
         let labels: Vec<String> = model
             .iter()
@@ -1161,20 +1197,52 @@ mod tests {
             ],
             "{labels:?}"
         );
+        // The pinned conversation leads the tab…
+        assert_eq!(model.get(1), Some(&Row::Session(1)), "{model:?}");
+        // …and is not filed under its workspace as well.
+        assert_eq!(
+            model.iter().filter(|row| **row == Row::Session(1)).count(),
+            1,
+            "a pinned conversation is listed once"
+        );
         // Every conversation is filed exactly once.
         let sessions: Vec<usize> = model.iter().filter_map(|row| row.session()).collect();
         let mut unique = sessions.clone();
         unique.sort_unstable();
         unique.dedup();
         assert_eq!(unique.len(), sessions.len(), "a conversation listed twice");
-        assert!(data.workspaces[0].pinned, "the fixture pins one workspace");
-        // …and the pinned one leads.
+        // The workspace headings follow in the order the filing built them,
+        // newest activity first — a pin does not move a workspace any more.
         assert_eq!(
             model.iter().find_map(|row| match row {
                 Row::Workspace(index) => Some(*index),
                 _ => None,
             }),
             Some(0)
+        );
+    }
+
+    /// Nothing pinned: the tab has no 置顶 heading at all, rather than one over
+    /// an empty block.
+    #[test]
+    fn the_pinned_heading_is_only_drawn_when_something_is_pinned() {
+        let data = demo::chat();
+        let labels: Vec<&'static str> = rows(PanelId::Workspaces, &data)
+            .iter()
+            .filter_map(|row| match row {
+                Row::Section(section) => Some(section.label(Language::Zh)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(labels, vec!["工作区", "对话会话"], "{labels:?}");
+        // …and its heading counts what it holds, like 活跃/更早 do.
+        let mut pinned = demo::chat();
+        pinned.sessions[0].pinned = true;
+        pinned.sessions[2].pinned = true;
+        let lines = plain_rows(PanelId::Workspaces, &pinned, 60, 30);
+        assert!(
+            lines.iter().any(|line| line.contains("置顶 2")),
+            "the pinned block is captioned with its count: {lines:?}"
         );
     }
 
@@ -1322,6 +1390,7 @@ mod tests {
                 parent_id: None,
                 streaming: false,
                 created_at_ms: 0,
+                pinned: false,
             });
             data.workspaces[1].session_ids.push(id);
         }
@@ -1390,6 +1459,7 @@ mod tests {
                 parent_id: None,
                 streaming: false,
                 created_at_ms: 0,
+                pinned: false,
             })
             .collect();
         let mut hit = HitMap::new();
@@ -1449,6 +1519,7 @@ mod tests {
                 parent_id: None,
                 streaming: false,
                 created_at_ms: 0,
+                pinned: false,
             })
             .collect();
         let total = rows(PanelId::Recent, &data).len();

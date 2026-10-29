@@ -95,6 +95,13 @@ pub struct SessionRow {
     /// here too — as long as the list is re-read while it runs (see
     /// `run::SESSIONS_POLL`).
     pub streaming: bool,
+    /// The reader pinned this conversation (`/pin`, the 置顶 section of 工作区).
+    ///
+    /// A pin names a conversation, not the directory it ran in: the agent has
+    /// no such flag, so this is this client's own choice, held in
+    /// `settings.json` (`pinnedSessions`) and filed into the rail's 置顶 block by
+    /// [`crate::workbench::panels::rows_with`].
+    pub pinned: bool,
 }
 
 /// One workspace in the 工作区 tab: a directory several conversations are filed
@@ -106,8 +113,6 @@ pub struct WorkspaceGroup {
     /// The directory, which is the group's identity — two checkouts can share a
     /// name.
     pub path: String,
-    /// Above the unpinned workspaces, in the 置顶 section.
-    pub pinned: bool,
     /// How long ago anything in it was refreshed (`5m`, `3h`).
     pub age: String,
     /// The conversations filed under it, most recently refreshed first.
@@ -529,10 +534,14 @@ pub struct WorkbenchData {
     /// The conversations, most recently refreshed first. Both panels read this
     /// one list; 工作区 only adds the filing.
     pub sessions: Vec<SessionRow>,
-    /// The workspace groups 工作区 files them under, pinned first.
+    /// The workspace groups 工作区 files them under, most recently worked on
+    /// first. This is the *filing*, which knows nothing about pins: 工作区 draws
+    /// a pinned conversation in 置顶 instead of under its heading, and 最近
+    /// draws it where it always would (see `panels::filed_sessions`).
     pub workspaces: Vec<WorkspaceGroup>,
     /// Conversations that belong to no workspace — the desktop's plain chats.
-    /// Session ids, in the same order as `sessions`.
+    /// Session ids, in the same order as `sessions`. A pinned one is drawn in
+    /// 置顶 by 工作区, like a pinned conversation in a workspace.
     pub chats: Vec<String>,
     /// Every model the agent offers, in the agent's order. The `/model` picker
     /// groups them by provider; an empty list is a picker that says so.

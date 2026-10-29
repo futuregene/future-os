@@ -398,10 +398,10 @@ pub enum WbAction {
     SetLanguage(LanguagePreference),
     /// A layout preference changed; the driver persists the whole surface state.
     SetPreferences,
-    /// The reader pinned (or unpinned) a workspace in the rail; the app records
-    /// it and rebuilds the groups.
-    SetWorkspacePinned {
-        path: String,
+    /// The reader pinned (or unpinned) a conversation in the rail; the app
+    /// records it and re-files the 工作区 tab.
+    SetSessionPinned {
+        id: String,
         pinned: bool,
     },
     /// Persist the effective shortcut map after a rebind or reset.
@@ -1991,29 +1991,38 @@ impl Workbench {
         vec![WbAction::Redraw]
     }
 
-    /// The workspace the conversation under the cursor belongs to.
-    fn selected_workspace<'a>(
-        &'a self,
-        data: &'a WorkbenchData,
-    ) -> Option<&'a state::WorkspaceGroup> {
+    /// The conversation under the rail's cursor.
+    ///
+    /// A pin names a conversation, not the directory it ran in: pinning the
+    /// workspace took every conversation in that directory along with it, which
+    /// is not what "keep this one where I can find it" means.
+    fn selected_session<'a>(&'a self, data: &'a WorkbenchData) -> Option<&'a state::SessionRow> {
         let rows = self.panel_rows(data);
-        let session = rows.get(self.sidebar_index)?.session()?;
-        let id = &data.sessions.get(session)?.id;
-        data.workspaces
-            .iter()
-            .find(|workspace| workspace.session_ids.contains(id))
+        let index = rows.get(self.sidebar_index)?.session()?;
+        data.sessions.get(index)
     }
 
-    /// Pin or unpin the workspace the cursor's conversation belongs to.
+    /// Pin or unpin the conversation under the rail's cursor.
     ///
     /// `pub(crate)` because the *driver* applies it: the verb is `/pin` (draft
     /// and palette), and a command reaches the surface through
     /// `surface_command`, which answers a notice rather than an action list.
+    ///
+    /// There is nothing to pin on the launchpad: the conversation the verb is
+    /// about is the one the first message creates, and it does not exist yet —
+    /// so a pin there would name a row the reader never chose (the rail's
+    /// cursor may sit on any old conversation) and, worse, look like it pinned
+    /// the new session.
     pub(crate) fn toggle_pin_selected(&mut self, data: &WorkbenchData) -> Vec<WbAction> {
-        match self.selected_workspace(data) {
-            Some(workspace) => vec![WbAction::SetWorkspacePinned {
-                path: workspace.path.clone(),
-                pinned: !workspace.pinned,
+        if data.on_launchpad() {
+            return vec![WbAction::Notice(
+                t(self.lang, Key::NoticePinNewSession).to_string(),
+            )];
+        }
+        match self.selected_session(data) {
+            Some(session) => vec![WbAction::SetSessionPinned {
+                id: session.id.clone(),
+                pinned: !session.pinned,
             }],
             None => vec![WbAction::Notice(
                 t(self.lang, Key::NoticePinUnavailable).to_string(),
@@ -4123,11 +4132,11 @@ impl Workbench {
         // none claims only the bare word — `/pin explain this` is a sentence,
         // not a pin.
         if let Some(command) = known_command(&text) {
-            // `/pin` names a workspace action and has no argument to give the
-            // words to, so a line that follows it with any is the reader's
-            // prompt. Claiming the verb there answered the pin and dropped what
-            // came after it, which is how a draft meant for the agent ended up
-            // toggling the rail instead of starting a session.
+            // `/pin` names a rail action on one conversation and has no
+            // argument to give the words to, so a line that follows it with any
+            // is the reader's prompt. Claiming the verb there answered the pin
+            // and dropped what came after it, which is how a draft meant for the
+            // agent ended up toggling the rail instead of starting a session.
             if command.name.eq_ignore_ascii_case("/pin") && !command.arg.is_empty() {
                 return vec![WbAction::Submit(text)];
             }
@@ -4420,8 +4429,10 @@ const FULL_WIDTH_QUESTION: &str = "？"; // i18n: a key spelling, not copy — n
 /// The help overlay's key table.
 /// The keys that are *not* configurable actions, for the help overlay: they are
 /// spelled inside the composer (`/`, `?`, `@`, `#`), or they are the pointer, or
-/// they belong to the focused rail (`p`, `delete`). Everything with a `preferences::Action`
-/// is listed from that table instead, so a rebind is shown rebind.
+/// they are the two rail verbs that have no chord of their own (`/pin`,
+/// `/delete` — a letter in the draft is a letter). Everything with a
+/// `preferences::Action` is listed from that table instead, so a rebind is shown
+/// rebind.
 pub const HELP_KEYS: [(&str, Key); 12] = [
     ("tab", Key::HelpKeyFocus),
     ("↑ ↓", Key::HelpKeyScroll),
@@ -5890,8 +5901,14 @@ mod tests {
         let data = demo::workspaces();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         workbench.panel = PanelId::Workspaces;
-        workbench.sidebar_index = 0;
-        workbench.step_session(1, &data);
+        // The first heading the tab draws — the pinned block leads it, and a
+        // pin's group is not even headed.
+        let at = workbench
+            .panel_rows(&data)
+            .iter()
+            .position(|row| matches!(row, panels::Row::Workspace(_)))
+            .expect("the tab lists workspaces");
+        workbench.sidebar_index = at;
         let heading = match workbench.panel_rows(&data)[workbench.sidebar_index] {
             panels::Row::Workspace(index) => data.workspaces[index].path.clone(),
             other => panic!("the cursor is on a workspace heading: {other:?}"),
@@ -5917,12 +5934,40 @@ mod tests {
         let open = panels::rows(PanelId::Workspaces, &data).len();
         let mut workbench = workbench();
         workbench.panel = PanelId::Workspaces;
-        workbench.set_folded_workspaces([data.workspaces[0].path.clone()]);
+        // A group with something left to fold: the pinned block leads the tab,
+        // and a pin's own workspace has no heading at all.
+        let folded = data
+            .workspaces
+            .iter()
+            .find(|group| {
+                group
+                    .session_ids
+                    .iter()
+                    .any(|id| data.sessions.iter().any(|row| &row.id == id && !row.pinned))
+            })
+            .cloned()
+            .expect("a workspace with an unpinned conversation");
+        let inside = folded
+            .session_ids
+            .iter()
+            .find(|id| {
+                data.sessions
+                    .iter()
+                    .any(|row| &row.id == *id && !row.pinned)
+            })
+            .cloned()
+            .expect("the conversation is in the list");
+        let at = data
+            .sessions
+            .iter()
+            .position(|row| row.id == inside)
+            .expect("the conversation is in the list");
+        workbench.set_folded_workspaces([folded.path.clone()]);
         let rows = workbench.panel_rows(&data);
         assert!(rows.len() < open, "{rows:?}");
         assert!(
-            !rows.iter().any(|row| row.session() == Some(0)),
-            "the first workspace's conversation is folded away: {rows:?}"
+            !rows.iter().any(|row| row.session() == Some(at)),
+            "the workspace's conversation is folded away: {rows:?}"
         );
     }
     /// The arrows are the transcript's and the caret's, never the rail's: `↑`/`↓`
@@ -6092,11 +6137,14 @@ mod tests {
         assert!(workbench.step_session(5, &data).is_empty());
         assert_eq!(workbench.sidebar_index, 3);
     }
-    /// `/pin` pins the workspace the cursor's conversation belongs to — the
-    /// rail's cursor, so `shift+↑/↓` picks which one — and `p` stays a letter in
-    /// the draft.
+    /// `/pin` pins the conversation under the rail's cursor — the rail's cursor,
+    /// so `shift+↑/↓` picks which one — and `p` stays a letter in the draft.
+    ///
+    /// A pin names one conversation, not the directory it ran in: the old verb
+    /// pinned the *workspace*, which took every conversation in that directory
+    /// with it.
     #[test]
-    fn the_pin_command_pins_the_cursor_workspace_and_p_stays_a_letter() {
+    fn the_pin_command_pins_the_cursor_conversation_and_p_stays_a_letter() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         // Not a chord: a letter in the draft, as always.
@@ -6108,10 +6156,10 @@ mod tests {
 
         workbench.sidebar_visible = true;
         workbench.sidebar_index = 0;
-        let workspace = &data.workspaces[0];
-        assert!(workspace.pinned);
+        let first = data.sessions[0].id.clone();
+        assert!(!data.sessions[0].pinned, "the fixture pins nothing");
         // Typed in the draft: the command clears the line and hands the app the
-        // pin, which is what the rail's old `p` did.
+        // pin of the row the cursor is on.
         let mut typed = data.clone();
         typed.input.text = "/pin".into();
         typed.input.cursor = 4;
@@ -6122,46 +6170,73 @@ mod tests {
                     text: String::new(),
                     cursor: 0,
                 },
-                WbAction::SetWorkspacePinned {
-                    path: workspace.path.clone(),
+                WbAction::SetSessionPinned {
+                    id: first.clone(),
+                    pinned: true,
+                },
+            ]
+        );
+
+        // The same verb on a pinned row is the unpin: the action carries the
+        // row's own state rather than a fixed `true`.
+        let mut pinned = data.clone();
+        pinned.sessions[0].pinned = true;
+        let mut unpin = pinned.clone();
+        unpin.input.text = "/pin".into();
+        unpin.input.cursor = 4;
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &unpin),
+            vec![
+                WbAction::EditInput {
+                    text: String::new(),
+                    cursor: 0,
+                },
+                WbAction::SetSessionPinned {
+                    id: first,
                     pinned: false,
                 },
             ]
         );
 
-        // The palette's row names the verb too, so the driver answers it there.
+        // The palette's row names the verb too, and it is answered by the same
+        // function, so a palette commit reaches the driver's arm.
         assert!(COMMANDS.iter().any(|(command, _)| *command == "/pin"));
 
-        // A conversation that belongs to no workspace says why it cannot be
-        // pinned instead of pinning something else.
-        let chat = demo::chat();
-        let chat_id = chat
-            .sessions
-            .iter()
-            .find(|row| {
-                !chat
-                    .workspaces
-                    .iter()
-                    .any(|w| w.session_ids.contains(&row.id))
-            })
-            .map(|row| row.id.clone())
-            .expect("the fixture has a conversation outside every workspace");
-        let mut loose = chat.clone();
-        loose.sessions.sort_by_key(|row| row.id != chat_id);
-        let (mut workbench, _rows) = frame(&loose, 120, 38);
+        // Nothing to pin on the launchpad: the conversation the verb is about
+        // is the one the first message creates, and it does not exist yet — the
+        // rail's cursor there is on some old conversation, so answering the pin
+        // would have looked like it pinned the new session.
+        let home = demo::launchpad();
+        assert!(home.on_launchpad());
+        let (mut workbench, _rows) = frame(&home, 120, 38);
         workbench.sidebar_visible = true;
-        workbench.panel = PanelId::Recent;
         workbench.sidebar_index = 0;
+        let mut typed = home.clone();
+        typed.input.text = "/pin".into();
+        typed.input.cursor = 4;
+        let actions = workbench.handle(WbEvent::Key("enter".into()), &typed);
         assert_eq!(
-            workbench
-                .panel_rows(&loose)
-                .first()
-                .and_then(|row| row.session())
-                .map(|index| loose.sessions[index].id.clone()),
-            Some(chat_id),
-            "the loose conversation leads the list"
+            actions,
+            vec![
+                WbAction::EditInput {
+                    text: String::new(),
+                    cursor: 0,
+                },
+                WbAction::Notice(t(workbench.lang, Key::NoticePinNewSession).to_string()),
+            ],
+            "the launchpad has no session to pin"
         );
-        let mut typed = loose.clone();
+
+        // A rail with no conversation under the cursor says so instead of
+        // pinning something else.
+        let mut empty = demo::chat();
+        empty.sessions.clear();
+        empty.workspaces.clear();
+        empty.chats.clear();
+        let (mut workbench, _rows) = frame(&empty, 120, 38);
+        workbench.sidebar_visible = true;
+        workbench.sidebar_index = 0;
+        let mut typed = empty.clone();
         typed.input.text = "/pin".into();
         typed.input.cursor = 4;
         let actions = workbench.handle(WbEvent::Key("enter".into()), &typed);
@@ -6169,33 +6244,7 @@ mod tests {
             actions
                 .iter()
                 .any(|action| matches!(action, WbAction::Notice(_))),
-            "a conversation outside every workspace says so: {actions:?}"
-        );
-    }
-
-    /// A word after `/pin` is the reader's prompt, not a pin: the verb takes no
-    /// argument, so claiming the line would answer the pin and drop everything
-    /// the reader typed after it — the sentence never reached the agent, and on
-    /// the launchpad no session was ever started for it.
-    #[test]
-    fn a_word_after_pin_is_a_prompt_and_the_rail_is_left_alone() {
-        let mut data = demo::chat();
-        let (mut workbench, _rows) = frame(&data, 120, 38);
-        workbench.sidebar_visible = true;
-        workbench.sidebar_index = 0;
-        let mut typed = data.clone();
-        let line = "/pin 这个会话太长了";
-        typed.input.text = line.into();
-        typed.input.cursor = line.len();
-        assert_eq!(
-            workbench.handle(WbEvent::Key("enter".into()), &typed),
-            vec![WbAction::Submit(line.into())],
-            "a pin has nowhere to put the words, so the line is a prompt"
-        );
-        // The case of the verb does not change that.
-        assert_eq!(
-            submit_draft(&mut workbench, &mut data, "/PIN 你好"),
-            vec![WbAction::Submit("/PIN 你好".into())]
+            "an empty rail says there is nothing to pin: {actions:?}"
         );
     }
 
@@ -8612,6 +8661,7 @@ mod tests {
             parent_id: None,
             streaming: false,
             created_at_ms: 0,
+            pinned: false,
         });
         let (mut workbench, _rows) = frame(&data, 120, 38);
         workbench.panel = PanelId::Recent;
