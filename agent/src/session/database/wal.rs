@@ -51,7 +51,14 @@ impl Checkpointer {
                 let start=Instant::now();
                 let sql=if truncate {"PRAGMA wal_checkpoint(TRUNCATE)"} else {"PRAGMA wal_checkpoint(PASSIVE)"};
                 let result=connection.query_row(sql,[],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?,row.get::<_,i64>(2)?)));
-                metrics.checkpoint.record(start.elapsed(),result.is_ok());
+                let elapsed=start.elapsed();
+                metrics.checkpoint.record(elapsed,result.is_ok());
+                // The checkpoint has its own thread and never joins the writer's
+                // queue, so a long one cannot be the job a stalled caller waits
+                // for — unless it holds a lock the writer itself needs, which
+                // then shows up as that job's `elapsed`. Logged separately so the
+                // two possibilities are never confused again.
+                super::slow::report("wal_checkpoint", elapsed, Duration::ZERO);
                 let observed=result.as_ref().copied().map_err(ToString::to_string);
                 match result {
                     Ok((busy,frames,copied))=> {

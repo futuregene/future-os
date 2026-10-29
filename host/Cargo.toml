@@ -28,6 +28,8 @@ thiserror = "2"
 rusqlite = { version = "0.40", features = ["bundled"] }
 future-app-settings = { path = "../packages/app-settings" }
 future-app-workspaces = { path = "../packages/app-workspaces" }
+future-config = { path = "../packages/config" }
+future-http = { path = "../packages/http" }
 future-remote-client = { path = "../packages/remote-client" }
 future-remote-server = { path = "../packages/remote-server" }
 

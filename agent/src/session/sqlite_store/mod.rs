@@ -114,7 +114,7 @@ impl SqliteStore {
             Vec::new()
         };
         let session = session.to_owned();
-        self.db.call(move |db| {
+        self.db.call_as("commit", move |db| {
             let tx = crate::session::database::begin_write_transaction(db)?;
             let session = super::identity::BoundIdentity::session(&tx, &session)?;
             if tx.execute(
@@ -171,7 +171,7 @@ impl SqliteStore {
     /// One durability boundary and one reclamation pass for a bounded batch.
     /// A failed commit leaves every session retryable, including import tombstones.
     pub(crate) fn delete_many(&self, sessions: Vec<String>) -> Result<()> {
-        let result = self.db.call(move |db| {
+        let result = self.db.call_as("delete", move |db| {
             let tx = crate::session::database::begin_write_transaction(db)?;
             for session in sessions {
                 let session=super::identity::BoundIdentity::session(&tx,&session)?;

@@ -18,6 +18,7 @@ dhat-heap = ["dep:dhat"]
 
 [dependencies]
 future-rpc = { path = "../packages/rpc" }
+future-http = { path = "../packages/http" }
 tokio.workspace = true
 parking_lot.workspace = true
 crossbeam-channel = "0.5"
@@ -31,7 +32,6 @@ serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 serde_with = "3"
 reqwest = { workspace = true, features = ["query", "form", "stream", "json", "rustls-no-provider", "blocking"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 futures.workspace = true
 futures-util.workspace = true
 tokio-stream = { workspace = true, features = ["sync"] }

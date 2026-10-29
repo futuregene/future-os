@@ -33,13 +33,26 @@ pub(super) struct Readers {
 
 impl Readers {
     pub(super) fn open(path: &Path) -> Result<Self> {
+        Self::open_with(path, READ_WORKERS)
+    }
+
+    /// One warm connection for fence reads: small queries whose answer decides
+    /// whether a caller may proceed (session presence, source identity). They
+    /// must not queue behind a history page, so they do not share the pool
+    /// below — and they must not queue behind the ordered writer either, which
+    /// is where they used to live.
+    pub(super) fn open_fence(path: &Path) -> Result<Self> {
+        Self::open_with(path, 1)
+    }
+
+    fn open_with(path: &Path, workers: usize) -> Result<Self> {
         let (sender, receiver) = mpsc::sync_channel::<DatabaseJob>(READ_QUEUE);
         let receiver = Arc::new(parking_lot::Mutex::new(receiver));
         let pool = Self {
             sender: parking_lot::Mutex::new(Some(sender)),
             threads: parking_lot::Mutex::new(Vec::new()),
         };
-        for index in 0..READ_WORKERS {
+        for index in 0..workers {
             let path = path.to_owned();
             let receiver = receiver.clone();
             let (ready, started) = mpsc::sync_channel(1);

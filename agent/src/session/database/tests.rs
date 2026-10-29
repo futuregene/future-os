@@ -413,3 +413,73 @@ fn opening_recovers_activity_stamps_pushed_forward_by_a_snapshot() {
     let again = Database::open(&path).unwrap();
     assert_eq!(stamp(&again), (1000, true));
 }
+
+/// A fence read must answer while the ordered writer is busy, not after it.
+///
+/// This is the lane contract behind `get_session_presence`: on 2026-10-29 four
+/// remote commands were released together after 18–21 s because one writer job
+/// was running, and two of them had already hit their 30 s deadline. Presence
+/// decides whether a caller may proceed at all, so it cannot be one of them.
+#[test]
+fn a_fence_read_answers_while_a_writer_job_holds_the_lane() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::open(&dir.path().join("agent.db")).unwrap();
+    let (entered_tx, entered) = mpsc::channel();
+    let (release_tx, release) = mpsc::channel::<()>();
+    let holder = {
+        let db = db.clone();
+        std::thread::spawn(move || {
+            db.call(move |_| {
+                let _ = entered_tx.send(());
+                let _ = release.recv();
+                Ok(())
+            })
+            .unwrap();
+        })
+    };
+    entered.recv().unwrap();
+
+    let started = std::time::Instant::now();
+    let answer = db
+        .fence(|connection| Ok(connection.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?))
+        .unwrap();
+    let waited = started.elapsed();
+    release_tx.send(()).unwrap();
+    holder.join().unwrap();
+
+    assert_eq!(answer, 1);
+    assert!(
+        waited < std::time::Duration::from_millis(500),
+        "a fence read waited {waited:?} behind a writer job"
+    );
+}
+
+/// The other half of the same contract, so the test above cannot pass by
+/// accident: the writer lane itself *does* wait for the job in front of it.
+#[test]
+fn a_writer_read_waits_for_the_job_in_front_of_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::open(&dir.path().join("agent.db")).unwrap();
+    let (entered_tx, entered) = mpsc::channel();
+    let holder = {
+        let db = db.clone();
+        std::thread::spawn(move || {
+            db.call(move |_| {
+                let _ = entered_tx.send(());
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                Ok(())
+            })
+            .unwrap();
+        })
+    };
+    entered.recv().unwrap();
+    let started = std::time::Instant::now();
+    db.call(|connection| Ok(connection.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?))
+        .unwrap();
+    let waited = started.elapsed();
+    holder.join().unwrap();
+    assert!(
+        waited >= std::time::Duration::from_millis(200),
+        "a queued writer job started before the one in front of it finished: {waited:?}"
+    );
+}

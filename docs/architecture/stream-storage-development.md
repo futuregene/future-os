@@ -104,6 +104,7 @@ Every local/remote consumer still needs verification; prototype JSON equality al
 ## 7. Writes, transactions and crash consistency
 
 Retain the dedicated writer, bounded queues, independent live path and critical boundaries. Context lookup/encoding occurs in persistence work, outside long broadcaster/session critical sections.
+A read whose answer decides whether a caller may proceed (session presence, source identity) runs on its own fence connection, never on the ordered writer and never in the shared read pool: a long write or a large history page must not be able to delay the fence. The cost is ordering, not freshness — the fence sees every committed write but not one still queued — so its callers confirm a negative answer once before acting on it.
 Merge same-context contiguous increments within a batch. Do not merge/reorder across message, tool, epoch or semantic boundaries.
 
 One publication transaction atomically includes new context, required segments/ranges, compact changes, extra links and durable watermark.
