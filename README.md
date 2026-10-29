@@ -13,13 +13,6 @@
 </p>
 
 <p align="center">
-  <img src="docs/mobile-recent.png" alt="FutureOS mobile — one recent list merged across every paired desktop, each row showing the machine it lives on" width="272">
-  &nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="docs/mobile-devices.png" alt="FutureOS mobile — the desktop picker: lab laptop, office desktop, home workstation, server, cloud builder" width="272">
-</p>
-<p align="center"><sub>Every conversation, on every machine you paired — one list on your phone.</sub></p>
-
-<p align="center">
   <a href="#quick-start">Quick Start</a> •
   <a href="#features">Features</a> •
   <a href="#configure-a-model">Models</a> •
@@ -57,6 +50,13 @@
 | **Powerful Built-in Skills** | 15+ skills out of the box for everyday agent work — image read & generation, PDF/Word parsing, web search, browser control, slides, software install, and the `/future-goal` long-run goal orchestrator ([builtin](https://github.com/futuregene/future-skills/tree/main/builtin)) |
 | **Forkable Sessions** | Branch any conversation like a repo — fork, clone, and tree navigation over JSONL session history |
 | **Rust Core** | Agent, IM channel bridge, goal control plane, CLI, and TUI are all written in Rust — high performance with memory safety |
+
+<p align="center">
+  <img src="docs/mobile-recent.png" alt="FutureOS mobile — one recent list merged across every paired desktop, each row showing the machine it lives on" width="272">
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="docs/mobile-devices.png" alt="FutureOS mobile — the desktop picker: lab laptop, office desktop, home workstation, server, cloud builder" width="272">
+</p>
+<p align="center"><sub><b>One phone, many desktops</b> — every conversation on every machine you paired, in one list.</sub></p>
 
 ## Quick Start
 
@@ -159,22 +159,6 @@ Many self-hosted endpoints accept only some thinking levels (often just `low`/`h
 
 </details>
 
-### Install skills (optional)
-
-Skills are add-on capability packs the agent picks up from
-`~/.future/agent/skills/`. Browse the catalog and install what you need —
-this only needs network access, not a running agent:
-
-```bash
-future skills list             # browse the skill catalog
-future skills install <name>   # install one skill
-future skills install          # no name: install every built-in skill
-```
-
-Skip this and the agent still answers fine — skills just add ready-made
-workflows. `uninstall` / `update` and friends are in the
-[CLI reference](docs/wiki/en/CLI.md).
-
 ### Run the Agent, then the terminals
 
 The terminal and CLI clients are thin gRPC clients. They connect over
@@ -187,22 +171,32 @@ instance started with its own home (`FUTURE_HOME=DIR`) — see
 If the FutureOS home sits on a filesystem that cannot host Unix sockets (e.g.
 NFS), point `FUTURE_HOME` at a directory on a local filesystem.
 
-**The Agent belongs to its host, not to the terminal.** Start a host first —
-either of these owns the Agent and keeps it running:
+**The Agent belongs to its host, not to the terminal.** Start a host first — it
+owns the Agent and keeps it running:
 
 ```bash
 future host      # this machine as a FutureOS host: local runs, tasks, and paired remote desktops
-future agent     # just the Agent server (logs to stdout; Ctrl-C to stop)
 ```
 
-`future host` needs **no sign-in**: without an account it serves everything local
-with your own model providers, and only the paired remote desktops stay closed
-until you run `future auth login` in another terminal — it picks the account up
-and starts serving them without a restart. `--relay URL` skips the Future
-platform entirely. Desktop GUI and host mode first attach to a compatible
-external Agent; when the default endpoint is absent and its instance lock is
-free, they run the complete Agent in their own process. Incompatible or
-locked/unavailable services produce an error without starting a second Agent.
+If a phone or another desktop should reach this machine, sign in **before** that
+command and pair the device — otherwise `future host` serves local work only:
+
+```bash
+future auth login           # the FutureOS account that pairs your devices
+future remote devices add   # print the invitation a phone or another desktop types in
+```
+
+`future host` needs **no sign-in** for local work: without an account it serves
+everything locally with your own model providers. The paired remote desktops
+above stay closed until `future auth login` has run — it may also happen later,
+in another terminal, and the host picks the account up without a restart.
+`--relay URL` skips the Future platform entirely; run your own relay instead
+([self-hosted relay](docs/guide/self-hosted-relay.md)).
+
+Desktop GUI and host mode first attach to a compatible external Agent; when the
+default endpoint is absent and its instance lock is free, they run the complete
+Agent in their own process. Incompatible or locked/unavailable services produce
+an error without starting a second Agent.
 
 Quitting an embedded Desktop stops work from every connected client, including
 CLI/TUI conversations. An attached external Agent stays running; Desktop cancels
