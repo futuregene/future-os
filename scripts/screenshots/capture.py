@@ -1437,11 +1437,12 @@ def _wait_for_addr(process: subprocess.Popen, timeout: float) -> str:
 # and the language, and a hard-coded column that lands one cell off selects the
 # neighbouring panel — a wrong picture that still looks plausible.
 #
-# A scenario listed in `TUI_SCENARIO_LONG` also asks the demo agent for a longer
-# conversation (`FUTURE_DEMO_LONG`): the scripted tutorial is a six-row exchange,
-# and a transcript shorter than the band has nothing to scroll — `↑` on it asks
-# for older rows instead of moving (see `Workbench::scroll`), so the `scrolled`
-# shot would otherwise be the plain chat frame.
+# A scenario listed in `TUI_SCENARIO_AGENT_ENV` also changes what the demo agent
+# pretends to have: `scrolled` asks for a longer conversation
+# (`FUTURE_DEMO_LONG`), because the scripted tutorial is a six-row exchange and a
+# transcript shorter than the band has nothing to scroll — `↑` on it asks for
+# older rows instead of moving (see `Workbench::scroll`); `queue` asks for queued
+# runs (`FUTURE_DEMO_QUEUE`), which `get_state` otherwise does not report.
 TUI_SCENARIO_KEYS: dict[str, str] = {
     "chat": "",
     "help": "?",
@@ -1476,7 +1477,7 @@ TUI_SCENARIO_KEYS: dict[str, str] = {
     "full-panel": "\x02",
     # A click that hands the keys back to the conversation, then three wheel-ups:
     # the frame is the chat scrolled up, with the `↑ 更早` badge. Needs the long
-    # conversation (see `TUI_SCENARIO_LONG`).
+    # conversation (see `TUI_SCENARIO_AGENT_ENV`).
     "scrolled": "\x1b[<0;20;20M\x1b[<0;20;20m" + "\x1b[<64;20;20M" * 3,
     # `ctrl+g` opens the repository browser on the session's workspace. The
     # panel reads the real repository the workbench runs in, so this frame is a
@@ -1497,10 +1498,20 @@ TUI_SCENARIO_KEYS: dict[str, str] = {
     # clock and a frame is painted per batch; a machine much slower than this one
     # may land one delta later, which is a different picture by one line.
     "streaming": "解释一下这个 off-by-one，要具体一点\r",
+    # The same live turn, with two prompts queued behind it (`FUTURE_DEMO_QUEUE`):
+    # the composer's queue band, the transcript that does not contain them, and
+    # the activity row still spinning — the frame a reader sees when they send
+    # something mid-reply.
+    "queue": "解释一下这个 off-by-one，要具体一点\r",
 }
-# Scenarios that need the demo agent's longer conversation, and the value to give
-# `FUTURE_DEMO_LONG`. See `TUI_SCENARIO_KEYS` above.
-TUI_SCENARIO_LONG: dict[str, str] = {"scrolled": "1"}
+# Scenarios that change what the demo agent pretends to have, and the environment
+# that makes it. `scrolled` needs the longer conversation (`FUTURE_DEMO_LONG`) —
+# a transcript shorter than the band has nothing to scroll — and `queue` needs
+# the queued runs `get_state` otherwise does not report. See `TUI_SCENARIO_KEYS`.
+TUI_SCENARIO_AGENT_ENV: dict[str, dict[str, str]] = {
+    "scrolled": {"FUTURE_DEMO_LONG": "1"},
+    "queue": {"FUTURE_DEMO_QUEUE": "1"},
+}
 
 # The one scenario whose keystrokes are *prose* rather than a verb: `streaming`
 # submits a prompt, so the words are the reader's and have to be in the language
@@ -1684,8 +1695,8 @@ def tui(args: argparse.Namespace) -> int:
             # (`FUTURE_DEMO_LANG`, which the demo agent reads) have to agree, or
             # the picture is English around a Chinese session list.
             agent_env = {**os.environ, "FUTURE_DEMO_LANG": args.lang}
-            if args.scenario in TUI_SCENARIO_LONG:
-                agent_env["FUTURE_DEMO_LONG"] = TUI_SCENARIO_LONG[args.scenario]
+            # …and the scenario's own scripted state, on top of it.
+            agent_env.update(TUI_SCENARIO_AGENT_ENV.get(args.scenario, {}))
             agent = subprocess.Popen(
                 [str(agent_bin), "--port", "0"],
                 stdout=subprocess.PIPE,
