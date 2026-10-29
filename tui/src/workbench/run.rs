@@ -2075,14 +2075,14 @@ pub(crate) fn load_settings(path: &Path) -> TuiSettings {
 /// the next preference change: the caller gets the defaults *and* a sentence
 /// that says the file could not be read.
 pub(crate) fn load_settings_report(path: &Path) -> (TuiSettings, Option<String>) {
-    match future_host::config_io::read_json_object(path) {
+    match future_config::read_json_object(path) {
         Ok(value) => (TuiSettings::from_json(&value), None),
         Err(error) => (TuiSettings::default(), Some(error.to_string())),
     }
 }
 
 pub(crate) fn save_settings(path: &Path, settings: &TuiSettings) -> Result<(), String> {
-    future_host::config_io::write_json_atomic(path, &settings.to_json(), false)
+    future_config::write_json_atomic(path, &settings.to_json(), false)
         .map_err(|error| error.to_string())
 }
 
