@@ -483,3 +483,81 @@ fn a_writer_read_waits_for_the_job_in_front_of_it() {
         "a queued writer job started before the one in front of it finished: {waited:?}"
     );
 }
+
+/// The fence's cost, asserted instead of assumed.
+///
+/// A fence read does not queue behind the ordered writer, so it cannot see a
+/// write that is already queued: a session whose placeholder commit is still
+/// waiting reads `missing`. That is exactly why the desktop confirms a negative
+/// answer before refusing it (`agent_bridge::presence::require_present_with_client`)
+/// — this test is the half that makes that recheck load-bearing rather than
+/// decorative. If the fence ever moves back onto the writer lane, the first read
+/// below stops answering and this fails instead of quietly re-introducing the
+/// 18–38 s stall.
+#[test]
+fn a_fence_read_lags_a_queued_write_until_it_commits() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::open(&dir.path().join("agent.db")).unwrap();
+    let session = uuid::Uuid::new_v4().to_string();
+    let exists = |db: &Database, session: String| {
+        db.fence(move |connection| {
+            Ok(connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)",
+                [&session],
+                |row| row.get::<_, bool>(0),
+            )?)
+        })
+    };
+
+    // Hold the writer with one job, then queue a create behind it.
+    let (entered_tx, entered) = mpsc::channel();
+    let (release_tx, release) = mpsc::channel::<()>();
+    let holder = {
+        let db = db.clone();
+        std::thread::spawn(move || {
+            db.call(move |_| {
+                let _ = entered_tx.send(());
+                let _ = release.recv();
+                Ok(())
+            })
+            .unwrap();
+        })
+    };
+    entered.recv().unwrap();
+    let queued = {
+        let db = db.clone();
+        let session = session.clone();
+        std::thread::spawn(move || {
+            db.call(move |connection| {
+                connection.execute(
+                    "INSERT INTO sessions(id,revision) VALUES (?1,-1)",
+                    [&session],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        })
+    };
+
+    // The fence answers now, and the answer is the pre-commit state.
+    let (before_tx, before) = mpsc::channel();
+    {
+        let db = db.clone();
+        let session = session.clone();
+        std::thread::spawn(move || {
+            let _ = before_tx.send(exists(&db, session));
+        });
+    }
+    let before = before
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("a fence read must answer while a writer job holds the lane");
+    assert!(!before.unwrap(), "the queued create is not visible yet");
+
+    release_tx.send(()).unwrap();
+    holder.join().unwrap();
+    queued.join().unwrap();
+    assert!(
+        exists(&db, session).unwrap(),
+        "the same question answers present once the create commits"
+    );
+}
