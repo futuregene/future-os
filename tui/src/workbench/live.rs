@@ -3640,14 +3640,25 @@ fn bound(text: &str, limit: usize) -> (String, bool) {
     (text[..cut].to_string(), true)
 }
 
+/// The share of the session's prompt tokens the provider served from its cache.
+///
+/// `input_tokens` is the session's cumulative `prompt_tokens`, and the cached
+/// bytes are *part of* the prompt they were served from — the agent's own
+/// counter refuses a block whose cache reads exceed its prompt precisely
+/// because of that (`agent/src/types/mod.rs`, `cached_tokens_exceed_prompt`).
+/// So the denominator is the reported input alone, which is also what
+/// `models::cache_hit_rate` divides by. Adding the reads to it counts the
+/// cached bytes twice: the ratio then reads `read / (read + prompt)`, and a
+/// session that is 99% cached shows 50% — its ceiling, not its rate.
 fn cache_percent(state: &RpcSessionState) -> u8 {
     let read = state.usage.cache_read_tokens.max(0) as u64;
     let input = state.usage.input_tokens.max(0) as u64;
-    let total = read + input;
-    if total == 0 {
+    if input == 0 {
         0
     } else {
-        ((read as f64 / total as f64) * 100.0).round() as u8
+        // A provider that contradicts itself (more cached than prompt) reads as
+        // fully cached rather than above 100%.
+        ((read.min(input) as f64 / input as f64) * 100.0).round() as u8
     }
 }
 
@@ -5178,9 +5189,20 @@ mod tests {
     fn a_cache_rate_never_divides_by_zero() {
         let mut state = RpcSessionState::default();
         assert_eq!(cache_percent(&state), 0);
+        // A cached read is part of the prompt it was served from, so the rate
+        // is the reads over the prompt — not over the prompt plus the reads.
+        state.usage.input_tokens = 100;
         state.usage.cache_read_tokens = 96;
-        state.usage.input_tokens = 4;
         assert_eq!(cache_percent(&state), 96);
+        // The old formula capped every heavily cached session at 50%: this
+        // session reads 99% here and read 50% there (990k / 1.99M).
+        state.usage.input_tokens = 1_000_000;
+        state.usage.cache_read_tokens = 990_000;
+        assert_eq!(cache_percent(&state), 99);
+        // Reads a provider reports beyond its own prompt read as fully cached.
+        state.usage.input_tokens = 10;
+        state.usage.cache_read_tokens = 90;
+        assert_eq!(cache_percent(&state), 100);
     }
 
     /// The 工作区 tab's filing. A conversation is filed under the directory it
@@ -5646,10 +5668,10 @@ mod tests {
         assert_eq!(state.usage.output_tokens, 100);
         assert_eq!(state.usage.cache_read_tokens, 800);
         assert_eq!(state.usage.cache_write_tokens, 20);
-        // Cache hit rate follows the same accounting the crate already uses:
-        // `cache_percent` divides the reads by the prompt *plus* the reads, so
-        // it reads `inputTokens` as the uncached part (800 / 1700 = 47).
-        assert_eq!(cache_percent(&state), 47);
+        // The cache rate is the reads over the prompt, which already contains
+        // them: `inputTokens` is the provider's `prompt_tokens` (800 / 900 = 89),
+        // not an uncached remainder.
+        assert_eq!(cache_percent(&state), 89);
 
         // A second step adds to the totals and replaces the context.
         let step = serde_json::json!({"prompt_tokens": 1100, "completion_tokens": 50});
