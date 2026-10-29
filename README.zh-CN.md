@@ -9,8 +9,15 @@
 </p>
 
 <p align="center">
-  <img src="docs/desktop-screenshot.png" alt="FutureOS 桌面应用——新对话、模型、技能与工作区，一窗集成" width="800">
+  <img src="docs/desktop-screenshot.zh-CN.png" alt="FutureOS 桌面应用——左边是会话，中间是对话，右边是当前工作区的文件" width="900">
 </p>
+
+<p align="center">
+  <img src="docs/mobile-recent.zh-CN.png" alt="FutureOS 移动端——把配对的每台桌面的会话合并成一条最近列表，每行标出它所在的机器" width="272">
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="docs/mobile-devices.zh-CN.png" alt="FutureOS 移动端——桌面选择面板：实验室笔记本、办公室台式机、家里工作站、服务器、云端构建机" width="272">
+</p>
+<p align="center"><sub>所有配对机器上的对话，都在手机里的这一条列表。</sub></p>
 
 <p align="center">
   <a href="#快速开始">快速开始</a> •
@@ -40,8 +47,10 @@
 
 | 类别 | 说明 |
 |---|---|
-| **多端统一** | 终端界面 (TUI)、桌面应用 (GUI)、移动端 App（Android · iOS）、命令行 (CLI)、IM 机器人——一个 Agent，无处不在。桌面后端还可**以主机模式运行在服务器上**（`future host`，无需窗口或 WebView，可跑在 SSH 会话里），手机与桌面之间的通道是**端到端加密**的——Noise 握手 + ChaCha20-Poly1305 记录，中继只看到密文（[主机模式](docs/guide/desktop-host.zh-CN.md)、[远程](docs/wiki/zh/Remote.md)） |
-| **自建中继** | `future relay init` 与 `future relay serve` 自己运行远程控制背后的中继，整条路径上不需要 FutureOS 账号。线路协议、配对与端到端加密不变，官方中继与自建中继可以并行使用（[指南](docs/guide/self-hosted-relay.zh-CN.md)） |
+| **多端统一** | 一个 Agent，多种界面：终端界面 (TUI)、桌面应用 (GUI)、移动端 App（Android · iOS）、命令行 (CLI)、IM 机器人——同一份会话、同一份记忆、同一套技能，无论你身在何处 |
+| **哪里都能跑，哪里都能接** | Agent 是一个二进制，能跑在活儿所在的任何地方——**嵌入式板子、手机、工位上的桌面机、GPU 服务器、集群**；而接它的界面同样是全的：终端、桌面应用、手机或平板。配对多少台机器都行，一部手机就能把它们全管起来；手机与主机之间的通道是**端到端加密**的（Noise 握手 + ChaCha20-Poly1305 记录），中继还可以**自建**（`future relay init` / `future relay serve`），所以中继上只会经过密文（[主机模式](docs/guide/desktop-host.zh-CN.md)、[远程](docs/wiki/zh/Remote.md)、[自建中继](docs/guide/self-hosted-relay.zh-CN.md)） |
+| **终端界面 (TUI)** | 终端里的全屏工作台，不是聊天记录：会话列表（「最近」合并列表或按工作区分组的树，可折叠）、把一轮回复的过程折成 `▸ 工具调用 3 次 · 思考 2 次` 并能展开成树的正文、侧边面板（待办、用量、技能、文件、git）、命令面板、鼠标选取、可拖拽的栏宽、六套配色、回复进行中输入时用的排队带——整个界面支持**中文或英文**，跟随系统或 `/lang`（[指南](docs/guide/tui.md)） |
+| **一部手机，多台桌面** | 移动端可以同时配对多台桌面：把它们合并成**一条最近列表**，每行标出所在的机器，用选择面板切换机器，还能在桌面上继续干活的同时从手机接管某条会话（[远程](docs/wiki/zh/Remote.md)） |
 | **可配置工具安全** | read, write, edit, shell——审批规则与分级（`off` / `manual` / `sandbox`，以及 `auto` = 沙箱 + 由模型复核本会询问的请求，需登录 FutureOS）；支持 macOS Seatbelt、Linux 系统 Bubblewrap、Windows 受限令牌写保护。各平台可用性与保护范围不同（[指南](docs/wiki/zh/Sandbox.md)） |
 | **模型灵活** | **自带 API Key（BYOK）**：[内置目录](docs/wiki/zh/Models.md)覆盖主流 Provider，任何 OpenAI 或 Anthropic 兼容端点都可通过 `models.json` 接入。也可以登录 **FutureOS 托管 Provider**（`future auth login`），由平台直接配好 Key 与模型列表。两者可同时使用，并自行限定选择器里出现的模型（[配置](#配置模型)） |
 | **Goal 工程** | 持久化目标/todos/门禁/监控，支撑 24+ 小时长程任务连续执行——确定性 should-run 内核、事件溯源状态、硬校验（证据下限/验收契约/verify 闸门）、租约活性自愈、多 agent（[指南](docs/architecture/goal-control-plane.zh-CN.md)） |
@@ -191,7 +200,7 @@ test/nightly 构建检查 nightly；本地/源码构建跳过检查。网络失�
 > **远程 / 开发模式：**给 `future agent` 传入 `--grpc-addr 127.0.0.1:50051` 可显式启用 TCP；客户端设置 `FUTURE_AGENT_GRPC_ADDR=127.0.0.1:50051`。TCP 非默认，不要暴露到不可信网络。
 
 <p align="center">
-  <img src="docs/tui-screenshot.png" alt="FutureOS 终端界面——内置技能加载，/help 命令面板" width="720">
+  <img src="docs/tui-screenshot.zh-CN.png" alt="FutureOS 终端界面——按工作区分组的会话列表，一轮回复的过程展开成树，正文里有代码块与表格" width="820">
 </p>
 
 > `future <cmd>` 是所有 Rust 组件的统一入口：`future agent`、`future tui`、

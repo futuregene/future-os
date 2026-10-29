@@ -9,8 +9,15 @@
 </p>
 
 <p align="center">
-  <img src="docs/desktop-screenshot.png" alt="FutureOS desktop app — new conversation, models, skills, and workspace in one window" width="800">
+  <img src="docs/desktop-screenshot.png" alt="FutureOS desktop app — sessions on the left, the conversation in the middle, the workspace's files on the right" width="900">
 </p>
+
+<p align="center">
+  <img src="docs/mobile-recent.png" alt="FutureOS mobile — one recent list merged across every paired desktop, each row showing the machine it lives on" width="272">
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="docs/mobile-devices.png" alt="FutureOS mobile — the desktop picker: lab laptop, office desktop, home workstation, server, cloud builder" width="272">
+</p>
+<p align="center"><sub>Every conversation, on every machine you paired — one list on your phone.</sub></p>
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> •
@@ -40,8 +47,10 @@
 
 | Category | Details |
 |---|---|
-| **Multi-Interface** | Terminal UI (TUI), desktop app (GUI), mobile apps (Android & iOS), CLI, IM bots — one agent, everywhere. The desktop backend also runs as a **host on a server** (`future host`: no window or WebView, works over SSH), and the phone↔desktop channel is **end-to-end encrypted** — a Noise handshake with ChaCha20-Poly1305 records, so the relay only carries ciphertext ([host mode](docs/guide/desktop-host.md), [remote](docs/wiki/en/Remote.md)) |
-| **Self-Hosted Relay** | `future relay init` and `future relay serve` run the relay behind remote control yourself, with no FutureOS account in the path. The wire protocol, pairing and end-to-end encryption are unchanged, so the official relay and your own can run side by side ([guide](docs/guide/self-hosted-relay.md)) |
+| **Multi-Interface** | One agent, many surfaces: terminal UI (TUI), desktop app (GUI), mobile apps (Android & iOS), CLI and IM bots — same sessions, same memory, same skills, wherever you are |
+| **Run anywhere, reach it anywhere** | The agent is one binary that fits wherever the work is — an **embedded board, a phone, a workstation, a GPU server, a cluster** — and every surface reaches it: terminal, desktop app, phone or tablet. Pair as many machines as you like and manage them all from one phone; the phone↔host channel is **end-to-end encrypted** (Noise handshake, ChaCha20-Poly1305 records), and the relay can be **self-hosted** (`future relay init` / `future relay serve`), so only ciphertext passes through it ([host mode](docs/guide/desktop-host.md), [remote](docs/wiki/en/Remote.md), [relay](docs/guide/self-hosted-relay.md)) |
+| **Terminal UI (TUI)** | A full-screen workbench in the terminal, not a chat log: a session rail (a merged recent list or the workspace tree, foldable), a transcript that folds a reply's process into `▸ 3 tool calls · 2 thoughts` and opens it as a tree, side panels (to-do, usage, skills, files, git), a command palette, mouse selection, drag-resizable panels, six colour palettes, a queue band for prompts typed mid-reply — and the whole interface in **Chinese or English**, following the system or `/lang` ([guide](docs/guide/tui.md)) |
+| **One phone, many desktops** | The mobile app pairs with several desktops at once: one **recent list merged across them**, each row carrying the machine it lives on, a picker to switch machines, and the ability to take control of a session from the phone while the desktop keeps working ([remote](docs/wiki/en/Remote.md)) |
 | **Configurable Tool Safety** | read, write, edit, shell — approval rules and tiers (`off` / `manual` / `sandbox`, plus `auto` = sandbox with model review of the requests that would have asked, on a FutureOS sign-in); macOS Seatbelt, Linux system Bubblewrap, Windows restricted-token write protection. Availability and guarantees differ by platform ([guide](docs/wiki/en/Sandbox.md)) |
 | **Model Flexibility** | **Bring your own key**: the [built-in catalog](docs/wiki/en/Models.md) covers the major providers, and any OpenAI- or Anthropic-compatible endpoint can be added through `models.json`. Or sign in to the **FutureOS provider** (`future auth login`) and have the keys and model list provisioned for you. Both work side by side, and you choose which models the picker offers ([setup](#configure-a-model)) |
 | **Goal Engineering** | Durable goals/todos/gates/monitors for long-horizon runs of 24+ hours — deterministic should-run kernel, event-sourced state, hard checks (evidence floor / acceptance contracts / verify gates), lease liveness, multi-agent ([guide](docs/architecture/goal-control-plane.md)) |
@@ -227,7 +236,7 @@ non-interactive commands never perform it.
 > beyond a trusted interface.
 
 <p align="center">
-  <img src="docs/tui-screenshot.png" alt="FutureOS terminal UI — built-in skills loaded, /help command palette" width="720">
+  <img src="docs/tui-screenshot.png" alt="FutureOS terminal UI — session rail grouped by workspace, a reply's process opened as a tree, markdown with a code block and a table" width="820">
 </p>
 
 > `future <cmd>` is the unified entry point for every Rust component: `future agent`,
