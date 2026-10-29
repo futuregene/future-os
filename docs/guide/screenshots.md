@@ -451,6 +451,35 @@ switch — `mobile/metro.config.js` redirects the remote context and the two nat
 modules to `mobile/shot/mock/` **only** on the web platform and only when it is
 set, so native builds (`make run-mobile-android`) are unaffected.
 
+### One session, two surfaces: the `parser-*` scenarios
+
+`.screenshots/tui-zh/` and `.screenshots/tui-en/` are the TUI's pictures of one
+scripted session — an off-by-one in an expression parser (`tui/examples/demo_agent.rs`,
+`journal_zh` / `journal_en`). `parser-zh` and `parser-en` show that same session on
+the phone:
+
+```bash
+SHOT_WEB=1 python3 scripts/screenshots/capture.py serve-mobile    # terminal 1
+python3 scripts/screenshots/capture.py capture-mobile parser-zh   # → .screenshots/mobile-zh.png
+python3 scripts/screenshots/capture.py capture-mobile parser-en   # → .screenshots/mobile-en.png
+```
+
+`?parser=1` swaps the whole demo catalogue for that session — the machine's name,
+the three workspace groups, the conversation (`mobile/shot/mock/parserSession.ts`)
+— and `lang` pins the browser locale (`zh-CN` / `en-US`), so the chrome and the
+transcript are in one language: the mock takes its words from `navigator.language`,
+which is the same input the app takes its language from, and each scenario fails
+if a word of the other language reaches the frame.
+
+The phone cannot show both turns at once — the conversation is 1125 css px of
+transcript and the band between the bar and the composer is 672 — so the frame
+opens at the question and holds the folded process, the diagnosis, the fixed line
+of code and the table; the second turn (the two commits) sits one scroll below.
+The TUI's tree of tool rows has no phone equivalent: it is the fold row, whose
+spoken label (`Show process · Tool calls 2× · Thought 1×`) is where the counts
+live, and the scenario asserts those counts. The scenario is deterministic: two
+runs produce byte-identical PNGs, because nothing in the frame reads the clock.
+
 ### The transcript is upright (the inverted list's extra flip)
 
 `mobile/src/features/chat/components/ChatTimeline.tsx` renders the transcript as
@@ -501,6 +530,16 @@ of each other are reported as inconclusive rather than as a pass. The judge and
 that direction are pinned offline by
 `scripts/tests/test-screenshot-upright-check.py` (`make test-screenshot-harness`).
 
+The probe judges the scroller that is *visible*, not the tallest one: the phone
+keeps the session list mounted underneath an open conversation, so a rail long
+enough to scroll is a taller scroller of its own. Before that filter it outlined a
+row of the list behind the chat, and the check reported "no in-place tile" for a
+transcript that was perfectly upright (`parser-zh` / `parser-en`, whose rail is
+long). It also takes a *paragraph* — a text block whose children are all inline
+runs — rather than only a childless element, because a frame whose largest plain
+leaf is one 13 px code line says nothing either way (0.045 upright against 0.053
+mirrored: inconclusive).
+
 ## Scenarios
 
 Scenarios are data, not code: `scripts/screenshots/scenarios.json`. Each one is a
@@ -526,6 +565,16 @@ Three platform-level knobs are worth knowing:
   is what keeps captures fast: a warm bundle is ready in about a second, a cold
   one can take 20. `settle` is only a small grace period after that. If a capture
   starts before the app paints, raise `readyTimeout` rather than `settle`.
+- **`lang` pins the browser locale, not a harness-only switch.** A scenario that
+  has to be in a language says `"lang": "en-US"`, and `cdp.mjs` makes the page's
+  system locale that value before the app's first script runs: `Emulation`
+  `setLocaleOverride` moves `Intl`, and the user agent override's `acceptLanguage`
+  moves `navigator.language` (measured on Chrome 156 — the locale override alone
+  leaves `navigator.language` at the host's `zh-CN`). The app reads the system
+  locale exactly as it does on a phone; a stored in-app preference still wins.
+- **`query` appends to the platform's URL.** `"query": "?parser=1"` keeps a
+  scenario on whatever port `serve-mobile` is serving, instead of pinning
+  `http://localhost:8099/` in the scenario the way a full `url` does.
 - **`tap` needs an accessible name.** It matches `aria-label` first, then the
   element's own text for interactive roles. Where neither exists, use `tapText`;
   if you find yourself writing coordinate taps, that is a hint the control is
