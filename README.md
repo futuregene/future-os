@@ -16,7 +16,6 @@
   <a href="#quick-start">Quick Start</a> •
   <a href="#features">Features</a> •
   <a href="#configure-a-model">Models</a> •
-  <a href="#essential-slash-commands-tui">Commands</a> •
   <a href="#troubleshooting">Troubleshooting</a>
 </p>
 
@@ -32,7 +31,7 @@
 
 ## Why FutureOS
 
-- **Choose the execution boundary.** Configure file-access approvals and OS sandboxing for agent tools. The desktop defaults to Unrestricted (`off`); select Manual or Sandboxed before working with untrusted content. See the [security model](SECURITY.md) and [sandbox guide](docs/wiki/en/Sandbox.md) for defaults and limitations.
+- **Choose the execution boundary.** File-access approvals and OS sandboxing for agent tools, in four tiers: `off`, `manual`, `sandbox` — and **`auto`**, the sandbox with the model reviewing the requests that would otherwise interrupt you. The desktop starts at Unrestricted (`off`); switch to Manual, Sandboxed or `auto` before working with untrusted content. See the [security model](SECURITY.md) and [sandbox guide](docs/wiki/en/Sandbox.md) for defaults and limitations.
 - **One backend, every surface.** A single gRPC agent drives the terminal UI, desktop app, mobile apps, CLI, and IM bots — same sessions, same memory, same skills, wherever you happen to be.
 - **Long runs need engineering, not prompting.** The built-in goal control plane gives durable goals, event-sourced state, and verification gates to runs of 24+ hours — start a research task at night, review the results from your phone in the morning.
 
@@ -41,7 +40,7 @@
 | Category | Details |
 |---|---|
 | **Run anywhere, reach it anywhere** | The agent is one binary that fits wherever the work is — an **embedded board, a phone, a workstation, a GPU server, a cluster** — and every surface reaches it: terminal UI, desktop app, mobile apps (Android & iOS), CLI and IM bots — all on the same sessions, the same memory and the same skills. Pair as many machines as you like — the phone reaches every one of them; the phone↔host channel is **end-to-end encrypted** (Noise handshake, ChaCha20-Poly1305 records), and the relay can be **self-hosted** (`future relay init` / `future relay serve`), so only ciphertext passes through it ([host mode](docs/guide/desktop-host.md), [remote](docs/wiki/en/Remote.md), [relay](docs/guide/self-hosted-relay.md)) |
-| **Terminal UI (TUI)** | A full-screen workbench in the terminal, not a chat log: a session rail (a merged recent list or the workspace tree, foldable), a transcript that folds a reply's process into `▸ 3 tool calls · 2 thoughts` and opens it as a tree, side panels (to-do, usage, skills, files, git), a command palette, mouse selection, drag-resizable panels, six colour palettes, a queue band for prompts typed mid-reply — and the whole interface in **Chinese or English**, following the system or `/lang` ([guide](docs/guide/tui.md)) |
+| **Terminal UI (TUI)** | A full-screen workbench in the terminal, not a chat log: a session rail (a merged recent list or the workspace tree, foldable), a transcript that folds a reply's process into `▸ 3 tool calls · 2 thoughts` and opens it as a tree, side panels (to-do, usage, skills, files, git), a command palette, mouse selection, drag-resizable panels, six colour palettes, and a queue band for prompts typed mid-reply ([guide](docs/guide/tui.md)) |
 | **One phone, many desktops** | The mobile app pairs with several desktops at once: one **recent list merged across them**, each row carrying the machine it lives on, a picker to switch machines, and the ability to take control of a session from the phone while the desktop keeps working ([remote](docs/wiki/en/Remote.md)) |
 | **Configurable Tool Safety** | read, write, edit, shell — approval rules and tiers (`off` / `manual` / `sandbox`, plus `auto` = sandbox with model review of the requests that would have asked, on a FutureOS sign-in); macOS Seatbelt, Linux system Bubblewrap, Windows restricted-token write protection. Availability and guarantees differ by platform ([guide](docs/wiki/en/Sandbox.md)) |
 | **Model Flexibility** | **Bring your own key**: the [built-in catalog](docs/wiki/en/Models.md) covers the major providers, and any OpenAI- or Anthropic-compatible endpoint can be added through `models.json`. Or sign in to the **FutureOS provider** (`future auth login`) and have the keys and model list provisioned for you. Both work side by side, and you choose which models the picker offers ([setup](#configure-a-model)) |
@@ -76,26 +75,20 @@ curl -fsSL https://dl.future-os.cn/install.sh | bash
 iex (irm https://dl.future-os.cn/install.ps1)
 ```
 
+**Android** — the phone app is on the download page, and it pairs with a desktop
+you already run:
+
+<https://future-os.cn/download>
+
+**iOS** has no build on that page yet — build it from source, the app is in this
+repository (`mobile/`).
+
 Step-by-step installation for every platform (desktop app, toolchains, GUI
 packaging) is in the **[Build & Install](docs/guide/build-and-install.md)** guide.
 
-The installers finish by running `future init`.
-
-Both scripts check the downloaded artifact against the release manifest's
-SHA-256 before installing it, including when `FUTUREOS_VERSION` pins a release
-(that release's own `latest.json` is read). An artifact whose checksum cannot be
-established — no manifest, no `sha256` for the platform, or a host without
-`shasum`/`sha256sum` — is refused instead of installed unverified. Only
-`FUTUREOS_SKIP_VERIFY=1` (`$env:FUTUREOS_SKIP_VERIFY = '1'` on Windows) turns
-that check off, and it means installing whatever the mirror served you.
-
 ### Configure a model
 
-The agent needs at least one model provider before it can answer. The interactive setup supports both FutureOS and custom providers:
-
-```bash
-future config
-```
+The agent needs at least one model provider before it can answer.
 
 **FutureOS hosted models** — device-flow sign-in provisions keys and a model list automatically:
 
@@ -161,139 +154,39 @@ Many self-hosted endpoints accept only some thinking levels (often just `low`/`h
 
 ### Run the Agent, then the terminals
 
-The terminal and CLI clients are thin gRPC clients. They connect over
-**per-user local IPC** by default (a Unix-domain socket on macOS/Linux,
-a current-user-only named pipe on Windows). Unix honors `FUTURE_AGENT_SOCKET`;
-otherwise the endpoint always lives under the instance's FutureOS home:
-`~/.future/run/agent.sock` by default, `<FUTURE_HOME>/run/agent.sock` for an
-instance started with its own home (`FUTURE_HOME=DIR`) — see
-[isolated instances](docs/guide/directory-layout.md#running-several-isolated-instances-future_home).
-If the FutureOS home sits on a filesystem that cannot host Unix sockets (e.g.
-NFS), point `FUTURE_HOME` at a directory on a local filesystem.
-
-**The Agent belongs to its host, not to the terminal.** Start a host first — it
-owns the Agent and keeps it running:
+**The Agent belongs to its host, not to the terminal.** Start the host, then open
+as many terminals as you like against it:
 
 ```bash
 future host      # this machine as a FutureOS host: local runs, tasks, and paired remote desktops
+future tui       # terminal UI — attaches to that host
 ```
 
-If a phone or another desktop should reach this machine, sign in **before** that
-command and pair the device — otherwise `future host` serves local work only:
+<p align="center">
+  <img src="docs/tui-screenshot.png" alt="FutureOS terminal UI — session rail grouped by workspace, a reply's process opened as a tree, markdown with a code block and a table" width="820">
+</p>
+
+### Remote access
+
+A phone or another desktop can drive this machine's agent. Pairing it is the one
+step that needs an account, and only on the official relay:
 
 ```bash
 future auth login           # the FutureOS account that pairs your devices
 future remote devices add   # print the invitation a phone or another desktop types in
 ```
 
-`future host` needs **no sign-in** for local work: without an account it serves
-everything locally with your own model providers. The paired remote desktops
-above stay closed until `future auth login` has run — it may also happen later,
-in another terminal, and the host picks the account up without a restart.
-`--relay URL` skips the Future platform entirely; run your own relay instead
-([self-hosted relay](docs/guide/self-hosted-relay.md)).
+The phone↔host channel is **end-to-end encrypted** — a Noise handshake with
+ChaCha20-Poly1305 records — so the relay only carries ciphertext. Without an
+account the host still serves everything local; the paired desktops simply stay
+closed until that sign-in exists, which can also happen later.
 
-Desktop GUI and host mode first attach to a compatible external Agent; when the
-default endpoint is absent and its instance lock is free, they run the complete
-Agent in their own process. Incompatible or locked/unavailable services produce
-an error without starting a second Agent.
-
-Quitting an embedded Desktop stops work from every connected client, including
-CLI/TUI conversations. An attached external Agent stays running; Desktop cancels
-its own submitted runs. See [Desktop Agent lifecycle and recovery](docs/guide/desktop-agent.md).
-
-Then launch the terminal UI from the same `future` command:
-
-```bash
-future tui       # terminal UI
-```
-
-The TUI only ever **attaches** to a serving Agent: it never starts or restarts
-one. With no Agent reachable it says so and names the command to run
-(`future host`, the desktop app, or `future agent`), and if the Agent it was
-attached to goes away it keeps reconnecting and showing that state instead of
-bringing a replacement up. So you can open **as many terminals as you like**
-against one host — and closing one leaves the Agent and the other terminals
-untouched.
-
-Published builds check for updates once in the background after TUI startup.
-A newer version is shown as a local notice with the official installer link;
-nothing is installed automatically. Release builds check the release channel,
-and test/nightly builds check nightly. Local/source builds skip the check.
-Network failures are silent; `future tui --offline` disables the check, and
-non-interactive commands never perform it.
-
-> **Remote / development mode:** pass `--grpc-addr 127.0.0.1:50051` to
-> `future agent` to serve plain TCP instead, and point clients at it with
-> `FUTURE_AGENT_GRPC_ADDR=127.0.0.1:50051`. TCP is opt-in — never expose it
-> beyond a trusted interface.
-
-<p align="center">
-  <img src="docs/tui-screenshot.png" alt="FutureOS terminal UI — session rail grouped by workspace, a reply's process opened as a tree, markdown with a code block and a table" width="820">
-</p>
-
-> `future <cmd>` is the unified entry point for every Rust component: `future agent`,
-> `future tui`, `future channel`, `future goal`. Each runs the same code as the
-> standalone binary of the same name (the `future-*` binaries still exist as
-> build targets — `cargo build -p future-tui` etc. — but are no longer
-> installed by default).
->
-> If connection fails, check Agent discovery, compatibility and instance ownership — see [Troubleshooting](#troubleshooting).
-
-### Essential Slash Commands (TUI)
-
-| Command | Purpose |
-|---|---|
-| `/help` | Show all commands and shortcuts |
-| `/model [name]` | Select / switch model |
-| `/new` | Start a new session |
-| `/sessions` | Browse and switch sessions |
-| `/tree` | Session tree with fork/clone hierarchy |
-| `/fork` | Fork from a chosen message |
-| `/clone` | Clone the current session |
-| `/name <name>` | Set the session name |
-| `/scoped-models` | Configure the model enable/disable list |
-| `/compact` | Compress conversation context |
-| `/status` | Session state, token usage, cost |
-| `/stop` | Abort current generation |
-| `/cancel <run-id>` | Cancel a queued run |
-| `/cwd <dir>` | Change the working directory |
-| `/approve <request-id>` | Approve a pending tool execution |
-| `/reject <request-id>` | Reject a pending tool execution |
-| `/reload` | Reload skills and context files |
-| `/skills` | Browse, install and manage skills |
-| `/providers` | Configure providers and models |
-| `/theme [id]` | Switch the color theme |
-
-Run `/help` in the TUI for the full list (40+ commands).
-
-### Keyboard Shortcuts (TUI)
-
-| Key | Action |
-|---|---|
-| `ctrl+c` | Stop the run in flight (nothing happens when idle) |
-| `ctrl+x` | Quit |
-| `ctrl+n` | New chat |
-| `ctrl+r` | Sessions |
-| `ctrl+d` | Rail: show / focus / hide |
-| `ctrl+p` | Command palette |
-| `ctrl+o` | Model chooser |
-| `ctrl+t` | Thinking effort |
-| `ctrl+s` | Approval mode |
-| `ctrl+l` | Workspaces |
-| `ctrl+f` | Files panel |
-| `ctrl+g` | Git browser |
-| `ctrl+v` | Paste clipboard (image or text) |
-| `ctrl+q` | Preferences (including the shortcut editor) |
-| `?` | Help: the effective keys, grouped |
-| `enter` | Send — while a run is in flight the prompt queues behind it |
-| `ctrl+j` | Newline in the draft |
-| `ctrl+e` / `end` | End of the draft line (`ctrl+a` / `home` go to the start) |
-| `page up` / `page down` | Scroll the conversation |
-| `escape` | Close an overlay; return to the latest output |
-
-Every chord is rebindable in `/preferences`, and `?` always shows what is
-actually in effect.
+**Your own relay.** `--relay URL` takes the Future platform out of the path
+entirely: no account, same protocol, same pairing, same encryption
+([self-hosted relay](docs/guide/self-hosted-relay.md)). Running the host on a
+server is the same command over SSH, with no window or WebView
+([host mode](docs/guide/desktop-host.md)); what a paired device can do is in
+[remote](docs/wiki/en/Remote.md).
 
 ## Troubleshooting
 
@@ -301,7 +194,7 @@ actually in effect.
 |---|---|
 | TUI says no Agent is serving and exits | Start the Agent's host first — `future host` (or the desktop app, or `future agent`). The TUI only attaches; it never starts one. |
 | Client exits with a connection / gRPC error | Run `future doctor`; check Agent startup/version/lock errors and that client/Agent use the same user and IPC environment. See the [Desktop Agent guide](docs/guide/desktop-agent.md) before changing service ownership. Only in explicit TCP mode, check the configured address/port. |
-| Agent replies with an auth / "no model" error | No model configured yet. Run `future config` — see [Configure a model](#configure-a-model). |
+| Agent replies with an auth / "no model" error | No model configured yet — see [Configure a model](#configure-a-model). |
 | Build / install problems | See [Build & Install](docs/guide/build-and-install.md) (platform toolchains, linker, GUI packaging). |
 
 ## Community
