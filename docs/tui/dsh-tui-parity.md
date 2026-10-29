@@ -346,7 +346,7 @@ verdict from the first pass at `9d5f02beb`.
 | 16 | Settings screen, grouped and searchable | 9 groups | no settings page; the pickers cover model, thinking and theme, the rest is per-command | partial | partial | P1 |
 | 17 | Fullscreen draft editor | `Ctrl+Shift+E`, `⛶` | no affordance, no editor; external `$EDITOR` no longer reachable | missing | partial | P1 |
 | 18 | History search scoped to the project | `Ctrl+R` `[R]` | prompt recall only | partial | partial | P1 |
-| 19 | Steering vs queue vs interrupt | `Enter`/`Tab`/`Ctrl+Enter` | submit queues behind the run; `ctrl+x` aborts | partial | partial | P1 |
+| 19 | Steering vs queue vs interrupt | `Enter`/`Tab`/`Ctrl+Enter` | submit queues behind the run; `ctrl+c` aborts | partial | partial | P1 |
 | 20 | Rewind to an earlier turn | double `Esc` + `/rewind` | `/fork` is not in the palette either | missing | missing | P2 |
 | 21 | Mermaid fences, LaTeX | Unicode + images | none | missing | missing | P2 |
 | 22 | Image preview zoom/pan, Sixel | yes | Kitty/iTerm2 passthrough only | partial | partial | P2 |

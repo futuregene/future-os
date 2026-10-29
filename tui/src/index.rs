@@ -558,8 +558,12 @@ async fn fork_print_session(
         .ok_or_else(|| "Fork returned no session".to_string())
 }
 
-/// Most recently updated session, by the canonical `updatedAtMs` the Agent
+/// Most recently updated conversation, by the canonical `updatedAtMs` the Agent
 /// already sorts by — the client must not re-derive it from a stale shape.
+///
+/// A session that holds no message is skipped: the agent lists one from the
+/// moment it is created, before its first prompt, and continuing onto it would
+/// reopen an empty transcript.
 async fn most_recent_session_id(grpc_addr: &str) -> Result<String, String> {
     let cmd = RpcCommand {
         id: now_id(),
@@ -577,6 +581,19 @@ async fn most_recent_session_id(grpc_addr: &str) -> Result<String, String> {
     let mut rows = sessions
         .iter()
         .filter_map(|session| {
+            // A session is listed before its first prompt, and `updatedAtMs`
+            // moves when the record is written (a storage migration restamps
+            // every one of them), so the newest row can be one nobody ever
+            // spoke in — continuing onto it would open an empty transcript.
+            // `queryCount` is how the agent says so; a peer that omits the
+            // field keeps its rows (see `workbench::live::is_conversation`).
+            if session
+                .get("queryCount")
+                .and_then(serde_json::Value::as_i64)
+                == Some(0)
+            {
+                return None;
+            }
             let id = session.get("id")?.as_str()?.to_string();
             let updated_at = session
                 .get("updatedAtMs")
@@ -2017,6 +2034,9 @@ mod tests {
                     serde_json::json!({"sessions": [
                         {"id": "s-old", "updatedAtMs": 100},
                         {"id": "s-recent", "updatedAtMs": 900},
+                        // Newest stamp of all, but never spoken in: `--continue`
+                        // must skip it rather than reopen an empty transcript.
+                        {"id": "s-empty", "updatedAtMs": 1000, "queryCount": 0},
                         {"id": "s-untimed"}
                     ]})
                     .to_string(),
@@ -2044,7 +2064,8 @@ mod tests {
         );
         assert_eq!(commands(), vec!["switch_session".to_string()]);
 
-        // --continue → the session with the newest updatedAtMs.
+        // --continue → the newest session that holds a message. `s-empty` carries
+        // a newer stamp but no turn, so it is not the last conversation.
         seen.lock().unwrap().clear();
         assert_eq!(
             resolve_print_session(&addr, &args(&["-p", "hi", "--continue"])).await,

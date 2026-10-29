@@ -104,8 +104,12 @@ fn state() -> Value {
         "contextTokens": 12_400,
         "contextWindow": 200_000,
         "contextPercent": 6.2,
+        // `inputTokens` is the session's `prompt_tokens`, so the cached part is
+        // inside it (88.0k + 2.1k of 92.0k → a 96% hit rate). A stand-in that
+        // reports more cache than prompt would paint a footer no real session
+        // can produce.
         "usage": {
-            "inputTokens": 9_100, "outputTokens": 3_300,
+            "inputTokens": 92_000, "outputTokens": 3_300,
             "cacheReadTokens": 88_000, "cacheWriteTokens": 2_100,
             "costCny": 0.0137
         }

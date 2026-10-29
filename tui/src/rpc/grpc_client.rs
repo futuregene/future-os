@@ -605,6 +605,27 @@ impl GrpcClient {
         Ok(ack)
     }
 
+    /// Is a turn in flight this client started? The interrupt chord reads it:
+    /// a stop with nothing running is nothing (`Live::abort`).
+    pub fn has_active_run(&self) -> bool {
+        self.inner.state.lock().active_run_id.is_some()
+    }
+
+    /// Publish a run the agent's `get_state` named as in flight.
+    ///
+    /// [`Self::set_current_session_id`] clears the run bookkeeping because the
+    /// id it held belonged to the session the client is leaving. That is right
+    /// for a real switch and wrong for the attach path: there the state being
+    /// installed *is* the new session's, and dropping its live run left the
+    /// interrupt chord (`ctrl+c`) a no-op on a terminal that had just attached
+    /// to a session already streaming.
+    pub fn adopt_active_run(&self, run_id: &str) {
+        let mut st = self.inner.state.lock();
+        st.active_run_id = Some(run_id.to_string());
+        st.last_run_id = Some(run_id.to_string());
+        st.runs.insert(run_id.to_string(), RunStatus::Running);
+    }
+
     /// `abort()`.
     pub async fn abort(&self) -> Result<(), String> {
         let run_id = self.inner.state.lock().active_run_id.clone();

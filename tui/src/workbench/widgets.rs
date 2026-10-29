@@ -6,6 +6,7 @@
 
 use crate::workbench::ansi::{align_right, clip, fit, width};
 use crate::workbench::i18n::{self, Key, Language};
+use crate::workbench::state::UsageData;
 use crate::workbench::theme::Palette;
 
 /// A horizontal rule across `columns`.
@@ -128,17 +129,46 @@ pub fn spinner(frame: usize) -> &'static str {
     SPINNER[frame % SPINNER.len()]
 }
 
-/// `◐ 42 tok/s · 缓存 96%` — the activity row's tail, so the numbers live in
-/// one place instead of being re-spelled at each call site.
-pub fn rate(palette: &Palette, tps: f64, cache_pct: u8, lang: Language) -> String {
-    let mut parts = Vec::new();
-    if tps > 0.0 {
-        parts.push(format!("{tps:.0} tok/s"));
+/// `42 tok/s · 输入 12.3k · 输出 640 · 缓存 9.9k · 命中 96%` — the activity row's
+/// tail, so the numbers live in one place instead of being re-spelled at each
+/// call site.
+///
+/// The tail shares the row with the activity text on its left, so it yields
+/// `budget` cells instead of pushing that text off: the token counts go first
+/// (they are the widest, and `usage` in the panels carries them too), then the
+/// rate, never the hit rate — the one number that exists nowhere else.
+pub fn rate(palette: &Palette, usage: &UsageData, lang: Language, budget: usize) -> String {
+    let mut parts: [Option<String>; 5] = [
+        (usage.tps > 0.0).then(|| format!("{:.0} tok/s", usage.tps)),
+        count_part(lang, Key::RateInput, usage.input_tokens),
+        count_part(lang, Key::RateOutput, usage.output_tokens),
+        count_part(lang, Key::RateCacheTokens, usage.cache_read_tokens),
+        (usage.cache_pct > 0).then(|| i18n::render(lang, Key::CacheLabel, &[&usage.cache_pct])),
+    ];
+    let joined = |parts: &[Option<String>; 5]| {
+        parts
+            .iter()
+            .flatten()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" · ")
+    };
+    let mut text = joined(&parts);
+    // Input, output, cache, rate — the hit rate is the floor of the tail.
+    for index in [1, 2, 3, 0] {
+        if width(&text) <= budget {
+            break;
+        }
+        parts[index] = None;
+        text = joined(&parts);
     }
-    if cache_pct > 0 {
-        parts.push(i18n::render(lang, Key::CacheLabel, &[&cache_pct]));
-    }
-    palette.dim(&parts.join(" · "))
+    palette.dim(&text)
+}
+
+/// `输入 12.3k` — a labelled token count, or `None` for a figure no request has
+/// reported yet (a fresh session's tail is not `输入 0`).
+fn count_part(lang: Language, key: Key, tokens: u64) -> Option<String> {
+    (tokens > 0).then(|| i18n::render(lang, key, &[&short_count(tokens)]))
 }
 
 /// `6.9k/1.0M 0.7%` — the context gauge's text form.
@@ -147,8 +177,13 @@ pub fn context_text(used: u64, total: u64) -> String {
 }
 
 /// `6.9k`, `1.0M`, `812` — the compact form the status bar has room for.
+///
+/// The billion tier is `B`, the spelling token counts are quoted in
+/// (`1B tokens`) — `G` would read as gigabytes in a terminal.
 pub fn short_count(count: u64) -> String {
-    if count >= 1_000_000 {
+    if count >= 1_000_000_000 {
+        format!("{:.1}B", count as f64 / 1_000_000_000.0)
+    } else if count >= 1_000_000 {
         format!("{:.1}M", count as f64 / 1_000_000.0)
     } else if count >= 1_000 {
         format!("{:.1}k", count as f64 / 1_000.0)
@@ -568,11 +603,92 @@ mod tests {
         );
     }
 
+    /// The activity row's tail carries the session's three token counts and the
+    /// hit rate they produce, in that order — the reading a reader checks by
+    /// eye (`cache / input`).
+    #[test]
+    fn the_rate_tail_reads_counts_then_the_hit_rate() {
+        let usage = UsageData {
+            tps: 42.0,
+            input_tokens: 812_400,
+            output_tokens: 24_800,
+            cache_read_tokens: 780_000,
+            cache_pct: 96,
+            ..Default::default()
+        };
+        let tail = |lang: Language, budget: usize| {
+            crate::utils::strip_ansi_codes(&rate(&P, &usage, lang, budget))
+        };
+        assert_eq!(
+            tail(Language::Zh, 200),
+            "42 tok/s · 输入 812.4k · 输出 24.8k · 缓存 780.0k · 命中 96%"
+        );
+        assert_eq!(
+            tail(Language::En, 200),
+            "42 tok/s · in 812.4k · out 24.8k · cache 780.0k · hit 96%"
+        );
+        // Idle: no rate, and a session that has not been billed never shows a
+        // `输入 0`.
+        let idle = UsageData { tps: 0.0, ..usage };
+        assert_eq!(
+            crate::utils::strip_ansi_codes(&rate(&P, &idle, Language::En, 200)),
+            "in 812.4k · out 24.8k · cache 780.0k · hit 96%"
+        );
+        assert_eq!(
+            crate::utils::strip_ansi_codes(&rate(&P, &UsageData::default(), Language::En, 200)),
+            ""
+        );
+    }
+
+    /// A narrow row gives the tail's cells up one number at a time — the cache
+    /// count, then the output, then the input, then the rate — and the hit rate
+    /// is the last thing standing, because it is the only figure the panels do
+    /// not repeat.
+    #[test]
+    fn a_narrow_tail_gives_up_the_counts_before_the_hit_rate() {
+        let usage = UsageData {
+            tps: 42.0,
+            input_tokens: 812_400,
+            output_tokens: 24_800,
+            cache_read_tokens: 780_000,
+            cache_pct: 96,
+            ..Default::default()
+        };
+        let tail =
+            |budget: usize| crate::utils::strip_ansi_codes(&rate(&P, &usage, Language::En, budget));
+        // 57 cells is the whole tail; the shapes below are what each next step
+        // of the ladder costs (measured, not guessed).
+        assert_eq!(
+            tail(57),
+            "42 tok/s · in 812.4k · out 24.8k · cache 780.0k · hit 96%"
+        );
+        assert_eq!(tail(56), "42 tok/s · out 24.8k · cache 780.0k · hit 96%");
+        assert_eq!(tail(41), "42 tok/s · cache 780.0k · hit 96%");
+        assert_eq!(tail(29), "42 tok/s · hit 96%");
+        assert_eq!(tail(0), "hit 96%");
+        // Whatever it drops, it never exceeds the budget `rate` was handed —
+        // and the hit rate is the floor it bottoms out at.
+        for budget in 0..80 {
+            let text = rate(&P, &usage, Language::En, budget);
+            let seen = crate::workbench::ansi::width(&text);
+            let floor = crate::workbench::ansi::width(&rate(&P, &usage, Language::En, 0));
+            assert!(seen <= budget.max(floor), "budget {budget} painted {seen}");
+            assert!(
+                crate::utils::strip_ansi_codes(&text).ends_with("hit 96%"),
+                "budget {budget}: {text:?}"
+            );
+        }
+    }
+
     #[test]
     fn counts_and_costs_read_like_the_status_bar_promises() {
         assert_eq!(short_count(812), "812");
         assert_eq!(short_count(6_900), "6.9k");
         assert_eq!(short_count(1_000_000), "1.0M");
+        // A long session's cumulative prompt is past a billion tokens; `2978.1M`
+        // is not a number a footer can carry.
+        assert_eq!(short_count(1_000_000_000), "1.0B");
+        assert_eq!(short_count(2_978_142_108), "3.0B");
         assert_eq!(context_text(6_900, 1_000_000), "6.9k/1.0M");
         assert_eq!(cost_text(0.0), "≈¥0");
         assert_eq!(cost_text(0.004), "<¥0.01");

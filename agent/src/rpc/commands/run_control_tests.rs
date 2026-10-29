@@ -107,6 +107,88 @@ fn abort_works() {
     assert_eq!(resp["success"], true);
 }
 
+/// A stop is in-memory work first and durable work second. When the journal
+/// refused the `run_stop_requested` marker, the old order returned before the
+/// cancellation was ever requested: the run kept going, and the client saw
+/// `Could not stop the run: Timeout expired` (the store's busy timeout and the
+/// client's deadline are both 5 s).
+#[test]
+fn a_stop_cancels_the_run_even_when_the_journal_cannot_take_the_marker() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    let mut history = crate::session::Session::new(".", "mock");
+    history.id = "default".into();
+    history
+        .entries
+        .push(crate::session::SessionEntry::run_started("live", 1));
+    state.session_manager.save(&history).unwrap();
+    let runtime = session.read().runtime.clone();
+    let lease = runtime.begin(Some("live"), None).unwrap();
+    // The flag the run task watches: true means the run is really interrupted.
+    let interrupt = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::channel(1);
+    assert!(runtime.install_cancellation(&lease, interrupt_tx, interrupt.clone()));
+    state.session_manager.test_execute(
+        "CREATE TRIGGER reject_stop BEFORE INSERT ON entries BEGIN SELECT RAISE(ABORT,'disk failure'); END;",
+    );
+
+    let mut cmd = make_cmd("abort");
+    cmd.run_id = "live".into();
+    let reply = parse_response(&handle_command_internal(&state, cmd));
+
+    assert_eq!(reply["success"], true, "{reply}");
+    assert_eq!(
+        runtime.snapshot().unwrap().phase,
+        crate::runtime::RunPhase::Cancelling
+    );
+    assert!(
+        interrupt.load(std::sync::atomic::Ordering::SeqCst),
+        "the run task must be interrupted, not merely journalled"
+    );
+    assert!(interrupt_rx.try_recv().is_ok());
+    assert!(session.read().runtime.begin_finalizing(&lease));
+    assert!(session.read().runtime.finish(&lease));
+}
+
+/// The reordered stop still records the durable marker the crash-recovery pass
+/// reads, for the run the cancellation actually reached.
+#[test]
+fn a_stop_records_the_marker_for_the_run_it_cancelled() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    let mut history = crate::session::Session::new(".", "mock");
+    history.id = "default".into();
+    history
+        .entries
+        .push(crate::session::SessionEntry::run_started("live", 1));
+    state.session_manager.save(&history).unwrap();
+    let runtime = session.read().runtime.clone();
+    let lease = runtime.begin(Some("live"), None).unwrap();
+
+    let mut cmd = make_cmd("abort");
+    cmd.run_id = "live".into();
+    let reply = parse_response(&handle_command_internal(&state, cmd));
+
+    assert_eq!(reply["success"], true, "{reply}");
+    let persisted = state.session_manager.load("default").unwrap();
+    let markers: Vec<_> = persisted
+        .entries
+        .iter()
+        .filter(|entry| entry.entry_type == "run_stop_requested")
+        .filter_map(|entry| {
+            entry
+                .content
+                .as_ref()?
+                .get("run_id")?
+                .as_str()
+                .map(str::to_owned)
+        })
+        .collect();
+    assert_eq!(markers, vec!["live".to_string()]);
+    assert!(session.read().runtime.begin_finalizing(&lease));
+    assert!(session.read().runtime.finish(&lease));
+}
+
 #[test]
 fn abort_commits_a_dead_tasks_terminal_state_and_preserves_a_committed_outcome() {
     for committed in [false, true] {

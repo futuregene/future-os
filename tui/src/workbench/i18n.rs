@@ -280,6 +280,9 @@ pub enum Key {
     UsageContext,
     UsageCost,
     UsageCache,
+    RateInput,
+    RateOutput,
+    RateCacheTokens,
     UsageOutput,
     PanelEmptyTodo,
     PanelGoalLabel,
@@ -633,6 +636,9 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         UsageContext => ("上下文", "Context"),
         UsageCost => ("成本", "Cost"),
         UsageCache => ("缓存命中", "Cache hit"),
+        RateInput => ("输入 {}", "in {}"),
+        RateOutput => ("输出 {}", "out {}"),
+        RateCacheTokens => ("缓存 {}", "cache {}"),
         UsageOutput => ("输出", "Output"),
         PanelEmptyTodo => ("没有待办", "no todos"),
         PanelGoalLabel => ("目标", "goal"),
@@ -913,7 +919,7 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ),
         CmdMouse => ("切换鼠标捕获，便于选择复制", "Toggle mouse capture for native selection"),
         QueueTitle => ("排队消息", "Queued prompts"),
-        QueueHint => ("↑↓ 选择 · x 取消 · r/⏎ 取消并取回草稿 · esc 关闭 · ctrl+x 停止当前运行", "↑↓ choose · x cancels · r/enter recalls to draft · esc closes · ctrl+x stops the active run"),
+        QueueHint => ("↑↓ 选择 · x 取消 · r/⏎ 取消并取回草稿 · esc 关闭 · ctrl+c 停止当前运行", "↑↓ choose · x cancels · r/enter recalls to draft · esc closes · ctrl+c stops the active run"),
         QueueEmpty => ("没有排队消息", "No queued prompts"),
         QueueCancelled => ("已取消排队消息", "Queued prompt cancelled"),
         QueueRecalled => ("已取消排队消息并取回草稿", "Queued prompt cancelled and recalled to draft"),
@@ -985,8 +991,8 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ),
         HelpKeySidebar => ("侧栏：打开 / 聚焦 / 收起", "Sidebar: show / focus / hide"),
         HelpKeyFocus => (
-            "在对话里逐个选中链接与图片，⏎ 打开",
-            "Step through the conversation's links and pictures, enter opens one",
+            "在对话里逐个选中链接与图片，⏎ 打开、再按一次收起",
+            "Step through the conversation's links and pictures: enter opens one, enter again folds it",
         ),
         HelpKeyScroll => ("滚动聊天，或侧栏列表", "Scroll the chat, or the sidebar's list"),
         HelpKeyPage => ("整页滚动聊天", "Scroll the chat a page at a time"),
@@ -1139,7 +1145,7 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         JobPaused => ("暂停", "paused"),
         JobScheduled => ("已排期", "scheduled"),
         JobManual => ("手动", "manual"),
-        CacheLabel => ("缓存 {}%", "cache {}%"),
+        CacheLabel => ("命中 {}%", "hit {}%"),
     }
 }
 
@@ -1342,7 +1348,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 322] = {
+    const ALL_KEYS: [Key; 325] = {
         use Key::*;
         [
             TabTodo,
@@ -1667,6 +1673,9 @@ mod tests {
             JobScheduled,
             JobManual,
             CacheLabel,
+            RateInput,
+            RateOutput,
+            RateCacheTokens,
         ]
     };
 }

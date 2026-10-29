@@ -234,6 +234,12 @@ pub struct Live {
     /// Nothing is sent: the agent has no session to set a directory on until
     /// the first message creates one.
     pending_cwd: Option<String>,
+    /// A workspace the reader picked while a conversation was attached (a
+    /// workspace picker row, a `/git` worktree row) that
+    /// `~/.future/tui/settings.json` has not been told about yet. The driver
+    /// drains it after every action ([`Self::take_workspace_to_remember`]); the
+    /// launchpad's own staging is read from `pending_cwd` instead.
+    remembered_cwd: Option<String>,
     /// When the current run started and how many output tokens it has reported:
     /// tok/s is the two divided. Cleared at `agent_start`, frozen at
     /// `agent_end` so an idle surface still shows the turn it just finished.
@@ -296,6 +302,27 @@ pub struct Live {
     /// The siblings a finished preview brought, waiting for the driver to hand
     /// them to the preview box (`take_preview_siblings`).
     preview_siblings: Option<(Vec<String>, usize)>,
+    /// The transcript's pictures, decoded and scaled down for a thumbnail
+    /// (`chat_area::render_pictures` reserves the cells; these are the pixels
+    /// that fill them). Keyed by path: two messages can carry the same picture,
+    /// and a conversation is re-read often enough that decoding it twice would
+    /// be the only slow thing about scrolling back.
+    ///
+    /// A path that could not be read is stored *empty* rather than left out:
+    /// an empty [`ImagePixels`] is the answer "there is nothing to draw here",
+    /// and the frame stops asking.
+    pictures: HashMap<String, super::image_view::ImagePixels>,
+    /// The order they were decoded in; an over-full cache gives the oldest up.
+    picture_order: VecDeque<String>,
+    /// Paths the frame asked for and nothing has answered yet, in the order it
+    /// asked. Read one at a time: a conversation with ten pictures in it should
+    /// not start ten decoders.
+    picture_queue: VecDeque<String>,
+    /// The one picture being read off the event loop, and the path it is for.
+    picture_read: Option<(
+        String,
+        std::sync::mpsc::Receiver<Result<super::image_view::ImagePixels, String>>,
+    )>,
 }
 
 struct PreviewLoaded {
@@ -374,6 +401,7 @@ impl Live {
             pending_effort: settings.and_then(|settings| settings.default_thinking_level.clone()),
             pending_mode: None,
             pending_cwd: None,
+            remembered_cwd: None,
             run_started: None,
             run_output_tokens: 0,
             run_tps: 0.0,
@@ -397,6 +425,10 @@ impl Live {
             tree_read: None,
             tree_revision: 0,
             preview_siblings: None,
+            pictures: HashMap::new(),
+            picture_order: VecDeque::new(),
+            picture_queue: VecDeque::new(),
+            picture_read: None,
         };
 
         if let Some(id) = session.filter(|id| !id.is_empty()) {
@@ -468,6 +500,12 @@ impl Live {
         if !state.session_id.is_empty() && self.client.get_current_session_id() != state.session_id
         {
             self.client.set_current_session_id(&state.session_id);
+            // The run this state names belongs to the session just published —
+            // publishing it cleared that name, and a terminal that attached to
+            // a session already streaming must still be able to interrupt it.
+            if let Some(active) = &state.active_run {
+                self.client.adopt_active_run(&active.run_id);
+            }
         }
         self.state = state;
         self.refresh_local();
@@ -1450,7 +1488,6 @@ impl Live {
         let cwd = self.shown_cwd().unwrap_or_default();
 
         WorkbenchData {
-            app_name: "future-tui".into(),
             version: crate::version::VERSION.to_string(),
             connected: self.connected(),
             session: SessionMeta {
@@ -1482,10 +1519,24 @@ impl Live {
                 ctx_total: state.context_window.unwrap_or(0).max(0) as u64,
                 cost: state.usage.cost_cny,
                 cache_pct: cache_percent(&state),
+                input_tokens: state.usage.input_tokens.max(0) as u64,
+                output_tokens: state.usage.output_tokens.max(0) as u64,
+                cache_read_tokens: state.usage.cache_read_tokens.max(0) as u64,
                 tps: self.live_tps(),
             },
             files: self.files.clone(),
             tree: self.tree.clone(),
+            pictures: self
+                .chat
+                .pictures()
+                .into_iter()
+                .map(|block| super::state::ChatImage {
+                    row: block.row,
+                    rows: block.rows,
+                    pixels: self.pictures.get(&block.path).cloned(),
+                    path: block.path,
+                })
+                .collect(),
             preview: self.preview.clone(),
             sessions: rows,
             workspaces,
@@ -1760,11 +1811,19 @@ impl Live {
             self.draft.placeholder.clone(),
         );
         self.revision = self.revision.wrapping_add(1);
-        self.chat.add_message(ChatMessage::new(
-            crate::session_rows::random_id(),
-            ChatRole::User,
-            &typed,
-        ));
+        let mut sent = ChatMessage::new(crate::session_rows::random_id(), ChatRole::User, &typed);
+        // The pictures travel with the bubble the reader just sent. The agent
+        // records them on the entry and the history replays them from its
+        // metadata, but that is a round trip away: the thumbnail is owed now.
+        sent.pictures = attachments
+            .iter()
+            .filter(|attachment| attachment.kind == "image" && !attachment.path.is_empty())
+            .map(|attachment| crate::components::chat_area::ChatPicture {
+                path: attachment.path.clone(),
+                name: attachment.name.clone(),
+            })
+            .collect();
+        self.chat.add_message(sent);
         self.mark(ActivityKind::Thinking);
         match self
             .client
@@ -2231,21 +2290,53 @@ impl Live {
         self.refresh_local();
     }
 
-    /// Stage the directory this process was started from for the first
-    /// conversation — the launchpad's default, so `cd project && future tui`
-    /// creates that project's conversation.
+    /// Stage the workspace the first conversation will run in — the launchpad's
+    /// default, so `cd project && future tui` creates that project's
+    /// conversation, and a `future tui` typed wherever the terminal happened to
+    /// sit reopens the workspace chosen last time (`remembered`).
     ///
     /// Called by the driver rather than by [`Self::attach`]: attaching is also
     /// how tests and an embedding caller open the surface, and those must not
     /// inherit whatever directory the process happens to run in.
-    pub fn stage_launch_workspace(&mut self) {
+    pub fn stage_launch_workspace(&mut self, remembered: Option<&str>) {
         if !self.detached() {
             return;
         }
-        if let Some(workspace) = launch_workspace() {
+        let launched = std::env::current_dir()
+            .ok()
+            .map(|dir| dir.to_string_lossy().to_string());
+        if let Some(workspace) = launch_workspace(launched.as_deref(), remembered) {
             self.pending_cwd = Some(workspace);
             self.refresh_local();
         }
+    }
+
+    /// The workspace `settings.json` should remember (`lastWorkspace`), if this
+    /// client holds one it has not handed over yet.
+    ///
+    /// Two sources, both of them a *choice* rather than a directory the reader
+    /// merely visited: the workspace the launchpad has staged for the next
+    /// conversation, and a workspace picked while one was attached. A
+    /// conversation the reader only switched to is not one — remembering it
+    /// would make an old session's directory the next start's default.
+    ///
+    /// Draining rather than reading keeps the driver's write cheap: it compares
+    /// this against the file and writes only when the two differ. The launchpad's
+    /// staging is read, not drained — the chip keeps naming that workspace until
+    /// the session exists — so the driver sees it again on the next action; that
+    /// comparison is what makes the repeat free.
+    pub fn take_workspace_to_remember(&mut self) -> Option<String> {
+        if let Some(chosen) = self.remembered_cwd.take() {
+            return Some(chosen);
+        }
+        if !self.detached() {
+            return None;
+        }
+        let staged = self.pending_cwd.as_deref()?.trim().to_string();
+        if staged.is_empty() || is_chat_directory(&staged) {
+            return None;
+        }
+        Some(staged)
     }
 
     /// Is the surface on the launchpad (no session attached)?
@@ -2876,6 +2967,9 @@ impl Live {
                 self.refresh_state().await;
                 self.refresh_worktrees();
                 self.diff = None;
+                // A worktree the reader entered is the workspace they chose:
+                // the next start from somewhere ambient reopens it.
+                self.remembered_cwd = Some(path.to_string());
             }
             Err(error) => {
                 self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
@@ -2970,6 +3064,9 @@ impl Live {
                 self.refresh_worktrees();
                 self.diff = None;
                 self.notice = Some(notice);
+                // The workspace the reader picked is the one the next start
+                // reopens (see [`Self::take_workspace_to_remember`]).
+                self.remembered_cwd = Some(path.to_string());
             }
             Err(error) => {
                 self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
@@ -3067,6 +3164,84 @@ impl Live {
     /// step buttons. Kept here until the driver asks for it.
     pub fn take_preview_siblings(&mut self) -> Option<(Vec<String>, usize)> {
         self.preview_siblings.take()
+    }
+
+    // ─── the transcript's pictures ──────────────────────────────────────
+
+    /// The frame asked for these pictures' pixels: read them, off the loop.
+    ///
+    /// Only what the frame could actually draw is asked for, and only once: a
+    /// transcript with a picture in it repaints for every streamed token, and a
+    /// reader who scrolls past ten attachments should not queue ten decodes for
+    /// the ones behind them.
+    pub fn want_pictures(&mut self, paths: Vec<String>) {
+        for path in paths {
+            if self.pictures.contains_key(&path)
+                || self.picture_queue.iter().any(|queued| *queued == path)
+                || self
+                    .picture_read
+                    .as_ref()
+                    .is_some_and(|(reading, _)| *reading == path)
+            {
+                continue;
+            }
+            self.picture_queue.push_back(path);
+        }
+        self.begin_picture_read();
+    }
+
+    /// Start the next read, if one is not already in flight.
+    fn begin_picture_read(&mut self) {
+        if self.picture_read.is_some() {
+            return;
+        }
+        let Some(path) = self.picture_queue.pop_front() else {
+            return;
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let read = path.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(read_thumbnail(&read));
+        });
+        self.picture_read = Some((path, rx));
+    }
+
+    /// Install every finished picture read. Returns whether the frame changed —
+    /// a thumbnail becoming visible is a repaint, and the slot it fills is
+    /// already on screen waiting for it.
+    pub fn poll_thumbnails(&mut self) -> bool {
+        let Some((_path, rx)) = self.picture_read.as_ref() else {
+            return false;
+        };
+        let outcome = rx.try_recv();
+        let path = self.picture_read.as_ref().map(|(path, _)| path.clone());
+        match outcome {
+            Ok(result) => {
+                self.picture_read = None;
+                let Some(path) = path else {
+                    return false;
+                };
+                let pixels = result.unwrap_or_default();
+                // A path that failed is remembered as "nothing to draw": the
+                // file may have been moved, and asking again every frame would
+                // be a read per frame for a picture that will never appear.
+                self.pictures.insert(path.clone(), pixels);
+                self.picture_order.push_back(path);
+                while self.picture_order.len() > MAX_PICTURE_CACHE {
+                    if let Some(old) = self.picture_order.pop_front() {
+                        self.pictures.remove(&old);
+                    }
+                }
+                self.begin_picture_read();
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.picture_read = None;
+                self.begin_picture_read();
+                false
+            }
+        }
     }
 
     /// Show the newest image already attached to the draft.
@@ -3177,8 +3352,16 @@ impl Live {
         });
     }
 
-    /// Interrupt the run in flight (`ctrl+x`).
+    /// Interrupt the run in flight (`ctrl+c`, `/stop`).
+    ///
+    /// With nothing running this is nothing: the chord means the turn under the
+    /// reader, and a turn that has already ended asks the agent to abort an
+    /// empty run id, which used to answer the reader with an error notice for
+    /// pressing a key at the wrong moment.
     pub async fn abort(&mut self) {
+        if !self.client.has_active_run() {
+            return;
+        }
         if let Err(error) = self.client.abort().await {
             self.notice = Some(format!("Could not stop the run: {error}"));
         } else {
@@ -3347,7 +3530,13 @@ impl SessionList {
     /// Replace the list, answering whether anything changed — an unchanged list
     /// keeps its version, so the rail is not re-filed (nor repainted) for a poll
     /// that read the same rows.
+    ///
+    /// The listing is filtered on the way in (`is_conversation`), so every
+    /// reader of the list — the rail, the 工作区 filing, `--continue`, the row a
+    /// delete slides into place — walks conversations rather than session
+    /// records.
     fn replace(&mut self, rows: Vec<SessionSummary>) -> bool {
+        let rows: Vec<SessionSummary> = rows.into_iter().filter(is_conversation).collect();
         if rows == self.rows {
             return false;
         }
@@ -3529,6 +3718,47 @@ pub const MAX_PREVIEW_IMAGE_PX: u32 = 2048;
 /// to be refused.
 const MAX_PREVIEW_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
 
+/// How many decoded pictures the transcript keeps, and the longest side each is
+/// scaled down to.
+///
+/// A window shows a handful; the rest are kept so scrolling back over a picture
+/// re-places it instead of decoding it again. `320` is sharp at a thumbnail's
+/// size — it is drawn into at most `screen::PICTURE_SLOT_COLUMNS` cells, and a
+/// cell is at most ten transmitted pixels wide (`run::TRANSMIT_PX_PER_CELL`) —
+/// and sixteen of them are a few megabytes rather than a few hundred.
+const MAX_PICTURE_CACHE: usize = 16;
+const MAX_THUMBNAIL_PX: u32 = 320;
+
+/// Decode a picture, scaled down so its longest side is at most `max_px`.
+///
+/// Shared by the preview box and the transcript's thumbnails: the two differ
+/// only in how many pixels they are worth, and a second decoder would be a
+/// second place for the size limits to drift.
+fn decode_image(
+    path: &str,
+    max_px: u32,
+    lang: Language,
+) -> Result<super::image_view::ImagePixels, String> {
+    let bytes = read_image_bytes(path, lang)?;
+    let image = image::load_from_memory(&bytes).map_err(|error| error.to_string())?;
+    let image = if image.width() > max_px || image.height() > max_px {
+        image.resize(max_px, max_px, image::imageops::FilterType::Triangle)
+    } else {
+        image
+    };
+    let rgba = image.to_rgba8();
+    Ok(super::image_view::ImagePixels {
+        width: rgba.width() as usize,
+        height: rgba.height() as usize,
+        rgba: rgba.into_raw().into(),
+    })
+}
+
+/// One picture for the transcript, read off the event loop.
+fn read_thumbnail(path: &str) -> Result<super::image_view::ImagePixels, String> {
+    decode_image(path, MAX_THUMBNAIL_PX, Language::En)
+}
+
 /// Read an image file without trusting its size on disk.
 fn read_image_bytes(path: &str, lang: Language) -> Result<Vec<u8>, String> {
     use std::io::Read;
@@ -3563,27 +3793,10 @@ fn read_preview_lang(path: &str, kind: super::files::PreviewKind, lang: Language
     let preview = || -> Result<PreviewView, String> {
         match kind {
             PreviewKind::Image => {
-                let bytes = read_image_bytes(path, lang)?;
-                let image = image::load_from_memory(&bytes).map_err(|error| error.to_string())?;
-                let image = if image.width() > MAX_PREVIEW_IMAGE_PX
-                    || image.height() > MAX_PREVIEW_IMAGE_PX
-                {
-                    image.resize(
-                        MAX_PREVIEW_IMAGE_PX,
-                        MAX_PREVIEW_IMAGE_PX,
-                        image::imageops::FilterType::Triangle,
-                    )
-                } else {
-                    image
-                };
-                let rgba = image.to_rgba8();
+                let pixels = decode_image(path, MAX_PREVIEW_IMAGE_PX, lang)?;
                 Ok(PreviewView::Image {
                     path: path.to_string(),
-                    pixels: super::image_view::ImagePixels {
-                        width: rgba.width() as usize,
-                        height: rgba.height() as usize,
-                        rgba: rgba.into_raw().into(),
-                    },
+                    pixels,
                 })
             }
             PreviewKind::Markdown => {
@@ -3674,6 +3887,26 @@ fn display_name(session: &SessionSummary) -> String {
         .or_else(|| session.first_message.clone())
         .filter(|name| !name.trim().is_empty())
         .unwrap_or_else(|| session.id.chars().take(8).collect())
+}
+
+/// Whether a listed session is a conversation the rail paints.
+///
+/// The agent lists a session from the moment a client creates it, before the
+/// first prompt arrives, so a session opened and never spoken in stays behind as
+/// a record with no entries, and `queryCount: 0` is how the agent says so. The
+/// desktop's rail never shows those — its importer waits for the first message
+/// (`host/src/agent_bridge/import.rs`, `has_message`) — and this rail is the same
+/// view, so the row is dropped here too. Left in, it has neither a name nor a
+/// prompt to be called by, and [`display_name`] falls back to the head of its
+/// id: the agent spells ids `YYYYMMDD-HHMMSS-<hash>`, so the rail ends up showing
+/// `20261019`, a date that is not a title, on a conversation that was never
+/// spoken in.
+///
+/// Only a count the agent actually sent decides. A peer that predates the field
+/// omits it, and an unknown count is not an empty session: hiding on it would
+/// drop a whole history from the rail because a client talked to an older agent.
+fn is_conversation(session: &SessionSummary) -> bool {
+    session.query_count != Some(0)
 }
 
 /// `~/future-os` — the row's workspace column has room for the home-relative
@@ -3818,18 +4051,92 @@ fn chat_dir_for(session_id: &str) -> String {
     chat_root().join(session_id).to_string_lossy().to_string()
 }
 
-/// The directory the TUI process was started from, when it can be a workspace.
+/// The workspace the first conversation of a fresh `future tui` runs in: the
+/// directory it was started from when that is a directory the reader chose,
+/// otherwise the workspace they chose last time, otherwise none at all (a plain
+/// chat).
 ///
-/// `cd project && future tui` starts the first conversation in that project
-/// rather than in the app's scratch tree; a launch from one of those scratch
-/// directories is still a chat, and so is a directory that cannot be resolved.
-fn launch_workspace() -> Option<String> {
-    let dir = std::env::current_dir().ok()?;
-    let path = dir.to_string_lossy().to_string();
-    if path.trim().is_empty() || is_chat_directory(&path) {
-        return None;
+/// `cd project && future tui` opens that project, which is what makes the two
+/// commands one gesture. A launch from somewhere *ambient* — the home directory,
+/// a temp directory, the filesystem root — is not a choice of workspace: the
+/// shell merely happens to sit there, so the remembered workspace comes back
+/// instead of a conversation filed under a directory named `tmp`
+/// (2026-10-29: sessions created by `future tui` started in `/private/tmp`
+/// kept coming back after the reader had picked `future-os` in the previous
+/// one). A launch from one of the app's own scratch directories is a chat, and
+/// so is a launch directory that cannot be resolved.
+///
+/// The remembered path is used only while it still exists: a removed worktree
+/// must not become the next conversation's directory.
+fn launch_workspace(launched: Option<&str>, remembered: Option<&str>) -> Option<String> {
+    let launched = launched
+        .map(str::trim)
+        .filter(|path| !path.is_empty() && !is_chat_directory(path));
+    if let Some(path) = launched.filter(|path| !is_ambient_directory(path)) {
+        return Some(path.to_string());
     }
-    Some(path)
+    let remembered = remembered
+        .map(str::trim)
+        .filter(|path| !path.is_empty() && !is_chat_directory(path))
+        .filter(|path| std::path::Path::new(path).is_dir());
+    remembered.map(str::to_string)
+}
+
+/// Is this directory one a shell happens to sit in rather than a workspace the
+/// reader chose — their home, the filesystem root, or a temp directory?
+///
+/// Home and temp are compared with their contents in mind in opposite
+/// directions: a project *under* the home directory is an ordinary workspace
+/// (`~/code/app`), while everything under a temp root is scratch
+/// (`/var/folders/…/T/…`, `/tmp/x`).
+fn is_ambient_directory(path: &str) -> bool {
+    let trimmed = path.trim().trim_end_matches(['/', '\\']);
+    if trimmed.is_empty() {
+        return true;
+    }
+    let path = std::path::Path::new(trimmed);
+    // `/` and `C:\` have no parent: the filesystem root itself.
+    if path.parent().is_none() {
+        return true;
+    }
+    if let Some(home) = crate::home::home_dir() {
+        if same_existing_path(path, &home) {
+            return true;
+        }
+    }
+    if under_directory(path, &std::env::temp_dir()) {
+        return true;
+    }
+    // The temp root the system names is per-user on macOS (`$TMPDIR`), while a
+    // shell's `/tmp` is the shared one; both are ambient, and on macOS the two
+    // spellings of the shared one are the same directory.
+    ["/tmp", "/private/tmp"]
+        .into_iter()
+        .any(|fixed| under_directory(path, std::path::Path::new(fixed)))
+}
+
+/// Is `path` `root` or something inside it, comparing the resolved directories
+/// when both exist (`/tmp` and `/private/tmp` are one directory on macOS)?
+fn under_directory(path: &std::path::Path, root: &std::path::Path) -> bool {
+    if path.strip_prefix(root).is_ok() {
+        return true;
+    }
+    match (std::fs::canonicalize(path), std::fs::canonicalize(root)) {
+        (Ok(path), Ok(root)) => path.strip_prefix(&root).is_ok(),
+        _ => false,
+    }
+}
+
+/// [`under_directory`] for one directory rather than a tree: a project under the
+/// home directory is a workspace, the home directory itself is not.
+fn same_existing_path(path: &std::path::Path, other: &std::path::Path) -> bool {
+    if path == other {
+        return true;
+    }
+    match (std::fs::canonicalize(path), std::fs::canonicalize(other)) {
+        (Ok(path), Ok(other)) => path == other,
+        _ => false,
+    }
 }
 
 /// Milliseconds since the epoch, read once per frame rather than once per row.
@@ -4311,6 +4618,59 @@ mod tests {
         );
     }
 
+    /// The interrupt chord means the turn in flight (`ctrl+c`). With nothing
+    /// running it is nothing at all: no `abort` reaches the agent, and the
+    /// reader is not shown an error for pressing a key at the wrong moment —
+    /// which is exactly what an unconditional abort did with an empty run id.
+    #[tokio::test]
+    async fn stopping_with_nothing_running_asks_the_agent_nothing() {
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            ("get_session_entries", r#"{"entries":[]}"#),
+            ("abort", "{}"),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        assert_eq!(live.state.session_id, "s1", "get_state installs the state");
+        assert!(!live.client.has_active_run(), "the state named no run");
+        live.abort().await;
+        assert!(live.notice.is_none(), "{:?}", live.notice);
+        let commands = seen.lock().unwrap().clone();
+        assert!(
+            !commands.iter().any(|command| command == "abort"),
+            "an idle interrupt must not reach the agent, saw {commands:?}"
+        );
+    }
+
+    /// …and with a turn in flight the same call does reach it: `ctrl+c` while a
+    /// reply streams is the shell's interrupt, and it has to land.
+    #[tokio::test]
+    async fn stopping_a_running_turn_asks_the_agent_to_abort() {
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            (
+                "get_state",
+                r#"{"sessionId":"s1","activeRun":{"runId":"r-1","epoch":1,"state":"running","lastEventIdx":0}}"#,
+            ),
+            ("get_session_entries", r#"{"entries":[]}"#),
+            ("abort", "{}"),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        assert_eq!(live.state.session_id, "s1", "get_state installs the state");
+        assert!(live.client.has_active_run(), "the state named a live run");
+        live.abort().await;
+        assert!(live.notice.is_none(), "{:?}", live.notice);
+        let commands = seen.lock().unwrap().clone();
+        assert!(
+            commands.iter().any(|command| command == "abort"),
+            "a live interrupt must reach the agent, saw {commands:?}"
+        );
+    }
+
     /// Opening a transcript row is the chat's own state: the driver rebuilds
     /// the transcript and moves the revision (the rows, and the link spans over
     /// them, changed), and nothing reaches the agent. `tab` + `enter` on a
@@ -4610,6 +4970,80 @@ mod tests {
         assert_eq!(siblings.0.len(), 1);
     }
 
+    /// A transcript picture is read off the loop like a preview, scaled down to
+    /// a thumbnail's worth of pixels, and asked for exactly once. A path that
+    /// cannot be read is remembered as "nothing to draw" rather than retried
+    /// for as long as its slot is on screen.
+    #[tokio::test]
+    async fn a_transcripts_picture_is_decoded_once_and_cached() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[(
+            "get_state",
+            r#"{"sessionId":"s-1"}"#,
+        )]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None).await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("shot.png");
+        // Wider than a thumbnail is allowed to be, so the cap is observable.
+        let mut wide = image::RgbaImage::new(MAX_THUMBNAIL_PX * 3, 40);
+        wide.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(wide)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .expect("encode");
+        std::fs::write(&png, bytes.into_inner()).unwrap();
+        let path = png.to_string_lossy().to_string();
+
+        // The same picture named twice is one read: two messages can carry it,
+        // and the frame asks again on every repaint.
+        live.want_pictures(vec![path.clone(), path.clone()]);
+        assert!(live.picture_queue.is_empty(), "{:?}", live.picture_queue);
+        assert_eq!(
+            live.picture_read
+                .as_ref()
+                .map(|(reading, _)| reading.clone()),
+            Some(path.clone()),
+            "one read, not two"
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !live.poll_thumbnails() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the picture never landed"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let pixels = live.pictures.get(&path).expect("decoded").clone();
+        assert_eq!(
+            pixels.width, MAX_THUMBNAIL_PX as usize,
+            "a thumbnail is scaled to its own size, not the picture's"
+        );
+        assert!(pixels.height > 0, "{pixels:?}");
+
+        // Asked again: the decode is behind us, so nothing is queued.
+        live.want_pictures(vec![path.clone()]);
+        assert!(live.picture_queue.is_empty(), "{:?}", live.picture_queue);
+
+        // A file that is gone becomes an *empty* picture: the frame sees an
+        // answer, stops asking, and the block keeps its caption.
+        live.want_pictures(vec!["/definitely/not/here.png".into()]);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !live.poll_thumbnails() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the failed read never answered"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let missing = live
+            .pictures
+            .get("/definitely/not/here.png")
+            .expect("a remembered failure");
+        assert!(missing.is_empty(), "{missing:?}");
+        live.want_pictures(vec!["/definitely/not/here.png".into()]);
+        assert!(live.picture_queue.is_empty(), "no retry loop");
+    }
+
     /// A launchpad has no session to subscribe to, but a successful attach
     /// still means the agent is there. A later stream edge is what turns the
     /// dot dark.
@@ -4678,6 +5112,10 @@ mod tests {
             parent_session_id: None,
             is_streaming: None,
             first_message: None,
+            // The field a peer may omit: these fixtures stand for rows an agent
+            // listed without the count, which the rail keeps (see
+            // `is_conversation`).
+            query_count: None,
         }
     }
 
@@ -4971,21 +5409,155 @@ mod tests {
             .expect("attach to the test agent");
         assert_eq!(live.pending_cwd, None, "attach stages nothing by itself");
 
-        live.stage_launch_workspace();
+        live.stage_launch_workspace(None);
         let started_from = std::env::current_dir().unwrap();
         assert_eq!(
             live.pending_cwd.as_deref(),
             Some(started_from.to_string_lossy().as_ref()),
             "the first conversation runs where the TUI was opened"
         );
-        // A launch from one of the app's own scratch directories stays a chat
-        // (see `launch_workspace`), and a session already attached is not
-        // re-staged.
+        // …and that staging is what `settings.json` is told to remember, so the
+        // next start reopens it.
+        assert_eq!(
+            live.take_workspace_to_remember().as_deref(),
+            Some(started_from.to_string_lossy().as_ref())
+        );
+        // A session already attached is not re-staged.
         live.launchpad = false;
         live.state.session_id = "s-1".into();
         live.pending_cwd = None;
-        live.stage_launch_workspace();
+        live.stage_launch_workspace(Some("/work/alpha"));
         assert_eq!(live.pending_cwd, None, "an attached session keeps its cwd");
+    }
+
+    /// A launch from somewhere ambient is not a choice of workspace: the one
+    /// picked last time comes back, which is what stops `future tui` typed in a
+    /// scratch directory from filing the next conversations under it.
+    #[test]
+    fn a_launch_from_an_ambient_directory_reopens_the_remembered_workspace() {
+        let remembered = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let remembered = remembered.path().to_string_lossy();
+        let scratch = scratch.path().to_string_lossy();
+        assert!(
+            is_ambient_directory(&scratch),
+            "a directory under the temp root is ambient: {scratch}"
+        );
+        assert_eq!(
+            launch_workspace(Some(&scratch), Some(&remembered)).as_deref(),
+            Some(remembered.as_ref())
+        );
+    }
+
+    /// `cd project && future tui` is still that project, whatever was picked
+    /// last time.
+    #[test]
+    fn a_project_directory_wins_over_the_remembered_workspace() {
+        let remembered = tempfile::tempdir().unwrap();
+        let remembered = remembered.path().to_string_lossy();
+        assert_eq!(
+            launch_workspace(Some("/work/future-os"), Some(&remembered)).as_deref(),
+            Some("/work/future-os")
+        );
+    }
+
+    /// A workspace that is gone (a removed worktree) is skipped instead of
+    /// becoming the next conversation's directory.
+    #[test]
+    fn a_remembered_workspace_that_no_longer_exists_is_not_staged() {
+        let scratch = tempfile::tempdir().unwrap();
+        let scratch = scratch.path().to_string_lossy();
+        let missing = std::env::temp_dir().join("future-tui-workspace-that-is-gone");
+        let missing = missing.to_string_lossy();
+        assert_eq!(launch_workspace(Some(&scratch), Some(&missing)), None);
+    }
+
+    /// Nothing remembered yet, and the shell sat somewhere ambient: the first
+    /// conversation is a plain chat rather than a workspace named `tmp` — the
+    /// one launch that still lands in the scratch directory, and the one the
+    /// remembered workspace makes unnecessary afterwards.
+    #[test]
+    fn a_first_launch_from_a_temp_directory_is_a_chat_not_a_workspace() {
+        let scratch = tempfile::tempdir().unwrap();
+        let scratch = scratch.path().to_string_lossy();
+        assert_eq!(launch_workspace(Some(&scratch), None), None);
+    }
+
+    /// One of the app's own scratch directories is a chat, and a chat is never
+    /// remembered as a workspace.
+    #[test]
+    fn the_apps_own_scratch_directory_is_never_the_launch_workspace() {
+        let remembered = tempfile::tempdir().unwrap();
+        let remembered = remembered.path().to_string_lossy();
+        let chat = chat_workspace();
+        assert_eq!(
+            launch_workspace(Some(&chat), Some(&remembered)).as_deref(),
+            Some(remembered.as_ref())
+        );
+        assert_eq!(launch_workspace(Some(&chat), None), None);
+    }
+
+    /// Ambient is about *where the shell sits*, not where the reader works: the
+    /// home directory and the temp tree are ambient, a project under either is
+    /// not.
+    #[test]
+    fn ambient_directories_are_the_ones_a_shell_sits_in() {
+        assert!(is_ambient_directory("/"), "the filesystem root");
+        assert!(is_ambient_directory("/tmp"));
+        assert!(is_ambient_directory("/tmp/"), "a trailing separator");
+        assert!(is_ambient_directory("/private/tmp"), "the macOS spelling");
+        assert!(is_ambient_directory("/tmp/scratch/notes"));
+        let temp = std::env::temp_dir();
+        assert!(is_ambient_directory(&temp.to_string_lossy()));
+        assert!(is_ambient_directory(&temp.join("child").to_string_lossy()));
+        if let Some(home) = crate::home::home_dir() {
+            let home = home.to_string_lossy().to_string();
+            assert!(is_ambient_directory(&home), "{home}");
+            assert!(
+                !is_ambient_directory(&format!("{home}/code/app")),
+                "a project under the home directory is a workspace"
+            );
+        }
+        assert!(!is_ambient_directory("/work/future-os"));
+        assert!(
+            !is_ambient_directory(&chat_workspace()),
+            "the app's scratch tree is not ambient — it is a chat, which is a\n             different rule (`is_chat_directory`)"
+        );
+    }
+
+    /// What the driver writes is a choice, not a directory the reader merely
+    /// visited: the launchpad's staging and an explicit workspace pick, not the
+    /// workspace of a conversation they switched to.
+    #[tokio::test]
+    async fn only_a_chosen_workspace_is_remembered() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+
+        // Nothing staged, no session: nothing to remember.
+        assert_eq!(live.take_workspace_to_remember(), None);
+        // A chat is not a workspace.
+        live.pending_cwd = None;
+        assert_eq!(live.take_workspace_to_remember(), None);
+        // The launchpad's staging is.
+        live.pending_cwd = Some("/work/alpha".into());
+        assert_eq!(
+            live.take_workspace_to_remember().as_deref(),
+            Some("/work/alpha")
+        );
+        assert_eq!(
+            live.take_workspace_to_remember().as_deref(),
+            Some("/work/alpha"),
+            "still staged: the chip keeps naming it, and the driver's compare\n             against the file is what makes the repeat a no-op"
+        );
+        // A session attached with a cwd of its own is not a choice — the reader
+        // merely opened a conversation — so switching does not rewrite it.
+        live.launchpad = false;
+        live.state.session_id = "s-1".into();
+        live.state.cwd = Some("/work/legacy".into());
+        assert_eq!(live.take_workspace_to_remember(), None);
     }
 
     /// `/new` starts the next conversation where the one on screen ran: a
@@ -5206,6 +5778,73 @@ mod tests {
         assert_eq!(
             display_name(&row("0123456789abcdef", None, "/tmp")),
             "01234567"
+        );
+    }
+
+    /// A session the agent lists before its first prompt — opened, never spoken
+    /// in — is not a conversation, and the rail must not paint it.
+    ///
+    /// Left in, it has no name and no prompt to be called by, so the title falls
+    /// back to the head of its id; ids are spelled `YYYYMMDD-HHMMSS-<hash>`, and
+    /// the rail showed `20261019` for a conversation nobody ever had. The desktop
+    /// never listed these (its importer waits for the first message), so dropping
+    /// the row is also what makes the two surfaces agree.
+    #[test]
+    fn a_session_with_no_message_never_reaches_the_rail() {
+        let mut empty = row("20261019-211257-845dff47", None, "/private/tmp");
+        empty.query_count = Some(0);
+        let mut spoken = row("20261019-171039-1f02dedd", None, "/private/tmp");
+        spoken.first_message = Some("why does the rail show a date".into());
+        spoken.query_count = Some(2);
+        let mut named = row("s-named", Some("会话总管"), "/work/alpha");
+        named.query_count = Some(1);
+
+        let mut list = SessionList::default();
+        assert!(list.replace(vec![empty, spoken, named]));
+        let ids: Vec<&str> = list.iter().map(|session| session.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["20261019-171039-1f02dedd", "s-named"],
+            "the session that was never spoken in is dropped"
+        );
+        // What the rail paints carries no id head: the fallback is still there
+        // for a row that has no title yet, but no such row survives the filter.
+        let titles: Vec<String> = list.iter().map(display_name).collect();
+        assert_eq!(
+            titles,
+            ["why does the rail show a date", "会话总管"],
+            "no date-headed row is left to paint"
+        );
+
+        // A session given a name but never spoken in is no conversation either:
+        // the agent lists it, the desktop never imports it, and opening it shows
+        // an empty transcript.
+        let mut labelled = row("s-labelled", Some("hand-named"), "/work/alpha");
+        labelled.query_count = Some(0);
+        assert!(list.replace(vec![labelled]));
+        assert!(list.is_empty(), "nothing to paint");
+
+        // An agent that predates `queryCount` sends no count at all. Unknown is
+        // not empty: its rows must stay, or a client that talked to an older
+        // agent would lose every conversation it has.
+        let legacy_empty = row("0123456789abcdef", None, "/tmp");
+        assert_eq!(legacy_empty.query_count, None, "the fixture carries none");
+        let mut legacy_spoken = row("s-legacy", None, "/work/alpha");
+        legacy_spoken.first_message = Some("look at this test".into());
+        assert!(list.replace(vec![legacy_empty, legacy_spoken]));
+        let ids: Vec<&str> = list.iter().map(|session| session.id.as_str()).collect();
+        assert_eq!(ids, ["0123456789abcdef", "s-legacy"], "no count, no hiding");
+
+        // A listing that only moves an invisible row changed nothing the rail
+        // paints, so no frame is owed.
+        let mut quiet = row("s-quiet", Some("quiet"), "/work/alpha");
+        quiet.first_message = Some("look at this test".into());
+        assert!(list.replace(vec![quiet.clone()]));
+        let mut hidden = row("s-hidden", None, "/private/tmp");
+        hidden.query_count = Some(0);
+        assert!(
+            !list.replace(vec![quiet, hidden]),
+            "a row the rail never paints cannot owe it a frame"
         );
     }
 
@@ -6395,10 +7034,11 @@ mod tests {
                     updated_at_ms: 1_700_000_000_000,
                     created_at_ms: 0,
                     model: "m".into(),
-                    session_name: None,
+                    session_name: Some("moved".into()),
                     parent_session_id: None,
                     is_streaming: None,
                     first_message: None,
+                    query_count: Some(1),
                 }]);
             live.data(&frame);
             let cold = start.elapsed().as_secs_f64() * 1000.0;

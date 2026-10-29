@@ -686,6 +686,26 @@ pub fn hyperlink(text: &str, url: &str) -> String {
     format!("\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\")
 }
 
+/// A local path written as a link destination — the inverse of the decoding
+/// `workbench::links::local_path` does when a row is read back.
+///
+/// A space or a parenthesis in a file name would end the markdown the
+/// transcript renders (and the OSC 8 destination it is wrapped in), so the three
+/// that occur in real names are escaped. Everything else passes through: a path
+/// is a path, and re-encoding the rest would only make the destination harder to
+/// read in a terminal that echoes it.
+pub fn path_href(path: &str) -> String {
+    path.chars()
+        .filter_map(|c| match c {
+            ' ' => Some("%20".to_string()),
+            '(' => Some("%28".to_string()),
+            ')' => Some("%29".to_string()),
+            '\n' | '\r' => None,
+            other => Some(other.to_string()),
+        })
+        .collect()
+}
+
 pub fn image_fallback(
     mime_type: &str,
     dimensions: Option<ImageDimensions>,

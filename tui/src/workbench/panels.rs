@@ -30,7 +30,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::workbench::ansi::{fit, width};
+use crate::workbench::ansi::{align_right, fit, width};
 use crate::workbench::i18n::{self, t, Key, Language};
 use crate::workbench::layout::{HitMap, Rect};
 use crate::workbench::state::{PanelId, SessionRow, WorkbenchData};
@@ -38,6 +38,26 @@ use crate::workbench::theme::Palette;
 
 /// The blank row between the tab strip and the list.
 const TOP_GAP: usize = 1;
+
+/// What separates the two halves of a row's tail (`~/future-os · 5m`).
+const TAIL_SEPARATOR: &str = " · ";
+
+/// The widths a panel's right-hand tail reserves, measured over the rows it is
+/// about to paint.
+///
+/// A rail's tail is read *down* the list rather than across one row — `313 会话 ·
+/// now` above `15 会话 · 6m` — so each of its parts is padded to a column: the
+/// `·` then stands in one cell and every age flushes against the same right
+/// edge, instead of each row putting the divider wherever its own text ended.
+#[derive(Debug, Clone, Copy, Default)]
+struct TailColumns {
+    /// The workspace headings' conversation count (`313` / `5`).
+    units: usize,
+    /// The workspace a 最近 row is filed under (`future-os`).
+    workspace: usize,
+    /// The age every tail ends with (`now` / `16h`).
+    age: usize,
+}
 
 /// What a conversation row draws in its state slot while a run is in flight and
 /// the reader asked for less motion (see the `frame` argument of [`render`]).
@@ -471,6 +491,7 @@ fn item_rows(
         };
         return vec![vec![palette.dim(&fit(&format!("  {message}"), columns))]];
     }
+    let tail = tail_columns(panel, data, &model);
     let items: Vec<Vec<String>> = model
         .iter()
         .enumerate()
@@ -497,11 +518,12 @@ fn item_rows(
                     palette,
                     columns,
                     lang,
+                    tail,
                 )],
                 None => vec![fit("", columns)],
             },
             Row::Session(at) => match data.sessions.get(*at) {
-                Some(session) => session_rows(panel, session, palette, columns, frame),
+                Some(session) => session_rows(panel, session, palette, columns, frame, tail),
                 None => vec![fit("", columns)],
             },
             Row::File(at) => match data.tree.get(*at) {
@@ -528,6 +550,37 @@ fn item_rows(
         return items;
     }
     items
+}
+
+/// The columns this frame's tails share, measured over the rows about to be
+/// painted — not over everything the agent listed: a filtered or folded panel
+/// should not reserve a column for a row it is not showing.
+fn tail_columns(panel: PanelId, data: &WorkbenchData, model: &[Row]) -> TailColumns {
+    let mut columns = TailColumns::default();
+    for row in model {
+        match row {
+            Row::Session(at) => {
+                if let Some(session) = data.sessions.get(*at) {
+                    columns.age = columns.age.max(width(&session.age));
+                    // 工作区 groups by the workspace already: its rows are under
+                    // a heading that names it, so only the age reaches the
+                    // tail there.
+                    if panel == PanelId::Recent {
+                        columns.workspace = columns.workspace.max(width(&session.workspace));
+                    }
+                }
+            }
+            Row::Workspace(at) => {
+                if let Some(workspace) = data.workspaces.get(*at) {
+                    columns.age = columns.age.max(width(&workspace.age));
+                    let units = workspace.session_ids.len().to_string();
+                    columns.units = columns.units.max(width(&units));
+                }
+            }
+            Row::Section(_) | Row::File(_) => {}
+        }
+    }
+    columns
 }
 
 /// One tree row: the indent, the open/closed marker for a directory, the name,
@@ -633,24 +686,31 @@ fn workspace_row(
     palette: &Palette,
     columns: usize,
     lang: Language,
+    tail: TailColumns,
 ) -> String {
     let units = workspace.session_ids.len();
-    let tail_text = format!(
-        "{} {} · {}",
-        units,
-        t(lang, Key::SummaryUnitsSessions),
-        workspace.age
-    );
-    let tail = fit(
-        &tail_text,
-        width(&tail_text).min(columns.saturating_sub(12).max(6)),
-    );
+    // Both halves are padded to their column, so the `·` sits in one cell down
+    // the list and the age keeps its own column beside it — `313 会话 · now`
+    // over `5 会话 · 26m`.
+    let units = align_right(&units.to_string(), tail.units);
+    let age = align_right(&workspace.age, tail.age);
+    let tail_text = format!("{units} {} · {age}", t(lang, Key::SummaryUnitsSessions));
+    // Never more than the row can leave the name. A rail that narrow falls back
+    // to the age alone, which is the fact a heading cannot supply itself.
+    let cap = columns.saturating_sub(12).max(6);
+    let tail = if width(&tail_text) > cap {
+        age
+    } else {
+        tail_text
+    };
     let tail_width = width(&tail);
     // `▾` open, `▸` folded: the same two glyphs the file tree uses, so
     // "this line holds more" reads the same in both panels.
     let marker = if folded { "▸" } else { "▾" };
     let name = fit(&workspace.name, columns.saturating_sub(tail_width + 4));
-    let pad = columns.saturating_sub(3 + width(&name) + tail_width);
+    // ` marker ` is two cells — a space and the marker — so the row ends on the
+    // panel's edge, the same cell a conversation's age ends in.
+    let pad = columns.saturating_sub(2 + width(&name) + tail_width);
     format!(
         " {}{}{}{}",
         palette.text(
@@ -676,6 +736,7 @@ fn session_rows(
     palette: &Palette,
     columns: usize,
     frame: Option<usize>,
+    tail: TailColumns,
 ) -> Vec<String> {
     // The leading cell is the row's state slot, the desktop rail's indicator
     // seen from a terminal: a run still in flight spins there (the one thing in
@@ -708,15 +769,30 @@ fn session_rows(
             // the name. The age is short and never worth cutting, so it is
             // reserved; the workspace takes what is left, and a plain chat
             // (no workspace at all) shows only its age.
-            let tail_text = if session.workspace.is_empty() {
-                session.age.clone()
-            } else {
-                format!("{} · {}", session.workspace, session.age)
-            };
+            //
+            // `workspace · age`, each half padded to its column so the same two
+            // cells hold the divider and the ages down the whole list. A plain
+            // chat (no workspace at all) shows its age alone: a divider with
+            // nothing in front of it reads as a name that went missing.
+            //
             // Half the row at most: the title is what the row is *for*. The
-            // tail is trimmed of the padding `fit` adds, so the title gets
-            // every cell the tail does not actually use.
-            let tail = fit(&tail_text, (columns / 2).max(5)).trim_end().to_string();
+            // workspace column is what is left of the budget once the age and
+            // the divider are paid for, and a name longer than that is
+            // ellipsised rather than allowed to move the dot.
+            let room = (columns / 2).max(5);
+            let workspace_column = tail
+                .workspace
+                .min(room.saturating_sub(width(TAIL_SEPARATOR) + tail.age));
+            let age = align_right(&session.age, tail.age);
+            let tail_text = if session.workspace.is_empty() || workspace_column == 0 {
+                age
+            } else {
+                format!(
+                    "{}{TAIL_SEPARATOR}{age}",
+                    fit(&session.workspace, workspace_column)
+                )
+            };
+            let tail = fit(&tail_text, room).trim_end().to_string();
             let tail_width = width(&tail);
             // ` marker ` is three cells (a space, the marker, a space).
             let title = fit(&session.title, columns.saturating_sub(3 + tail_width));
@@ -733,8 +809,10 @@ fn session_rows(
             )]
         }
         PanelId::Workspaces => {
-            let tail = fit(&session.age, (columns / 3).max(4));
-            let tail_width = width(&tail);
+            // Under a workspace heading the heading already names the group, so
+            // the row ends with its age — the same age a heading above prints,
+            // in the same column: the pad puts it against the panel's edge.
+            let tail_width = width(&session.age);
             // ` marker ` is three cells (a space, the marker, a space).
             let title = fit(&session.title, columns.saturating_sub(3 + tail_width));
             let pad = columns.saturating_sub(3 + width(&title) + tail_width);
@@ -746,7 +824,7 @@ fn session_rows(
             vec![format!(
                 " {marker} {title}{}{}",
                 " ".repeat(pad),
-                palette.dim(&tail)
+                palette.dim(&session.age)
             )]
         }
         // The file tree paints one row per entry, so a conversation's own row
@@ -774,6 +852,30 @@ mod tests {
 
     fn panel_text(panel: PanelId, data: &WorkbenchData, lang: Language) -> String {
         panel_text_with(panel, data, lang, &Folded::default())
+    }
+
+    /// A panel's rows, painted plain, at a given size.
+    fn plain_rows(panel: PanelId, data: &WorkbenchData, columns: u16, rows: u16) -> Vec<String> {
+        let mut hit = HitMap::new();
+        render(
+            panel,
+            data,
+            &P,
+            Rect::new(0, 0, columns, rows),
+            PanelView::default(),
+            &mut hit,
+            LANG,
+            Some(0),
+        )
+        .iter()
+        .map(|line| crate::utils::strip_ansi_codes(line))
+        .collect()
+    }
+
+    /// Where `needle` starts on a painted row, in display cells rather than
+    /// bytes (a CJK title is two cells per character).
+    fn column_of(line: &str, needle: &str) -> Option<usize> {
+        line.find(needle).map(|index| width(&line[..index]))
     }
 
     fn panel_text_with(
@@ -1030,6 +1132,82 @@ mod tests {
             }),
             Some(0)
         );
+    }
+
+    /// 最近's right-hand tail is a table read down the list: the `·` divider in
+    /// one cell and every age against the rail's edge — including a plain
+    /// chat's, which has no workspace and so no divider at all.
+    #[test]
+    fn the_recent_rows_line_their_dots_and_ages_up() {
+        let mut data = demo::chat();
+        // Ages of two widths, and one conversation filed under nothing: the two
+        // facts that used to move the divider row by row.
+        data.sessions[0].age = "now".into();
+        data.sessions[1].age = "16h".into();
+        data.sessions[4].workspace = String::new();
+        let lines = plain_rows(PanelId::Recent, &data, 60, 20);
+        let dots: Vec<usize> = lines
+            .iter()
+            .filter_map(|line| column_of(line, "·"))
+            .collect();
+        assert_eq!(dots.len(), data.sessions.len() - 1, "{lines:?}");
+        assert!(
+            dots.windows(2).all(|pair| pair[0] == pair[1]),
+            "one column for the divider: {dots:?}"
+        );
+        for session in &data.sessions {
+            let line = lines
+                .iter()
+                .find(|line| line.contains(&session.title))
+                .unwrap_or_else(|| panic!("no row for {}", session.title));
+            assert!(line.trim_end().ends_with(&session.age), "{line:?}");
+            assert_eq!(width(line.trim_end()), 60, "{line:?}");
+        }
+    }
+
+    /// 工作区's tails line up as one table too: the count column and its `·`
+    /// down the headings, and every age — a heading's or a conversation's —
+    /// against the rail's edge.
+    #[test]
+    fn the_workspace_panel_lines_its_counts_and_ages_up() {
+        let mut data = demo::chat();
+        // A heading with a two-digit count beside single-digit ones, and ages
+        // of two widths.
+        for index in 0..10 {
+            let id = format!("bulk{index}");
+            data.sessions.push(SessionRow {
+                id: id.clone(),
+                title: format!("bulk {index}"),
+                workspace: "mobile".into(),
+                age: "1d".into(),
+                current: false,
+                parent_id: None,
+                streaming: false,
+                created_at_ms: 0,
+            });
+            data.workspaces[1].session_ids.push(id);
+        }
+        data.workspaces[0].age = "now".into();
+        data.workspaces[1].age = "16h".into();
+        data.workspaces[2].age = "2d".into();
+        let lines = plain_rows(PanelId::Workspaces, &data, 60, 40);
+        // Workspace headings are the rows with a divider; a conversation under
+        // one has only its age.
+        let headings: Vec<&String> = lines.iter().filter(|line| line.contains(" · ")).collect();
+        assert_eq!(headings.len(), data.workspaces.len(), "{lines:?}");
+        let dots: Vec<usize> = headings
+            .iter()
+            .filter_map(|line| column_of(line, "·"))
+            .collect();
+        assert_eq!(dots.len(), headings.len(), "{lines:?}");
+        assert!(
+            dots.windows(2).all(|pair| pair[0] == pair[1]),
+            "one column for the divider: {dots:?}"
+        );
+        // The ages end at the panel's edge, headings and conversations alike.
+        for line in lines.iter().filter(|line| !line.trim().is_empty()) {
+            assert_eq!(width(line.trim_end()), 60, "{line:?}");
+        }
     }
 
     #[test]

@@ -50,6 +50,8 @@ pub mod theme;
 pub mod widgets;
 pub mod workflows;
 
+use std::time::{Duration, Instant};
+
 use picker::{Picker, PickerKind, PickerRow};
 use state::{PanelId, WorkbenchData};
 use theme::Palette;
@@ -450,6 +452,31 @@ struct Drag {
     grab_width: u16,
 }
 
+/// Silence that ends a wheel burst.
+///
+/// Terminals have no gesture: a trackpad fling or a free-spinning wheel arrives
+/// as a long run of reports that nothing separates from deliberate rolling. The
+/// one thing that does separate them is time — consecutive reports of one burst
+/// are milliseconds apart, and a reader who stops, aims, and rolls again takes
+/// far longer than this.
+const WHEEL_BURST_GAP: Duration = Duration::from_millis(200);
+
+/// Which surface the wheel burst in progress belongs to.
+///
+/// The rail and the conversation are the two things a wheel can scroll while
+/// both are on screen, and a burst stays on the one it began over: reports
+/// arriving less than [`WHEEL_BURST_GAP`] after the last one continue it, a
+/// longer silence starts a new burst wherever the pointer is by then. Without
+/// it the tail of a fling follows the pointer across the divider and the rail's
+/// list walks under a hand that never aimed at it.
+#[derive(Debug, Clone, Copy)]
+struct WheelBurst {
+    /// True when the burst began over the rail.
+    over_rail: bool,
+    /// When its last report arrived.
+    at: Instant,
+}
+
 /// A picture pan in progress: where the pointer went down, and the pan the
 /// picture had at that moment.
 ///
@@ -515,14 +542,63 @@ const GIT_HSCROLL_STEP: usize = 8;
 /// figures live in [`WorkbenchData`], which the app owns and passes in. Keeping
 /// them apart is what lets the surface be tested with fixtures and later fed by
 /// a real session without either side knowing the other's shape.
-/// A picture placed on screen by the terminal's image protocol.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PaintedImage {
-    /// The source bytes it was transmitted from (`screen::ImageRequest::source`).
-    pub source: u64,
-    /// The id it was transmitted under, which is how it is placed and deleted.
-    pub id: u32,
+/// Every picture the terminal is holding, keyed by the bytes it was transmitted
+/// from.
+///
+/// One map for the whole surface rather than a slot per kind of picture: the
+/// preview box and the transcript's thumbnails are placed the same way, and
+/// what has to be remembered is which transmitted image is still on screen (so
+/// a frame re-places it instead of sending a megabyte again) and which one is
+/// not (so it can be deleted).
+#[derive(Debug, Clone, Default)]
+pub struct PaintedImages {
+    /// Oldest transmission first: the order images were first sent in, which is
+    /// the order an over-full surface gives them up in.
+    pub order: Vec<u64>,
+    /// The terminal id each transmitted source got.
+    pub ids: std::collections::HashMap<u64, u32>,
+    /// The sources iTerm2 re-transmitted last frame, and where. Its images are
+    /// text, not a layer: a row that was rewritten erased the picture over it,
+    /// so placement is only skipped while the frame left those cells alone.
+    pub iterm_shown: Vec<(u64, (u16, u16, u16, u16))>,
 }
+
+impl PaintedImages {
+    /// Remember a transmission, and forget the oldest if the surface is
+    /// hoarding them. Returns the ids that have to be deleted to make room.
+    pub fn remember(&mut self, source: u64, id: u32) -> Vec<u32> {
+        if self.ids.insert(source, id).is_none() {
+            self.order.push(source);
+        }
+        let mut evicted = Vec::new();
+        while self.order.len() > MAX_PAINTED_IMAGES {
+            let old = self.order.remove(0);
+            if let Some(id) = self.ids.remove(&old) {
+                evicted.push(id);
+            }
+        }
+        evicted
+    }
+
+    /// Drop `source` from the record, answering its terminal id if it had one.
+    pub fn take(&mut self, source: u64) -> Option<u32> {
+        self.order.retain(|known| *known != source);
+        self.ids.remove(&source)
+    }
+
+    /// Forget everything. Used when the terminal cannot place pictures at all.
+    pub fn clear(&mut self) {
+        self.order.clear();
+        self.ids.clear();
+        self.iterm_shown.clear();
+    }
+}
+
+/// How many transmitted pictures the surface keeps. A frame shows at most a
+/// window's worth of thumbnails plus the preview box's picture; keeping a few
+/// more than that is what makes scrolling back over an image a re-placement
+/// (`a=p`, sixty bytes) instead of a re-transmission.
+pub const MAX_PAINTED_IMAGES: usize = 12;
 
 pub struct Workbench {
     pub palette: Palette,
@@ -647,6 +723,9 @@ pub struct Workbench {
     /// The frame size of the last render; mouse coordinates are resolved
     /// against it.
     last_frame: (u16, u16),
+    /// The wheel burst in progress, if its last report is recent enough to still
+    /// be one (see [`WheelBurst`]).
+    wheel_burst: Option<WheelBurst>,
     hit: layout::HitMap,
     /// The hit map's length when the overlay started painting — see
     /// [`Self::overlay_mark`].
@@ -678,20 +757,23 @@ pub struct Workbench {
     /// Folds outlive the process (`foldedWorkspaces` in `settings.json`; a rail
     /// the reader has organised should come back organised).
     pub rail: panels::Folded,
-    /// The picture the last frame wanted on screen, if any.
+    /// The pictures the last frame wanted on screen, in paint order — the
+    /// preview box's own, and the transcript's thumbnails.
     ///
     /// A terminal picture is not text: the frame is a list of rows, and a
-    /// bitmap is placed by the terminal at a cell of its own. So the preview box
-    /// *asks* for one and the driver paints it after the frame it belongs to
-    /// (`run::paint_image`) — the one thing a text frame cannot express.
-    pub image_request: Option<screen::ImageRequest>,
-    /// The picture actually placed on screen: its terminal id, and the source
-    /// bytes it was transmitted from. `None` means nothing is placed.
-    pub painted_image: Option<PaintedImage>,
-    /// The source of the iTerm2 image currently in the text grid. iTerm2 has
-    /// no placement layer or image ids; it is retransmitted only when its cells
-    /// were rewritten or the shown crop changed.
-    pub painted_iterm: Option<u64>,
+    /// bitmap is placed by the terminal at a cell of its own. So the frame
+    /// *asks* for placements and the driver paints them after the frame it
+    /// belongs to (`run::paint_images`) — the one thing a text frame cannot
+    /// express. Rebuilt every frame: a picture the frame does not ask for is
+    /// one that is no longer on screen.
+    pub image_requests: Vec<screen::PlacedPicture>,
+    /// The paths the frame needed pixels for and did not have yet. The driver
+    /// hands them to the adapter, which reads them off the event loop and
+    /// paints the frame again when they land.
+    pub picture_wants: Vec<String>,
+    /// What the terminal is actually holding: the ids every transmitted picture
+    /// was given, and which of them the last frame placed.
+    pub painted_images: PaintedImages,
 }
 
 impl Default for Workbench {
@@ -768,6 +850,7 @@ impl Workbench {
             mention: None,
             mention_dismissed: None,
             last_frame: (0, 0),
+            wheel_burst: None,
             hit: layout::HitMap::new(),
             overlay_mark: 0,
             cursor: None,
@@ -780,9 +863,9 @@ impl Workbench {
             preview_return: None,
             preview_drag: None,
             rail: panels::Folded::default(),
-            image_request: None,
-            painted_image: None,
-            painted_iterm: None,
+            image_requests: Vec::new(),
+            picture_wants: Vec::new(),
+            painted_images: PaintedImages::default(),
         }
     }
 
@@ -862,8 +945,9 @@ impl Workbench {
         // menu for it.
         self.sync_mention(data);
         // Each frame asks again: a frame that paints no picture asks for none,
-        // and the driver takes that as "remove the one on screen".
-        self.image_request = None;
+        // and the driver takes that as "remove the ones on screen".
+        self.image_requests.clear();
+        self.picture_wants.clear();
         let rows = screen::compose(self, data, w, h);
         debug_assert_eq!(
             rows.len(),
@@ -1202,10 +1286,13 @@ impl Workbench {
             }
         }
         // Leaving is never an overlay's to swallow. Every other key belongs to
-        // whoever owns the screen, but a modal that eats `ctrl+c` leaves the
-        // user with no way out except a signal — and a signalled TUI is exactly
-        // the exit that cannot restore the terminal properly (alt screen and
-        // keyboard protocol left behind).
+        // whoever owns the screen, but a modal that eats the quit chord leaves
+        // the user with no way out except a signal — and a signalled TUI is
+        // exactly the exit that cannot restore the terminal properly (alt screen
+        // and keyboard protocol left behind). The chord is read from the
+        // bindings rather than written here: `ctrl+c` is the run's interrupt
+        // (`Action::Stop`), and it is deliberately *not* the exit, so a modal
+        // that runs it gets nothing.
         if self.keys.action(key) == Some(preferences::Action::Quit) {
             return vec![WbAction::Quit];
         }
@@ -1670,6 +1757,21 @@ impl Workbench {
     /// Shared with the compositor ([`screen::conversation`]) deliberately: the
     /// rows that are highlighted and the rows that answer a click have to be the
     /// same list, and two scans could disagree on the frame they straddle.
+    ///
+    /// Ask the driver to read and decode a picture the frame had no pixels for.
+    ///
+    /// The frame is the only side that knows which pictures are on screen, and
+    /// the adapter is the only side that may read a file — so the request
+    /// travels this way rather than the adapter decoding every attachment a
+    /// conversation ever had.
+    pub(crate) fn want_picture(&mut self, path: &str) {
+        if !self.picture_wants.iter().any(|want| want == path) {
+            self.picture_wants.push(path.to_string());
+        }
+    }
+
+    /// The conversation's openable spans, rescanned only when something they
+    /// were derived from changed.
     pub(crate) fn link_spans(&mut self, data: &WorkbenchData) -> &[links::LinkSpan] {
         self.links.spans(
             &data.messages,
@@ -3071,10 +3173,23 @@ impl Workbench {
                 } else {
                     3
                 };
-                if frame
+                // Where the burst began decides where it keeps going, not where
+                // each report lands: the pointer crossing the divider mid-fling
+                // used to hand the rest of the gesture to the rail, whose list
+                // then walked under a hand that never aimed at it (see
+                // `WheelBurst`).
+                let under_pointer = frame
                     .sidebar
-                    .is_some_and(|rect| rect.contains(event.x, event.y))
-                {
+                    .is_some_and(|rect| rect.contains(event.x, event.y));
+                let now = Instant::now();
+                let over_rail = match self.wheel_burst {
+                    Some(burst) if now.duration_since(burst.at) <= WHEEL_BURST_GAP => {
+                        burst.over_rail
+                    }
+                    _ => under_pointer,
+                };
+                self.wheel_burst = Some(WheelBurst { over_rail, at: now });
+                if over_rail {
                     let index = self.panel.index();
                     let next = self.panel_scroll[index] as i32 + delta;
                     self.panel_scroll[index] = next.max(0) as usize;
@@ -3502,6 +3617,21 @@ impl Workbench {
         let row_click = id
             .strip_prefix("chat.row.")
             .and_then(|rest| rest.parse::<usize>().ok());
+        // The picture's own block: a pointer that landed on the thumbnail asked
+        // for the picture, which is the preview box. It is not a `tab` stop of
+        // its own — the caption under it is the stop (and opens the same file)
+        // — so this names the file rather than a cursor position.
+        let picture_click = id
+            .strip_prefix("chat.picture.")
+            .and_then(|rest| rest.parse::<usize>().ok());
+        if let Some(index) = picture_click {
+            let path = data.pictures.get(index).map(|picture| picture.path.clone());
+            self.blur_rail();
+            return match path {
+                Some(path) => vec![WbAction::PreviewFile(path)],
+                None => vec![WbAction::Redraw],
+            };
+        }
         if link_click.is_none() && row_click.is_none() {
             self.chat_index = None;
         }
@@ -3565,6 +3695,9 @@ impl Workbench {
                 self.blur_rail();
             }
             return vec![WbAction::SetPreferences];
+        }
+        if id == "header.sessions" {
+            return self.open_picker(PickerKind::Sessions, data);
         }
         if id == "header.files" {
             return vec![WbAction::OpenFiles];
@@ -4530,12 +4663,26 @@ mod tests {
         let (workbench, rows) = frame(&data, 120, 38);
         let text = plain(&rows);
         // The two-row context header keeps identity and context on one line and
-        // gives the conversation every other row.
+        // gives the conversation every other row. Its right end is the build
+        // number and the doors — the chat list first, then the panel browsers —
+        // never the binary's own name, which the left end already implies.
         assert!(
             text.contains("FUTURE OS"),
             "the text brand is drawn: {text}"
         );
-        assert!(text.contains("future-tui v0.11.0"), "{text}");
+        assert!(text.contains("v0.11.0"), "the build number: {text}");
+        assert!(
+            !text.contains("future-tui"),
+            "the corner names the build: {text}"
+        );
+        assert!(
+            text.contains(&format!(
+                "[{}] {}",
+                workbench.keys.key(preferences::Action::Sessions),
+                t(Language::Zh, Key::TabSessions)
+            )),
+            "the chat list's door: {text}"
+        );
         assert!(text.contains("修复 parser 的 off-by-one"), "{text}");
         assert!(text.contains("dev-huichen"), "{text}");
         // The demo frame is Chinese, so its process row is too (see `demo`).
@@ -6046,6 +6193,78 @@ mod tests {
         assert!(row.contains('\u{2014}'), "{row}");
     }
 
+    /// The chat list's door on the header: the cells it paints, the click that
+    /// opens the same box `ctrl+r` does, and the fact that it outlives the panel
+    /// doors — on a narrow frame the rail is not beside the conversation and it
+    /// is keyboard-only, so this button is the pointer's one way to the list.
+    #[test]
+    fn the_header_chat_list_button_opens_the_picker_and_outlives_the_panel_doors() {
+        let data = demo::chat();
+        let (mut surface, rows) = frame(&data, 120, 38);
+        let (rect, _) = surface
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "header.sessions")
+            .cloned()
+            .expect("the header's chat-list door");
+        // The region is the cells the button is *painted* on, and it is the
+        // `[key] label` shape the panel doors use — the chord is how a reader
+        // who never opened the help finds out what it is.
+        let painted = ansi::slice_cols(
+            &rows[rect.y as usize],
+            rect.x as usize,
+            rect.right() as usize,
+        );
+        assert_eq!(
+            crate::utils::strip_ansi_codes(&painted).trim_end(),
+            format!(
+                "[{}] {}",
+                surface.keys.key(preferences::Action::Sessions),
+                t(Language::Zh, Key::TabSessions)
+            )
+        );
+        // A click is the key: same verb, same box, same list.
+        assert_eq!(
+            click_region(&mut surface, &data, 120, 38, "header.sessions"),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(surface.overlay, Some(Overlay::Picker(PickerKind::Sessions)));
+        let mut keyboard = workbench();
+        keyboard.handle(WbEvent::Key("ctrl+r".into()), &data);
+        assert_eq!(surface.overlay, keyboard.overlay);
+
+        // A narrow frame gives up the panel browsers and the brand before this
+        // door — the rail is not beside the conversation there, and it is
+        // keyboard-only, so the button is the pointer's one way to the list.
+        let (mut narrow, rows) = frame(&data, 40, 38);
+        let ids: Vec<String> = narrow
+            .hits()
+            .regions()
+            .iter()
+            .map(|(_, id)| id.to_string())
+            .collect();
+        assert_eq!(
+            ids.iter()
+                .filter(|id| id.starts_with("header."))
+                .cloned()
+                .collect::<Vec<String>>(),
+            vec!["header.sessions".to_string()],
+            "{ids:?}"
+        );
+        let row = plain(&rows[..1]);
+        assert!(
+            row.contains("修复 parser"),
+            "the title is still named: {row:?}"
+        );
+        assert!(!row.contains("FUTURE OS"), "the brand gave way: {row:?}");
+        assert_eq!(
+            click_region(&mut narrow, &data, 40, 38, "header.sessions"),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(narrow.overlay, Some(Overlay::Picker(PickerKind::Sessions)));
+    }
+
     /// The files panel is not a tab: the strip names two of them, no strip cell
     /// opens the tree, and the doors are its own (the header's button, `/files`).
     #[test]
@@ -6323,6 +6542,114 @@ mod tests {
             workbench.handle(WbEvent::Key("]".into()), &data),
             vec![WbAction::Redraw]
         );
+    }
+
+    /// Each control answers a click on the cell its label is *painted* on.
+    ///
+    /// The row is laid out in display columns — a Hanzi is two cells — so a
+    /// region measured in `chars()` sat to the left of its own label, and each
+    /// later button drifted further: in Chinese `[缩放]`-style labels made the
+    /// whole row look live while a click on `[上一张]` landed on the counter
+    /// beside it and did nothing.
+    #[test]
+    fn the_preview_controls_are_where_their_labels_are_painted() {
+        let _caps = crate::terminal_image::CapabilitiesGuard::pin(
+            crate::terminal_image::ImageProtocol::Kitty,
+        );
+        let mut data = demo::chat();
+        data.preview = Some(demo::preview_image());
+        let mut workbench = workbench();
+        workbench.overlay = Some(Overlay::FilePreview);
+        workbench.set_preview_siblings((
+            vec!["/w/a.png".into(), "/w/b.png".into(), "/w/c.png".into()],
+            1,
+        ));
+        let rows = workbench.render(&data, 120, 38);
+        let (y, painted) = rows
+            .iter()
+            .enumerate()
+            .find_map(|(y, row)| {
+                let plain = crate::utils::strip_ansi_codes(row);
+                plain.contains('缩').then_some((y, plain))
+            })
+            .expect("the controls row is painted");
+        for (label, id) in [
+            ("[缩小]", "preview.zoomOut"),
+            ("[放大]", "preview.zoomIn"),
+            ("[适应]", "preview.fit"),
+            ("[上一张]", "preview.prev"),
+            ("[下一张]", "preview.next"),
+        ] {
+            let byte = painted
+                .find(label)
+                .unwrap_or_else(|| panic!("{label} is painted"));
+            let x = ansi::width(&painted[..byte]);
+            let last = x + ansi::width(label) - 1;
+            for cell in [x, (x + last) / 2, last] {
+                assert_eq!(
+                    workbench.hits().hit(cell as u16, y as u16),
+                    Some(id),
+                    "{label} at column {x}: a click on cell {cell} must reach it"
+                );
+            }
+        }
+
+        // …and the click does what the label says, from the cell it is painted
+        // on: the same actions the keys produce, not a live-looking no-op.
+        let column = |label: &str| {
+            let byte = painted.find(label).expect("the label is painted");
+            ansi::width(&painted[..byte]) as u16
+        };
+        let press = |workbench: &mut Workbench, x: u16| {
+            workbench.render(&data, 120, 38);
+            workbench.handle(
+                WbEvent::Mouse(mouse::MouseEvent {
+                    kind: mouse::MouseKind::Press,
+                    x,
+                    y: y as u16,
+                    shift: false,
+                    alt: false,
+                    ctrl: false,
+                }),
+                &data,
+            )
+        };
+        assert_eq!(
+            press(&mut workbench, column("[放大]") + 1),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(workbench.preview_zoom, 2, "a click on [放大] zooms in");
+        press(&mut workbench, column("[适应]") + 1);
+        assert_eq!(workbench.preview_zoom, 1, "a click on [适应] fits");
+        assert_eq!(
+            press(&mut workbench, column("[下一张]") + 1),
+            vec![WbAction::PreviewFile("/w/c.png".into())]
+        );
+        assert_eq!(workbench.preview_index, 2);
+        assert_eq!(
+            press(&mut workbench, column("[上一张]") + 1),
+            vec![WbAction::PreviewFile("/w/b.png".into())]
+        );
+        assert_eq!(workbench.preview_index, 1);
+        // A box too narrow for the row clips labels off its right edge, and a
+        // clipped label is not a target: the frame stays the frame, and no
+        // region reaches past it.
+        for (w, h) in [(40u16, 10u16), (24, 8)] {
+            let rows = workbench.render(&data, w, h);
+            for (row, line) in rows.iter().enumerate() {
+                assert_eq!(
+                    ansi::width(line),
+                    w as usize,
+                    "{w}x{h}: row {row} is not the frame's width"
+                );
+            }
+            for (rect, id) in workbench.hits().regions() {
+                assert!(
+                    rect.x + rect.w <= w && rect.y + rect.h <= h,
+                    "{w}x{h}: {id} reaches past the frame at {rect:?}"
+                );
+            }
+        }
     }
 
     /// Dragging the picture pans it: the pointer's counterpart of the arrows.
@@ -7123,6 +7450,103 @@ mod tests {
         );
     }
 
+    fn roll(
+        workbench: &mut Workbench,
+        data: &WorkbenchData,
+        kind: mouse::MouseKind,
+        x: u16,
+        y: u16,
+    ) {
+        workbench.handle(
+            WbEvent::Mouse(mouse::MouseEvent {
+                kind,
+                x,
+                y,
+                shift: false,
+                alt: false,
+                ctrl: false,
+            }),
+            data,
+        );
+    }
+
+    /// End the burst in progress, the way a reader who stops, aims and rolls
+    /// again does it.
+    fn pause_between_bursts(workbench: &mut Workbench) {
+        workbench.wheel_burst = workbench.wheel_burst.map(|burst| WheelBurst {
+            at: Instant::now() - WHEEL_BURST_GAP - Duration::from_millis(50),
+            ..burst
+        });
+    }
+
+    /// A burst belongs to the surface it began over. A terminal reports a fling
+    /// (or a free-spinning wheel) as a long run of wheel events, and they follow
+    /// the pointer: crossing the divider mid-fling handed the rest of the
+    /// gesture to the rail, whose list then walked under a hand that never aimed
+    /// at it.
+    #[test]
+    fn a_wheel_burst_keeps_scrolling_the_conversation_it_began_over() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let slot = workbench.panel.index();
+
+        roll(&mut workbench, &data, mouse::MouseKind::WheelUp, 40, 15);
+        let scrolled = workbench.chat_scroll;
+        assert!(scrolled > 0, "the wheel over the conversation scrolls it");
+
+        // The pointer is over the rail now; the burst is still the one that
+        // began in the conversation, so the rail's list stays put.
+        roll(&mut workbench, &data, mouse::MouseKind::WheelUp, 110, 15);
+        assert_eq!(
+            workbench.panel_scroll[slot], 0,
+            "the burst did not hand the rail its tail"
+        );
+        assert!(
+            workbench.chat_scroll > scrolled,
+            "the burst kept scrolling the conversation"
+        );
+    }
+
+    /// The same rule the other way: a burst that began over the rail scrolls the
+    /// rail even after the pointer leaves it.
+    #[test]
+    fn a_wheel_burst_keeps_scrolling_the_rail_it_began_over() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let slot = workbench.panel.index();
+
+        roll(&mut workbench, &data, mouse::MouseKind::WheelDown, 110, 15);
+        let scrolled = workbench.panel_scroll[slot];
+        assert!(scrolled > 0, "the wheel over the rail scrolls it");
+
+        roll(&mut workbench, &data, mouse::MouseKind::WheelDown, 40, 15);
+        assert_eq!(
+            workbench.chat_scroll, 0,
+            "the conversation did not take the burst over"
+        );
+        assert!(
+            workbench.panel_scroll[slot] > scrolled,
+            "the rail kept scrolling"
+        );
+    }
+
+    /// Stop, aim, roll again: a silence longer than the burst gap is a new
+    /// gesture, and it scrolls whatever the pointer is over by then.
+    #[test]
+    fn a_new_wheel_burst_follows_the_pointer() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let slot = workbench.panel.index();
+
+        roll(&mut workbench, &data, mouse::MouseKind::WheelDown, 40, 15);
+        pause_between_bursts(&mut workbench);
+        roll(&mut workbench, &data, mouse::MouseKind::WheelDown, 110, 15);
+        assert!(
+            workbench.panel_scroll[slot] > 0,
+            "the new burst scrolled the rail under the pointer"
+        );
+    }
+
     #[test]
     fn a_focused_rail_names_the_keys_it_answers() {
         let data = demo::chat();
@@ -7758,6 +8182,196 @@ mod tests {
         }
     }
 
+    /// The whole path a pasted picture takes: the journal row's attachment
+    /// becomes a block in the transcript, the frame turns it into a placement,
+    /// and the caption under it is the stop that opens the picture — which is
+    /// the behaviour a reader sees, end to end, in one test.
+    #[test]
+    fn a_pasted_picture_reaches_the_frame_as_a_thumbnail_and_a_stop() {
+        use crate::terminal_image::{CapabilitiesGuard, ImageProtocol};
+        let _caps = CapabilitiesGuard::pin(ImageProtocol::Kitty);
+        let dir = tempfile::tempdir().unwrap();
+        let shot = dir.path().join("shot.png");
+        std::fs::write(&shot, b"\x89PNG\r\n\x1a\n").unwrap();
+
+        let messages = crate::session_rows::rows_to_messages(&[serde_json::json!({
+            "id": "u1",
+            "role": "user",
+            "blocks": [{"kind": "text", "text": "look at this"}],
+            "metadata": {"attachments": [
+                {"kind": "image", "path": shot.to_string_lossy(), "name": "shot.png"},
+            ]},
+        })]);
+        let width = layout::chat_inner(120);
+        let mut chat = crate::components::chat_area::ChatArea::new(width, None);
+        for message in messages {
+            chat.add_message(message);
+        }
+        let mut data = demo::chat();
+        data.session.cwd = dir.path().to_string_lossy().into();
+        data.session.id = "s-picture".into();
+        data.revision = 7;
+        data.messages = chat.render_all_shared(width);
+        data.row_stops = chat.row_stops();
+        data.pictures = chat
+            .pictures()
+            .into_iter()
+            .map(|block| state::ChatImage {
+                row: block.row,
+                rows: block.rows,
+                path: block.path,
+                pixels: Some(demo::picture_pixels()),
+            })
+            .collect();
+        assert_eq!(data.pictures.len(), 1, "one picture came with the message");
+
+        let (mut workbench, rows) = frame(&data, 120, 38);
+        assert_eq!(workbench.image_requests.len(), 1, "the thumbnail is placed");
+        // The caption is the row under the slot, and it is a link the reader can
+        // `tab` to and open — the picture's only stop.
+        let caption_row = data.pictures[0].row + data.pictures[0].rows;
+        let caption = crate::utils::strip_ansi_codes(&data.messages[caption_row]);
+        assert!(caption.contains("shot.png"), "{caption:?}");
+        let spans = workbench.link_spans(&data);
+        let span = spans
+            .iter()
+            .find(|span| span.row == caption_row)
+            .unwrap_or_else(|| panic!("the caption is a target: {spans:?}"));
+        assert_eq!(
+            span.target,
+            links::LinkTarget::File(shot.to_string_lossy().into())
+        );
+        // …and the frame painted it where the slot is, not over the composer:
+        // the bitmap's top row is exactly the slot's, and the caption the frame
+        // drew sits right under the block.
+        let placed = workbench.image_requests[0].request;
+        let y = placed.y as usize;
+        let caption_screen = rows
+            .iter()
+            .position(|row| crate::utils::strip_ansi_codes(row).contains("shot.png"))
+            .unwrap_or_else(|| panic!("the caption is painted"));
+        assert_eq!(
+            caption_screen,
+            y + data.pictures[0].rows,
+            "the thumbnail sits on the slot, the caption right under it"
+        );
+        assert!(caption_screen < 38, "inside the frame");
+    }
+
+    /// A picture in the transcript: a thumbnail fitted into the rows the
+    /// renderer reserved, a click on it that opens the preview box, and nothing
+    /// at all on a terminal that cannot place a bitmap.
+    #[test]
+    fn a_transcripts_picture_is_a_thumbnail_and_a_click_target() {
+        use crate::terminal_image::{CapabilitiesGuard, ImageProtocol};
+        let caps = CapabilitiesGuard::pin(ImageProtocol::Kitty);
+        let mut data = demo::chat();
+        // Row 1 draws the picture's slot; the frame is what turns it into a
+        // placement.
+        data.pictures = vec![state::ChatImage {
+            row: 1,
+            rows: 4,
+            path: "/home/dev/future-os/shot.png".into(),
+            pixels: Some(demo::picture_pixels()),
+        }];
+        let (mut workbench, rows) = frame(&data, 120, 38);
+        assert!(!rows.is_empty());
+        let placed = workbench
+            .image_requests
+            .first()
+            .expect("the thumbnail is placed");
+        assert!(placed.request.columns > 0 && placed.request.rows > 0);
+        assert!(
+            placed.request.columns as usize <= 28,
+            "a thumbnail is a preview, not the picture: {placed:?}"
+        );
+        assert_eq!(
+            placed.request.crop,
+            (0, 0, placed.pixels.width, placed.pixels.height),
+            "the whole picture goes into the slot"
+        );
+
+        // The bitmap keeps the picture's shape: a cell is twice as tall as it
+        // is wide, and a screenshot must not arrive squashed.
+        let (width, height) = (placed.pixels.width, placed.pixels.height);
+        let expected = crate::workbench::image_view::fitted_cells(width, height, 28, 4, 1);
+        assert_eq!(
+            (
+                placed.request.columns as usize,
+                placed.request.rows as usize
+            ),
+            expected
+        );
+
+        // A click on the block opens the file — the pointer named the picture,
+        // which lives in the preview box.
+        let actions = click_region(&mut workbench, &data, 120, 38, "chat.picture.0");
+        assert_eq!(
+            actions,
+            vec![WbAction::PreviewFile("/home/dev/future-os/shot.png".into())]
+        );
+
+        // Pixels that have not arrived are asked for once and painted by
+        // nobody: the slot is already on screen.
+        caps.install(crate::terminal_image::TerminalCapabilities {
+            images: ImageProtocol::Kitty,
+            true_color: true,
+            ..Default::default()
+        });
+        let mut waiting = demo::chat();
+        waiting.pictures = vec![state::ChatImage {
+            row: 1,
+            rows: 4,
+            path: "/home/dev/future-os/shot.png".into(),
+            pixels: None,
+        }];
+        let (workbench, _rows) = frame(&waiting, 120, 38);
+        assert!(
+            workbench.image_requests.is_empty(),
+            "nothing to transmit yet"
+        );
+        assert_eq!(
+            workbench.picture_wants,
+            vec!["/home/dev/future-os/shot.png".to_string()]
+        );
+
+        // A terminal without a protocol is never asked for pixels it cannot
+        // show: the caption is the picture there.
+        caps.install(crate::terminal_image::TerminalCapabilities::default());
+        let mut waiting = demo::chat();
+        waiting.pictures = vec![state::ChatImage {
+            row: 1,
+            rows: 4,
+            path: "/home/dev/future-os/shot.png".into(),
+            pixels: Some(demo::picture_pixels()),
+        }];
+        let (workbench, _rows) = frame(&waiting, 120, 38);
+        assert!(workbench.image_requests.is_empty());
+        assert!(
+            !workbench
+                .hits()
+                .regions()
+                .iter()
+                .any(|(_, region)| region.starts_with("chat.picture.")),
+            "no block to click"
+        );
+    }
+
+    /// The transmitted-image book is bounded, and what it evicts is deleted
+    /// rather than left on screen.
+    #[test]
+    fn transmitted_pictures_are_evicted_oldest_first() {
+        let mut painted = PaintedImages::default();
+        for index in 0..(MAX_PAINTED_IMAGES as u32) {
+            assert!(painted.remember(index as u64, index + 1).is_empty());
+        }
+        let evicted = painted.remember(999, 1000);
+        assert_eq!(evicted, vec![1], "the first transmission is given up");
+        assert!(!painted.ids.contains_key(&0));
+        assert_eq!(painted.take(999), Some(1000));
+        assert_eq!(painted.take(999), None);
+    }
+
     /// The preview box names the picture and keeps the frame's size invariant at
     /// every terminal size. A picture is either placed by the terminal's image
     /// protocol — never drawn as half blocks, which is a mosaic of the thing the
@@ -7797,7 +8411,9 @@ mod tests {
         assert!(text.contains("96×64"), "the title names the size: {text}");
         assert!(!text.contains('▀'), "no half-block mosaic: {text}");
         let request = workbench
-            .image_request
+            .image_requests
+            .first()
+            .map(|placed| placed.request)
             .expect("a kitty terminal is asked to place the picture");
         assert!(request.columns > 0 && request.rows > 0, "{request:?}");
         assert_eq!(
@@ -7811,7 +8427,11 @@ mod tests {
         workbench.handle(WbEvent::Key("+".into()), &data);
         let rows = workbench.render(&data, 120, 38);
         assert!(plain(&rows).contains("2x"), "{}", plain(&rows));
-        let zoomed = workbench.image_request.expect("still placed");
+        let zoomed = workbench
+            .image_requests
+            .first()
+            .map(|placed| placed.request)
+            .expect("still placed");
         assert!(
             zoomed.crop.2 - zoomed.crop.0 < 96 || zoomed.crop.3 - zoomed.crop.1 < 64,
             "a zoomed window is a crop of the picture: {zoomed:?}"
@@ -7828,7 +8448,7 @@ mod tests {
         workbench.overlay = Some(Overlay::FilePreview);
         workbench.render(&data, 120, 38);
         assert!(
-            workbench.image_request.is_some(),
+            !workbench.image_requests.is_empty(),
             "iTerm2 is a graphics protocol, not a fallback"
         );
 
@@ -7845,7 +8465,7 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains('▀'), "{text}");
-        assert!(workbench.image_request.is_none());
+        assert!(workbench.image_requests.is_empty());
     }
 
     /// A code preview is painted in the palette's token colours — a keyword is
@@ -8032,24 +8652,40 @@ mod tests {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         assert_eq!(
-            workbench.handle(WbEvent::Key("ctrl+c".into()), &data),
+            workbench.handle(WbEvent::Key("ctrl+x".into()), &data),
             vec![WbAction::Quit]
         );
         // Inside the palette every other key belongs to the palette, and escape
-        // is its way out — but quitting still has to work: a modal that ate
-        // `ctrl+c` would leave a signal as the only exit, and a signalled TUI is
-        // the exit that cannot hand the terminal back cleanly.
+        // is its way out — but quitting still has to work: a modal that ate the
+        // quit chord would leave a signal as the only exit, and a signalled TUI
+        // is the exit that cannot hand the terminal back cleanly.
         workbench.handle(WbEvent::Key("/".into()), &data);
         assert!(workbench.overlay.is_some());
         assert_eq!(
-            workbench.handle(WbEvent::Key("ctrl+c".into()), &data),
+            workbench.handle(WbEvent::Key("ctrl+x".into()), &data),
             vec![WbAction::Quit]
         );
         workbench.overlay = Some(Overlay::Help);
         assert_eq!(
-            workbench.handle(WbEvent::Key("ctrl+c".into()), &data),
+            workbench.handle(WbEvent::Key("ctrl+x".into()), &data),
             vec![WbAction::Quit]
         );
+    }
+
+    /// The interrupt chord belongs to the run, not to the exit: a modal that
+    /// swallowed nothing still must not turn `ctrl+c` into a quit, or the one
+    /// key the reader presses to stop a turn would drop them out of the surface.
+    #[test]
+    fn the_interrupt_chord_is_not_the_exit() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        assert!(!workbench
+            .handle(WbEvent::Key("ctrl+c".into()), &data)
+            .contains(&WbAction::Quit));
+        workbench.overlay = Some(Overlay::Help);
+        assert!(!workbench
+            .handle(WbEvent::Key("ctrl+c".into()), &data)
+            .contains(&WbAction::Quit));
     }
 
     // ─── language ──────────────────────────────────────────────────────────

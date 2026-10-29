@@ -296,7 +296,7 @@ impl Action {
     /// absent on a compact one.
     ///
     /// The letters are not free to pick, and the exclusions are why the map
-    /// stops at fourteen:
+    /// stops at fifteen:
     ///
     /// * `ctrl+h` / `ctrl+i` / `ctrl+j` / `ctrl+m` never arrive as themselves —
     ///   a terminal sends Backspace, Tab, `\n` and Enter for them (see
@@ -310,25 +310,38 @@ impl Action {
     ///   only duplicate Home / End / Right, so `e` and `f` are the two the map
     ///   does take (Home/End/arrows still edit the draft).
     ///
+    /// `ctrl+c` is the one letter whose meaning is not ours to choose: raw mode
+    /// turns the signal off (`ISIG`, see `terminal_posix`), so the byte arrives
+    /// as a key and the reader's expectation is the shell's — **interrupt what
+    /// is running**, not "close the shell". Bound to a turn in flight it does
+    /// exactly that, and with nothing running it does nothing rather than
+    /// something surprising. Leaving is `ctrl+x`, which no other terminal
+    /// program teaches, so it is never pressed by reflex.
+    ///
     /// An action that has no chord keeps a typed door (`/copy`, `/preferences`,
     /// `/preview`, `/lang`, `/refresh`…) and a visible control instead: `""` is
     /// that "no default", and [`Keybindings::action`] never resolves it.
     ///
-    /// The fourteen go to what is pressed *while working*: the commands, the
-    /// sessions, the three answers that decide what runs next (model, effort,
-    /// approval), the two places a reader keeps going back to (the workspace
-    /// list and the files of this session's workspace), the rail, the
-    /// repository, the run under them, and leaving. Switching the interface
+    /// The fifteen go to what is pressed *while working*: stopping the run
+    /// under them, the commands, the sessions, the three answers that decide
+    /// what runs next (model, effort, approval), the two places a reader keeps
+    /// going back to (the workspace list and the files of this session's
+    /// workspace), the rail, the repository, and leaving. Switching the interface
     /// language, refreshing the view, the queue of prompts sent mid-run, and
     /// deleting a conversation are things a reader does once in a while, so they
     /// keep commands instead of taking a letter from something pressed every
     /// minute.
     pub fn default_key(self) -> &'static str {
         match self {
-            Self::Quit => "ctrl+c",
+            // `x` leaves: the interrupt chord is spoken for (see above), and a
+            // chord nothing else teaches is the right home for the one action
+            // whose mis-press loses the screen.
+            Self::Quit => "ctrl+x",
             Self::NewSession => "ctrl+n",
             Self::Sessions => "ctrl+r",
-            Self::Stop => "ctrl+x",
+            // The shell's own meaning of the byte: interrupt the foreground
+            // turn. Idle, it is a no-op (`Live::abort`).
+            Self::Stop => "ctrl+c",
             Self::ReplyDetail => "ctrl+e",
             Self::Palette => "ctrl+p",
             // `m` is Enter on a terminal that does not report modifiers; `o`

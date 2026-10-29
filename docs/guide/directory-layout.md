@@ -196,7 +196,9 @@ channel config, queue and status.
 
 Owned by `future-tui`. `settings.json` persists client-side settings
 (`defaultModel`, `defaultThinkingLevel`, `defaultPermissionLevel`,
-`enabledModelIds`, `themeId`, `skillRecommend`); key-binding overrides live in
+`enabledModelIds`, `themeId`, `skillRecommend`, `lastWorkspace` — the workspace
+`future tui` opens on when it is started from somewhere ambient); key-binding
+overrides live in
 `keybindings.json` (`/keymap` writes the non-default bindings, and the file is
 read at startup); `skill_reco.json` holds the current local day's
 skill-recommendation budget (which skills were already offered and which

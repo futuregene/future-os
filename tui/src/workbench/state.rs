@@ -38,6 +38,15 @@ pub struct UsageData {
     pub cost: f64,
     /// Cache hit rate, 0..=100.
     pub cache_pct: u8,
+    /// Prompt tokens the session has been billed for, cumulative across its
+    /// requests. This is the provider's `prompt_tokens`, so the cached reads
+    /// below are *part of* it — that is what makes the hit rate checkable by
+    /// eye (`cache_read_tokens / input_tokens`).
+    pub input_tokens: u64,
+    /// Completion tokens the session has been billed for, cumulative.
+    pub output_tokens: u64,
+    /// The cached share of `input_tokens`, cumulative.
+    pub cache_read_tokens: u64,
     /// Output tokens per second of the run in flight (0 when idle).
     pub tps: f64,
 }
@@ -505,7 +514,6 @@ impl PanelId {
 /// Everything the workbench paints.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WorkbenchData {
-    pub app_name: String,
     pub version: String,
     pub connected: bool,
     pub session: SessionMeta,
@@ -573,9 +581,37 @@ pub struct WorkbenchData {
     pub files: Vec<String>,
     /// The 文件 panel's tree of the session workspace.
     pub tree: FileTree,
+    /// The pictures the transcript draws as thumbnails, in reading order — the
+    /// rows that carry one, and the pixels once the adapter has decoded them.
+    ///
+    /// Pictures live in the transcript as *rows* (`components::chat_area`
+    /// reserves a slot for each), so the placement travels with them: a
+    /// thumbnail that scrolled out of the window simply is not in `messages`
+    /// any more, and nothing has to guess where it went.
+    pub pictures: Vec<ChatImage>,
     /// What the preview box is showing, if it is open — written by the adapter
     /// when the reader asks for a file, read by the surface to paint it.
     pub preview: Option<PreviewView>,
+}
+
+/// A picture the transcript draws as a thumbnail: the block it owns, and the
+/// pixels to draw in it.
+///
+/// The pixels are `None` until the adapter has read and decoded the file — the
+/// block is already on screen by then (its slot is part of the rows), and the
+/// picture arrives on the next frame. That is what keeps a transcript from
+/// freezing on a decode: `image::load_from_memory` of a phone screenshot is a
+/// hundred milliseconds, and it happens off the event loop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatImage {
+    /// First rendered row of the block's thumbnail slot (an index into
+    /// [`WorkbenchData::messages`]).
+    pub row: usize,
+    /// Rows the slot reserves for the thumbnail. The caption is the row below.
+    pub rows: usize,
+    /// The file to draw.
+    pub path: String,
+    pub pixels: Option<ImagePixels>,
 }
 
 /// What the preview box holds: a picture's pixels, a document's text, or the
