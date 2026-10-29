@@ -534,7 +534,16 @@ export interface EntriesData {
   total?: number;
   hasMore?: boolean;
   nextOffset?: number;
-  /** The bridge shed whole oldest exchanges to fit its page byte budget. */
+  /**
+   * The page holds fewer user exchanges than the client asked for, so it is a
+   * slice of the window rather than the window itself. Two bounds shorten one:
+   * the bridge sheds whole oldest exchanges to fit its page byte budget, and the
+   * Agent cuts a backward read at its own row and byte limits (a tool-dense
+   * exchange then arrives as a fragment of itself). A client that asked for a
+   * window must keep reading while `hasMore` holds and prepend what it gets —
+   * installing a short page as the whole transcript shows a reply with nothing
+   * above it, and `hasMore` alone does not distinguish the two.
+   */
   trimmed?: boolean;
 }
 

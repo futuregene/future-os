@@ -39,7 +39,7 @@ impl SqliteStore {
         let _active = ActiveOperation::claim(&operation);
         let prefix = format!("reset:{operation}:");
         let (s, op, p) = (session.to_owned(), operation.clone(), prefix.clone());
-        self.db.call(move |db| {
+        self.db.call_as("content_reset", move |db| {
             let tx = database::begin_write_transaction(db)?;
             let s=crate::session::identity::BoundIdentity::session(&tx,&s)?;
             check_revision(&tx, &s, revision)?;
@@ -77,7 +77,7 @@ impl SqliteStore {
                 )?);
             }
             let (s, p) = (session.to_owned(), prefix.clone());
-            self.db.call(move |db| {
+            self.db.call_as("content_reset", move |db| {
                 let tx = database::begin_write_transaction(db)?;
             let s=crate::session::identity::BoundIdentity::session(&tx,&s)?;
                 check_revision(&tx, &s, revision)?;
@@ -178,7 +178,7 @@ impl SqliteStore {
                 format!("{prefix}{entry}"),
                 batch.to_vec(),
             );
-            self.db.call(move |db| {
+            self.db.call_as("content_reset", move |db| {
                 let tx = database::begin_write_transaction(db)?;
                 let s = crate::session::identity::BoundIdentity::session(&tx, &s)?;
                 check_revision(&tx, &s, revision)?;
@@ -206,7 +206,7 @@ impl SqliteStore {
                 cancellation.check()?;
             }
             let operation = operation.to_owned();
-            let complete = self.db.call(move |db| {
+            let complete = self.db.call_as("content_reset", move |db| {
                 let tx = database::begin_write_transaction(db)?;
                 let scope: Option<(crate::session::identity::BoundIdentity,String,String)> = tx.query_row("SELECT session_id,owner_prefix,kind FROM content_operations WHERE operation_id=?1",[&operation],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
                 let Some((session,prefix,kind)) = scope else { return Ok(true); };

@@ -70,7 +70,7 @@ impl Manager {
             ack.run_id.clone(),
             fingerprint.to_owned(),
         );
-        self.storage()?.db.call(move |db| {
+        self.storage()?.db.call_as("receipt", move |db| {
             let tx = super::database::begin_write_transaction(db)?;
             let run=super::identity::BoundIdentity::run(&tx,&session,&run)?;
             let session=super::identity::BoundIdentity::session(&tx,&session)?;
@@ -101,7 +101,7 @@ impl Manager {
     /// pass the whole batch instead.
     pub(crate) fn cancel_queued_receipts(&self, session: &str, runs: &[String]) -> Result<()> {
         let (session, runs) = (session.to_owned(), runs.to_vec());
-        self.storage()?.db.call(move |db| {
+        self.storage()?.db.call_as("receipt", move |db| {
             let tx = super::database::begin_write_transaction(db)?;
             for run in runs {
                 let run=super::identity::BoundIdentity::run(&tx,&session,&run)?;

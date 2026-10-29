@@ -251,7 +251,7 @@ impl SqliteStore {
         // on the journal's own index. Grouping the whole journal here — the way
         // the explicit sweep does to rank runs by size — is exactly the cost this
         // entry cannot afford at startup.
-        let candidates = self.db.call(move |db| {
+        let candidates = self.db.call_as("journal_reclaim", move |db| {
             let mut statement = db.prepare(&format!(
                 "SELECT r.session_id,r.run_id
                  FROM runs r
@@ -370,7 +370,7 @@ impl SqliteStore {
                     }
                     let chunk_session = session.clone();
                     let chunk_run = run.clone();
-                    let chunk = self.db.call(move |db| {
+                    let chunk = self.db.call_as("journal_reclaim", move |db| {
                         super::database::try_maintenance_transaction(db, |tx| {
                             let deleted =
                                 delete_raw_rows(tx, &chunk_session, &chunk_run, RETIRE_CHUNK_ROWS)?;
@@ -422,7 +422,7 @@ impl SqliteStore {
         } else {
             "0"
         };
-        let candidates = self.db.call(move |db| {
+        let candidates = self.db.call_as("journal_reclaim", move |db| {
             let mut statement = db.prepare(&format!(
                 "SELECT r.session_id,r.run_id,count(*) n,{byte_expr} b
                  FROM runs r JOIN run_events e
@@ -476,7 +476,9 @@ impl SqliteStore {
                     // One unrepresentable journal must not end the sweep: it is
                     // recorded, skipped, and the next candidate is attempted.
                     let key = "journal.skipped.error";
-                    let _ = self.db.call(move |db| bump_meta(db, key, 1));
+                    let _ = self
+                        .db
+                        .call_as("journal_reclaim", move |db| bump_meta(db, key, 1));
                     entries.push(json!({
                         "sessionId": session,
                         "runId": run,
@@ -536,7 +538,7 @@ impl SqliteStore {
 
         // Fold freed pages back into the file where this database can do it
         // incrementally, so the reported size reflects the retirement.
-        let (bytes_after, free_after) = self.db.call(|db| {
+        let (bytes_after, free_after) = self.db.call_as("journal_reclaim", |db| {
             let _ = super::database::reclaim_space_when_idle(db);
             Ok((journal_bytes(db)?, free_bytes(db)?))
         })?;

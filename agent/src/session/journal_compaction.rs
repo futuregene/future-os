@@ -345,7 +345,7 @@ impl SqliteStore {
         let (owned_session, owned_run) = (session.to_owned(), run.to_owned());
         let read = self
             .db
-            .call(move |db| read_compaction_source(db, &owned_session, &owned_run))?;
+            .read(move |db| read_compaction_source(db, &owned_session, &owned_run))?;
         let original = match read {
             CompactionRead::Source(source) if source.count > 0 => source,
             CompactionRead::Source(_) => return Ok(self.skipped(session, SkipReason::Empty)),
@@ -382,7 +382,7 @@ impl SqliteStore {
             }
             let (page_session, page_run) = (session.to_owned(), run.to_owned());
             let after_epoch = epoch.unwrap_or(i64::MIN);
-            let Some(rows) = self.db.call(move |db| {
+            let Some(rows) = self.db.read(move |db| {
                 super::sqlite_store::read_compaction_event_rows(
                     db,
                     &page_session,
@@ -517,7 +517,7 @@ impl SqliteStore {
         // replay. The reclaim sweep deletes those inert leftovers.
         let (commit_session, commit_run) = (session.clone(), run.clone());
         let expected = original.clone();
-        let first = self.db.call(move |db| {
+        let first = self.db.call_as("journal_compaction", move |db| {
             let deleted = super::database::try_maintenance_transaction(db, |tx| {
                 ensure!(
                     read_compaction_source(tx, &commit_session, &commit_run)?
@@ -554,7 +554,7 @@ impl SqliteStore {
         let mut deleted = first;
         while (deleted as i64) < original.count && !stop.load(Ordering::Acquire) {
             let (chunk_session, chunk_run) = (session.clone(), run.clone());
-            let chunk = self.db.call(move |db| {
+            let chunk = self.db.call_as("journal_compaction", move |db| {
                 super::database::try_maintenance_transaction(db, |tx| {
                     let deleted =
                         delete_raw_rows(tx, &chunk_session, &chunk_run, RETIRE_CHUNK_ROWS)?;
@@ -592,7 +592,10 @@ impl SqliteStore {
     fn skipped(&self, session: &str, reason: SkipReason) -> CompactionOutcome {
         if reason.is_leftover() {
             let key = reason.key();
-            if let Err(error) = self.db.call(move |db| bump_meta(db, &key, 1)) {
+            if let Err(error) = self
+                .db
+                .call_as("journal_compaction", move |db| bump_meta(db, &key, 1))
+            {
                 tracing::debug!(%error, reason = reason.as_str(), "could not record journal skip");
             }
             tracing::debug!(

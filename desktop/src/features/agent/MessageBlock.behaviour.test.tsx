@@ -152,14 +152,10 @@ it("offers retry and continue on the latest failed reply, with its recovery sour
   expect(handlers.onContinue).toHaveBeenCalledWith(expect.objectContaining({ id: "a1" }));
 });
 
-it("withholds recovery for an interrupted run and for an earlier exchange", () => {
-  // error-path: the agent may still be processing the original after a GUI
-  // restart, so retrying would race the in-flight run.
-  render(message({ id: "a1", status: "failed", stopped: true }), { isLast: true, recoverySource: message({ id: "u1", role: "user" }) });
-  expect(buttons().some(button => button.textContent?.includes("Retry"))).toBe(false);
-
-  act(() => root.unmount());
-  root = createRoot(container);
+it("withholds recovery for an earlier exchange and for a user row", () => {
+  // A stopped reply is recoverable (the reader may want to pick it up), so the
+  // row is withheld for the two structural reasons only: it is not the latest
+  // exchange, or it is not a reply at all.
   render(message({ id: "a1", status: "failed" }), { isLast: false, recoverySource: message({ id: "u1", role: "user" }) });
   expect(buttons().some(button => button.textContent?.includes("Retry"))).toBe(false);
 
@@ -168,6 +164,19 @@ it("withholds recovery for an interrupted run and for an earlier exchange", () =
   root = createRoot(container);
   render(message({ id: "u1", role: "user", status: "failed" }), { isLast: true });
   expect(buttons().some(button => button.textContent?.includes("Retry"))).toBe(false);
+});
+
+it("offers recovery for a reply the user stopped, or one a restart cut off", () => {
+  // Every reason a reply stopped is resumable — the affordance no longer asks
+  // why. (A stopped run: the user may want to continue from where it stopped.)
+  render(message({ id: "a1", status: "failed", stopped: true }), { isLast: true, recoverySource: message({ id: "u1", role: "user" }) });
+  expect(buttons().some(button => button.textContent?.includes("Continue"))).toBe(true);
+
+  act(() => root.unmount());
+  root = createRoot(container);
+  // A completed run whose stream was truncated, drawn as a clean reply.
+  render(message({ id: "a1", status: "complete", truncated: true }), { isLast: true, recoverySource: message({ id: "u2", role: "user" }) });
+  expect(buttons().some(button => button.textContent?.includes("Continue"))).toBe(true);
 });
 
 it("copies the reply's text, joining segments and skipping activity lines", async () => {

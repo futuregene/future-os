@@ -388,20 +388,34 @@ fn header(
 ) -> (Vec<String>, Vec<DoorSpan>) {
     let compact = frame.compact;
     // The right corner is a *composition*, never a cut string: each candidate is
-    // whole (dot, app, version), and the widest one that fits is drawn. Cutting
+    // whole (dot, version), and the widest one that fits is drawn. Cutting
     // a joined `● already-connected` is what once left a lone `●已` behind — a
     // Hanzi is two cells, so even a cell-accurate cut can strand half a word.
     // Everything in the corner is ASCII for the same reason: it degrades to its
     // dot cleanly, and the Chinese label lives in the status bar.
     let right_avail = (columns / 2).min((columns.saturating_sub(40)).max(columns / 3));
-    let right = header_right(palette, data, right_avail);
-    let right_width = width(&right);
-    // The surface's two doors, beside the title: the files panel and the
-    // repository browser. They are drawn only when a title still fits next to
-    // them — the header's job is naming the conversation, and a strip of
-    // controls that pushed the name off the edge would trade the point of the
-    // row for its tools.
+    let corner = header_right(palette, data, right_avail);
+    // The surface's doors, beside the title: the chat list, then the two panel
+    // browsers. A door is drawn only while a title still fits next to it — the
+    // header's job is naming the conversation — and they are given up from the
+    // tail, so the chat list is the last one standing: it is the only door with
+    // no other pointer route (the rail is a keyboard surface, and a narrow frame
+    // does not even put it beside the conversation).
+    //
+    // A door carries its chord — `[ctrl+r] 会话` — and it is the only place some
+    // of them are named: the footer's hint row leaves the chat list out for
+    // exactly this reason (see `hint_row`), so the header is where that key is
+    // learned.
     let doors: Vec<Door> = vec![
+        Door {
+            id: "header.sessions",
+            text: header_button(
+                palette,
+                keys,
+                preferences::Action::Sessions,
+                t(lang, Key::TabSessions),
+            ),
+        },
         Door {
             id: "header.files",
             text: header_button(
@@ -422,23 +436,29 @@ fn header(
         .into_iter()
         .filter(|door| !door.text.is_empty())
         .collect();
-    let group = doors
-        .iter()
-        .map(|door| door.text.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
-    let room_for_left = if compact { 12 } else { 24 };
-    // Two cells either side of the group: one gap is what keeps it from reading
-    // as the tail of a truncated title, the other from reading as the corner's.
-    let reserve = right_width
-        + usize::from(right_width > 0)
-        + width(&group)
-        + usize::from(!group.is_empty()) * 4;
-    let doors: Vec<Door> = if columns >= reserve + room_for_left {
-        doors
+    // The title's floor, in cells. A narrow row cannot spare the wide one: `24`
+    // is a share of a comfortable row, and on a 50-column frame it would be
+    // nearly half of it — the reason the chat list used to vanish on exactly the
+    // screens with no other way to reach it.
+    let room_for_left = if compact || columns < layout::NARROW_WIDTH as usize {
+        12
     } else {
-        Vec::new()
+        24
     };
+    // The row is one budget claimed by three things — the corner, the doors and
+    // the title — and `fit_row` spends it on the doors first: a door is function
+    // a reader can aim at, while the brand also stands in the window title and
+    // `future --version` answers for the build.
+    let brand_width = width("FUTURE OS · ") + usize::from(!compact);
+    let (right, doors, brand) = fit_row(
+        corner,
+        widgets::status_dot(palette, data.connected),
+        &doors,
+        columns,
+        room_for_left,
+        brand_width,
+    );
+    let right_width = width(&right);
     let button = doors
         .iter()
         .map(|door| door.text.as_str())
@@ -461,11 +481,15 @@ fn header(
         } else {
             data.session.title.clone()
         };
-        let left = format!(
-            "{} {}",
-            palette.strong(palette.accent, "FUTURE OS"),
-            palette.dim(&format!("· {title}"))
-        );
+        let left = if brand {
+            format!(
+                "{} {}",
+                palette.strong(palette.accent, "FUTURE OS"),
+                palette.dim(&format!("· {title}"))
+            )
+        } else {
+            format!(" {}", palette.dim(&title))
+        };
         let left = fit(&left, left_width);
         let left_width = width(&left);
         let pad = columns.saturating_sub(left_width + before + button_width + after + right_width);
@@ -497,11 +521,15 @@ fn header(
     } else {
         format!("{} · @{}", data.session.cwd, data.session.branch)
     };
-    let left = format!(
-        " {} {}",
-        palette.strong(palette.accent, "FUTURE OS"),
-        palette.dim(&format!("· {title} · {workspace}"))
-    );
+    let left = if brand {
+        format!(
+            " {} {}",
+            palette.strong(palette.accent, "FUTURE OS"),
+            palette.dim(&format!("· {title} · {workspace}"))
+        )
+    } else {
+        format!(" {}", palette.dim(&format!("{title} · {workspace}")))
+    };
     let left = fit(&left, left_width);
     let left_width = width(&left);
     let pad = columns.saturating_sub(left_width + before + button_width + after + right_width);
@@ -525,6 +553,7 @@ fn header(
 
 /// One door in the header: the chord and label it paints, and the hit region it
 /// claims (`id`, the name the pointer is resolved against).
+#[derive(Clone)]
 struct Door {
     id: &'static str,
     text: String,
@@ -577,29 +606,71 @@ fn header_button(
     )
 }
 
+/// The header's one row, resolved: how much of the corner is drawn, which doors
+/// fit beside the title, and whether the brand still rides in front of it.
+///
+/// The row is one budget, and the buttons come first: the whole group is tried
+/// with the richest decoration that fits — the brand and the build number, the
+/// brand alone, then neither — and only then with doors from the tail, and never
+/// with decoration again. A name that came back as the row narrowed would read as
+/// a glitch, and a row short of a button is short of the name as well.
+fn fit_row(
+    corner: String,
+    dot: String,
+    doors: &[Door],
+    columns: usize,
+    room_for_left: usize,
+    brand_width: usize,
+) -> (String, Vec<Door>, bool) {
+    for (right, brand) in [(&corner, true), (&dot, true), (&dot, false)] {
+        let floor = room_for_left + if brand { brand_width } else { 0 };
+        if columns >= row_reserve(doors, width(right)) + floor {
+            return (right.clone(), doors.to_vec(), brand);
+        }
+    }
+    for keep in (0..doors.len()).rev() {
+        let kept = &doors[..keep];
+        if columns >= row_reserve(kept, width(&dot)) + room_for_left {
+            return (dot.clone(), kept.to_vec(), false);
+        }
+    }
+    (dot, Vec::new(), false)
+}
+
+/// What a row costs beside the title: the corner, the doors as one painted run,
+/// and the gaps that keep the three from reading as one word. Two cells either
+/// side of the doors — one gap keeps the group from reading as the tail of a
+/// truncated title, the other from reading as the corner's.
+fn row_reserve(doors: &[Door], right_width: usize) -> usize {
+    let group = door_group_width(doors);
+    right_width + usize::from(right_width > 0) + group + usize::from(group > 0) * 4
+}
+
+/// How wide a run of doors paints: the buttons and the single spaces between.
+fn door_group_width(doors: &[Door]) -> usize {
+    doors.iter().map(|door| width(&door.text)).sum::<usize>() + doors.len().saturating_sub(1)
+}
+
 /// The header's right corner: the widest whole composition that fits `avail`.
 ///
+/// The build number, and nothing else: the name is already on the left of this
+/// row and in the window title, while a version is what a bug report needs. The
+/// corner degrades to its dot — the connection state — when even that is too
+/// wide.
+///
 /// ```text
-/// v1.2.3 ● future-tui  →  ● future-tui  →  v1.2.3 ●  →  ●
+/// v1.2.3 ●  →  ●
 /// ```
 fn header_right(palette: &Palette, data: &WorkbenchData, avail: usize) -> String {
     let point = widgets::status_dot(palette, data.connected);
-    let app = palette.dim(&data.app_name);
-    let version = if data.version.is_empty() {
-        None
-    } else {
-        Some(palette.dim(&format!("v{}", data.version)))
-    };
     let mut candidates: Vec<String> = Vec::new();
-    match &version {
-        Some(version) => {
-            candidates.push(format!("{point} {app} {version}"));
-            candidates.push(format!("{point} {app}"));
-            candidates.push(format!("{point} {version}"));
-        }
-        None => candidates.push(format!("{point} {app}")),
+    if !data.version.is_empty() {
+        candidates.push(format!(
+            "{point} {}",
+            palette.dim(&format!("v{}", data.version))
+        ));
     }
-    candidates.push(point.clone());
+    candidates.push(point);
     candidates
         .into_iter()
         .find(|candidate| width(candidate) <= avail)
@@ -612,7 +683,7 @@ fn header_right(palette: &Palette, data: &WorkbenchData, avail: usize) -> String
 ///
 /// The frame is text and a bitmap is not: the terminal places it at a cell, out
 /// of band. So the box asks for one here and the driver writes it after the
-/// frame (`run::paint_image`), which is the only place that owns the terminal.
+/// frame (`run::paint_images`), which is the only place that owns the terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImageRequest {
     /// A hash of the bytes that will be transmitted (the file, and the crop of
@@ -628,6 +699,18 @@ pub struct ImageRequest {
     /// The part of the image being shown, in pixels: the whole picture at 1x,
     /// the window a zoomed picture has been panned to otherwise.
     pub crop: (usize, usize, usize, usize),
+}
+
+/// A placement and the pixels it shows.
+///
+/// The two travel together because the driver needs both and the surface is the
+/// only side that has them at the same time: the frame knows the cells (it laid
+/// the rows out) and the data knows the picture. The pixels are an `Arc` inside
+/// [`ImagePixels`], so carrying them per frame copies nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlacedPicture {
+    pub request: ImageRequest,
+    pub pixels: image_view::ImagePixels,
 }
 
 /// The window of a picture that a zoomed, panned box shows, in pixels.
@@ -765,10 +848,10 @@ fn conversation(
         };
         (start, end)
     };
-    // `tab` can walk the cursor to a span far above or below the window, and a
+    // `tab` can walk the cursor to a stop far above or below the window, and a
     // highlight nobody can see is not a cursor: the transcript follows it, the
     // way a search result brings itself into view.
-    if let Some(row) = workbench.selected_link(data).map(|(_, span)| span.row) {
+    if let Some(row) = workbench.selected_stop_row(data) {
         let row = row.min(total.saturating_sub(1));
         let (start, end) = shown_window(offset);
         if row < start || row >= end {
@@ -781,9 +864,22 @@ fn conversation(
     workbench.set_chat_scroll(offset);
     let end = total.saturating_sub(offset);
     let start = end.saturating_sub(visible);
-    // The span the cursor is on, cloned: the paint below needs `workbench` for
-    // its hit regions, and the list it came from borrows it.
-    let selected = workbench.selected_link(data);
+    // The stop the cursor is on, and the half of it that is a link: the paint
+    // below needs `workbench` for its hit regions, and the lists it came from
+    // borrow it.
+    let selected_span = match workbench.selected_stop(data) {
+        Some(crate::workbench::ChatStop::Link(index)) => workbench
+            .link_spans(data)
+            .get(index)
+            .map(|span| (span.row, span.start, span.end)),
+        _ => None,
+    };
+    // A row under the cursor is marked the same way a link is: the glyphs it is
+    // made of reverse, so the highlight sits on the label rather than on a band.
+    let selected_row_marked = match workbench.selected_stop(data) {
+        Some(crate::workbench::ChatStop::Row(stop)) => Some((stop.row, stop.start, stop.end)),
+        _ => None,
+    };
     // Every span on a painted row answers a click, not just the one the cursor
     // is on: the pointer names its own target, and a link a reader can see but
     // not click is the one thing a terminal hyperlink cannot express (the
@@ -798,6 +894,13 @@ fn conversation(
             .map(|(index, span)| (index, span.clone()))
             .collect()
     };
+    // The transcript's own rows that answer a click, in the same window.
+    let visible_rows: Vec<crate::components::chat_area::RowStop> = data
+        .row_stops
+        .iter()
+        .filter(|stop| stop.row >= start && stop.row < end)
+        .cloned()
+        .collect();
     let badge = usize::from(start > 0);
     let shown = end.saturating_sub(start);
     let mut lines: Vec<String> = Vec::new();
@@ -811,9 +914,14 @@ fn conversation(
     let mut marked: Option<String>;
     for (index, line) in messages.iter().enumerate().skip(start).take(shown) {
         let mut text = line.as_str();
-        if let Some((_, span)) = &selected {
-            if span.row == index {
-                marked = Some(super::links::highlight(line, span.start, span.end));
+        if let Some((row, from, to)) = selected_row_marked {
+            if row == index {
+                marked = Some(super::links::highlight(line, from, to));
+                text = marked.as_deref().unwrap_or(line);
+            }
+        } else if let Some((row, from, to)) = selected_span {
+            if row == index {
+                marked = Some(super::links::highlight(line, from, to));
                 text = marked.as_deref().unwrap_or(line);
             }
         }
@@ -838,6 +946,23 @@ fn conversation(
                         1,
                     ),
                     format!("chat.link.{span_index}"),
+                );
+            }
+        }
+        for stop in visible_rows.iter().filter(|stop| stop.row == index) {
+            let from = stop.start.min(inner);
+            let to = stop.end.min(inner);
+            if to > from {
+                workbench.hit_map().push(
+                    Rect::new(
+                        area.x
+                            .saturating_add(padding as u16)
+                            .saturating_add(from as u16),
+                        y,
+                        (to - from) as u16,
+                        1,
+                    ),
+                    format!("chat.row.{}", stop.row),
                 );
             }
         }
@@ -1266,13 +1391,12 @@ fn sidebar_rows(
         );
         x = x.saturating_add(tab_width + 1);
     }
-    // A focused rail says which keys work from here: `shift+←→` the tabs,
-    // `shift+↑↓` the conversations, with the chat following the cursor. `↑↓`
-    // alone only moves the list cursor and `⏎` only opens what it stands on, so
-    // a reader who guessed wrong learns the chords here. It costs the list one
-    // row and saves the guesswork, so it is only shown while the rail actually
-    // owns the keys — and while the search line is open it names that surface's
-    // keys instead, because the chords above are not what the next key does.
+    // A focused rail says which keys work from here: `ctrl+↑↓` switch the
+    // conversation (the chat follows the cursor, from here or from the draft),
+    // `shift+←→` the tabs. `↑↓` alone move this list's cursor and `⏎` only opens
+    // what it stands on. A reader who guessed wrong learns the chords here; it
+    // costs the list one row and saves the guesswork, so it is only shown while
+    // the rail actually owns the keys.
     let footer = usize::from(workbench.sidebar_focus && area.h >= 4);
     let content = Rect::new(area.x, area.y + 1, area.w, area.h - 1 - footer as u16);
     let index = workbench.panel.index();
@@ -1282,11 +1406,7 @@ fn sidebar_rows(
     };
     let lang = workbench.lang;
     let panel = workbench.panel;
-    let filter = workbench.rail.clone();
-    // The search line lives in the row the panel already spends under its tabs,
-    // so it costs the list nothing: it is drawn while the rail has the keys (as
-    // the one thing that names `/`), and whenever a filter is in force.
-    let search_row = workbench.sidebar_focus || filter.open || !filter.query.is_empty();
+    let folded = workbench.rail.clone();
     let frame = workbench.row_spinner();
     let body = panels::render_with(
         panel,
@@ -1297,18 +1417,12 @@ fn sidebar_rows(
         workbench.hit_map(),
         lang,
         frame,
-        &filter,
-        search_row,
+        &folded,
         "sidebar.row.",
     );
     lines.extend(body);
     if footer == 1 {
-        let key = if workbench.rail.open {
-            Key::RailSearchHint
-        } else {
-            Key::RailHint
-        };
-        let hint = fit(t(lang, key), columns);
+        let hint = fit(t(lang, Key::RailHint), columns);
         lines.push(fit(&palette.dim(&hint), columns));
     }
     lines.truncate(area.h as usize);
@@ -1322,6 +1436,12 @@ fn sidebar_rows(
 }
 
 // ─── activity / status / hint ──────────────────────────────────────────────
+
+/// Cells the activity row keeps for what the session is doing — the spinner,
+/// the kind, and a short detail after it — before its usage tail may claim
+/// width. Without a floor the six-figure token counts would be the only text on
+/// a narrow row, and "what is happening" is the row's first job.
+const ACTIVITY_LEFT_CELLS: usize = 22;
 
 fn activity_row(
     workbench: &mut Workbench,
@@ -1363,9 +1483,9 @@ fn activity_row(
     }
     let right = widgets::rate(
         palette,
-        data.usage.tps,
-        data.usage.cache_pct,
+        &data.usage,
         workbench.lang,
+        columns.saturating_sub(ACTIVITY_LEFT_CELLS),
     );
     let right_width = width(&right);
     let left = fit(&left, columns.saturating_sub(right_width + 1));
@@ -1442,6 +1562,10 @@ fn hint_row(
     // where it went; the cells it frees are what keep both `ctrl+q` and
     // `ctrl+n` on the row in English at 120 columns.
     //
+    // The chat list (`ctrl+r 会话`) is not listed either: the header's own door
+    // beside the title spells `[ctrl+r] 会话`, so a hint here would be the same
+    // key taught twice on one screen. Its cells went to the entries above.
+    //
     // `esc` is not listed either: it is the key that leaves *whatever the reader
     // is in* — an overlay, the queue, a scrolled-back transcript — so a hint
     // that spelled it named one of the five things it does, and the boxes that
@@ -1453,7 +1577,6 @@ fn hint_row(
     // overlay's own inline table does.
     let wide = [
         (workbench.keys.key(Action::Sidebar), Key::HintSidebar),
-        (workbench.keys.key(Action::Sessions), Key::HintSessions),
         (workbench.keys.key(Action::Palette), Key::HintCommands),
         (workbench.keys.key(Action::Preferences), Key::HintSettings),
         (workbench.keys.key(Action::NewSession), Key::HintNewChat),
@@ -1584,15 +1707,35 @@ fn controls_row(
     inner: usize,
     images: bool,
 ) -> (String, Vec<(&'static str, u16)>) {
+    // The width is measured the way the row is laid out — display columns,
+    // where a Hanzi is two cells. Counting `chars()` put every region left of
+    // its own label (`[缩小]` claimed four cells and paints six) and each later
+    // button drifted further: in Chinese the row looked live, and a click on
+    // `[上一张]` landed on the counter beside it and did nothing at all.
     fn segment(
         row: &mut String,
         regions: &mut Vec<(&'static str, u16)>,
+        inner: usize,
         id: &'static str,
         plain: &str,
         painted: String,
     ) {
-        row.push_str(&painted);
-        regions.push((id, plain.chars().count().max(1) as u16));
+        let painted_w = width(plain).max(1);
+        let used: usize = regions.iter().map(|(_, w)| usize::from(*w)).sum();
+        let room = inner.saturating_sub(used);
+        if room == 0 {
+            // Clipped off the box: a target for text nobody can see is a trap.
+            return;
+        }
+        if painted_w <= room {
+            row.push_str(&painted);
+            regions.push((id, painted_w as u16));
+        } else {
+            // Only the part that fits is painted, so only that part is a
+            // target — and it is a whole one, not half a Hanzi.
+            row.push_str(&ansi::clip(&painted, room));
+            regions.push((id, room as u16));
+        }
     }
 
     let lang = workbench.lang;
@@ -1605,6 +1748,7 @@ fn controls_row(
     segment(
         &mut row,
         &mut regions,
+        inner,
         "overlay.surface",
         " ",
         " ".to_string(),
@@ -1615,6 +1759,7 @@ fn controls_row(
         segment(
             &mut row,
             &mut regions,
+            inner,
             super::ZOOM_OUT,
             &out_label,
             if out_live {
@@ -1627,6 +1772,7 @@ fn controls_row(
         segment(
             &mut row,
             &mut regions,
+            inner,
             "overlay.surface",
             &zoom_label,
             palette.dim(&zoom_label),
@@ -1636,6 +1782,7 @@ fn controls_row(
         segment(
             &mut row,
             &mut regions,
+            inner,
             super::ZOOM_IN,
             &in_label,
             if in_live {
@@ -1649,6 +1796,7 @@ fn controls_row(
         segment(
             &mut row,
             &mut regions,
+            inner,
             super::ZOOM_FIT,
             &fit_label,
             if fit_live {
@@ -1660,6 +1808,7 @@ fn controls_row(
         segment(
             &mut row,
             &mut regions,
+            inner,
             "overlay.surface",
             "   ",
             "   ".to_string(),
@@ -1671,6 +1820,7 @@ fn controls_row(
         segment(
             &mut row,
             &mut regions,
+            inner,
             super::PREV_IMAGE,
             &prev_label,
             if prev_live {
@@ -1683,6 +1833,7 @@ fn controls_row(
         segment(
             &mut row,
             &mut regions,
+            inner,
             "overlay.surface",
             &counter,
             palette.dim(&counter),
@@ -1692,6 +1843,7 @@ fn controls_row(
         segment(
             &mut row,
             &mut regions,
+            inner,
             super::NEXT_IMAGE,
             &next_label,
             if next_live {
@@ -1701,34 +1853,10 @@ fn controls_row(
             },
         );
     }
-    let visible: String = {
-        // Clip to the box: the frame is text, and a row longer than the box
-        // would push its own border off the edge.
-        let mut width = 0usize;
-        let mut out = String::new();
-        let mut escape = false;
-        for ch in row.chars() {
-            if escape {
-                out.push(ch);
-                if ch == 'm' {
-                    escape = false;
-                }
-                continue;
-            }
-            if ch == '\x1b' {
-                escape = true;
-                out.push(ch);
-                continue;
-            }
-            if width >= inner {
-                break;
-            }
-            width += 1;
-            out.push(ch);
-        }
-        out
-    };
-    (visible, regions)
+    // Clip to the box: the frame is text, and a row longer than the box would
+    // push its own border off the edge. `fit` clips by display columns, which
+    // is what the segments above were measured in.
+    (fit(&row, inner), regions)
 }
 
 fn paint_box(
@@ -2659,9 +2787,8 @@ fn files_box(
             lang,
             frame,
             // A tree is filtered by nothing but its own expansion: the rail's
-            // search belongs to its two conversation panels.
-            &panels::Filter::default(),
-            false,
+            // folds belong to its two conversation panels.
+            &panels::Folded::default(),
             "files.row.",
         )
     };
@@ -3026,15 +3153,18 @@ fn preview_box(
                 let crop = crop_of(pixels, cells_w, cells_h, pan, shown_w, shown_h);
                 let left = (inner.saturating_sub(shown_w) / 2) as u16;
                 let top = (picture_h.saturating_sub(shown_h) / 2) as u16;
-                workbench.image_request = Some(ImageRequest {
-                    // The *source* is what a repaint must not retransmit; the
-                    // placement is the part that is cheap to repeat.
-                    source: image_source_key(path, pixels, crop),
-                    x: geometry.left + 1 + left,
-                    y: geometry.top + 2 + top,
-                    columns: shown_w as u16,
-                    rows: shown_h as u16,
-                    crop,
+                workbench.image_requests.push(PlacedPicture {
+                    request: ImageRequest {
+                        // The *source* is what a repaint must not retransmit; the
+                        // placement is the part that is cheap to repeat.
+                        source: image_source_key(path, pixels, crop),
+                        x: geometry.left + 1 + left,
+                        y: geometry.top + 2 + top,
+                        columns: shown_w as u16,
+                        rows: shown_h as u16,
+                        crop,
+                    },
+                    pixels: pixels.clone(),
                 });
                 // The box keeps its own background under the bitmap: the frame
                 // is text, and the picture is a layer above it.
@@ -3550,7 +3680,7 @@ fn panel_box(
         scroll: workbench.panel_scroll[index],
         selected: workbench.sidebar_index,
     };
-    let filter = workbench.rail.clone();
+    let folded = workbench.rail.clone();
     let frame = workbench.row_spinner();
     let body = panels::render_with(
         panel,
@@ -3561,11 +3691,7 @@ fn panel_box(
         workbench.hit_map(),
         lang,
         frame,
-        &filter,
-        // The box is where the search is reachable on a terminal too narrow for
-        // a rail, so its line is always on screen: the box has the room, and one
-        // row spent naming the key is what teaches it.
-        true,
+        &folded,
         "sidebar.row.",
     );
     let geometry = box_geometry(w, h, PANEL_WIDTH, body.len());
@@ -3614,7 +3740,6 @@ mod tests {
 
     fn data(version: &str) -> WorkbenchData {
         WorkbenchData {
-            app_name: "future-tui".into(),
             version: version.into(),
             connected: true,
             ..WorkbenchData::default()
@@ -3988,21 +4113,25 @@ mod tests {
     }
 
     #[test]
-    fn the_header_corner_degrades_piece_by_piece_and_never_cuts_a_word() {
+    fn the_header_corner_is_the_build_number_and_degrades_to_its_dot() {
         let data = data("0.0.2-9f0a8b76c+local");
         // Every width lands on one of the whole candidates, never on its
-        // prefix: `● future-tui v0.0.2-9f0a8…` in the corner is exactly what
-        // the piecewise ladder exists to prevent.
+        // prefix: `● v0.0.2-9f0a8b…` in the corner is exactly what the piecewise
+        // ladder exists to prevent.
         let full = plain(&header_right(&FUTURE_DARK, &data, 60));
-        assert!(full.contains("future-tui"));
-        assert!(full.contains("v0.0.2-9f0a8b76c+local"));
-
-        let app_only = plain(&header_right(&FUTURE_DARK, &data, 20));
-        assert!(app_only.contains("future-tui"), "{app_only:?}");
-        assert!(!app_only.contains("0.0.2"), "{app_only:?}");
+        assert!(full.contains("v0.0.2-9f0a8b76c+local"), "{full:?}");
+        // The binary's name is not repeated here: the header's left end already
+        // says what this is, and the corner is the one place a build number can
+        // live without costing the conversation its name.
+        assert!(!full.contains("future-tui"), "{full:?}");
 
         let dot = plain(&header_right(&FUTURE_DARK, &data, 3));
         assert_eq!(dot, "●");
+
+        // A build with no version string has nothing to say but its state.
+        let mut bare = data.clone();
+        bare.version.clear();
+        assert_eq!(plain(&header_right(&FUTURE_DARK, &bare, 60)), "●");
 
         for avail in 0..80usize {
             let corner = plain(&header_right(&FUTURE_DARK, &data, avail));
@@ -4012,15 +4141,123 @@ mod tests {
             );
             assert!(width(&corner) <= avail, "avail {avail}: {corner:?}");
         }
-        // The whole header keeps the corner at the seam too.
+        // The whole header keeps the corner at the seam too: wide enough for the
+        // doors, the brand and the build number, it ends on the build number.
         let mut workbench = Workbench::new();
-        let rows = workbench.render(&data, 90, 24);
+        let rows = workbench.render(&data, 140, 24);
         let row = plain(&rows[0]);
         assert!(
             row.trim_end().ends_with("v0.0.2-9f0a8b76c+local"),
             "{row:?}"
         );
         assert!(!row.contains("已"), "{row:?}");
+        // Ten cells narrower, the corner is what pays: the doors and the brand
+        // stay, the build number goes, and nothing is cut in half on the way.
+        let rows = workbench.render(&data, 90, 24);
+        let row = plain(&rows[0]);
+        assert!(!row.contains("v0.0.2"), "{row:?}");
+        assert!(row.trim_end().ends_with('●'), "{row:?}");
+    }
+
+    /// The header's one row is one budget, and a button is what it protects: the
+    /// whole group is drawn with as much decoration as fits, then with fewer
+    /// doors — the chat list last, because the rail is a keyboard surface a narrow
+    /// frame does not show beside the conversation.
+    #[test]
+    fn the_header_gives_up_the_version_and_the_brand_before_the_chat_list() {
+        let doors = [
+            Door {
+                id: "header.sessions",
+                text: "x".repeat(13),
+            },
+            Door {
+                id: "header.files",
+                text: "x".repeat(13),
+            },
+            Door {
+                id: "header.git",
+                text: "x".repeat(12),
+            },
+        ];
+        let corner = "● v0.11.0".to_string();
+        let dot = "●".to_string();
+        let ids = |kept: &[Door]| kept.iter().map(|door| door.id).collect::<Vec<_>>();
+        for (columns, expect, brand, version) in [
+            (
+                120usize,
+                vec!["header.sessions", "header.files", "header.git"],
+                true,
+                true,
+            ),
+            (
+                89,
+                vec!["header.sessions", "header.files", "header.git"],
+                true,
+                true,
+            ),
+            (
+                88,
+                vec!["header.sessions", "header.files", "header.git"],
+                true,
+                false,
+            ),
+            (
+                70,
+                vec!["header.sessions", "header.files", "header.git"],
+                false,
+                false,
+            ),
+            (60, vec!["header.sessions", "header.files"], false, false),
+            (50, vec!["header.sessions"], false, false),
+            (40, Vec::new(), false, false),
+        ] {
+            let (right, kept, has_brand) =
+                fit_row(corner.clone(), dot.clone(), &doors, columns, 24, 11);
+            assert_eq!(ids(&kept), expect, "{columns}");
+            assert_eq!(has_brand, brand, "{columns}");
+            assert_eq!(right == corner, version, "{columns}");
+        }
+        // Monotone in width, and always a prefix of the priority order: the one
+        // way this can drift is a rung that costs more than the one below it,
+        // which would make a wider terminal lose a button.
+        let mut seen = (0usize, false, false);
+        for columns in 0..=160usize {
+            let (right, kept, brand) =
+                fit_row(corner.clone(), dot.clone(), &doors, columns, 24, 11);
+            assert!(kept.len() >= seen.0, "{columns}: lost a door");
+            assert!(!seen.1 || brand, "{columns}: lost the brand");
+            assert!(!seen.2 || right == corner, "{columns}: lost the version");
+            assert_eq!(ids(&kept), ids(&doors[..kept.len()]), "{columns}");
+            seen = (kept.len(), brand, right == corner);
+        }
+    }
+
+    #[test]
+    fn the_activity_row_pays_for_its_usage_tail_out_of_its_own_width() {
+        let mut workbench = Workbench::new();
+        workbench.set_language(crate::workbench::i18n::LanguagePreference::Zh);
+        let data = crate::workbench::demo::chat();
+        for columns in [120usize, 80, 60, 40, 24] {
+            let row = plain(&activity_row(&mut workbench, &data, &FUTURE_DARK, columns)[0]);
+            assert_eq!(width(&row), columns, "{columns}: {row:?}");
+            // The hit rate is the tail's floor at every width: it is the one
+            // usage number no panel repeats.
+            assert!(row.trim_end().ends_with("命中 96%"), "{columns}: {row:?}");
+        }
+        // Wide enough for all three counts, in the order they are read.
+        let wide = plain(&activity_row(&mut workbench, &data, &FUTURE_DARK, 120)[0]);
+        assert!(
+            wide.contains("输入 812.4k · 输出 24.8k · 缓存 780.0k · 命中 96%"),
+            "{wide:?}"
+        );
+        // Narrow: the counts step aside rather than squeezing out what the
+        // session is doing.
+        let narrow = plain(&activity_row(&mut workbench, &data, &FUTURE_DARK, 40)[0]);
+        assert!(!narrow.contains("输入"), "{narrow:?}");
+        assert!(
+            narrow.contains("idle") || narrow.contains('·'),
+            "{narrow:?}"
+        );
     }
 
     #[test]
@@ -4052,14 +4289,17 @@ mod tests {
             Some("? 帮助"),
             "{wide:?}"
         );
+        // The chat list is the header's to teach: the door beside the title
+        // spells it, so the hint row leaves it out.
+        assert!(!wide.contains("ctrl+r"), "{wide:?}");
         // Narrow keeps the head of the row whole and drops the tail, and never
         // cuts a hint in half. Measured at a width where the dropped entry is
         // gone in *both* languages: the Chinese labels are half as wide as the
-        // English ones, so a 40-column row that ends after `ctrl+r` in English
-        // still reaches `ctrl+p` in Chinese.
+        // English ones, so a 40-column row that ends after `ctrl+p` in English
+        // still reaches it in Chinese.
         let narrow = plain(&hint_row(&workbench, &FUTURE_DARK, 40, true)[0]);
         assert!(narrow.contains("ctrl+d"), "{narrow:?}");
-        assert!(narrow.contains("ctrl+r"), "{narrow:?}");
+        assert!(narrow.contains("ctrl+p"), "{narrow:?}");
         let narrow = plain(&hint_row(&workbench, &FUTURE_DARK, 24, true)[0]);
         assert!(narrow.contains("ctrl+d"), "{narrow:?}");
         assert!(

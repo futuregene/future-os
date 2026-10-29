@@ -318,6 +318,16 @@ pub struct SessionSummary {
     // extra field carried by list_sessions (first message preview)
     #[serde(default)]
     pub first_message: Option<String>,
+    /// How many user turns the session has taken.
+    ///
+    /// A session is listed from the moment a client creates it, before its
+    /// first prompt, and zero is how the agent says "opened, never spoken in"
+    /// — the rail drops those rows (see `workbench::live::is_conversation`).
+    /// Optional because a peer that predates the field omits it, and an absent
+    /// count is "unknown", not zero: the rail must not hide a whole history
+    /// because an older agent left the field out.
+    #[serde(default)]
+    pub query_count: Option<i64>,
 }
 
 // ============================================================================
@@ -682,6 +692,25 @@ mod tests {
         assert_eq!(summary.created_at_ms, 1786030800000);
         assert_eq!(summary.session_name.as_deref(), Some("hi"));
         assert_eq!(summary.is_streaming, Some(true));
+        assert_eq!(summary.query_count, Some(3));
+    }
+
+    /// The rail drops a session the agent reports as never spoken in, so the
+    /// count it decides by has to survive the wire — and a peer that omits it
+    /// must read as "unknown", not as zero, or an older agent's whole history
+    /// would be filtered out.
+    #[test]
+    fn a_summary_without_a_query_count_is_unknown_not_empty() {
+        let summary: SessionSummary = serde_json::from_str(
+            r#"{"id":"s1","sessionName":"hi","model":"m","cwd":"/tmp","updatedAtMs":1}"#,
+        )
+        .expect("parse");
+        assert_eq!(summary.query_count, None);
+        let empty: SessionSummary = serde_json::from_str(
+            r#"{"id":"s2","sessionName":null,"model":"m","cwd":"/tmp","updatedAtMs":1,"queryCount":0}"#,
+        )
+        .expect("parse");
+        assert_eq!(empty.query_count, Some(0));
     }
 
     #[test]

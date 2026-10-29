@@ -183,7 +183,7 @@ fn import_status(db: &Connection, id: &str) -> Result<Option<String>> {
 
 impl SqliteStore {
     pub fn import_records(&self) -> Result<Vec<ImportRecord>> {
-        self.db.call(|db| {
+        self.db.read(|db| {
             let mut statement = db.prepare("SELECT session_id,status,error_file,error_line,error_kind,warnings FROM legacy_imports ORDER BY session_id")?;
             let records = statement.query_map([], |row| Ok(ImportRecord {
                 session_id: row.get(0)?, status: row.get(1)?, error_file: row.get(2)?,
@@ -379,7 +379,7 @@ impl SqliteStore {
             cancellation.check()?;
             let cancellation = cancellation.clone();
             let retrying = retry.is_some();
-            self.db.call(move |db| {
+            self.db.call_as("legacy_import", move |db| {
                 // Reads the destination before it writes: take the write lock at
                 // BEGIN, or a concurrent connection's commit invalidates this
                 // snapshot and the upgrade fails instantly (SQLITE_BUSY_SNAPSHOT).
@@ -425,7 +425,7 @@ impl SqliteStore {
         }
         cancellation.check()?;
         let cancellation = cancellation.clone();
-        self.db.call(move |db| {
+        self.db.call_as("legacy_import", move |db| {
             cancellation.check()?;
             db.execute(
                 "INSERT OR IGNORE INTO storage_meta VALUES ('legacy_complete','1')",

@@ -55,6 +55,14 @@ context or source index. `stream_contexts_entry/tool/key` find source identities
 `stream_changes_context` finds their event types and cursors. Partial source indices cover only the
 corresponding event kinds rather than every delta. Source lookups filter contexts before changes.
 
+Teardown is a different access pattern from all of the above: deleting a conversation cascades
+`stream_runs` → `stream_symbols`, and SQLite resolves every child key for each deleted symbol row. Only an
+index whose leading column *is* that key can serve those lookups, and the scoped indices lead with
+`stream_id`, so `stream_body_owners(key_id)` and one plain index per context symbol key exist as well.
+Without them each symbol deletion scans the whole child table — measured 2026-10-29, tearing down one
+30k-change conversation spent 113 s of CPU in those scans, inside the store's single ordered writer,
+which held every other session's writes (and a user's stop) behind it for 71 s.
+
 ## Changes and ranges
 
 `stream_changes` stores stream/context IDs, first/last cursor, explicit kind code, remainder JSON,

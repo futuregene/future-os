@@ -38,6 +38,15 @@ pub struct UsageData {
     pub cost: f64,
     /// Cache hit rate, 0..=100.
     pub cache_pct: u8,
+    /// Prompt tokens the session has been billed for, cumulative across its
+    /// requests. This is the provider's `prompt_tokens`, so the cached reads
+    /// below are *part of* it — that is what makes the hit rate checkable by
+    /// eye (`cache_read_tokens / input_tokens`).
+    pub input_tokens: u64,
+    /// Completion tokens the session has been billed for, cumulative.
+    pub output_tokens: u64,
+    /// The cached share of `input_tokens`, cumulative.
+    pub cache_read_tokens: u64,
     /// Output tokens per second of the run in flight (0 when idle).
     pub tps: f64,
 }
@@ -426,10 +435,13 @@ pub enum PanelId {
 impl PanelId {
     /// The panels the rail's tab strip offers, in tab order.
     ///
-    /// Every key that walks tabs (`←`/`→` on the rail, `shift+←/→` anywhere,
+    /// Every key that walks tabs (`shift+←/→` anywhere,
     /// [`Action::PanelPrev`](super::preferences::Action::PanelPrev)) walks this
     /// list, so 文件 cannot be reached by stepping past 工作区 — the panel has its
-    /// own door (`/files`, its own shortcut, the header's button).
+    /// own door (`/files`, its own shortcut, the header's button). The plain
+    /// arrows are the caret's, never the tab strip's, even while the rail has
+    /// the keys: the prompt stays on screen and a reader standing in it reads
+    /// `←`/`→` as movement inside their draft.
     pub const TABS: [PanelId; 2] = [PanelId::Recent, PanelId::Workspaces];
 
     /// Every panel id, tabs first. The scroll slots are indexed by this, so the
@@ -502,7 +514,6 @@ impl PanelId {
 /// Everything the workbench paints.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WorkbenchData {
-    pub app_name: String,
     pub version: String,
     pub connected: bool,
     pub session: SessionMeta,
@@ -535,6 +546,12 @@ pub struct WorkbenchData {
     /// Shared rather than owned: one keystroke composes the frame several times
     /// and a long transcript must not be copied for each pass.
     pub messages: std::sync::Arc<[String]>,
+    /// The transcript's own `tab` stops: the rows that open something — a
+    /// settled reply's folded process, a burst of work, a tool call's body, a
+    /// reasoning block's text (see `chat_area::RowStop`). Rows are indexes into
+    /// `messages`, which is why they travel with it: the walk, the highlight
+    /// and the click regions have to name the same lines the frame painted.
+    pub row_stops: Vec<crate::components::chat_area::RowStop>,
     pub input: InputView,
     pub activity: Activity,
     /// A failed request or command, shown in place of the hint row until

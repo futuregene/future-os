@@ -104,7 +104,7 @@ fn held_lock_rejects_startup_before_database_initialization() {
 }
 
 #[test]
-fn a_stalled_client_fails_stop_without_releasing_the_lock_or_restarting() {
+fn a_stalled_client_cannot_hold_the_stop_or_the_instance() {
     run_case("stalled");
 }
 
@@ -672,6 +672,11 @@ fn host_fixture() {
         return;
     }
     if case == "stalled" {
+        // A connected client that never closes is exactly what the drain's last
+        // stage waits for. It may not outlast the stop: measured 2026-10-28, this
+        // state failed a stop at "RPC listener and streams", retained instance
+        // ownership for the life of the Desktop process, and left the machine
+        // with no Agent for ~40 minutes while every scheduled task failed.
         let client = rpc
             .block_on(future_rpc::connection::connect_verified(
                 "auto",
@@ -681,20 +686,44 @@ fn host_fixture() {
             ))
             .unwrap();
         let started = Instant::now();
-        let error = host.stop().unwrap_err().to_string();
-        assert!(error.contains("RPC listener"), "{error}");
-        assert!(started.elapsed() < STOP_TIMEOUT);
-        assert!(root.join("agent/agent-instance.json").exists());
-        assert!(host.start("auto".into()).is_err());
-        assert!(host.recover("auto".into()).is_err());
-        assert!(host.recovery_requires_restart());
+        host.stop().unwrap();
+        let stopped = started.elapsed();
+        println!("STALLED-STOP elapsed_ms={}", stopped.as_millis());
+        assert!(
+            stopped < STOP_TIMEOUT,
+            "the stop stays inside its own budget: {stopped:?}"
+        );
+        assert_eq!(host.phase(), Phase::Stopped);
+        assert!(
+            !host.recovery_requires_restart(),
+            "a client that stayed connected is not unfinished cleanup"
+        );
+        assert!(!root.join("agent/agent-instance.json").exists());
+        // The lock another process needs: a released instance is claimable.
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open(root.join("agent/agent-instance.lock"))
             .unwrap();
-        assert!(fs2::FileExt::try_lock_exclusive(&file).is_err());
+        assert!(
+            fs2::FileExt::try_lock_exclusive(&file).is_ok(),
+            "the released instance lock must be claimable again"
+        );
+        fs2::FileExt::unlock(&file).unwrap();
+        // And this process brings a replacement up on the same home, with the
+        // old client still connected, without restarting anything.
+        let restart = Instant::now();
+        host.start("auto".into()).unwrap();
+        let ready_after = restart.elapsed();
+        println!("STALLED-RESTART elapsed_ms={}", ready_after.as_millis());
+        assert_eq!(host.phase(), Phase::Ready);
+        assert!(host.owns_agent());
+        assert!(
+            ready_after < Duration::from_secs(30),
+            "a replacement Agent starts promptly: {ready_after:?}"
+        );
         drop(client);
+        host.stop().unwrap();
         return;
     }
     // Let the client transport close before testing an ordinary complete drain.

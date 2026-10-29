@@ -1041,9 +1041,11 @@ mod http_tests {
 
     #[test]
     fn pairing_path_requires_a_home() {
-        let _home = HomeGuard::new("pairing-no-home");
-        std::env::remove_var("HOME");
-        std::env::remove_var("USERPROFILE");
+        let home = HomeGuard::new("pairing-no-home");
+        // "No home" has to mean *no root at all*: `FUTURE_HOME` names the
+        // FutureOS root as surely as `HOME` does, so withdrawing only the user
+        // home would leave every assertion below reading this fixture's root.
+        home.withdraw_home();
         assert!(pairing_path().is_err());
         assert!(load_creds().is_none());
         assert!(clear_creds().is_err());

@@ -342,6 +342,19 @@ export class RemoteClient {
     return this.state === "failed" || this.state === "revoked";
   }
 
+  /**
+   * The lifecycle state a runtime reads before choosing a recovery.
+   *
+   * `recoverNow` deliberately returns immediately for a terminal client, so a
+   * runtime must not mistake `failed` for something a probe can heal: the state
+   * machine keeps that client in `failed` forever and every request answers
+   * `communication_frozen`. Its own answer is "a manual reconnect creates a
+   * fresh RemoteClient", which is the branch the runtime has to take.
+   */
+  get connectionState(): ConnectionState {
+    return this.state;
+  }
+
   /** Keep a category bounded even when a broken connection alternates error
    * shapes and would otherwise create a fresh episode for every retry. */
   private permitFailureLog(category: string): boolean {

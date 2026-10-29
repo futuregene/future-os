@@ -3,8 +3,8 @@ use future_remote_server::services::ReplySink;
 use serde_json::{json, Value};
 
 use super::{
-    entries_vec, paginate_events, paginate_items_with_cap, paginate_messages,
-    prepare_backward_entries_page_with_cap, reply, DEFAULT_MESSAGE_PAGE_LIMIT,
+    entries_vec, mark_short_backward_page, paginate_events, paginate_items_with_cap,
+    paginate_messages, prepare_backward_entries_page_with_cap, reply, DEFAULT_MESSAGE_PAGE_LIMIT,
 };
 
 /// The cursor meaning "the page at the end of the session". Clients open a
@@ -143,6 +143,14 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                             !cmd.chunked_read,
                             enforce_page_bytes,
                         );
+                        // The byte budget is only one of the two bounds that can
+                        // leave a page short of the exchanges the client asked
+                        // for; the Agent's own row and byte limits are the other,
+                        // and they cut mid-exchange. Say so here, once, for any
+                        // client that assembles its window from several pages.
+                        if !cmd.untrimmed {
+                            mark_short_backward_page(&mut page, limit);
+                        }
                         if cmd.untrimmed {
                             page["untrimmed"] = json!(true);
                         }

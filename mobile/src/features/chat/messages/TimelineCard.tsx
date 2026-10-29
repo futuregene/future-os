@@ -191,7 +191,8 @@ function TimelineCardView({
             </View>
           ) : null}
           {/* Desktop parity: the retry/continue row sits right below the bubble
-              content, above the copy/stats footer. */}
+              content, above the copy/stats footer. It asks nothing about *why*
+              the reply stopped — see `canRecoverMessage`. */}
           {canRecoverMessage(item, isLatestAssistant ? item.id : null) && (
             <View style={styles.recoveryRow}>
               <Button

@@ -280,6 +280,9 @@ pub enum Key {
     UsageContext,
     UsageCost,
     UsageCache,
+    RateInput,
+    RateOutput,
+    RateCacheTokens,
     UsageOutput,
     PanelEmptyTodo,
     PanelGoalLabel,
@@ -288,7 +291,6 @@ pub enum Key {
     PanelEmptyGoalTodo,
     PanelEmptyJobs,
     PanelEmptySessions,
-    PanelEmptySearch,
     PanelEmptySkills,
     // ── the picker overlay ────────────────────────────────────────────
     PickerTitleModel,
@@ -327,9 +329,6 @@ pub enum Key {
     ModeAutoDesc,
     ModeOffDesc,
     RailHint,
-    /// The search line's placeholder, and the keys it answers while it is open.
-    RailSearch,
-    RailSearchHint,
     // ── the files panel (its own overlay, not a rail tab) ──────────
     FilesHint,
     FilesNoWorkspace,
@@ -637,6 +636,9 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         UsageContext => ("上下文", "Context"),
         UsageCost => ("成本", "Cost"),
         UsageCache => ("缓存命中", "Cache hit"),
+        RateInput => ("输入 {}", "in {}"),
+        RateOutput => ("输出 {}", "out {}"),
+        RateCacheTokens => ("缓存 {}", "cache {}"),
         UsageOutput => ("输出", "Output"),
         PanelEmptyTodo => ("没有待办", "no todos"),
         PanelGoalLabel => ("目标", "goal"),
@@ -648,7 +650,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         PanelEmptyGoalTodo => ("这个目标还没有待办", "this goal has no todos yet"),
         PanelEmptyJobs => ("没有定时任务", "no scheduled jobs"),
         PanelEmptySessions => ("没有会话", "no sessions"),
-        PanelEmptySearch => ("没有匹配的会话", "no matching sessions"),
         PanelEmptySkills => ("没有技能", "no skills"),
 
         PickerTitleModel => ("模型", "Models"),
@@ -743,13 +744,8 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         HintNewChat => ("新会话", "New Chat"),
         HintSettings => ("偏好设置", "Preferences"),
         RailHint => (
-            "shift+←→ 页签 · shift+↑↓ 切换会话",
-            "shift+←→ tabs · shift+↑↓ switches session",
-        ),
-        RailSearch => ("搜索会话", "Search sessions"),
-        RailSearchHint => (
-            "输入筛选 · ⏎ 保留 · esc 清除",
-            "type to filter · enter keeps · esc clears",
+            "ctrl+↑↓ 切换会话 · shift+←→ 页签",
+            "ctrl+↑↓ switches session · shift+←→ tabs",
         ),
         FilesHint => (
             "↑↓ 选择 · ⏎ 打开 · ⌫ 上一层 · r 刷新 · esc 关闭",
@@ -923,7 +919,7 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ),
         CmdMouse => ("切换鼠标捕获，便于选择复制", "Toggle mouse capture for native selection"),
         QueueTitle => ("排队消息", "Queued prompts"),
-        QueueHint => ("↑↓ 选择 · x 取消 · r/⏎ 取消并取回草稿 · esc 关闭 · ctrl+x 停止当前运行", "↑↓ choose · x cancels · r/enter recalls to draft · esc closes · ctrl+x stops the active run"),
+        QueueHint => ("↑↓ 选择 · x 取消 · r/⏎ 取消并取回草稿 · esc 关闭 · ctrl+c 停止当前运行", "↑↓ choose · x cancels · r/enter recalls to draft · esc closes · ctrl+c stops the active run"),
         QueueEmpty => ("没有排队消息", "No queued prompts"),
         QueueCancelled => ("已取消排队消息", "Queued prompt cancelled"),
         QueueRecalled => ("已取消排队消息并取回草稿", "Queued prompt cancelled and recalled to draft"),
@@ -950,8 +946,8 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         CmdModel => ("选择模型", "Choose a model"),
         CmdLanguage => ("界面语言", "Interface language"),
         CmdReplyDetail => (
-            "过程展示：全展开 / 收起工具与思考 / 只留回答",
-            "Process detail: all / fold the work / answer only",
+            "过程展示：只留回答 / 全部过程",
+            "Process detail: answer only / the whole process",
         ),
         CmdToolOutput => ("工具调用正文：展开 / 收起", "Tool call bodies: expand / collapse"),
         CmdWorkspace => ("workspace 目录", "Workspace directory"),
@@ -995,8 +991,8 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ),
         HelpKeySidebar => ("侧栏：打开 / 聚焦 / 收起", "Sidebar: show / focus / hide"),
         HelpKeyFocus => (
-            "在对话里逐个选中链接与图片，⏎ 打开",
-            "Step through the conversation's links and pictures, enter opens one",
+            "在对话里逐个选中链接与图片，⏎ 打开、再按一次收起",
+            "Step through the conversation's links and pictures: enter opens one, enter again folds it",
         ),
         HelpKeyScroll => ("滚动聊天，或侧栏列表", "Scroll the chat, or the sidebar's list"),
         HelpKeyPage => ("整页滚动聊天", "Scroll the chat a page at a time"),
@@ -1011,8 +1007,8 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ),
         HelpKeyHelp => ("这份帮助", "This help"),
         HelpKeyReplyDetail => (
-            "过程展示：全展开 → 收起工具与思考 → 只留回答",
-            "Process detail: all → fold the work → answer only",
+            "过程展示：只留回答 / 全部过程（工具与思考仍收起）",
+            "Process detail: answer only / the whole process (calls and thoughts stay folded)",
         ),
         HelpKeyReplyDetailSet => ("同上，直接设置", "The same, set directly"),
         HelpKeyPrevSession => ("上一个会话（侧栏随之切换）", "Previous conversation (the chat follows)"),
@@ -1149,7 +1145,7 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         JobPaused => ("暂停", "paused"),
         JobScheduled => ("已排期", "scheduled"),
         JobManual => ("手动", "manual"),
-        CacheLabel => ("缓存 {}%", "cache {}%"),
+        CacheLabel => ("命中 {}%", "hit {}%"),
     }
 }
 
@@ -1386,7 +1382,6 @@ mod tests {
             PanelEmptyGoalTodo,
             PanelEmptyJobs,
             PanelEmptySessions,
-            PanelEmptySearch,
             PanelEmptySkills,
             PickerTitleModel,
             PickerTitleTheme,
@@ -1424,8 +1419,6 @@ mod tests {
             ModeAutoDesc,
             ModeOffDesc,
             RailHint,
-            RailSearch,
-            RailSearchHint,
             FilesHint,
             FilesNoWorkspace,
             LangSystem,
@@ -1680,6 +1673,9 @@ mod tests {
             JobScheduled,
             JobManual,
             CacheLabel,
+            RateInput,
+            RateOutput,
+            RateCacheTokens,
         ]
     };
 }

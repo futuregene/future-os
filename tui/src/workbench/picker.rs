@@ -20,11 +20,11 @@
 //!   same rows it painted, so a click cannot land on a row that is not there.
 
 use crate::approval_mode::ApprovalMode;
-use crate::workbench::ansi::{fit, width};
+use crate::workbench::ansi::{align_right, fit, width};
 use crate::workbench::i18n::{self, t, Key, Language, LanguagePreference};
 use crate::workbench::state::{
-    fallback_thinking_levels, model_reference, thinking_index_in, ModelChoice, WorkbenchData,
-    DEFAULT_THINKING_LEVEL_NAME,
+    fallback_thinking_levels, model_reference, thinking_index_in, ModelChoice, SessionRow,
+    WorkbenchData, DEFAULT_THINKING_LEVEL_NAME,
 };
 use crate::workbench::theme::{self, Palette};
 
@@ -35,6 +35,15 @@ use crate::workbench::theme::{self, Palette};
 /// the one character no path can carry, so a row keyed by a directory the reader
 /// typed can never be mistaken for this one.
 pub const CHAT_WORKSPACE_KEY: &str = "\0chat";
+
+/// The widest workspace column the session list reserves for itself: room for
+/// the long names a checkout directory can have (`session-supervisor`), short
+/// enough that the title keeps the row. A longer name is ellipsised rather than
+/// allowed to push the dot out of its column.
+const SESSION_WORKSPACE_MAX: usize = 20;
+
+/// The cells ` · ` takes between the two columns of a session row's tail.
+const SEPARATOR_WIDTH: usize = 3;
 
 /// Which picker is open. The id is what `Overlay::Picker` carries and what the
 /// hit regions name.
@@ -529,14 +538,49 @@ pub fn rows(
             }
         }
         PickerKind::Sessions => {
-            for session in &data.sessions {
-                if !matches(&[&session.title, &session.workspace, &session.id]) {
-                    continue;
-                }
+            // The tail is a two-column table, `workspace · age`, and the
+            // columns are padded out *here* rather than by the painter: the
+            // painter fits a row's whole tail into one cell, so a bare
+            // `format!("{workspace} · {age}")` left the dot wherever the
+            // workspace name happened to end, and `now` (three cells) against
+            // `1m` (two) moved it again on the age side. Padding both to what
+            // the listed rows need puts every dot in one column and every age
+            // in the next, which is what makes the list scannable.
+            let listed: Vec<&SessionRow> = data
+                .sessions
+                .iter()
+                .filter(|session| matches(&[&session.title, &session.workspace, &session.id]))
+                .collect();
+            let workspace_column = listed
+                .iter()
+                .map(|session| width(&session.workspace))
+                .max()
+                .unwrap_or(0)
+                .min(SESSION_WORKSPACE_MAX);
+            let age_column = listed
+                .iter()
+                .map(|session| width(&session.age))
+                .max()
+                .unwrap_or(0);
+            for session in listed {
+                // The age keeps its column even where the workspace is missing:
+                // `· 2h` reads as a name that went missing, so the separator is
+                // left out and the age stands on its own.
+                let age = align_right(&session.age, age_column);
+                let detail = if session.workspace.trim().is_empty() {
+                    let gap = if workspace_column == 0 {
+                        0
+                    } else {
+                        workspace_column + SEPARATOR_WIDTH
+                    };
+                    format!("{}{age}", " ".repeat(gap))
+                } else {
+                    format!("{} · {age}", fit(&session.workspace, workspace_column))
+                };
                 rows.push(PickerRow::Item {
                     key: session.id.clone(),
                     label: session.title.clone(),
-                    detail: format!("{} · {}", session.workspace, session.age),
+                    detail,
                     current: session.current,
                 });
             }
@@ -1526,6 +1570,79 @@ mod tests {
         picker.backspace(&data);
         picker.backspace(&data);
         assert_eq!(picker.view(&data, "").selectable, 2);
+    }
+
+    /// The right-hand tail of a session row is a table of two columns — the
+    /// workspace, then the age — so every dot sits in one cell and every age
+    /// ends in the next. Ages differ in width (`now` is three cells, `1m` two),
+    /// which is what put the dot in a different place on every row before.
+    #[test]
+    fn session_rows_line_their_dots_and_ages_up() {
+        let mut data = data();
+        let session =
+            |id: &str, title: &str, workspace: &str, age: &str, current: bool| SessionRow {
+                id: id.into(),
+                title: title.into(),
+                workspace: workspace.into(),
+                age: age.into(),
+                current,
+                parent_id: None,
+                streaming: false,
+                created_at_ms: 0,
+            };
+        data.sessions = vec![
+            session("s1", "会话总管", "session-supervisor", "1m", false),
+            session("s2", "修 parser", "future-os", "now", true),
+            // A plain chat has no workspace, so it shows its age alone: a dot
+            // with nothing in front of it reads as a lost name.
+            session("s3", "三金五金", "", "2h", false),
+        ];
+        let view = rows(
+            PickerKind::Sessions,
+            &data,
+            "",
+            0,
+            &fallback_thinking_levels(),
+            "",
+            LANG,
+            LanguagePreference::System,
+        );
+        let plain: Vec<String> = view
+            .rows
+            .iter()
+            .map(|row| {
+                crate::utils::strip_ansi_codes(&row_line(
+                    &FUTURE_DARK,
+                    row,
+                    false,
+                    60,
+                    LANG,
+                    view.detail_column,
+                ))
+            })
+            .collect();
+        assert_eq!(plain.len(), 3, "{plain:?}");
+        // Columns, not byte offsets: a CJK title is two cells per character.
+        let column = |line: &str, index: usize| crate::workbench::ansi::width(&line[..index]);
+        // The dot in one column for the rows that have something to separate…
+        let dot = |line: &str| line.find('·').map(|index| column(line, index));
+        assert_eq!(dot(&plain[0]), dot(&plain[1]), "{plain:?}");
+        assert!(dot(&plain[0]).is_some(), "{plain:?}");
+        // …and absent from the one that does not, while its age still lands in
+        // the age column.
+        assert_eq!(dot(&plain[2]), None, "{plain:?}");
+        let ends: Vec<usize> = plain
+            .iter()
+            .zip(["1m", "now", "2h"])
+            .map(|(line, age)| {
+                let start = line.find(age).expect(age);
+                column(line, start) + crate::workbench::ansi::width(age)
+            })
+            .collect();
+        assert!(
+            ends.windows(2).all(|pair| pair[0] == pair[1]),
+            "ages end in one column: {ends:?} in {plain:?}"
+        );
     }
 
     #[test]

@@ -617,9 +617,30 @@ export function useDesktopConnection({
   const recover = useCallback(
     async (reason: RecoveryReason) => {
       const client = clientRef.current;
-      if (AppState.currentState !== "active") return;
+      if (AppState.currentState !== "active") {
+        // A recovery that never happened is the wedge an app restart used to be
+        // the only way out of. Say so, so the next report has evidence instead
+        // of a spinner: if this fires while the user is looking at the screen,
+        // the lifecycle state is stale, not the connection.
+        console.warn("[remote] recovery skipped while the app is not active");
+        return;
+      }
       if (!client || clientRef.current !== client || !credentialsRef.current) return;
       try {
+        if (client.connectionState === "failed") {
+          // A fatal client is terminal by design: `transition` keeps it in
+          // `failed` and every request answers `communication_frozen`, so
+          // probing it recovers nothing — a conversation would not open and a
+          // prompt would not send, until the app was killed and started again.
+          // The state machine's own answer is "a manual reconnect creates a
+          // fresh RemoteClient": do exactly that with the same credentials.
+          console.warn("[remote] rebuilding a terminal client", {
+            reason,
+            state: client.connectionState,
+          });
+          await connect(credentialsRef.current);
+          return;
+        }
         const revision = recoveryRef.current.revision(client);
         await client.recoverNow(reason);
         if (
@@ -637,7 +658,7 @@ export function useDesktopConnection({
         if (clientRef.current === client) recordError(nextError);
       }
     },
-    [clientRef, credentialsRef, recordError, recoverState],
+    [clientRef, connect, credentialsRef, recordError, recoverState],
   );
 
   const setAppActive = useCallback((next: boolean) => {

@@ -49,6 +49,12 @@ pub struct Options {
 enum TerminalEvent {
     Data(String),
     Resize,
+    /// An exit signal (SIGINT / SIGTERM / SIGHUP / SIGQUIT, see
+    /// `Terminal::set_exit_signal_callback`). It is its own event and not an
+    /// injected `ctrl+c` byte: that byte is the run's interrupt chord, so a
+    /// signal routed through the keymap would stop a turn and leave the process
+    /// running.
+    Signal,
 }
 
 struct InputIo<'a> {
@@ -127,8 +133,14 @@ pub async fn run(options: Options) -> Result<(), String> {
         live.attach_most_recent().await;
     }
     // `cd project && future tui` starts that project's conversation: the
-    // launchpad stages the working directory, not the app's scratch tree.
-    live.stage_launch_workspace();
+    // launchpad stages the working directory, not the app's scratch tree. A
+    // launch from somewhere ambient (the home directory, a temp directory)
+    // stages the workspace chosen last time instead (see `launch_workspace`).
+    live.stage_launch_workspace(settings.last_workspace.as_deref());
+    // …and whatever that staging came to is what the next start should reopen,
+    // so a first launch from an ambient directory is the last one that lands
+    // there by accident.
+    persist_pending(&mut live, &mut settings, &options.settings_path);
 
     if let Some(prompt) = options
         .initial_prompt
@@ -171,12 +183,12 @@ pub async fn run(options: Options) -> Result<(), String> {
         }),
     )
     .map_err(|error| format!("terminal: {error}"))?;
-    // SIGINT/SIGTERM take the same path as ctrl+c so the terminal is restored
-    // by the loop's own exit rather than by the signal handler's re-raise.
+    // SIGINT/SIGTERM take the quit path so the terminal is restored by the
+    // loop's own exit rather than by the signal handler's re-raise.
     {
         let signal_tx = input_tx.clone();
         terminal.set_exit_signal_callback(Some(Box::new(move || {
-            let _ = signal_tx.send(TerminalEvent::Data("\u{3}".into()));
+            let _ = signal_tx.send(TerminalEvent::Signal);
         })));
     }
     let mut notifications = crate::notifications::NotifyCenter::default();
@@ -293,6 +305,11 @@ async fn event_loop(
                 let mut events = match &input {
                     TerminalEvent::Resize => vec![WbEvent::Resize(terminal.columns(), terminal.rows())],
                     TerminalEvent::Data(data) => events_of(data),
+                    // A signal leaves now, whatever an overlay is showing: the
+                    // chord cannot be hard-coded (`ctrl+c` stops a run) and the
+                    // reader may have rebound quit to something a fake byte
+                    // could never reproduce.
+                    TerminalEvent::Signal => return Ok(()),
                 };
                 // Read the rest of the burst before doing anything with it. A
                 // held key arrives as one terminal event per repeat, and every
@@ -308,6 +325,7 @@ async fn event_loop(
                             terminal.rows(),
                         )),
                         Ok(TerminalEvent::Data(data)) => events.extend(events_of(&data)),
+                        Ok(TerminalEvent::Signal) => return Ok(()),
                         Err(_) => break,
                     }
                 }
@@ -595,10 +613,10 @@ impl PendingOpen {
 
 /// The net step a *session* key asks for, if this event is one.
 ///
-/// The driver reads this before the key reaches `quit`, so a held `shift+↑` /
-/// `shift+↓` becomes one switch instead of one per repeat. The guards are the
-/// same ones that decide whether any global shortcut fires: an overlay owns the
-/// keys it paints.
+/// The driver reads this before the key reaches `quit`, so a held `ctrl+↑` /
+/// `ctrl+↓` (or `shift+↑` / `shift+↓`) becomes one switch instead of one per
+/// repeat. The guards are the same ones that decide whether any global shortcut
+/// fires: an overlay owns the keys it paints.
 fn session_step_of(workbench: &Workbench, event: &WbEvent) -> Option<i32> {
     let WbEvent::Key(key) = event else {
         return None;
@@ -822,6 +840,8 @@ async fn quit(
                     return Ok(false);
                 }
                 Some(super::preferences::Action::Stop) => {
+                    // Idle, this is a no-op (see `Live::abort`): `ctrl+c` means
+                    // the turn in flight, and there is none.
                     live.abort().await;
                     return Ok(false);
                 }
@@ -1296,22 +1316,22 @@ async fn quit(
             let data = live.data(frame);
             workbench.follow_current(&data);
         }
-        // A model or level chosen with no session attached is nothing the agent
-        // can hold: `live.apply` staged it on the adapter, which asks for it
-        // when the session is created, and `persist_pending` remembers it as
-        // this terminal UI's default. One rule, so the picker's row and the
-        // launchpad's own chips land in the same place.
+        // A model or level the reader chose is remembered as this terminal UI's
+        // default: on the launchpad `live.apply` staged it (the agent cannot
+        // hold it without a session), in a session it was applied to the agent;
+        // either way `persist_pending` writes it to `settings.json` so the next
+        // session starts with it.
         persist_pending(live, settings, settings_path);
     }
     Ok(false)
 }
 
-/// Write the launchpad's staged model and level into `settings.json`, which is
-/// where the terminal UI keeps its defaults.
+/// Write the reader's last chosen model, level and workspace into
+/// `settings.json`, which is where the terminal UI keeps its defaults.
 ///
-/// Called after every applied action and writes only on a change — a staging
-/// action is rare, and a launchpad chip that cycles through the list would
-/// otherwise rewrite the file on each step.
+/// Called after every applied action and writes only on a change — a pick is
+/// rare, and a launchpad chip that cycles through the list would otherwise
+/// rewrite the file on each step.
 fn persist_pending(live: &mut Live, settings: &mut TuiSettings, path: &Path) {
     let mut changed = false;
     if let Some(model) = live.pending_model() {
@@ -1323,6 +1343,14 @@ fn persist_pending(live: &mut Live, settings: &mut TuiSettings, path: &Path) {
     if let Some(effort) = live.pending_effort() {
         if settings.default_thinking_level.as_deref() != Some(effort) {
             settings.default_thinking_level = Some(effort.to_string());
+            changed = true;
+        }
+    }
+    // The workspace is drained rather than read: `None` is "nothing new", which
+    // is also what a client in the middle of a conversation reports.
+    if let Some(workspace) = live.take_workspace_to_remember() {
+        if settings.last_workspace.as_deref() != Some(workspace.as_str()) {
+            settings.last_workspace = Some(workspace);
             changed = true;
         }
     }
@@ -1703,7 +1731,7 @@ fn draw(
     if !bytes.is_empty() {
         terminal.write(&bytes);
     }
-    paint_image(terminal, workbench, &data, !painted.rows_written);
+    paint_images(terminal, workbench, &painted.written);
     Ok(())
 }
 
@@ -1776,123 +1804,147 @@ fn repaint_after_resets(line: &str, paint: &str) -> String {
     out
 }
 
-/// Paint (or remove) the picture the frame asked for.
+/// Paint (or remove) every picture the frame asked for.
 ///
 /// A terminal bitmap is not a row of text: it is placed at a cell by the
-/// terminal itself, above whatever the frame wrote there. So the preview box
-/// only *describes* what it wants ([`screen::ImageRequest`]) and this — the one
-/// place holding the terminal — writes it after the frame it belongs to,
+/// terminal itself, above whatever the frame wrote there. So the surface only
+/// *describes* what it wants ([`screen::PlacedPicture`]) and this — the one
+/// place holding the terminal — writes them after the frame they belong to,
 /// leaving the hardware cursor exactly where the frame put it.
 ///
 /// The pixels are transmitted once per source (the file, and the crop of it a
-/// zoomed box shows); every later frame only re-places the image, which is a
-/// hundred bytes instead of a megabyte. Re-placing every frame is what keeps a
-/// picture on screen: the frame under it is rewritten each paint, and a placed
-/// image is not part of that text.
-fn paint_image(
-    terminal: &mut Terminal,
-    workbench: &mut Workbench,
-    data: &super::WorkbenchData,
-    rows_intact: bool,
-) {
-    let request = workbench.image_request;
-    let Some(request) = request else {
-        if let Some(painted) = workbench.painted_image.take() {
-            terminal.write(&crate::terminal_image::delete_kitty_image(painted.id));
-        }
-        workbench.painted_iterm = None;
-        return;
-    };
-    // The pixels are the box's own preview: the same image the frame drew.
-    let Some(super::state::PreviewView::Image { pixels, .. }) = data.preview.as_ref() else {
-        return;
-    };
+/// zoomed box or a half-scrolled slot shows); every later frame only re-places
+/// the image, which is a hundred bytes instead of a megabyte. Re-placing every
+/// frame is what keeps a picture on screen: the frame under it is rewritten
+/// each paint, and a placed image is not part of that text. A picture the frame
+/// no longer asks for is deleted, which is how a thumbnail that scrolled out of
+/// the window leaves the cells it used to cover.
+fn paint_images(terminal: &mut Terminal, workbench: &mut Workbench, written_rows: &[usize]) {
+    let requests = workbench.image_requests.clone();
     let protocol = crate::terminal_image::get_capabilities().images;
-    if protocol == crate::terminal_image::ImageProtocol::Iterm2 {
-        // iTerm2 images are inline text, not an independently addressable layer:
-        // a frame that rewrites any cell over the picture erases it, so the
-        // image is placed again only then (or when the shown crop changes).
-        if rows_intact && workbench.painted_iterm == Some(request.source) {
-            return;
+    if protocol == crate::terminal_image::ImageProtocol::None {
+        if !workbench.painted_images.ids.is_empty()
+            || !workbench.painted_images.iterm_shown.is_empty()
+        {
+            workbench.painted_images.clear();
         }
-        let (rgb, w, h) = transmit_bitmap(
-            pixels,
-            request.crop,
-            request.columns as usize,
-            request.rows as usize,
-        );
-        let Some(sequence) = crate::terminal_image::encode_iterm2_rgb_png(
-            &rgb,
-            w as u32,
-            h as u32,
-            request.columns as usize,
-            request.rows as usize,
-        ) else {
-            return;
-        };
-        let mut out = format!("\x1b[{};{}H{sequence}", request.y + 1, request.x + 1);
-        if let Some((x, y)) = workbench.cursor() {
-            out.push_str(&format!("\x1b[{};{}H", y + 1, x + 1));
-        }
-        terminal.write(&out);
-        workbench.painted_iterm = Some(request.source);
-        return;
-    }
-    if protocol != crate::terminal_image::ImageProtocol::Kitty {
-        workbench.painted_iterm = None;
         return;
     }
     let mut out = String::new();
-    match workbench.painted_image {
-        Some(painted) if painted.source == request.source => {
-            // Same bytes, new place: `a=p` places an already-transmitted image
-            // by id, and `p=1` keeps the placement one thing (a new `a=p` each
-            // frame would otherwise stack copies).
-            out.push_str(&format!(
-                "\x1b[{};{}H\x1b_Ga=p,i={},p=1,c={},r={},q=2,C=1\x1b\\",
-                request.y + 1,
-                request.x + 1,
-                painted.id,
-                request.columns,
-                request.rows
-            ));
-        }
-        other => {
-            if let Some(painted) = other {
-                out.push_str(&crate::terminal_image::delete_kitty_image(painted.id));
-            }
-            let id = crate::terminal_image::allocate_image_id();
-            // Transmit what the cells can show, not the source: the decoder
-            // keeps enough pixels for a zoomed window to stay sharp, but a
-            // whole 2048px picture across a hundred cells is fifteen megabytes
-            // over the pty that the terminal would immediately throw away.
-            let (rgb, w, h) = transmit_bitmap(
-                pixels,
-                request.crop,
-                request.columns as usize,
-                request.rows as usize,
-            );
-            out.push_str(&format!("\x1b[{};{}H", request.y + 1, request.x + 1));
-            out.push_str(&crate::terminal_image::encode_kitty_rgb(
-                &rgb,
-                w,
-                h,
-                request.columns as usize,
-                request.rows as usize,
-                id,
-            ));
-            workbench.painted_image = Some(super::PaintedImage {
-                source: request.source,
-                id,
-            });
+    // Everything the frame dropped goes first: an image left behind sits on top
+    // of the rows painted over it, and a scrolled thumbnail would stay where it
+    // was.
+    let wanted: Vec<u64> = requests
+        .iter()
+        .map(|placed| placed.request.source)
+        .collect();
+    let stale: Vec<u64> = workbench
+        .painted_images
+        .ids
+        .keys()
+        .copied()
+        .filter(|source| !wanted.contains(source))
+        .collect();
+    for source in stale {
+        if let Some(id) = workbench.painted_images.take(source) {
+            out.push_str(&crate::terminal_image::delete_kitty_image(id));
         }
     }
-    // Put the cursor back where the frame left it; the image itself does not
-    // move it (`C=1`), but the addressing above did.
+    let mut iterm_now: Vec<(u64, (u16, u16, u16, u16))> = Vec::new();
+    for placed in &requests {
+        let request = placed.request;
+        let placement = (request.x, request.y, request.columns, request.rows);
+        match protocol {
+            crate::terminal_image::ImageProtocol::Iterm2 => {
+                // iTerm2 images are inline text, not an independently
+                // addressable layer: a frame that rewrites any cell over the
+                // picture erases it, so it is placed again only then (or when
+                // the shown crop or its cells changed).
+                let untouched = !written_rows.iter().any(|row| {
+                    let row = *row as u16;
+                    row >= request.y && row < request.y.saturating_add(request.rows)
+                });
+                let already = workbench
+                    .painted_images
+                    .iterm_shown
+                    .iter()
+                    .any(|(source, at)| *source == request.source && *at == placement);
+                if !(untouched && already) {
+                    let (rgb, w, h) = transmit_bitmap(
+                        &placed.pixels,
+                        request.crop,
+                        request.columns as usize,
+                        request.rows as usize,
+                    );
+                    if let Some(sequence) = crate::terminal_image::encode_iterm2_rgb_png(
+                        &rgb,
+                        w as u32,
+                        h as u32,
+                        request.columns as usize,
+                        request.rows as usize,
+                    ) {
+                        out.push_str(&format!(
+                            "\x1b[{};{}H{sequence}",
+                            request.y + 1,
+                            request.x + 1
+                        ));
+                    }
+                }
+                iterm_now.push((request.source, placement));
+            }
+            crate::terminal_image::ImageProtocol::Kitty => {
+                match workbench.painted_images.ids.get(&request.source).copied() {
+                    // Same bytes, new place: `a=p` places an already-transmitted
+                    // image by id, and `p=1` keeps the placement one thing (a new
+                    // `a=p` each frame would otherwise stack copies).
+                    Some(id) => out.push_str(&format!(
+                        "\x1b[{};{}H\x1b_Ga=p,i={},p=1,c={},r={},q=2,C=1\x1b\\",
+                        request.y + 1,
+                        request.x + 1,
+                        id,
+                        request.columns,
+                        request.rows
+                    )),
+                    None => {
+                        let id = crate::terminal_image::allocate_image_id();
+                        // Transmit what the cells can show, not the source: the
+                        // decoder keeps enough pixels for a zoomed window to
+                        // stay sharp, but a whole 2048px picture across a
+                        // hundred cells is fifteen megabytes over the pty that
+                        // the terminal would immediately throw away.
+                        let (rgb, w, h) = transmit_bitmap(
+                            &placed.pixels,
+                            request.crop,
+                            request.columns as usize,
+                            request.rows as usize,
+                        );
+                        out.push_str(&format!("\x1b[{};{}H", request.y + 1, request.x + 1));
+                        out.push_str(&crate::terminal_image::encode_kitty_rgb(
+                            &rgb,
+                            w,
+                            h,
+                            request.columns as usize,
+                            request.rows as usize,
+                            id,
+                        ));
+                        for evicted in workbench.painted_images.remember(request.source, id) {
+                            out.push_str(&crate::terminal_image::delete_kitty_image(evicted));
+                        }
+                    }
+                }
+            }
+            crate::terminal_image::ImageProtocol::None => {}
+        }
+    }
+    workbench.painted_images.iterm_shown = iterm_now;
+    // Put the cursor back where the frame left it; the images do not move it
+    // (`C=1`), but the addressing above did.
     if let Some((x, y)) = workbench.cursor() {
         out.push_str(&format!("\x1b[{};{}H", y + 1, x + 1));
     }
-    terminal.write(&out);
+    if !out.is_empty() {
+        terminal.write(&out);
+    }
 }
 
 /// How many source pixels per placed cell are worth transmitting.
@@ -2001,9 +2053,11 @@ struct FrameCache {
     rows: Vec<String>,
     width: usize,
     cursor: Option<(u16, u16)>,
-    /// Did the last call erase and rewrite any cell? iTerm2 images live in the
-    /// text grid, so only a row write invalidates one.
-    rows_written: bool,
+    /// The rows the last call erased and rewrote. iTerm2 images live in the text
+    /// grid rather than in a layer of their own, so a picture is only erased by
+    /// a write to *its own* rows — a streamed reply repainting the tail must not
+    /// cost a re-transmission of a thumbnail further up.
+    written: Vec<usize>,
 }
 
 /// The bytes needed to turn `cache` into `rows` at `width`.
@@ -2021,21 +2075,21 @@ fn frame_bytes_since(
     let full = cache.width != width || cache.rows.len() != rows.len();
     let mut frame = String::new();
     frame.push_str("\x1b[?25l");
-    let mut wrote = false;
+    let mut written: Vec<usize> = Vec::new();
     for (index, row) in rows.iter().enumerate() {
         if !full && cache.rows.get(index) == Some(row) {
             continue;
         }
-        wrote = true;
+        written.push(index);
         frame.push_str(&format!("\x1b[0m\x1b[{};1H", index + 1));
         frame.push_str("\x1b[K");
         frame.push_str(row);
     }
-    if !wrote && cursor == cache.cursor {
-        cache.rows_written = false;
+    if written.is_empty() && cursor == cache.cursor {
+        cache.written.clear();
         return String::new();
     }
-    cache.rows_written = wrote;
+    cache.written = written;
     frame.push_str("\x1b[0m");
     if let Some((x, y)) = cursor {
         frame.push_str(&format!("\x1b[{};{}H\x1b[?25h", y + 1, x + 1));
@@ -2075,14 +2129,14 @@ pub(crate) fn load_settings(path: &Path) -> TuiSettings {
 /// the next preference change: the caller gets the defaults *and* a sentence
 /// that says the file could not be read.
 pub(crate) fn load_settings_report(path: &Path) -> (TuiSettings, Option<String>) {
-    match future_host::config_io::read_json_object(path) {
+    match future_config::read_json_object(path) {
         Ok(value) => (TuiSettings::from_json(&value), None),
         Err(error) => (TuiSettings::default(), Some(error.to_string())),
     }
 }
 
 pub(crate) fn save_settings(path: &Path, settings: &TuiSettings) -> Result<(), String> {
-    future_host::config_io::write_json_atomic(path, &settings.to_json(), false)
+    future_config::write_json_atomic(path, &settings.to_json(), false)
         .map_err(|error| error.to_string())
 }
 
@@ -2671,6 +2725,44 @@ mod tests {
         let mut restored = super::super::Workbench::new();
         restored.set_folded_workspaces(written.folded_workspaces.unwrap_or_default());
         assert_eq!(restored.folded_workspaces(), workbench.folded_workspaces());
+    }
+
+    /// The workspace a reader picked while a conversation was attached is what
+    /// `settings.json` remembers, and what the next start opens on.
+    ///
+    /// Read back from the file rather than from the value the writer kept: the
+    /// point is that a *next start* sees it.
+    #[tokio::test]
+    async fn the_chosen_workspace_reaches_the_settings_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let workspace = tempfile::tempdir().unwrap();
+        let chosen = workspace.path().to_string_lossy().to_string();
+
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = crate::workbench::live::Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        // The launchpad's own road: nothing attached, so the directory is staged
+        // for the session the first message creates.
+        live.select_workspace(&chosen).await;
+
+        let mut settings = TuiSettings::default();
+        persist_pending(&mut live, &mut settings, &path);
+        assert_eq!(
+            load_settings(&path).last_workspace.as_deref(),
+            Some(chosen.as_str())
+        );
+
+        // A second pass with nothing staged leaves the value alone — the write
+        // happens on a change, not on every action.
+        let mut settings = load_settings(&path);
+        persist_pending(&mut live, &mut settings, &path);
+        assert_eq!(
+            load_settings(&path).last_workspace.as_deref(),
+            Some(chosen.as_str())
+        );
     }
 
     /// A held `shift+↑/↓` opens one conversation, the one the reader stops on.

@@ -52,8 +52,8 @@ pub use self::observer::{
     reconcile_streaming_observers, spawn_session_discovery, spawn_streaming_observer_monitor,
 };
 pub use self::presence::{
-    session_presence, session_presence_with_client, verify_session_database, verify_thread_source,
-    verify_thread_source_with_client,
+    require_present_with_client, session_presence, session_presence_with_client,
+    verify_session_database, verify_thread_source, verify_thread_source_with_client,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use self::prompt::agent_prompt;

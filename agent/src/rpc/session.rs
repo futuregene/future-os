@@ -11,6 +11,17 @@ use super::{ApprovalGate, SseBroadcaster};
 /// so the dropped-session exit is directly testable.
 const IDLE_HISTORY_RELEASE: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// How long a stop waits for its durable `run_stop_requested` marker before it
+/// stops waiting and interrupts the run.
+///
+/// The marker is what recovery reads: an unterminated run that carries one is
+/// never resumed, so it is worth a brief wait before the run can be
+/// interrupted. It is not worth an unbounded one — the write lands in the
+/// store's single ordered writer, whose queue can be held by another session's
+/// job. Ordinary writes commit in about a millisecond; the budget only decides
+/// how long a stop stands behind a store that cannot answer.
+const STOP_MARKER_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
+
 fn schedule_idle_history_release(session: std::sync::Weak<parking_lot::RwLock<ServerSession>>) {
     let Ok(handle) = tokio::runtime::Handle::try_current() else {
         return;
@@ -642,32 +653,11 @@ impl ServerSession {
 
     pub fn abort_run(&self, expected_run_id: Option<&str>) -> Result<()> {
         let _recovery = self.fault_recovery.lock();
-        if !self.ephemeral && self.session_manager.contains(&self.session_id)? {
-            if let Some(active) = self.runtime.snapshot() {
-                let lease = crate::runtime::RunLease {
-                    run_id: active.run_id.clone(),
-                    epoch: active.epoch,
-                    run_sequence: active.run_sequence,
-                };
-                let cancellable = matches!(
-                    active.phase,
-                    crate::runtime::RunPhase::Starting
-                        | crate::runtime::RunPhase::Running
-                        | crate::runtime::RunPhase::Cancelling
-                ) || self.runtime.cancellation_kind(&lease)
-                    == Some(crate::runtime::CancellationCause::SystemShutdown);
-                if cancellable
-                    && expected_run_id.is_none_or(|id| id.is_empty() || id == active.run_id)
-                {
-                    self.session_manager.append_entries_synced(
-                        &self.session_id,
-                        &[crate::session::SessionEntry::run_stop_requested(
-                            &active.run_id,
-                        )],
-                    )?;
-                }
-            }
-        }
+        // A stop with no live run can only be made durable: it lands in the
+        // journal so a run still inside startup's recovery delay is not started
+        // moments later. Storage-only, and it keeps the "nothing is running"
+        // answer before `request_abort` (which rejects a run id that is no
+        // longer active).
         if self.runtime.snapshot().is_none() && !self.ephemeral {
             if let Some(run_id) = self.session_manager.resumable_run_id(&self.session_id)? {
                 if expected_run_id.is_none_or(|expected| expected.is_empty() || expected == run_id)
@@ -698,6 +688,24 @@ impl ServerSession {
                 }
             }
         }
+        // Which run the stop reaches is decided before the request, so the
+        // marker below names the run the cancellation was actually for.
+        let stopped = self.stop_target(expected_run_id);
+        // The durable marker is started first — recovery resumes an
+        // unterminated run that carries no `run_stop_requested`, so it must be
+        // in the store before the run can be interrupted — but the stop waits
+        // for it only briefly. It waits for the marker's *commit* in the store's
+        // single ordered writer, and that is not the stop: on 2026-10-29 a
+        // contended lane held this append for 71 s, so `request_abort` below was
+        // never reached, five ctrl+x presses each expired at the client's
+        // deadline as `Could not stop the run: Timeout expired`, and the run
+        // kept streaming until the marker finally landed.
+        if let Some(pending) = stopped
+            .as_deref()
+            .and_then(|run_id| self.begin_stop_marker(run_id))
+        {
+            let _ = pending.recv_timeout(STOP_MARKER_GRACE);
+        }
         self.runtime.request_abort(expected_run_id)?;
         self.shell_cancel_generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -724,6 +732,70 @@ impl ServerSession {
             );
         }
         Ok(())
+    }
+
+    /// The run a user stop can still reach, if any: the run that would be
+    /// cancelled in memory, and therefore the one a durable stop marker names.
+    /// A run past the cancellation point (`Finalizing`) is not one, and a
+    /// mismatched `expected_run_id` addresses a different run entirely.
+    fn stop_target(&self, expected_run_id: Option<&str>) -> Option<String> {
+        let active = self.runtime.snapshot()?;
+        let lease = crate::runtime::RunLease {
+            run_id: active.run_id.clone(),
+            epoch: active.epoch,
+            run_sequence: active.run_sequence,
+        };
+        let cancellable = matches!(
+            active.phase,
+            crate::runtime::RunPhase::Starting
+                | crate::runtime::RunPhase::Running
+                | crate::runtime::RunPhase::Cancelling
+        ) || self.runtime.cancellation_kind(&lease)
+            == Some(crate::runtime::CancellationCause::SystemShutdown);
+        (cancellable && expected_run_id.is_none_or(|id| id.is_empty() || id == active.run_id))
+            .then_some(active.run_id)
+    }
+
+    /// Start the durable user intent for crash recovery on its own thread and
+    /// hand back the receiver that reports when it is committed. The caller
+    /// waits on it only for [`STOP_MARKER_GRACE`], so a write that outlives that
+    /// budget still lands — it just stops holding up the interruption.
+    ///
+    /// A failed write is a warning, not a failed stop: the worst case is a run
+    /// recovered as `interrupted_by_restart` instead of `cancelled`.
+    fn begin_stop_marker(&self, run_id: &str) -> Option<std::sync::mpsc::Receiver<()>> {
+        if self.ephemeral {
+            return None;
+        }
+        let manager = self.session_manager.clone();
+        let session_id = self.session_id.clone();
+        let run_id = run_id.to_owned();
+        let (done, pending) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("agent-stop-marker".into())
+            .spawn(move || {
+                let written = manager.contains(&session_id).and_then(|known| {
+                    if known {
+                        manager.append_entries_synced(
+                            &session_id,
+                            &[crate::session::SessionEntry::run_stop_requested(&run_id)],
+                        )
+                    } else {
+                        Ok(())
+                    }
+                });
+                if let Err(error) = written {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        %run_id,
+                        %error,
+                        "run stop request could not be journalled; the run is being stopped anyway"
+                    );
+                }
+                let _ = done.send(());
+            })
+            .ok()?;
+        Some(pending)
     }
 
     fn persist_fault_outcome(

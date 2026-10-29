@@ -179,7 +179,7 @@ impl SqliteStore {
                 bytes: range.length,
             })?;
             let (s, k, op) = (session.to_owned(), key.to_owned(), operation.clone());
-            self.db.call(move |db| {
+            self.db.call_as("content_checkpoint", move |db| {
                 let tx=database::begin_write_transaction(db)?;
             let s=crate::session::identity::BoundIdentity::session(&tx,&s)?;
                 let state:Option<String>=tx.query_row("SELECT state FROM compaction_operations WHERE session_id=?1 AND input_key=?2",params![s,k],|row|row.get(0)).optional()?;
@@ -260,7 +260,7 @@ impl SqliteStore {
             "checkpoint operation identity exceeds its metadata budget"
         );
         let (session, operation) = (session.to_owned(), operation.to_owned());
-        let claim=self.db.call(move |db| {
+        let claim=self.db.call_as("content_checkpoint", move |db| {
             let tx=database::begin_write_transaction(db)?;
             let session=crate::session::identity::BoundIdentity::session(&tx,&session)?;
             let scope=Snapshot::capture_from(&tx,&session)?;

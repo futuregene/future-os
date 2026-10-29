@@ -413,3 +413,151 @@ fn opening_recovers_activity_stamps_pushed_forward_by_a_snapshot() {
     let again = Database::open(&path).unwrap();
     assert_eq!(stamp(&again), (1000, true));
 }
+
+/// A fence read must answer while the ordered writer is busy, not after it.
+///
+/// This is the lane contract behind `get_session_presence`: on 2026-10-29 four
+/// remote commands were released together after 18–21 s because one writer job
+/// was running, and two of them had already hit their 30 s deadline. Presence
+/// decides whether a caller may proceed at all, so it cannot be one of them.
+#[test]
+fn a_fence_read_answers_while_a_writer_job_holds_the_lane() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::open(&dir.path().join("agent.db")).unwrap();
+    let (entered_tx, entered) = mpsc::channel();
+    let (release_tx, release) = mpsc::channel::<()>();
+    let holder = {
+        let db = db.clone();
+        std::thread::spawn(move || {
+            db.call(move |_| {
+                let _ = entered_tx.send(());
+                let _ = release.recv();
+                Ok(())
+            })
+            .unwrap();
+        })
+    };
+    entered.recv().unwrap();
+
+    let started = std::time::Instant::now();
+    let answer = db
+        .fence(|connection| Ok(connection.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?))
+        .unwrap();
+    let waited = started.elapsed();
+    release_tx.send(()).unwrap();
+    holder.join().unwrap();
+
+    assert_eq!(answer, 1);
+    assert!(
+        waited < std::time::Duration::from_millis(500),
+        "a fence read waited {waited:?} behind a writer job"
+    );
+}
+
+/// The other half of the same contract, so the test above cannot pass by
+/// accident: the writer lane itself *does* wait for the job in front of it.
+#[test]
+fn a_writer_read_waits_for_the_job_in_front_of_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::open(&dir.path().join("agent.db")).unwrap();
+    let (entered_tx, entered) = mpsc::channel();
+    let holder = {
+        let db = db.clone();
+        std::thread::spawn(move || {
+            db.call(move |_| {
+                let _ = entered_tx.send(());
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                Ok(())
+            })
+            .unwrap();
+        })
+    };
+    entered.recv().unwrap();
+    let started = std::time::Instant::now();
+    db.call(|connection| Ok(connection.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?))
+        .unwrap();
+    let waited = started.elapsed();
+    holder.join().unwrap();
+    assert!(
+        waited >= std::time::Duration::from_millis(200),
+        "a queued writer job started before the one in front of it finished: {waited:?}"
+    );
+}
+
+/// The fence's cost, asserted instead of assumed.
+///
+/// A fence read does not queue behind the ordered writer, so it cannot see a
+/// write that is already queued: a session whose placeholder commit is still
+/// waiting reads `missing`. That is exactly why the desktop confirms a negative
+/// answer before refusing it (`agent_bridge::presence::require_present_with_client`)
+/// — this test is the half that makes that recheck load-bearing rather than
+/// decorative. If the fence ever moves back onto the writer lane, the first read
+/// below stops answering and this fails instead of quietly re-introducing the
+/// 18–38 s stall.
+#[test]
+fn a_fence_read_lags_a_queued_write_until_it_commits() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::open(&dir.path().join("agent.db")).unwrap();
+    let session = uuid::Uuid::new_v4().to_string();
+    let exists = |db: &Database, session: String| {
+        db.fence(move |connection| {
+            Ok(connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)",
+                [&session],
+                |row| row.get::<_, bool>(0),
+            )?)
+        })
+    };
+
+    // Hold the writer with one job, then queue a create behind it.
+    let (entered_tx, entered) = mpsc::channel();
+    let (release_tx, release) = mpsc::channel::<()>();
+    let holder = {
+        let db = db.clone();
+        std::thread::spawn(move || {
+            db.call(move |_| {
+                let _ = entered_tx.send(());
+                let _ = release.recv();
+                Ok(())
+            })
+            .unwrap();
+        })
+    };
+    entered.recv().unwrap();
+    let queued = {
+        let db = db.clone();
+        let session = session.clone();
+        std::thread::spawn(move || {
+            db.call(move |connection| {
+                connection.execute(
+                    "INSERT INTO sessions(id,revision) VALUES (?1,-1)",
+                    [&session],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        })
+    };
+
+    // The fence answers now, and the answer is the pre-commit state.
+    let (before_tx, before) = mpsc::channel();
+    {
+        let db = db.clone();
+        let session = session.clone();
+        std::thread::spawn(move || {
+            let _ = before_tx.send(exists(&db, session));
+        });
+    }
+    let before = before
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("a fence read must answer while a writer job holds the lane");
+    assert!(!before.unwrap(), "the queued create is not visible yet");
+
+    release_tx.send(()).unwrap();
+    holder.join().unwrap();
+    queued.join().unwrap();
+    assert!(
+        exists(&db, session).unwrap(),
+        "the same question answers present once the create commits"
+    );
+}

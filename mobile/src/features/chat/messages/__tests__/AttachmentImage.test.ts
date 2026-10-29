@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { Image } from "react-native";
 import type { HistoryAttachment } from "../../../../remote/types";
-import { MarkdownImageLoaderContext } from "../../../../components/MarkdownImage";
+import { MarkdownImageLoaderContext, type MarkdownImageLoader } from "../../../../components/MarkdownImage";
 import { ImageViewerContext } from "../../../../components/imageViewer";
 import { AttachmentImage } from "../AttachmentImage";
 
@@ -20,7 +20,7 @@ afterEach(() => {
 const attachment = (fields: Partial<HistoryAttachment> & { name: string }): HistoryAttachment =>
   ({ path: `/files/${fields.name}`, ...fields });
 
-function render(attachment: HistoryAttachment, providers: { loader?: { scope: string; cached(): string | null; load(): Promise<string | null> }; openViewer?: jest.Mock } = {}) {
+function render(attachment: HistoryAttachment, providers: { loader?: MarkdownImageLoader; openViewer?: jest.Mock } = {}) {
   const inner = createElement(AttachmentImage, { attachment, onOpen: jest.fn() });
   const withViewer = providers.openViewer === undefined
     ? inner
@@ -71,6 +71,24 @@ describe("a sent image is drawn as itself", () => {
   test("no loader (a surface that cannot read the desktop) keeps the chip", () => {
     render(attachment({ kind: "image", name: "shot.png" }), { openViewer: jest.fn() });
     expect(tree.root.findAllByType(Image)).toHaveLength(0);
+  });
+
+  test("a picture this phone already holds is on screen at the first render", async () => {
+    const load = jest.fn(async () => "file:///cache/shot.png");
+    const rememberAspect = jest.fn();
+    await act(async () => {
+      render(attachment({ kind: "image", name: "shot.png" }), {
+        loader: { cached: () => "file:///cache/shot.png", load, scope: "s", aspect: () => 2, rememberAspect },
+        openViewer: jest.fn(),
+      });
+    });
+    // No chip first, no round trip first: the frame the row is laid out in already
+    // has the picture, at the height it had when it was last drawn.
+    const image = tree.root.findByType(Image);
+    expect(image.props.source).toEqual({ uri: "file:///cache/shot.png" });
+    expect(image.props.style[1].aspectRatio).toBe(2);
+    act(() => image.props.onLoad({ nativeEvent: { source: { width: 300, height: 150 } } }));
+    expect(rememberAspect).toHaveBeenCalledWith("/files/shot.png", 2);
   });
 
   test("a picture only loads once across streaming re-renders", async () => {

@@ -1347,19 +1347,21 @@ mod tests {
 
     #[test]
     fn is_desktop_chat_cwd_falls_through_when_home_is_unset() {
-        let _lock = crate::TEST_HOME_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let saved_home = std::env::var("HOME").ok();
-        let saved_profile = std::env::var("USERPROFILE").ok();
-        std::env::remove_var("HOME");
-        std::env::remove_var("USERPROFILE");
-        // No home → the `if let Some(home)` else path runs, returning false.
+        let home = crate::auth_store::test_support::HomeGuard::new("import-no-home");
+        // "Unset" means no root at all: the scratch root resolves through the
+        // app dir, which `FUTURE_HOME` names by itself. Withdrawing only the
+        // user home left the fixture's own root in charge, so the test ran the
+        // ordinary path-mismatch arm and never reached the fall-through it is
+        // named for. The guard restores what it withdrew.
+        home.withdraw_home();
+        assert!(
+            future_app_workspaces::chat_workspaces_root().is_err(),
+            "no home and no override leaves no scratch root to compare against"
+        );
+        // No home → the `let Ok(root)` edge answers false.
         assert!(!is_desktop_chat_cwd(
             "/Users/who/.future/workspaces/chat/abc"
         ));
-        super::super::test_support::restore_home(saved_home);
-        std::env::set_var("USERPROFILE", saved_profile.unwrap_or_default());
     }
 
     /// Fire-and-forget spawned tasks (title sync, cwd write-back) run against

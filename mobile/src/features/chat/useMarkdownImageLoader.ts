@@ -4,7 +4,15 @@ import { downloadWarning } from "./downloadPolicy";
 import { basename } from "@future-os/markdown";
 import type { MarkdownImageLoader } from "../../components/MarkdownImage";
 import type { useRemote } from "../../remote/RemoteContext";
-import { MAX_FILE_BYTES, TransferCancelledError } from "../../remote/files";
+import {
+  MAX_FILE_BYTES,
+  TransferCancelledError,
+  cachedPreviewFile,
+  forgetPreviewFile,
+  previewAspect,
+  rememberPreviewAspect,
+  rememberPreviewFile,
+} from "../../remote/files";
 import type { DownloadInfo } from "../../remote/types";
 import { confirmDownload, formatBytes } from "./utils";
 
@@ -26,7 +34,9 @@ export function useMarkdownImageLoader(remote: Remote, t: TFunction): MarkdownIm
   // Transfers run one at a time, because a second concurrent one would stack
   // native cellular dialogs. They queue rather than being dropped: a reply can
   // start several inline images at once, and the previous "bail out while one is
-  // pending" left every image after the first unloaded.
+  // pending" left every image after the first unloaded. A picture already on
+  // this phone never enters the queue — see `load` — so re-entering a
+  // conversation draws all of them at once instead of one per round trip.
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   useLayoutEffect(() => {
     currentScope.current = scope;
@@ -43,7 +53,10 @@ export function useMarkdownImageLoader(remote: Remote, t: TFunction): MarkdownIm
       check();
       if (!imagePreview(info)) throw new Error("markdown_image_unavailable");
       const cached = cachedAttachment(attachment, "preview");
-      if (cached) return cached.file.uri;
+      if (cached) {
+        rememberPreviewFile(scope, path, info);
+        return cached.file.uri;
+      }
       const warning = await downloadWarning(info.size);
       check();
       if (warning) {
@@ -54,20 +67,50 @@ export function useMarkdownImageLoader(remote: Remote, t: TFunction): MarkdownIm
       }
       const file = await downloadAttachment(info, undefined, signal);
       check();
+      // Only now are the bytes here, so this is the first moment the path can be
+      // answered without the desktop: the next open paints from this entry.
+      rememberPreviewFile(scope, path, info);
       return file.uri;
+    };
+    // The content identity a held preview was stored under is re-checked in the
+    // background, never on the paint path. The desktop's answer only rewrites
+    // the index: the picture on screen stays, and an answer that no longer
+    // matches drops the entry so the next open fetches the new picture.
+    const revalidate = async (path: string, contentHash: string) => {
+      try {
+        const info = await prepareAttachment({ path, name: basename(path) }, "preview");
+        if (currentScope.current !== scope) return;
+        if (info.contentHash === contentHash) rememberPreviewFile(scope, path, info);
+        else forgetPreviewFile(scope, path);
+      } catch {
+        // Unreachable desktop, or a file the desktop no longer serves: the bytes
+        // already on screen are still the best answer available.
+      }
     };
     // Each caller still gets its own result (and its own rejection).
     return {
       scope,
-      cached(_path) {
-        // A Markdown path can be overwritten in place. Revalidate its content
-        // identity before exposing cached bytes.
-        return null;
+      cached(path) {
+        // Answered from this phone alone. The desktop still gets asked, but
+        // afterwards (see `load`), so it can no longer delay the first frame.
+        return cachedPreviewFile(scope, path)?.file.uri ?? null;
       },
       load(path, signal) {
+        const held = cachedPreviewFile(scope, path);
+        if (held) {
+          if (signal.aborted || currentScope.current !== scope) return Promise.reject(new TransferCancelledError());
+          if (held.stale) void revalidate(path, held.contentHash);
+          return Promise.resolve(held.file.uri);
+        }
         const run = queue.current.then(() => transfer(path, signal));
         queue.current = run.then(() => undefined, () => undefined);
         return run;
+      },
+      aspect(path) {
+        return previewAspect(scope, path);
+      },
+      rememberAspect(path, aspect) {
+        rememberPreviewAspect(scope, path, aspect);
       },
     };
   }, [scope, cachedAttachment, prepareAttachment, downloadAttachment, t, queue]);

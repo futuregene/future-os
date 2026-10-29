@@ -65,6 +65,15 @@ pub struct TuiSettings {
     /// nowhere, because a filter left over from yesterday reads as conversations
     /// that went missing.
     pub folded_workspaces: Option<Vec<String>>,
+    /// The workspace a fresh `future tui` opens on (`lastWorkspace`), by path.
+    ///
+    /// `cd project && future tui` still means that project — this is what the
+    /// launchpad stages when the terminal itself was sitting somewhere ambient
+    /// (the home directory, a temp directory), so the workspace the reader
+    /// picked last time comes back instead of a conversation filed under
+    /// whatever directory the shell happened to be in. A path that no longer
+    /// exists (a removed worktree) is skipped rather than staged.
+    pub last_workspace: Option<String>,
 }
 
 impl TuiSettings {
@@ -144,6 +153,9 @@ impl TuiSettings {
                 ),
             );
         }
+        if let Some(workspace) = &self.last_workspace {
+            obj.insert("lastWorkspace".into(), Value::String(workspace.clone()));
+        }
         Value::Object(obj)
     }
 
@@ -195,6 +207,7 @@ impl TuiSettings {
                         .collect()
                 },
             ),
+            last_workspace: string("lastWorkspace"),
         }
     }
 }
@@ -227,6 +240,7 @@ mod tests {
             reduced_motion: Some(true),
             pinned_workspaces: Some(vec!["/src/future-os".into()]),
             folded_workspaces: Some(vec!["/src/mobile".into()]),
+            last_workspace: Some("/src/future-os".into()),
         };
         let back = TuiSettings::from_json(&settings.to_json());
         assert_eq!(back.default_model.as_deref(), Some("future/deepseek-flash"));
@@ -244,6 +258,7 @@ mod tests {
         assert_eq!(back.reduced_motion, Some(true));
         assert_eq!(back.pinned_workspaces, Some(vec!["/src/future-os".into()]));
         assert_eq!(back.folded_workspaces, Some(vec!["/src/mobile".into()]));
+        assert_eq!(back.last_workspace.as_deref(), Some("/src/future-os"));
     }
 
     #[test]

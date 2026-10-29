@@ -43,13 +43,22 @@ impl Manager {
         Ok(result)
     }
 
+    /// Read on the fence lane: the answer decides whether a caller may
+    /// proceed, so it must not queue behind a history page (the shared read
+    /// pool) or behind a writer job — where it lived until the writer was
+    /// measured holding it for 18–38 s while four remote commands waited.
+    ///
+    /// The cost of leaving the writer's queue is ordering, not freshness: a
+    /// reader sees every committed write, but not one still queued. The desktop
+    /// treats `missing` as a first answer to confirm, not a verdict — see
+    /// `agent_bridge::presence::require_present`.
     pub(crate) fn session_presence(&self, ids: &[String]) -> Result<serde_json::Value> {
         ensure!(
             ids.len() <= future_rpc::session_deletion::MAX_DELETE_SESSIONS,
             "too many session ids"
         );
         let ids = ids.to_vec();
-        self.storage()?.db.call(move |db| {
+        self.storage()?.db.fence(move |db| {
             let tx = db.transaction()?;
             let database: String = tx.query_row(
                 "SELECT value FROM storage_meta WHERE key='database_id'",

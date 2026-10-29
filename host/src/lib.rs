@@ -29,8 +29,11 @@ mod home;
 pub mod skills;
 pub use home::{future_home_root, home_dir};
 
+/// Install the process TLS provider before an entry point builds an HTTP client.
+/// The provider choice lives in `future-http`; this alias keeps host call sites
+/// (and the Desktop) reading as the host's own concern.
 pub fn install_rustls_provider() {
-    future_agent::http::install_tls_provider();
+    future_http::install_tls_provider();
 }
 
 #[cfg(any(test, feature = "test-support"))]

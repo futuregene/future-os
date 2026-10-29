@@ -171,7 +171,6 @@ interface PromptOutboxOptions {
   clientRef: MutableRefObject<RemoteClient | null>;
   credentialsRef: MutableRefObject<RemoteCredentials | null>;
   selectedRef: MutableRefObject<string>;
-  streamingRef: MutableRefObject<Record<string, boolean>>;
   compactingRef: MutableRefObject<Record<string, boolean>>;
   conversationEpochRef: MutableRefObject<number>;
   syncEngineRef: MutableRefObject<SyncEngine | null>;
@@ -197,7 +196,6 @@ export function usePromptOutbox({
   clientRef,
   credentialsRef,
   selectedRef,
-  streamingRef,
   compactingRef,
   conversationEpochRef,
   syncEngineRef,
@@ -273,7 +271,14 @@ export function usePromptOutbox({
         workspaceId: targetDraft ? targetDraftWorkspaceId : "",
       };
       if (compactingRef.current[targetSessionId]) throw new Error("send_compacting");
-      if (streamingRef.current[targetSessionId] ?? false) throw new Error("send_streaming");
+      // A send is never refused over this client's own idea of whether the
+      // session is still running. That flag is a local projection: it lags a
+      // run that already ended (a missed terminal event, a socket that died
+      // mid-stream) and there is nothing left to clear it — automatic resume
+      // was retired in #1355, so a stale `streaming` entry sits there forever
+      // and every later message answers "message failed to send". The desktop
+      // owns the truth: a run still in flight is refused there before anything
+      // is persisted, and that refusal reaches the user as its own sentence.
 
       // Acquire the prompt lane before the first storage await. Recovery and a
       // user tap can otherwise both read the same slot and deliver concurrently.
@@ -384,7 +389,6 @@ export function usePromptOutbox({
       setDraftMode,
       setDraftWorkspaceId,
       setSelectedSessionId,
-      streamingRef,
       compactingRef,
       syncEngineRef,
       thinkingLevel,

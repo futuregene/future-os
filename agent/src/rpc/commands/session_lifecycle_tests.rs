@@ -2521,3 +2521,47 @@ fn canonical_history_requires_a_cursor_and_never_uses_the_whole_history_fallback
         "visible"
     );
 }
+
+/// Presence is a fence every remote command waits on, so it must answer while
+/// the ordered writer is busy — not after it. It used to be read on that lane,
+/// which is how one long writer job stalled four remote commands for 18–21 s on
+/// 2026-10-29.
+#[test]
+fn presence_answers_while_a_writer_job_holds_the_lane() {
+    let state = make_app_state();
+    let mut create = make_cmd_for("new_session", "fence-presence");
+    create.cwd = state.welcome_cwd.clone();
+    let created = parse_response(&handle_command_internal(&state, create));
+    assert_eq!(created["success"], true, "{created}");
+
+    let db = state
+        .session_manager
+        .storage()
+        .expect("the session store is open")
+        .db
+        .clone();
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        db.call(move |_| {
+            let _ = entered_tx.send(());
+            std::thread::sleep(std::time::Duration::from_millis(1_500));
+            Ok(())
+        })
+        .expect("the holding job ran");
+    });
+    entered.recv().expect("the holding job started");
+
+    let mut presence = make_cmd("get_session_presence");
+    presence.session_ids = vec!["fence-presence".into()];
+    let started = std::time::Instant::now();
+    let response = parse_response(&handle_command_internal(&state, presence));
+    let waited = started.elapsed();
+    holder.join().expect("the holding job finished");
+
+    assert_eq!(response["success"], true, "{response}");
+    assert_eq!(response["data"]["sessions"][0]["status"], "present");
+    assert!(
+        waited < std::time::Duration::from_millis(500),
+        "presence waited {waited:?} behind a writer job"
+    );
+}

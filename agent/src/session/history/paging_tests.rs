@@ -277,6 +277,53 @@ async fn a_backward_exchange_larger_than_the_budget_is_complete_before_projectio
     assert_eq!(full["hasMore"], false);
 }
 
+/// A backward page's `limit` counts user exchanges, so the page must carry every
+/// row of the exchanges it named — including the ones above a long run.
+///
+/// One assistant step and one tool entry per tool call make a busy run a hundred
+/// display rows on its own. A fixed row ceiling over the canonical branch cut the
+/// requested window down to whatever fitted, so a session whose newest exchange
+/// was such a run opened on its last reply alone: the question that had produced
+/// it, and every exchange before that, looked gone.
+#[test]
+fn a_busy_exchange_does_not_hide_the_exchanges_above_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = Manager::new(dir.path().join("sessions"));
+    let store = manager.storage().unwrap();
+    store.reserve_segmented("s").unwrap();
+    let mut entries = vec![
+        json!({"id":"u1","type":"user","role":"user","timestamp":"2026-10-26T00:00:00Z",
+            "content":[{"type":"text","text":"first question"}]}),
+        json!({"id":"a1","type":"assistant","role":"assistant","timestamp":"2026-10-26T00:00:01Z",
+            "content":[{"type":"text","text":"first answer"}]}),
+        json!({"id":"u2","type":"user","role":"user","timestamp":"2026-10-26T00:00:02Z",
+            "content":[{"type":"text","text":"second question"}]}),
+    ];
+    // A run with more steps than the old ceiling: one row per step.
+    for step in 0..80 {
+        entries.push(
+            json!({"id":format!("a2-{step}"),"type":"assistant","role":"assistant",
+            "timestamp":"2026-10-26T00:00:03Z",
+            "content":[{"type":"text","text":format!("step {step}")}]}),
+        );
+    }
+    entries.push(json!({"id":"a3","type":"assistant","role":"assistant",
+        "timestamp":"2026-10-26T00:00:04Z",
+        "content":[{"type":"text","text":"second answer"}]}));
+    store.replace("s", entries).unwrap();
+    let page = manager
+        .history_page("s", Some(i64::MAX), None, Some(2))
+        .unwrap();
+    let rows = page["entries"].as_array().unwrap();
+    assert!(
+        rows.len() > 64,
+        "two exchanges including a busy run are more than the old row ceiling, got {}",
+        rows.len()
+    );
+    assert_eq!(rows[0]["blocks"][0]["text"], json!("first question"));
+    assert_eq!(page["hasMore"], json!(false));
+}
+
 /// A display index that is missing (a partially migrated or damaged file) must
 /// be reported, never paged as "no history": an empty page would look to the
 /// caller like a session with nothing in it.

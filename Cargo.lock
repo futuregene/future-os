@@ -1858,6 +1858,7 @@ dependencies = [
  "dirs",
  "fd-lock",
  "fs2",
+ "future-http",
  "future-rpc",
  "futures",
  "futures-util",
@@ -1871,7 +1872,6 @@ dependencies = [
  "regex",
  "reqwest",
  "rusqlite",
- "rustls",
  "semver",
  "serde",
  "serde_json",
@@ -2003,6 +2003,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "future-config"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "future-goal"
 version = "0.1.0"
 dependencies = [
@@ -2039,6 +2048,8 @@ dependencies = [
  "future-agent",
  "future-app-settings",
  "future-app-workspaces",
+ "future-config",
+ "future-http",
  "future-remote-client",
  "future-remote-crypto",
  "future-remote-protocol",
@@ -2066,6 +2077,14 @@ dependencies = [
  "tonic",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "future-http"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "rustls",
 ]
 
 [[package]]
@@ -2203,9 +2222,9 @@ version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
- "future-host",
+ "future-config",
+ "future-http",
  "future-rpc",
- "future-tasks",
  "futures-util",
  "image",
  "libc",

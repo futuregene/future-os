@@ -11,7 +11,7 @@ import { foldsSettledReply, useReplyDetail } from "../../lib/replyDisplay";
 import { STREAMED_BLOCK_CONTAINMENT } from "../markdown/LiveMarkdownContext";
 import { MarkdownContent, StreamingMarkdownContent } from "../markdown/MarkdownContent";
 import { AgentActivityLine, AgentActivityList } from "./AgentActivityList";
-import { canContinueResponse, isCompletedWithoutReply } from "./agentMessageFormatters";
+import { isCompletedWithoutReply } from "./agentMessageFormatters";
 import { MessageMeta } from "./MessageMeta";
 import { AttachmentChip } from "./messages/AttachmentChip";
 import { MessageFrame } from "./messages/MessageFrame";
@@ -83,13 +83,17 @@ function MessageBlockImpl({
   const streaming = !isUser && message.status === "streaming";
   const noFinalReply = isCompletedWithoutReply(message);
   // Retry/Continue only make sense on the latest exchange — once a newer round has
-  // started, recovering an earlier failed exchange would fork the conversation.
-  // Also suppress for interrupted runs (the agent may still be processing the
-  // original after a GUI restart — retrying would race the in-flight run).
+  // started, recovering an earlier exchange would fork the conversation.
+  //
+  // The *reason* a reply stopped is not a gate: a failure, a user stop, a
+  // truncated stream and a run a restart cut off all leave a reply worth
+  // picking up from, and Continue only re-sends a prompt. Suppressing the row
+  // for interrupted runs (to avoid racing an in-flight run after a GUI restart)
+  // dates from the restart-auto-resume era, which #1355 retired: nothing is
+  // resumed for the user any more, so this row is the only way back in.
   const canRecover = !isUser
-    && message.status === "failed"
     && isLast === true
-    && !message.stopped;
+    && (message.status === "failed" || message.stopped === true || message.truncated === true);
   // A local narrowed to the non-empty segment array (or null) so the render can
   // map over it without a non-null assertion.
   const segments = !isUser && message.segments && message.segments.length > 0 ? message.segments : null;
@@ -303,7 +307,7 @@ function MessageBlockImpl({
                     </button>
                   )
                 : null}
-              {onContinue && canContinueResponse(message)
+              {onContinue
                 ? (
                     <button
                       className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"

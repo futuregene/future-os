@@ -373,11 +373,13 @@ mod tests {
         OverrideReset
     }
 
-    async fn free_port() -> i64 {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port() as i64;
-        drop(listener);
-        port
+    /// A port this test owns for its whole body. Not `bind("127.0.0.1:0")` +
+    /// drop: that only proves the port was free at that instant, and another
+    /// fixture's `:0` bind can be handed it before the driver is asked to
+    /// listen — which is how the probe-budget test once met a stranger's mock
+    /// rather than silence on CI. See [`crate::test_env::reserved_port`].
+    fn free_port() -> i64 {
+        crate::test_env::reserved_port()
     }
 
     // ── safari_status ─────────────────────────────────────────────────
@@ -490,7 +492,7 @@ mod tests {
         // make this test report `did not respond … within 10s`, 5/5 red).
         let _budget = ReadinessBudgetGuard::set(200);
 
-        let port = free_port().await;
+        let port = free_port();
         let started = tokio::spawn(async move { safari_start(port, None).await });
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
@@ -825,7 +827,7 @@ mod tests {
         *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
         let _reset_platform = PlatformReset;
         let _reset = set_driver_override("/nonexistent/safaridriver");
-        let err = safari_start(free_port().await, None).await.err().unwrap();
+        let err = safari_start(free_port(), None).await.err().unwrap();
         assert!(err.contains("Failed to launch safaridriver"), "{err}");
     }
 
@@ -838,7 +840,7 @@ mod tests {
         // No driver-path override: the cfg(test) default is /bin/sh, which
         // spawns fine but never serves → 10 s wait → error.
         let started = std::time::Instant::now();
-        let err = safari_start(free_port().await, Some("https://x"))
+        let err = safari_start(free_port(), Some("https://x"))
             .await
             .err()
             .unwrap();
@@ -859,7 +861,7 @@ mod tests {
         let _reset = PlatformReset;
         let _budget = ReadinessBudgetGuard::set(2);
         let started = std::time::Instant::now();
-        let err = safari_start(free_port().await, Some("https://x"))
+        let err = safari_start(free_port(), Some("https://x"))
             .await
             .err()
             .unwrap();
@@ -924,7 +926,7 @@ mod tests {
         }
         let _reset = set_driver_override(&sh.to_string_lossy());
 
-        let requested = free_port().await;
+        let requested = free_port();
         let started = tokio::spawn(async move { safari_start(requested, Some("http://x/")).await });
 
         // The spawn is behind us once the driver has recorded its port; only
@@ -1011,7 +1013,7 @@ mod tests {
         let _guard = crate::test_env::lock_env().await;
         *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(false);
         let _reset = PlatformReset;
-        let err = safari_start(free_port().await, None).await.err().unwrap();
+        let err = safari_start(free_port(), None).await.err().unwrap();
         assert_eq!(err, "Safari is only available on macOS.");
     }
 
@@ -1036,7 +1038,7 @@ mod tests {
         // bound ports must not overlap).
         let _guard = crate::test_env::lock_env().await;
         // Free port is returned as-is.
-        let free = free_port().await;
+        let free = free_port();
         assert_eq!(resolve_port(free).await.unwrap(), free);
 
         // A live HTTP endpoint on the requested port is reused as-is.
@@ -1064,7 +1066,7 @@ mod tests {
         let taken = held.local_addr().unwrap().port() as i64;
         assert!(port_in_use(taken).await);
         drop(held);
-        let free = free_port().await;
+        let free = free_port();
         assert!(!port_in_use(free).await);
     }
 
@@ -1134,7 +1136,7 @@ mod tests {
         //    carry the missing path, so only the launcher is named.)
         *SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap() =
             Some("C:\\future-clitui-no-such-driver.exe".to_string());
-        let err = safari_start(free_port().await, None)
+        let err = safari_start(free_port(), None)
             .await
             .map(|_| ())
             .expect_err("a missing driver cannot start");
@@ -1144,7 +1146,7 @@ mod tests {
         //    expires with the endpoint named. `where` exists on every Windows
         //    host and exits immediately on an unknown option.
         *SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap() = Some("where".to_string());
-        let port = free_port().await;
+        let port = free_port();
         let err = safari_start(port, None)
             .await
             .map(|_| ())

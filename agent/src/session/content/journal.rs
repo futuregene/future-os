@@ -220,7 +220,7 @@ impl Writer {
                         if text.len() > WRITE_BYTES {
                             pending.flush(store)?;
                             let scope = stream.clone();
-                            store.db.call(move |db| {
+                            store.db.call_as("journal_commit", move |db| {
                                 commit_batch(db, &scope, vec![piece], Vec::new())
                             })?;
                         } else {
@@ -262,7 +262,7 @@ impl Writer {
                             &raw,
                             &metadata["data"]["tool_args"],
                         )?;
-                        store.db.call(move |db| {
+                        store.db.call_as("journal_commit", move |db| {
                             let tx = crate::session::database::begin_write_transaction(db)?;
                             super::seal_json(&tx, range.id, verified)?;
                             tx.commit()?;

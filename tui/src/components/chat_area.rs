@@ -18,8 +18,8 @@ use crate::theme::{
 };
 use crate::tui::{Component, RESET};
 use crate::utils::{
-    apply_background_to_line, strip_ansi_codes, truncate_to_width, wrap_text_with_ansi,
-    TruncateOptions,
+    apply_background_to_line, strip_ansi_codes, truncate_to_width, visible_width,
+    wrap_text_with_ansi, TruncateOptions,
 };
 
 /// Body rows one call may print — the hard cap an expanded body gets, so a
@@ -44,63 +44,166 @@ pub enum ToolStatus {
     Error,
 }
 
-/// How much of a reply the transcript keeps — three reading levels, of which
-/// the desktop's and the phone's `replyDetail` setting offers the outer two.
+/// How much of a settled reply the transcript keeps — the desktop's two
+/// `replyDetail` levels, and only those two: `default` and `detailed`.
+///
+/// Neither level ever shows a tool call's body or a reasoning block's text
+/// (`ctrl+e` is not what opens those; the row itself is — see [`RowAction`],
+/// and `/tool-output` opens every body at once). What the level decides is
+/// whether a *settled* reply keeps its process where it happened or folds it
+/// into one row above the answer it ended on.
 ///
 /// The terminal starts at [`Default`](Self::Default) every time: `ctrl+e` (and
 /// the `/reply-detail` verb) is a view toggle for the run it is pressed in, not
 /// a preference written back to `settings.json`. A reader who peeks at the
 /// process used to find every later start expanded, because the peek *became*
 /// the stored level — the one thing a terminal must not do with a key that
-/// reads as "show me this once".
+/// reads as "show me this once". The level applies to every reply in the
+/// conversation at once: one press re-reads the whole transcript, not the
+/// reply under the cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReplyDetail {
-    /// The whole process: every slice stays in place, in the order it happened,
-    /// reasoning text included — this is the level that answers "what did it
-    /// think?". Each tool call is still one row: its body waits for
-    /// `/tool-output`, exactly as at the other levels.
+    /// The desktop's `detailed`: every slice of a settled reply keeps its own
+    /// row, in the order it happened — a tool call is one row, reasoning a
+    /// `▸ thinking` marker, and every piece of prose the model wrote (the notes
+    /// between its calls included) stays on screen. A reply that is still
+    /// running uses the same shape: nothing folds while the reader is watching
+    /// it arrive.
     Detailed,
-    /// Half folded: finished calls and reasoning collapse where they happened
-    /// (a `▸ 12 tool calls · 3 thoughts` row, a `▸ thinking` marker), while
-    /// every piece of prose the model wrote — including the notes between its
-    /// calls — stays on screen in order. This is the desktop's *live* shape
-    /// kept for a settled reply.
-    Steps,
-    /// Fully folded: a settled reply keeps only the answer it ended on, with
-    /// the reasoning, calls and notes that produced it folded into one summary
-    /// row above that answer. A reply that is still running is never folded
-    /// this far — it reads like [`Steps`](Self::Steps) until `agent_end`, so
-    /// the rows do not collapse and reopen while the model works (see
-    /// [`ChatArea::begin_reply_run`]).
+    /// The desktop's `default`: a settled reply keeps only the answer it ended
+    /// on, with the reasoning, calls and notes that produced it folded into one
+    /// summary row above that answer. A reply that is still running is never
+    /// folded this far — it reads like [`Detailed`](Self::Detailed) until
+    /// `agent_end`, so the rows do not collapse and reopen while the model
+    /// works (see [`ChatArea::begin_reply_run`]). That streaming shape is the
+    /// desktop's too: all of the model's output stays on screen while work is
+    /// folded.
     #[default]
     Default,
 }
 
 impl ReplyDetail {
-    /// The level one `ctrl+e` press moves to: everything, then the work
-    /// folded, then the process too — each press folds one more thing away, and
-    /// the press after the last opens it all again.
+    /// The level one `ctrl+e` press moves to: the whole transcript flips
+    /// between the answer alone and the answer with its process where it
+    /// happened.
     pub fn next(self) -> Self {
         match self {
-            Self::Detailed => Self::Steps,
-            Self::Steps => Self::Default,
+            Self::Detailed => Self::Default,
             Self::Default => Self::Detailed,
         }
     }
+}
 
-    /// Is reasoning text on screen? Only at [`Detailed`](Self::Detailed); the
-    /// other levels show a `▸ thinking` marker (or count the thought into a
-    /// summary row).
-    fn shows_reasoning(self) -> bool {
-        self == Self::Detailed
+/// One rendered row the reader can stop on with `tab` and act on with `enter`
+/// (or a click).
+///
+/// This is the terminal's answer to what the desktop does with a pointer: a
+/// tool call and a reasoning block are rows that open when pressed, and a
+/// folded stretch of work is a row that opens into the rows it stood for. The
+/// terminal has no pointer to hover, so the rows are `tab` stops instead — the
+/// same walk that already steps through links and pictures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowAction {
+    /// A settled reply's whole process, folded into one summary row above its
+    /// answer (`▸ 61 tool calls · 30 thoughts`). Opening it replays the reply's
+    /// slices in place, their own rows still folded.
+    Process { msg: usize },
+    /// A burst of finished work folded where it happened (`▸ read 3 files`).
+    /// Opening it puts the calls and thoughts it stood for back on screen, one
+    /// row each.
+    Burst { msg: usize },
+    /// A tool call's own row: opening it shows the call's body.
+    Tool { msg: usize },
+    /// A `▸ thinking` marker: opening it shows the reasoning text.
+    Thinking { msg: usize },
+}
+
+impl RowAction {
+    fn kind(&self) -> RowKind {
+        match self {
+            Self::Process { .. } => RowKind::Process,
+            Self::Burst { .. } => RowKind::Burst,
+            Self::Tool { .. } => RowKind::Tool,
+            Self::Thinking { .. } => RowKind::Thinking,
+        }
     }
 
-    /// Are finished calls and reasoning folded where they happened (a run of
-    /// work into counts, a lone thinking block into its marker)? True for both
-    /// folding levels; `ctrl+d`'s compact view asks the same question.
-    fn folds_work(self) -> bool {
-        self != Self::Detailed
+    /// The message the row's reveal flag lives on.
+    ///
+    /// Not always the message that *draws* the row: an opened fold's header is
+    /// the first row of the reply's tree, while the fold itself is remembered
+    /// against the reply's head — one flag, whichever of the two rows the
+    /// reader presses.
+    fn message(&self) -> usize {
+        match self {
+            Self::Process { msg }
+            | Self::Burst { msg }
+            | Self::Tool { msg }
+            | Self::Thinking { msg } => *msg,
+        }
     }
+}
+
+/// Which of a message's rows a reader opened. A message draws at most one row
+/// per kind, so the pair (message id, kind) is the row's identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RowKind {
+    /// A settled reply's whole process, folded above its answer.
+    Process,
+    /// A burst of finished work, folded where it happened.
+    Burst,
+    /// One tool call: its body waits behind its row.
+    Tool,
+    /// One reasoning block: its text waits behind its marker.
+    Thinking,
+}
+
+/// Which rows of one message are open. Four flags rather than four sets: a
+/// lookup on the render path is one `HashMap` probe, and a row that moves (a
+/// reply above it grew) keeps its state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct OpenRows {
+    process: bool,
+    burst: bool,
+    tool: bool,
+    thinking: bool,
+}
+
+impl OpenRows {
+    fn get(self, kind: RowKind) -> bool {
+        match kind {
+            RowKind::Process => self.process,
+            RowKind::Burst => self.burst,
+            RowKind::Tool => self.tool,
+            RowKind::Thinking => self.thinking,
+        }
+    }
+
+    fn toggle(&mut self, kind: RowKind) {
+        let slot = match kind {
+            RowKind::Process => &mut self.process,
+            RowKind::Burst => &mut self.burst,
+            RowKind::Tool => &mut self.tool,
+            RowKind::Thinking => &mut self.thinking,
+        };
+        *slot = !*slot;
+    }
+}
+
+/// One stop of the transcript's own walk (`tab`): the rendered row that draws
+/// it, and what pressing `enter` on it does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowStop {
+    /// Index into the rendered rows (`WorkbenchData::messages`).
+    pub row: usize,
+    /// First display column of the row's label, and one past its last. The
+    /// label, not the whole padded row: what is highlighted and what answers a
+    /// click have to be the thing that reads as pressable.
+    pub start: usize,
+    pub end: usize,
+    pub action: RowAction,
+    /// Is the row currently open (its hidden rows are on screen)?
+    pub expanded: bool,
 }
 
 /// What a folded stretch of a reply hides, as the summary row counts it.
@@ -112,19 +215,11 @@ struct FoldSummary {
     thoughts: usize,
 }
 
-/// A summary row standing in for folded work, and how far that fold reaches.
+/// A summary row standing in for a settled reply's folded work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ReplyFold {
     /// What the row counts.
     summary: FoldSummary,
-    /// Whether the row stands for a *burst* folded where it happened — a reply
-    /// that is still running, whose prose stays on screen between the bursts —
-    /// rather than a settled reply's whole process folded above its answer.
-    ///
-    /// A burst row is the only row its slices leave behind (the calls and the
-    /// reasoning marker it replaced are what it stands for), while a settled
-    /// reply's row sits above an answer that still draws itself.
-    burst: bool,
 }
 
 /// The words a transcript's own process rows are drawn in.
@@ -179,8 +274,8 @@ impl FoldWords {
 }
 
 /// The rows a transcript's folds resolve to: per message, the message that
-/// renders it, the summary rows that stand in for folded work, and the slices
-/// whose reasoning those summaries already count.
+/// renders it, the summary rows that stand in for folded work, and any folds
+/// the reader opened.
 #[derive(Debug, Default)]
 struct FoldPlan {
     /// One entry per message: the index of the message that draws its rows
@@ -188,10 +283,27 @@ struct FoldPlan {
     heads: Vec<usize>,
     /// Summary rows, keyed by the message that draws them.
     folds: HashMap<usize, ReplyFold>,
-    /// Messages whose reasoning a summary row already counts, so that they draw
-    /// no `▸ thinking` marker of their own (the marker would be a second,
-    /// uncounted row for the same thought).
-    counted: BTreeSet<usize>,
+    /// Folds the reader opened, keyed by the message that draws each of their
+    /// rows (see [`OpenedTree`]).
+    trees: HashMap<usize, OpenedTree>,
+}
+
+/// A fold the reader opened: every row it stood for is back, indented under one
+/// header row that folds them away again.
+///
+/// An opened fold has to keep a row of its own, or opening one would be a state
+/// with no way back: the summary row used to *become* the rows it hid, so the
+/// only thing that could close them was gone. The header is that row — the same
+/// counts, one press away from folding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OpenedTree {
+    /// The message the fold's reveal flag lives on: the reply's head for a
+    /// settled reply's process, the burst's first slice for a burst.
+    head: usize,
+    /// Which flag that is — [`RowKind::Process`] or [`RowKind::Burst`].
+    kind: RowKind,
+    /// What the header counts. Only the fold's first row draws it.
+    banner: Option<FoldSummary>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,6 +360,22 @@ pub struct ChatMessage {
     pub run_id: Option<String>,
     pub run_state: Option<RunState>,
     pub queue_position: Option<u32>,
+    /// Pictures this message carries, in the order they were attached.
+    ///
+    /// The journal keeps a picture as a *path* — no bytes travel with an entry
+    /// — so these name files rather than hold them, and a path that has since
+    /// been deleted paints as its caption alone.
+    pub pictures: Vec<ChatPicture>,
+}
+
+/// A picture a message carries: the file, and the name its caption shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatPicture {
+    /// The file, as the entry's metadata recorded it (an absolute path).
+    pub path: String,
+    /// The caption, already safe to sit inside markdown's `[…](…)` — see
+    /// `session_rows::rows_to_messages`.
+    pub name: String,
 }
 
 impl ChatMessage {
@@ -269,6 +397,7 @@ impl ChatMessage {
             run_id: None,
             run_state: None,
             queue_position: None,
+            pictures: Vec::new(),
         }
     }
 }
@@ -294,6 +423,16 @@ struct StreamRenderCache {
 /// Marks a folded row — a run of calls or thinking standing in for many rows.
 const FOLD_MARKER: &str = "▸";
 
+/// Marks the header of a fold the reader opened: the same row as
+/// [`FOLD_MARKER`], turned down, and pressing it folds the work away again.
+const OPEN_MARKER: &str = "▾";
+
+/// The gutter an opened fold's rows hang under. Two columns — a space and the
+/// rail — so the rail lands in column 2, directly under the header's `▸`, and
+/// every row's text starts in the column the header's label does.
+const TREE_RAIL: &str = "│";
+const TREE_GUTTER: usize = 2;
+
 /// What kind of thing a message folds into. Folding is per kind: two reads fold
 /// together, a read and a shell call do not (the same rule the desktop's
 /// collapsed bursts use, so a fold always means one homogeneous run).
@@ -303,6 +442,23 @@ enum FoldKind {
     Tool(String),
     /// A thinking block with no visible answer text of its own.
     Thinking,
+}
+
+/// Put `gutter` in front of a rendered row — inside the row's background when it
+/// has one, so a call's band still starts in column 1 with the rest of the
+/// transcript and the rail is painted *on* the band instead of beside it.
+///
+/// The row is laid out one gutter narrower (see `render_message`), so the result
+/// is exactly as wide as any other row.
+fn with_gutter(text: &str, gutter: &str) -> String {
+    const BAND: &str = "\x1b[48;5;";
+    let Some(rest) = text.strip_prefix(BAND) else {
+        return format!("{gutter}{text}");
+    };
+    match rest.find('m') {
+        Some(end) => format!("{BAND}{}{gutter}{}", &rest[..=end], &rest[end + 1..]),
+        None => format!("{gutter}{text}"),
+    }
 }
 
 /// Does this message fold into the run above it?
@@ -341,26 +497,6 @@ fn has_reasoning(msg: &ChatMessage) -> bool {
 /// marker is the row the reader sees.
 fn reasoning_only(msg: &ChatMessage) -> bool {
     msg.role == ChatRole::Assistant && msg.content.trim().is_empty() && has_reasoning(msg)
-}
-
-/// Does this slice fold into the burst around it while its reply is still
-/// running?
-///
-/// A finished (or failed) call does, and so does a reasoning-only slice that has
-/// stopped growing: they are work the reader has already been shown, and the
-/// running turn reads as counts. A call still in flight does not — it is the row
-/// the reader is waiting on. Neither does prose, which is the reply's own output
-/// and the reason a running turn is readable at all (the desktop keeps every one
-/// of them on screen until the reply settles, and so does this).
-fn folds_as_work(msg: &ChatMessage) -> bool {
-    match msg.role {
-        ChatRole::Tool => matches!(
-            msg.tool_status,
-            Some(ToolStatus::Complete) | Some(ToolStatus::Error)
-        ),
-        ChatRole::Assistant => !msg.pending && reasoning_only(msg),
-        _ => false,
-    }
 }
 
 /// The tool a call row belongs to: its name, or the call id when the agent sent
@@ -687,10 +823,15 @@ pub struct ChatArea {
     flat_cache: Option<Arc<[String]>>,
     auto_scroll: bool,
     width: usize,
-    /// `ctrl+e` (the full-process reading level) reveals the reasoning text;
-    /// at the default level it stays collapsed into a `▸ thinking` marker, as
-    /// the desktop and the phone start it. See [`ReplyDetail`].
-    thinking_hidden: bool,
+    /// The rows the reader opened, by message id and row kind: a settled
+    /// reply's folded process, a burst of work, a tool call's body, a reasoning
+    /// block's text. Keyed by kind because one message can draw two rows (a
+    /// settled reply whose head is a lone reasoning block keeps both its
+    /// summary row and its `▸ thinking` marker), and the two open separately.
+    ///
+    /// A view state, not a preference: it lives as long as the transcript does
+    /// and is dropped when the conversation is left.
+    revealed: std::collections::HashMap<String, OpenRows>,
     last_render_width: i64,
     dirty: bool,
     pending_rerender: BTreeSet<usize>,
@@ -712,10 +853,11 @@ pub struct ChatArea {
     /// compact summary rows (see [`Self::compact_heads`]). Off by default: the
     /// transcript renders exactly as it does without it.
     compact_activity: bool,
-    /// `ctrl+e`: how much of a reply stays on screen (see [`ReplyDetail`]).
-    /// `default` keeps the answer a reply ends on and folds the process that
-    /// produced it into one summary row; `steps` keeps the prose and folds the
-    /// work; `detailed` shows every slice.
+    /// `ctrl+e`: how much of a settled reply stays on screen (see
+    /// [`ReplyDetail`]). `default` keeps the answer a reply ends on and folds
+    /// the process that produced it into one summary row; `detailed` keeps
+    /// every slice where it happened. Neither level shows a call's body or a
+    /// reasoning block's text — the rows do, one at a time.
     reply_detail: ReplyDetail,
     /// The words the process rows are drawn in — the reader's interface
     /// language, not the model's output (see [`FoldWords`]).
@@ -730,9 +872,6 @@ pub struct ChatArea {
     /// reply folded and unfolded on every step — the rows collapsed while the
     /// answer was still being written, which is what the desktop never does.
     run_in_flight: bool,
-    /// Messages whose reasoning a summary row counts, so they draw no marker of
-    /// their own (see [`FoldPlan::counted`]).
-    counted_reasoning: BTreeSet<usize>,
     /// The compact layout the rendered lines were built with — one entry per
     /// message, the index of the message that renders it (itself when it
     /// renders its own rows). Compared against a freshly computed layout to
@@ -740,12 +879,19 @@ pub struct ChatArea {
     /// which changes an earlier message's rows) and the transcript has to be
     /// rebuilt. Only meaningful while a fold is possible at all.
     compact_layout: Vec<usize>,
-    /// Per message index of the message that renders a reply's folded work:
-    /// the counts its summary row draws, and whether that row stands for a burst
-    /// folded in place (a reply still running) or for the whole process above a
-    /// settled answer. Keyed by the message that *renders* the summary, and
-    /// empty for messages that fold nothing.
+    /// Per message index of the message that renders a settled reply's folded
+    /// work. Keyed by the message that *renders* the summary, and empty for
+    /// messages that fold nothing.
     reply_folds: HashMap<usize, ReplyFold>,
+    /// Folds the reader opened, keyed by the message drawing each of their rows
+    /// (see [`OpenedTree`]): their rows hang under one header that folds them
+    /// away again. Kept beside [`Self::reply_folds`] — the two are halves of one
+    /// layout, so a row that moves or a level that flips keeps its state.
+    opened_trees: HashMap<usize, OpenedTree>,
+    /// Is the render in flight drawing a row that hangs inside an opened fold?
+    /// Set around one message's own rows, and what makes a detail (a call's
+    /// body, a thought's text) hang one level deeper than its parent row.
+    nested: bool,
     /// One bitfield per message holding the only message state a fold can
     /// depend on (see [`fold_flags`]). A streaming delta changes a message's
     /// text but not these bits, which is what lets the hot path skip the
@@ -753,6 +899,14 @@ pub struct ChatArea {
     fold_bits: Vec<u8>,
     on_change: Option<Box<dyn FnMut()>>,
     message_line_ranges: Vec<(usize, i64)>,
+    /// The actionable rows each message draws, by message index: for each, its
+    /// offset inside the message's own rows, the action, and the label's column
+    /// span. One message can draw two (a settled reply whose head is a lone
+    /// reasoning block keeps both its summary row and its `▸ thinking` marker).
+    /// Derived rather than stored per rendered line so that the incremental
+    /// paths (`rerender_message`, `append_last_message`) keep it correct for
+    /// free: rows shift, offsets do not.
+    row_meta: HashMap<usize, Vec<(usize, RowAction, usize, usize)>>,
 }
 
 impl ChatArea {
@@ -768,10 +922,10 @@ impl ChatArea {
             flat_cache: None,
             auto_scroll: true,
             width: max_width,
-            // Reasoning starts collapsed, like the desktop: a streamed reply
+            // Every row starts closed, like the desktop: a streamed reply
             // would otherwise spend the screen on its own thinking and push
             // the answer it just wrote off the bottom.
-            thinking_hidden: true,
+            revealed: std::collections::HashMap::new(),
             last_render_width: -1,
             dirty: false,
             pending_rerender: BTreeSet::new(),
@@ -786,12 +940,14 @@ impl ChatArea {
             reply_detail: ReplyDetail::Default,
             fold_words: FoldWords::default(),
             run_in_flight: false,
-            counted_reasoning: BTreeSet::new(),
             compact_layout: Vec::new(),
             reply_folds: HashMap::new(),
+            opened_trees: HashMap::new(),
+            nested: false,
             fold_bits: Vec::new(),
             on_change: None,
             message_line_ranges: Vec::new(),
+            row_meta: HashMap::new(),
         }
     }
 
@@ -806,7 +962,6 @@ impl ChatArea {
     pub fn empty_like(&self) -> Self {
         let mut fresh = Self::new(self.width.max(1), Some(self.theme));
         fresh.reply_detail = self.reply_detail;
-        fresh.thinking_hidden = self.thinking_hidden;
         fresh.fold_words = self.fold_words;
         fresh.tool_output_expanded = self.tool_output_expanded;
         fresh.compact_activity = self.compact_activity;
@@ -830,9 +985,9 @@ impl ChatArea {
         self.fold_words
     }
 
-    /// A run has started writing the transcript's last reply: keep its prose
-    /// and its count rows on screen until it ends, instead of folding it onto
-    /// its answer every time a slice stops growing.
+    /// A run has started writing the transcript's last reply: keep every
+    /// thought, call and piece of prose on screen until it ends, instead of
+    /// folding the reply each time a slice stops growing.
     ///
     /// Idempotent — the workbench calls it from `agent_start` and again on the
     /// first event of a run it attached to mid-flight.
@@ -948,26 +1103,22 @@ impl ChatArea {
 
     /// Set the reading level (`/reply-detail`, or `ctrl+e`'s cycle).
     ///
-    /// The level also decides whether reasoning is on screen: `detailed` is
-    /// the full process, which is the one place the thinking text belongs; the
-    /// two folding levels keep it behind a `▸ thinking` marker (or count it into
-    /// a summary row). Keeping the two in step is what lets `ctrl+e` alone
-    /// answer "what did it think?" without a second key.
+    /// One level for the whole transcript: every reply re-reads at once, and
+    /// no row's open state is discarded by the flip — a burst the reader
+    /// opened stays open whichever level draws it.
     pub fn set_reply_detail(&mut self, detail: ReplyDetail) {
-        let thinking_hidden = !detail.shows_reasoning();
-        if self.reply_detail == detail && self.thinking_hidden == thinking_hidden {
+        if self.reply_detail == detail {
             return;
         }
         self.reply_detail = detail;
-        self.thinking_hidden = thinking_hidden;
         self.rerender();
     }
 
     /// Flip the reading level (`ctrl+e`); returns the new one. The transcript's
     /// height changes by however much was folded, so the view jumps to the
     /// bottom like the other view toggles. The cycle runs
-    /// `detailed → steps → default → detailed`: each press folds one more thing
-    /// away (see [`ReplyDetail::next`]).
+    /// `default ↔ detailed` — the desktop's two levels, and nothing between
+    /// them (see [`ReplyDetail::next`]).
     pub fn toggle_reply_detail(&mut self) -> ReplyDetail {
         let next = self.reply_detail.next();
         self.set_reply_detail(next);
@@ -985,8 +1136,8 @@ impl ChatArea {
     }
 
     /// The content of the most recent assistant message (thinking excluded) —
-    /// what `/copy` and `ctrl+x` put on the clipboard. `None` when the
-    /// transcript has no assistant text yet.
+    /// what `/copy` puts on the clipboard. `None` when the transcript has no
+    /// assistant text yet.
     pub fn last_assistant_text(&self) -> Option<String> {
         self.messages
             .iter()
@@ -1410,29 +1561,93 @@ impl ChatArea {
         }
     }
 
-    pub fn set_thinking_hidden(&mut self, hidden: bool) {
-        if self.thinking_hidden != hidden {
-            self.thinking_hidden = hidden;
-            self.rerender();
+    // ─── Opening a row (tab + enter, and a click) ───────────────────────
+
+    /// The rows `tab` stops on: every row that opens something, in reading
+    /// order — a settled reply's process, a burst of work, a tool call, a
+    /// reasoning marker.
+    ///
+    /// Derived from the per-message offsets the render wrote (`row_meta`) and
+    /// the message ranges it wrote them into, so the list is always consistent
+    /// with the lines on screen even after an incremental re-render.
+    pub fn row_stops(&self) -> Vec<RowStop> {
+        let mut stops: Vec<RowStop> = Vec::new();
+        for (msg, rows) in &self.row_meta {
+            let Some((from, to)) = self.message_line_ranges.get(*msg).copied() else {
+                continue;
+            };
+            if to < from as i64 {
+                continue;
+            }
+            for (offset, action, start, end) in rows {
+                // The reveal flag lives on the message the action names: a
+                // fold's header hangs off the first row of its tree, but it
+                // opens and closes the reply it stands for.
+                let open = self
+                    .messages
+                    .get(action.message())
+                    .and_then(|msg| self.revealed.get(msg.id.as_str()))
+                    .copied()
+                    .unwrap_or_default();
+                stops.push(RowStop {
+                    row: from + offset,
+                    start: *start,
+                    end: *end,
+                    expanded: open.get(action.kind()),
+                    action: action.clone(),
+                });
+            }
         }
+        stops.sort_by_key(|stop| stop.row);
+        stops
     }
 
-    /// Is the reasoning text collapsed (`▸ thinking` instead of the text)?
-    pub fn thinking_hidden(&self) -> bool {
-        self.thinking_hidden
-    }
-
-    /// Flip thinking visibility for all messages; returns the new state
-    /// (`true` = hidden). The workbench reaches this through the reading level
-    /// (`ctrl+e`), not a key of its own — see [`Self::set_reply_detail`].
-    /// Re-renders on change and jumps to the bottom — after expanding, the
-    /// fresh content would otherwise grow off-screen; after collapsing, the
-    /// answer lands at the bottom anyway. (Also keeps `viewport_top` valid:
-    /// collapsing shrinks the line count.)
-    pub fn toggle_thinking_hidden(&mut self) -> bool {
-        self.set_thinking_hidden(!self.thinking_hidden);
+    /// Open or close the row drawn at rendered row `row`; returns the row the
+    /// cursor should land on afterwards (`None` when that row draws nothing
+    /// actionable any more).
+    ///
+    /// Opening is per row, and the state is kept by message id, so a row that
+    /// moves (a reply above it grew) or a level flip does not lose it. The
+    /// returned row is where the *same* row went: opening a fold moves its
+    /// header to the top of the work it stands for (and closing it moves the
+    /// header back), and a reader who pressed `enter` expects the cursor to
+    /// follow what they pressed rather than stay on a line that now says
+    /// something else.
+    pub fn toggle_row(&mut self, row: usize) -> Option<usize> {
+        let msg = self.message_at_row(row)?;
+        let (from, _) = self.message_line_ranges[msg];
+        let action = self.row_meta.get(&msg).and_then(|rows| {
+            rows.iter()
+                .find(|(offset, _, _, _)| from + offset == row)
+                .map(|(_, action, _, _)| action.clone())
+        })?;
+        let id = self
+            .messages
+            .get(action.message())
+            .map(|msg| msg.id.clone())?;
+        self.revealed.entry(id).or_default().toggle(action.kind());
+        // The transcript's height changes by however much was opened or
+        // folded, which invalidates the scroll offset the reader was holding.
+        self.rerender();
         self.set_auto_scroll(true);
-        self.thinking_hidden
+        let stops = self.row_stops();
+        stops
+            .iter()
+            .find(|stop| stop.action == action)
+            .or_else(|| stops.iter().find(|stop| stop.row >= row))
+            .map(|stop| stop.row)
+    }
+
+    /// The message whose rendered rows cover `row`.
+    fn message_at_row(&self, row: usize) -> Option<usize> {
+        self.message_line_ranges
+            .iter()
+            .position(|(from, to)| *from <= row && (row as i64) <= *to)
+    }
+
+    /// Is the row `kind` of message `id` open?
+    fn is_open(&self, id: &str, kind: RowKind) -> bool {
+        self.revealed.get(id).is_some_and(|rows| rows.get(kind))
     }
 
     pub fn clear_messages(&mut self) {
@@ -1543,28 +1758,36 @@ impl ChatArea {
         self.last_render_width = -1;
     }
 
-    /// Render every slice, ignoring the reading level, the thinking fold and
-    /// the compact view — what `/transcript` copies into its pager. The three
-    /// folds are screen preferences; a transcript is a record, so it shows the
-    /// whole thing. The screen's own layout is restored before returning.
+    /// Render every slice with the work opened — what `/transcript` copies into
+    /// its pager. The reading level, the open rows and the compact view are
+    /// screen preferences; a transcript is a record, so it shows the reasoning
+    /// and the notes the screen keeps folded. Tool call bodies are still
+    /// `/tool-output`'s (or `/export`'s): a record of twenty `cargo test` runs is
+    /// their rows, not twenty logs. The screen's own layout is restored before
+    /// returning.
     pub fn render_all_detailed(&mut self, width: usize) -> Vec<String> {
-        if self.reply_detail == ReplyDetail::Detailed
-            && !self.thinking_hidden
-            && !self.compact_activity
-        {
-            return self.render_all(width);
-        }
         let detail = self.reply_detail;
-        let thinking_hidden = self.thinking_hidden;
         let compact = self.compact_activity;
+        let revealed = std::mem::take(&mut self.revealed);
         self.reply_detail = ReplyDetail::Detailed;
-        self.thinking_hidden = false;
         self.compact_activity = false;
+        let ids: Vec<String> = self.messages.iter().map(|msg| msg.id.clone()).collect();
+        for id in ids {
+            self.revealed.insert(
+                id,
+                OpenRows {
+                    process: true,
+                    burst: true,
+                    tool: false,
+                    thinking: true,
+                },
+            );
+        }
         self.rerender();
         let lines = self.render_all(width);
         self.reply_detail = detail;
-        self.thinking_hidden = thinking_hidden;
         self.compact_activity = compact;
+        self.revealed = revealed;
         self.rerender();
         lines
     }
@@ -1668,23 +1891,20 @@ impl ChatArea {
         self.flushing = false;
     }
 
-    /// The reading-level fold, in the two shapes the desktop draws.
+    /// The reading-level fold for settled replies.
     ///
     /// A **settled** reply keeps the answer it ended on: the calls, the
     /// reasoning and the notes it wrote between them fold into one summary row
-    /// above that answer. A **running** reply folds where the work happened
-    /// instead — each burst of finished calls and reasoning becomes its own
-    /// summary row — and every piece of prose it has written stays on screen, in
-    /// order, so the reader watches the reply being written rather than a count
-    /// of what it already did.
+    /// above that answer. A **running** reply never folds: every thought, call
+    /// and piece of prose keeps its row until the run ends. Folding a finished
+    /// burst while the next slice was arriving made rows disappear and reappear,
+    /// and changed the viewport height throughout the run.
     ///
     /// Whether a reply is still running is the *run's* answer, not its
     /// messages': `agent_start` opens a run and `agent_end` closes it, and in
     /// between a slice routinely stops growing while the model thinks about the
     /// next step. Reading "settled" off the messages made the whole reply
-    /// collapse onto its answer between two slices and reopen on the next event
-    /// — the flicker the desktop never shows, because it only folds a reply once
-    /// it has finished streaming.
+    /// collapse onto its answer between two slices and reopen on the next event.
     ///
     /// A reply is the stretch of messages after a user or system row: the same
     /// unit the desktop and the phone call a reply, drawn from the transcript
@@ -1692,14 +1912,15 @@ impl ChatArea {
     /// decided on its own, so an older turn stays folded while the newest one
     /// streams.
     ///
-    /// `fold_settled` is what separates the two folding levels: [`ReplyDetail::Default`]
+    /// `fold_settled` is what separates the two levels: [`ReplyDetail::Default`]
     /// passes `true` (a finished reply becomes its answer plus one count row),
-    /// [`ReplyDetail::Steps`] passes `false` (every reply, finished or not, keeps
-    /// the desktop's live shape).
+    /// [`ReplyDetail::Detailed`] passes `false` (a finished reply keeps every
+    /// slice). Neither level folds a reply that is still running.
     fn reply_fold_layout(
         messages: &[ChatMessage],
         run_in_flight: bool,
         fold_settled: bool,
+        revealed: &std::collections::HashMap<String, OpenRows>,
     ) -> FoldPlan {
         let mut plan = FoldPlan {
             heads: (0..messages.len()).collect(),
@@ -1722,6 +1943,7 @@ impl ChatArea {
                     cursor,
                     live == Some(start),
                     fold_settled,
+                    revealed,
                     &mut plan,
                 );
                 start = cursor + 1;
@@ -1752,15 +1974,10 @@ impl ChatArea {
         live
     }
 
-    /// Fold one reply (`start..end`, exclusive): the finished work in place
-    /// while it runs, the whole process above the answer once it settles.
+    /// Fold one settled reply (`start..end`, exclusive) above its answer.
     ///
-    /// A reply still running keeps every piece of prose on screen — that is its
-    /// output, and the desktop keeps all of it until the reply settles — and
-    /// folds only the bursts of work between those pieces (see
-    /// [`Self::fold_running_reply`]).
-    ///
-    /// Once the reply settles the whole reply folds — the work that produced the
+    /// A reply still running keeps every row on screen. Once the reply settles
+    /// the whole reply folds — the work that produced the
     /// answer *and* whatever ran after it. Before this, only the stretch above
     /// the answer folded, so a reply whose last prose came before its last few
     /// calls (an interrupted run, a turn that ended on a tool call) kept those
@@ -1769,15 +1986,15 @@ impl ChatArea {
     /// unit, and its summary row counts all of the work.
     ///
     /// `live` says the run is still writing *this* reply (see
-    /// [`Self::live_segment_start`]) and `fold_settled` selects the folding
-    /// level; either one being in the live shape's favour keeps the prose on
-    /// screen.
+    /// [`Self::live_segment_start`]) and `fold_settled` picks what a finished
+    /// reply does.
     fn fold_reply_segment(
         messages: &[ChatMessage],
         start: usize,
         end: usize,
         live: bool,
         fold_settled: bool,
+        revealed: &std::collections::HashMap<String, OpenRows>,
         plan: &mut FoldPlan,
     ) {
         if start >= end {
@@ -1787,8 +2004,16 @@ impl ChatArea {
             || messages[start..end]
                 .iter()
                 .any(|msg| msg.pending || msg.tool_status == Some(ToolStatus::Running));
-        if running || !fold_settled {
-            Self::fold_running_reply(messages, start, end, plan);
+        if running {
+            // Streaming rows are allowed to grow or update in place, never to
+            // disappear into an automatic fold. `agent_end` is the one moment
+            // the default reading level may collapse the reply.
+            return;
+        }
+        if !fold_settled {
+            // `detailed`: every slice keeps its own row. Nothing is folded, so
+            // there is no summary row to open; the calls and thoughts are
+            // already on screen, each opening its own detail.
             return;
         }
         // The slice the summary rides on is the one the reader keeps in sight:
@@ -1830,110 +2055,90 @@ impl ChatArea {
             // The reply is already just its output: nothing to stand in for.
             return;
         }
+        // The reader opened this reply's process row: it replays as a tree
+        // under a header that folds it away again (see [`Self::open_tree`]).
+        if revealed
+            .get(messages[head].id.as_str())
+            .is_some_and(|open| open.get(RowKind::Process))
+        {
+            Self::open_tree(
+                &mut plan.trees,
+                messages,
+                start,
+                end,
+                head,
+                RowKind::Process,
+                summary,
+            );
+            return;
+        }
         for index in folded {
             plan.heads[index] = head;
         }
-        plan.folds.insert(
-            head,
-            ReplyFold {
-                summary,
-                burst: false,
-            },
-        );
+        plan.folds.insert(head, ReplyFold { summary });
     }
 
-    /// Fold a reply that is still running: each burst of adjacent work —
-    /// finished calls, reasoning-only slices — becomes one summary row where it
-    /// happened, and every piece of prose the model wrote stays on screen.
+    /// Lay a fold the reader opened out as a tree.
     ///
-    /// This is the desktop's live shape. Its `buildReplyBlocks` groups
-    /// consecutive settled steps into one "Ran N commands · Thought" row while
-    /// the reply streams and leaves the prose untouched, and only when the reply
-    /// settles does the whole process fold above its last answer. The terminal
-    /// used to fold a running reply the same way it folds a settled one — one
-    /// row, the newest prose — which meant the notes the model wrote between its
-    /// calls were never on screen while it worked, the one moment a reader wants
-    /// them. Counting them as "work" would be wrong too (they are the reply's
-    /// output, not its process), so they stay.
+    /// Every row the fold stood for gets its own row back, hung under one header
+    /// that counts them and folds them away again — an opened fold with no
+    /// header is a state with no way out, because the summary row used to *turn
+    /// into* the rows it hid.
     ///
-    /// A burst of one folds nothing: a single finished call already reads as its
-    /// own row, and a lone reasoning slice as its `▸ thinking` marker.
-    ///
-    /// A slice can carry *both* reasoning and prose (the model thought, then
-    /// wrote in the same slice). Its prose keeps it out of the burst, but the
-    /// thought it hides still belongs to the work above it: the desktop counts
-    /// it in the steps group that precedes the prose, and so does this — the
-    /// thought is added to that group's count and the slice draws no marker of
-    /// its own. Without this the counts on screen added up to less than the work
-    /// that ran, and the leftover appeared as a `▸ thinking` row the counts never
-    /// mentioned.
-    fn fold_running_reply(messages: &[ChatMessage], start: usize, end: usize, plan: &mut FoldPlan) {
-        let mut cursor = start;
-        while cursor < end {
-            if !folds_as_work(&messages[cursor]) {
-                cursor += 1;
+    /// `head` is the slice the fold rode on. An **answer** stays outside the
+    /// tree, at the transcript's own column: it is the reply's output rather
+    /// than part of its process, and the answer's own reasoning then reads as
+    /// its `▸ thinking` marker again, so the header stops counting it. A reply
+    /// that never wrote prose has no such row — its head is just the newest
+    /// slice, which joins the tree like every other one.
+    fn open_tree(
+        trees: &mut HashMap<usize, OpenedTree>,
+        messages: &[ChatMessage],
+        start: usize,
+        end: usize,
+        head: usize,
+        kind: RowKind,
+        summary: FoldSummary,
+    ) {
+        let answer_outside =
+            messages[head].role == ChatRole::Assistant && !messages[head].content.trim().is_empty();
+        let mut banner = summary;
+        if answer_outside && has_reasoning(&messages[head]) && !reasoning_only(&messages[head]) {
+            // The answer's reasoning is a marker of its own again (it is outside
+            // the tree), so it is no longer one of the header's counts.
+            banner.thoughts = banner.thoughts.saturating_sub(1);
+        }
+        let mut first = true;
+        for index in start..end {
+            if index == head && answer_outside {
                 continue;
             }
-            let burst = cursor;
-            let mut summary = FoldSummary::default();
-            while cursor < end && folds_as_work(&messages[cursor]) {
-                match messages[cursor].role {
-                    ChatRole::Tool => summary.tools += 1,
-                    _ => summary.thoughts += 1,
-                }
-                cursor += 1;
-            }
-            if cursor - burst < 2 {
-                continue;
-            }
-            for head in plan.heads.iter_mut().take(cursor).skip(burst + 1) {
-                *head = burst;
-            }
-            plan.folds.insert(
-                burst,
-                ReplyFold {
-                    summary,
-                    burst: true,
+            trees.insert(
+                index,
+                OpenedTree {
+                    head,
+                    kind,
+                    banner: if first { Some(banner) } else { None },
                 },
             );
-        }
-        // The thoughts of the prose slices that break those bursts (see above).
-        for (offset, msg) in messages[start..end].iter().enumerate() {
-            let index = start + offset;
-            if plan.heads[index] != index || reasoning_only(msg) || !has_reasoning(msg) {
-                continue;
-            }
-            if index == start || plan.heads[index - 1] == index - 1 {
-                continue;
-            }
-            let Some(fold) = plan.folds.get_mut(&plan.heads[index - 1]) else {
-                continue;
-            };
-            if !fold.burst {
-                continue;
-            }
-            fold.summary.thoughts += 1;
-            plan.counted.insert(index);
+            first = false;
         }
     }
 
     /// The layout in effect for the rendered lines: the reading-level fold,
     /// with the compact view's runs folded on top of whatever it left standing.
     fn layout(&self) -> FoldPlan {
-        let mut plan = match self.reply_detail {
-            ReplyDetail::Detailed => FoldPlan {
-                heads: (0..self.messages.len()).collect(),
-                ..FoldPlan::default()
-            },
-            // The half-folded level keeps the live shape for every reply, so a
-            // finished turn reads exactly like the one being written.
-            ReplyDetail::Steps => {
-                Self::reply_fold_layout(&self.messages, self.run_in_flight, false)
-            }
-            ReplyDetail::Default => {
-                Self::reply_fold_layout(&self.messages, self.run_in_flight, true)
-            }
-        };
+        // `default` folds a settled reply onto the answer it ended on;
+        // `detailed` keeps every slice where it happened. A reply that is still
+        // running keeps every row at either level, and neither level shows a
+        // body or reasoning text — opened rows are the reader's.
+        let fold_settled = self.reply_detail == ReplyDetail::Default;
+        let mut plan = Self::reply_fold_layout(
+            &self.messages,
+            self.run_in_flight,
+            fold_settled,
+            &self.revealed,
+        );
         if self.compact_activity {
             let mut run: Option<(FoldKind, usize)> = None;
             for (i, msg) in self.messages.iter().enumerate() {
@@ -1947,6 +2152,14 @@ impl ChatArea {
                 // join a run either: folding it into a later row would take
                 // the summary off screen with it.
                 if plan.folds.contains_key(&i) {
+                    run = None;
+                    continue;
+                }
+                // A row hanging under an opened fold's header is out of play
+                // for the same reason: a compact run would swallow the tree's
+                // rows into a row of its own, outside the header that counts
+                // them.
+                if plan.trees.contains_key(&i) {
                     run = None;
                     continue;
                 }
@@ -2009,22 +2222,8 @@ impl ChatArea {
     /// again, brings rows back — so the transcript is rebuilt: correctness over
     /// a splice that would have to reason about both sides of the fold.
     fn sync_compact_layout(&mut self) -> bool {
-        let folded = self.reply_detail.folds_work() || self.compact_activity;
-        if !folded {
-            if self.compact_layout.len() != self.messages.len()
-                || self
-                    .compact_layout
-                    .iter()
-                    .enumerate()
-                    .any(|(i, head)| *head != i)
-            {
-                self.compact_layout = (0..self.messages.len()).collect();
-            }
-            self.reply_folds.clear();
-            self.counted_reasoning.clear();
-            self.fold_bits = Self::fold_flags(&self.messages);
-            return false;
-        }
+        // `default` folds settled replies, so there is no "nothing folds" fast
+        // path; the bit comparison below is what keeps the common case cheap.
         // A fold can only appear or dissolve when one of these bits moved, so
         // the common case (a delta arriving in the reply being streamed) costs
         // one linear scan of cheap comparisons instead of a layout rebuild.
@@ -2035,15 +2234,28 @@ impl ChatArea {
                 .reply_folds
                 .keys()
                 .all(|idx| *idx < self.messages.len())
+            && self
+                .opened_trees
+                .keys()
+                .all(|idx| *idx < self.messages.len())
         {
             return false;
         }
         let plan = self.layout();
         self.fold_bits = bits;
-        if fold_layout_extends(&self.compact_layout, &plan.heads) {
+        // A fold's *counts* can move while its structure stands: a prose slice's
+        // reasoning joins the counts above it, and the row that counts them is
+        // drawn from them (`push_reply_summary`). `heads` alone would say
+        // "nothing moved" and leave the old numbers, and a marker the counts
+        // just took over would stay on screen. Those are earlier messages' rows
+        // too, so the transcript is rebuilt rather than spliced.
+        if fold_layout_extends(&self.compact_layout, &plan.heads)
+            && plan.folds == self.reply_folds
+            && plan.trees == self.opened_trees
+        {
             self.compact_layout = plan.heads;
             self.reply_folds = plan.folds;
-            self.counted_reasoning = plan.counted;
+            self.opened_trees = plan.trees;
             return false;
         }
         self.rerender();
@@ -2065,13 +2277,14 @@ impl ChatArea {
         let plan = self.layout();
         self.compact_layout = plan.heads;
         self.reply_folds = plan.folds;
-        self.counted_reasoning = plan.counted;
+        self.opened_trees = plan.trees;
         self.fold_bits = Self::fold_flags(&self.messages);
         self.rendered_lines = Vec::new();
         self.message_line_ranges = Vec::new();
         // A folded message renders nothing and takes no separator with it, so
         // the transcript stays as tight as the summary row implies.
         let mut rendered_any = false;
+        let mut above: Option<usize> = None;
         for i in 0..self.messages.len() {
             if self.is_folded(i) {
                 let at = self.rendered_lines.len();
@@ -2079,16 +2292,16 @@ impl ChatArea {
                 continue;
             }
             if rendered_any {
-                self.rendered_lines.push(RenderedLine {
-                    text: String::new(),
-                    dim: true,
-                });
+                if let Some(above) = above {
+                    self.push_message_separator(i, above);
+                }
             }
             let start = self.rendered_lines.len();
             self.render_message(i);
             self.message_line_ranges
                 .push((start, self.rendered_lines.len() as i64 - 1));
             rendered_any = true;
+            above = Some(i);
         }
         self.rendered_lines.push(RenderedLine {
             text: String::new(),
@@ -2156,10 +2369,7 @@ impl ChatArea {
         }
         self.rendered_lines.pop();
         if self.messages.len() > 1 {
-            self.rendered_lines.push(RenderedLine {
-                text: String::new(),
-                dim: true,
-            });
+            self.push_message_separator(self.messages.len() - 1, self.messages.len() - 2);
         }
         let start = self.rendered_lines.len();
         self.render_message(self.messages.len() - 1);
@@ -2193,31 +2403,159 @@ impl ChatArea {
     fn render_message(&mut self, msg_idx: usize) {
         // A folded run renders as one summary row, written by its first message
         // (the rest render nothing at all — see `compact_heads`).
+        self.row_meta.remove(&msg_idx);
+        // Where this message's own rows start: the actionable rows it draws are
+        // remembered as offsets from here, so a splice that shifts them costs
+        // nothing (see `row_stops`).
+        let origin = self.rendered_lines.len();
         let run = self.compact_run(msg_idx);
         let fold = self.reply_folds.get(&msg_idx).copied();
+        let tree = self.opened_trees.get(&msg_idx).copied();
+        // An opened fold draws its header first — the row that folds it away
+        // again — then a gap that carries the rail on down, and hangs every row
+        // it stands for beneath that: the tree is a block of its own, not the
+        // title's next line.
+        if let Some(tree) = tree {
+            if let Some(summary) = tree.banner {
+                self.push_fold_header(msg_idx, summary, tree, origin);
+                self.push_rail_row();
+            }
+        }
+        // The rows below the header are laid out one gutter narrower and hung
+        // under the rail once they are drawn: markdown wrapping, a call's band
+        // and its body all have to fit inside the tree's column.
+        let body = self.rendered_lines.len();
+        let width = self.width;
+        if tree.is_some() {
+            self.width = width.saturating_sub(TREE_GUTTER).max(1);
+        }
+        // Rows drawn *inside* this one (a call's body, a thought's text) hang
+        // one level deeper, with a rail of their own.
+        self.nested = tree.is_some();
         let msg = self.messages[msg_idx].clone();
         match msg.role {
             ChatRole::User => self.render_user_message(&msg),
-            ChatRole::Assistant => self.render_assistant_message(msg_idx, &msg, run, fold),
+            ChatRole::Assistant => self.render_assistant_message(msg_idx, &msg, run, fold, origin),
             ChatRole::Tool if fold.is_some() => {
                 let fold = fold.unwrap();
-                self.push_reply_summary(fold.summary);
-                // A burst folded where it happened *is* this row: the calls it
-                // stands for are what it replaced. The settled shape rides on a
-                // call the reader keeps in sight instead, so that call still
-                // draws its own row.
-                if !fold.burst {
-                    if run > 1 {
-                        self.render_tool_run(msg_idx, run);
-                    } else {
-                        self.render_tool_message(&msg);
-                    }
+                self.push_reply_summary(msg_idx, fold.summary, origin);
+                // The settled summary rides on a call the reader keeps in
+                // sight, so that call still draws its own row.
+                if run > 1 {
+                    self.render_tool_run(msg_idx, run, origin);
+                } else {
+                    self.render_tool_message(msg_idx, &msg, origin);
                 }
             }
-            ChatRole::Tool if run > 1 => self.render_tool_run(msg_idx, run),
-            ChatRole::Tool => self.render_tool_message(&msg),
+            ChatRole::Tool if run > 1 => self.render_tool_run(msg_idx, run, origin),
+            ChatRole::Tool => self.render_tool_message(msg_idx, &msg, origin),
             ChatRole::System => self.render_system_message(&msg),
         }
+        // Everything but the user card draws its pictures after its own rows:
+        // the card renders them inside itself (see `render_user_message`), so a
+        // picture sits on the bubble rather than under it.
+        if !matches!(msg.role, ChatRole::User) {
+            self.render_pictures(&msg);
+        }
+        self.nested = false;
+        self.width = width;
+        if tree.is_some() {
+            // The header is the tree's own row; everything after it hangs.
+            self.hang_under_rail(body, msg_idx, body - origin);
+        }
+    }
+
+    /// Where a row drawn *inside* another one goes, and how wide: one gutter in,
+    /// with a rail of its own, when the row it belongs to is inside an opened
+    /// fold (a call's body, a thought's text).
+    ///
+    /// A detail that sat at its parent's column read as another sibling of it;
+    /// the second level is what makes the fold a tree rather than a flat list of
+    /// rows that happen to be beside a rail.
+    fn detail_place(&self) -> (usize, String) {
+        if self.nested {
+            (self.width.saturating_sub(TREE_GUTTER).max(1), self.rail())
+        } else {
+            (self.width, String::new())
+        }
+    }
+
+    /// Look the rows just drawn hang under: the rail in column 1 of each, with
+    /// the rows' own widths already laid out one gutter narrower.
+    fn hang_under_rail(&mut self, from: usize, msg_idx: usize, skipped: usize) {
+        let rail = self.rail();
+        for row in &mut self.rendered_lines[from..] {
+            if row.text.is_empty() {
+                // A blank row inside the row's own text (a paragraph break)
+                // stays blank: a rail there would read as an empty row.
+                continue;
+            }
+            row.text = with_gutter(&row.text, &rail);
+        }
+        if let Some(rows) = self.row_meta.get_mut(&msg_idx) {
+            for (offset, _, start, end) in rows.iter_mut() {
+                if *offset < skipped {
+                    continue;
+                }
+                *start += TREE_GUTTER;
+                *end += TREE_GUTTER;
+            }
+        }
+    }
+
+    /// The gutter an opened fold's rows hang under, in the chrome's faint ink:
+    /// a space and the rail, so the rail sits in column 2 — directly under the
+    /// header's marker — while the row's own one-column inset still starts the
+    /// text in the header label's column.
+    ///
+    /// The foreground is given back with `39` rather than a full reset: a reset
+    /// would drop the background a call's band is painted on.
+    fn rail(&self) -> String {
+        format!(
+            " \x1b[38;5;{}m{TREE_RAIL}\x1b[39m",
+            Chrome::from_theme(&self.theme).muted
+        )
+    }
+
+    /// The row that separates the message at `index` from the one above it: a
+    /// blank, or the tree's rail when both hang under one opened fold's header —
+    /// a blank row there would cut the tree in two.
+    fn push_message_separator(&mut self, index: usize, above: usize) {
+        let same_tree = match (self.opened_trees.get(&above), self.opened_trees.get(&index)) {
+            (Some(above), Some(index)) => above.head == index.head,
+            _ => false,
+        };
+        if same_tree {
+            self.push_rail_row();
+        } else {
+            self.rendered_lines.push(RenderedLine {
+                text: String::new(),
+                dim: true,
+            });
+        }
+    }
+
+    /// A row that carries the tree's rail and nothing else: the spine keeps
+    /// running where the transcript has a gap (between two rows of one fold, and
+    /// under its header).
+    fn push_rail_row(&mut self) {
+        let text = self.rail().trim_end().to_string();
+        self.rendered_lines.push(RenderedLine { text, dim: true });
+    }
+
+    /// Record that the row just pushed is the one `action` opens, spanning the
+    /// label the renderer wrote (from column 1, the transcript's gutter).
+    fn mark_last_row(&mut self, msg_idx: usize, origin: usize, action: RowAction) {
+        let Some(last) = self.rendered_lines.len().checked_sub(1) else {
+            return;
+        };
+        let end = visible_width(&self.rendered_lines[last].text).max(1);
+        let start = if end > 1 { 1 } else { 0 };
+        let offset = last.saturating_sub(origin);
+        self.row_meta
+            .entry(msg_idx)
+            .or_default()
+            .push((offset, action, start, end));
     }
 
     /// How many messages render together as the row at `msg_idx`: its own fold
@@ -2280,6 +2618,10 @@ impl ChatArea {
             let t = format!("{indent}{}", dim(label));
             self.push_user_card_row(&t, bg);
         }
+        // The pictures the reader attached, inside the bubble they came with —
+        // and before the card's closing padding row, so the card keeps its
+        // bottom edge under the caption rather than under a picture.
+        self.render_pictures(msg);
         self.push_user_card_row("", bg);
     }
 
@@ -2296,6 +2638,75 @@ impl ChatArea {
         });
     }
 
+    // ─── Pictures ───────────────────────────────────────────────────────
+
+    /// The pictures a message carried: the file's name, linked to its path.
+    ///
+    /// The picture itself is not painted here — not as a thumbnail either. A
+    /// text surface has no pixels of its own (the mosaic of half blocks this
+    /// renderer used to try was removed for being a guess at a picture rather
+    /// than a picture, see `workbench::image_view`), and the blank block a
+    /// bitmap was then placed over cost every message four rows of height to
+    /// say "there is a picture here" less clearly than its own name does. The
+    /// picture is one `enter` (or one click) away in the preview box, where it
+    /// is drawn at full size; the transcript line is the door to it.
+    ///
+    /// The caption is markdown's link, so `tab` + `enter` and a click both open
+    /// it — the same two ways every other link in the conversation opens.
+    fn render_pictures(&mut self, msg: &ChatMessage) {
+        if msg.pictures.is_empty() {
+            return;
+        }
+        // A picture inside the user bubble is part of the bubble: that is where
+        // the reader put it, and a full-width block hanging under it would read
+        // as a separate message.
+        let card = matches!(msg.role, ChatRole::User);
+        let bg = self.theme.user_bg;
+        let inset = if self.width >= Self::USER_CARD_INSET * 2 {
+            Self::USER_CARD_INSET
+        } else {
+            1
+        };
+        let indent = " ".repeat(inset);
+        let content_width = if card {
+            self.width.saturating_sub(inset * 2).max(1)
+        } else {
+            self.width.saturating_sub(2).max(1)
+        };
+        for picture in &msg.pictures {
+            // Markdown rather than a hand-built row: `[…](…)` is exactly the
+            // link styling the transcript paints every other link in, and the
+            // OSC 8 wrapper it writes is what `tab` and a click find.
+            let label = if picture.name.trim().is_empty() {
+                file_name_of(&picture.path)
+            } else {
+                picture.name.clone()
+            };
+            // The caption is markdown's link text: a bracket or a newline in a
+            // file name would close the row's own syntax early.
+            let label = label.replace(['[', ']', '\n', '\r'], " ");
+            let caption = format!(
+                "[{label}]({})",
+                crate::terminal_image::path_href(&picture.path)
+            );
+            for line in self.md.render_text(&caption, content_width) {
+                if card {
+                    self.push_user_card_row(&format!("{indent}{line}"), bg);
+                } else if line.is_empty() {
+                    self.rendered_lines.push(RenderedLine {
+                        text: String::new(),
+                        dim: true,
+                    });
+                } else {
+                    self.rendered_lines.push(RenderedLine {
+                        text: format!(" {line}"),
+                        dim: false,
+                    });
+                }
+            }
+        }
+    }
+
     // ─── Assistant message (markdown, thinking first) ───────────────────
 
     fn render_assistant_message(
@@ -2304,71 +2715,44 @@ impl ChatArea {
         msg: &ChatMessage,
         run: usize,
         fold: Option<ReplyFold>,
+        origin: usize,
     ) {
         let has_thinking = msg
             .thinking
             .as_deref()
-            .is_some_and(|t| !t.trim().is_empty());
+            .is_some_and(|t| !t.trim().is_empty())
+            // Reasoning that has started but not sent its first token yet is
+            // still the row the reader is watching: drawing nothing until the
+            // first delta made the marker arrive a frame late, on a line the
+            // transcript had already counted (a blank) — one more row appearing
+            // under a bottom-anchored transcript, one more jump.
+            || (msg.pending && msg.content.trim().is_empty() && msg.thinking.is_some());
 
         // The reading level folded this reply's work (and this answer's own
         // reasoning) away: one summary row stands in for it, above the answer.
+        let summary_drawn = fold.is_some();
         if let Some(fold) = fold {
-            self.push_reply_summary(fold.summary);
+            self.push_reply_summary(msg_idx, fold.summary, origin);
         }
 
-        // Render thinking block FIRST (before content). Collapsed reasoning —
-        // the default level, and the compact view — shows a one-line marker
-        // instead of the text, the row the desktop's `Thinking` block and the
-        // phone's thought row use: that the model reasoned, not what it said.
+        // Render thinking block FIRST (before content). Reasoning is never its
+        // text on this surface: a one-line marker says the model reasoned — the
+        // row the desktop's `Thinking` block and the phone's thought row use —
+        // and opening it (`enter` on the marker) shows the text beneath it.
+        // `ctrl+e` is *not* what opens reasoning: no level of it shows a body's
+        // text or a call's output (see [`ReplyDetail`]).
+        //
         // A folded reply hides the marker too: its summary row already counts
-        // the thought — the two exceptions are a burst this slice *heads* (its
-        // row is that summary) and reasoning that is a reply's whole output so
-        // far, whose marker is the only row saying the model thought at all
-        // (see `reasoning_only`).
+        // the thought, except when reasoning is the reply's whole output and
+        // the marker is the only row saying the model thought at all.
         let shows_marker = match fold {
-            // Not folded: the marker is this slice's row — unless a burst above
-            // it already counts this slice's reasoning (see `FoldPlan::counted`).
-            None => !self.counted_reasoning.contains(&msg_idx),
-            // A burst this slice heads *is* that summary row — the marker would
-            // say the same thing twice.
-            Some(fold) if fold.burst => false,
-            // A settled reply keeps the marker only when the reasoning is its
-            // whole output (see `reasoning_only`).
+            None => true,
             Some(_) => reasoning_only(msg),
         };
         if has_thinking && shows_marker {
-            if self.thinking_hidden || self.compact_activity {
-                self.push_thinking_marker(msg, run);
-            } else {
-                let thinking = msg.thinking.as_deref().unwrap_or("");
-                let thinking_lines = if msg.pending {
-                    Self::render_streaming_markdown(
-                        &mut self.stream_caches,
-                        &format!("{}:t", msg.id),
-                        thinking,
-                        self.width.saturating_sub(2).max(1),
-                        &mut self.md_thinking,
-                    )
-                } else {
-                    self.md_thinking
-                        .render_text(thinking, self.width.saturating_sub(2).max(1))
-                };
-                let think_prefix = format!("\x1b[3m\x1b[38;5;{}m", self.theme.thinking_text);
-                for line in thinking_lines {
-                    if line.is_empty() {
-                        self.rendered_lines.push(RenderedLine {
-                            text: String::new(),
-                            dim: true,
-                        });
-                    } else {
-                        // Re-apply thinking style after EVERY ANSI reset.
-                        let styled = reapply_style(&format!(" {line}"), &think_prefix);
-                        self.rendered_lines.push(RenderedLine {
-                            text: format!("{think_prefix}{styled}{RESET}"),
-                            dim: true,
-                        });
-                    }
-                }
+            self.push_thinking_marker(msg_idx, msg, run, origin);
+            if self.is_open(&msg.id, RowKind::Thinking) {
+                self.push_thinking_text(msg);
             }
         }
 
@@ -2376,11 +2760,24 @@ impl ChatArea {
         // on screen — a marker row and the answer read fine without it, and the
         // streaming marker never coexists with content).
         if has_thinking
-            && !self.thinking_hidden
-            && !self.compact_activity
+            && self.is_open(&msg.id, RowKind::Thinking)
             && fold.is_none()
             && !msg.content.trim().is_empty()
         {
+            self.rendered_lines.push(RenderedLine {
+                text: String::new(),
+                dim: true,
+            });
+        }
+
+        // …and the same row above a folded reply's answer. The counts are chrome
+        // that heads the answer, so wedged against the prose they read as its
+        // first line (`▸ 工具调用 62 次 · 思考 39 次` and `是缓存命中率…` on
+        // consecutive rows). This never stacks with the spacer above: that one
+        // needs `fold.is_none()`, and a folded reply shows its reasoning text
+        // only when the reasoning is the whole output, which leaves no content
+        // to space out here.
+        if summary_drawn && !msg.content.trim().is_empty() {
             self.rendered_lines.push(RenderedLine {
                 text: String::new(),
                 dim: true,
@@ -2494,7 +2891,7 @@ impl ChatArea {
     /// `/tool-output`), no targets (twenty paths is what the fold exists to
     /// avoid).
     /// The `▸` marks it as a fold rather than a call.
-    fn render_tool_run(&mut self, msg_idx: usize, run: usize) {
+    fn render_tool_run(&mut self, msg_idx: usize, run: usize, origin: usize) {
         let tool_name = tool_name_of(&self.messages[msg_idx]);
         let count = if tool_name == "shell" {
             // Every command stands on its own, so the run's size is its count.
@@ -2517,6 +2914,7 @@ impl ChatArea {
             text: apply_background_to_line(&line, self.width, self.theme.tool_success_bg),
             dim: true,
         });
+        self.mark_last_row(msg_idx, origin, RowAction::Burst { msg: msg_idx });
     }
 
     /// `read 3 files` / `$ 4 commands` / `mcp_tool ×3` — the folded row's label,
@@ -2544,7 +2942,13 @@ impl ChatArea {
     /// them): that the model reasoned, and how many blocks — not the text. The
     /// ellipsis marks the reasoning *itself* still arriving (`pending` alone is
     /// not enough: the flag also covers the answer streaming after it).
-    fn push_thinking_marker(&mut self, msg: &ChatMessage, run: usize) {
+    fn push_thinking_marker(
+        &mut self,
+        msg_idx: usize,
+        msg: &ChatMessage,
+        run: usize,
+        origin: usize,
+    ) {
         let mut label = self.fold_words.thinking.to_string();
         if run > 1 {
             label.push_str(&format!(" ×{run}"));
@@ -2556,7 +2960,46 @@ impl ChatArea {
         // has always had) — both stated once, for the whole row, by
         // `push_quiet_row`.
         let ink = self.theme.thinking_text as u8;
-        self.push_quiet_row(&label, ink, true);
+        self.push_quiet_row(FOLD_MARKER, &label, ink, true);
+        self.mark_last_row(msg_idx, origin, RowAction::Thinking { msg: msg_idx });
+    }
+
+    /// The reasoning text, drawn under its marker once the reader opens it.
+    ///
+    /// The same italic ink and inset the desktop's revealed thought uses: one
+    /// step in from the marker, so a reasoning block and a tool call's body read
+    /// the same way.
+    fn push_thinking_text(&mut self, msg: &ChatMessage) {
+        let thinking = msg.thinking.as_deref().unwrap_or("");
+        let (detail_width, detail_rail) = self.detail_place();
+        let width = detail_width.saturating_sub(2).max(1);
+        let thinking_lines = if msg.pending {
+            Self::render_streaming_markdown(
+                &mut self.stream_caches,
+                &format!("{}:t", msg.id),
+                thinking,
+                width,
+                &mut self.md_thinking,
+            )
+        } else {
+            self.md_thinking.render_text(thinking, width)
+        };
+        let think_prefix = format!("\x1b[3m\x1b[38;5;{}m", self.theme.thinking_text);
+        for line in thinking_lines {
+            if line.is_empty() {
+                self.rendered_lines.push(RenderedLine {
+                    text: String::new(),
+                    dim: true,
+                });
+            } else {
+                // Re-apply thinking style after EVERY ANSI reset.
+                let styled = reapply_style(&format!(" {line}"), &think_prefix);
+                self.rendered_lines.push(RenderedLine {
+                    text: format!("{detail_rail}{think_prefix}{styled}{RESET}"),
+                    dim: true,
+                });
+            }
+        }
     }
 
     /// One of the transcript's own quiet rows: `" ▸ label"` in a single ink,
@@ -2567,7 +3010,7 @@ impl ChatArea {
     /// colour it was given, and the frame's row painter re-arms the body ink
     /// after it — so the counts that followed a `dim(▸)` used to arrive in the
     /// bright body colour while only the marker wore the faint ink.
-    fn push_quiet_row(&mut self, label: &str, ink: u8, italic_label: bool) {
+    fn push_quiet_row(&mut self, marker: &str, label: &str, ink: u8, italic_label: bool) {
         // A row is text like any other: a terminal too narrow for it clips it
         // instead of spilling past the last column. The marker and its two
         // spaces stay whole; the label takes what is left.
@@ -2577,7 +3020,7 @@ impl ChatArea {
             &TruncateOptions::default(),
         );
         let mut text = fg_raw(ink, " ");
-        text.push_str(&dim_raw(FOLD_MARKER));
+        text.push_str(&dim_raw(marker));
         text.push_str("\x1b[22m ");
         if italic_label {
             text.push_str(&italic_raw(&label));
@@ -2592,12 +3035,50 @@ impl ChatArea {
     /// said. The same two counts — and the same order — the desktop's process
     /// fold and the phone's step summary use, so one reply reads the same on
     /// every client. It rides on the slice below it: the answer, or the call the
-    /// reply is running right now.
+    /// reply stopped at.
     ///
     /// The wording comes from [`FoldWords`], which is what lets a Chinese frame
     /// say `工具调用 61 次 · 思考 30 次` while an English one says
     /// `61 tool calls · 30 thoughts`.
-    fn push_reply_summary(&mut self, summary: FoldSummary) {
+    fn push_reply_summary(&mut self, msg_idx: usize, summary: FoldSummary, origin: usize) {
+        let label = self.fold_summary_label(summary);
+        // Upright, not italic: the desktop's counts are plain, and slanted
+        // digits would pull the eye to the one row that is meant to sit behind
+        // the prose.
+        //
+        // The faintest ink the chrome has (the default palette's `241`, one step
+        // under the `245` of body dim text): the row is a note about work that
+        // already happened, and it should recede behind the answer it stands
+        // above.
+        let ink = Chrome::from_theme(&self.theme).muted;
+        self.push_quiet_row(FOLD_MARKER, &label, ink, false);
+        self.mark_last_row(msg_idx, origin, RowAction::Process { msg: msg_idx });
+    }
+
+    /// The header an opened fold's rows hang under: the same counts as the
+    /// closed summary row, with the marker turned down. Pressing it (`enter`, or
+    /// a click) folds the tree away again.
+    fn push_fold_header(
+        &mut self,
+        msg_idx: usize,
+        summary: FoldSummary,
+        tree: OpenedTree,
+        origin: usize,
+    ) {
+        let label = self.fold_summary_label(summary);
+        let ink = Chrome::from_theme(&self.theme).muted;
+        self.push_quiet_row(OPEN_MARKER, &label, ink, false);
+        let action = match tree.kind {
+            RowKind::Burst => RowAction::Burst { msg: tree.head },
+            _ => RowAction::Process { msg: tree.head },
+        };
+        self.mark_last_row(msg_idx, origin, action);
+    }
+
+    /// `12 tool calls · 3 thoughts` / `工具调用 12 次 · 思考 3 次`, in the order
+    /// [`FoldWords`] gives them; a fold that counted nothing (a burst of notes)
+    /// falls back on the plain name for what it hides.
+    fn fold_summary_label(&self, summary: FoldSummary) -> String {
         let words = self.fold_words;
         let mut parts: Vec<String> = Vec::new();
         if summary.tools > 0 {
@@ -2620,24 +3101,14 @@ impl ChatArea {
                 summary.thoughts,
             ));
         }
-        let label = if parts.is_empty() {
+        if parts.is_empty() {
             words.process.to_string()
         } else {
             parts.join(" · ")
-        };
-        // Upright, not italic: the desktop's counts are plain, and slanted
-        // digits would pull the eye to the one row that is meant to sit behind
-        // the prose.
-        //
-        // The faintest ink the chrome has (the default palette's `241`, one step
-        // under the `245` of body dim text): the row is a note about work that
-        // already happened, and it should recede behind the answer it stands
-        // above.
-        let ink = Chrome::from_theme(&self.theme).muted;
-        self.push_quiet_row(&label, ink, false);
+        }
     }
 
-    fn render_tool_message(&mut self, msg: &ChatMessage) {
+    fn render_tool_message(&mut self, msg_idx: usize, msg: &ChatMessage, origin: usize) {
         let tool_name = msg
             .name
             .as_deref()
@@ -2672,32 +3143,38 @@ impl ChatArea {
             text: apply_background_to_line(&line, self.width, bg_color),
             dim: status != ToolStatus::Running,
         });
+        self.mark_last_row(msg_idx, origin, RowAction::Tool { msg: msg_idx });
 
-        // A call is one row — the call itself, however it ended. The body is
-        // what `/tool-output` is for, so a transcript of twenty calls is twenty
-        // rows rather than twenty previews, and a failure is one of the twenty.
-        if !self.tool_output_expanded {
+        // A call is one row — the call itself, however it ended. The body waits
+        // behind that row: opened one at a time by `enter` on it (or a click),
+        // or all at once by `/tool-output`. A transcript of twenty calls is
+        // twenty rows rather than twenty previews, and a failure is one of the
+        // twenty.
+        if !self.tool_output_expanded && !self.is_open(&msg.id, RowKind::Tool) {
             return;
         }
 
-        let (rows, hidden) = body.rows(self.width, &self.theme);
-        self.rendered_lines.extend(
-            rows.into_iter()
-                .map(|text| RenderedLine { text, dim: false }),
-        );
+        let (detail_width, detail_rail) = self.detail_place();
+        let (rows, hidden) = body.rows(detail_width, &self.theme);
+        self.rendered_lines.extend(rows.into_iter().map(|text| {
+            let text = if text.is_empty() {
+                text
+            } else {
+                format!("{detail_rail}{text}")
+            };
+            RenderedLine { text, dim: false }
+        }));
         if hidden > 0 {
-            self.rendered_lines.push(RenderedLine {
-                text: fg(
-                    self.theme.dim as u8,
-                    &truncate_to_width(
-                        &format!(
-                            "  … {hidden} more line{plural} · truncated",
-                            plural = if hidden == 1 { "" } else { "s" },
-                        ),
-                        self.width,
-                        &TruncateOptions::default(),
-                    ),
+            let more = truncate_to_width(
+                &format!(
+                    "  … {hidden} more line{plural} · truncated",
+                    plural = if hidden == 1 { "" } else { "s" },
                 ),
+                detail_width,
+                &TruncateOptions::default(),
+            );
+            self.rendered_lines.push(RenderedLine {
+                text: fg(self.theme.dim as u8, &format!("{detail_rail}{more}")),
                 dim: true,
             });
         }
@@ -2900,8 +3377,17 @@ impl Component for ChatArea {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
-/// Build the assistant and thinking markdown renderers for `theme`.
-///
+/// The file's own name, for a picture whose caption arrived empty.
+fn file_name_of(path: &str) -> String {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path).trim();
+    if name.is_empty() {
+        path.to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+/// Build the assistant and thinking markdown renderers for `theme`.///
 /// The assistant renderer takes the palette's markdown roles
 /// ([`MarkdownTheme::from_theme`]), so `/theme` repaints the transcript instead
 /// of leaving it on the dark constants baked into `MarkdownTheme::default`.
@@ -2969,21 +3455,35 @@ mod tests {
         ChatArea::new(W, None)
     }
 
-    /// The same transcript at the *detailed* reading level — every slice in
-    /// place, reasoning text included. Tests about what a slice looks like
-    /// (thinking colours, a call's row) render at this level so neither the
-    /// reading-level fold nor the collapsed reasoning stands between them and
-    /// the row under test. The compact-view tests use it too: at the default
-    /// level a reply's own summary covers its calls first, so the compact fold
-    /// is only on its own there.
+    /// The same transcript at the *detailed* reading level — the desktop's
+    /// `detailed`: every slice keeps its own row, the work folded where it
+    /// happened and the prose in order. Tests about what a slice looks like (a
+    /// call's row, a marker's ink) render at this level so the *settled-reply*
+    /// fold does not stand between them and the row under test. The compact-view
+    /// tests use it too: at the default level a reply's own summary covers its
+    /// calls first, so the compact fold is only on its own there.
     fn detailed_chat() -> ChatArea {
         let mut chat = ChatArea::new(W, None);
         chat.set_reply_detail(ReplyDetail::Detailed);
         chat
     }
 
+    /// The row stop whose action opens the reasoning of message `id`.
+    fn thinking_stop(chat: &mut ChatArea, id: &str) -> usize {
+        let msg = chat
+            .messages
+            .iter()
+            .position(|msg| msg.id == id)
+            .expect("the message is in the transcript");
+        chat.row_stops()
+            .into_iter()
+            .find(|stop| stop.action == RowAction::Thinking { msg })
+            .expect("the reasoning block draws a marker")
+            .row
+    }
+
     #[test]
-    fn toggle_thinking_hidden_collapses_and_expands() {
+    fn a_marker_opens_its_reasoning_text_and_closes_again() {
         let mut chat = detailed_chat();
         chat.render(W);
         set_messages(
@@ -2997,30 +3497,28 @@ mod tests {
             }],
         );
 
-        // Expanded by default: full thinking text is rendered.
-        let expanded = chat.render_all(W);
-        assert!(expanded
-            .iter()
-            .any(|l| l.contains("step by step reasoning")));
+        // Closed by default: the reason said that it thought, never what it
+        // thought — at *both* reading levels (see `ReplyDetail`).
+        let closed = chat.render_all(W);
+        assert!(!closed.iter().any(|l| l.contains("step by step reasoning")));
+        assert!(closed.iter().any(|l| l.contains("final answer")));
 
-        // Collapse: thinking block disappears entirely (no placeholder);
-        // the answer content stays visible and we stick to the bottom.
-        assert!(chat.toggle_thinking_hidden());
-        let collapsed = chat.render_all(W);
-        assert!(!collapsed
-            .iter()
-            .any(|l| l.contains("step by step reasoning")));
-        assert!(!collapsed.iter().any(|l| l.contains("Thinking...")));
-        assert!(collapsed.iter().any(|l| l.contains("final answer")));
+        // `enter` on the marker: the text arrives under it, the view sticks to
+        // the bottom.
+        let row = thinking_stop(&mut chat, "m");
+        assert!(chat.toggle_row(row).is_some());
+        let open = chat.render_all(W);
+        assert!(open.iter().any(|l| l.contains("step by step reasoning")));
+        assert!(open.iter().any(|l| l.contains("final answer")));
         assert!(chat.auto_scroll);
+        assert_matches_fresh_render(&mut chat);
 
-        // Expand again, still pinned to the bottom.
-        assert!(!chat.toggle_thinking_hidden());
-        let reexpanded = chat.render_all(W);
-        assert!(reexpanded
-            .iter()
-            .any(|l| l.contains("step by step reasoning")));
-        assert!(chat.auto_scroll);
+        // `enter` again puts it back.
+        let row = thinking_stop(&mut chat, "m");
+        chat.toggle_row(row).expect("the marker is still a row");
+        let again = chat.render_all(W);
+        assert!(!again.iter().any(|l| l.contains("step by step reasoning")));
+        assert_matches_fresh_render(&mut chat);
     }
 
     #[test]
@@ -3090,10 +3588,12 @@ mod tests {
         assert!(!plain.contains("hmm"), "{plain:?}");
     }
 
-    /// The full-process level is where the reasoning text lives, and toggling
-    /// it is the only key a reader needs: `ctrl+e` in, `ctrl+e` out.
+    /// No reading level shows the reasoning text, and `ctrl+e` never did: it
+    /// flips between the answer alone and the reply with its process, and the
+    /// thought stays a marker at both. Opening the marker is the row's own
+    /// door (see `a_marker_opens_its_reasoning_text_and_closes_again`).
     #[test]
-    fn the_full_process_level_reveals_the_reasoning_text() {
+    fn no_reading_level_shows_the_reasoning_text() {
         let mut chat = new_chat();
         chat.render(W);
         chat.start_thinking();
@@ -3101,23 +3601,16 @@ mod tests {
         chat.end_thinking();
         chat.append_to_last_message("answer");
         chat.mark_last_message_complete();
-        assert!(chat.thinking_hidden());
 
-        chat.set_reply_detail(ReplyDetail::Detailed);
-        assert!(!chat.thinking_hidden());
-        let lines = chat.render_all(W);
-        assert!(
-            lines.iter().any(|l| l.contains("secret reasoning")),
-            "{lines:?}"
-        );
-
-        chat.set_reply_detail(ReplyDetail::Default);
-        assert!(chat.thinking_hidden());
-        let lines = chat.render_all(W);
-        assert!(
-            !lines.iter().any(|l| l.contains("secret reasoning")),
-            "{lines:?}"
-        );
+        for level in [ReplyDetail::Default, ReplyDetail::Detailed] {
+            chat.set_reply_detail(level);
+            let lines = chat.render_all(W);
+            assert!(
+                !lines.iter().any(|l| l.contains("secret reasoning")),
+                "{level:?} leaked the reasoning: {lines:?}"
+            );
+            assert!(lines.iter().any(|l| l.contains("answer")), "{lines:?}");
+        }
     }
 
     #[test]
@@ -3149,6 +3642,22 @@ mod tests {
         chat.rerender();
     }
 
+    /// Open every row the transcript draws (each one by the `enter` a reader
+    /// would press on it), so a test that inspects a body or a reasoning text
+    /// sees it. The walk is the reader's own: a summary row opens into its
+    /// slices, and each of those opens its detail.
+    fn open_all_rows(chat: &mut ChatArea) {
+        for _ in 0..128 {
+            let Some(stop) = chat.row_stops().into_iter().find(|stop| !stop.expanded) else {
+                return;
+            };
+            if chat.toggle_row(stop.row).is_none() {
+                return;
+            }
+        }
+        panic!("rows kept appearing: the walk did not settle");
+    }
+
     // ─── Compact activity (ctrl+d) ─────────────────────────────────────
 
     /// A completed tool call, the way a live run builds one (start, then end).
@@ -3172,7 +3681,7 @@ mod tests {
         let incremental = chat.render_all(width);
         let mut fresh = ChatArea::new(width, None);
         fresh.set_tool_output_expanded(chat.tool_output_expanded());
-        fresh.set_thinking_hidden(chat.thinking_hidden);
+        fresh.revealed = chat.revealed.clone();
         fresh.compact_activity = chat.compact_activity;
         fresh.reply_detail = chat.reply_detail;
         set_messages(&mut fresh, chat.messages.clone());
@@ -3192,7 +3701,7 @@ mod tests {
         // another walk through the incremental paths.
         let mut fresh = ChatArea::new(W, None);
         fresh.set_tool_output_expanded(chat.tool_output_expanded());
-        fresh.set_thinking_hidden(chat.thinking_hidden);
+        fresh.revealed = chat.revealed.clone();
         fresh.fold_words = chat.fold_words;
         fresh.compact_activity = chat.compact_activity;
         fresh.reply_detail = chat.reply_detail;
@@ -3242,6 +3751,23 @@ mod tests {
         render_trimmed(chat)
             .iter()
             .map(|line| strip(line).trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect()
+    }
+
+    /// [`compact_lines`] with the tree's rail taken off, so a test can read an
+    /// opened fold as the rows it stands for.
+    fn rail_stripped(chat: &mut ChatArea) -> Vec<String> {
+        render_trimmed(chat)
+            .iter()
+            .map(|line| strip(line))
+            .map(|line| {
+                line.trim_start()
+                    .strip_prefix(TREE_RAIL)
+                    .unwrap_or(line.trim_start())
+                    .trim()
+                    .to_string()
+            })
             .filter(|line| !line.is_empty())
             .collect()
     }
@@ -3447,21 +3973,31 @@ mod tests {
     }
 
     #[test]
-    fn compact_view_folds_thinking_to_one_marker() {
+    fn a_marker_keeps_its_place_while_the_compact_view_folds_it() {
+        // A lone thought is already the marker the compact view would draw, so
+        // the toggle changes nothing about it — and its text opens from the
+        // marker itself, at either setting.
         let mut chat = detailed_chat();
         chat.render(W);
         chat.add_message(ChatMessage::new("u".into(), ChatRole::User, "go"));
         let mut assistant = ChatMessage::new("a".into(), ChatRole::Assistant, "the answer");
-        assistant.thinking = Some("line one\nline two\nline three".into());
+        assistant.thinking = Some("line one\nline two".into());
         chat.add_message(assistant);
-        // Without the compact view the reasoning is on screen in full.
-        assert!(compact_lines(&mut chat)
-            .iter()
-            .any(|l| l.contains("line one")));
+        assert_eq!(
+            compact_lines(&mut chat),
+            vec!["go", "▸ thinking", "the answer"]
+        );
 
         chat.set_compact_activity(true);
         let lines = compact_lines(&mut chat);
         assert_eq!(lines, vec!["go", "▸ thinking", "the answer"], "{lines:?}");
+
+        open_all_rows(&mut chat);
+        let opened = compact_lines(&mut chat);
+        assert!(
+            opened.iter().any(|line| line.contains("line one")),
+            "the reasoning opens from its marker — {opened:?}"
+        );
         assert_matches_fresh_render(&mut chat);
     }
 
@@ -3485,10 +4021,11 @@ mod tests {
     /// default level draws (reasoning starts collapsed there too).
     #[test]
     fn hidden_thinking_keeps_its_marker_and_loses_its_text() {
+        // `ctrl+d`'s compact view folds the thought into its marker — the same
+        // row the reader sees at every other level, never its text.
         let mut chat = detailed_chat();
         chat.render(W);
         chat.set_compact_activity(true);
-        chat.set_thinking_hidden(true);
         let mut msg = ChatMessage::new("a1".into(), ChatRole::Assistant, "answer");
         msg.thinking = Some("reasoning".into());
         chat.add_message(msg);
@@ -3653,21 +4190,31 @@ mod tests {
     }
 
     #[test]
-    fn the_detailed_level_keeps_every_slice_but_tool_bodies_collapsed() {
+    /// The detailed level is the desktop's `detailed`: every slice stays where
+    /// it happened, interleaved in order — and a body or a reasoning text is
+    /// still nobody's default (`ctrl+e` opens neither; the rows do).
+    fn the_detailed_level_keeps_every_slice_without_its_detail() {
         let mut chat = new_chat();
         chat.render(W);
         chat.set_reply_detail(ReplyDetail::Detailed);
         set_messages(&mut chat, settled_turn_messages());
 
         let lines = compact_lines(&mut chat);
+        // The thought is a marker, never its text — at every level.
         assert!(
-            lines.iter().any(|l| l.contains("weighing the options")),
-            "{lines:?}"
+            !lines.iter().any(|l| l.contains("weighing the options")),
+            "detailed does not print reasoning — {lines:?}"
         );
+        // Every slice keeps its own row, in order: no summary row at all.
         assert!(
             lines.iter().any(|l| l.contains("read /src/parser.rs")),
             "{lines:?}"
         );
+        assert!(
+            lines.iter().all(|l| !l.contains("tool call")),
+            "detailed draws no count row — {lines:?}"
+        );
+        // Every piece of prose the model wrote stays, in order.
         assert!(
             lines.iter().any(|l| l.contains("I read the parser.")),
             "{lines:?}"
@@ -3676,29 +4223,391 @@ mod tests {
             lines.iter().any(|l| l.contains("Fixed the off-by-one.")),
             "{lines:?}"
         );
-        assert!(
-            !lines
-                .iter()
-                .any(|l| l.contains("tool call") || l.contains("thought")),
-            "detail draws no fold row — {lines:?}"
-        );
-        // The call's body stays behind /tool-output at either reading level.
+        // The call's body stays behind its own row (or `/tool-output`) at either
+        // level.
         assert!(!lines.iter().any(|l| l.contains("body")), "{lines:?}");
         assert_matches_fresh_render(&mut chat);
     }
 
-    /// A running reply folds the way the desktop's live view does: each burst of
-    /// finished work becomes a summary row *where it happened*, and every piece
-    /// of prose the model wrote stays on screen — including the notes it wrote
-    /// between its calls. Settling is what folds those notes away, leaving the
-    /// answer the reply ended on.
-    ///
-    /// The terminal used to fold a live reply the same way it folds a settled
-    /// one (one row, the newest prose), which meant the output *between* the
-    /// calls was never on screen while the model worked — the one moment a
-    /// reader watches it arrive.
+    /// An opened process is a tree: one header that folds it again, and every
+    /// slice it stood for hung under a rail beneath it.
     #[test]
-    fn a_streaming_reply_folds_the_work_but_keeps_its_prose() {
+    fn an_opened_process_hangs_its_rows_under_one_header() {
+        let mut chat = new_chat();
+        chat.render(W);
+        set_messages(&mut chat, settled_turn_messages());
+        let stop = chat
+            .row_stops()
+            .into_iter()
+            .find(|stop| matches!(stop.action, RowAction::Process { .. }))
+            .expect("the fold draws a stop");
+        chat.toggle_row(stop.row).expect("the fold opens");
+
+        // The rows the fold stood for, in reply order, each under the rail.
+        assert_eq!(
+            rail_stripped(&mut chat),
+            vec![
+                "fix the parser",
+                "▾ 1 tool call · 1 thought",
+                "▸ thinking",
+                "read /src/parser.rs",
+                "I read the parser.",
+                "Fixed the off-by-one.",
+            ],
+        );
+        // …and the answer is outside the tree: it is the reply's output, not
+        // part of its process. Everything between the header and it hangs.
+        let rows: Vec<String> = render_trimmed(&mut chat)
+            .iter()
+            .map(|line| strip(line))
+            .collect();
+        let header = rows.iter().position(|row| row.contains("▾")).unwrap();
+        let answer = rows
+            .iter()
+            .position(|row| row.contains("off-by-one"))
+            .unwrap();
+        assert!(
+            rows[header + 1].trim() == TREE_RAIL,
+            "a gap under the header carries the rail on down (and nothing else): {rows:?}"
+        );
+        assert!(
+            rows[header + 2..answer - 1]
+                .iter()
+                .filter(|row| !row.trim().is_empty())
+                .all(|row| row.trim_start().starts_with(TREE_RAIL)),
+            "every row under the header hangs: {rows:?}"
+        );
+        // …in the column the header's own marker occupies: the rows hang *from*
+        // the title, not off to the left of it.
+        let indent = |row: &str| row.chars().take_while(|c| *c == ' ').count();
+        assert_eq!(indent(&rows[header]), 1, "{rows:?}");
+        for row in rows[header + 2..answer - 1]
+            .iter()
+            .filter(|row| !row.trim().is_empty())
+        {
+            assert_eq!(
+                indent(row),
+                1,
+                "a tree row puts its rail in the marker's column: {rows:?}"
+            );
+        }
+        assert!(
+            rows[answer - 1].trim().is_empty(),
+            "a blank row separates the tree from the answer: {rows:?}"
+        );
+        assert_matches_fresh_render(&mut chat);
+
+        // The rail is paid for by the layout, not added on top of it: no row of
+        // the tree is wider than the terminal, and a call's band still runs edge
+        // to edge with the rail painted on it.
+        for width in [W, 64, 40] {
+            let rendered = chat.render_all(width);
+            for row in &rendered {
+                assert!(
+                    visible_width_of(row) <= width,
+                    "a tree row is wider than the terminal ({width}): {row:?}"
+                );
+            }
+            let band = rendered
+                .iter()
+                .find(|row| strip(row).contains("/src/parser.rs"))
+                .expect("the call is on screen");
+            assert_eq!(visible_width_of(band), width, "the band reaches both edges");
+            assert_matches_fresh_render_at(&mut chat, width);
+        }
+    }
+
+    /// The header is the way back out: pressing it folds the tree onto its
+    /// counts again. Before it existed an opened fold had no exit at all — the
+    /// summary row *became* the rows it hid, so the only row that could close
+    /// them was gone.
+    #[test]
+    fn the_tree_header_folds_its_rows_away_again() {
+        let mut chat = new_chat();
+        chat.render(W);
+        set_messages(&mut chat, settled_turn_messages());
+        let folded = compact_lines(&mut chat);
+
+        let summary = chat
+            .row_stops()
+            .into_iter()
+            .find(|stop| matches!(stop.action, RowAction::Process { .. }))
+            .expect("the fold draws a stop");
+        chat.toggle_row(summary.row).expect("the fold opens");
+
+        let header = chat
+            .row_stops()
+            .into_iter()
+            .find(|stop| matches!(stop.action, RowAction::Process { .. }))
+            .expect("the opened fold keeps a row to close it");
+        assert!(header.expanded, "the header reports the fold open");
+        let landed = chat.toggle_row(header.row).expect("the header closes it");
+        assert_eq!(
+            compact_lines(&mut chat),
+            folded,
+            "closing the tree restores the folded transcript"
+        );
+        // The cursor stays on the fold rather than on whatever line it used to
+        // occupy: closing moves the header down onto the answer.
+        assert_eq!(
+            landed,
+            chat.row_stops()
+                .into_iter()
+                .find(|stop| matches!(stop.action, RowAction::Process { .. }))
+                .expect("the fold draws a stop")
+                .row
+        );
+        assert_matches_fresh_render(&mut chat);
+    }
+
+    /// A reply that never wrote prose has no answer to keep outside the tree: its
+    /// head is just the newest slice, so every row hangs under the header.
+    #[test]
+    fn an_opened_reply_without_an_answer_hangs_every_row() {
+        let mut chat = new_chat();
+        chat.render(W);
+        set_messages(
+            &mut chat,
+            vec![
+                ChatMessage::new("u1".into(), ChatRole::User, "go"),
+                read_of("/a.rs"),
+                read_of("/b.rs"),
+            ],
+        );
+        let stop = chat
+            .row_stops()
+            .into_iter()
+            .find(|stop| matches!(stop.action, RowAction::Process { .. }))
+            .expect("the fold draws a stop");
+        chat.toggle_row(stop.row).expect("the fold opens");
+        assert_eq!(
+            rail_stripped(&mut chat),
+            vec!["go", "▾ 1 tool call", "read /a.rs", "read /b.rs"],
+        );
+        let rows: Vec<String> = render_trimmed(&mut chat)
+            .iter()
+            .map(|line| strip(line))
+            .collect();
+        let header = rows.iter().position(|row| row.contains("▾")).unwrap();
+        assert!(
+            rows[header + 1..]
+                .iter()
+                .filter(|row| !row.trim().is_empty())
+                .all(|row| row.trim_start().starts_with(TREE_RAIL)),
+            "nothing follows the tree when the reply has no answer: {rows:?}"
+        );
+        assert_matches_fresh_render(&mut chat);
+    }
+
+    /// A call opened inside a tree keeps its body under it, indented like the
+    /// rest of the tree.
+    #[test]
+    fn a_call_inside_a_tree_opens_its_body_in_place() {
+        let mut chat = new_chat();
+        chat.render(W);
+        set_messages(&mut chat, settled_turn_messages());
+        let summary = chat
+            .row_stops()
+            .into_iter()
+            .find(|stop| matches!(stop.action, RowAction::Process { .. }))
+            .expect("the fold draws a stop");
+        chat.toggle_row(summary.row).expect("the fold opens");
+
+        let call = chat
+            .row_stops()
+            .into_iter()
+            .find(|stop| matches!(stop.action, RowAction::Tool { .. }))
+            .expect("the call is a row of the tree");
+        assert!(call.start >= TREE_GUTTER, "the row hangs under the rail");
+        chat.toggle_row(call.row).expect("the call opens");
+
+        let rows: Vec<String> = render_trimmed(&mut chat)
+            .iter()
+            .map(|line| strip(line))
+            .collect();
+        let body = rows
+            .iter()
+            .position(|row| row.contains("body"))
+            .unwrap_or_else(|| panic!("the call's body is on screen: {rows:?}"));
+        assert!(
+            rows[body]
+                .trim_end()
+                .starts_with(&format!(" {TREE_RAIL} {TREE_RAIL}")),
+            "the body hangs one level in, under a rail of its own: {rows:?}"
+        );
+        assert_matches_fresh_render(&mut chat);
+        // A body is laid out in the tree's column too: no row spills past the
+        // terminal, whatever the width.
+        for width in [W, 40] {
+            for row in &chat.render_all(width) {
+                assert!(
+                    visible_width_of(row) <= width,
+                    "a body row is wider than the terminal ({width}): {row:?}"
+                );
+            }
+            assert_matches_fresh_render_at(&mut chat, width);
+        }
+    }
+
+    /// A reasoning block inside an opened fold nests the same way its text's
+    /// sibling — a call's body — does: one level in, under a rail of its own.
+    #[test]
+    fn a_thought_inside_a_tree_nests_one_level_in() {
+        let mut chat = new_chat();
+        chat.render(W);
+        set_messages(&mut chat, settled_turn_messages());
+        let summary = chat
+            .row_stops()
+            .into_iter()
+            .find(|stop| matches!(stop.action, RowAction::Process { .. }))
+            .expect("the fold draws a stop");
+        chat.toggle_row(summary.row).expect("the fold opens");
+        let marker = chat
+            .row_stops()
+            .into_iter()
+            .find(|stop| matches!(stop.action, RowAction::Thinking { .. }))
+            .expect("the thought is a row of the tree");
+        // The marker itself is a level-1 row (one rail); its text is level 2.
+        let marker_row = render_trimmed(&mut chat)
+            .iter()
+            .map(|line| strip(line))
+            .find(|row| row.contains("thinking"))
+            .expect("the marker is on screen");
+        assert!(
+            marker_row.starts_with(&format!(" {TREE_RAIL}"))
+                && !marker_row.starts_with(&format!(" {TREE_RAIL} {TREE_RAIL}")),
+            "the marker is one rail in: {marker_row:?}"
+        );
+
+        chat.toggle_row(marker.row).expect("the marker opens");
+        let rows: Vec<String> = render_trimmed(&mut chat)
+            .iter()
+            .map(|line| strip(line))
+            .collect();
+        let text = rows
+            .iter()
+            .position(|row| row.contains("weighing the options"))
+            .unwrap_or_else(|| panic!("the reasoning text is on screen: {rows:?}"));
+        assert!(
+            rows[text]
+                .trim_end()
+                .starts_with(&format!(" {TREE_RAIL} {TREE_RAIL}")),
+            "the reasoning text hangs one level in: {rows:?}"
+        );
+        assert_matches_fresh_render(&mut chat);
+    }
+
+    /// The rail goes in front of a row, inside its band when it has one: a call's
+    /// background runs edge to edge like every other row, so the tree's rail is
+    /// painted *on* it rather than beside it.
+    #[test]
+    fn the_rail_is_painted_inside_a_call_band() {
+        assert_eq!(
+            with_gutter("\x1b[48;5;236m read a.rs \x1b[0m", "│ "),
+            "\x1b[48;5;236m│  read a.rs \x1b[0m"
+        );
+        assert_eq!(with_gutter(" ▸ thinking", "│ "), "│  ▸ thinking");
+    }
+
+    /// Opening the settled summary replays the reply's process in place: the
+    /// notes come back, the work still folded where it happened, and every row
+    /// it reveals opens on its own.
+    #[test]
+    fn opening_the_process_replays_the_reply_in_place() {
+        let mut chat = new_chat();
+        chat.render(W);
+        set_messages(&mut chat, settled_turn_messages());
+
+        let folded = compact_lines(&mut chat);
+        assert_eq!(
+            folded,
+            vec![
+                "fix the parser",
+                "▸ 1 tool call · 1 thought",
+                "Fixed the off-by-one.",
+            ],
+            "{folded:?}"
+        );
+
+        // The summary row is a `tab` stop whose action opens this reply.
+        let stop = chat
+            .row_stops()
+            .into_iter()
+            .find(|stop| matches!(stop.action, RowAction::Process { .. }))
+            .expect("the fold draws a stop");
+        assert!(!stop.expanded);
+        chat.toggle_row(stop.row).expect("the stop opens");
+
+        let open = compact_lines(&mut chat);
+        assert!(
+            open.iter().any(|line| line.contains("I read the parser.")),
+            "the note is back — {open:?}"
+        );
+        assert!(
+            !open
+                .iter()
+                .any(|line| line.contains("weighing the options")),
+            "opening the process does not print reasoning — {open:?}"
+        );
+        // Opening a fold is not a level change: the rest of the transcript
+        // stays as folded as it was.
+        assert_eq!(chat.reply_detail(), ReplyDetail::Default);
+        assert_matches_fresh_render(&mut chat);
+    }
+
+    /// A call's body and a reasoning block's text open one at a time — the
+    /// desktop's rows, reached from the keyboard.
+    #[test]
+    fn a_call_and_a_thought_open_their_own_detail() {
+        let mut chat = detailed_chat();
+        chat.render(W);
+        set_messages(
+            &mut chat,
+            vec![
+                ChatMessage::new("u".into(), ChatRole::User, "go"),
+                ChatMessage {
+                    id: "t".into(),
+                    role: ChatRole::Assistant,
+                    thinking: Some("the reasoning".into()),
+                    content: "answer".into(),
+                    ..ChatMessage::new(String::new(), ChatRole::Assistant, "")
+                },
+                completed_tool("read", r#"{"path":"/a.rs"}"#, "the call's body"),
+            ],
+        );
+
+        // Both rows are stops, and neither detail is on screen yet.
+        let stops = chat.row_stops();
+        assert_eq!(stops.len(), 2, "{stops:?}");
+        assert!(!stops.iter().any(|stop| stop.expanded));
+        let plain = compact_lines(&mut chat).join("\n");
+        assert!(!plain.contains("the reasoning"), "{plain}");
+        assert!(!plain.contains("the call's body"), "{plain}");
+
+        // `enter` on the marker...
+        let marker = thinking_stop(&mut chat, "t");
+        chat.toggle_row(marker).expect("the marker opens");
+        let thought = compact_lines(&mut chat).join("\n");
+        assert!(thought.contains("the reasoning"), "{thought}");
+        // ...and on the call.
+        let call = chat
+            .row_stops()
+            .into_iter()
+            .find(|stop| matches!(stop.action, RowAction::Tool { .. }))
+            .expect("the call draws a row")
+            .row;
+        chat.toggle_row(call).expect("the call opens");
+        let both = compact_lines(&mut chat).join("\n");
+        assert!(both.contains("the reasoning"), "{both}");
+        assert!(both.contains("the call's body"), "{both}");
+        assert_matches_fresh_render(&mut chat);
+    }
+
+    /// A running reply keeps every thought, call and piece of prose on screen.
+    /// Settling is what folds the process away, leaving the answer the reply
+    /// ended on.
+    #[test]
+    fn a_streaming_reply_keeps_the_work_and_prose_until_it_settles() {
         let mut chat = new_chat();
         chat.render(W);
         let mut messages = settled_turn_messages();
@@ -3711,7 +4620,8 @@ mod tests {
             lines,
             vec![
                 "fix the parser",
-                "▸ 1 tool call · 1 thought",
+                "▸ thinking",
+                "read /src/parser.rs",
                 "I read the parser.",
                 "Fixed",
             ],
@@ -3737,10 +4647,8 @@ mod tests {
         assert_matches_fresh_render(&mut chat);
     }
 
-    /// The output *between* the calls: a reply that wrote notes before its next
-    /// call keeps them on screen while it runs, with each burst of finished work
-    /// folded where it happened — the desktop's live shape. Settling is what
-    /// folds those notes away.
+    /// The output and work between calls keep their individual rows while the
+    /// reply runs. Settling is what folds those notes and calls away.
     #[test]
     fn a_live_reply_keeps_the_notes_it_wrote_between_its_calls() {
         let mut chat = new_chat();
@@ -3765,9 +4673,11 @@ mod tests {
             lines,
             vec![
                 "go",
-                "▸ 1 tool call · 1 thought",
+                "▸ thinking",
+                "read /src/a.rs",
                 "Let me compare both files.",
-                "▸ 1 tool call · 1 thought",
+                "▸ thinking",
+                "read /src/b.rs",
                 "Both fold the same way.",
             ],
             "{lines:?}"
@@ -3789,12 +4699,9 @@ mod tests {
         assert_matches_fresh_render(&mut chat);
     }
 
-    /// A burst of one folds nothing: a lone finished call already reads as its
-    /// own row, and a lone thought as its `▸ thinking` marker — the desktop
-    /// draws a single step the same way, and only a burst needs a row standing
-    /// in for it.
+    /// A lone finished call and thought keep their own rows for the whole run.
     #[test]
-    fn a_live_reply_folds_only_bursts() {
+    fn a_live_reply_keeps_single_steps_visible() {
         let mut chat = new_chat();
         chat.render(W);
         chat.add_message(ChatMessage::new("u".into(), ChatRole::User, "go"));
@@ -3850,10 +4757,86 @@ mod tests {
         assert_matches_fresh_render(&mut chat);
     }
 
-    /// The call the reader is waiting on stays a row: everything above it folds,
-    /// and when the answer starts the summary moves onto the answer.
+    /// The marker the reader is watching never leaves the screen when the
+    /// thought it announces stops growing: it drops its ellipsis and stays.
+    ///
+    /// Running replies never fold, so the bottom-anchored transcript cannot
+    /// pull every line above the marker down when reasoning ends.
     #[test]
-    fn a_live_run_shows_the_counts_and_the_call_in_flight() {
+    fn the_live_marker_keeps_its_row_when_the_thought_ends() {
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.add_message(ChatMessage::new("u".into(), ChatRole::User, "go"));
+        chat.begin_reply_run();
+
+        // Reasoning that has started but sent no token yet is already the row
+        // the reader is waiting on: it appears with the thought, not with its
+        // first byte.
+        chat.start_thinking();
+        assert_eq!(compact_lines(&mut chat), vec!["go", "▸ thinking…"]);
+        chat.append_thinking_delta("weighing it");
+        let live = compact_lines(&mut chat);
+        assert_eq!(live, vec!["go", "▸ thinking…"], "{live:?}");
+        let rows = chat.render_all(W).len();
+
+        chat.end_thinking();
+        let ended = compact_lines(&mut chat);
+        assert_eq!(ended, vec!["go", "▸ thinking"], "{ended:?}");
+        assert_eq!(
+            chat.render_all(W).len(),
+            rows,
+            "the marker left the screen: every line above it would jump down"
+        );
+        assert_matches_fresh_render(&mut chat);
+    }
+
+    /// A running reply's transcript only ever grows.
+    ///
+    /// The view is bottom-anchored — its window is the transcript's last rows —
+    /// so a row that *disappears* at the tail pulls every line above it down,
+    /// and the next event pushes them back up. Folding the step the reader was
+    /// watching the instant it finished did that once per step.
+    #[test]
+    fn a_running_reply_only_ever_grows() {
+        let mut chat = new_chat();
+        chat.render(W);
+        let mut rows = vec![chat.render_all(W).len()];
+        chat.add_message(ChatMessage::new("u".into(), ChatRole::User, "go"));
+        rows.push(chat.render_all(W).len());
+        chat.begin_reply_run();
+        rows.push(chat.render_all(W).len());
+        for i in 0..4 {
+            chat.start_thinking();
+            rows.push(chat.render_all(W).len());
+            chat.append_thinking_delta("weighing it");
+            rows.push(chat.render_all(W).len());
+            chat.end_thinking();
+            rows.push(chat.render_all(W).len());
+            let id = format!("c{i}");
+            chat.add_tool_start(&id, "read", Some(r#"{"path":"/a.rs"}"#.into()));
+            rows.push(chat.render_all(W).len());
+            chat.finish_tool(&id, None, false);
+            rows.push(chat.render_all(W).len());
+        }
+        chat.start_thinking();
+        chat.append_thinking_delta("one more look");
+        chat.end_thinking();
+        rows.push(chat.render_all(W).len());
+        chat.append_to_last_message("the answer");
+        rows.push(chat.render_all(W).len());
+
+        for pair in rows.windows(2) {
+            assert!(
+                pair[1] >= pair[0],
+                "a row left the tail, so every line above it moved: {rows:?}"
+            );
+        }
+        assert_matches_fresh_render(&mut chat);
+    }
+
+    /// Finished calls and the call the reader is waiting on all stay visible.
+    #[test]
+    fn a_live_run_keeps_finished_and_running_calls_visible() {
         let mut chat = new_chat();
         chat.render(W);
         chat.add_message(ChatMessage::new("u".into(), ChatRole::User, "go"));
@@ -3863,26 +4846,90 @@ mod tests {
         chat.finish_tool("c1", None, false);
         chat.add_tool_start("c2", "read", Some(r#"{"path":"/b.rs"}"#.into()));
 
-        // The finished call folded into the count; the running one is the row
-        // the reader is watching.
         let live = compact_lines(&mut chat);
         assert_eq!(
             live,
-            vec!["go", "▸ 1 tool call · 1 thought", "read /b.rs"],
+            vec!["go", "▸ thinking", "read /a.rs", "read /b.rs"],
             "{live:?}"
         );
 
-        // The answer arriving moves the summary onto it — the counts do not
-        // wait for the run to end.
         chat.finish_tool("c2", None, false);
         chat.append_to_last_message("the answer");
         let lines = compact_lines(&mut chat);
         assert_eq!(
             lines,
-            vec!["go", "▸ 2 tool calls · 1 thought", "the answer",],
+            vec!["go", "▸ thinking", "read /a.rs", "read /b.rs", "the answer",],
             "{lines:?}"
         );
         assert_matches_fresh_render(&mut chat);
+    }
+
+    /// The counts head the answer instead of running into it: one blank row
+    /// stands between a folded reply's summary and the prose under it. Wedged
+    /// together, `▸ 工具调用 62 次 · 思考 39 次` read as the answer's first line
+    /// (reported 2026-10-29 against a reply whose table followed right below).
+    #[test]
+    fn a_folded_reply_keeps_a_blank_row_above_its_answer() {
+        let mut chat = new_chat();
+        chat.render(W);
+        set_messages(
+            &mut chat,
+            vec![
+                ChatMessage::new("u1".into(), ChatRole::User, "go"),
+                read_of("/a.rs"),
+                read_of("/b.rs"),
+                ChatMessage::new("a1".into(), ChatRole::Assistant, "the answer"),
+            ],
+        );
+        let rows: Vec<String> = render_trimmed(&mut chat)
+            .iter()
+            .map(|line| strip(line).trim().to_string())
+            .collect();
+        let summary = rows
+            .iter()
+            .position(|row| row.contains("2 tool calls"))
+            .unwrap_or_else(|| panic!("no summary row: {rows:?}"));
+        let answer = rows
+            .iter()
+            .position(|row| row == "the answer")
+            .unwrap_or_else(|| panic!("no answer row: {rows:?}"));
+        assert_eq!(
+            answer,
+            summary + 2,
+            "exactly one blank row between the counts and the answer: {rows:?}"
+        );
+        assert!(rows[summary + 1].is_empty(), "{rows:?}");
+    }
+
+    /// The blank row is an answer's spacer, not a summary's: a fold that rides
+    /// on a call (`▸ 1 tool call` over the call it stands above) keeps the call
+    /// on the very next row — the band already separates them, and a blank
+    /// there would just cost a row.
+    #[test]
+    fn a_fold_that_rides_on_a_call_keeps_it_on_the_next_row() {
+        let mut chat = new_chat();
+        chat.render(W);
+        set_messages(
+            &mut chat,
+            vec![
+                ChatMessage::new("u1".into(), ChatRole::User, "go"),
+                read_of("/a.rs"),
+                read_of("/b.rs"),
+            ],
+        );
+        let rows: Vec<String> = render_trimmed(&mut chat)
+            .iter()
+            .map(|line| strip(line).trim().to_string())
+            .collect();
+        let summary = rows
+            .iter()
+            .position(|row| row.contains("tool call"))
+            .unwrap_or_else(|| panic!("no summary row: {rows:?}"));
+        assert!(
+            rows.get(summary + 1)
+                .is_some_and(|row| row.contains("/b.rs")),
+            "the call the fold rides on follows the counts directly: {rows:?}"
+        );
     }
 
     #[test]
@@ -3961,63 +5008,77 @@ mod tests {
         set_messages(&mut chat, settled_turn_messages());
         let folded = chat.render_all(W).len();
 
-        // One press per step of the cycle: every slice, then the work folded,
-        // then the process folded too — and the last press is back to the
-        // transcript the reader started from.
+        // One press: the reply keeps its process where it happened — the work
+        // still folded, the prose back — and the desktop's `detailed` is what
+        // that is. The press after it returns to the transcript the reader
+        // started from.
         assert_eq!(chat.toggle_reply_detail(), ReplyDetail::Detailed);
         let expanded = chat.render_all(W);
         assert!(expanded.len() > folded, "detail adds the folded rows back");
-
-        assert_eq!(chat.toggle_reply_detail(), ReplyDetail::Steps);
-        let half = compact_lines(&mut chat);
+        let detail = compact_lines(&mut chat);
         assert!(
-            half.iter().any(|line| line == "▸ 1 tool call · 1 thought"),
-            "the half-folded level counts the work — {half:?}"
+            detail
+                .iter()
+                .any(|line| line.contains("read /src/parser.rs")),
+            "detailed keeps the work it ran — {detail:?}"
         );
         assert!(
-            half.iter().any(|line| line.contains("I read the parser.")),
-            "…and keeps the notes it wrote — {half:?}"
+            detail
+                .iter()
+                .any(|line| line.contains("I read the parser.")),
+            "…and keeps the notes it wrote — {detail:?}"
         );
 
         assert_eq!(chat.toggle_reply_detail(), ReplyDetail::Default);
         assert_eq!(chat.render_all(W).len(), folded);
-        assert_eq!(chat.toggle_reply_detail(), ReplyDetail::Detailed);
     }
 
-    /// A live run folds through the incremental paths — every event the
-    /// workbench feeds (thinking, a call, the answer) — not only when the
-    /// transcript is rebuilt from scratch.
+    /// A live run keeps its work visible through the incremental paths — every
+    /// event the workbench feeds (thinking, a call, the answer) — and folds only
+    /// when the reply settles.
     #[test]
-    fn a_live_run_folds_as_the_events_arrive() {
+    fn a_live_run_keeps_work_visible_until_it_settles() {
         let mut chat = new_chat();
         chat.render(W);
         chat.add_message(ChatMessage::new("u".into(), ChatRole::User, "go"));
+        chat.begin_reply_run();
         chat.start_thinking();
         chat.append_thinking_delta("weighing it");
         // A reasoning block with nothing else yet: the marker is the only row
         // saying what is happening, so it stays (and is not counted).
         assert_eq!(compact_lines(&mut chat), vec!["go", "▸ thinking…"]);
 
+        chat.end_thinking();
         chat.add_tool_start("c1", "read", Some(r#"{"path":"/a.rs"}"#.into()));
         chat.append_tool_delta("c1", "body\n");
+        let height_before_finish = chat.render_all(W).len();
         chat.finish_tool("c1", None, false);
+        assert_eq!(
+            chat.render_all(W).len(),
+            height_before_finish,
+            "finishing adjacent work must not collapse rows during the run"
+        );
         chat.append_to_last_message("the answer");
 
-        // The reasoning folded into a count as soon as the answer started, and
-        // the reasoning text never reaches the screen.
         let live = compact_lines(&mut chat);
         assert_eq!(
             live,
-            vec!["go", "▸ 1 tool call · 1 thought", "the answer"],
+            vec!["go", "▸ thinking", "read /a.rs", "the answer"],
             "{live:?}"
         );
         assert!(
             !live.iter().any(|line| line.contains("weighing it")),
             "{live:?}"
         );
+        let live_height = chat.render_all(W).len();
 
         chat.mark_last_message_complete();
+        chat.end_reply_run();
         let lines = compact_lines(&mut chat);
+        assert!(
+            chat.render_all(W).len() < live_height,
+            "settling is the first point where the reply may collapse"
+        );
         assert_eq!(
             lines,
             vec!["go", "▸ 1 tool call · 1 thought", "the answer"],
@@ -4127,13 +5188,10 @@ mod tests {
         assert_matches_fresh_render(&mut chat);
     }
 
-    /// A thought that shares its slice with the prose it introduced is counted
-    /// in the burst above it instead of becoming a `▸ thinking` row the counts
-    /// never mention: the terminal is one message per slice, so "think, then
-    /// write" arrives as one slice — the desktop gets this for free, because its
-    /// reasoning and its prose are separate segments.
+    /// A thought that shares its slice with prose keeps its marker while the
+    /// reply runs, then joins the settled reply's total.
     #[test]
-    fn a_thought_written_with_its_prose_is_counted_in_the_burst_above_it() {
+    fn a_thought_written_with_prose_keeps_its_marker_until_settling() {
         let mut chat = new_chat();
         chat.render(W);
         chat.add_message(ChatMessage::new("u".into(), ChatRole::User, "go"));
@@ -4153,12 +5211,14 @@ mod tests {
         let live = compact_lines(&mut chat);
         assert_eq!(
             live,
-            vec!["go", "▸ 1 tool call · 2 thoughts", "Second file next."],
-            "the thought is counted, not a second uncounted marker row — {live:?}"
-        );
-        assert!(
-            !live.iter().any(|line| line.contains("▸ thinking")),
-            "{live:?}"
+            vec![
+                "go",
+                "▸ thinking",
+                "read /a.rs",
+                "▸ thinking",
+                "Second file next.",
+            ],
+            "both thoughts keep their rows until settling — {live:?}"
         );
 
         // The same counts once the run ends and the reply folds.
@@ -4197,7 +5257,8 @@ mod tests {
             live,
             vec![
                 "go",
-                "▸ 1 tool call · 1 thought",
+                "▸ thinking",
+                "read /a.rs",
                 "Looking at a.rs.",
                 "▸ thinking",
                 "Second file next.",
@@ -4217,13 +5278,13 @@ mod tests {
         );
     }
 
-    /// The half-folded level: finished work folds where it happened, the prose
-    /// stays — the desktop's live shape, kept for a reply that has settled.
+    /// The detailed level: every slice keeps its own row, in the order it
+    /// happened — no summary row, and still no reasoning text.
     #[test]
-    fn the_steps_level_keeps_every_reply_in_the_live_shape() {
+    fn the_detailed_level_keeps_every_reply_in_place() {
         let mut chat = new_chat();
         chat.render(W);
-        chat.set_reply_detail(ReplyDetail::Steps);
+        chat.set_reply_detail(ReplyDetail::Detailed);
         set_messages(&mut chat, settled_turn_messages());
 
         let lines = compact_lines(&mut chat);
@@ -4231,7 +5292,8 @@ mod tests {
             lines,
             vec![
                 "fix the parser",
-                "▸ 1 tool call · 1 thought",
+                "▸ thinking",
+                "read /src/parser.rs",
                 "I read the parser.",
                 "Fixed the off-by-one.",
             ],
@@ -4241,7 +5303,7 @@ mod tests {
             !lines
                 .iter()
                 .any(|line| line.contains("weighing the options")),
-            "reasoning text stays behind the fold — {lines:?}"
+            "reasoning text is still behind its marker — {lines:?}"
         );
         assert_matches_fresh_render(&mut chat);
     }
@@ -4273,6 +5335,12 @@ mod tests {
         chat.add_tool_start("c2", "read", Some(r#"{"path":"/b.rs"}"#.into()));
         chat.finish_tool("c2", None, false);
         chat.append_to_last_message("看完了");
+        assert_eq!(
+            compact_lines(&mut chat),
+            vec!["开始", "▸ 思考", "read /a.rs", "read /b.rs", "看完了"]
+        );
+        chat.mark_last_message_complete();
+        chat.end_reply_run();
 
         let lines = compact_lines(&mut chat);
         assert_eq!(
@@ -4415,16 +5483,13 @@ mod tests {
         assert_folded(&mut chat, 3, "as loaded");
 
         // `ctrl+e` round-trips: `default` has to come back from a transcript
-        // that was rendered unfolded. The cycle is detailed → steps → default.
+        // that was rendered unfolded. The cycle is default ↔ detailed.
         assert_eq!(chat.toggle_reply_detail(), ReplyDetail::Detailed);
         let open = compact_lines(&mut chat);
         assert!(
             open.iter().any(|line| line.contains("read /src/old.rs")),
             "detail keeps the call — {open:?}"
         );
-        // The half-folded level keeps the calls folded but every reply's prose
-        // on screen.
-        assert_eq!(chat.toggle_reply_detail(), ReplyDetail::Steps);
         assert_eq!(chat.toggle_reply_detail(), ReplyDetail::Default);
         assert_folded(&mut chat, 3, "after a toggle round-trip");
 
@@ -4540,8 +5605,8 @@ mod tests {
             "detail keeps the call — {open:?}"
         );
 
-        // Two presses of the cycle: the work folds, then the process does.
-        assert_eq!(chat.toggle_reply_detail(), ReplyDetail::Steps);
+        // Two presses of the cycle: the work folds onto the answer, then the
+        // prose comes back with it folded in place.
         assert_eq!(chat.toggle_reply_detail(), ReplyDetail::Default);
         let lines = compact_lines(&mut chat);
         assert_eq!(folded_rows(&mut chat), 4, "after the toggle — {lines:?}");
@@ -4552,6 +5617,7 @@ mod tests {
                 "{gone} still painted after the toggle — {lines:?}"
             );
         }
+        assert_eq!(chat.toggle_reply_detail(), ReplyDetail::Detailed);
         assert_matches_fresh_render(&mut chat);
     }
 
@@ -4637,10 +5703,22 @@ mod tests {
         );
         assert!(!lines.iter().any(|l| l.contains("thinking about cut")));
 
-        // `ctrl+e` replays the whole thing, reasoning included.
+        // `ctrl+e` replays the whole thing: every slice, each with its own row —
+        // and the reasoning still behind its marker, as at every level.
         chat.set_reply_detail(ReplyDetail::Detailed);
         let open = compact_lines(&mut chat);
-        assert!(open.iter().any(|l| l.contains("thinking about cut")));
+        assert!(
+            open.iter().any(|l| l.contains("read /src/cut.rs")),
+            "{open:?}"
+        );
+        assert!(!open.iter().any(|l| l.contains("thinking about cut")));
+        // Opening the marker is how the reasoning text is reached.
+        open_all_rows(&mut chat);
+        let opened = compact_lines(&mut chat);
+        assert!(
+            opened.iter().any(|l| l.contains("thinking about cut")),
+            "{opened:?}"
+        );
     }
 
     /// The same shape arriving from the session store.
@@ -4861,6 +5939,8 @@ mod tests {
             let mut assistant = ChatMessage::new("a".into(), ChatRole::Assistant, "答案 ok");
             assistant.thinking = Some("thinking".into());
             chat.add_message(assistant);
+            chat.render_all(width);
+            open_all_rows(&mut chat);
 
             let all = chat.render_all(width);
             let view = chat.render(width);
@@ -5226,6 +6306,7 @@ mod tests {
             ..ChatMessage::new(String::new(), ChatRole::Assistant, "")
         });
         chat.render(60); // establish width
+        open_all_rows(&mut chat);
         let lines = chat.render(60);
         let thinking_lines: Vec<&String> = lines
             .iter()
@@ -5271,6 +6352,8 @@ mod tests {
             thinking: Some("> quoted thought\n\n```\ncode line\n```\n\n".into()),
             ..ChatMessage::new(String::new(), ChatRole::Assistant, "")
         });
+        chat.render(60);
+        open_all_rows(&mut chat);
         let lines = chat.render(60);
         let joined = lines
             .iter()
@@ -5306,6 +6389,7 @@ mod tests {
             ..ChatMessage::new(String::new(), ChatRole::Assistant, "")
         });
         chat.render(60);
+        open_all_rows(&mut chat);
         let lines = chat.render(60);
         let needles = ["Plan", "some code", "a link", "first item", "const x = 1;"];
         let thinking_lines: Vec<&String> = lines
@@ -5358,6 +6442,8 @@ mod tests {
         chat.start_thinking();
         chat.append_thinking_delta("second block");
         chat.end_thinking();
+        chat.render(60);
+        open_all_rows(&mut chat);
         let lines = chat.render(60);
         let plain = lines
             .iter()
@@ -6826,5 +7912,108 @@ mod tests {
             top <= total,
             "viewport_top {top} must be inside {total} lines"
         );
+    }
+
+    // ─── Pictures ───────────────────────────────────────────────────────
+
+    /// A message carrying a picture, written to a scratch file so the caption's
+    /// link resolves the way it does in a real session.
+    fn picture_message(dir: &std::path::Path) -> ChatMessage {
+        let path = dir.join("a shot.png");
+        std::fs::write(&path, b"\x89PNG\r\n\x1a\n").unwrap();
+        let mut message = ChatMessage::new("m-pic".into(), ChatRole::User, "look at this");
+        message.pictures.push(ChatPicture {
+            path: path.to_string_lossy().into_owned(),
+            name: "a shot.png".into(),
+        });
+        message
+    }
+
+    /// A picture is one row in the transcript: its name, as a link.
+    ///
+    /// Nothing is reserved for a thumbnail — not on an image-capable terminal
+    /// either — because the picture is drawn in the preview box and nowhere
+    /// else. The row that remains is the door: the caption is a real link, so
+    /// `tab` + `enter` and a click both open it.
+    #[test]
+    fn a_picture_is_its_linked_caption() {
+        let _caps = crate::terminal_image::CapabilitiesGuard::pin(
+            crate::terminal_image::ImageProtocol::Kitty,
+        );
+        let dir = std::env::temp_dir().join(format!("future-chat-pic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let message = picture_message(&dir);
+
+        let mut chat = new_chat();
+        chat.add_message(message);
+        // The raw rows: the caption is a hyperlink, and its target lives in the
+        // OSC 8 wrapper that stripping would remove.
+        let rows = chat.render(W);
+        let plain: Vec<String> = rows.iter().map(|row| strip_ansi_codes(row)).collect();
+        let text_row = plain
+            .iter()
+            .position(|row| row.contains("look at this"))
+            .unwrap_or_else(|| panic!("the text is there: {plain:?}"));
+        let caption_row = plain
+            .iter()
+            .position(|row| row.contains("a shot.png"))
+            .unwrap_or_else(|| panic!("the caption is there: {plain:?}"));
+        // One row between them: the block's own padding, never a blank slot.
+        assert_eq!(
+            caption_row,
+            text_row + 1,
+            "no thumbnail block above the caption: {plain:?}"
+        );
+        let spans = crate::workbench::links::scan(
+            std::slice::from_ref(&rows[caption_row]),
+            &dir.to_string_lossy(),
+            &mut Default::default(),
+        );
+        assert_eq!(spans.len(), 1, "{spans:?}");
+        assert!(
+            matches!(&spans[0].target, crate::workbench::links::LinkTarget::File(path)
+                if path.ends_with("a shot.png")),
+            "{:?}",
+            spans[0].target
+        );
+        // A copy read as text is the same transcript: there is no slot to drop.
+        let copy: Vec<String> = chat
+            .render_all_detailed(W)
+            .iter()
+            .map(|row| strip_ansi_codes(row))
+            .collect();
+        let copied = copy
+            .iter()
+            .position(|row| row.contains("a shot.png"))
+            .unwrap_or_else(|| panic!("the caption is there: {copy:?}"));
+        assert!(
+            copy[copied - 1].contains("look at this"),
+            "the copy keeps the same rows: {copy:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A picture with no name falls back to its file's own.
+    #[test]
+    fn a_nameless_picture_names_its_file() {
+        let dir = std::env::temp_dir().join(format!("future-chat-noname-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("logo.png");
+        std::fs::write(&path, b"\x89PNG").unwrap();
+        let mut message = ChatMessage::new("m-pic2".into(), ChatRole::Assistant, "here");
+        message.pictures.push(ChatPicture {
+            path: path.to_string_lossy().into_owned(),
+            name: String::new(),
+        });
+        let mut chat = new_chat();
+        chat.add_message(message);
+        let text = chat
+            .render(W)
+            .iter()
+            .map(|row| strip_ansi_codes(row))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("logo.png"), "{text}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

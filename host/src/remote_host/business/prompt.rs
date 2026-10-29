@@ -231,23 +231,40 @@ pub(crate) fn build_continue_prompt(run_id: &str) -> String {
     lines.join("\n")
 }
 
-/// A continuation is not a free-form prompt alias: it may only resume the
-/// failed run that belongs to the addressed session. This keeps a stale mobile
-/// outbox entry (including one from a previous pairing) from creating or
-/// steering an unrelated conversation.
+/// The stable token a refused continuation carries, so a client can say *why*
+/// instead of reporting a generic send failure (the same pattern as
+/// [`UNKNOWN_SESSION_CODE`]). Prefixed to the human sentence: the phone's toast
+/// maps the token, the text stays readable in the desktop's own logs.
+pub(crate) const CONTINUE_REFUSED_CODE: &str = "continue_unavailable";
+
+fn continue_refused(reason: &str) -> crate::Error {
+    format!("{CONTINUE_REFUSED_CODE}: {reason}").into()
+}
+
+/// A continuation is not a free-form prompt alias: it may only resume a run
+/// that belongs to the addressed session. This keeps a stale mobile outbox entry
+/// (including one from a previous pairing) from creating or steering an
+/// unrelated conversation.
+///
+/// **Identity only — never the reason the run stopped.** Any run of this
+/// conversation can be picked up from: a failure, a user stop, a stream the
+/// Agent or the app cut off, a restart that interrupted it. The rule used to
+/// read "only a `failed` run can be continued", which turned the one thing a
+/// client can offer after a restart (Continue — startup convergence settles
+/// that run `cancelled`/`interrupted`, not `failed`) into a permanent dead end,
+/// and asked the server to judge a decision the user had already made by tapping
+/// the button. The desktop's own Continue never consulted the run at all: it
+/// re-sends a prompt either way.
 pub(crate) fn validate_continue_source(session_id: &str, run_id: &str) -> Result<(), crate::Error> {
     if session_id.trim().is_empty() || run_id.trim().is_empty() {
-        return Err("A continuation requires a session and source run."
-            .to_string()
-            .into());
+        return Err(continue_refused(
+            "A continuation requires a session and source run.",
+        ));
     }
     let run = crate::store::get_run(run_id)?
-        .ok_or_else(|| "The source run no longer exists.".to_string())?;
-    if run.status != "failed" {
-        return Err("Only a failed run can be continued.".to_string().into());
-    }
+        .ok_or_else(|| continue_refused("The source run no longer exists."))?;
     let thread = crate::store::get_thread(&run.thread_id)?
-        .ok_or_else(|| "The source run's conversation no longer exists.".to_string())?;
+        .ok_or_else(|| continue_refused("The source run's conversation no longer exists."))?;
     let run_session_id = thread
         .agent_session_id
         .as_deref()
@@ -255,9 +272,9 @@ pub(crate) fn validate_continue_source(session_id: &str, run_id: &str) -> Result
         .filter(|value| !value.is_empty())
         .unwrap_or(&thread.id);
     if run_session_id != session_id {
-        return Err("The source run does not belong to this session."
-            .to_string()
-            .into());
+        return Err(continue_refused(
+            "The source run does not belong to this session.",
+        ));
     }
     Ok(())
 }
@@ -294,6 +311,12 @@ pub(crate) struct RemotePromptOptions {
 /// Prefixed to the human sentence: the phone's toast maps the token, the text
 /// stays readable in the desktop's own logs.
 pub(crate) const UNKNOWN_SESSION_CODE: &str = "session_not_on_desktop";
+
+/// The same token for a conversation whose run is still in flight. The client
+/// no longer guesses at this locally (its own "still streaming" flag outlives
+/// the run it described), so the refusal has to arrive with a reason it can
+/// turn into a sentence instead of "message failed to send".
+pub(crate) const SESSION_BUSY_CODE: &str = "session_busy";
 
 /// Find the thread for `session_id`, then persist user message + run via
 /// `agent_bridge::headless`.
@@ -390,9 +413,9 @@ pub(crate) async fn prepare_remote_prompt(
         .iter()
         .any(|active| active == &resolved_session_id)
     {
-        return Err(crate::Error::Message(
-            "This session is still running; wait for it to finish or abort it first.".to_string(),
-        ));
+        return Err(crate::Error::Message(format!(
+            "{SESSION_BUSY_CODE}: this session is still running; wait for it to finish or abort it first."
+        )));
     }
     let attachments = crate::remote_host::files::claim_uploads(&upload_references, &thread.id)?;
     let prepared = crate::agent_bridge::prepare_prompt_persisted_with_trigger(
@@ -457,6 +480,58 @@ mod tests {
                 "session {session:?} run {run:?} -> {error}"
             );
         }
+    }
+
+    /// Every reason a run can stop is resumable — the guard is identity, not
+    /// outcome. The old reading ("only a `failed` run can be continued") made
+    /// the phone's Continue a dead end for exactly the run a restart leaves
+    /// behind (`cancelled`/`interrupted`), while the desktop's own Continue
+    /// re-sent a prompt without ever consulting the run.
+    #[test]
+    fn every_terminal_run_of_the_session_is_a_continuation_source() {
+        use crate::remote::test_support::{raw_store_connection, HomeGuard};
+
+        let _home = HomeGuard::new("business-prompt-continue-any-reason");
+        crate::remote::test_support::init_store();
+        {
+            let conn = raw_store_connection();
+            conn.execute_batch(
+                "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                     VALUES ('ws_rst', 'WS', 'user', '/tmp/ws', 1, 1);
+                 INSERT INTO threads (id, workspace_id, mode, title, agent_session_id,
+                                      created_at, updated_at)
+                     VALUES ('th_rst', 'ws_rst', 'chat', 'T', 'sess_rst', 1, 1);
+                 INSERT INTO runs (id, thread_id, status, error_message, error_type,
+                                   created_at, updated_at) VALUES
+                     ('run_failed', 'th_rst', 'failed', 'boom', 'model_failed', 1, 1),
+                     ('run_interrupted', 'th_rst', 'cancelled',
+                      'Interrupted by application restart.', 'interrupted', 1, 1),
+                     ('run_completed', 'th_rst', 'completed', NULL, NULL, 1, 1),
+                     ('run_stopped', 'th_rst', 'cancelled', 'Run was cancelled.', 'cancelled', 1, 1);",
+            )
+            .expect("seed the source runs");
+        }
+
+        for run_id in [
+            "run_failed",
+            "run_interrupted",
+            "run_completed",
+            "run_stopped",
+        ] {
+            validate_continue_source("sess_rst", run_id)
+                .unwrap_or_else(|error| panic!("{run_id} must be continuable: {error}"));
+        }
+
+        // The one thing still refused: a run that belongs to another
+        // conversation, which would steer text into a chat the user is not in.
+        let error = validate_continue_source("another-session", "run_failed")
+            .expect_err("a foreign run is not a continuation source")
+            .to_string();
+        assert!(
+            error.starts_with(CONTINUE_REFUSED_CODE),
+            "the phone maps this token to its own text: {error}"
+        );
+        assert!(error.contains("does not belong"), "{error}");
     }
 
     /// A prompt addressed to a conversation this desktop does not have must be
