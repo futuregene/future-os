@@ -27,12 +27,16 @@ where
 /// "supersede_session".
 pub const BUSY_ENQUEUE: &str = "enqueue_if_busy";
 
-/// Follow-up policy the composer submits with: the agent may fold a burst of
-/// submissions queued behind the running turn into ONE run, so a supplement
-/// sent seconds after the previous message is answered with it instead of in a
-/// separate reply. Folded submissions come back as terminal `merged` acks
-/// (`RunState::Merged`), which the composer renders instead of leaving them
-/// stuck at `queued`.
+/// The policy the composer submits with: a submission behind a running turn
+/// waits in the agent's queue, and at the turn boundary the run of prompts
+/// waiting there is folded into **one** message and answered together — the
+/// agent appends their texts in queue order (`start_next_scheduled`), so a burst
+/// of supplements reads the way the reader wrote it, as one follow-up.
+///
+/// Folding is a boundary event, not a submission event: until the running turn
+/// ends every request is its own row in `get_state.queuedRuns` — the band above
+/// the composer lists it, cancels it and recalls it on its own — and the order
+/// it folds in is the order it was queued in.
 pub const BUSY_ENQUEUE_COALESCING: &str = "enqueue_coalescing";
 
 /// `ThinkingLevel` — "off" | "minimal" | "low" | "medium" | "high" | "xhigh".

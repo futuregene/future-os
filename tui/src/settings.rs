@@ -54,9 +54,13 @@ pub struct TuiSettings {
     pub notify: Option<crate::notifications::NotifyConfig>,
     /// Keep the activity indicator still; streaming itself is never delayed.
     pub reduced_motion: Option<bool>,
-    /// Workspace paths pinned in the rail's 置顶 section (`pinnedWorkspaces`),
-    /// in the order they were pinned.
-    pub pinned_workspaces: Option<Vec<String>>,
+    /// Conversation ids the reader pinned, in the order they were pinned
+    /// (`pinnedSessions`).
+    ///
+    /// The rail's 置顶 block leads the 工作区 tab with them. A pin names a
+    /// conversation rather than a workspace: two conversations in one directory
+    /// are two rows, and the reader pins the one they keep coming back to.
+    pub pinned_sessions: Option<Vec<String>>,
     /// Workspace paths whose conversations the reader folded away in the rail
     /// (`foldedWorkspaces`), by path — the group's identity, not its name.
     ///
@@ -131,15 +135,10 @@ impl TuiSettings {
         if let Some(reduced) = self.reduced_motion {
             obj.insert("reducedMotion".into(), Value::Bool(reduced));
         }
-        if let Some(pinned) = &self.pinned_workspaces {
+        if let Some(pinned) = &self.pinned_sessions {
             obj.insert(
-                "pinnedWorkspaces".into(),
-                Value::Array(
-                    pinned
-                        .iter()
-                        .map(|path| Value::String(path.clone()))
-                        .collect(),
-                ),
+                "pinnedSessions".into(),
+                Value::Array(pinned.iter().map(|id| Value::String(id.clone())).collect()),
             );
         }
         if let Some(folded) = &self.folded_workspaces {
@@ -189,15 +188,15 @@ impl TuiSettings {
                 .get("notify")
                 .and_then(|value| serde_json::from_value(value.clone()).ok()),
             reduced_motion: value.get("reducedMotion").and_then(Value::as_bool),
-            pinned_workspaces: value.get("pinnedWorkspaces").and_then(Value::as_array).map(
-                |paths| {
-                    paths
-                        .iter()
+            pinned_sessions: value
+                .get("pinnedSessions")
+                .and_then(Value::as_array)
+                .map(|ids| {
+                    ids.iter()
                         .filter_map(Value::as_str)
                         .map(str::to_string)
                         .collect()
-                },
-            ),
+                }),
             folded_workspaces: value.get("foldedWorkspaces").and_then(Value::as_array).map(
                 |paths| {
                     paths
@@ -238,7 +237,7 @@ mod tests {
                 title: false,
             }),
             reduced_motion: Some(true),
-            pinned_workspaces: Some(vec!["/src/future-os".into()]),
+            pinned_sessions: Some(vec!["s1".into()]),
             folded_workspaces: Some(vec!["/src/mobile".into()]),
             last_workspace: Some("/src/future-os".into()),
         };
@@ -256,7 +255,7 @@ mod tests {
         assert_eq!(back.mouse_capture, Some(false));
         assert!(!back.notify.unwrap().bell);
         assert_eq!(back.reduced_motion, Some(true));
-        assert_eq!(back.pinned_workspaces, Some(vec!["/src/future-os".into()]));
+        assert_eq!(back.pinned_sessions, Some(vec!["s1".into()]));
         assert_eq!(back.folded_workspaces, Some(vec!["/src/mobile".into()]));
         assert_eq!(back.last_workspace.as_deref(), Some("/src/future-os"));
     }

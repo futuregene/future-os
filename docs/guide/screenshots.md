@@ -245,6 +245,42 @@ What the flags are for:
 - `--addr <host:port>` attaches to an agent that is already running (a *real*
   session) instead of starting `demo_agent`, and leaves the caller's
   `FUTURE_HOME` alone.
+- `--lang <system|zh|en>` pins the whole frame's language (default `zh`, the
+  language every committed asset was shot in): the chrome's copy goes into the
+  TUI's `settings.json` and the scripted data is handed to `demo_agent` as
+  `FUTURE_DEMO_LANG`. Both halves have to agree, or the frame is an English
+  shell around a Chinese session list. The English `streaming` scenario also
+  submits its prompt in English — the question is the reader's words, not a
+  keystroke. The English session is not a sentence-by-sentence translation: it
+  is a fuller one (65 conversations in the rail, a two-turn transcript that
+  exercises a heading, bold and italic runs, inline code, a highlighted `rust`
+  block, a bordered table and a quote), because a panel with three rows in it is
+  a picture of a mock. It is also taller than a 54-row band by itself, so an
+  English frame is usually shot at 190×66 rather than at the documented 120×38.
+- `--sidebar-width <cols>` pins the rail's width (default: the surface's own,
+  `SIDEBAR_DEFAULT` = 36). The rail reserves a third of itself for the workspace
+  name, so at 36 columns an English session title gets about nineteen cells
+  before the ellipsis while the same list in Chinese fits; pass this when a
+  frame needs the titles to read through (the ceiling is 60).
+- `--sidebar-position <left|right>` pins which side the rail sits on (the
+  surface's own default is right).
+- `--theme <id>` pins the palette (`dark`, `light`, `dracula`, `tokyo-night`,
+  `gruvbox`, `rose-pine`, …; see `theme.rs`). The committed assets are all on the
+  shipped default, so this is for a frame that wants to show the palette picker's
+  effect rather than the product's own look.
+- `--scenario composing` is the frame of a reader *in the middle of writing*
+  behind a reply that is still in flight: four lines of draft in the composer
+  (typed with `ctrl+j`, never sent), the **queue band** above it listing three
+  prompts waiting for the current turn (`FUTURE_DEMO_QUEUE`), and the last turn's
+  process opened — the `▸ 3 tool calls · 2 thoughts` row clicked, then the
+  `▸ thinking` row inside it, so the calls, their arguments and the reasoning
+  behind them are all on screen. A closed fold is all a transcript ever shows on
+  its own, so the capture makes both clicks, resolving each row from the frame on
+  screen (see `_tui_click_row`). At 190×73 the whole thing fits: 65 conversations
+  in the rail, the transcript's table/code/quote, the queue band and the draft.
+  The activity row carries a live `Thinking · Ns` clock, so this frame is
+  byte-stable on one machine and may lag a second on a much slower one — the same
+  caveat as `streaming`.
 
 The repository's own entry point for these frames is
 `tui/scripts/shot.sh <scenario> [WxH] [out.png]`, a thin wrapper that supplies
@@ -254,6 +290,9 @@ The repository's own entry point for these frames is
 tui/scripts/shot.sh chat 120x38 $PWD/docs/tui/assets/workbench-chat.png
 tui/scripts/shot.sh usage 120x38 $PWD/docs/tui/assets/workbench-panel-usage.png
 tui/scripts/shot.sh drag 120x38 $PWD/docs/tui/assets/workbench-drag-fixed.png
+# An English frame, big, rail on the left and wide enough for the titles:
+SHOT_LANG=en SHOT_SIDEBAR_WIDTH=56 SHOT_SIDEBAR_POSITION=left \
+  tui/scripts/shot.sh composing 190x73
 ```
 
 The third argument is the output path; without it the wrapper names the file
