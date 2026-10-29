@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/desktop-screenshot.png" alt="FutureOS 桌面应用——左边是会话，中间是对话，右边是当前工作区的文件" width="900">
+  <img src="docs/desktop-screenshot.zh-CN.png" alt="FutureOS 桌面应用——左边是会话，中间是对话，右边是当前工作区的文件" width="900">
 </p>
 
 <p align="center">
