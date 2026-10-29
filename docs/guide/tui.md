@@ -138,17 +138,12 @@ the rail focused, the two tabs are still `shift+←`/`shift+→` and nothing els
 plain `←`/`→` is the draft caret's from every state, because the prompt stays on
 screen (and can hold the keys' next keystroke) while the rail is up.
 
-Both tabs list the same conversations, so **one search narrows both**: `/` while
-the rail has the keys opens the line under its tabs (`/ 搜索会话` while it is
-empty and closed, `❯ <query>▏` while it is taking keys), typing narrows the list
-to the conversations whose title, workspace or id matches — case-insensitively —
-and `enter` hands the keys back to the list with the filter still on, `esc`
-clears it. A workspace whose name matches keeps its conversations, and a search
-opens folded groups, because a match the reader cannot see is not a result. A
-fold (`enter` on a workspace heading, or a click) is remembered in
-`~/.future/tui/settings.json` (`foldedWorkspaces`) and is already in force on
-the next start; the query is not written anywhere, since a filter left over from
-yesterday reads as sessions that went missing.
+Both tabs list the same conversations; a fold (`enter` on a workspace heading, or
+a click on one) is remembered in `~/.future/tui/settings.json`
+(`foldedWorkspaces`) and is already in force on the next start. Searching
+sessions is the history picker's job: `ctrl+r` lists them with its own filter
+line, so the rail paints no search line of its own — `/` from the rail opens the
+command palette, as `/` does everywhere else on the surface.
 
 The launchpad is the *body*, not a dialog over the conversation: with no session
 attached the composer fills the surface (the name, the box, workspace / model /
@@ -347,7 +342,7 @@ click on the rail's tab strip are the doors to the same places.
 | `ctrl+q` or `/preferences` | Preferences: sidebar position, width and visibility, mouse capture, notifications, reduced motion, interface language, color theme and the shortcut editor. The key is also printed in the footer hint row, so it is on screen while the reader is wondering |
 | `?` (or the full-width `？`) | Help overlay (effective keys, grouped by area, then the commands; the key requires an empty draft). Rows are listed only where an action has a chord — the verbs with none keep their typed door in the command list at the end of the same box |
 | `/lang` | Interface language: opens the picker — follow the system, Chinese or English |
-| `ctrl+e` | Process detail: two levels, the desktop's `replyDetail` — **answer only** (a settled reply keeps the answer it ended on, and the reasoning, calls and notes that produced it fold into one summary row above it; a reply that never wrote prose folds onto the slice it stopped at) and **whole process** (every slice keeps its own row, in the order it happened). The terminal opens on **answer only**, the desktop's default, and the level applies to the whole conversation at once — one press re-reads every reply, not the one under the cursor. Neither level shows a tool call's body or a reasoning block's text: a call is one row, a thought a `▸ thinking` marker (or a count in the summary row), and the details open one row at a time with `tab` + `enter` (or a click). A reply folds only once its run has ended (`agent_start` … `agent_end`); while it streams it is always in the live shape — all of the model's output on screen, its work folded into counts where it happened — at both levels, so the rows do not collapse and reopen between two steps, and `ctrl+e` never changes what a running reply looks like. The counts are words in the reader's language — `61 tool calls · 30 thoughts`, or `工具调用 61 次 · 思考 30 次` in Chinese, whose word order and counter (`次`) the templates carry — and so is the bare reasoning marker (`▸ 思考`); the summary row is drawn in the faintest colour the chrome has, one step under body text, so it sits behind the answer it stands above. History loaded from a session folds the same way, so a reopened conversation reads as one answer per reply. A view toggle for the run it is pressed in, not a preference: every start opens on the folded level |
+| `ctrl+e` | Process detail: two levels, the desktop's `replyDetail` — **answer only** (a settled reply keeps the answer it ended on, and the reasoning, calls and notes that produced it fold into one summary row above it; a reply that never wrote prose folds onto the slice it stopped at) and **whole process** (every slice keeps its own row, in the order it happened). The terminal opens on **answer only**, the desktop's default, and the level applies to the whole conversation at once — one press re-reads every reply, not the one under the cursor. Neither level shows a tool call's body or a reasoning block's text: a call is one row, a thought a `▸ thinking` marker (or a count in the summary row), and the details open one row at a time with `tab` + `enter` (or a click). A reply folds only once its run has ended (`agent_start` … `agent_end`); while it streams, no work folds at either level — every thought, call and piece of prose keeps its own row, so the transcript only grows or updates in place until `agent_end`, and `ctrl+e` never changes what a running reply looks like. The counts are words in the reader's language — `61 tool calls · 30 thoughts`, or `工具调用 61 次 · 思考 30 次` in Chinese, whose word order and counter (`次`) the templates carry — and so is the bare reasoning marker (`▸ 思考`); the summary row is drawn in the faintest colour the chrome has, one step under body text, so it sits behind the answer it stands above. History loaded from a session folds the same way, so a reopened conversation reads as one answer per reply. A view toggle for the run it is pressed in, not a preference: every start opens on the folded level |
 | `ctrl+c` | Quit |
 
 | Mouse | Action |
