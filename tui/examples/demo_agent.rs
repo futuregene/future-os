@@ -100,27 +100,35 @@ fn journal() -> Value {
     json!({ "entries": entries })
 }
 
+/// The session in Chinese: the same two turns as [`journal_en`], so a frame taken
+/// in one language shows the same session as the other — same bug, same table,
+/// same two commits — in the words a Chinese reader would use.
+///
+/// Not a translation of the English payload: it is written in Chinese, and the
+/// shapes it exercises are the ones a Chinese frame has to get right — a heading,
+/// double-width bold and italic runs, a table whose cells are CJK, a highlighted
+/// block, a quote, and a folded process that opens into a tree.
 fn journal_zh() -> Vec<Value> {
     vec![
         json!({
             "id": "e1", "kind": "user", "role": "user",
             "blocks": [{"kind": "text",
-                "text": "parser 里有个 off-by-one，找出来并补一个回归测试"}],
+                "text": "`1+2+` 返回的是 `3`，不是报错。表达式解析器里有个 off-by-one，找出来并补一个回归测试。"}],
         }),
         json!({
             "id": "e2", "kind": "assistant", "role": "assistant",
             "blocks": [{"kind": "reasoning",
-                "text": "先看 parse_expr 的边界条件，怀疑是最后一个 token 的处理。"}],
+                "text": "先从 `parse_expr` 的循环边界看：光标用 `<=` 比较时，「到末尾」和「越过末尾」是同一个状态，尾随的运算符会被接受，而它的右操作数其实并不存在。"}],
         }),
         json!({
             "id": "e3", "kind": "assistant", "role": "assistant",
             "blocks": [{"kind": "tool_call", "toolCallId": "call_read", "name": "read",
-                        "arguments": {"path": "src/parser.rs"}}],
+                        "arguments": {"path": "src/parser.rs", "offset": 138, "limit": 16}}],
         }),
         json!({
             "id": "e4", "kind": "tool", "role": "tool",
             "blocks": [{"kind": "tool_result", "toolCallId": "call_read", "isError": false,
-                "text": "142  fn parse_expr(&mut self) -> Result<Expr> {\n143      while self.peek() <= self.end { ... }\n"}],
+                "text": "142  fn parse_expr(&mut self) -> Result<Expr> {\n143      let mut lhs = self.parse_atom()?;\n144      while self.peek() <= self.end {\n145          let op = self.next();\n146          let rhs = self.parse_atom()?;\n147          lhs = apply(lhs, op, rhs);\n148      }\n149      Ok(lhs)\n150  }\n"}],
         }),
         json!({
             "id": "e5", "kind": "assistant", "role": "assistant",
@@ -130,12 +138,62 @@ fn journal_zh() -> Vec<Value> {
         json!({
             "id": "e6", "kind": "tool", "role": "tool",
             "blocks": [{"kind": "tool_result", "toolCallId": "call_test", "isError": false,
-                "text": "test result: ok. 40 passed; 0 failed\n"}],
+                "text": "running 41 tests\ntest result: ok. 41 passed; 0 failed; 0 ignored\n"}],
         }),
         json!({
             "id": "e7", "kind": "assistant", "role": "assistant",
             "blocks": [{"kind": "text",
-                "text": "`while self.peek() <= self.end` 在最后一个 token 上多读一次。改成 `<` 之后，41 个用例全过。"}],
+                "text": "### 诊断\n\n`parse_expr` 用 **`<=`** 比较光标，于是 *「到末尾」* 和 *「越过末尾」* 变成同一个状态——尾随的运算符被消费掉，而缺的那个右操作数就成了 `lhs`。\n\n```rust\n// 停在最后一个 token 上，而不是越过它。\nwhile self.peek() < self.end {\n    let op = self.next();\n    lhs = apply(lhs, op, self.parse_atom()?);\n}\n```\n\n| 形状 | 改前 | 改后 |\n| --- | --- | --- |\n| 1+2+ | 3 | UnexpectedEof |\n| [1,2, | [1, 2] | UnexpectedEof |\n| f(a, | f(a) | UnexpectedEof |\n\n三种写法是**同一个错误**，所以一张表驱动的用例就覆盖了它们——见 `src/parser/tests.rs`。"}],
+        }),
+        json!({
+            "id": "e8", "kind": "user", "role": "user",
+            "blocks": [{"kind": "text",
+                "text": "别处还有同样的写法吗？顺手拆成两个 commit 提交——先边界，再测试。"}],
+        }),
+        json!({
+            "id": "e9", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "reasoning",
+                "text": "搜这个比较本身，而不是搜 `parse_expr`：错的是边界，不是函数。"}],
+        }),
+        json!({
+            "id": "e10", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "tool_call", "toolCallId": "call_grep", "name": "shell",
+                        "arguments": {"command": "rg -n 'peek\\(\\) <=' src/"}}],
+        }),
+        json!({
+            "id": "e11", "kind": "tool", "role": "tool",
+            "blocks": [{"kind": "tool_result", "toolCallId": "call_grep", "isError": false,
+                "text": "src/parser.rs:144:        while self.peek() <= self.end {\nsrc/parser.rs:318:        while self.peek() <= self.end {\nsrc/args.rs:87:        while self.peek() <= self.end {\n"}],
+        }),
+        json!({
+            "id": "e12", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "reasoning",
+                "text": "另外两处，都能从同一个入口到达。边界放一个 commit、用例表放另一个，这样回滚测试不会把行为改动一起带走，中间也不会留一个红的测试集。"}],
+        }),
+        json!({
+            "id": "e13", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "tool_call", "toolCallId": "call_edit", "name": "edit",
+                        "arguments": {"path": "src/args.rs", "old": "while self.peek() <= self.end {", "new": "while self.peek() < self.end {"}}],
+        }),
+        json!({
+            "id": "e14", "kind": "tool", "role": "tool",
+            "blocks": [{"kind": "tool_result", "toolCallId": "call_edit", "isError": false,
+                "text": "patched src/args.rs:87\n1 file changed, 1 insertion(+), 1 deletion(-)\n"}],
+        }),
+        json!({
+            "id": "e15", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "tool_call", "toolCallId": "call_commit", "name": "shell",
+                        "arguments": {"command": "cargo test -p parser && git commit -am 'fix(parser): the loop bound'"}}],
+        }),
+        json!({
+            "id": "e16", "kind": "tool", "role": "tool",
+            "blocks": [{"kind": "tool_result", "toolCallId": "call_commit", "isError": false,
+                "text": "test result: ok. 44 passed; 0 failed; 0 ignored\n[parser 6b1f0c2] fix(parser): the loop bound\n 3 files changed, 3 insertions(+), 3 deletions(-)\n"}],
+        }),
+        json!({
+            "id": "e17", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "text",
+                "text": "分成 **两个 commit** 落地，都是绿的：\n\n1. `6b1f0c2` —— 三处边界，*只改行为*\n2. `d41e8aa` —— 表驱动的用例，*只改覆盖*\n\n> `cargo test -p parser`：44 passed，0 failed，0 ignored。\n\n回滚第二个 commit 之后 `41 passed` 原样回来——这就是你要的那条性质，别的东西一个都没动。"}],
         }),
     ]
 }
@@ -419,7 +477,7 @@ fn state() -> Value {
 
 fn session_name() -> &'static str {
     match demo_lang() {
-        DemoLang::Zh => "parser 的 off-by-one",
+        DemoLang::Zh => "表达式解析器里的 off-by-one",
         // Title case, like every other English title here: a session name in a
         // rail is a title, and the TUI does not restyle what the agent sends.
         DemoLang::En => "Off-by-One in the Expression Parser",
@@ -435,16 +493,93 @@ fn session_name() -> &'static str {
 /// and that is what an English frame should show.
 fn sessions() -> Value {
     let sessions = match demo_lang() {
-        DemoLang::Zh => json!([
-            {"id": SESSION_ID, "sessionName": session_name(), "cwd": session_cwd(),
-             "model": MODEL, "updatedAtMs": now_ms(), "queryCount": 1, "isStreaming": false},
-            {"id": "demo-older", "sessionName": "workbench 布局草图",
-             "cwd": "/Users/you/future-os/.worktrees/ui", "model": MODEL,
-             "updatedAtMs": now_ms() - 3_600_000, "queryCount": 12, "isStreaming": false},
-            {"id": "demo-oldest", "sessionName": "nightly coverage run",
-             "cwd": "/Users/you/future-os", "model": MODEL,
-             "updatedAtMs": now_ms() - 86_400_000, "queryCount": 4, "isStreaming": false}
-        ]),
+        DemoLang::Zh => {
+            // The Chinese rail is the English one row for row — same workspaces,
+            // same ages, same query counts — with a title a Chinese reader would
+            // have written. A frame's session list is as much "the content" as
+            // its transcript, so pinning the language has to reach it too.
+            const HOME: &str = "/Users/you/future-os";
+            const UI: &str = "/Users/you/future-os/.worktrees/ui";
+            const NOTES: &str = "/Users/you/notes";
+            const OTHERS: [(&str, &str, i64, u32); 57] = [
+                ("重试层挡住了静默的流", HOME, 8, 23),
+                ("侧栏：把一个工作区折起来", HOME, 26, 9),
+                ("短查询的命盘排序", HOME, 51, 14),
+                ("目标面板的覆盖率闸门", HOME, 95, 31),
+                ("SQLite 视图 prepare 要 12ms", HOME, 140, 7),
+                ("工作台布局草图", UI, 240, 12),
+                ("静默 48 秒后重连", HOME, 300, 18),
+                ("把重试层从桥里拆出来", HOME, 420, 6),
+                ("按键审计：ctrl+g 与 ctrl+d", UI, 600, 11),
+                ("Windows 命名管道冒烟测试", HOME, 1_500, 4),
+                ("夜里那次覆盖率跑", HOME, 2_100, 4),
+                ("压缩数字的笔记", NOTES, 3_000, 3),
+                ("目录结构那一页", NOTES, 5_400, 2),
+                ("命盘需要一个过滤行", UI, 6_200, 8),
+                ("待办面板：把目标去重", HOME, 6_000, 5),
+                ("事件流来了两遍", HOME, 6_432, 16),
+                ("工具结果算不算正文行", HOME, 6_896, 9),
+                ("手机端：追问开了新会话", HOME, 7_393, 21),
+                ("会话的「最近」从不更新", HOME, 7_925, 13),
+                ("一次删掉一批会话", HOME, 8_496, 4),
+                ("45 秒的死线没有收尾行", HOME, 9_109, 17),
+                ("缓存命中率是 96%", HOME, 9_765, 6),
+                ("每次 run 花多少额度", NOTES, 10_468, 3),
+                ("一个 parser 一个 commit，还是三个", HOME, 11_223, 2),
+                ("指南：每个文件放哪里", NOTES, 12_031, 5),
+                ("截图：把侧栏宽度钉住", UI, 12_898, 7),
+                ("在隔离 home 里跑 grpcurl", HOME, 13_827, 8),
+                ("目标面板把一个 todo 忘了", HOME, 14_824, 11),
+                ("那个 flaky 测试在等什么", HOME, 15_892, 9),
+                ("Windows：锁文件不是原子的", HOME, 17_037, 6),
+                ("一个 prompt，两个会话", HOME, 18_264, 4),
+                ("正文丢了最后一行", HOME, 19_580, 12),
+                ("浅色主题的对比度", UI, 20_991, 9),
+                ("滚动：天花板上限要算窗口", HOME, 22_504, 7),
+                ("帮助浮层列了它没有的动词", HOME, 24_125, 3),
+                ("类型化 RPC：退役 JSON 兜底", HOME, 25_863, 15),
+                ("分支保护要求先合 main", HOME, 27_727, 2),
+                ("覆盖率：src-tauri 那一对", HOME, 29_725, 8),
+                ("滚轮为什么跳两行", UI, 31_866, 5),
+                ("工具调用参数被截断", HOME, 34_163, 10),
+                ("读 40MB 的日志不卡", HOME, 36_624, 6),
+                ("模型选择器什么都记不住", HOME, 39_263, 4),
+                ("diff 评审：把长 hunk 折起来", UI, 42_092, 11),
+                ("国际化：英文版用量面板", HOME, 45_125, 7),
+                ("沙箱层级名字有点误导", NOTES, 48_376, 3),
+                ("worktree 留到落地再删", HOME, 51_862, 2),
+                ("Windows：管道名按用户分", HOME, 55_598, 5),
+                ("两个 agent 抢一个 socket", HOME, 59_604, 3),
+                ("输入框随草稿长高", UI, 63_899, 9),
+                ("截图：侧栏再宽一点", UI, 68_503, 4),
+                ("Markdown 表格遇到宽字就散", HOME, 73_439, 6),
+                ("diff 面板读的是索引", HOME, 78_730, 7),
+                ("收尾锁里的陈旧锁", HOME, 84_403, 2),
+                ("覆盖率：把两次跑合起来", HOME, 90_484, 8),
+                ("一份刚好放得下的会话列表", NOTES, 97_004, 5),
+                ("读目标面板的账本", HOME, 103_993, 11),
+                ("一个 prompt，两个回答", HOME, 111_486, 3),
+            ];
+            let mut rows: Vec<(&str, &str, i64, u32)> = Vec::with_capacity(OTHERS.len() + 1);
+            rows.push((session_name(), HOME, 0, 1));
+            rows.extend(OTHERS);
+            Value::Array(
+                rows.iter()
+                    .enumerate()
+                    .map(|(index, (title, cwd, minutes, queries))| {
+                        let id = match index {
+                            0 => SESSION_ID.to_string(),
+                            other => format!("demo-zh-{}", other + 1),
+                        };
+                        json!({
+                            "id": id, "sessionName": title, "cwd": cwd, "model": MODEL,
+                            "updatedAtMs": now_ms() - minutes * 60_000,
+                            "queryCount": queries, "isStreaming": false
+                        })
+                    })
+                    .collect(),
+            )
+        }
         DemoLang::En => {
             // `(title, workspace, minutes ago, queries)`, newest first. Ages are
             // in minutes so the rail's own `12m` / `3h` / `2d` stamps come out of

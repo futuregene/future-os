@@ -1629,7 +1629,7 @@ fn activity_row(
         palette.dim("· ")
     };
     let kind = match activity.kind {
-        ActivityKind::Idle => palette.dim("idle"),
+        ActivityKind::Idle => palette.dim(t(workbench.lang, Key::ActivityIdle)),
         ActivityKind::Thinking => {
             palette.text(palette.amber, t(workbench.lang, Key::ActivityThinking))
         }
@@ -1669,7 +1669,7 @@ fn status_row(
 ) -> Vec<String> {
     let usage = data.usage;
     let model = if data.model.is_empty() {
-        "no model".to_string()
+        t(lang, Key::StatusNoModel).to_string()
     } else {
         data.model.clone()
     };
@@ -1690,7 +1690,7 @@ fn status_row(
             if data.effort.is_empty() {
                 "—"
             } else {
-                &data.effort
+                i18n::effort_label(lang, &data.effort).unwrap_or(&data.effort)
             },
             mode
         ))
