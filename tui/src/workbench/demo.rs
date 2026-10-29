@@ -173,6 +173,7 @@ fn base() -> WorkbenchData {
             "AGENTS.md".into(),
         ],
         messages: Default::default(),
+        row_stops: Vec::new(),
         input: InputView {
             placeholder: t(
                 crate::workbench::i18n::Language::Zh,

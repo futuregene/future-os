@@ -319,6 +319,12 @@ pub enum WbAction {
     /// Hand a link from the conversation to the reader's browser (or mail
     /// client). The app owns the process; the surface only knows the address.
     OpenUrl(String),
+    /// `enter` (or a click) on a transcript row that opens something: a settled
+    /// reply's folded process, a burst of work, a tool call's body, a reasoning
+    /// block's text. The row is a rendered-line index — the same number the
+    /// frame painted and the driver's snapshot handed out (see
+    /// `chat_area::RowStop`).
+    ToggleChatRow(usize),
     SetTools(Vec<String>),
     CancelQueued(String),
     RecallQueued(String),
@@ -400,6 +406,20 @@ pub enum VerbOutcome {
     Done { notice: Option<String> },
     /// Not the surface's: the app runs it against the agent.
     Agent,
+}
+
+/// One stop of the conversation's `tab` walk.
+///
+/// Two kinds share one cursor because the reader is walking a page, not a data
+/// structure: a link and the row that opens a folded stretch of work sit in the
+/// same column of the same transcript, and the walk visiting them in screen
+/// order is the whole point (see [`Workbench::chat_stops`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ChatStop {
+    /// A link or a picture, by index into the mirrored span list.
+    Link(usize),
+    /// A transcript row that opens something (see `chat_area::RowAction`).
+    Row(crate::components::chat_area::RowStop),
 }
 
 /// One input event.
@@ -563,12 +583,13 @@ pub struct Workbench {
     /// until the transcript, the width it was wrapped at or the working
     /// directory changes (see [`links::Cache`]).
     links: links::Cache,
-    /// Which span `tab` put the cursor on, as an index into that list.
+    /// Which stop `tab` put the cursor on, as an index into the merged walk of
+    /// links and transcript rows, in reading order (see [`Self::chat_stops`]).
     ///
-    /// An index rather than a copy of the span: the list is rebuilt as the
-    /// conversation grows, and a stored span would then point at a row that has
+    /// An index rather than a copy of the stop: the list is rebuilt as the
+    /// conversation grows, and a stored stop would then point at a row that has
     /// moved. Out-of-range is clamped at the point of use.
-    link_index: Option<usize>,
+    chat_index: Option<usize>,
     /// The width the transcript was last wrapped at. Part of the span cache's
     /// key, because a resize rewraps every row while no message changes.
     chat_inner: usize,
@@ -728,7 +749,7 @@ impl Workbench {
             chat_scroll: 0,
             scroll: scroll::ScrollState::default(),
             links: links::Cache::default(),
-            link_index: None,
+            chat_index: None,
             chat_inner: 0,
             queue_index: 0,
             workflow_index: 0,
@@ -833,7 +854,7 @@ impl Workbench {
             self.session_key = data.session.id.clone();
             self.scroll.reset();
             // The cursor belonged to the conversation that just left the screen.
-            self.link_index = None;
+            self.chat_index = None;
             self.links.clear();
         }
         self.scroll.observe(data.revision);
@@ -1104,12 +1125,12 @@ impl Workbench {
     }
 
     fn handle_key(&mut self, key: &str, data: &WorkbenchData) -> Vec<WbAction> {
-        // Every key but the three that move or use the link cursor means the
-        // reader is aiming at something else: typing, scrolling or opening a
+        // Every key but the three that move or use the conversation cursor means
+        // the reader is aiming at something else: typing, scrolling or opening a
         // panel takes the highlight away instead of leaving it on a row the
         // next frame may not even show.
         if !matches!(key, "tab" | "shift+tab" | "enter") {
-            self.link_index = None;
+            self.chat_index = None;
         }
         // The mention menu answers the navigation keys while it is up, and
         // nothing else: every other key still edits the draft, which is what
@@ -1302,17 +1323,19 @@ impl Workbench {
                 self.open_palette();
                 vec![WbAction::Redraw]
             }
-            // `tab` walks the conversation's links and pictures — the one job
-            // it has on a screen that is a conversation. The rail keeps its own
-            // door (`ctrl+b`, or a click on a tab), which is why focusing it is
-            // no longer something `tab` does: a reader stepping towards a link
-            // should never watch the caret jump into the sidebar instead.
+            // `tab` walks the conversation's openable things — links, pictures,
+            // and the rows that open a call, a thought or a folded stretch of
+            // work — the one job it has on a screen that is a conversation. The
+            // rail keeps its own door (`ctrl+b`, or a click on a tab), which is
+            // why focusing it is no longer something `tab` does: a reader
+            // stepping towards a row should never watch the caret jump into the
+            // sidebar instead.
             "tab" => {
                 if data.on_launchpad() {
                     self.launch_field = self.launch_field.next();
                     vec![WbAction::Redraw]
                 } else {
-                    self.step_link(1, data)
+                    self.step_stop(1, data)
                 }
             }
             "shift+tab" => {
@@ -1320,7 +1343,7 @@ impl Workbench {
                     self.launch_field = self.launch_field.previous();
                     vec![WbAction::Redraw]
                 } else {
-                    self.step_link(-1, data)
+                    self.step_stop(-1, data)
                 }
             }
             // On the launchpad a focused chip answers `enter`: it cycles the
@@ -1338,10 +1361,11 @@ impl Workbench {
                 self.launch_field = LaunchField::Prompt;
                 vec![WbAction::Redraw]
             }
-            // A link under the `tab` cursor answers `enter` first: the reader
+            // A stop under the `tab` cursor answers `enter` first: the reader
             // put the cursor there to open it, and `esc` is what hands the key
-            // back to the draft.
-            "enter" if self.link_index.is_some() && !self.sidebar_focus => self.open_link(data),
+            // back to the draft. A link opens its target; a row opens what it
+            // hides (see [`ChatStop`]).
+            "enter" if self.chat_index.is_some() && !self.sidebar_focus => self.open_stop(data),
             "enter" if self.sidebar_focus => self.open_selected(data),
             "enter" => self.submit_draft(data),
             "up" if self.sidebar_focus => self.move_selection(-1, data),
@@ -1711,60 +1735,101 @@ impl Workbench {
         )
     }
 
-    /// The span `tab` has the cursor on — its index (what a click names it by)
-    /// and a copy of it, if the list still has it.
-    pub(crate) fn selected_link(
-        &mut self,
-        data: &WorkbenchData,
-    ) -> Option<(usize, links::LinkSpan)> {
-        let index = self.link_index?;
-        let spans = self.link_spans(data);
-        let count = spans.len();
-        if count == 0 {
-            self.link_index = None;
-            return None;
+    /// The conversation's openable things, in reading order: its links and
+    /// pictures, and the transcript's own rows that open something.
+    ///
+    /// One walk over two lists rather than two walks. The reader is moving a
+    /// cursor down a page, and which of the two a stop belongs to is an
+    /// implementation detail they should never have to think about — the row
+    /// with `▸ 61 tool calls · 30 thoughts` on it sits between two links on the
+    /// same page, so the cursor has to pass them in the order the page shows.
+    pub(crate) fn chat_stops(&mut self, data: &WorkbenchData) -> Vec<ChatStop> {
+        let mut keyed: Vec<(usize, usize, ChatStop)> = Vec::new();
+        for (index, span) in self.link_spans(data).iter().enumerate() {
+            keyed.push((span.row, span.start, ChatStop::Link(index)));
         }
-        let selected = index.min(count - 1);
-        let span = spans[selected].clone();
-        if selected != index {
-            self.link_index = Some(selected);
+        for stop in &data.row_stops {
+            keyed.push((stop.row, stop.start, ChatStop::Row(stop.clone())));
         }
-        Some((selected, span))
+        keyed.sort_by_key(|(row, column, _)| (*row, *column));
+        keyed.into_iter().map(|(_, _, stop)| stop).collect()
     }
 
-    /// `tab` / `shift+tab`: step the link cursor, wrapping at both ends.
+    /// The stop `tab` has the cursor on, if the list still has it.
+    pub(crate) fn selected_stop(&mut self, data: &WorkbenchData) -> Option<ChatStop> {
+        let index = self.chat_index?;
+        let stops = self.chat_stops(data);
+        if stops.is_empty() {
+            self.chat_index = None;
+            return None;
+        }
+        let selected = index.min(stops.len() - 1);
+        if selected != index {
+            self.chat_index = Some(selected);
+        }
+        stops.into_iter().nth(selected)
+    }
+
+    /// Which rendered row the cursor is on — the link's row or the transcript
+    /// row itself. The frame scrolls the transcript to it, the way a search
+    /// result brings itself into view.
+    pub(crate) fn selected_stop_row(&mut self, data: &WorkbenchData) -> Option<usize> {
+        let stop = self.selected_stop(data)?;
+        match stop {
+            ChatStop::Link(index) => self.link_spans(data).get(index).map(|span| span.row),
+            ChatStop::Row(stop) => Some(stop.row),
+        }
+    }
+
+    /// `tab` / `shift+tab`: step the conversation cursor, wrapping at both ends.
     ///
     /// It wraps rather than stopping because the reader is walking a short list
-    /// inside a long transcript: running off the last link and having nothing
-    /// happen reads as "this conversation has no links", when the first one is
-    /// one more press away.
-    fn step_link(&mut self, delta: isize, data: &WorkbenchData) -> Vec<WbAction> {
-        let count = self.link_spans(data).len();
+    /// inside a long transcript: running off the last stop and having nothing
+    /// happen reads as "this conversation has nothing to open", when the first
+    /// one is one more press away.
+    fn step_stop(&mut self, delta: isize, data: &WorkbenchData) -> Vec<WbAction> {
+        let count = self.chat_stops(data).len();
         if count == 0 {
-            self.link_index = None;
+            self.chat_index = None;
             return vec![WbAction::Redraw];
         }
-        let next = match self.link_index {
+        let next = match self.chat_index {
             None if delta < 0 => count - 1,
             None => 0,
             Some(index) => (index as isize + delta).rem_euclid(count as isize) as usize,
         };
-        self.link_index = Some(next);
+        self.chat_index = Some(next);
         vec![WbAction::Redraw]
     }
 
-    /// `enter` on the link cursor: a URL goes to the browser, a conversation
-    /// link switches to it, a file opens in the preview box — a picture as a
-    /// picture.
-    fn open_link(&mut self, data: &WorkbenchData) -> Vec<WbAction> {
-        let Some((_, span)) = self.selected_link(data) else {
+    /// `enter` on the conversation cursor: a URL goes to the browser, a
+    /// conversation link switches to it, a file opens in the preview box — a
+    /// picture as a picture — and a transcript row opens what it hides.
+    fn open_stop(&mut self, data: &WorkbenchData) -> Vec<WbAction> {
+        let Some(stop) = self.selected_stop(data) else {
             return Vec::new();
         };
-        match span.target {
-            links::LinkTarget::Url(url) => vec![WbAction::OpenUrl(url)],
-            links::LinkTarget::Session(id) => vec![WbAction::SwitchSession(id)],
-            links::LinkTarget::File(path) => vec![WbAction::PreviewFile(path)],
+        match stop {
+            ChatStop::Row(stop) => vec![WbAction::ToggleChatRow(stop.row)],
+            ChatStop::Link(index) => {
+                let Some(span) = self.link_spans(data).get(index).cloned() else {
+                    return Vec::new();
+                };
+                match span.target {
+                    links::LinkTarget::Url(url) => vec![WbAction::OpenUrl(url)],
+                    links::LinkTarget::Session(id) => vec![WbAction::SwitchSession(id)],
+                    links::LinkTarget::File(path) => vec![WbAction::PreviewFile(path)],
+                }
+            }
         }
+    }
+
+    /// The index in [`Self::chat_stops`] that a click names: the row's own stop,
+    /// by the rendered line it sits on.
+    fn row_stop_index(&mut self, row: usize, data: &WorkbenchData) -> Option<usize> {
+        self.chat_stops(data)
+            .iter()
+            .position(|stop| matches!(stop, ChatStop::Row(check) if check.row == row))
     }
 
     /// `enter`/`→` on a tree row (the files panel): a directory opens, a file
@@ -3500,21 +3565,40 @@ impl Workbench {
             self.blur_rail();
             return vec![WbAction::FocusPane(PaneId::Input)];
         }
-        // A click that is not on a link means the reader is aiming somewhere
-        // else: the highlight goes with the key path's own rule.
-        if !id.starts_with("chat.link.") {
-            self.link_index = None;
+        // A click that is not on an openable row means the reader is aiming
+        // somewhere else: the highlight goes with the key path's own rule.
+        let link_click = id
+            .strip_prefix("chat.link.")
+            .and_then(|rest| rest.parse::<usize>().ok());
+        let row_click = id
+            .strip_prefix("chat.row.")
+            .and_then(|rest| rest.parse::<usize>().ok());
+        if link_click.is_none() && row_click.is_none() {
+            self.chat_index = None;
         }
         // A link in the conversation. A click both puts the cursor on it and
         // opens it — the pointer has already named its target, so a second
         // `enter` would be asking the reader to say it twice.
-        if let Some(index) = id
-            .strip_prefix("chat.link.")
-            .and_then(|rest| rest.parse::<usize>().ok())
-        {
-            self.link_index = Some(index);
+        if let Some(index) = link_click {
+            self.chat_index = self
+                .chat_stops(data)
+                .iter()
+                .position(|stop| matches!(stop, ChatStop::Link(span) if *span == index));
             self.blur_rail();
-            let actions = self.open_link(data);
+            let actions = self.open_stop(data);
+            return if actions.is_empty() {
+                vec![WbAction::Redraw]
+            } else {
+                actions
+            };
+        }
+        // The same for a transcript row: the pointer named the row it wants
+        // opened, whether that is a folded process, a burst, a call's body or a
+        // reasoning block's text.
+        if let Some(row) = row_click {
+            self.chat_index = self.row_stop_index(row, data);
+            self.blur_rail();
+            let actions = self.open_stop(data);
             return if actions.is_empty() {
                 vec![WbAction::Redraw]
             } else {
@@ -4776,7 +4860,7 @@ mod tests {
         // `esc` puts the cursor back in the draft, so `enter` is a submission
         // again rather than the link the reader has finished with.
         workbench.handle(WbEvent::Key("escape".into()), &data);
-        assert_eq!(workbench.link_index, None);
+        assert_eq!(workbench.chat_index, None);
     }
 
     /// A click names its own link and opens it: the pointer has already said
@@ -4795,13 +4879,73 @@ mod tests {
             click_region(&mut workbench, &data, 150, 38, "chat.link.1"),
             vec![WbAction::SwitchSession("s-2".into())]
         );
-        assert_eq!(workbench.link_index, Some(1));
+        assert_eq!(workbench.chat_index, Some(1));
         // Every painted link answers a click, not just the one the cursor is
         // on: the first one has its own region.
         assert_eq!(
             click_region(&mut workbench, &data, 150, 38, "chat.link.0"),
             vec![WbAction::OpenUrl("https://example.com/a".into())]
         );
+    }
+
+    /// `tab` reaches the transcript's own rows — a folded process, a burst, a
+    /// call, a reasoning marker — and `enter` opens the one under the cursor,
+    /// with the walk in reading order across both kinds of stop.
+    #[test]
+    fn tab_walks_fold_rows_and_enter_opens_them() {
+        let mut data = demo::chat();
+        data.messages = vec![
+            format!("a link: {}", md_link("https://example.com/a", "the site")),
+            "▸ 2 tool calls · 1 thought".to_string(),
+            "the answer".to_string(),
+        ]
+        .into();
+        data.row_stops = vec![crate::components::chat_area::RowStop {
+            row: 1,
+            start: 1,
+            end: 26,
+            action: crate::components::chat_area::RowAction::Process { msg: 3 },
+            expanded: false,
+        }];
+        let mut workbench = workbench();
+        // The link sits above the row, so the walk visits it first…
+        assert_eq!(
+            workbench.handle(WbEvent::Key("tab".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        // …and the row is the next press after it.
+        assert_eq!(
+            workbench.handle(WbEvent::Key("tab".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::ToggleChatRow(1)]
+        );
+        // `esc` gives the key back to the draft.
+        workbench.handle(WbEvent::Key("escape".into()), &data);
+        assert_eq!(workbench.chat_index, None);
+    }
+
+    /// A click on a transcript row opens it, the same as `enter` on the cursor —
+    /// and it leaves the cursor on the row the pointer named.
+    #[test]
+    fn a_click_on_a_fold_row_opens_it() {
+        let mut data = demo::chat();
+        data.messages = vec!["▸ 2 tool calls".to_string(), "the answer".to_string()].into();
+        data.row_stops = vec![crate::components::chat_area::RowStop {
+            row: 0,
+            start: 1,
+            end: 15,
+            action: crate::components::chat_area::RowAction::Process { msg: 1 },
+            expanded: false,
+        }];
+        let mut workbench = workbench();
+        assert_eq!(
+            click_region(&mut workbench, &data, 150, 38, "chat.row.0"),
+            vec![WbAction::ToggleChatRow(0)]
+        );
+        assert_eq!(workbench.chat_index, Some(0));
     }
 
     /// The cursor is painted: the row the reader tabbed to is in reverse video,
@@ -4903,19 +5047,19 @@ mod tests {
         let (mut workbench, _rows) = frame(&data, 120, 38);
         let step = |workbench: &mut Workbench, data: &WorkbenchData| {
             workbench.handle(WbEvent::Key("tab".into()), data);
-            workbench.link_index
+            workbench.chat_index
         };
         assert_eq!(step(&mut workbench, &data), Some(0));
         assert_eq!(step(&mut workbench, &data), Some(1));
         assert_eq!(step(&mut workbench, &data), Some(0), "the walk wraps");
         workbench.handle(WbEvent::Key("shift+tab".into()), &data);
-        assert_eq!(workbench.link_index, Some(1), "shift+tab walks back");
+        assert_eq!(workbench.chat_index, Some(1), "shift+tab walks back");
         assert!(!workbench.sidebar_focus, "the rail was never focused");
         assert!(workbench.sidebar_visible);
         // Typing takes the cursor back to the draft: the highlight cannot
         // outlive the aim that put it there.
         workbench.handle(WbEvent::Key("x".into()), &data);
-        assert_eq!(workbench.link_index, None);
+        assert_eq!(workbench.chat_index, None);
     }
 
     /// Deleting a conversation asks before it acts: `/delete` (or the rail's

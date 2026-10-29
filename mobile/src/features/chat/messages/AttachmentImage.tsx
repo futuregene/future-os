@@ -19,17 +19,24 @@ export function AttachmentImage({ attachment, onOpen }: {
   // names a file on the desktop that has to come through the same preview
   // transfer the reply images use.
   const local = /^[a-z][a-z0-9+.-]*:\/\//i.test(attachment.path) ? attachment.path : null;
-  const [uri, setUri] = useState<string | null>(local);
-  const [aspectRatio, setAspectRatio] = useState(1.5);
+  // A picture this phone already holds paints on the first frame: the index is
+  // local, so re-entering a conversation does not show a name chip first and
+  // then swap it for the picture (twice, once per image, one round trip apart).
+  const [uri, setUri] = useState<string | null>(() => local ?? loader?.cached(attachment.path) ?? null);
+  // Same seam as the reply images: the last ratio this picture had is reused so
+  // the row it sits in does not change height when it is drawn again.
+  const [aspectRatio, setAspectRatio] = useState(() => loader?.aspect?.(attachment.path) ?? 1.5);
   const pending = useRef<AbortController | null>(null);
   useEffect(() => () => pending.current?.abort(), []);
   // Load once per attachment, and only once: the transcript re-renders on every
   // streaming delta, so an unguarded effect would re-request the picture on each
-  // tick. No loader means this surface cannot read the desktop (or a test has
-  // none): the chip is then the only honest thing to draw.
+  // tick. A picture kept from an earlier open resolves from disk on the spot
+  // (the loader still re-checks it with the desktop behind the paint). No loader
+  // means this surface cannot read the desktop (or a test has none): the chip is
+  // then the only honest thing to draw.
   const autoStarted = useRef(false);
   useEffect(() => {
-    if (autoStarted.current || uri || !loader) return;
+    if (autoStarted.current || local || !loader) return;
     autoStarted.current = true;
     const request = new AbortController();
     pending.current = request;
@@ -44,7 +51,7 @@ export function AttachmentImage({ attachment, onOpen }: {
       .finally(() => {
         if (!request.signal.aborted) pending.current = null;
       });
-  }, [attachment.path, loader, uri]);
+  }, [attachment.path, loader, local]);
   // No bytes yet, no viewer on this surface, or a file the phone cannot read as
   // an image: the named chip is the fallback, and it still opens the full file
   // preview (with its download/share actions).
@@ -62,8 +69,11 @@ export function AttachmentImage({ attachment, onOpen }: {
           // intrinsic size, and the 1.5 default keeps the box sane when it does
           // not.
           const source = event?.nativeEvent?.source;
-          if (source && source.width > 0 && source.height > 0 && Number.isFinite(source.width / source.height))
-            setAspectRatio(source.width / source.height);
+          if (source && source.width > 0 && source.height > 0 && Number.isFinite(source.width / source.height)) {
+            const ratio = source.width / source.height;
+            setAspectRatio(ratio);
+            loader?.rememberAspect?.(attachment.path, ratio);
+          }
         }}
         resizeMode="contain"
         source={{ uri }}

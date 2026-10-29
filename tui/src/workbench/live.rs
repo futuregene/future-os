@@ -1508,6 +1508,7 @@ impl Live {
                 .collect(),
             skills,
             messages,
+            row_stops: self.chat.row_stops(),
             input,
             activity,
             notice: self.notice.clone(),
@@ -1613,6 +1614,14 @@ impl Live {
                 self.decide_with_rule(approved, rule).await
             }
             WbAction::SelectDiff(_) => {}
+            // Opening a transcript row is the chat's own state (`tab` + `enter`,
+            // or a click): the driver only has to repaint, and the revision
+            // moves because the rows — and the spans over them — changed.
+            WbAction::ToggleChatRow(row) => {
+                if self.chat.toggle_row(row).is_some() {
+                    self.revision = self.revision.wrapping_add(1);
+                }
+            }
             WbAction::SelectWorktree(path) => self.select_worktree(&path).await,
             WbAction::ForkAt(id) => self.fork_at(&id).await,
             WbAction::Compact(instructions) => self.compact(instructions).await,
@@ -4220,6 +4229,7 @@ fn find_model<'a>(models: &'a [ModelInfo], reference: &str) -> Option<&'a ModelI
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::chat_area::{ChatMessage, ChatRole, RowAction};
     use crate::rpc::types::SessionSummary;
 
     /// The launchpad's first message must create the session and send the
@@ -4283,6 +4293,70 @@ mod tests {
             painted.contains("hello there"),
             "the transcript keeps what was said:\n{painted}"
         );
+    }
+
+    /// Opening a transcript row is the chat's own state: the driver rebuilds
+    /// the transcript and moves the revision (the rows, and the link spans over
+    /// them, changed), and nothing reaches the agent. `tab` + `enter` on a
+    /// folded reply, a burst, a call or a reasoning marker all land here.
+    #[tokio::test]
+    async fn opening_a_chat_row_repaints_without_asking_the_agent() {
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[(
+            "get_state",
+            r#"{"sessionId":"s1"}"#,
+        )]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the test agent");
+
+        // One settled turn: a call, then the answer it produced.
+        live.chat
+            .add_message(ChatMessage::new("u".into(), ChatRole::User, "look"));
+        live.chat
+            .add_tool_start("c1", "read", Some(r#"{"path":"/a.rs"}"#.into()));
+        live.chat.finish_tool("c1", None, false);
+        live.chat.add_message(ChatMessage::new(
+            "a".into(),
+            ChatRole::Assistant,
+            "the answer",
+        ));
+        let folded = plain_rows(&live.chat.render_all(100));
+        assert!(
+            !folded.contains("read /a.rs"),
+            "the work is folded: {folded}"
+        );
+
+        let row = live
+            .chat
+            .row_stops()
+            .into_iter()
+            .find(|stop| matches!(stop.action, RowAction::Process { .. }))
+            .expect("the fold draws a row")
+            .row;
+        let before = seen.lock().unwrap().len();
+        let revision = live.revision;
+        live.apply(WbAction::ToggleChatRow(row)).await;
+
+        assert!(
+            live.revision > revision,
+            "the revision moves, so the span cache is rebuilt"
+        );
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            before,
+            "opening a row reaches the agent with nothing"
+        );
+        let open = plain_rows(&live.chat.render_all(100));
+        assert!(open.contains("read /a.rs"), "the call is back: {open}");
+    }
+
+    /// Rows as a reader sees them: ANSI stripped, one per line.
+    fn plain_rows(rows: &[String]) -> String {
+        rows.iter()
+            .map(|row| crate::utils::strip_ansi_codes(row))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// `/tool-output` is the one door to a tool call's body: the chord that used

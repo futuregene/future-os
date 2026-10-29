@@ -522,8 +522,8 @@ impl E2e {
         );
         // The production wiring, unmodified: one secure transport shared by the
         // command loop and the event drain, a real ordered event queue, a real
-        // command subscription. `build_transport` also resets the capability
-        // flags, which is what makes the first replay the pre-change baseline.
+        // command subscription. Nothing has declared anything yet, which is what
+        // makes the first replay the pre-change baseline.
         let mut tasks = build_transport(&bridge_client, &pair_id, &handshake, new_reply_slots())
             .await
             .expect("bridge transport");
@@ -1491,7 +1491,7 @@ async fn run_real_traffic_with(
     // ── Undeclared: the pre-change lane over real traffic ──
     assert!(
         !lean_declared(e2e.pair_id.as_str()),
-        "build_transport must reset the declaration"
+        "the baseline must run before this connection declares anything"
     );
     let live_full = e2e.replay_live_lane(session, run, journal).await;
     assert_lane(&live_full, journal, false, "undeclared");

@@ -535,6 +535,12 @@ pub struct WorkbenchData {
     /// Shared rather than owned: one keystroke composes the frame several times
     /// and a long transcript must not be copied for each pass.
     pub messages: std::sync::Arc<[String]>,
+    /// The transcript's own `tab` stops: the rows that open something — a
+    /// settled reply's folded process, a burst of work, a tool call's body, a
+    /// reasoning block's text (see `chat_area::RowStop`). Rows are indexes into
+    /// `messages`, which is why they travel with it: the walk, the highlight
+    /// and the click regions have to name the same lines the frame painted.
+    pub row_stops: Vec<crate::components::chat_area::RowStop>,
     pub input: InputView,
     pub activity: Activity,
     /// A failed request or command, shown in place of the hint row until

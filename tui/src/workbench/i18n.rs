@@ -950,8 +950,8 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         CmdModel => ("选择模型", "Choose a model"),
         CmdLanguage => ("界面语言", "Interface language"),
         CmdReplyDetail => (
-            "过程展示：全展开 / 收起工具与思考 / 只留回答",
-            "Process detail: all / fold the work / answer only",
+            "过程展示：只留回答 / 全部过程",
+            "Process detail: answer only / the whole process",
         ),
         CmdToolOutput => ("工具调用正文：展开 / 收起", "Tool call bodies: expand / collapse"),
         CmdWorkspace => ("workspace 目录", "Workspace directory"),
@@ -1011,8 +1011,8 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ),
         HelpKeyHelp => ("这份帮助", "This help"),
         HelpKeyReplyDetail => (
-            "过程展示：全展开 → 收起工具与思考 → 只留回答",
-            "Process detail: all → fold the work → answer only",
+            "过程展示：只留回答 / 全部过程（工具与思考仍收起）",
+            "Process detail: answer only / the whole process (calls and thoughts stay folded)",
         ),
         HelpKeyReplyDetailSet => ("同上，直接设置", "The same, set directly"),
         HelpKeyPrevSession => ("上一个会话（侧栏随之切换）", "Previous conversation (the chat follows)"),
