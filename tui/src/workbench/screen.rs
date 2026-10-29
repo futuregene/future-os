@@ -405,8 +405,21 @@ fn splice(base: &str, piece: &str, at: usize, width: usize) -> String {
 
 /// Paint a centred overlay: each row is composited over the frame, so the
 /// surface behind it stays visible at the edges.
+///
+/// A row the painter left blank is that margin, not a row it painted: a box
+/// starts below its own top margin, and painting that margin as a full-width
+/// panel row put a lighter band over the page above every floating box — a
+/// rectangle nothing in the box held, while the same rows below it were the
+/// page's. Blank rows *after* the first painted one are still painted: a
+/// full-height box (`/git`, the queue, the review surface) pads its own body,
+/// and that padding is the box, not a margin.
 fn paint_overlay(rows: &mut [String], palette: &Palette, lines: Vec<String>, columns: usize) {
+    let mut painted = false;
     for (index, line) in lines.iter().enumerate() {
+        if !painted && line.chars().all(|cell| cell == ' ') {
+            continue;
+        }
+        painted = true;
         if let Some(slot) = rows.get_mut(index) {
             *slot = palette.on(palette.panel, &fit(line, columns), columns);
         }
@@ -3379,14 +3392,14 @@ fn preview_box(
 
     let Some(preview) = data.preview.as_ref() else {
         let title = t(lang, Key::PreviewNothing).to_string();
-        return paint_box(
+        return preview_surface(
             palette,
             &title,
             vec![palette.dim(&format!(" {}", t(lang, Key::PreviewNothing)))],
             w,
             h,
             &geometry,
-            Chrome::Panel(lang),
+            lang,
         );
     };
     let zoom = workbench.preview_zoom;
@@ -3482,7 +3495,12 @@ fn preview_box(
         state::PreviewView::Markdown { text, .. } => {
             let mut renderer = crate::components::markdown::MarkdownRenderer::new();
             let lines = renderer.render_text(text, inner.saturating_sub(2));
-            let window = window(&lines, scroll, content_h);
+            let (start, window) = window(&lines, scroll, content_h);
+            // The offset the window settled on is written back: the painter's
+            // clamp alone would leave the state ahead of the paint, and the next
+            // `pageUp` would be spent walking that gap instead of the document
+            // (the same reason the transcript and `/git` clamp their own offset).
+            workbench.preview_scroll = start;
             content.extend(window.into_iter().map(|line| format!(" {line}")));
             t(lang, Key::PreviewHintText)
         }
@@ -3492,11 +3510,12 @@ fn preview_box(
             if lines.is_empty() {
                 content.push(palette.dim(&format!(" {}", t(lang, Key::PreviewEmptyFile))));
             }
-            let window = window(
+            let (start, window) = window(
                 lines,
                 scroll,
                 content_h.saturating_sub(usize::from(*truncated)),
             );
+            workbench.preview_scroll = start;
             content.extend(
                 window
                     .into_iter()
@@ -3521,6 +3540,13 @@ fn preview_box(
             t(lang, Key::PreviewHintText)
         }
     };
+    // The box is the screen less its two-row margin, whatever the document
+    // holds: a body that stopped where the *text* stopped would end the box
+    // early and leave the page underneath showing through below it, which is
+    // what the last page of a long file and a one-line error both used to do.
+    while content.len() < content_h {
+        content.push(String::new());
+    }
     content.push(String::new());
     content.push(palette.dim(&format!(" {hint}")));
 
@@ -3537,15 +3563,43 @@ fn preview_box(
         }
         _ => preview.name().to_string(),
     };
-    paint_box(
-        palette,
-        &title,
-        content,
-        w,
-        h,
-        &geometry,
-        Chrome::Panel(lang),
-    )
+    preview_surface(palette, &title, content, w, h, &geometry, lang)
+}
+
+/// Paint the preview box, and cover the frame it sits in.
+///
+/// The box takes all but a two-row margin, so the margin is the only part of the
+/// page it does not own — and a margin that showed the conversation through it
+/// read as a box cut short, which is what a scrolled preview used to look like:
+/// the rows below the box were the chat's own rows, and as the document scrolled
+/// the band of chat under the box grew. Unlike a floating menu, a preview owns
+/// the whole frame while it is open: its margin is the surface's background, so
+/// nothing of the page is visible beside the box at any scroll position.
+fn preview_surface(
+    palette: &Palette,
+    title: &str,
+    content: Vec<String>,
+    w: u16,
+    h: u16,
+    geometry: &BoxGeometry,
+    lang: Language,
+) -> Vec<String> {
+    let surface = |line: String| {
+        if line.chars().all(|cell| cell == ' ') {
+            palette.panel_row("", w as usize)
+        } else {
+            line
+        }
+    };
+    let mut lines: Vec<String> =
+        paint_box(palette, title, content, w, h, geometry, Chrome::Panel(lang))
+            .into_iter()
+            .map(surface)
+            .collect();
+    while lines.len() < h as usize {
+        lines.push(palette.panel_row("", w as usize));
+    }
+    lines
 }
 
 /// A previewed line with its syntax runs in the palette's token colours.
@@ -3567,12 +3621,23 @@ fn painted(palette: &Palette, line: &syntax::Line) -> String {
 }
 
 /// `height` lines starting at `scroll`, clamped to the end of the text.
-fn window<T: Clone>(lines: &[T], scroll: usize, height: usize) -> Vec<T> {
+/// `height` lines starting at `scroll`, clamped to the last *full* page — and
+/// the start it settled on, so the caller can store it back.
+///
+/// Clamping to the last row instead (the old `lines.len() - 1`) let the offset
+/// run past the end: every press after that painted fewer rows than the box
+/// holds, so the text climbed its own band while the box shrank under it and
+/// the conversation showed through below — and coming back up had to pay the
+/// whole overshoot before the document moved at all.
+fn window<T: Clone>(lines: &[T], scroll: usize, height: usize) -> (usize, Vec<T>) {
     if lines.is_empty() || height == 0 {
-        return Vec::new();
+        return (0, Vec::new());
     }
-    let start = scroll.min(lines.len().saturating_sub(1));
-    lines[start..(start + height).min(lines.len())].to_vec()
+    let start = scroll.min(lines.len().saturating_sub(height));
+    (
+        start,
+        lines[start..(start + height).min(lines.len())].to_vec(),
+    )
 }
 
 fn palette_box(
