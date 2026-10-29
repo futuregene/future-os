@@ -552,9 +552,18 @@ fn validate_key(key: &str) -> Result<(), String> {
     }
 }
 
-/// The rows of the preferences box, in the order it lists them: the frame's
-/// shape, then its input and its feedback, then the two choices that are
-/// themselves menus (the language and the palette), then the doors.
+/// The rows of the preferences box, in the order it lists them: the two choices
+/// that repaint the whole surface (the language and the palette), then the
+/// frame's shape, then its input and its feedback, then the doors.
+///
+/// The language leads because it is the one row a reader has to be able to find
+/// without reading the rows around it: every other label here is written in
+/// whatever that row says, so a reader who cannot read the box is looking at a
+/// list that does not tell them where the door is. It has no chord either
+/// (`/lang` is a command they would have to be told about), so this box is the
+/// only place the setting is discoverable. The theme follows it as its pair —
+/// the other choice that changes the whole surface rather than one part of it,
+/// and the only other row that opens a list instead of stepping in place.
 ///
 /// Every row here is one persisted setting: the box is the one screen a reader
 /// visits to see what this terminal client remembers, so a preference with no
@@ -577,6 +586,8 @@ pub enum PreferenceRow {
 }
 
 pub const PREFERENCE_ROWS: [PreferenceRow; 11] = [
+    PreferenceRow::Language,
+    PreferenceRow::Theme,
     PreferenceRow::Position,
     PreferenceRow::Width,
     PreferenceRow::SidebarVisible,
@@ -584,8 +595,6 @@ pub const PREFERENCE_ROWS: [PreferenceRow; 11] = [
     PreferenceRow::Notifications,
     PreferenceRow::NotificationBell,
     PreferenceRow::Motion,
-    PreferenceRow::Language,
-    PreferenceRow::Theme,
     PreferenceRow::Shortcuts,
     PreferenceRow::Reset,
 ];
@@ -716,6 +725,26 @@ mod tests {
         for position in [SidebarPosition::Left, SidebarPosition::Right] {
             assert_eq!(SidebarPosition::from_wire(position.as_wire()), position);
         }
+    }
+
+    /// The language leads the box, and the theme follows it. Every other label
+    /// on that screen is written in whatever the language row says, so it is
+    /// the one row a reader has to find without reading its neighbours — and
+    /// the box is its only door, since it has no chord. This ordering is a
+    /// decision, not an accident of the array, so it is asserted here.
+    #[test]
+    fn the_language_row_leads_the_box() {
+        assert_eq!(PREFERENCE_ROWS[0], PreferenceRow::Language);
+        assert_eq!(PREFERENCE_ROWS[1], PreferenceRow::Theme);
+        // `index()` is what the cursor, the click regions and the key handler
+        // address rows by, so it has to agree with the array they are painted
+        // from.
+        for (index, row) in PREFERENCE_ROWS.iter().enumerate() {
+            assert_eq!(row.index(), index, "{row:?}");
+        }
+        // The doors stay last: `restore defaults` is the row a reader reaches
+        // for once, and it is the one that cannot be undone by pressing again.
+        assert_eq!(PREFERENCE_ROWS[10], PreferenceRow::Reset);
     }
 
     /// No function key is a default. `F1`–`F12` sit behind an `Fn` modifier on a
