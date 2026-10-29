@@ -7342,6 +7342,129 @@ mod tests {
         assert!(workbench.preview_scroll > 5, "wheel down moves the text");
     }
 
+    /// A preview box is the screen less its two-row margin, whatever the
+    /// document holds.
+    ///
+    /// The body used to stop where the *text* stopped, so a short file or the
+    /// last page of a long one ended the box early: the bottom half of the
+    /// screen was the conversation underneath, with the box's own hint standing
+    /// on the line it stopped at. Both cases are here because they failed for
+    /// different reasons — a file shorter than the box, and an offset past the
+    /// end of a file longer than it.
+    #[test]
+    fn a_preview_box_fills_its_rectangle_whether_or_not_the_text_does() {
+        fn bottom_row(rows: &[String]) -> usize {
+            rows.iter()
+                .position(|row| crate::utils::strip_ansi_codes(row).contains('╰'))
+                .expect("the box closes")
+        }
+        let (w, h) = (100u16, 30u16);
+        // The box takes all but a two-row margin: 28 rows from row 1, so its
+        // bottom border belongs on row 28 and nothing of it may fall short.
+        let last_box_row = 1 + (h as usize - 2) - 1;
+
+        let mut data = demo::chat();
+        data.preview = Some(state::PreviewView::Text {
+            path: "notes.txt".into(),
+            lines: (0..3)
+                .map(|n| super::syntax::Line::plain(format!("line {n}")))
+                .collect::<Vec<_>>()
+                .into(),
+            truncated: false,
+        });
+        let (mut workbench, _rows) = frame(&data, w, h);
+        workbench.overlay = Some(Overlay::FilePreview);
+        let short = workbench.render(&data, w, h);
+        assert_eq!(
+            bottom_row(&short),
+            last_box_row,
+            "a three-line file still fills the box:\n{}",
+            plain(&short)
+        );
+
+        // The same file, long enough to scroll, opened at the very bottom.
+        data.preview = Some(state::PreviewView::Text {
+            path: "long.txt".into(),
+            lines: (0..200)
+                .map(|n| super::syntax::Line::plain(format!("line {n}")))
+                .collect::<Vec<_>>()
+                .into(),
+            truncated: false,
+        });
+        workbench.preview_scroll = 10_000;
+        let end = workbench.render(&data, w, h);
+        assert_eq!(
+            bottom_row(&end),
+            last_box_row,
+            "the last page fills the box too:\n{}",
+            plain(&end)
+        );
+
+        // And the document that is rendered rather than parsed: markdown's own
+        // line count is the renderer's business, so the box may not trust it
+        // to fill the body either.
+        data.preview = Some(state::PreviewView::Markdown {
+            path: "notes.md".into(),
+            text: (0..120)
+                .map(|n| format!("## heading {n}\n\nbody {n}\n\n"))
+                .collect::<String>()
+                .into(),
+        });
+        workbench.preview_scroll = 10_000;
+        let markdown = workbench.render(&data, w, h);
+        assert_eq!(
+            bottom_row(&markdown),
+            last_box_row,
+            "the last page of markdown fills the box:\n{}",
+            plain(&markdown)
+        );
+        // And the margin around the box is the surface's, not the page's: a
+        // preview leaves no row of the conversation beside its own.
+        for y in [0, last_box_row + 1] {
+            assert!(
+                crate::utils::strip_ansi_codes(&markdown[y])
+                    .trim()
+                    .is_empty(),
+                "row {y} is the margin and holds no page text: {:?}",
+                crate::utils::strip_ansi_codes(&markdown[y])
+            );
+        }
+    }
+
+    /// Scrolling stops at the last full page, and the offset follows.
+    ///
+    /// Past the end the box used to draw an ever-shorter body — the text climbed
+    /// its own band while the page under it showed through — and the offset
+    /// stayed where the reader had pushed it, so the first `pageUp` afterwards
+    /// moved nothing. The painter pins both: the window is a full page, and the
+    /// number the keys read is the one that page starts at.
+    #[test]
+    fn a_document_stops_scrolling_at_its_last_full_page() {
+        let mut data = demo::chat();
+        data.preview = Some(state::PreviewView::Text {
+            path: "long.txt".into(),
+            lines: (0..200)
+                .map(|n| super::syntax::Line::plain(format!("line {n}")))
+                .collect::<Vec<_>>()
+                .into(),
+            truncated: false,
+        });
+        let (mut workbench, _rows) = frame(&data, 100, 30);
+        workbench.overlay = Some(Overlay::FilePreview);
+        workbench.preview_scroll = 10_000;
+        workbench.render(&data, 100, 30);
+        let at_end = workbench.preview_scroll;
+        let page = workbench.list_page;
+        // The last page starts `page` rows before the end of the file, which is
+        // the offset that keeps the window full.
+        assert_eq!(at_end, 200 - page, "the window stops at a full page");
+
+        // One `pageUp` from there moves, rather than burning the overshoot the
+        // old clamp left in the state.
+        workbench.handle(WbEvent::Key("pageUp".into()), &data);
+        assert_eq!(workbench.preview_scroll, at_end - page);
+    }
+
     /// The box's own controls: the buttons are the pointer's spelling of keys
     /// the box already answers, and the folder's pictures step with `[` / `]`.
     #[test]
