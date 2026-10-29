@@ -1436,6 +1436,12 @@ def _wait_for_addr(process: subprocess.Popen, timeout: float) -> str:
 # from a fixed column: the tab labels move with the sidebar's width, the theme
 # and the language, and a hard-coded column that lands one cell off selects the
 # neighbouring panel — a wrong picture that still looks plausible.
+#
+# A scenario listed in `TUI_SCENARIO_LONG` also asks the demo agent for a longer
+# conversation (`FUTURE_DEMO_LONG`): the scripted tutorial is a six-row exchange,
+# and a transcript shorter than the band has nothing to scroll — `↑` on it asks
+# for older rows instead of moving (see `Workbench::scroll`), so the `scrolled`
+# shot would otherwise be the plain chat frame.
 TUI_SCENARIO_KEYS: dict[str, str] = {
     "chat": "",
     "help": "?",
@@ -1469,7 +1475,8 @@ TUI_SCENARIO_KEYS: dict[str, str] = {
     # `ctrl+b` on a terminal too narrow for the rail: the panel takes the body.
     "full-panel": "\x02",
     # A click that hands the keys back to the conversation, then three wheel-ups:
-    # the frame is the chat scrolled up, with the `↑ 更早` badge.
+    # the frame is the chat scrolled up, with the `↑ 更早` badge. Needs the long
+    # conversation (see `TUI_SCENARIO_LONG`).
     "scrolled": "\x1b[<0;20;20M\x1b[<0;20;20m" + "\x1b[<64;20;20M" * 3,
     # `ctrl+g` opens the repository browser on the session's workspace. The
     # panel reads the real repository the workbench runs in, so this frame is a
@@ -1491,6 +1498,11 @@ TUI_SCENARIO_KEYS: dict[str, str] = {
     # may land one delta later, which is a different picture by one line.
     "streaming": "解释一下这个 off-by-one，要具体一点\r",
 }
+# Scenarios that need the demo agent's longer conversation, and the value to give
+# `FUTURE_DEMO_LONG`. See `TUI_SCENARIO_KEYS` above.
+TUI_SCENARIO_LONG: dict[str, str] = {"scrolled": "1"}
+
+
 # Each entry lists the label in every language the surface ships: the capture
 # pins one language (`--lang`), and a tab the frame spells differently is a
 # click that lands on nothing.
@@ -1650,12 +1662,19 @@ def tui(args: argparse.Namespace) -> int:
             addr = args.addr
             env = None
         else:
+            agent_env = None
+            if args.scenario in TUI_SCENARIO_LONG:
+                agent_env = {
+                    **os.environ,
+                    "FUTURE_DEMO_LONG": TUI_SCENARIO_LONG[args.scenario],
+                }
             agent = subprocess.Popen(
                 [str(agent_bin), "--port", "0"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
+                env=agent_env,
             )
             addr = _wait_for_addr(agent, 20)
             env = {"FUTURE_HOME": str(home), "HOME": str(home)}
