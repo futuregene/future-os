@@ -168,7 +168,7 @@ python3 scripts/screenshots/capture.py tui tui-chat.png
   TUI 的 `settings.json`，脚本数据由 `FUTURE_DEMO_LANG` 交给 `demo_agent`——两边必须一致，
   否则就是英文外壳套一份中文会话列表。英文 `streaming` 场景提交的提问也会跟着变英文
   （提问是读者的话，不是按键）。`demo_agent` 的英文会话不是中文的逐句翻译，而是一个
-  更长更满的会话：会话列表 65 条，正文两轮里带标题、粗体斜体、行内代码、一段高亮的
+  更长更满的会话：会话列表 58 条，正文两轮里带标题、粗体斜体、行内代码、一段高亮的
   `rust` 代码块、一张带边框的表格和一条引用——面板空着的时候图看着像 mock。它本身就高过
   54 行的正文带，所以英文帧一般按 190×66 拍，而不是文档里的 120×38。
 - `--sidebar-width <cols>` 钉住侧栏宽度（默认交给界面自己，`SIDEBAR_DEFAULT` = 36）。侧栏会
@@ -178,14 +178,16 @@ python3 scripts/screenshots/capture.py tui tui-chat.png
 - `--theme <id>` 钉住配色（`dark`、`light`、`dracula`、`tokyo-night`、`gruvbox`、`rose-pine`……
   见 `theme.rs`）。已入仓的资产全在出厂默认配色上，所以这个参数是给「想展示配色效果」的帧
   用的，不是产品本来的样子。
-- `--scenario composing` 是「回复还在跑、读者正写到一半」的那一帧：输入框里有四行草稿（用
-  `ctrl+j` 换行打进去、不回车），输入框上方是**输入队列**（`FUTURE_DEMO_QUEUE`，三条等当前
-  回复结束的 prompt，一行一条），再上面是上一轮**打开**的经过——先点开
-  `▸ 3 tool calls · 2 thoughts` 那一行，再点开里面的 `▸ thinking`，于是工具调用、它们的参数
-  和背后的推理都在画面上。折叠是读者点开的，截图必须替他把这两下都做了（见
-  `_tui_click_row`，两次都从画面里解析行）。190×73 时整幅刚好放得下：侧栏 65 条会话、
-  正文的表格/代码/引用、队列带和草稿。活动行带 `Thinking · Ns` 的计时，所以在同一台机器上
-  逐字节稳定，机器慢很多时可能差一秒——和 `streaming` 一样的限制。
+- `--scenario composing` 是「回复刚结束、读者正写到一半」的那一帧：输入框里有四行草稿（用
+  `ctrl+j` 换行打进去、不回车），上方是**输入队列**（`FUTURE_DEMO_QUEUE=idle`——回复已经
+  结束、队列里的三条还没发出去），再上面是上一轮**按树状展开**的经过：`▾ 3 tool calls ·
+  2 thoughts`，下面 `│ ▸ thinking` 和它的推理、`│ edit src/args.rs`、`│ $ cargo test …`。
+  展开走键盘——`tab` 走到那一折、`enter` 打开、再 `tab` 进它的第一条思考、再 `enter`——因为
+  点会话行**点不动**（实测：同样的 SGR 字节能点开侧栏页签、能抓住分隔条，点 `▸ … tool calls`
+  那一行却什么也不会发生）。之后用 `shift+right`（`PanelNext`）把侧栏从「最近」切到**工作区**
+  视图，会话按所属 checkout 的标题与计数分组。这两种形状都只在**结束之后**才有：run 在跑的时候
+  每一行都是平铺的，所以队列带取的是那个状态的 idle 一半。190×72 时整幅刚好放得下——侧栏
+  58 条会话分三组、正文的表格/高亮代码/引用、展开的树、队列带和草稿。
 
 仓库里拍这些帧的入口是 `tui/scripts/shot.sh <scenario> [WxH] [out.png]`，它是
 `capture.py tui` 的一层包装：补上 `--scenario` 与尺寸，并按对应资产命名文件。
@@ -196,7 +198,7 @@ tui/scripts/shot.sh usage 120x38 $PWD/docs/tui/assets/workbench-panel-usage.png
 tui/scripts/shot.sh drag 120x38 $PWD/docs/tui/assets/workbench-drag-fixed.png
 # 英文帧（界面与会话列表/正文一起），侧栏在左、宽到标题能读全：
 SHOT_LANG=en SHOT_SIDEBAR_WIDTH=56 SHOT_SIDEBAR_POSITION=left \
-  tui/scripts/shot.sh composing 190x73
+  tui/scripts/shot.sh composing 190x72
 ```
 
 `FUTURE_DEMO_LONG=1` 是「往会话里追加轮次，直到正文高过面板」的那颗开关（`scrolled` 场景

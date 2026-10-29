@@ -361,10 +361,17 @@ fn state() -> Value {
     // `FUTURE_DEMO_CWD`: a stand-in that always had a queue would put a band in
     // every other frame's baseline.
     if std::env::var_os("FUTURE_DEMO_QUEUE").is_some() {
-        state["isStreaming"] = json!(true);
-        state["activeRun"] = json!({
-            "runId": "demo-run-live", "epoch": 1, "state": "running", "lastEventIdx": 0
-        });
+        // A live turn is what makes the band truthful, but it also keeps the
+        // transcript in its *running* shape — no fold, no tree. `FUTURE_DEMO_QUEUE=idle`
+        // is the other half of a real state: the reply has just finished and its
+        // queued prompts have not been sent yet, so the band is up, the transcript is
+        // settled, and the work opens as a tree.
+        if std::env::var("FUTURE_DEMO_QUEUE").unwrap_or_default() != "idle" {
+            state["isStreaming"] = json!(true);
+            state["activeRun"] = json!({
+                "runId": "demo-run-live", "epoch": 1, "state": "running", "lastEventIdx": 0
+            });
+        }
         // The prompts waiting behind the reply, in the frame's own language: a
         // queue band is a list of the reader's *words*, so a Chinese one in an
         // English frame reads as a mock (the same reason the transcript is
@@ -452,7 +459,7 @@ fn sessions() -> Value {
             const HOME: &str = "/Users/you/future-os";
             const UI: &str = "/Users/you/future-os/.worktrees/ui";
             const NOTES: &str = "/Users/you/notes";
-            const OTHERS: [(&str, &str, i64, u32); 64] = [
+            const OTHERS: [(&str, &str, i64, u32); 57] = [
                 ("Retry Layer Hides a Silent Stream", HOME, 8, 23),
                 ("Rail: Fold a Workspace Shut", HOME, 26, 9),
                 ("Palette Ranking for Short Queries", HOME, 51, 14),
@@ -510,13 +517,6 @@ fn sessions() -> Value {
                 ("A Session List That Fits", NOTES, 97_004, 5),
                 ("Reading the Goal Plane's Ledger", HOME, 103_993, 11),
                 ("One Prompt, Two Answers", HOME, 111_486, 3),
-                ("Where the Context Window Grows", HOME, 119_519, 5),
-                ("Screenshots: The Queue Band", UI, 128_131, 4),
-                ("A Prompt That Is Two Lines", HOME, 137_363, 3),
-                ("Sent Together, Not One by One", HOME, 147_260, 6),
-                ("The Queue Survives a Reopen", HOME, 157_871, 2),
-                ("The /queue List Has Its Own Rows", UI, 169_245, 5),
-                ("Closing the Editor Keeps the Draft", HOME, 181_440, 3),
             ];
             // The session the frame opens is the newest row, so it cannot be in
             // the const table: its title comes from `session_name()`.
