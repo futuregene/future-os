@@ -514,7 +514,6 @@ impl PanelId {
 /// Everything the workbench paints.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WorkbenchData {
-    pub app_name: String,
     pub version: String,
     pub connected: bool,
     pub session: SessionMeta,

@@ -3610,6 +3610,9 @@ impl Workbench {
             }
             return vec![WbAction::SetPreferences];
         }
+        if id == "header.sessions" {
+            return self.open_picker(PickerKind::Sessions, data);
+        }
         if id == "header.files" {
             return vec![WbAction::OpenFiles];
         }
@@ -4574,12 +4577,26 @@ mod tests {
         let (workbench, rows) = frame(&data, 120, 38);
         let text = plain(&rows);
         // The two-row context header keeps identity and context on one line and
-        // gives the conversation every other row.
+        // gives the conversation every other row. Its right end is the build
+        // number and the doors — the chat list first, then the panel browsers —
+        // never the binary's own name, which the left end already implies.
         assert!(
             text.contains("FUTURE OS"),
             "the text brand is drawn: {text}"
         );
-        assert!(text.contains("future-tui v0.11.0"), "{text}");
+        assert!(text.contains("v0.11.0"), "the build number: {text}");
+        assert!(
+            !text.contains("future-tui"),
+            "the corner names the build: {text}"
+        );
+        assert!(
+            text.contains(&format!(
+                "[{}] {}",
+                workbench.keys.key(preferences::Action::Sessions),
+                t(Language::Zh, Key::TabSessions)
+            )),
+            "the chat list's door: {text}"
+        );
         assert!(text.contains("修复 parser 的 off-by-one"), "{text}");
         assert!(text.contains("dev-huichen"), "{text}");
         // The demo frame is Chinese, so its process row is too (see `demo`).
@@ -6088,6 +6105,78 @@ mod tests {
             .find(|line| line.contains("切到「工作区」面板"))
             .expect("the 工作区 row");
         assert!(row.contains('\u{2014}'), "{row}");
+    }
+
+    /// The chat list's door on the header: the cells it paints, the click that
+    /// opens the same box `ctrl+r` does, and the fact that it outlives the panel
+    /// doors — on a narrow frame the rail is not beside the conversation and it
+    /// is keyboard-only, so this button is the pointer's one way to the list.
+    #[test]
+    fn the_header_chat_list_button_opens_the_picker_and_outlives_the_panel_doors() {
+        let data = demo::chat();
+        let (mut surface, rows) = frame(&data, 120, 38);
+        let (rect, _) = surface
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| id == "header.sessions")
+            .cloned()
+            .expect("the header's chat-list door");
+        // The region is the cells the button is *painted* on, and it is the
+        // `[key] label` shape the panel doors use — the chord is how a reader
+        // who never opened the help finds out what it is.
+        let painted = ansi::slice_cols(
+            &rows[rect.y as usize],
+            rect.x as usize,
+            rect.right() as usize,
+        );
+        assert_eq!(
+            crate::utils::strip_ansi_codes(&painted).trim_end(),
+            format!(
+                "[{}] {}",
+                surface.keys.key(preferences::Action::Sessions),
+                t(Language::Zh, Key::TabSessions)
+            )
+        );
+        // A click is the key: same verb, same box, same list.
+        assert_eq!(
+            click_region(&mut surface, &data, 120, 38, "header.sessions"),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(surface.overlay, Some(Overlay::Picker(PickerKind::Sessions)));
+        let mut keyboard = workbench();
+        keyboard.handle(WbEvent::Key("ctrl+r".into()), &data);
+        assert_eq!(surface.overlay, keyboard.overlay);
+
+        // A narrow frame gives up the panel browsers and the brand before this
+        // door — the rail is not beside the conversation there, and it is
+        // keyboard-only, so the button is the pointer's one way to the list.
+        let (mut narrow, rows) = frame(&data, 40, 38);
+        let ids: Vec<String> = narrow
+            .hits()
+            .regions()
+            .iter()
+            .map(|(_, id)| id.to_string())
+            .collect();
+        assert_eq!(
+            ids.iter()
+                .filter(|id| id.starts_with("header."))
+                .cloned()
+                .collect::<Vec<String>>(),
+            vec!["header.sessions".to_string()],
+            "{ids:?}"
+        );
+        let row = plain(&rows[..1]);
+        assert!(
+            row.contains("修复 parser"),
+            "the title is still named: {row:?}"
+        );
+        assert!(!row.contains("FUTURE OS"), "the brand gave way: {row:?}");
+        assert_eq!(
+            click_region(&mut narrow, &data, 40, 38, "header.sessions"),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(narrow.overlay, Some(Overlay::Picker(PickerKind::Sessions)));
     }
 
     /// The files panel is not a tab: the strip names two of them, no strip cell

@@ -388,20 +388,29 @@ fn header(
 ) -> (Vec<String>, Vec<DoorSpan>) {
     let compact = frame.compact;
     // The right corner is a *composition*, never a cut string: each candidate is
-    // whole (dot, app, version), and the widest one that fits is drawn. Cutting
+    // whole (dot, version), and the widest one that fits is drawn. Cutting
     // a joined `● already-connected` is what once left a lone `●已` behind — a
     // Hanzi is two cells, so even a cell-accurate cut can strand half a word.
     // Everything in the corner is ASCII for the same reason: it degrades to its
     // dot cleanly, and the Chinese label lives in the status bar.
     let right_avail = (columns / 2).min((columns.saturating_sub(40)).max(columns / 3));
-    let right = header_right(palette, data, right_avail);
-    let right_width = width(&right);
-    // The surface's two doors, beside the title: the files panel and the
-    // repository browser. They are drawn only when a title still fits next to
-    // them — the header's job is naming the conversation, and a strip of
-    // controls that pushed the name off the edge would trade the point of the
-    // row for its tools.
+    let corner = header_right(palette, data, right_avail);
+    // The surface's doors, beside the title: the chat list, then the two panel
+    // browsers. A door is drawn only while a title still fits next to it — the
+    // header's job is naming the conversation — and they are given up from the
+    // tail, so the chat list is the last one standing: it is the only door with
+    // no other pointer route (the rail is a keyboard surface, and a narrow frame
+    // does not even put it beside the conversation).
     let doors: Vec<Door> = vec![
+        Door {
+            id: "header.sessions",
+            text: header_button(
+                palette,
+                keys,
+                preferences::Action::Sessions,
+                t(lang, Key::TabSessions),
+            ),
+        },
         Door {
             id: "header.files",
             text: header_button(
@@ -422,23 +431,29 @@ fn header(
         .into_iter()
         .filter(|door| !door.text.is_empty())
         .collect();
-    let group = doors
-        .iter()
-        .map(|door| door.text.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
-    let room_for_left = if compact { 12 } else { 24 };
-    // Two cells either side of the group: one gap is what keeps it from reading
-    // as the tail of a truncated title, the other from reading as the corner's.
-    let reserve = right_width
-        + usize::from(right_width > 0)
-        + width(&group)
-        + usize::from(!group.is_empty()) * 4;
-    let doors: Vec<Door> = if columns >= reserve + room_for_left {
-        doors
+    // The title's floor, in cells. A narrow row cannot spare the wide one: `24`
+    // is a share of a comfortable row, and on a 50-column frame it would be
+    // nearly half of it — the reason the chat list used to vanish on exactly the
+    // screens with no other way to reach it.
+    let room_for_left = if compact || columns < layout::NARROW_WIDTH as usize {
+        12
     } else {
-        Vec::new()
+        24
     };
+    // The row is one budget claimed by three things — the corner, the doors and
+    // the title — and `fit_row` spends it on the doors first: a door is function
+    // a reader can aim at, while the brand also stands in the window title and
+    // `future --version` answers for the build.
+    let brand_width = width("FUTURE OS · ") + usize::from(!compact);
+    let (right, doors, brand) = fit_row(
+        corner,
+        widgets::status_dot(palette, data.connected),
+        &doors,
+        columns,
+        room_for_left,
+        brand_width,
+    );
+    let right_width = width(&right);
     let button = doors
         .iter()
         .map(|door| door.text.as_str())
@@ -461,11 +476,15 @@ fn header(
         } else {
             data.session.title.clone()
         };
-        let left = format!(
-            "{} {}",
-            palette.strong(palette.accent, "FUTURE OS"),
-            palette.dim(&format!("· {title}"))
-        );
+        let left = if brand {
+            format!(
+                "{} {}",
+                palette.strong(palette.accent, "FUTURE OS"),
+                palette.dim(&format!("· {title}"))
+            )
+        } else {
+            format!(" {}", palette.dim(&title))
+        };
         let left = fit(&left, left_width);
         let left_width = width(&left);
         let pad = columns.saturating_sub(left_width + before + button_width + after + right_width);
@@ -497,11 +516,15 @@ fn header(
     } else {
         format!("{} · @{}", data.session.cwd, data.session.branch)
     };
-    let left = format!(
-        " {} {}",
-        palette.strong(palette.accent, "FUTURE OS"),
-        palette.dim(&format!("· {title} · {workspace}"))
-    );
+    let left = if brand {
+        format!(
+            " {} {}",
+            palette.strong(palette.accent, "FUTURE OS"),
+            palette.dim(&format!("· {title} · {workspace}"))
+        )
+    } else {
+        format!(" {}", palette.dim(&format!("{title} · {workspace}")))
+    };
     let left = fit(&left, left_width);
     let left_width = width(&left);
     let pad = columns.saturating_sub(left_width + before + button_width + after + right_width);
@@ -525,6 +548,7 @@ fn header(
 
 /// One door in the header: the chord and label it paints, and the hit region it
 /// claims (`id`, the name the pointer is resolved against).
+#[derive(Clone)]
 struct Door {
     id: &'static str,
     text: String,
@@ -577,29 +601,71 @@ fn header_button(
     )
 }
 
+/// The header's one row, resolved: how much of the corner is drawn, which doors
+/// fit beside the title, and whether the brand still rides in front of it.
+///
+/// The row is one budget, and the buttons come first: the whole group is tried
+/// with the richest decoration that fits — the brand and the build number, the
+/// brand alone, then neither — and only then with doors from the tail, and never
+/// with decoration again. A name that came back as the row narrowed would read as
+/// a glitch, and a row short of a button is short of the name as well.
+fn fit_row(
+    corner: String,
+    dot: String,
+    doors: &[Door],
+    columns: usize,
+    room_for_left: usize,
+    brand_width: usize,
+) -> (String, Vec<Door>, bool) {
+    for (right, brand) in [(&corner, true), (&dot, true), (&dot, false)] {
+        let floor = room_for_left + if brand { brand_width } else { 0 };
+        if columns >= row_reserve(doors, width(right)) + floor {
+            return (right.clone(), doors.to_vec(), brand);
+        }
+    }
+    for keep in (0..doors.len()).rev() {
+        let kept = &doors[..keep];
+        if columns >= row_reserve(kept, width(&dot)) + room_for_left {
+            return (dot.clone(), kept.to_vec(), false);
+        }
+    }
+    (dot, Vec::new(), false)
+}
+
+/// What a row costs beside the title: the corner, the doors as one painted run,
+/// and the gaps that keep the three from reading as one word. Two cells either
+/// side of the doors — one gap keeps the group from reading as the tail of a
+/// truncated title, the other from reading as the corner's.
+fn row_reserve(doors: &[Door], right_width: usize) -> usize {
+    let group = door_group_width(doors);
+    right_width + usize::from(right_width > 0) + group + usize::from(group > 0) * 4
+}
+
+/// How wide a run of doors paints: the buttons and the single spaces between.
+fn door_group_width(doors: &[Door]) -> usize {
+    doors.iter().map(|door| width(&door.text)).sum::<usize>() + doors.len().saturating_sub(1)
+}
+
 /// The header's right corner: the widest whole composition that fits `avail`.
 ///
+/// The build number, and nothing else: the name is already on the left of this
+/// row and in the window title, while a version is what a bug report needs. The
+/// corner degrades to its dot — the connection state — when even that is too
+/// wide.
+///
 /// ```text
-/// v1.2.3 ● future-tui  →  ● future-tui  →  v1.2.3 ●  →  ●
+/// v1.2.3 ●  →  ●
 /// ```
 fn header_right(palette: &Palette, data: &WorkbenchData, avail: usize) -> String {
     let point = widgets::status_dot(palette, data.connected);
-    let app = palette.dim(&data.app_name);
-    let version = if data.version.is_empty() {
-        None
-    } else {
-        Some(palette.dim(&format!("v{}", data.version)))
-    };
     let mut candidates: Vec<String> = Vec::new();
-    match &version {
-        Some(version) => {
-            candidates.push(format!("{point} {app} {version}"));
-            candidates.push(format!("{point} {app}"));
-            candidates.push(format!("{point} {version}"));
-        }
-        None => candidates.push(format!("{point} {app}")),
+    if !data.version.is_empty() {
+        candidates.push(format!(
+            "{point} {}",
+            palette.dim(&format!("v{}", data.version))
+        ));
     }
-    candidates.push(point.clone());
+    candidates.push(point);
     candidates
         .into_iter()
         .find(|candidate| width(candidate) <= avail)
@@ -3651,7 +3717,6 @@ mod tests {
 
     fn data(version: &str) -> WorkbenchData {
         WorkbenchData {
-            app_name: "future-tui".into(),
             version: version.into(),
             connected: true,
             ..WorkbenchData::default()
@@ -4025,21 +4090,25 @@ mod tests {
     }
 
     #[test]
-    fn the_header_corner_degrades_piece_by_piece_and_never_cuts_a_word() {
+    fn the_header_corner_is_the_build_number_and_degrades_to_its_dot() {
         let data = data("0.0.2-9f0a8b76c+local");
         // Every width lands on one of the whole candidates, never on its
-        // prefix: `● future-tui v0.0.2-9f0a8…` in the corner is exactly what
-        // the piecewise ladder exists to prevent.
+        // prefix: `● v0.0.2-9f0a8b…` in the corner is exactly what the piecewise
+        // ladder exists to prevent.
         let full = plain(&header_right(&FUTURE_DARK, &data, 60));
-        assert!(full.contains("future-tui"));
-        assert!(full.contains("v0.0.2-9f0a8b76c+local"));
-
-        let app_only = plain(&header_right(&FUTURE_DARK, &data, 20));
-        assert!(app_only.contains("future-tui"), "{app_only:?}");
-        assert!(!app_only.contains("0.0.2"), "{app_only:?}");
+        assert!(full.contains("v0.0.2-9f0a8b76c+local"), "{full:?}");
+        // The binary's name is not repeated here: the header's left end already
+        // says what this is, and the corner is the one place a build number can
+        // live without costing the conversation its name.
+        assert!(!full.contains("future-tui"), "{full:?}");
 
         let dot = plain(&header_right(&FUTURE_DARK, &data, 3));
         assert_eq!(dot, "●");
+
+        // A build with no version string has nothing to say but its state.
+        let mut bare = data.clone();
+        bare.version.clear();
+        assert_eq!(plain(&header_right(&FUTURE_DARK, &bare, 60)), "●");
 
         for avail in 0..80usize {
             let corner = plain(&header_right(&FUTURE_DARK, &data, avail));
@@ -4049,15 +4118,95 @@ mod tests {
             );
             assert!(width(&corner) <= avail, "avail {avail}: {corner:?}");
         }
-        // The whole header keeps the corner at the seam too.
+        // The whole header keeps the corner at the seam too: wide enough for the
+        // doors, the brand and the build number, it ends on the build number.
         let mut workbench = Workbench::new();
-        let rows = workbench.render(&data, 90, 24);
+        let rows = workbench.render(&data, 140, 24);
         let row = plain(&rows[0]);
         assert!(
             row.trim_end().ends_with("v0.0.2-9f0a8b76c+local"),
             "{row:?}"
         );
         assert!(!row.contains("已"), "{row:?}");
+        // Ten cells narrower, the corner is what pays: the doors and the brand
+        // stay, the build number goes, and nothing is cut in half on the way.
+        let rows = workbench.render(&data, 90, 24);
+        let row = plain(&rows[0]);
+        assert!(!row.contains("v0.0.2"), "{row:?}");
+        assert!(row.trim_end().ends_with('●'), "{row:?}");
+    }
+
+    /// The header's one row is one budget, and a button is what it protects: the
+    /// whole group is drawn with as much decoration as fits, then with fewer
+    /// doors — the chat list last, because the rail is a keyboard surface a narrow
+    /// frame does not show beside the conversation.
+    #[test]
+    fn the_header_gives_up_the_version_and_the_brand_before_the_chat_list() {
+        let doors = [
+            Door {
+                id: "header.sessions",
+                text: "x".repeat(13),
+            },
+            Door {
+                id: "header.files",
+                text: "x".repeat(13),
+            },
+            Door {
+                id: "header.git",
+                text: "x".repeat(12),
+            },
+        ];
+        let corner = "● v0.11.0".to_string();
+        let dot = "●".to_string();
+        let ids = |kept: &[Door]| kept.iter().map(|door| door.id).collect::<Vec<_>>();
+        for (columns, expect, brand, version) in [
+            (
+                120usize,
+                vec!["header.sessions", "header.files", "header.git"],
+                true,
+                true,
+            ),
+            (
+                89,
+                vec!["header.sessions", "header.files", "header.git"],
+                true,
+                true,
+            ),
+            (
+                88,
+                vec!["header.sessions", "header.files", "header.git"],
+                true,
+                false,
+            ),
+            (
+                70,
+                vec!["header.sessions", "header.files", "header.git"],
+                false,
+                false,
+            ),
+            (60, vec!["header.sessions", "header.files"], false, false),
+            (50, vec!["header.sessions"], false, false),
+            (40, Vec::new(), false, false),
+        ] {
+            let (right, kept, has_brand) =
+                fit_row(corner.clone(), dot.clone(), &doors, columns, 24, 11);
+            assert_eq!(ids(&kept), expect, "{columns}");
+            assert_eq!(has_brand, brand, "{columns}");
+            assert_eq!(right == corner, version, "{columns}");
+        }
+        // Monotone in width, and always a prefix of the priority order: the one
+        // way this can drift is a rung that costs more than the one below it,
+        // which would make a wider terminal lose a button.
+        let mut seen = (0usize, false, false);
+        for columns in 0..=160usize {
+            let (right, kept, brand) =
+                fit_row(corner.clone(), dot.clone(), &doors, columns, 24, 11);
+            assert!(kept.len() >= seen.0, "{columns}: lost a door");
+            assert!(!seen.1 || brand, "{columns}: lost the brand");
+            assert!(!seen.2 || right == corner, "{columns}: lost the version");
+            assert_eq!(ids(&kept), ids(&doors[..kept.len()]), "{columns}");
+            seen = (kept.len(), brand, right == corner);
+        }
     }
 
     #[test]

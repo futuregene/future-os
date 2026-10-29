@@ -1457,7 +1457,6 @@ impl Live {
         let cwd = self.shown_cwd().unwrap_or_default();
 
         WorkbenchData {
-            app_name: "future-tui".into(),
             version: crate::version::VERSION.to_string(),
             connected: self.connected(),
             session: SessionMeta {

@@ -58,7 +58,6 @@ pub fn data(scenario: Scenario) -> WorkbenchData {
 
 fn base() -> WorkbenchData {
     WorkbenchData {
-        app_name: "future-tui".into(),
         version: "0.11.0".into(),
         connected: true,
         session: SessionMeta::default(),

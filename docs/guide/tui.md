@@ -41,7 +41,7 @@ conversations, to see the rail's window and its `↓ N more` row).
 ## The frame
 
 ```
- header (2 rows: session · workspace · backend dot, then hairline)
+ header (2 rows: session · workspace · doors · build, then hairline)
  ──────────────────────────────────────────┬──────────────────────
  conversation (bottom-anchored, ↑ 更早)     │ rail: 最近 工作区
                                             │ ▸ the conversation's name  ~/future-os · 2m
@@ -250,8 +250,14 @@ the same line: a key added in one language only does not compile.
 
 ## Layout and personalization
 
-The header is a two-row context line — session, workspace and the backend dot,
-with the hairline under it — leaving the rest of the frame to the conversation.
+The header is a two-row context line — the conversation's name and workspace, the
+buttons that open the chat list and the two panel browsers, and the connection
+state — with the hairline under it, leaving the rest of the frame to the
+conversation. A row that runs short spends itself on buttons: the build number
+goes first, then the brand, then the panel buttons from the tail, and the chat
+list's button last of all — the rail is a keyboard surface that a narrow frame
+does not put beside the conversation, so even a phone-sized terminal can open
+the list of chats with a click.
 `Ctrl+Q` or `/preferences` opens the preference panel, and the panel is the
 list of everything this terminal client remembers: move the sidebar left or
 right, adjust its 30–60-column width, show or hide it, control mouse capture and
@@ -349,7 +355,7 @@ click on the rail's tab strip are the doors to the same places.
 | `ctrl+l` | Workspaces: opens the workspace chooser — every directory this client has a conversation in, a row that creates one from the path typed into its search line (`/workspace <path>` prefills that line), and a row that is a plain chat instead: no workspace at all, which mints `~/.future/workspaces/chat/<session id>` for the conversation and is filed under 对话会话 |
 | `ctrl+d` | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal. The rail's own `›` edge button does the same hide/show with one click. The show/hide choice is written to `sidebarVisible` and is where the next start begins (a first start begins hidden) |
 | `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run |
-| `ctrl+r` | Session picker (name, workspace and age of each conversation; the footer names the key) |
+| `ctrl+r`, or `[ctrl+r] 会话` in the header | Session picker (name, workspace and age of each conversation; the footer names the key). The header's button is the pointer's door to it, and the one button a narrow frame keeps |
 | `ctrl+q` or `/preferences` | Preferences: sidebar position, width and visibility, mouse capture, notifications, reduced motion, interface language, color theme and the shortcut editor. The key is also printed in the footer hint row, so it is on screen while the reader is wondering |
 | `?` (or the full-width `？`) | Help overlay (effective keys, grouped by area, then the commands; the key requires an empty draft). Rows are listed only where an action has a chord — the verbs with none keep their typed door in the command list at the end of the same box |
 | `/lang` | Interface language: opens the picker — follow the system, Chinese or English |
