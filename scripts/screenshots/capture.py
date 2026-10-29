@@ -851,6 +851,11 @@ def run_scenario(platform: str, name: str, spec: dict, out_dir: Path, cd_endpoin
     # language pins the locale instead of a harness-only switch.
     if spec.get("lang"):
         command += ["--lang", str(spec["lang"])]
+    # `"appearance": "dark"` pins the *platform* appearance (`prefers-color-scheme`),
+    # which is what a phone set to dark mode reports and what the app's "follow the
+    # system" theme resolves against — not the app's stored preference.
+    if spec.get("appearance"):
+        command += ["--appearance", str(spec["appearance"])]
     print(f"── {platform}/{name}{shot_suffix}")
     # `text=True` with no encoding decodes with the locale's, which on a Windows
     # console is a legacy code page: the step runner prints whatever the page said

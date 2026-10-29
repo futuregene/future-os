@@ -587,6 +587,11 @@ Nothing in either capture is still running: a `running` or `queued` row draws an
 unsettled conversations blocked on the reader's approval instead. Two runs
 produce byte-identical PNGs.
 
+The four frames are a phone set to dark (`"appearance": "dark"`), and the
+scenarios assert it: the row's painted surface has to be one of the dark tokens
+and its title has to be inked with the dark `ink`, so a capture that fell back
+to the light theme fails instead of publishing the wrong look.
+
 ### The transcript is upright (the inverted list's extra flip)
 
 `mobile/src/features/chat/components/ChatTimeline.tsx` renders the transcript as
@@ -679,6 +684,14 @@ Three platform-level knobs are worth knowing:
   moves `navigator.language` (measured on Chrome 156 — the locale override alone
   leaves `navigator.language` at the host's `zh-CN`). The app reads the system
   locale exactly as it does on a phone; a stored in-app preference still wins.
+- **`appearance` pins the platform's appearance, the way `lang` pins its locale.**
+  `"appearance": "dark"` makes the page report `prefers-color-scheme: dark`
+  (`Emulation.setEmulatedMedia`), which is exactly what a phone set to dark mode
+  reports — and the app's *follow the system* theme resolves against it
+  (`resolveScheme("system", …)` in `mobile/src/theme/theme.ts`). A stored in-app
+  preference still wins, so this pins the phone, not the reader's choice; the
+  desktop's `?theme=` pins its own window the other way, because a window has no
+  platform to ask.
 - **`query` appends to the platform's URL.** `"query": "?parser=1"` keeps a
   scenario on whatever port `serve-mobile` is serving, instead of pinning
   `http://localhost:8099/` in the scenario the way a full `url` does.
