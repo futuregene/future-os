@@ -252,15 +252,29 @@ What the flags are for:
   shell around a Chinese session list. The English `streaming` scenario also
   submits its prompt in English — the question is the reader's words, not a
   keystroke. The English session is not a sentence-by-sentence translation: it
-  is a fuller one (47 conversations in the rail, a dozen turns of transcript),
-  because a panel with three rows in it is a picture of a mock. A 190×54 frame
-  still wants `FUTURE_DEMO_LONG=1` (the switch `scrolled` uses to outrun the
-  band): at that height the default conversation stops eight rows short.
+  is a fuller one (58 conversations in the rail, a two-turn transcript that
+  exercises a heading, bold and italic runs, inline code, a highlighted `rust`
+  block, a bordered table and a quote), because a panel with three rows in it is
+  a picture of a mock. It is also taller than a 54-row band by itself, so an
+  English frame is usually shot at 190×66 rather than at the documented 120×38.
 - `--sidebar-width <cols>` pins the rail's width (default: the surface's own,
   `SIDEBAR_DEFAULT` = 36). The rail reserves a third of itself for the workspace
   name, so at 36 columns an English session title gets about nineteen cells
   before the ellipsis while the same list in Chinese fits; pass this when a
   frame needs the titles to read through (the ceiling is 60).
+- `--sidebar-position <left|right>` pins which side the rail sits on (the
+  surface's own default is right).
+- `--theme <id>` pins the palette (`dark`, `light`, `dracula`, `tokyo-night`,
+  `gruvbox`, `rose-pine`, …; see `theme.rs`). The committed assets are all on the
+  shipped default, so this is for a frame that wants to show the palette picker's
+  effect rather than the product's own look.
+- `--scenario composing` is the frame of a reader *in the middle of writing*:
+  four lines of draft in the composer (typed with `ctrl+j`, never sent), and the
+  last turn's process opened — the `▸ 3 tool calls · 2 thoughts` row clicked, then
+  `tab` + `enter` on the first thought inside it, so the calls, their arguments
+  and the reasoning behind them are all on screen. A closed fold is all a
+  transcript ever shows on its own; opening it is the reader's click, so the
+  capture has to make it (see `_tui_click_fold_row`).
 
 The repository's own entry point for these frames is
 `tui/scripts/shot.sh <scenario> [WxH] [out.png]`, a thin wrapper that supplies
@@ -270,8 +284,9 @@ The repository's own entry point for these frames is
 tui/scripts/shot.sh chat 120x38 $PWD/docs/tui/assets/workbench-chat.png
 tui/scripts/shot.sh usage 120x38 $PWD/docs/tui/assets/workbench-panel-usage.png
 tui/scripts/shot.sh drag 120x38 $PWD/docs/tui/assets/workbench-drag-fixed.png
-# An English frame — chrome, session list and transcript — with room for the titles:
-FUTURE_DEMO_LONG=1 SHOT_LANG=en SHOT_SIDEBAR_WIDTH=56 tui/scripts/shot.sh chat 190x54
+# An English frame, big, rail on the left and wide enough for the titles:
+SHOT_LANG=en SHOT_SIDEBAR_WIDTH=56 SHOT_SIDEBAR_POSITION=left \
+  tui/scripts/shot.sh composing 190x66
 ```
 
 The third argument is the output path; without it the wrapper names the file

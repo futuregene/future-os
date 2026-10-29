@@ -168,10 +168,20 @@ python3 scripts/screenshots/capture.py tui tui-chat.png
   TUI 的 `settings.json`，脚本数据由 `FUTURE_DEMO_LANG` 交给 `demo_agent`——两边必须一致，
   否则就是英文外壳套一份中文会话列表。英文 `streaming` 场景提交的提问也会跟着变英文
   （提问是读者的话，不是按键）。`demo_agent` 的英文会话不是中文的逐句翻译，而是一个
-  更长更满的会话：会话列表 47 条、正文十几轮，因为面板是空的时候图看着像 mock。
+  更长更满的会话：会话列表 58 条，正文两轮里带标题、粗体斜体、行内代码、一段高亮的
+  `rust` 代码块、一张带边框的表格和一条引用——面板空着的时候图看着像 mock。它本身就高过
+  54 行的正文带，所以英文帧一般按 190×66 拍，而不是文档里的 120×38。
 - `--sidebar-width <cols>` 钉住侧栏宽度（默认交给界面自己，`SIDEBAR_DEFAULT` = 36）。侧栏会
   给工作区名留三分之一，于是 36 列下英文标题只剩十九格就出省略号，而中文同样长度放得下；
   想拍标题完整的英文帧就传它（上限 60）。
+- `--sidebar-position <left|right>` 钉住侧栏在哪一侧（界面自己默认在右）。
+- `--theme <id>` 钉住配色（`dark`、`light`、`dracula`、`tokyo-night`、`gruvbox`、`rose-pine`……
+  见 `theme.rs`）。已入仓的资产全在出厂默认配色上，所以这个参数是给「想展示配色效果」的帧
+  用的，不是产品本来的样子。
+- `--scenario composing` 是「读者正写到一半」的那一帧：输入框里有四行草稿（用 `ctrl+j`
+  换行打进去、不回车），而上一轮的经过是**打开**的——先点开 `▸ 3 tool calls · 2 thoughts`
+  那一行，再在里面 `tab` + `enter` 打开第一条思考，于是工具调用、它们的参数和背后的推理
+  都在画面上。折叠是读者点开的，截图必须替他把这一下做了（见 `_tui_click_fold_row`）。
 
 仓库里拍这些帧的入口是 `tui/scripts/shot.sh <scenario> [WxH] [out.png]`，它是
 `capture.py tui` 的一层包装：补上 `--scenario` 与尺寸，并按对应资产命名文件。
@@ -180,12 +190,13 @@ python3 scripts/screenshots/capture.py tui tui-chat.png
 tui/scripts/shot.sh chat 120x38 $PWD/docs/tui/assets/workbench-chat.png
 tui/scripts/shot.sh usage 120x38 $PWD/docs/tui/assets/workbench-panel-usage.png
 tui/scripts/shot.sh drag 120x38 $PWD/docs/tui/assets/workbench-drag-fixed.png
-# 英文帧（界面与会话列表/正文一起），并给英文标题留够宽度：
-FUTURE_DEMO_LONG=1 SHOT_LANG=en SHOT_SIDEBAR_WIDTH=56 tui/scripts/shot.sh chat 190x54
+# 英文帧（界面与会话列表/正文一起），侧栏在左、宽到标题能读全：
+SHOT_LANG=en SHOT_SIDEBAR_WIDTH=56 SHOT_SIDEBAR_POSITION=left \
+  tui/scripts/shot.sh composing 190x66
 ```
 
 `FUTURE_DEMO_LONG=1` 是「往会话里追加轮次，直到正文高过面板」的那颗开关（`scrolled` 场景
-也用它）；英文默认会话在一张 54 行高的屏幕里会短八行，所以拍「满」的帧要带上它。
+用它）；英文默认会话本身已经够满，拍 `composing` 不需要它。
 
 第三个参数是输出路径；不传时脚本按「场景 + 尺寸」自动命名
 （`workbench-chat-120x38.png`、`workbench-usage-120x38.png`），

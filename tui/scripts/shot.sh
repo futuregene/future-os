@@ -41,7 +41,8 @@
 # session (its list, its transcript), which the demo agent carries in both
 # languages. Default `zh`, the language every committed asset was shot in.
 # `SHOT_SIDEBAR_WIDTH=<cols>` pins the rail wider than the surface's own default,
-# which is what an English frame usually wants (see `--sidebar-width`).
+# `SHOT_SIDEBAR_POSITION=<left|right>` puts it on a side, and `SHOT_THEME=<id>`
+# picks a palette — an English frame usually wants the first of those.
 # Exit codes: 2 = usage or missing binary, 1 = capture failure.
 set -euo pipefail
 
@@ -116,6 +117,12 @@ ARGS=(tui "$OUT" --cols "$COLS" --rows "$ROWS" --scenario "$SCENARIO" --bin "$TU
 # the layout every committed frame was captured with.
 if [ -n "${SHOT_SIDEBAR_WIDTH:-}" ]; then
   ARGS+=(--sidebar-width "$SHOT_SIDEBAR_WIDTH")
+fi
+if [ -n "${SHOT_SIDEBAR_POSITION:-}" ]; then
+  ARGS+=(--sidebar-position "$SHOT_SIDEBAR_POSITION")
+fi
+if [ -n "${SHOT_THEME:-}" ]; then
+  ARGS+=(--theme "$SHOT_THEME")
 fi
 if [ "$LIVE" = 1 ]; then
   ARGS+=(--addr "$FUTURE_AGENT_GRPC_ADDR")

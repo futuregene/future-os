@@ -140,14 +140,15 @@ fn journal_zh() -> Vec<Value> {
     ]
 }
 
-/// The same session as an English reader would have it: the bug found, the fix
-/// explained, and a second question that widens it to the other two parsers.
+/// The same session as an English reader would have it — and, deliberately, the
+/// richest transcript the demo agent can draw: a heading, **bold** and *italic*
+/// runs, inline code, a diff, a bordered table, a numbered list, a quote, and two
+/// folded processes whose calls and thoughts a click opens.
 ///
-/// Rows, not words, are what a frame is made of, so this payload is longer than
-/// the Chinese tutorial: a tall terminal's chat band is 40-odd rows, and a
-/// transcript that stops halfway down leaves the bottom half of the picture
-/// empty. Every block here is one a real journal produces (reasoning, a tool
-/// call, its result, prose with a diff in it).
+/// Rows, not words, are what a frame is made of, so the shapes are one turn each
+/// rather than the shortest thing that would parse: a panel is filled by content
+/// a reader would recognise, and a screenshot exists to show what the surface can
+/// draw.
 fn journal_en() -> Vec<Value> {
     vec![
         json!({
@@ -183,12 +184,12 @@ fn journal_en() -> Vec<Value> {
         json!({
             "id": "e7", "kind": "assistant", "role": "assistant",
             "blocks": [{"kind": "text",
-                "text": "Found it on line 144, and it is one character wide:\n\n```diff\n-        while self.peek() <= self.end {\n+        while self.peek() < self.end {\n```\n\nWith `<=` the loop runs one iteration past the last token, so a trailing operator is consumed and its missing operand quietly becomes `lhs`. `1+2+` now reports `UnexpectedEof` instead of returning `3`, and the suite is green: 41 passed, 0 failed.\n\nThe regression test pins the three shapes that used to slip through — a trailing binary operator (`1+2+`), a trailing list comma (`[1,2,`), and a call with an empty argument list (`f(a,`). All three are the same mistake, so one table-driven test covers them."}],
+                "text": "### Diagnosis\n\n`parse_expr` compares the cursor with **`<=`**, so *\"at the end\"* and *\"past the end\"* are one state — the trailing operator is consumed and its missing operand becomes `lhs`.\n\n```rust\n// Stop *at* the last token, not one past it.\nwhile self.peek() < self.end {\n    let op = self.next();\n    lhs = apply(lhs, op, self.parse_atom()?);\n}\n```\n\n| Shape | Before | After |\n| --- | --- | --- |\n| 1+2+ | 3 | UnexpectedEof |\n| [1,2, | [1, 2] | UnexpectedEof |\n| f(a, | f(a) | UnexpectedEof |\n\nAll three are the **same mistake**, so one table-driven test covers them — see `src/parser/tests.rs`."}],
         }),
         json!({
             "id": "e8", "kind": "user", "role": "user",
             "blocks": [{"kind": "text",
-                "text": "Does the same shape show up anywhere else in the crate?"}],
+                "text": "Does the same shape appear anywhere else? And land it as two commits — the bounds first, then the tests."}],
         }),
         json!({
             "id": "e9", "kind": "assistant", "role": "assistant",
@@ -207,8 +208,33 @@ fn journal_en() -> Vec<Value> {
         }),
         json!({
             "id": "e12", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "reasoning",
+                "text": "Two more sites, both reachable from the same entry point. Bounds in one commit, the case table in the other, so reverting the tests cannot take the behaviour change with them — or leave a red suite in between."}],
+        }),
+        json!({
+            "id": "e13", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "tool_call", "toolCallId": "call_edit", "name": "edit",
+                        "arguments": {"path": "src/args.rs", "old": "while self.peek() <= self.end {", "new": "while self.peek() < self.end {"}}],
+        }),
+        json!({
+            "id": "e14", "kind": "tool", "role": "tool",
+            "blocks": [{"kind": "tool_result", "toolCallId": "call_edit", "isError": false,
+                "text": "patched src/args.rs:87\n1 file changed, 1 insertion(+), 1 deletion(-)\n"}],
+        }),
+        json!({
+            "id": "e15", "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "tool_call", "toolCallId": "call_commit", "name": "shell",
+                        "arguments": {"command": "cargo test -p parser && git commit -am 'fix(parser): the loop bound'"}}],
+        }),
+        json!({
+            "id": "e16", "kind": "tool", "role": "tool",
+            "blocks": [{"kind": "tool_result", "toolCallId": "call_commit", "isError": false,
+                "text": "test result: ok. 44 passed; 0 failed; 0 ignored\n[parser 6b1f0c2] fix(parser): the loop bound\n 3 files changed, 3 insertions(+), 3 deletions(-)\n"}],
+        }),
+        json!({
+            "id": "e17", "kind": "assistant", "role": "assistant",
             "blocks": [{"kind": "text",
-                "text": "Two more sites, and both are reachable from the same entry point:\n\n- `src/parser.rs:318` — `parse_list`, where `[1,2,` returns `[1, 2]`\n- `src/args.rs:87` — `parse_args`, where `f(a,` returns `f(a)`\n\nNeither has a test that ends on a separator, which is why the suite never noticed. The fix is the same one-character change, and I would rather land it as two commits — the bounds in one, the three tests in the other — so reverting the behaviour change cannot take the coverage with it.\n\nWant me to split it that way, or would you rather have one commit per parser?"}],
+                "text": "Landed in **two commits**, both green:\n\n1. `6b1f0c2` — the three bounds, *behaviour only*\n2. `d41e8aa` — the table-driven test, *coverage only*\n\n> `cargo test -p parser`: 44 passed, 0 failed, 0 ignored."}],
         }),
     ]
 }
@@ -361,7 +387,9 @@ fn state() -> Value {
 fn session_name() -> &'static str {
     match demo_lang() {
         DemoLang::Zh => "parser 的 off-by-one",
-        DemoLang::En => "off-by-one in the expression parser",
+        // Title case, like every other English title here: a session name in a
+        // rail is a title, and the TUI does not restyle what the agent sends.
+        DemoLang::En => "Off-by-One in the Expression Parser",
     }
 }
 
@@ -385,340 +413,91 @@ fn sessions() -> Value {
              "updatedAtMs": now_ms() - 86_400_000, "queryCount": 4, "isStreaming": false}
         ]),
         DemoLang::En => {
-            // `(id, title, cwd, minutes ago, queries)`. Ages are in minutes so
-            // the rail's own `12m` / `3h` / `2d` stamps come out of the surface
-            // rather than being written here as text. A working checkout files a
-            // railful under a couple of workspaces — three rows of sessions next
-            // to a transcript the height of the band is a picture of a mock, not
-            // of a session list.
-            let rows: [(&str, &str, &str, i64, u32); 47] = [
-                (SESSION_ID, session_name(), "/Users/you/future-os", 0, 1),
-                (
-                    "demo-en-2",
-                    "retry layer hides a silent stream",
-                    "/Users/you/future-os",
-                    8,
-                    23,
-                ),
-                (
-                    "demo-en-3",
-                    "rail: fold a workspace shut",
-                    "/Users/you/future-os",
-                    26,
-                    9,
-                ),
-                (
-                    "demo-en-4",
-                    "palette ranking for short queries",
-                    "/Users/you/future-os",
-                    51,
-                    14,
-                ),
-                (
-                    "demo-en-5",
-                    "coverage gate for the goal plane",
-                    "/Users/you/future-os",
-                    95,
-                    31,
-                ),
-                (
-                    "demo-en-6",
-                    "sqlite view prepare is 12ms",
-                    "/Users/you/future-os",
-                    140,
-                    7,
-                ),
-                (
-                    "demo-en-7",
-                    "workbench layout sketch",
-                    "/Users/you/future-os/.worktrees/ui",
-                    240,
-                    12,
-                ),
-                (
-                    "demo-en-8",
-                    "48s of silence, then a reopen",
-                    "/Users/you/future-os",
-                    300,
-                    18,
-                ),
-                (
-                    "demo-en-9",
-                    "split the retry out of the bridge",
-                    "/Users/you/future-os",
-                    420,
-                    6,
-                ),
-                (
-                    "demo-en-10",
-                    "keymap audit: ctrl+g and ctrl+d",
-                    "/Users/you/future-os/.worktrees/ui",
-                    600,
-                    11,
-                ),
-                (
-                    "demo-en-11",
-                    "windows named pipe smoke test",
-                    "/Users/you/future-os",
-                    1_500,
-                    4,
-                ),
-                (
-                    "demo-en-12",
-                    "nightly coverage run",
-                    "/Users/you/future-os",
-                    2_100,
-                    4,
-                ),
-                (
-                    "demo-en-13",
-                    "notes on the compaction numbers",
-                    "/Users/you/notes",
-                    3_000,
-                    3,
-                ),
-                (
-                    "demo-en-14",
-                    "directory layout page",
-                    "/Users/you/notes",
-                    5_400,
-                    2,
-                ),
-                (
-                    "demo-en-15",
-                    "the palette needs a filter row",
-                    "/Users/you/future-os/.worktrees/ui",
-                    6_200,
-                    8,
-                ),
-                (
-                    "demo-en-16",
-                    "todo panel: dedupe the goals",
-                    "/Users/you/future-os",
-                    7_400,
-                    5,
-                ),
-                (
-                    "demo-en-17",
-                    "stream events arrive twice",
-                    "/Users/you/future-os",
-                    8_600,
-                    16,
-                ),
-                (
-                    "demo-en-18",
-                    "tool results as transcript rows",
-                    "/Users/you/future-os",
-                    10_000,
-                    9,
-                ),
-                (
-                    "demo-en-19",
-                    "mobile: follow-up opens a new chat",
-                    "/Users/you/future-os",
-                    12_000,
-                    21,
-                ),
-                (
-                    "demo-en-20",
-                    "session recency is never updated",
-                    "/Users/you/future-os",
-                    15_000,
-                    13,
-                ),
-                (
-                    "demo-en-21",
-                    "delete a batch of sessions",
-                    "/Users/you/future-os",
-                    18_000,
-                    4,
-                ),
-                (
-                    "demo-en-22",
-                    "the 45s deadline has no closing line",
-                    "/Users/you/future-os",
-                    22_000,
-                    17,
-                ),
-                (
-                    "demo-en-23",
-                    "cache hit rate is 96 percent",
-                    "/Users/you/future-os",
-                    26_000,
-                    6,
-                ),
-                (
-                    "demo-en-24",
-                    "cost per run, in credit units",
-                    "/Users/you/notes",
-                    31_000,
-                    3,
-                ),
-                (
-                    "demo-en-25",
-                    "one commit per parser, or three",
-                    "/Users/you/future-os",
-                    35_000,
-                    2,
-                ),
-                (
-                    "demo-en-26",
-                    "guide: where each file lives",
-                    "/Users/you/notes",
-                    40_000,
-                    5,
-                ),
-                (
-                    "demo-en-27",
-                    "screenshots: pin the rail width",
-                    "/Users/you/future-os/.worktrees/ui",
-                    46_000,
-                    7,
-                ),
-                (
-                    "demo-en-28",
-                    "grpcurl against a scratch home",
-                    "/Users/you/future-os",
-                    52_000,
-                    8,
-                ),
-                (
-                    "demo-en-29",
-                    "the goal plane forgets a todo",
-                    "/Users/you/future-os",
-                    58_000,
-                    11,
-                ),
-                (
-                    "demo-en-30",
-                    "what the flaky test was waiting for",
-                    "/Users/you/future-os",
-                    63_000,
-                    9,
-                ),
-                (
-                    "demo-en-31",
-                    "windows: the lock file is not atomic",
-                    "/Users/you/future-os",
-                    70_000,
-                    6,
-                ),
-                (
-                    "demo-en-32",
-                    "one prompt, two sessions",
-                    "/Users/you/future-os",
-                    78_000,
-                    4,
-                ),
-                (
-                    "demo-en-33",
-                    "the transcript loses its last row",
-                    "/Users/you/future-os",
-                    86_000,
-                    12,
-                ),
-                (
-                    "demo-en-34",
-                    "colour contrast in the light theme",
-                    "/Users/you/future-os/.worktrees/ui",
-                    95_000,
-                    9,
-                ),
-                (
-                    "demo-en-35",
-                    "scroll: the ceiling counts the window",
-                    "/Users/you/future-os",
-                    104_000,
-                    7,
-                ),
-                (
-                    "demo-en-36",
-                    "help overlay lists verbs it lacks",
-                    "/Users/you/future-os",
-                    115_000,
-                    3,
-                ),
-                (
-                    "demo-en-37",
-                    "typed rpc: retire the json fallback",
-                    "/Users/you/future-os",
-                    126_000,
-                    15,
-                ),
-                (
-                    "demo-en-38",
-                    "branch protection wants main merged",
-                    "/Users/you/future-os",
-                    138_000,
-                    2,
-                ),
-                (
-                    "demo-en-39",
-                    "coverage: the src-tauri pair",
-                    "/Users/you/future-os",
-                    150_000,
-                    8,
-                ),
-                (
-                    "demo-en-40",
-                    "why the wheel jumps two lines",
-                    "/Users/you/future-os/.worktrees/ui",
-                    163_000,
-                    5,
-                ),
-                (
-                    "demo-en-41",
-                    "tool call arguments are truncated",
-                    "/Users/you/future-os",
-                    176_000,
-                    10,
-                ),
-                (
-                    "demo-en-42",
-                    "reading a 40MB log without freezing",
-                    "/Users/you/future-os",
-                    190_000,
-                    6,
-                ),
-                (
-                    "demo-en-43",
-                    "the model picker remembers nothing",
-                    "/Users/you/future-os",
-                    205_000,
-                    4,
-                ),
-                (
-                    "demo-en-44",
-                    "diff review: fold long hunks",
-                    "/Users/you/future-os/.worktrees/ui",
-                    220_000,
-                    11,
-                ),
-                (
-                    "demo-en-45",
-                    "i18n: the usage panel in english",
-                    "/Users/you/future-os",
-                    236_000,
-                    7,
-                ),
-                (
-                    "demo-en-46",
-                    "sandbox tier names are misleading",
-                    "/Users/you/notes",
-                    255_000,
-                    3,
-                ),
-                (
-                    "demo-en-47",
-                    "keep the worktree until it lands",
-                    "/Users/you/future-os",
-                    275_000,
-                    2,
-                ),
+            // `(title, workspace, minutes ago, queries)`, newest first. Ages are
+            // in minutes so the rail's own `12m` / `3h` / `2d` stamps come out of
+            // the surface rather than being written here as text. A working
+            // checkout files a railful under a couple of workspaces — three rows
+            // of sessions next to a transcript the height of the band is a
+            // picture of a mock, not of a session list.
+            //
+            // Titles are title case. A session name is a *title* in the rail, and
+            // the surface prints whatever the agent sent, so the case has to come
+            // from here.
+            const HOME: &str = "/Users/you/future-os";
+            const UI: &str = "/Users/you/future-os/.worktrees/ui";
+            const NOTES: &str = "/Users/you/notes";
+            const OTHERS: [(&str, &str, i64, u32); 57] = [
+                ("Retry Layer Hides a Silent Stream", HOME, 8, 23),
+                ("Rail: Fold a Workspace Shut", HOME, 26, 9),
+                ("Palette Ranking for Short Queries", HOME, 51, 14),
+                ("Coverage Gate for the Goal Plane", HOME, 95, 31),
+                ("SQLite View Prepare Is 12ms", HOME, 140, 7),
+                ("Workbench Layout Sketch", UI, 240, 12),
+                ("48s of Silence, Then a Reopen", HOME, 300, 18),
+                ("Split the Retry out of the Bridge", HOME, 420, 6),
+                ("Keymap Audit: ctrl+g and ctrl+d", UI, 600, 11),
+                ("Windows Named Pipe Smoke Test", HOME, 1_500, 4),
+                ("Nightly Coverage Run", HOME, 2_100, 4),
+                ("Notes on the Compaction Numbers", NOTES, 3_000, 3),
+                ("Directory Layout Page", NOTES, 5_400, 2),
+                ("The Palette Needs a Filter Row", UI, 6_200, 8),
+                ("To-do Panel: Dedupe the Goals", HOME, 6_000, 5),
+                ("Stream Events Arrive Twice", HOME, 6_479, 16),
+                ("Tool Results as Transcript Rows", HOME, 6_997, 9),
+                ("Mobile: Follow-up Opens a New Chat", HOME, 7_555, 21),
+                ("Session Recency Is Never Updated", HOME, 8_159, 13),
+                ("Delete a Batch of Sessions", HOME, 8_810, 4),
+                ("The 45s Deadline Has No Closing Line", HOME, 9_514, 17),
+                ("Cache Hit Rate Is 96 Percent", HOME, 10_273, 6),
+                ("Cost per Run, in Credit Units", NOTES, 11_094, 3),
+                ("One Commit per Parser, or Three", HOME, 11_980, 2),
+                ("Guide: Where Each File Lives", NOTES, 12_937, 5),
+                ("Screenshots: Pin the Rail Width", UI, 13_970, 7),
+                ("A grpcurl Probe in a Scratch Home", HOME, 15_085, 8),
+                ("The Goal Plane Forgets a Todo", HOME, 16_290, 11),
+                ("What the Flaky Test Was Waiting For", HOME, 17_591, 9),
+                ("Windows: The Lock File Is Not Atomic", HOME, 18_996, 6),
+                ("One Prompt, Two Sessions", HOME, 20_512, 4),
+                ("The Transcript Loses Its Last Row", HOME, 22_151, 12),
+                ("Colour Contrast in the Light Theme", UI, 23_919, 9),
+                ("Scroll: The Ceiling Counts the Window", HOME, 25_830, 7),
+                ("Help Overlay Lists Verbs It Lacks", HOME, 27_892, 3),
+                ("Typed RPC: Retire the JSON Fallback", HOME, 30_120, 15),
+                ("Branch Protection Wants Main Merged", HOME, 32_525, 2),
+                ("Coverage: The src-tauri Pair", HOME, 35_122, 8),
+                ("Why the Wheel Jumps Two Lines", UI, 37_927, 5),
+                ("Tool Call Arguments Are Truncated", HOME, 40_956, 10),
+                ("Reading a 40MB Log Without Freezing", HOME, 44_227, 6),
+                ("The Model Picker Remembers Nothing", HOME, 47_759, 4),
+                ("Diff Review: Fold Long Hunks", UI, 51_573, 11),
+                ("i18n: The Usage Panel in English", HOME, 55_691, 7),
+                ("Sandbox Tier Names Are Misleading", NOTES, 60_138, 3),
+                ("Keep the Worktree Until It Lands", HOME, 64_941, 2),
+                ("Windows: The Pipe Name Is Per User", HOME, 70_127, 5),
+                ("Two Agents on One Socket", HOME, 75_727, 3),
+                ("The Composer Grows With the Draft", UI, 81_775, 9),
+                ("Screenshots: A Wider Rail", UI, 88_305, 4),
+                ("Markdown Tables Break on Wide Cells", HOME, 95_357, 6),
+                ("The Diff Panel Reads the Index", HOME, 102_972, 7),
+                ("Stale Locks in the Finish Lock", HOME, 111_195, 2),
+                ("Coverage: Merge the Two Runs", HOME, 120_075, 8),
+                ("A Session List That Fits", NOTES, 129_664, 5),
+                ("Reading the Goal Plane's Ledger", HOME, 140_018, 11),
+                ("One Prompt, Two Answers", HOME, 151_200, 3),
             ];
+            // The session the frame opens is the newest row, so it cannot be in
+            // the const table: its title comes from `session_name()`.
+            let mut rows: Vec<(&str, &str, i64, u32)> = Vec::with_capacity(OTHERS.len() + 1);
+            rows.push((session_name(), HOME, 0, 1));
+            rows.extend(OTHERS);
             Value::Array(
                 rows.iter()
-                    .map(|(id, title, cwd, minutes, queries)| {
+                    .enumerate()
+                    .map(|(index, (title, cwd, minutes, queries))| {
+                        let id = match index {
+                            0 => SESSION_ID.to_string(),
+                            other => format!("demo-en-{}", other + 1),
+                        };
                         json!({
                             "id": id, "sessionName": title, "cwd": cwd, "model": MODEL,
                             "updatedAtMs": now_ms() - minutes * 60_000,
