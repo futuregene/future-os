@@ -1074,7 +1074,7 @@ impl Live {
             self.mark(ActivityKind::Thinking);
             self.run_started = Some(Instant::now());
             // The trailing reply is being written by a run this client did not
-            // start: it keeps the live shape until that run ends.
+            // start: every row stays in place until that run ends.
             self.chat.begin_reply_run();
         }
     }
