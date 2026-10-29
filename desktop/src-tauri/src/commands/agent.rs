@@ -524,3 +524,13 @@ mod tests {
         assert!(!error.to_string().is_empty());
     }
 }
+
+#[tauri::command]
+pub async fn get_fusion(
+    run_id: String,
+    tool_call_id: String,
+    step_id: Option<String>,
+    offset: Option<i64>,
+) -> Result<serde_json::Value, crate::AppError> {
+    future_host::fusion::query_for_run(run_id, tool_call_id, step_id, offset).await
+}

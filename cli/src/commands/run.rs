@@ -64,6 +64,9 @@ streams the response to stdout, and exits.
 
 Usage:
   future run [options] [@files...] [message...]
+  future run '/fusion <task>'   Enable a thinking-only Fusion tool for this run.
+                                Requires a running FutureOS Host. The main Agent
+                                decides when to consult, then continues the task.
 
 Session options:
   --session <id>           Connect to an existing session by ID

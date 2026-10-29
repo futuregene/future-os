@@ -6,10 +6,10 @@ import { isRecord } from "./utils";
 // (projection.ts) build on. Keeping these in one place is what stops the two
 // paths from drifting — a collapse or target-extraction tweak lands in both.
 
-/** The four tool kinds the activity UI models (every other tool maps to "shell"). */
+/** The tool kinds the activity UI models (every other tool maps to "shell"). */
 export type ToolKind = Exclude<AgentActivityKind, "thinking">;
 
-const TOOL_KINDS = new Set<ToolKind>(["read", "shell", "edit", "write"]);
+const TOOL_KINDS = new Set<ToolKind>(["read", "shell", "edit", "write", "fusion"]);
 
 /** Whether `name` is one of the modeled tool kinds. */
 export function isToolKind(name: string): name is ToolKind {
@@ -53,6 +53,8 @@ export function normalizeArgs(value: unknown): Record<string, unknown> | null {
  * record (or null) — see {@link normalizeArgs}.
  */
 export function targetFromArgs(kind: ToolKind, args: Record<string, unknown> | null): string | undefined {
+  if (kind === "fusion")
+    return stringValue(args?.question);
   if (kind === "shell")
     return stringValue(args?.command);
   return stringValue(args?.path) ?? stringValue(args?.file_path) ?? stringValue(args?.filePath);

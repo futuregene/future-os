@@ -583,6 +583,17 @@ impl GrpcClient {
         busy_policy: &str,
         attachments: Vec<Attachment>,
     ) -> Result<RunAck, String> {
+        if let Some(task) = future_fusion::fusion_prompt(message) {
+            if task.is_empty() {
+                return Err("Use /fusion followed by a task".into());
+            }
+            let capability = self
+                .call("get_fusion_status", RpcCommand::default())
+                .await?;
+            if capability["available"] != true {
+                return Err("Fusion is unavailable: start or upgrade the FutureOS host".into());
+            }
+        }
         let request_id = uuid_hex();
         let cmd = RpcCommand {
             message: message.to_string(),
@@ -603,6 +614,18 @@ impl GrpcClient {
             st.runs.insert(ack.run_id.clone(), RunStatus::Queued);
         }
         Ok(ack)
+    }
+
+    pub async fn fusion_discussion(&self, step: &str, offset: i64) -> Result<Value, String> {
+        self.call(
+            "get_fusion",
+            RpcCommand {
+                entry_id: step.into(),
+                offset: Some(offset),
+                ..Default::default()
+            },
+        )
+        .await
     }
 
     /// Is a turn in flight this client started? The interrupt chord reads it:

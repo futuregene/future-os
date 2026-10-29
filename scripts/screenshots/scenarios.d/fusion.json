@@ -1,0 +1,148 @@
+{
+  "desktop": {
+    "fusion-discussion": {
+      "steps": [
+        {
+          "wait": 1800
+        },
+        {
+          "tap": "查看过程"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "tapText": "Fusion · 讨论记录"
+        },
+        {
+          "wait": 800
+        },
+        {
+          "shot": "d-fusion-discussion.png"
+        }
+      ],
+      "url": "http://localhost:5299/shot/?fusion=1"
+    },
+    "fusion-issues": {
+      "steps": [
+        {
+          "wait": 1800
+        },
+        {
+          "tap": "查看过程"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "tapText": "Fusion · 讨论记录"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "tapText": "分歧与结论"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "shot": "d-fusion-issues.png"
+        }
+      ],
+      "url": "http://localhost:5299/shot/?fusion=1"
+    }
+  },
+  "mobile": {
+    "fusion-discussion": {
+      "steps": [
+        {
+          "wait": 300
+        },
+        {
+          "tap": "Not now"
+        },
+        {
+          "wait": 700
+        },
+        {
+          "tap": "Workspace"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "tapText": "整理两篇文献的结论对比表"
+        },
+        {
+          "wait": 1000
+        },
+        {
+          "tap": "Show process"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "tapText": "Fusion · Discussion"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "shot": "m-fusion-discussion.png"
+        }
+      ],
+      "url": "http://localhost:8099/?fusion=1&single=1",
+      "ready": "document.body.innerText.includes(\"Not now\")"
+    },
+    "fusion-issues": {
+      "steps": [
+        {
+          "wait": 300
+        },
+        {
+          "tap": "Not now"
+        },
+        {
+          "wait": 700
+        },
+        {
+          "tap": "Workspace"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "tapText": "整理两篇文献的结论对比表"
+        },
+        {
+          "wait": 1000
+        },
+        {
+          "tap": "Show process"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "tapText": "Fusion · Discussion"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "tapText": "Issues and conclusions"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "shot": "m-fusion-issues.png"
+        }
+      ],
+      "url": "http://localhost:8099/?fusion=1&single=1",
+      "ready": "document.body.innerText.includes(\"Not now\")"
+    }
+  }
+}

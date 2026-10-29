@@ -675,6 +675,9 @@ pub(crate) async fn import_discovered_session(session_id: &str) -> Result<bool, 
         return Err(format!("agent rejected get_state: {}", response.error).into());
     }
     let state: serde_json::Value = future_rpc::decode::response_data(&response);
+    if state["created_by"] == "fusion" || state["createdBy"] == "fusion" {
+        return Ok(false);
+    }
     let summary = AgentSessionSummary {
         id: session_id.to_string(),
         // get_state emits canonical `sessionName` plus the legacy `session_name`

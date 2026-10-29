@@ -2,11 +2,25 @@
 
 [中文](fusion.zh-CN.md)
 
-Status: development design, not implemented. Design date: 2026-10-29.
+Status: first tool implementation available with fixed development models. Design/implementation date: 2026-10-29.
 
 Fusion is a multi-model thinking tool available to the main Agent. Its orchestration kernel lives in `orchestration/fusion`, alongside Goal and Tasks. Users add the `fusion` tool to the current main run with `/fusion`. The main Agent investigates and may submit a focused decision question. Internal read-only discussion returns a final conclusion, then the original main flow continues the user's task. Users can inspect the complete discussion separately.
 
 Delivery requires desktop, mobile and terminal support, with hosts on Windows, macOS and Linux. Desktop alone is insufficient. The outer main flow retains `read / write / edit / shell`, adding `fusion` when requested. The inner moderator and panelists receive only `read / ls / glob / grep`.
+
+## Current implementation and usage
+
+The moderator is fixed to `future/deepseek-flash`. Panelists are `future/deepseek-flash`, `future/glm-5.3-flash` and `future/qwen3.7-plus`, the third selected from the live Future catalog with the user's confirmation. Missing models fail explicitly; no default-model substitution occurs.
+
+Start Desktop or `future host`, then submit `/fusion <task>` from Desktop, Mobile or TUI. The main Agent receives a real run-scoped tool and decides when to consult on a focused question. The inner 3→1→3→1 protocol returns one final result and the original flow continues. Later ordinary runs do not inherit the tool. Expand the reply process and Fusion activity to inspect discussion, issues/conclusion, diagnostics and original evidence. TUI offers `/fusion-log [step-id]`; CLI offers `future fusion show <parent-session-id> [--run <id> --tool <id>] [--step <id>] [--offset <bytes>] --json`. Reads never invoke models.
+
+The Host executor claims a bounded durable queue in `~/.future/fusion/fusion.db`, avoiding an Agent-to-Host crate dependency. The existing Host instance lock gives one executor, with at most two concurrent consultations. The Agent validates the leading token from the original submission and persists `ScheduledSettingsSnapshot.fusion_enabled` with the raw input/request key. Remote outboxes retain that original directive and key. No persistent session-tool setting is changed. Inner sessions carry `created_by=fusion`; each run forcibly receives only the four snapshot tools regardless of ordinary session configuration.
+
+Only explicit, parent-authorized UTF-8 `read_scope` files are captured, once per consultation, with hashes shared across every round. Empty scope supports conceptual decisions. Escapes, links/reparse points, special files and oversized inputs fail. Limits are 1 MiB/file, 16 MiB total and 1024 files/directories. Capture timestamps and observed-change detection are recorded; this is not an atomic filesystem snapshot. Input/result limits are 48/32 KiB. Each completion is limited to 4096 output tokens and each step to five tool-loop turns. Each parent run admits at most two consultations; steps time out after 180 seconds, total waiting after 900 seconds, with at most two attempts per step. Completeness reflects actual full/partial/single participation.
+
+The `fusion_runs/inputs/participants/steps/messages/issues/positions/events` tables store structure, inputs, state, references and diagnostics. Complete messages/tool evidence remain in Agent child transcripts. Previews are bounded; original transcripts use UTF-8 byte paging. Queries verify the parent, database source and step ownership. Restart interrupts unfinished consultations without automatic paid replay. Parent cancellation stops child work and fences late results. Deleting a parent stops/deletes linked children and removes its consultation/snapshot records. Offline `future data` backups include the Fusion database and snapshots. Archived reads remain valid after restoring the same Agent database; execution still requires the current restore identity.
+
+Later sections retain the planned product contract. Editable model/thinking settings, dedicated redacted export, richer position-change records and monetary budgets remain future work; this development version uses fixed models plus token/count/time limits. Cross-system builds and unit regressions run in CI. See the [implementation verification record](../testing/fusion-implementation.md).
 
 ## Product boundaries
 
@@ -14,7 +28,7 @@ Fusion thinks, investigates, compares, discusses and proposes plans; it does not
 
 The outer main Agent owns interpretation, tool use, implementation, verification and the final reply. A Fusion call is one tool invocation inside that flow, not a replacement for the entire user request or a prerequisite for each write/command. Recommendations cannot expand user authorization. A request to implement continues naturally under existing permissions; an analysis-only request ends with analysis, without requiring an extra execution button.
 
-Distinguish the outer main Agent from the inner Fusion moderator: one completes the user task, the other chairs a consultation. They may use the same model configuration but have separate contexts, runtime identities and permissions. Settings eventually select a moderator, panelists and thinking levels. Development fixes one moderator and three panelists behind `FusionConfig`, reusing existing model IDs and credential resolution without copying API keys.
+Distinguish the outer main Agent from the inner Fusion moderator: one completes the user task, the other chairs a consultation. They may use the same model configuration but have separate contexts, runtime identities and permissions. Settings eventually select a moderator, panelists and thinking levels. Development fixes one moderator and three panelists through `future-fusion` constants, reusing existing model IDs and credential resolution without copying API keys.
 
 Goal, Tasks and Fusion retain separate responsibilities. V1 enables the tool only through an explicit user `/fusion` request. Model-generated text, skills, files and schedulers cannot enlarge the tool catalog. Once enabled, the outer main Agent decides whether consultation is useful according to the task and tool description.
 
@@ -24,7 +38,7 @@ Submitting `/fusion <task>` adds `fusion` to that outer Agent run while the rema
 
 Non-interactive CLI calls without a composer must include the task in the same request. Bare `/fusion` returns missing-task usage, without an invisible pending flag affecting a later command.
 
-All clients share command and submission-metadata semantics. Recognize only an independent leading `/fusion` token or an equivalent command-menu action. Quotes, code blocks, paths, `/fusion-other` and file contents do not activate it. Retain raw user input, normalized task and activation origin for audit. Use proposed run-scoped `requested_tools: ["fusion"]` metadata validated by the server, rather than prompt text alone or persistent `set_tools` changes to the conversation catalog.
+All clients share command and submission-metadata semantics. Recognize only an independent leading `/fusion` token or an equivalent command-menu action. Quotes, code blocks, paths, `/fusion-other` and file contents do not activate it. Retain raw user input, normalized task and activation origin for audit. The current transport retains the original directive; the server derives and validates a run-scoped `fusion_enabled` snapshot and constructs the actual tool catalog. Prompt text alone and persistent `set_tools` changes are insufficient.
 
 The main Agent may investigate with ordinary tools before consulting, or solve a simple task without calling Fusion. Honor explicit user instructions to require consultation or prohibit it; `/fusion` alone does not force a call. Do not create a fake discussion record or show completion when unused. V1 adds no separate mode, permanent conversation toggle or global default activation.
 

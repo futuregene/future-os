@@ -4,6 +4,7 @@ import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { ContextToolOption, MentionEditorHandle, SkillMentionOption } from "./MentionEditor";
 import type { SessionMentionOption } from "./sessionMention";
+import { fusionTask } from "@future-os/thread-projection";
 import { Paperclip, TriangleAlert, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -234,29 +235,18 @@ function ComposerImpl({
     setContextActionPending(false);
   }, [draftKey]);
 
+  const [fusionEnabled, setFusionEnabled] = useState(false);
   const contextTools = useMemo<ContextToolOption[]>(() => {
+    const fusion = { id: "fusion", name: "/fusion", description: t("fusion.enableDescription"), searchText: "fusion 会商 多模型 思考" };
     if (!onCompactContext || sending || compactionPending)
-      return [];
-    return [{
+      return [fusion];
+    return [fusion, {
       id: "compact",
       name: t("composer.compactContext"),
       description: t("composer.compactContextDescription"),
       searchText: "compact compaction compress context 压缩 上下文",
     }];
   }, [compactionPending, onCompactContext, sending, t]);
-  const handleContextToolSelect = useCallback((toolId: string) => {
-    if (toolId !== "compact" || !onCompactContext || compactionPending)
-      return;
-    const isCurrent = captureOperation();
-    const result = onCompactContext();
-    if (result) {
-      setContextActionPending(true);
-      result.catch(() => {}).finally(() => {
-        if (isCurrent())
-          setContextActionPending(false);
-      });
-    }
-  }, [captureOperation, compactionPending, onCompactContext]);
 
   const catalog = useSkillCatalog();
   const skills = useMemo<SkillMentionOption[]>(() => {
@@ -295,8 +285,30 @@ function ComposerImpl({
       return;
     const text = editorRef.current ? editorRef.current.getContent() : lastTextRef.current;
     lastTextRef.current = text;
+    setFusionEnabled(fusionTask(text) !== null);
     saveComposerDraft(key, { attachments: attachmentsRef.current, text });
   }, [attachmentsRef, draftKeyRef]);
+
+  const handleContextToolSelect = useCallback((toolId: string) => {
+    if (toolId === "fusion") {
+      const current = editorRef.current?.getContent() ?? "";
+      editorRef.current?.restore(`/fusion ${fusionTask(current) ?? current}`);
+      setFusionEnabled(true);
+      saveDraft();
+      return;
+    }
+    if (toolId !== "compact" || !onCompactContext || compactionPending)
+      return;
+    const isCurrent = captureOperation();
+    const result = onCompactContext();
+    if (result) {
+      setContextActionPending(true);
+      result.catch(() => {}).finally(() => {
+        if (isCurrent())
+          setContextActionPending(false);
+      });
+    }
+  }, [captureOperation, saveDraft, compactionPending, onCompactContext]);
 
   // Load this conversation's draft when it becomes active. Continuous saves
   // (editor onChange + the attachments effect) keep the outgoing conversation's
@@ -308,6 +320,7 @@ function ComposerImpl({
     editorRef.current?.restore(text);
     lastTextRef.current = text;
     restoredTextRef.current = text;
+    setFusionEnabled(fusionTask(text) !== null);
     setAttachments(draft?.attachments ?? []);
     setAttachError(null);
   }, [draftKey, setAttachError, setAttachments]);
@@ -390,6 +403,11 @@ function ComposerImpl({
 
   function submitValue() {
     const trimmed = (editorRef.current?.getContent() ?? "").trim();
+    if (fusionTask(trimmed) === "") {
+      editorRef.current?.restore("/fusion ");
+      setFusionEnabled(true);
+      return;
+    }
     // Block submission while a reply streams (the send button is already an
     // abort button then), while context compaction is running, and while an
     // async send is in flight. The editor intentionally remains enabled so the
@@ -413,6 +431,7 @@ function ComposerImpl({
         // Handed over: the text now lives in the panel's queue, so this box gives it
         // up the same way a delivered message does.
         editorRef.current?.clear();
+        setFusionEnabled(false);
         lastTextRef.current = "";
         const remaining = attachmentsRef.current.filter(item => !submittedAttachments.includes(item));
         attachmentsRef.current = remaining;
@@ -440,7 +459,7 @@ function ComposerImpl({
     // (install, dismiss, or send again); anything else (timeout, no match,
     // error) sends normally.
     const reco = skillRecommendation;
-    if (reco) {
+    if (reco && fusionTask(trimmed) === null) {
       // A card is on screen and not yet acted on: a plain send means "send
       // without it" — the same thing the card's secondary button does. The
       // send button stays live here (only the recommender wait disables it),
@@ -535,6 +554,7 @@ function ComposerImpl({
       if ((editorRef.current.getContent() ?? "").trim().length > 0)
         return;
       editorRef.current.restore(submittedText);
+      setFusionEnabled(fusionTask(submittedText) !== null);
       lastTextRef.current = submittedText;
       const restored = [...submittedAttachments, ...attachmentsRef.current];
       attachmentsRef.current = restored;
@@ -692,6 +712,22 @@ function ComposerImpl({
             </div>
           )
         : null}
+      {fusionEnabled && (
+        <div className="flex items-center gap-2 px-1 pb-2 text-xs text-ink-muted">
+          <span>{t("fusion.enabled")}</span>
+          <button
+            type="button"
+            className="cursor-pointer hover:text-ink"
+            onClick={() => {
+              editorRef.current?.restore(fusionTask(editorRef.current?.getContent() ?? "") ?? "");
+              setFusionEnabled(false);
+              saveDraft();
+            }}
+          >
+            {t("fusion.remove")}
+          </button>
+        </div>
+      )}
       <MentionEditor
         ref={editorRef}
         className={textareaClassName}

@@ -1,3 +1,4 @@
+import { fusionTask } from "@future-os/thread-projection";
 import { INPUT_MIN_HEIGHT, INPUT_MAX_HEIGHT } from "../composer/composerMetrics";
 import { ArrowDown, CircleAlert, FileText, Paperclip, X } from "lucide-react-native";
 import { Pressable, ScrollView, Text, TextInput, useWindowDimensions, View, type TextInputInstance } from "react-native";
@@ -131,7 +132,7 @@ function ComposerDockView({
     [remote.sessions, remote.selectedSessionId],
   );
   const slashActions = useMemo<SlashAction[]>(() => {
-    const actions: SlashAction[] = [];
+    const actions: SlashAction[] = remote.capabilities.has("fusion_v1") ? [{ id: "fusion", label: "/fusion", description: t("chat.fusionDescription"), searchText: "fusion 会商 多模型 思考", insert: "/fusion " }] : [];
     if (canReference) {
       // The phone has no `#` key to speak of (it sits on the keyboard's symbol
       // page) while `/` has a button of its own, so the reference would be
@@ -154,10 +155,11 @@ function ComposerDockView({
       });
     }
     return actions;
-  }, [canReference, compactionActionEnabled, t]);
+  }, [canReference, compactionActionEnabled, remote.capabilities, t]);
   const handleSlashAction = useCallback((action: SlashAction) => {
+    if (action.id === "fusion") setMessage(value => `/fusion ${value.replace(/(^|\s)\/fusion(?=\s|$)\s*/u, "$1").trimStart()}`);
     if (action.id === "compact" && compactionActionEnabled) onCompactContext?.();
-  }, [compactionActionEnabled, onCompactContext]);
+  }, [compactionActionEnabled, onCompactContext, setMessage]);
   const stopRequest = useStopRequest(
     remote.streaming,
     remote.selectedSessionId,
@@ -354,7 +356,8 @@ function ComposerDockView({
                 {`${message}\u200b`}
               </Text>
             </View>
-            <TextInput
+            {fusionTask(message) !== null ? <Pressable accessibilityRole="button" onPress={() => setMessage(fusionTask(message) ?? message)}><View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}><Text style={{ color: colors.inkSoft, fontSize: 12 }}>{t("chat.fusionEnabled")}</Text><X size={12} color={colors.inkMuted} /></View></Pressable> : null}
+      <TextInput
               ref={inputRef}
               selection={completion.inputSelection}
               onSelectionChange={(event) =>

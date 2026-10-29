@@ -2,7 +2,7 @@
 
 [English](data-backup.md)
 
-`future data` 是本地 FutureOS home 的离线、协同备份与恢复入口。它复制两个
+`future data` 是本地 FutureOS home 的离线、协同备份与恢复入口。它复制 Agent/Desktop 与可选 Fusion 的
 SQLite 数据库，以及承载会话、附件、评审仓库与 Agent 凭据的托管文件树，用
 SHA-256 校验每一个复制出的字节，并能把这一整套放回原来的路径。它不是在线备份：
 当 Desktop 后端或 Agent 占用着 home 时它会拒绝运行，也从不替你停掉任何进程。
@@ -34,6 +34,7 @@ SHA-256 校验每一个复制出的字节，并能把这一整套放回原来的
 | --- | --- |
 | `agent/agent.db` | Agent 存储：会话、运行、事件、技能清单（SQLite 快照）。 |
 | `app/app.db` | Desktop 存储：workspace、线程、运行、审批（SQLite 快照）。 |
+| `fusion/fusion.db`、`fusion/snapshots` | 会商元数据（SQLite 快照）和固定文件证据；完整子会话正文位于 `agent/agent.db`。 |
 | `app/images` | 每线程的图片树（`thumb/`、`origin/`）。 |
 | `app/review` | 每 workspace 的影子 git 评审仓库。 |
 | `workspaces/chat` | 每线程的聊天工作目录。 |

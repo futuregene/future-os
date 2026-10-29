@@ -720,13 +720,14 @@ const UNFLIP_INVERTED_LIST = `
   };
   const scrolls = (el) => {
     const overflow = getComputedStyle(el).overflowY;
-    return (overflow === 'auto' || overflow === 'scroll') && el.scrollHeight > el.clientHeight + 10;
+    return overflow === 'auto' || overflow === 'scroll';
   };
-  // The wrapper whose only child is the mirrored scroller: two nested vertical
+  // The wrapper can inherit overflow from the scroller, including on short lists.
+  // Its only child is the mirrored scroller: two nested vertical
   // mirrors where the inner one is the scroll container. A single mirror (the
   // scroller) or a mirrored cell never matches.
   const extraInversion = (el) => {
-    if (!verticalMirror(el) || scrolls(el)) return false;
+    if (!verticalMirror(el)) return false;
     const children = [...el.children];
     return children.length === 1 && verticalMirror(children[0]) && scrolls(children[0]);
   };

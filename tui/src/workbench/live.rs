@@ -1841,6 +1841,54 @@ impl Live {
             .to_string();
         let arg = parts.next().unwrap_or("").trim().to_string();
         match name.as_str() {
+            "fusion" => {
+                if arg.is_empty() {
+                    self.set_draft("/fusion ".into(), 8);
+                    self.notice = Some(t(self.lang, Key::FusionEnabled).into());
+                } else {
+                    self.submit(&format!("/fusion {arg}")).await;
+                }
+            }
+            "fusion-log" => match self.client.fusion_discussion(&arg, 0).await {
+                Ok(data) => {
+                    let mut text = data["transcript"]
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| serde_json::to_string_pretty(&data).unwrap_or_default());
+                    let mut next = data["next_offset"].as_i64().unwrap_or(0);
+                    let total = data["total_bytes"].as_i64().unwrap_or(0);
+                    while next < total {
+                        match self.client.fusion_discussion(&arg, next).await {
+                            Ok(page) => {
+                                text.push_str(page["transcript"].as_str().unwrap_or_default());
+                                let cursor = page["next_offset"].as_i64().unwrap_or(next);
+                                if cursor <= next {
+                                    break;
+                                }
+                                next = cursor;
+                            }
+                            Err(error) => {
+                                text.push_str(&format!("\n{error}"));
+                                break;
+                            }
+                        }
+                    }
+                    if !arg.is_empty() {
+                        if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                            text = serde_json::to_string_pretty(&value).unwrap_or(text);
+                        }
+                    }
+                    let text = format!("{}\n\n{text}", t(self.lang, Key::FusionLogTitle));
+                    self.chat.add_message(ChatMessage::new(
+                        format!("fusion-view-{}", uuid::Uuid::new_v4()),
+                        ChatRole::System,
+                        &text,
+                    ));
+                }
+                Err(error) => {
+                    self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
+                }
+            },
             "quit" => return Outcome::Quit,
             "stop" => self.abort().await,
             "queue" => self.refresh_state().await,

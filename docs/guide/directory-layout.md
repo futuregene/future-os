@@ -22,6 +22,9 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 │   ├── browser/               # CLI browser-tool state (config.json, profile/, artifacts/)
 │   ├── images/                # CLI image-tool output directory
 │   └── logs/agent.log         # agent log (when logging is enabled)
+├── fusion/                    # shared read-only consultation control plane
+│   ├── fusion.db              # runs, phases, participants, issues and transcript references
+│   └── snapshots/             # bounded, hashed consultation file snapshots
 ├── agent-app/                 # legacy credential dir (auth.json) read for back-compat
 ├── channels/
 │   ├── config.json            # every channel's config (see channels-config.md)

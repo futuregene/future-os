@@ -3198,6 +3198,14 @@ impl ChatArea {
 
         match serde_json::from_str::<serde_json::Value>(tool_args) {
             Ok(args) => match tool_name {
+                "fusion" => {
+                    let question = args["question"].as_str().unwrap_or("");
+                    format!(
+                        "{} {}",
+                        fg(self.theme.tool_title as u8, &bold("fusion")),
+                        truncate_to_width(question, max_for(7), &TruncateOptions::default())
+                    )
+                }
                 "shell" => {
                     let cmd = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
                     let first_line = cmd.split('\n').next().unwrap_or("");

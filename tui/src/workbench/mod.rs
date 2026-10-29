@@ -3932,6 +3932,16 @@ impl Workbench {
         if text.is_empty() {
             return Vec::new();
         }
+        if let Some(task) = future_fusion::fusion_prompt(&text) {
+            return if task.is_empty() {
+                vec![WbAction::EditInput {
+                    text: "/fusion ".into(),
+                    cursor: 8,
+                }]
+            } else {
+                vec![WbAction::Submit(text)]
+            };
+        }
         // A typed command is a command, never a prompt: `/model` in the draft
         // used to be sent to the agent as text, which is why no picker ever
         // opened from the input box. Only the surface's own verbs are claimed —
@@ -4143,7 +4153,7 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
 /// The command palette's entries: `(command, description)`. Kept here rather
 /// than in the app so the palette, the help overlay and the tests share one
 /// list.
-pub const COMMANDS: [(&str, Key); 35] = [
+pub const COMMANDS: [(&str, Key); 37] = [
     ("/new", Key::CmdNew),
     ("/stop", Key::CmdStop),
     ("/delete", Key::CmdDelete),
@@ -4177,6 +4187,8 @@ pub const COMMANDS: [(&str, Key); 35] = [
     ("/preferences", Key::CmdPreferences),
     ("/export", Key::CmdExport),
     ("/transcript", Key::CmdTranscript),
+    ("/fusion", Key::CmdFusion),
+    ("/fusion-log", Key::CmdFusionLog),
     ("/help", Key::CmdHelp),
     ("/quit", Key::CmdQuit),
 ];

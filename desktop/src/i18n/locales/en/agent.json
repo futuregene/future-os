@@ -336,5 +336,53 @@
     "dismiss": "Dismiss tutorial entry",
     "dismissed": "Tutorial entry hidden · Reopen anytime from the Skills page on the left",
     "loadFailed": "Failed to load tutorial configuration: {{message}}"
+  },
+  "fusion": {
+    "enabled": "Fusion tool enabled · Read-only consultation when needed",
+    "enableDescription": "Add multi-model thinking to this run; discussion does not act",
+    "remove": "Remove",
+    "discussion": "Discussion",
+    "discussing": "Consulting models",
+    "issues": "Issues and conclusions",
+    "diagnostics": "Diagnostics",
+    "original": "Original messages and tool evidence",
+    "more": "Read more",
+    "input": "Actual input",
+    "loading": "Loading discussion",
+    "noIssues": "No issues recorded yet",
+    "unavailable": "Fusion is unavailable on this host",
+    "missingParent": "Parent task identity missing",
+    "phases": {
+      "preparing": "Preparing evidence",
+      "analyzing": "Independent analysis",
+      "issue_mapping": "Mapping issues",
+      "reviewing": "Cross-review",
+      "synthesizing": "Synthesis"
+    },
+    "states": {
+      "preparing": "Preparing",
+      "queued": "Queued",
+      "running": "Discussing",
+      "delivering": "Returning result",
+      "completed": "Consultation complete; main flow continues",
+      "failed": "Consultation failed",
+      "cancelled": "Cancelled",
+      "interrupted": "Interrupted",
+      "starting": "Starting"
+    },
+    "retry": "Retry {{count}}",
+    "completeness": {
+      "full": "Full panel",
+      "partial": "Partial panel",
+      "single": "Single participant"
+    },
+    "result": {
+      "rationale": "Reasons",
+      "conditions": "Conditions",
+      "unresolved": "Unresolved",
+      "next_steps": "Proposed next steps"
+    },
+    "title": "Fusion discussion",
+    "runningTitle": "Fusion deliberating"
   }
 }

@@ -197,8 +197,11 @@ pub(crate) fn cmd_list_sessions(state: &AppState, cmd: &RpcCommand, id: &str) ->
     };
 
     // One canonical contract shared by every client.
+    let fusion_children = crate::fusion::child_sessions();
     let sessions: Vec<serde_json::Value> = summaries
         .into_iter()
+        // Fusion children are addressable for replay but not user conversations.
+        .filter(|s| !fusion_children.contains(&s.id))
         .filter(|s| cwd_filter.is_empty() || s.cwd == cwd_filter)
         .map(|s| {
             let is_streaming = active_flags.get(&s.id).copied().unwrap_or(false);
@@ -378,7 +381,40 @@ fn delete_sessions(
     for session_id in session_ids {
         match prepare_session_delete(state, session_id) {
             Some(error) => results.push(error),
-            None => ready.push(session_id.clone()),
+            None => {
+                let cleanup = (|| -> anyhow::Result<()> {
+                    let Ok(store) = future_fusion::Store::existing(&crate::utils::future_home())
+                    else {
+                        return Ok(());
+                    };
+                    for run in store.runs_for_parent(session_id)? {
+                        store.cancel(&run.id)?;
+                        let children = store
+                            .steps(&run.id)?
+                            .into_iter()
+                            .map(|s| s.session_id)
+                            .filter(|s| !s.is_empty())
+                            .collect::<std::collections::HashSet<_>>()
+                            .into_iter()
+                            .collect::<Vec<_>>();
+                        let deleted = delete_sessions(state, &children);
+                        anyhow::ensure!(
+                            deleted.iter().all(|r| r.deleted),
+                            "Fusion child runs are stopping; retry session deletion"
+                        );
+                    }
+                    Ok(())
+                })();
+                match cleanup {
+                    Ok(()) => ready.push(session_id.clone()),
+                    Err(error) => results.push(deletion_failure(
+                        session_id,
+                        "session_busy",
+                        error.to_string(),
+                        serde_json::json!({"retryable":true}),
+                    )),
+                }
+            }
         }
     }
     if ready.is_empty() {
@@ -392,6 +428,11 @@ fn delete_sessions(
                 .and_then(|data| data["databaseId"].as_str());
             for session_id in ready {
                 state.sessions.write().remove(&session_id);
+                if let Ok(store) = future_fusion::Store::existing(&crate::utils::future_home()) {
+                    if let Err(error) = store.purge_parent(&session_id) {
+                        tracing::error!("Fusion retention cleanup failed: {error:#}");
+                    }
+                }
                 // Publish only after the whole database transaction committed.
                 state
                     .control_plane

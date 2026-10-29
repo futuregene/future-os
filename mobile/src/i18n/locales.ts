@@ -409,6 +409,43 @@ export const resources = {
           "Could not switch to {{name}} to open that conversation. Reconnect and retry.",
       },
       chat: {
+        "fusionEnabled": "Fusion tool enabled · Read-only consultation when needed",
+        "fusionDescription": "Add multi-model thinking to this run; discussion does not act",
+        "fusionUnavailable": "Fusion is unavailable on this host",
+        "fusionDiscussing": "Consulting models",
+        "fusionDiscussion": "Discussion",
+        "fusionLoading": "Loading discussion",
+        "fusionNoIssues": "No issues recorded yet",
+        "fusionOriginal": "Original messages and tool evidence",
+        "fusionMore": "Read more",
+        "fusionPhases": {
+          "preparing": "Preparing evidence",
+          "analyzing": "Independent analysis",
+          "issue_mapping": "Mapping issues",
+          "reviewing": "Cross-review",
+          "synthesizing": "Synthesis"
+        },
+        "fusionStates": {
+          "preparing": "Preparing",
+          "queued": "Queued",
+          "running": "Discussing",
+          "delivering": "Returning result",
+          "completed": "Consultation complete; main flow continues",
+          "failed": "Consultation failed",
+          "cancelled": "Cancelled",
+          "interrupted": "Interrupted",
+          "starting": "Starting"
+        },
+        "fusionCompleteness": {
+          "full": "Full panel",
+          "partial": "Partial panel",
+          "single": "Single participant"
+        },
+        "fusionTabs": {
+          "discussion": "Discussion",
+          "issues": "Issues and conclusions",
+          "diagnostics": "Diagnostics"
+        },
         new: "New conversation",
         workspaceConversation: "Workspace conversation",
         workspaceNamed: "Workspace · {{name}}",
@@ -1414,6 +1451,43 @@ export const resources = {
           "切换到「{{name}}」打开该会话失败，请恢复连接后重试。",
       },
       chat: {
+        "fusionEnabled": "Fusion 工具已启用 · 按需只读会商",
+        "fusionDescription": "为本次主流程加入多模型思考工具；讨论不执行动作",
+        "fusionUnavailable": "当前宿主不支持 Fusion",
+        "fusionDiscussing": "正在会商",
+        "fusionDiscussion": "讨论记录",
+        "fusionLoading": "正在读取讨论记录",
+        "fusionNoIssues": "暂未形成议题",
+        "fusionOriginal": "原始发言与工具证据",
+        "fusionMore": "继续读取",
+        "fusionPhases": {
+          "preparing": "准备资料",
+          "analyzing": "独立分析",
+          "issue_mapping": "整理议题",
+          "reviewing": "交叉评议",
+          "synthesizing": "综合结论"
+        },
+        "fusionStates": {
+          "preparing": "准备中",
+          "queued": "排队中",
+          "running": "会商中",
+          "delivering": "返回结果",
+          "completed": "会商完成，主流程继续处理",
+          "failed": "会商失败",
+          "cancelled": "已停止",
+          "interrupted": "已中断",
+          "starting": "启动中"
+        },
+        "fusionCompleteness": {
+          "full": "完整讨论",
+          "partial": "部分模型参与",
+          "single": "单模型意见"
+        },
+        "fusionTabs": {
+          "discussion": "讨论记录",
+          "issues": "分歧与结论",
+          "diagnostics": "诊断"
+        },
         new: "新对话",
         workspaceConversation: "工作区会话",
         workspaceNamed: "工作区 · {{name}}",
