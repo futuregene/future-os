@@ -577,15 +577,19 @@ python3 scripts/screenshots/capture.py capture-mobile fleet-picker-en   # → .s
 
 The two list scenarios assert the merge rather than the picture: the row order
 is the reply time each machine reported (not the machine), all five machines
-contribute rows, and the two captions count 2 and 12. The `-picker-` pair opens
-the sheet above the list, which is where the five machines are *named* — a row
-names its machine by glyph alone, because a name there would eat the title's
+contribute rows, and the one caption counts all fourteen. The `-picker-` pair
+opens the sheet above the list, which is where the five machines are *named* — a
+row names its machine by glyph alone, because a name there would eat the title's
 width.
 
-Nothing in either capture is still running: a `running` or `queued` row draws an
-`ActivityIndicator`, whose frame differs every capture, so the fixture has both
-unsettled conversations blocked on the reader's approval instead. Two runs
-produce byte-identical PNGs.
+Nothing in either capture is running or blocked. A `running`/`queued` row draws
+an `ActivityIndicator`, and a `waiting_approval` row draws the amber
+`CircleAlert` — a picture of "every machine in one list" should carry neither
+(the alert reads as an error on the newest rows, and a spinner is a different
+PNG every capture). So every conversation is settled: the page draws one stretch
+(`14`), and the scenarios assert both halves of that — no active caption, and no
+`circle-alert` or warning-stroked icon inside any row — so either one cannot
+come back unnoticed. Two runs produce byte-identical PNGs.
 
 The four frames are a phone set to dark (`"appearance": "dark"`), and the
 scenarios assert it: the row's painted surface has to be one of the dark tokens

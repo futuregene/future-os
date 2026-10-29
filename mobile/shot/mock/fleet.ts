@@ -117,8 +117,9 @@ export function fleetWorkspaces(desktopId: string) {
 }
 
 /**
- * One conversation, as the host reports it: which machine, where it lives, when
- * it moved, and — for the two still working — what the run is doing.
+ * One conversation, as the host reports it: which machine, where it lives and
+ * when it moved. No run state: every row on this page is settled (see the note
+ * on the two newest rows).
  *
  * `lastMessageAt` is the recency page's only ordering clock, so the rows are
  * written as minutes-ago and the *machine* they belong to is what interleaves
@@ -131,28 +132,24 @@ interface FleetRow {
   title: string;
   /** Minutes since the last reply. */
   repliedAgo: number;
-  /** Minutes since the conversation opened; only the unsettled rows need it. */
-  openedAgo?: number;
-  status?: "waiting_approval";
 }
 
 const fleetRows: FleetRow[] = zh
   ? [
-    // Both are blocked on the reader, on two different machines — the state the
-    // active stretch exists for, and the one a phone paired with five desktops
-    // most wants to surface. Neither is running or merely `queued`: both of those
-    // draw a spinner (`running = status === "running" || status === "queued"` in
-    // `SessionList`), and a spinner is a different PNG every frame, which a
-    // capture meant to be a baseline cannot be. The stretch ranks by when a
-    // conversation *opened*, so the ages below are not their place in it.
+    // These two used to be blocked on the reader's approval, which is a state
+    // `SessionList` draws as a warning glyph on the row. A photo of "every
+    // machine in one list" is about the merge, and an amber `!` on the newest
+    // rows reads as "something is wrong" — so every row here is an ordinary
+    // finished conversation, and the page's active stretch is empty on purpose.
+    // (Nothing is `running` or `queued` either: those rows spin a loader, and a
+    // loader is a different PNG every frame, which a capture meant to be a
+    // baseline cannot be.)
     {
       machine: "desktop_cloud",
       id: "sess_fleet_coverage",
       workspaceId: "ws_cloud_future_os",
       title: "跑一遍全量覆盖率",
       repliedAgo: 0.5,
-      openedAgo: 3,
-      status: "waiting_approval",
     },
     {
       machine: "desktop_office",
@@ -160,11 +157,9 @@ const fleetRows: FleetRow[] = zh
       workspaceId: "ws_office_future_os",
       title: "把这个 PR 的 diff 拉下来",
       repliedAgo: 2,
-      openedAgo: 7,
-      status: "waiting_approval",
     },
-    // Earlier: newest reply first. Every machine answers, and no two of the
-    // five sit next to each other by accident.
+    // Newest reply first. Every machine answers, and no two of the five sit next
+    // to each other by accident.
     {
       machine: "desktop_lab",
       id: "sess_fleet_recency",
@@ -257,8 +252,6 @@ const fleetRows: FleetRow[] = zh
       workspaceId: "ws_cloud_future_os",
       title: "Run the full coverage pass",
       repliedAgo: 0.5,
-      openedAgo: 3,
-      status: "waiting_approval",
     },
     {
       machine: "desktop_office",
@@ -266,8 +259,6 @@ const fleetRows: FleetRow[] = zh
       workspaceId: "ws_office_future_os",
       title: "Pull the diff for this PR",
       repliedAgo: 2,
-      openedAgo: 7,
-      status: "waiting_approval",
     },
     {
       machine: "desktop_lab",
@@ -358,10 +349,9 @@ const fleetRows: FleetRow[] = zh
 /**
  * One machine's conversations, in the shape `CatalogEntry.sessions` holds.
  *
- * `createdAt` is the session's own start (the recency page ranks a *blocked*
- * conversation by it), so a row's `openedAgo` is what places it in the active
- * stretch — and a row without one falls back to its reply time, which is what
- * every finished conversation there is.
+ * `createdAt` is the session's own start. Nothing on this page reads it (the
+ * active stretch, which ranked by it, is empty), so it is simply a plausible ten
+ * minutes before the last reply rather than a second table to keep in step.
  */
 function sessionsOf(desktopId: string) {
   return fleetRows
@@ -375,13 +365,9 @@ function sessionsOf(desktopId: string) {
         mode: "workspace" as const,
         workspaceId: row.workspaceId,
         workspaceName: workspace?.name ?? null,
-        createdAt: now - (row.openedAgo ?? row.repliedAgo) * minute,
-        // Nothing here is streaming: a run producing output spins a loader, and a
-        // loader is a different PNG every frame (see the note on the two blocked
-        // rows above).
+        createdAt: now - (row.repliedAgo + 10) * minute,
         streaming: false,
         lastMessageAt: now - row.repliedAgo * minute,
-        ...(row.status ? { status: row.status } : {}),
       };
     });
 }
