@@ -1503,6 +1503,15 @@ TUI_SCENARIO_KEYS: dict[str, str] = {
     # the activity row still spinning — the frame a reader sees when they send
     # something mid-reply.
     "queue": "解释一下这个 off-by-one，要具体一点\r",
+    # A draft with four lines in it, typed and not sent (`ctrl+j` is the newline):
+    # the composer grows, the transcript stays, and the frame is of a reader
+    # halfway through writing. `TUI_SCENARIO_FOLD` then opens the work above.
+    "composing": (
+        "推送之前还有两件事：\n"
+        "1. `parse_list` 和 `parse_args` 补同样的回归测试。\n"
+        "2. 跑整套测试，不只是 parser 这个 crate。\n"
+        "第二条 commit 的 diff 贴到回复里。"
+    ),
 }
 # Scenarios that change what the demo agent pretends to have, and the environment
 # that makes it. `scrolled` needs the longer conversation (`FUTURE_DEMO_LONG`) —
@@ -1513,6 +1522,35 @@ TUI_SCENARIO_AGENT_ENV: dict[str, dict[str, str]] = {
     "queue": {"FUTURE_DEMO_QUEUE": "1"},
 }
 
+# Scenarios that end by opening the folded process of a turn — the row that reads
+# `▸ 2 tool calls · 1 thought`, which a click (or `enter` on the cursor) expands
+# into the calls, their arguments and the reasoning between them. A frame of a
+# transcript only ever shows them shut: the fold is the reader's decision, so the
+# capture has to make it.
+#
+# What such a row says, in both languages (`▸ 2 tool calls · 1 thought` /
+# `▸ 工具调用 2 次 · 1 条思考`). Matched as a substring of the row the click is
+# resolved from, so the marker, the count and the thought count can all change
+# without breaking the step.
+TUI_FOLD_WORDS: tuple[str, ...] = ("tool call", "工具调用")
+# ...and the reasoning row inside an opened process, `▸ thinking` / `▸ 思考`: it is
+# a fold of its own, so the thought is one more press away.
+TUI_THOUGHT_WORDS: tuple[str, ...] = ("thinking", "思考")
+
+TUI_SCENARIO_FOLD: dict[str, tuple[tuple[str, object], ...]] = {
+    # Open the last turn's process (its tool calls and thought markers), then walk
+    # into the first thought with `tab` and open it with `enter`: a thought row is
+    # a fold of its own, so its words are one more press away.
+    "composing": (("row", TUI_FOLD_WORDS), ("keys", b"\t\r")),
+}
+
+# Seconds between the steps *after* the first one. The default capture budget is
+# six seconds, and a chain that waited `settle` (2.5 s) between three steps would
+# run its last one after the pty had already been closed — measured: the thought
+# row stayed shut and the frame looked like the click had done nothing. The first
+# step keeps the full settle: the surface has to be up before anything is typed.
+TUI_STEP_GAP = 1.2
+
 # The one scenario whose keystrokes are *prose* rather than a verb: `streaming`
 # submits a prompt, so the words are the reader's and have to be in the language
 # the frame is pinned to — a Chinese question in an English frame (or the other
@@ -1521,6 +1559,12 @@ TUI_SCENARIO_AGENT_ENV: dict[str, dict[str, str]] = {
 # both languages.
 TUI_SCENARIO_KEYS_EN: dict[str, str] = {
     "streaming": "Explain this off-by-one in detail, and where else it hides\r",
+    "composing": (
+        "Two things before you push:\n"
+        "1. The same regression test for `parse_list` and `parse_args`.\n"
+        "2. Run the whole suite, not just the parser crate.\n"
+        "And paste the diff of the second commit in the reply."
+    ),
 }
 
 
@@ -1596,6 +1640,53 @@ def _tui_click_tab(words: tuple[str, ...], cols: int, rows: int, settle: float):
     return (settle, action)
 
 
+def _tui_click_fold_row(words: tuple[str, ...], cols: int, rows: int, settle: float):
+    """A step that clicks the lowest transcript row whose text names a fold.
+
+    A finished turn keeps its process shut: one row reading `▸ 2 tool calls ·
+    1 thought`, which a click (or `enter` on the cursor) opens into the calls,
+    their arguments and the reasoning between them. A picture of a transcript
+    therefore shows the *fold*, never the work — unless the capture presses it.
+
+    The row is resolved from the frame on screen, like the tabs and the divider:
+    where the fold sits moves with the transcript, the window and the terminal
+    size. The *lowest* one is pressed on purpose — it is the fold nearest the
+    tail, so what it opens lands above the composer instead of off the top.
+    """
+
+    def action(text: str) -> bytes | None:
+        import tui_terminal
+
+        cells, _ = tui_terminal.screen_from_stream(text, cols, rows)
+        target: tuple[int, int] | None = None
+        for row_index in range(len(cells) - 1, -1, -1):
+            painted = _painted_cells(cells[row_index])
+            # The row's own marker, wherever the rail ends it: with the sidebar on
+            # the left, a transcript row is not the start of the *line*.
+            for at, (column, ch) in enumerate(painted):
+                if ch not in ("▸", "▾"):
+                    continue
+                # …and the summary it opens must follow it on the same row.
+                following = "".join(c for _, c in painted[at : at + 40])
+                if any(word in following for word in words):
+                    target = (row_index, column)
+                    break
+            if target is not None:
+                break
+        if target is None:
+            raise SystemExit(
+                f"error: the frame has no folded {words!r} row to open at {cols}x{rows}. "
+                "The scenario needs a transcript whose visible turns made tool calls "
+                "(and `--lang` has to match the demo agent's data language)."
+            )
+        row_index, column = target
+        press = f"\x1b[<0;{column + 1};{row_index + 1}M".encode()
+        release = f"\x1b[<0;{column + 1};{row_index + 1}m".encode()
+        return press + release
+
+    return (settle, action)
+
+
 def _tui_drag_divider(dx: int, cols: int, rows: int, settle: float):
     """A step that grabs the sidebar divider and drags it `dx` columns right.
 
@@ -1645,7 +1736,13 @@ def _tui_steps(scenario: str, cols: int, rows: int, settle: float = 2.5, lang: s
         keys = TUI_SCENARIO_KEYS[scenario]
         if lang.startswith("en"):
             keys = TUI_SCENARIO_KEYS_EN.get(scenario, keys)
-        return [(settle, keys.encode())] if keys else []
+        steps = [(settle, keys.encode())] if keys else []
+        for kind, payload in TUI_SCENARIO_FOLD.get(scenario, ()):
+            if kind == "row":
+                steps.append(_tui_click_fold_row(payload, cols, rows, TUI_STEP_GAP))
+            else:
+                steps.append((TUI_STEP_GAP, payload))
+        return steps
     if scenario in TUI_SCENARIO_TABS:
         return [_tui_click_tab(TUI_SCENARIO_TABS[scenario], cols, rows, settle)]
     if scenario in TUI_SCENARIO_DRAGS:
@@ -1728,6 +1825,10 @@ def tui(args: argparse.Namespace) -> int:
             pinned = {"language": args.lang, "sidebarVisible": True}
             if args.sidebar_width is not None:
                 pinned["sidebarWidth"] = args.sidebar_width
+            if args.sidebar_position is not None:
+                pinned["sidebarPosition"] = args.sidebar_position
+            if args.theme is not None:
+                pinned["themeId"] = args.theme
             (home / "tui").mkdir(parents=True, exist_ok=True)
             (home / "tui" / "settings.json").write_text(
                 json.dumps(pinned),
@@ -1831,6 +1932,12 @@ def _self_test() -> int:
         _tui_steps("help", 40, 2, settle=0.0, lang="en")[0][1],
         TUI_SCENARIO_KEYS["help"].encode(),
     )
+    # A scenario that chains steps is a chain of delays inside one capture budget:
+    # waiting `settle` between all of them put the last one after the pty had
+    # closed, and the frame then looked like the click had done nothing.
+    chain = _tui_steps("composing", 40, 2, settle=2.5, lang="en")
+    check("composing is a chain of three", len(chain), 3)
+    check("composing fits the capture budget", sum(step[0] for step in chain) < 6.0, True)
 
     if problems:
         for problem in problems:
@@ -2064,6 +2171,17 @@ def main() -> int:
         type=int,
         default=None,
         help="columns the sidebar is pinned to (default: the surface's own default)",
+    )
+    tui_parser.add_argument(
+        "--sidebar-position",
+        default=None,
+        choices=("left", "right"),
+        help="which side the rail is pinned to (default: the surface's own = right)",
+    )
+    tui_parser.add_argument(
+        "--theme",
+        default=None,
+        help="palette id to pin (e.g. dracula, tokyo-night, gruvbox; default: the surface's own)",
     )
     tui_parser.add_argument("--release", action="store_true", help="look in target/release instead of target/debug")
     tui_parser.add_argument("--keep-stream", default=None,
