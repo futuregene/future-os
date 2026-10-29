@@ -7465,6 +7465,31 @@ mod tests {
         assert_eq!(workbench.preview_scroll, at_end - page);
     }
 
+    /// A floating box's margin is the page's, not its own.
+    ///
+    /// The rows above a centred box used to be painted as full-width panel
+    /// rows — a lighter rectangle over the page, with nothing in it, while the
+    /// rows below the same box were the page's own. A menu floats *over* the
+    /// page; only the preview (which owns the frame) paints its margin.
+    #[test]
+    fn an_overlay_leaves_the_page_above_its_box_alone() {
+        let data = demo::chat();
+        let (mut workbench, page) = frame(&data, 100, 30);
+        workbench.overlay = Some(Overlay::Picker(PickerKind::Theme));
+        let with_box = workbench.render(&data, 100, 30);
+        let top = with_box
+            .iter()
+            .position(|row| crate::utils::strip_ansi_codes(row).contains('╭'))
+            .expect("the box is painted");
+        assert!(top > 0, "a floating box has a margin above it");
+        for y in 0..top {
+            assert_eq!(
+                with_box[y], page[y],
+                "row {y} above the box is the page's row, escape for escape"
+            );
+        }
+    }
+
     /// The box's own controls: the buttons are the pointer's spelling of keys
     /// the box already answers, and the folder's pictures step with `[` / `]`.
     #[test]
@@ -10338,11 +10363,20 @@ mod tests {
         for ch in "mobile".chars() {
             workbench.handle(WbEvent::Key(ch.to_string()), &data);
         }
-        let text = plain(&workbench.render(&data, 120, 38));
+        let rows = workbench.render(&data, 120, 38);
+        let text = plain(&rows);
         assert!(text.contains("mobile 恢复会话"), "{text}");
+        // The check is on the box, not the frame: the header above it names the
+        // conversation the picker was opened from, which is the same title the
+        // filtered row wears.
+        let box_top = rows
+            .iter()
+            .position(|row| crate::utils::strip_ansi_codes(row).contains('╭'))
+            .expect("the picker is painted");
+        let listed = plain(&rows[box_top..]);
         assert!(
-            !text.contains("修复 parser 的 off-by-one"),
-            "filtered out: {text}"
+            !listed.contains("修复 parser 的 off-by-one"),
+            "filtered out: {listed}"
         );
         assert_eq!(
             workbench.handle(WbEvent::Key("enter".into()), &data),

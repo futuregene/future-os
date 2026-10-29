@@ -405,8 +405,21 @@ fn splice(base: &str, piece: &str, at: usize, width: usize) -> String {
 
 /// Paint a centred overlay: each row is composited over the frame, so the
 /// surface behind it stays visible at the edges.
+///
+/// A row the painter left blank is that margin, not a row it painted: a box
+/// starts below its own top margin, and painting that margin as a full-width
+/// panel row put a lighter band over the page above every floating box — a
+/// rectangle nothing in the box held, while the same rows below it were the
+/// page's. Blank rows *after* the first painted one are still painted: a
+/// full-height box (`/git`, the queue, the review surface) pads its own body,
+/// and that padding is the box, not a margin.
 fn paint_overlay(rows: &mut [String], palette: &Palette, lines: Vec<String>, columns: usize) {
+    let mut painted = false;
     for (index, line) in lines.iter().enumerate() {
+        if !painted && line.chars().all(|cell| cell == ' ') {
+            continue;
+        }
+        painted = true;
         if let Some(slot) = rows.get_mut(index) {
             *slot = palette.on(palette.panel, &fit(line, columns), columns);
         }
@@ -3558,9 +3571,10 @@ fn preview_box(
 /// The box takes all but a two-row margin, so the margin is the only part of the
 /// page it does not own — and a margin that showed the conversation through it
 /// read as a box cut short, which is what a scrolled preview used to look like:
-/// the two rows below the box were the chat's own rows, and as the document
-/// scrolled the band of chat under the box grew. The surface is painted too, so
-/// the frame behind a preview is never visible, at any scroll position.
+/// the rows below the box were the chat's own rows, and as the document scrolled
+/// the band of chat under the box grew. Unlike a floating menu, a preview owns
+/// the whole frame while it is open: its margin is the surface's background, so
+/// nothing of the page is visible beside the box at any scroll position.
 fn preview_surface(
     palette: &Palette,
     title: &str,
@@ -3570,9 +3584,20 @@ fn preview_surface(
     geometry: &BoxGeometry,
     lang: Language,
 ) -> Vec<String> {
-    let mut lines = paint_box(palette, title, content, w, h, geometry, Chrome::Panel(lang));
+    let surface = |line: String| {
+        if line.chars().all(|cell| cell == ' ') {
+            palette.panel_row("", w as usize)
+        } else {
+            line
+        }
+    };
+    let mut lines: Vec<String> =
+        paint_box(palette, title, content, w, h, geometry, Chrome::Panel(lang))
+            .into_iter()
+            .map(surface)
+            .collect();
     while lines.len() < h as usize {
-        lines.push(fit("", w as usize));
+        lines.push(palette.panel_row("", w as usize));
     }
     lines
 }
