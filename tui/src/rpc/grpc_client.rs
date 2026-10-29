@@ -668,13 +668,36 @@ impl GrpcClient {
     /// caller that asks about a session it then fails to open has to re-read
     /// its own (`get_state`, i.e. the addressed-by-current form).
     pub async fn get_state_of(&self, session_id: &str) -> Result<RpcSessionState, String> {
+        let state = self.fetch_state_of(session_id).await?;
+        self.adopt_state(&state);
+        Ok(state)
+    }
+
+    /// The read half of [`Self::get_state_of`], with no bookkeeping.
+    ///
+    /// A switch the driver does not wait for reads state from another task
+    /// (see `Live::start_step_switch`), and two such reads can finish out of
+    /// order: the answer a reader has already stepped past must not move this
+    /// client's run map, so the fetch is separated from the adoption — the
+    /// thread that owns the client adopts the answer it keeps, and only that
+    /// one.
+    pub async fn fetch_state_of(&self, session_id: &str) -> Result<RpcSessionState, String> {
         let command = RpcCommand {
             session_id: session_id.to_string(),
             ..Default::default()
         };
         let resp = self.call("get_state", command).await?;
-        let state: RpcSessionState = serde_json::from_value(resp).map_err(|e| e.to_string())?;
+        serde_json::from_value(resp).map_err(|e| e.to_string())
+    }
 
+    /// The bookkeeping half of [`Self::get_state_of`]: record the agent
+    /// instance, the run map and the active run of the state just read.
+    ///
+    /// Idempotent for one state — a caller may adopt a state it also fetched
+    /// through [`Self::get_state_of`] — except for the lost-queued-run tally,
+    /// which is only appended to when the agent instance changed, so a caller
+    /// adopts each answer exactly once.
+    pub fn adopt_state(&self, state: &RpcSessionState) {
         let mut st = self.inner.state.lock();
         if let (Some(prev), Some(cur)) = (&st.agent_instance_id, &state.agent_instance_id) {
             if prev != cur {
@@ -701,8 +724,6 @@ impl GrpcClient {
         for queued in &state.queued_runs {
             st.runs.insert(queued.run_id.clone(), RunStatus::Queued);
         }
-        drop(st);
-        Ok(state)
     }
 
     /// `getMessages()` — the session's whole in-memory context in one

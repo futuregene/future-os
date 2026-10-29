@@ -120,8 +120,9 @@ const CACHED_SESSIONS: usize = 8;
 ///
 /// The rows are the expensive half of a switch and the half that does not
 /// change: a cached `ChatArea` holds what the reader last read, so a switch
-/// that hits one paints immediately and then reconciles in the background
-/// (`Live::finish_switch`). `page` is the tail page those rows were built from
+/// that hits one paints immediately and then reconciles beside the surface
+/// ([`Live::start_step_switch`] for a step, [`Live::finish_switch`] for the
+/// doors that wait). `page` is the tail page those rows were built from
 /// — the reconcile compares it against the page the agent returns and keeps the
 /// rows when nothing moved.
 struct CachedSession {
@@ -320,6 +321,24 @@ pub struct Live {
     /// The siblings a finished preview brought, waiting for the driver to hand
     /// them to the preview box (`take_preview_siblings`).
     preview_siblings: Option<(Vec<String>, usize)>,
+    /// The conversation whose state and tail page are being read off the
+    /// driver's own clock (see [`Self::start_step_switch`]). One at a time,
+    /// newest wins: an answer for anything else is dropped on arrival.
+    switch_load: Option<String>,
+    /// Where a switch read hands its answer to the driver's loop. `None` in a
+    /// surface nobody drives (tests, the demos), where every switch waits for
+    /// its own answer instead.
+    switch_tx: Option<tokio::sync::mpsc::UnboundedSender<SwitchLoaded>>,
+}
+
+/// The agent's answer to the two reads a switch makes, handed from the task
+/// that read them to the loop that owns the surface.
+pub struct SwitchLoaded {
+    /// The conversation asked for — the key the loop checks its own selection
+    /// against before installing anything.
+    pub id: String,
+    pub state: Result<RpcSessionState, String>,
+    pub page: Result<SessionEntriesPage, String>,
 }
 
 struct PreviewLoaded {
@@ -424,6 +443,8 @@ impl Live {
             tree_read: None,
             tree_revision: 0,
             preview_siblings: None,
+            switch_load: None,
+            switch_tx: None,
         };
 
         if let Some(id) = session.filter(|id| !id.is_empty()) {
@@ -1401,8 +1422,13 @@ impl Live {
         }
     }
     fn save_draft(&mut self) {
+        let key = self.draft_key();
+        self.save_draft_of(key);
+    }
+    /// File the box under `key` — the conversation it currently belongs to.
+    fn save_draft_of(&mut self, key: String) {
         self.drafts.insert(
-            self.draft_key(),
+            key,
             DraftSnapshot {
                 editor: self.draft.editor.clone(),
                 pending: self.draft.editor.pending(),
@@ -1411,6 +1437,14 @@ impl Live {
     }
     fn restore_draft(&mut self) {
         let key = self.draft_key();
+        self.restore_draft_of(key);
+    }
+    /// Put `key`'s draft in the box, or an empty one when it has none.
+    ///
+    /// Keyed by argument rather than by `self.state` because a switch moves the
+    /// box onto a conversation the state does not name yet — the answer that
+    /// will name it is still out with the agent.
+    fn restore_draft_of(&mut self, key: String) {
         if let Some(saved) = self.drafts.remove(&key) {
             let mut editor = saved.editor;
             let text = editor.text().to_string();
@@ -2270,9 +2304,11 @@ impl Live {
     /// Kept as one call for every door that is not a held key (a click in the
     /// rail, the launchpad's recents, `--continue`, a deleted row's
     /// successor). Those doors paint once after this returns, so a cache hit's
-    /// rows and the reconcile's are one frame; `run::show_conversation` splits
-    /// the two only for `shift+↑/↓`, where painting the cache first is the
-    /// whole point.
+    /// rows and the reconcile's are one frame.
+    ///
+    /// `shift+↑/↓` does *not* come through here: a step has to stay off the
+    /// agent's clock entirely, or a held key spends its burst waiting on the
+    /// first conversation it passed through (see [`Self::start_step_switch`]).
     async fn switch(&mut self, session_id: &str) {
         if self.already_showing(session_id) {
             return;
@@ -2283,25 +2319,40 @@ impl Live {
 
     /// Everything about a switch that costs no round trip.
     ///
-    /// The draft is filed under the conversation being left, the cached
-    /// conversation (if any) is swapped onto the screen, and the rail's step is
-    /// forgotten. Returns whether cached rows are on screen *now*: `true` means
-    /// the caller may paint them before [`Self::finish_switch`] asks the agent
-    /// anything, which is the whole point of keeping them. A miss leaves the
-    /// transcript untouched — the rows are replaced when the page arrives, and
-    /// nothing paints in between — and returns `false`.
+    /// The draft is filed under the conversation being left and the one being
+    /// landed on is put in the box, the cached conversation (if any) is swapped
+    /// onto the screen, and the rail's step is forgotten. Returns whether cached
+    /// rows are on screen *now*: `true` means the caller may paint them before
+    /// the agent has answered anything, which is the whole point of keeping
+    /// them. A miss leaves the transcript untouched — the rows are replaced when
+    /// the page arrives, and nothing paints in between — and returns `false`.
+    ///
+    /// The draft moves here rather than with the rows because the box belongs to
+    /// the conversation the reader is *on*: with the answer still out, a key
+    /// typed into a box still holding the last conversation's text would be
+    /// filed under the conversation they left when the answer landed.
     pub fn begin_switch(&mut self, session_id: &str) -> bool {
         if self.already_showing(session_id) {
+            // Nothing to open, and whatever a step is still reading belongs to a
+            // conversation the reader has left — including a step *back* onto
+            // this one while its successor was being read.
+            self.switch_load = None;
             return false;
         }
+        // Whatever a step was reading is not this conversation's (a click, or
+        // the next step, supersedes it): its answer is dropped on arrival.
+        self.switch_load = None;
+        // Filed under the conversation being left, before the launchpad flag and
+        // the screen's own state move off it.
         self.save_draft();
         self.launchpad = false;
         self.notice = None;
         let cached = self.take_cached(session_id);
+        self.restore_draft_of(session_id.to_string());
         // The row is the session's: nothing of the one just left may stay on it
         // (see [`Self::adopt_run`]). With cached rows this already uses the
         // state that came in with them, so the frame painted from them is
-        // coherent; `finish_switch` re-runs it against the agent's answer.
+        // coherent; the agent's answer re-runs it.
         self.adopt_run();
         self.reset_scroll_revision();
         cached
@@ -2317,21 +2368,123 @@ impl Live {
     /// `try_get_session`. A cached conversation whose page the agent answers
     /// with unchanged keeps the rows it already has, so coming back to one is a
     /// repaint and not a rebuild.
+    ///
+    /// This is the *waiting* form. The driver's step uses
+    /// [`Self::start_step_switch`], which puts the two reads in a task instead.
     pub async fn finish_switch(&mut self, session_id: &str) {
         let (state, page) = tokio::join!(
-            self.client.get_state_of(session_id),
+            self.client.fetch_state_of(session_id),
             self.client.session_tail_page(session_id)
         );
-        match state {
-            Ok(state) => self.install_state(state),
-            // Nothing moved: the header and the transcript stay on the
-            // conversation that is still current, and the notice says why the
-            // one the reader picked did not open.
-            Err(error) => {
-                self.notice = Some(format!("Could not switch session: {error}"));
-                return;
-            }
+        self.install_switch(session_id, state, page);
+    }
+
+    /// Hand the surface the channel its non-blocking switches answer on.
+    ///
+    /// Called once by the driver before its loop starts: the loop is what owns
+    /// the wake-up, so the surface only ever holds the sending end.
+    pub fn set_switch_sender(&mut self, tx: tokio::sync::mpsc::UnboundedSender<SwitchLoaded>) {
+        self.switch_tx = Some(tx);
+    }
+
+    /// The non-blocking half of a switch: swap what the cache can show onto the
+    /// screen *now* and read the rest in a task.
+    ///
+    /// Returns whether cached rows are on screen — the caller's cue to paint
+    /// before the answer arrives. A surface with no driver attached (the frame
+    /// tests, the demos) has nowhere to hand the answer, so it sends nothing:
+    /// those doors call [`Self::switch`], which waits for its own.
+    ///
+    /// One load is out at a time, keyed by the conversation asked for. A step
+    /// that lands on a third conversation while the second is still out starts
+    /// that one too — the answer already on its way is dropped when it arrives
+    /// ([`Self::install_switch_load`]), because two page reads are cheap next to
+    /// making the reader wait for a conversation they have already left. Held
+    /// keys never get here in bulk: `run::OPEN_SETTLE` is what collapses a burst
+    /// onto one conversation.
+    pub fn start_step_switch(&mut self, session_id: &str) -> bool {
+        if self.already_showing(session_id) {
+            // Back onto the conversation on screen: nothing to open, and a read
+            // still out belongs to a conversation the reader has left.
+            self.switch_load = None;
+            return false;
         }
+        let cached = self.begin_switch(session_id);
+        self.load_switch(session_id);
+        cached
+    }
+
+    /// Ask the agent for `session_id`'s state and tail page without waiting.
+    fn load_switch(&mut self, session_id: &str) {
+        if self.switch_load.as_deref() == Some(session_id) {
+            return;
+        }
+        let Some(tx) = self.switch_tx.clone() else {
+            return;
+        };
+        let client = self.client.clone();
+        let id = session_id.to_string();
+        self.switch_load = Some(id.clone());
+        tokio::spawn(async move {
+            let (state, page) =
+                tokio::join!(client.fetch_state_of(&id), client.session_tail_page(&id));
+            // The receiver is gone when the driver has quit: the answer is
+            // simply dropped with it.
+            let _ = tx.send(SwitchLoaded { id, state, page });
+        });
+    }
+
+    /// Take one finished switch load from the driver's loop.
+    ///
+    /// An answer for a conversation the reader has already stepped past is
+    /// dropped: installing it would paint rows for a conversation that is no
+    /// longer selected. Returns whether a frame is owed.
+    pub fn install_switch_load(&mut self, loaded: SwitchLoaded) -> bool {
+        if self.switch_load.as_deref() != Some(loaded.id.as_str()) {
+            return false;
+        }
+        self.switch_load = None;
+        self.install_switch(&loaded.id, loaded.state, loaded.page)
+    }
+
+    /// Put the agent's answer for a switch on screen.
+    ///
+    /// Shared by the waiting form ([`Self::finish_switch`]) and the driver's
+    /// ([`Self::install_switch_load`]), so which rows are kept, when the notice
+    /// speaks and what the activity row shows are decided in one place.
+    fn install_switch(
+        &mut self,
+        session_id: &str,
+        state: Result<RpcSessionState, String>,
+        page: Result<SessionEntriesPage, String>,
+    ) -> bool {
+        let state = match state {
+            Ok(state) => state,
+            Err(error) => {
+                // The box took the target's draft on the way in: filed under
+                // that conversation, it survives, and the one on screen gets its
+                // own text back.
+                self.save_draft_of(session_id.to_string());
+                self.restore_draft();
+                // Nothing moved: the header and the transcript stay on the
+                // conversation that is still current, and the notice says why
+                // the one the reader picked did not open.
+                self.notice = Some(format!("Could not switch session: {error}"));
+                return true;
+            }
+        };
+        // The rows on screen are the conversation being left — a cache hit has
+        // already moved them into the cache. Kept here, before the incoming
+        // state renames what is on screen and `show_page` replaces the rows
+        // themselves, so the way back is a repaint. A miss therefore paints the
+        // new rows and files the old ones in the same frame.
+        if !self.already_showing(session_id) {
+            self.remember_current();
+        }
+        // The run map before the state: `install_state` decides the approval row
+        // from it, and the state this client holds is the one adopted.
+        self.client.adopt_state(&state);
+        self.install_state(state);
         match page {
             Ok(page) => {
                 // The rows on screen are worth keeping only when they are this
@@ -2347,7 +2500,7 @@ impl Live {
             Err(error) => self.notice = Some(format!("Could not load the transcript: {error}")),
         }
         self.adopt_run();
-        self.restore_draft();
+        true
     }
 
     /// Is this conversation's transcript still in the cache — that is, can a
@@ -2391,11 +2544,14 @@ impl Live {
                 true
             }
             None => {
-                let fresh = self.chat.empty_like();
-                let previous = std::mem::replace(&mut self.chat, fresh);
-                self.paging = Paging::default();
-                self.shown_page = None;
-                self.remember(outgoing, previous);
+                // Nothing cached to paint. The rows on screen stay exactly
+                // where they are — they are the conversation being left, and
+                // they are kept (`remember_current`) the moment the answer for
+                // the new one is in hand. Clearing them here instead would
+                // blank the transcript for as long as the agent takes to
+                // answer, and the driver paints between the two: a tick, a
+                // streamed delta from the run in the conversation being left,
+                // its own clock.
                 false
             }
         }
@@ -2434,6 +2590,28 @@ impl Live {
         while self.cached.len() > CACHED_SESSIONS {
             self.cached.pop_front();
         }
+    }
+
+    /// File the conversation on screen in the cache: its state, the pages it has
+    /// loaded and the rows themselves.
+    ///
+    /// Used by a switch that had nothing cached to paint — the rows stay on
+    /// screen until the incoming page is in hand, so this is called at that
+    /// moment rather than when the step was taken (see [`Self::install_switch`]).
+    /// The rows are *moved*: a `ChatArea` is the one copy of what the reader has
+    /// read, and the incoming page replaces it.
+    fn remember_current(&mut self) {
+        let outgoing = (
+            self.state.session_id.clone(),
+            self.paging.clone(),
+            self.state.clone(),
+            self.shown_page.clone(),
+        );
+        let empty = self.chat.empty_like();
+        let previous = std::mem::replace(&mut self.chat, empty);
+        self.paging = Paging::default();
+        self.shown_page = None;
+        self.remember(outgoing, previous);
     }
 
     /// Delete one conversation — its record and its file.
@@ -2506,6 +2684,9 @@ impl Live {
         });
         self.save_draft();
         self.launchpad = true;
+        // A step's answer on its way belongs to a conversation the reader has
+        // just left; installing it would paint one over the launchpad.
+        self.switch_load = None;
         // The conversation being left keeps its rows for the way back: `/new`
         // is not a reason to make the rail pay a round trip for it.
         let outgoing = (
@@ -7520,6 +7701,381 @@ mod tests {
             1,
             "and the cached rows were replaced, not appended to: {screen}"
         );
+    }
+
+    // ─── a step off the loop ──────────────────────────────────────────
+
+    /// `shift+↑/↓` hands the agent's two reads to a task: the step returns
+    /// without waiting, and the conversation's rows arrive on their own
+    /// wake-up.
+    ///
+    /// The waiting form is what made a held key look stuck — the loop was
+    /// behind an agent answer (measured: 75 ms warm, seconds on a busy store)
+    /// on *every* step, so the rail, the stream and the keyboard all stopped.
+    #[tokio::test]
+    async fn a_step_reads_off_the_loop_and_installs_its_answer_when_it_lands() {
+        let first = page_of(&["q1"]);
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_slow(
+            &[
+                ("switch_session", r#"{"success":true}"#),
+                ("get_state", r#"{"sessionId":"s-a"}"#),
+                ("get_session_entries", &first),
+            ],
+            250,
+        );
+        let table = mock.data_by_type.clone();
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s-a"), false, None)
+            .await
+            .expect("attach to the slow test agent");
+        let (tx, mut answers) = tokio::sync::mpsc::unbounded_channel();
+        live.set_switch_sender(tx);
+
+        // What s-b will answer, moved in before it is asked for.
+        table
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-b"}"#.into());
+        table
+            .lock()
+            .unwrap()
+            .insert("get_session_entries".into(), page_of(&["q2"]));
+
+        let started = std::time::Instant::now();
+        assert!(
+            !live.start_step_switch("s-b"),
+            "nothing cached for s-b to paint"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(200),
+            "a step does not wait for the agent ({:?})",
+            started.elapsed()
+        );
+        assert!(
+            answers.try_recv().is_err(),
+            "the answer is still out with the agent"
+        );
+        assert!(
+            rows_on_screen(&mut live).join("\n").contains("q1"),
+            "the conversation that was on screen is still there"
+        );
+
+        let loaded = answers.recv().await.expect("the step's read answers");
+        assert_eq!(loaded.id, "s-b");
+        assert!(live.install_switch_load(loaded), "the answer owes a frame");
+        let screen = rows_on_screen(&mut live).join("\n");
+        assert!(
+            screen.contains("q2"),
+            "the rows that landed are on screen: {screen}"
+        );
+        assert!(
+            !screen.contains("q1"),
+            "and the conversation left is not: {screen}"
+        );
+        assert!(answers.try_recv().is_err(), "one step, one read");
+        live.client.disconnect();
+    }
+
+    /// A step the reader has already moved past is dropped when its answer
+    /// lands: the rows belong to the conversation they are on, and installing
+    /// the one they passed through would paint over it.
+    #[tokio::test]
+    async fn an_answer_for_a_conversation_the_reader_left_is_dropped() {
+        let first = page_of(&["q1"]);
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("switch_session", r#"{"success":true}"#),
+            ("get_state", r#"{"sessionId":"s-a"}"#),
+            ("get_session_entries", &first),
+        ]);
+        let table = mock.data_by_type.clone();
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s-a"), false, None)
+            .await
+            .expect("attach to the test agent");
+        let (tx, mut answers) = tokio::sync::mpsc::unbounded_channel();
+        live.set_switch_sender(tx);
+
+        table
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-b"}"#.into());
+        table
+            .lock()
+            .unwrap()
+            .insert("get_session_entries".into(), page_of(&["q-b"]));
+        live.start_step_switch("s-b");
+        let passed = answers.recv().await.expect("s-b answers");
+
+        table
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-c"}"#.into());
+        table
+            .lock()
+            .unwrap()
+            .insert("get_session_entries".into(), page_of(&["q-c"]));
+        live.start_step_switch("s-c");
+
+        assert!(
+            !live.install_switch_load(passed),
+            "s-b is a conversation the reader has left"
+        );
+        assert!(
+            live.data(&frame()).session.id == "s-a",
+            "so the screen still names the one they are on"
+        );
+
+        let landed = answers.recv().await.expect("s-c answers");
+        assert!(
+            live.install_switch_load(landed),
+            "the one they are on lands"
+        );
+        let screen = rows_on_screen(&mut live).join("\n");
+        assert!(screen.contains("q-c"), "{screen}");
+        assert!(!screen.contains("q-b"), "{screen}");
+        live.client.disconnect();
+    }
+
+    /// The draft belongs to the conversation the reader is *on*, so it moves
+    /// with the cursor rather than with the agent's answer: a key typed while a
+    /// step's read is still out lands in the conversation they see.
+    #[tokio::test]
+    async fn the_draft_moves_with_the_cursor_and_not_with_the_answer() {
+        let first = page_of(&["q1"]);
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_slow(
+            &[
+                ("switch_session", r#"{"success":true}"#),
+                ("get_state", r#"{"sessionId":"s-a"}"#),
+                ("get_session_entries", &first),
+            ],
+            250,
+        );
+        let table = mock.data_by_type.clone();
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s-a"), false, None)
+            .await
+            .expect("attach to the slow test agent");
+        let (tx, mut answers) = tokio::sync::mpsc::unbounded_channel();
+        live.set_switch_sender(tx);
+
+        live.set_draft("half a prompt".into(), 13);
+        table
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-b"}"#.into());
+        table
+            .lock()
+            .unwrap()
+            .insert("get_session_entries".into(), page_of(&["q2"]));
+        live.start_step_switch("s-b");
+        assert_eq!(
+            live.data(&frame()).input.text,
+            "",
+            "the box is the conversation landed on, not the one left"
+        );
+
+        // Typed while the answer is still out.
+        live.set_draft("typed after".into(), 12);
+        let loaded = answers.recv().await.expect("the step's read answers");
+        assert!(live.install_switch_load(loaded));
+        assert_eq!(
+            live.data(&frame()).input.text,
+            "typed after",
+            "the answer does not overwrite what was typed into its box"
+        );
+
+        // …and the way back still finds what was left there.
+        table
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-a"}"#.into());
+        table
+            .lock()
+            .unwrap()
+            .insert("get_session_entries".into(), page_of(&["q1"]));
+        live.start_step_switch("s-a");
+        let back = answers.recv().await.expect("s-a answers");
+        assert!(live.install_switch_load(back));
+        assert_eq!(live.data(&frame()).input.text, "half a prompt");
+        live.client.disconnect();
+    }
+
+    /// A step back onto the conversation still on screen cancels the read that
+    /// was out for its successor: the reader has left that one, and its rows
+    /// must not arrive later and paint over this one.
+    #[tokio::test]
+    async fn stepping_back_onto_the_conversation_on_screen_cancels_the_read() {
+        let first = page_of(&["q1"]);
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_slow(
+            &[
+                ("switch_session", r#"{"success":true}"#),
+                ("get_state", r#"{"sessionId":"s-a"}"#),
+                ("get_session_entries", &first),
+            ],
+            100,
+        );
+        let table = mock.data_by_type.clone();
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s-a"), false, None)
+            .await
+            .expect("attach to the test agent");
+        let (tx, mut answers) = tokio::sync::mpsc::unbounded_channel();
+        live.set_switch_sender(tx);
+
+        table
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-b"}"#.into());
+        table
+            .lock()
+            .unwrap()
+            .insert("get_session_entries".into(), page_of(&["q-b"]));
+        live.start_step_switch("s-b");
+        // …and back, before s-b answered.
+        assert!(
+            !live.start_step_switch("s-a"),
+            "the conversation on screen is already there"
+        );
+
+        let stale = answers.recv().await.expect("s-b was read");
+        assert!(!live.install_switch_load(stale), "s-b is not wanted");
+        assert_eq!(live.data(&frame()).session.id, "s-a");
+        assert!(rows_on_screen(&mut live).join("\n").contains("q1"));
+        live.client.disconnect();
+    }
+
+    /// A step's answer that lands after the reader opened something else is
+    /// dropped: the screen belongs to the last thing they asked for — a click on
+    /// another row, or `/new`.
+    #[tokio::test]
+    async fn a_step_answer_never_overrides_what_was_opened_since() {
+        let first = page_of(&["q1"]);
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_slow(
+            &[
+                ("switch_session", r#"{"success":true}"#),
+                ("get_state", r#"{"sessionId":"s-a"}"#),
+                ("get_session_entries", &first),
+            ],
+            100,
+        );
+        let table = mock.data_by_type.clone();
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s-a"), false, None)
+            .await
+            .expect("attach to the test agent");
+        let (tx, mut pending) = tokio::sync::mpsc::unbounded_channel();
+        live.set_switch_sender(tx);
+
+        table
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-b"}"#.into());
+        table
+            .lock()
+            .unwrap()
+            .insert("get_session_entries".into(), page_of(&["q-b"]));
+        live.start_step_switch("s-b");
+
+        // A click on another row while s-b is still being read.
+        table
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-c"}"#.into());
+        table
+            .lock()
+            .unwrap()
+            .insert("get_session_entries".into(), page_of(&["q-c"]));
+        live.apply(WbAction::SwitchSession("s-c".into())).await;
+
+        let stepped = pending.recv().await.expect("s-b was read");
+        assert_eq!(stepped.id, "s-b");
+        assert!(
+            !live.install_switch_load(stepped),
+            "the step was superseded by the conversation opened since"
+        );
+        assert!(
+            rows_on_screen(&mut live).join("\n").contains("q-c"),
+            "the clicked conversation is what stays on screen"
+        );
+
+        // The same for `/new`: a step's rows must not land on the launchpad.
+        live.start_step_switch("s-a");
+        live.to_launchpad();
+        let landing = pending.recv().await.expect("s-a was read");
+        assert!(!live.install_switch_load(landing), "the launchpad stays");
+        assert!(
+            live.data(&frame()).session.id.is_empty(),
+            "no session shown"
+        );
+        live.client.disconnect();
+    }
+
+    /// A switch the agent cannot answer leaves the reader where they were, with
+    /// both drafts intact: the text of the conversation still on screen, and the
+    /// one of the conversation that never opened.
+    #[tokio::test]
+    async fn a_failed_step_keeps_both_drafts_and_the_conversation_it_was_on() {
+        let first = page_of(&["q1"]);
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("switch_session", r#"{"success":true}"#),
+            ("get_state", r#"{"sessionId":"s-a"}"#),
+            ("get_session_entries", &first),
+        ]);
+        let table = mock.data_by_type.clone();
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s-a"), false, None)
+            .await
+            .expect("attach to the test agent");
+        let (tx, mut answers) = tokio::sync::mpsc::unbounded_channel();
+        live.set_switch_sender(tx);
+        live.set_draft("half a prompt".into(), 13);
+
+        // A state the client cannot read: the switch fails on the way in.
+        table
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":42}"#.into());
+        live.start_step_switch("s-b");
+        live.set_draft("typed after".into(), 12);
+        let failed = answers.recv().await.expect("the read answers either way");
+        assert!(live.install_switch_load(failed), "the notice owes a frame");
+        assert!(
+            live.notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("switch")),
+            "the notice says what failed: {:?}",
+            live.notice
+        );
+        assert_eq!(
+            live.data(&frame()).session.id,
+            "s-a",
+            "the reader stays on the conversation they were on"
+        );
+        assert_eq!(
+            live.data(&frame()).input.text,
+            "half a prompt",
+            "and the box gets its own text back"
+        );
+        assert!(
+            rows_on_screen(&mut live).join("\n").contains("q1"),
+            "the transcript is untouched"
+        );
+
+        // What was typed into s-b's box is filed under s-b, not lost.
+        table
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-b"}"#.into());
+        table
+            .lock()
+            .unwrap()
+            .insert("get_session_entries".into(), page_of(&["q-b"]));
+        live.start_step_switch("s-b");
+        let landed = answers.recv().await.expect("s-b answers this time");
+        assert!(live.install_switch_load(landed));
+        assert_eq!(live.data(&frame()).session.id, "s-b");
+        assert_eq!(live.data(&frame()).input.text, "typed after");
+        live.client.disconnect();
     }
 
     /// `/new` is not a reason to make the way back cost a round trip: the
