@@ -386,6 +386,30 @@ pub fn image_siblings(path: &str) -> (Vec<String>, usize) {
     }
 }
 
+/// The pictures a conversation carries, in the order it carries them, and where
+/// `path` sits among them.
+///
+/// `candidates` is that conversation's own list — the paths its journal records,
+/// oldest first — rather than a directory, because the directory lies: captures
+/// pasted into every conversation are written to one clipboard directory, so a
+/// folder step from a picture in this session walks into another session's
+/// pictures. Repeats of one path count once (the same picture can be attached
+/// twice), a candidate that is gone from disk or was never a picture is skipped,
+/// and a `path` that is not in the list has nothing to step to.
+pub fn conversation_siblings(path: &str, candidates: &[String]) -> (Vec<String>, usize) {
+    let mut pictures: Vec<String> = Vec::new();
+    for candidate in candidates {
+        if pictures.contains(candidate) || !is_image_file(Path::new(candidate)) {
+            continue;
+        }
+        pictures.push(candidate.clone());
+    }
+    match pictures.iter().position(|candidate| candidate == path) {
+        Some(index) => (pictures, index),
+        None => (Vec::new(), 0),
+    }
+}
+
 /// Is the first handful of bytes an image signature? Twelve bytes are enough
 /// to tell every format the preview supports from text, without reading the
 /// text sample `preview_kind` needs for its second question.
@@ -452,6 +476,36 @@ mod tests {
     }
 
     use super::*;
+
+    /// A conversation's pictures step through its own list, skipping a path that
+    /// is gone, a file that only looks like a picture, and a repeat.
+    #[test]
+    fn conversation_siblings_lists_only_the_conversations_pictures() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let picture = |name: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"\x89PNG\r\n\x1a\n").unwrap();
+            path.to_string_lossy().into_owned()
+        };
+        let first = picture("a.png");
+        let second = picture("b.png");
+        let missing = dir.path().join("gone.png").to_string_lossy().into_owned();
+        let text = dir.path().join("notes.md").to_string_lossy().into_owned();
+        std::fs::write(&text, b"# notes\n").unwrap();
+        // The same picture attached twice is one place to stand, not two.
+        let candidates = vec![first.clone(), missing, text, second.clone(), first.clone()];
+
+        let (list, index) = super::conversation_siblings(&second, &candidates);
+        assert_eq!(list, vec![first, second.clone()], "this list, and only it");
+        assert_eq!(index, 1, "the opened picture's own place");
+
+        // A path the conversation does not carry has nothing to step to — even
+        // though it sits in the same directory as these pictures.
+        let outsider = picture("elsewhere.png");
+        let (empty, at) = super::conversation_siblings(&outsider, &candidates);
+        assert!(empty.is_empty());
+        assert_eq!(at, 0);
+    }
 
     fn tree_fixture() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");

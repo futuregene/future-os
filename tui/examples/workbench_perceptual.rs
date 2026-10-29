@@ -257,15 +257,14 @@ fn surfaces() -> Vec<Surface> {
     out.push(Surface {
         name: "sidebar sessions",
         data,
-        open: Box::new(|wb, _| {
-            wb.panel = PanelId::Recent;
-            wb.sidebar_focus = true;
-        }),
+        open: Box::new(|wb, _| wb.panel = PanelId::Recent),
         id: |index| format!("sidebar.row.{index}"),
         token: |index| format!("P{index:02} "),
         marker: false,
         selection: Selection::None,
-        down: "down",
+        // The rail's records move behind : a bare arrow belongs to the
+        // transcript, so the audit presses the chord the surface documents.
+        down: "shift+down",
         count: 10,
     });
 
