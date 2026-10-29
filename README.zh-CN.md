@@ -13,13 +13,6 @@
 </p>
 
 <p align="center">
-  <img src="docs/mobile-recent.zh-CN.png" alt="FutureOS 移动端——把配对的每台桌面的会话合并成一条最近列表，每行标出它所在的机器" width="272">
-  &nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="docs/mobile-devices.zh-CN.png" alt="FutureOS 移动端——桌面选择面板：实验室笔记本、办公室台式机、家里工作站、服务器、云端构建机" width="272">
-</p>
-<p align="center"><sub>所有配对机器上的对话，都在手机里的这一条列表。</sub></p>
-
-<p align="center">
   <a href="#快速开始">快速开始</a> •
   <a href="#特性">特性</a> •
   <a href="#配置模型">模型</a> •
@@ -57,6 +50,13 @@
 | **强大的预设技能** | 内置 15+ 技能开箱即用，覆盖日常 Agent 场景——图片读取与生成、PDF/Word 解析、网页搜索、浏览器控制、幻灯片与软件安装，以及 `/future-goal` 长程目标编排器（[builtin](https://github.com/futuregene/future-skills/tree/main/builtin)） |
 | **可分支会话** | 像仓库一样为对话开分支——fork、clone、树形导航，JSONL 存储 |
 | **Rust 核心** | Agent、IM 渠道桥、goal 控制面、CLI 与 TUI 均用 Rust 编写——高性能、内存安全 |
+
+<p align="center">
+  <img src="docs/mobile-recent.zh-CN.png" alt="FutureOS 移动端——把配对的每台桌面的会话合并成一条最近列表，每行标出它所在的机器" width="272">
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="docs/mobile-devices.zh-CN.png" alt="FutureOS 移动端——桌面选择面板：实验室笔记本、办公室台式机、家里工作站、服务器、云端构建机" width="272">
+</p>
+<p align="center"><sub><b>一部手机，多台桌面</b>——所有配对机器上的对话，都在这一条列表里。</sub></p>
 
 ## 快速开始
 
@@ -156,30 +156,24 @@ future auth login
 
 </details>
 
-### 安装技能（可选）
-
-技能是按需安装的能力包，agent 会从 `~/.future/agent/skills/` 加载。浏览技能目录并安装需要的技能——只需要网络连接，不要求 agent 在运行：
-
-```bash
-future skills list             # 浏览技能目录
-future skills install <name>   # 安装指定技能
-future skills install          # 不带名字：安装全部内置技能
-```
-
-跳过这一步 agent 也能正常回答——技能只是提供现成的工作流。卸载、升级等用法见 [CLI 参考](docs/wiki/zh/CLI.md)。
-
 ### 启动主机，再启动终端
 
 终端与 CLI 客户端都是轻量 gRPC 客户端，默认使用**每用户本地 IPC**（macOS/Linux 为 Unix socket，Windows 为仅当前用户可访问的命名管道）。Unix 优先使用 `FUTURE_AGENT_SOCKET`；否则端点始终位于实例的 FutureOS home 之下：默认 `~/.future/run/agent.sock`，`FUTURE_HOME=DIR` 指定的实例使用 `<FUTURE_HOME>/run/agent.sock`——见[多实例运行](docs/guide/directory-layout.zh-CN.md#多实例运行future_home)。若 FutureOS home 位于无法承载 Unix socket 的文件系统（如 NFS），请将 `FUTURE_HOME` 指向本地文件系统上的目录。
 
-**Agent 由它的宿主负责，不由终端负责。** 先启动一个宿主——两者都会持有并维持 Agent：
+**Agent 由它的宿主负责，不由终端负责。** 先启动一个宿主——它会持有并维持 Agent：
 
 ```bash
 future host       # 把本机作为 FutureOS 主机：本地运行、定时任务，以及已配对的远程桌面
-future agent      # 只启动 Agent 服务（日志打到 stdout，Ctrl-C 停止）
 ```
 
-`future host` **不需要先登录**：没有账号时它用你自己的模型 provider 提供全部本地能力，只有已配对的远程桌面会保持关闭——在另一个终端执行 `future auth login` 后它无需重启就会接管并开始提供远程桌面；`--relay URL` 则完全绕开 Future 平台。桌面 GUI 与主机模式先尝试连接兼容的外部 Agent；默认端点上没有服务且其实例锁空闲时，它们在自己的进程内运行完整 Agent；不兼容或锁被占用/不可用时直接报错，不会另起第二个 Agent。
+如果要从手机或另一台桌面接入这台机器，请在**上面那条命令之前**登录，并把设备配对好——否则 `future host` 只提供本地能力：
+
+```bash
+future auth login           # 用来配对设备的 FutureOS 账号
+future remote devices add   # 打印邀请，供手机或另一台桌面输入
+```
+
+`future host` 做本地工作**不需要先登录**：没有账号时它用你自己的模型 provider 提供全部本地能力，上面那些已配对的远程桌面会一直保持关闭，直到执行过 `future auth login`——这一步也可以稍后在另一个终端做，主机会无需重启就接管；`--relay URL` 则完全绕开 Future 平台——直接自建中继，见[自建中继](docs/guide/self-hosted-relay.zh-CN.md)。桌面 GUI 与主机模式先尝试连接兼容的外部 Agent；默认端点上没有服务且其实例锁空闲时，它们在自己的进程内运行完整 Agent；不兼容或锁被占用/不可用时直接报错，不会另起第二个 Agent。
 
 退出内置 Agent 的 Desktop 会停止所有客户端的任务，包括 CLI/TUI 对话；连接外部 Agent 时只取消本 Desktop 提交的运行，外部服务保持存活。详见 [Desktop Agent 生命周期与恢复](docs/guide/desktop-agent.zh-CN.md)。
 
