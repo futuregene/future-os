@@ -47,8 +47,7 @@
 
 | 类别 | 说明 |
 |---|---|
-| **多端统一** | 一个 Agent，多种界面：终端界面 (TUI)、桌面应用 (GUI)、移动端 App（Android · iOS）、命令行 (CLI)、IM 机器人——同一份会话、同一份记忆、同一套技能，无论你身在何处 |
-| **哪里都能跑，哪里都能接** | Agent 是一个二进制，能跑在活儿所在的任何地方——**嵌入式板子、手机、工位上的桌面机、GPU 服务器、集群**；而接它的界面同样是全的：终端、桌面应用、手机或平板。配对多少台机器都行，一部手机就能把它们全管起来；手机与主机之间的通道是**端到端加密**的（Noise 握手 + ChaCha20-Poly1305 记录），中继还可以**自建**（`future relay init` / `future relay serve`），所以中继上只会经过密文（[主机模式](docs/guide/desktop-host.zh-CN.md)、[远程](docs/wiki/zh/Remote.md)、[自建中继](docs/guide/self-hosted-relay.zh-CN.md)） |
+| **哪里都能跑，哪里都能接** | Agent 是一个二进制，能跑在活儿所在的任何地方——**嵌入式板子、手机、工位上的桌面机、GPU 服务器、集群**；而接它的界面同样是全的：终端界面、桌面应用、移动端（Android · iOS）、命令行与 IM 机器人——共享同一份会话、同一份记忆、同一套技能。配对多少台机器都行——手机够得着其中每一台；手机与主机之间的通道是**端到端加密**的（Noise 握手 + ChaCha20-Poly1305 记录），中继还可以**自建**（`future relay init` / `future relay serve`），所以中继上只会经过密文（[主机模式](docs/guide/desktop-host.zh-CN.md)、[远程](docs/wiki/zh/Remote.md)、[自建中继](docs/guide/self-hosted-relay.zh-CN.md)） |
 | **终端界面 (TUI)** | 终端里的全屏工作台，不是聊天记录：会话列表（「最近」合并列表或按工作区分组的树，可折叠）、把一轮回复的过程折成 `▸ 工具调用 3 次 · 思考 2 次` 并能展开成树的正文、侧边面板（待办、用量、技能、文件、git）、命令面板、鼠标选取、可拖拽的栏宽、六套配色、回复进行中输入时用的排队带——整个界面支持**中文或英文**，跟随系统或 `/lang`（[指南](docs/guide/tui.md)） |
 | **一部手机，多台桌面** | 移动端可以同时配对多台桌面：把它们合并成**一条最近列表**，每行标出所在的机器，用选择面板切换机器，还能在桌面上继续干活的同时从手机接管某条会话（[远程](docs/wiki/zh/Remote.md)） |
 | **可配置工具安全** | read, write, edit, shell——审批规则与分级（`off` / `manual` / `sandbox`，以及 `auto` = 沙箱 + 由模型复核本会询问的请求，需登录 FutureOS）；支持 macOS Seatbelt、Linux 系统 Bubblewrap、Windows 受限令牌写保护。各平台可用性与保护范围不同（[指南](docs/wiki/zh/Sandbox.md)） |
