@@ -251,11 +251,15 @@ What the flags are for:
   `FUTURE_DEMO_LANG`. Both halves have to agree, or the frame is an English
   shell around a Chinese session list. The English `streaming` scenario also
   submits its prompt in English — the question is the reader's words, not a
-  keystroke. The English session is not a sentence-by-sentence translation: it
-  is a fuller one (58 conversations in the rail, a two-turn transcript that
-  exercises a heading, bold and italic runs, inline code, a highlighted `rust`
-  block, a bordered table and a quote), because a panel with three rows in it is
-  a picture of a mock. It is also taller than a 54-row band by itself, so an
+  keystroke. Both payloads are the same session — 58 conversations in the rail
+  and a two-turn transcript that exercises a heading, bold and italic runs,
+  inline code, a highlighted `rust` block, a bordered table and a quote — written
+  in each language rather than translated sentence by sentence, because a panel
+  with three rows in it is a picture of a mock. That also flushed out three
+  labels the chrome had left in English: the settled activity row (`idle`), a
+  session with no model chosen, and the reasoning effort beside the model
+  (`medium`), plus the age of the newest conversation (`now`, two cells wider as
+  刚刚 — the age column is measured over what is painted). It is also taller than a 54-row band by itself, so an
   English frame is usually shot at 190×66 rather than at the documented 120×38.
 - `--sidebar-width <cols>` pins the rail's width (default: the surface's own,
   `SIDEBAR_DEFAULT` = 36). The rail reserves a third of itself for the workspace

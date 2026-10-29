@@ -343,6 +343,17 @@ pub enum Key {
     ActivityTool,
     ActivityStreaming,
     ActivityTools,
+    ActivityIdle,
+    StatusNoModel,
+    AgeNow,
+    EffortDefault,
+    EffortOff,
+    EffortMinimal,
+    EffortLow,
+    EffortMedium,
+    EffortHigh,
+    EffortXhigh,
+    EffortMax,
     HintBackToChat,
     HintSidebar,
     HintSessions,
@@ -742,6 +753,21 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ActivityTool => ("工具", "Tool"),
         ActivityStreaming => ("生成", "Writing"),
         ActivityTools => (" · {}s · {} 工具", " · {}s · {} tools"),
+        // The one activity label that used to be a literal: a settled session
+        // says `· idle`, and a Chinese frame has to say 空闲.
+        ActivityIdle => ("空闲", "idle"),
+        StatusNoModel => ("未选择模型", "no model"),
+        // The other ages are numbers and a unit (`8m`, `2d`, `3w`), which
+        // read the same in both languages; only the newest row is a word.
+        AgeNow => ("刚刚", "now"),
+        EffortDefault => ("默认", "Default"),
+        EffortOff => ("关", "Off"),
+        EffortMinimal => ("最少", "Minimal"),
+        EffortLow => ("低", "Low"),
+        EffortMedium => ("中", "Medium"),
+        EffortHigh => ("高", "High"),
+        EffortXhigh => ("很高", "XHigh"),
+        EffortMax => ("最高", "Max"),
         // `esc` walks back one level — a preview to the panel it was opened
         // from, a panel to the chat — so the hint names the walk, not one of
         // its stops.
@@ -1198,6 +1224,27 @@ fn pair(key: Key) -> (&'static str, &'static str) {
 }
 
 /// One piece of chrome in `lang`.
+/// A declared reasoning effort's label, or `None` when the host declared a
+/// token of its own.
+///
+/// The vocabulary is open — a model may accept `turbo` — so the status bar shows
+/// the wire value for anything this table does not name, exactly like the other
+/// clients do (mobile's `thinkingLevelLabel`).
+pub fn effort_label(lang: Language, level: &str) -> Option<&'static str> {
+    let key = match level {
+        "default" => Key::EffortDefault,
+        "off" => Key::EffortOff,
+        "minimal" => Key::EffortMinimal,
+        "low" => Key::EffortLow,
+        "medium" => Key::EffortMedium,
+        "high" => Key::EffortHigh,
+        "xhigh" => Key::EffortXhigh,
+        "max" => Key::EffortMax,
+        _ => return None,
+    };
+    Some(t(lang, key))
+}
+
 pub fn t(lang: Language, key: Key) -> &'static str {
     let (zh, en) = pair(key);
     match lang {
@@ -1396,7 +1443,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 334] = {
+    const ALL_KEYS: [Key; 345] = {
         use Key::*;
         [
             TabTodo,
@@ -1479,6 +1526,17 @@ mod tests {
             ActivityTool,
             ActivityStreaming,
             ActivityTools,
+            ActivityIdle,
+            StatusNoModel,
+            AgeNow,
+            EffortDefault,
+            EffortOff,
+            EffortMinimal,
+            EffortLow,
+            EffortMedium,
+            EffortHigh,
+            EffortXhigh,
+            EffortMax,
             HintBackToChat,
             HintSidebar,
             HintSessions,
