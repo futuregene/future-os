@@ -1621,15 +1621,35 @@ fn controls_row(
     inner: usize,
     images: bool,
 ) -> (String, Vec<(&'static str, u16)>) {
+    // The width is measured the way the row is laid out — display columns,
+    // where a Hanzi is two cells. Counting `chars()` put every region left of
+    // its own label (`[缩小]` claimed four cells and paints six) and each later
+    // button drifted further: in Chinese the row looked live, and a click on
+    // `[上一张]` landed on the counter beside it and did nothing at all.
     fn segment(
         row: &mut String,
         regions: &mut Vec<(&'static str, u16)>,
+        inner: usize,
         id: &'static str,
         plain: &str,
         painted: String,
     ) {
-        row.push_str(&painted);
-        regions.push((id, plain.chars().count().max(1) as u16));
+        let painted_w = width(plain).max(1);
+        let used: usize = regions.iter().map(|(_, w)| usize::from(*w)).sum();
+        let room = inner.saturating_sub(used);
+        if room == 0 {
+            // Clipped off the box: a target for text nobody can see is a trap.
+            return;
+        }
+        if painted_w <= room {
+            row.push_str(&painted);
+            regions.push((id, painted_w as u16));
+        } else {
+            // Only the part that fits is painted, so only that part is a
+            // target — and it is a whole one, not half a Hanzi.
+            row.push_str(&ansi::clip(&painted, room));
+            regions.push((id, room as u16));
+        }
     }
 
     let lang = workbench.lang;
@@ -1642,6 +1662,7 @@ fn controls_row(
     segment(
         &mut row,
         &mut regions,
+        inner,
         "overlay.surface",
         " ",
         " ".to_string(),
@@ -1652,6 +1673,7 @@ fn controls_row(
         segment(
             &mut row,
             &mut regions,
+            inner,
             super::ZOOM_OUT,
             &out_label,
             if out_live {
@@ -1664,6 +1686,7 @@ fn controls_row(
         segment(
             &mut row,
             &mut regions,
+            inner,
             "overlay.surface",
             &zoom_label,
             palette.dim(&zoom_label),
@@ -1673,6 +1696,7 @@ fn controls_row(
         segment(
             &mut row,
             &mut regions,
+            inner,
             super::ZOOM_IN,
             &in_label,
             if in_live {
@@ -1686,6 +1710,7 @@ fn controls_row(
         segment(
             &mut row,
             &mut regions,
+            inner,
             super::ZOOM_FIT,
             &fit_label,
             if fit_live {
@@ -1697,6 +1722,7 @@ fn controls_row(
         segment(
             &mut row,
             &mut regions,
+            inner,
             "overlay.surface",
             "   ",
             "   ".to_string(),
@@ -1708,6 +1734,7 @@ fn controls_row(
         segment(
             &mut row,
             &mut regions,
+            inner,
             super::PREV_IMAGE,
             &prev_label,
             if prev_live {
@@ -1720,6 +1747,7 @@ fn controls_row(
         segment(
             &mut row,
             &mut regions,
+            inner,
             "overlay.surface",
             &counter,
             palette.dim(&counter),
@@ -1729,6 +1757,7 @@ fn controls_row(
         segment(
             &mut row,
             &mut regions,
+            inner,
             super::NEXT_IMAGE,
             &next_label,
             if next_live {
@@ -1738,34 +1767,10 @@ fn controls_row(
             },
         );
     }
-    let visible: String = {
-        // Clip to the box: the frame is text, and a row longer than the box
-        // would push its own border off the edge.
-        let mut width = 0usize;
-        let mut out = String::new();
-        let mut escape = false;
-        for ch in row.chars() {
-            if escape {
-                out.push(ch);
-                if ch == 'm' {
-                    escape = false;
-                }
-                continue;
-            }
-            if ch == '\x1b' {
-                escape = true;
-                out.push(ch);
-                continue;
-            }
-            if width >= inner {
-                break;
-            }
-            width += 1;
-            out.push(ch);
-        }
-        out
-    };
-    (visible, regions)
+    // Clip to the box: the frame is text, and a row longer than the box would
+    // push its own border off the edge. `fit` clips by display columns, which
+    // is what the segments above were measured in.
+    (fit(&row, inner), regions)
 }
 
 fn paint_box(

@@ -6325,6 +6325,114 @@ mod tests {
         );
     }
 
+    /// Each control answers a click on the cell its label is *painted* on.
+    ///
+    /// The row is laid out in display columns — a Hanzi is two cells — so a
+    /// region measured in `chars()` sat to the left of its own label, and each
+    /// later button drifted further: in Chinese `[缩放]`-style labels made the
+    /// whole row look live while a click on `[上一张]` landed on the counter
+    /// beside it and did nothing.
+    #[test]
+    fn the_preview_controls_are_where_their_labels_are_painted() {
+        let _caps = crate::terminal_image::CapabilitiesGuard::pin(
+            crate::terminal_image::ImageProtocol::Kitty,
+        );
+        let mut data = demo::chat();
+        data.preview = Some(demo::preview_image());
+        let mut workbench = workbench();
+        workbench.overlay = Some(Overlay::FilePreview);
+        workbench.set_preview_siblings((
+            vec!["/w/a.png".into(), "/w/b.png".into(), "/w/c.png".into()],
+            1,
+        ));
+        let rows = workbench.render(&data, 120, 38);
+        let (y, painted) = rows
+            .iter()
+            .enumerate()
+            .find_map(|(y, row)| {
+                let plain = crate::utils::strip_ansi_codes(row);
+                plain.contains('缩').then_some((y, plain))
+            })
+            .expect("the controls row is painted");
+        for (label, id) in [
+            ("[缩小]", "preview.zoomOut"),
+            ("[放大]", "preview.zoomIn"),
+            ("[适应]", "preview.fit"),
+            ("[上一张]", "preview.prev"),
+            ("[下一张]", "preview.next"),
+        ] {
+            let byte = painted
+                .find(label)
+                .unwrap_or_else(|| panic!("{label} is painted"));
+            let x = ansi::width(&painted[..byte]);
+            let last = x + ansi::width(label) - 1;
+            for cell in [x, (x + last) / 2, last] {
+                assert_eq!(
+                    workbench.hits().hit(cell as u16, y as u16),
+                    Some(id),
+                    "{label} at column {x}: a click on cell {cell} must reach it"
+                );
+            }
+        }
+
+        // …and the click does what the label says, from the cell it is painted
+        // on: the same actions the keys produce, not a live-looking no-op.
+        let column = |label: &str| {
+            let byte = painted.find(label).expect("the label is painted");
+            ansi::width(&painted[..byte]) as u16
+        };
+        let press = |workbench: &mut Workbench, x: u16| {
+            workbench.render(&data, 120, 38);
+            workbench.handle(
+                WbEvent::Mouse(mouse::MouseEvent {
+                    kind: mouse::MouseKind::Press,
+                    x,
+                    y: y as u16,
+                    shift: false,
+                    alt: false,
+                    ctrl: false,
+                }),
+                &data,
+            )
+        };
+        assert_eq!(
+            press(&mut workbench, column("[放大]") + 1),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(workbench.preview_zoom, 2, "a click on [放大] zooms in");
+        press(&mut workbench, column("[适应]") + 1);
+        assert_eq!(workbench.preview_zoom, 1, "a click on [适应] fits");
+        assert_eq!(
+            press(&mut workbench, column("[下一张]") + 1),
+            vec![WbAction::PreviewFile("/w/c.png".into())]
+        );
+        assert_eq!(workbench.preview_index, 2);
+        assert_eq!(
+            press(&mut workbench, column("[上一张]") + 1),
+            vec![WbAction::PreviewFile("/w/b.png".into())]
+        );
+        assert_eq!(workbench.preview_index, 1);
+        // A box too narrow for the row clips labels off its right edge, and a
+        // clipped label is not a target: the frame stays the frame, and no
+        // region reaches past it.
+        for (w, h) in [(40u16, 10u16), (24, 8)] {
+            let rows = workbench.render(&data, w, h);
+            for (row, line) in rows.iter().enumerate() {
+                assert_eq!(
+                    ansi::width(line),
+                    w as usize,
+                    "{w}x{h}: row {row} is not the frame's width"
+                );
+            }
+            for (rect, id) in workbench.hits().regions() {
+                assert!(
+                    rect.x + rect.w <= w && rect.y + rect.h <= h,
+                    "{w}x{h}: {id} reaches past the frame at {rect:?}"
+                );
+            }
+        }
+    }
+
     /// Dragging the picture pans it: the pointer's counterpart of the arrows.
     #[test]
     fn dragging_the_picture_pans_it() {
