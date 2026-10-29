@@ -264,6 +264,13 @@ function TimelineCardView({
     // whole prompt in a reader of its own (see `promptCollapse` and
     // `PromptReader`). Expanding in place cannot be offered: that is the shape
     // that fails.
+    //
+    // What keeps the row small is the head, not the cap: the preview is budgeted
+    // in *rendered* lines (`PROMPT_PREVIEW_LINES`), because a prompt is one
+    // `Text` node however much it wraps to, and a single node of ~630 dp is what
+    // the device dropped. The markdown pipeline stays — the preview is the
+    // prompt as the reader wrote it, headings and fences included — it just
+    // carries a few lines of it.
     const longPrompt = isLongPrompt(item.text);
     const preview = longPrompt ? promptPreview(item.text) : { head: item.text, truncated: false };
     return (

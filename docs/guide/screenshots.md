@@ -251,11 +251,15 @@ What the flags are for:
   `FUTURE_DEMO_LANG`. Both halves have to agree, or the frame is an English
   shell around a Chinese session list. The English `streaming` scenario also
   submits its prompt in English — the question is the reader's words, not a
-  keystroke. The English session is not a sentence-by-sentence translation: it
-  is a fuller one (65 conversations in the rail, a two-turn transcript that
-  exercises a heading, bold and italic runs, inline code, a highlighted `rust`
-  block, a bordered table and a quote), because a panel with three rows in it is
-  a picture of a mock. It is also taller than a 54-row band by itself, so an
+  keystroke. Both payloads are the same session — 58 conversations in the rail
+  and a two-turn transcript that exercises a heading, bold and italic runs,
+  inline code, a highlighted `rust` block, a bordered table and a quote — written
+  in each language rather than translated sentence by sentence, because a panel
+  with three rows in it is a picture of a mock. That also flushed out three
+  labels the chrome had left in English: the settled activity row (`idle`), a
+  session with no model chosen, and the reasoning effort beside the model
+  (`medium`), plus the age of the newest conversation (`now`, two cells wider as
+  刚刚 — the age column is measured over what is painted). It is also taller than a 54-row band by itself, so an
   English frame is usually shot at 190×66 rather than at the documented 120×38.
 - `--sidebar-width <cols>` pins the rail's width (default: the surface's own,
   `SIDEBAR_DEFAULT` = 36). The rail reserves a third of itself for the workspace
@@ -269,18 +273,22 @@ What the flags are for:
   shipped default, so this is for a frame that wants to show the palette picker's
   effect rather than the product's own look.
 - `--scenario composing` is the frame of a reader *in the middle of writing*
-  behind a reply that is still in flight: four lines of draft in the composer
-  (typed with `ctrl+j`, never sent), the **queue band** above it listing three
-  prompts waiting for the current turn (`FUTURE_DEMO_QUEUE`), and the last turn's
-  process opened — the `▸ 3 tool calls · 2 thoughts` row clicked, then the
-  `▸ thinking` row inside it, so the calls, their arguments and the reasoning
-  behind them are all on screen. A closed fold is all a transcript ever shows on
-  its own, so the capture makes both clicks, resolving each row from the frame on
-  screen (see `_tui_click_row`). At 190×73 the whole thing fits: 65 conversations
-  in the rail, the transcript's table/code/quote, the queue band and the draft.
-  The activity row carries a live `Thinking · Ns` clock, so this frame is
-  byte-stable on one machine and may lag a second on a much slower one — the same
-  caveat as `streaming`.
+  after a reply has finished: four lines of draft in the composer (typed with
+  `ctrl+j`, never sent), the **queue band** above it listing three prompts that
+  are waiting to go out (`FUTURE_DEMO_QUEUE=idle` — the reply is done, the queued
+  prompts have not been sent yet), and the last turn's work **opened as a tree**:
+  `▾ 3 tool calls · 2 thoughts`, then `│ ▸ thinking` with the reasoning under it,
+  `│ edit src/args.rs`, `│ $ cargo test …`. Opening it is a keyboard walk —
+  `tab` to the fold, `enter`, `tab` into its first thought, `enter` again —
+  because a click on a transcript row does not arrive through the pty (measured:
+  the same SGR bytes open a rail tab and grab the divider, and leave a fold
+  shut); `shift+right` (`PanelNext`) then switches the rail from its flat *Recent*
+  list to the workspace view, so the conversations are filed under the heading
+  and count of the checkout they belong to. Both shapes only exist when the
+  session is *settled*: a run in flight renders every row flat, which is why the
+  queue band is captured in the idle half of that state. At 190×72 the whole
+  thing fits — 58 conversations in three workspace groups, the transcript's
+  table/highlighted code/quote, the opened tree, the band and the draft.
 
 The repository's own entry point for these frames is
 `tui/scripts/shot.sh <scenario> [WxH] [out.png]`, a thin wrapper that supplies
@@ -292,7 +300,7 @@ tui/scripts/shot.sh usage 120x38 $PWD/docs/tui/assets/workbench-panel-usage.png
 tui/scripts/shot.sh drag 120x38 $PWD/docs/tui/assets/workbench-drag-fixed.png
 # An English frame, big, rail on the left and wide enough for the titles:
 SHOT_LANG=en SHOT_SIDEBAR_WIDTH=56 SHOT_SIDEBAR_POSITION=left \
-  tui/scripts/shot.sh composing 190x73
+  tui/scripts/shot.sh composing 190x72
 ```
 
 The third argument is the output path; without it the wrapper names the file
@@ -443,6 +451,35 @@ switch — `mobile/metro.config.js` redirects the remote context and the two nat
 modules to `mobile/shot/mock/` **only** on the web platform and only when it is
 set, so native builds (`make run-mobile-android`) are unaffected.
 
+### One session, two surfaces: the `parser-*` scenarios
+
+`.screenshots/tui-zh/` and `.screenshots/tui-en/` are the TUI's pictures of one
+scripted session — an off-by-one in an expression parser (`tui/examples/demo_agent.rs`,
+`journal_zh` / `journal_en`). `parser-zh` and `parser-en` show that same session on
+the phone:
+
+```bash
+SHOT_WEB=1 python3 scripts/screenshots/capture.py serve-mobile    # terminal 1
+python3 scripts/screenshots/capture.py capture-mobile parser-zh   # → .screenshots/mobile-zh.png
+python3 scripts/screenshots/capture.py capture-mobile parser-en   # → .screenshots/mobile-en.png
+```
+
+`?parser=1` swaps the whole demo catalogue for that session — the machine's name,
+the three workspace groups, the conversation (`mobile/shot/mock/parserSession.ts`)
+— and `lang` pins the browser locale (`zh-CN` / `en-US`), so the chrome and the
+transcript are in one language: the mock takes its words from `navigator.language`,
+which is the same input the app takes its language from, and each scenario fails
+if a word of the other language reaches the frame.
+
+The phone cannot show both turns at once — the conversation is 1125 css px of
+transcript and the band between the bar and the composer is 672 — so the frame
+opens at the question and holds the folded process, the diagnosis, the fixed line
+of code and the table; the second turn (the two commits) sits one scroll below.
+The TUI's tree of tool rows has no phone equivalent: it is the fold row, whose
+spoken label (`Show process · Tool calls 2× · Thought 1×`) is where the counts
+live, and the scenario asserts those counts. The scenario is deterministic: two
+runs produce byte-identical PNGs, because nothing in the frame reads the clock.
+
 ### The transcript is upright (the inverted list's extra flip)
 
 `mobile/src/features/chat/components/ChatTimeline.tsx` renders the transcript as
@@ -493,6 +530,16 @@ of each other are reported as inconclusive rather than as a pass. The judge and
 that direction are pinned offline by
 `scripts/tests/test-screenshot-upright-check.py` (`make test-screenshot-harness`).
 
+The probe judges the scroller that is *visible*, not the tallest one: the phone
+keeps the session list mounted underneath an open conversation, so a rail long
+enough to scroll is a taller scroller of its own. Before that filter it outlined a
+row of the list behind the chat, and the check reported "no in-place tile" for a
+transcript that was perfectly upright (`parser-zh` / `parser-en`, whose rail is
+long). It also takes a *paragraph* — a text block whose children are all inline
+runs — rather than only a childless element, because a frame whose largest plain
+leaf is one 13 px code line says nothing either way (0.045 upright against 0.053
+mirrored: inconclusive).
+
 ## Scenarios
 
 Scenarios are data, not code: `scripts/screenshots/scenarios.json`. Each one is a
@@ -518,6 +565,16 @@ Three platform-level knobs are worth knowing:
   is what keeps captures fast: a warm bundle is ready in about a second, a cold
   one can take 20. `settle` is only a small grace period after that. If a capture
   starts before the app paints, raise `readyTimeout` rather than `settle`.
+- **`lang` pins the browser locale, not a harness-only switch.** A scenario that
+  has to be in a language says `"lang": "en-US"`, and `cdp.mjs` makes the page's
+  system locale that value before the app's first script runs: `Emulation`
+  `setLocaleOverride` moves `Intl`, and the user agent override's `acceptLanguage`
+  moves `navigator.language` (measured on Chrome 156 — the locale override alone
+  leaves `navigator.language` at the host's `zh-CN`). The app reads the system
+  locale exactly as it does on a phone; a stored in-app preference still wins.
+- **`query` appends to the platform's URL.** `"query": "?parser=1"` keeps a
+  scenario on whatever port `serve-mobile` is serving, instead of pinning
+  `http://localhost:8099/` in the scenario the way a full `url` does.
 - **`tap` needs an accessible name.** It matches `aria-label` first, then the
   element's own text for interactive roles. Where neither exists, use `tapText`;
   if you find yourself writing coordinate taps, that is a hint the control is

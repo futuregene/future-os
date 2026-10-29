@@ -33,6 +33,10 @@
  *                   colour choice)
  *   --measure FILE  write the geometry collected by `offsets` steps
  *   --baseline FILE compare against an earlier `--measure` run (shows movement)
+ *   --lang TAG      emulate this browser locale (BCP 47, e.g. en-US), so a
+ *                   capture pinned to a language is a page whose system locale
+ *                   really is that language — the app follows the OS locale,
+ *                   not a harness-only switch
  *   --pointer BOOL  draw the pointer indicator on taps/hovers
  *                   (default: on while recording, off for stills)
  *   --annotate BOOL remove every overlay when false (default true)
@@ -89,6 +93,22 @@ const MEASURE_FILE = opt("measure", "");
 const BASELINE_FILE = opt("baseline", "");
 /** `--inject FILE` runs a JS file after the app is ready (variant styling). */
 const INJECT_FILE = opt("inject", "");
+/**
+ * `--lang TAG` emulates a browser locale for this scenario.
+ *
+ * The app's language comes from the OS locale (`expo-localization` reads
+ * `navigator.language` on the web), so a capture that has to be *in* a language
+ * has to change what the page reports, not a harness-only flag. Two CDP calls
+ * do it, and only together: `Emulation.setLocaleOverride` moves `Intl` (date,
+ * time and number formatting), while `navigator.language` follows the user
+ * agent override's `acceptLanguage` — measured on Chrome 156, where the locale
+ * override alone leaves `navigator.language` at the host's `zh-CN`. The UA
+ * string is passed back unchanged, so the page is otherwise the same browser.
+ *
+ * A stored in-app preference still wins over the system locale (as it does on a
+ * phone), so this pins the system, not the reader's choice.
+ */
+const LANG = opt("lang", "");
 /**
  * `--pointer BOOL` draws the pointer indicator that follows taps/hovers.
  *
@@ -685,6 +705,18 @@ await send("Emulation.setDeviceMetricsOverride", {
 });
 if (TOUCH)
   await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+
+// Before navigating, so the very first script the app runs already reads the
+// pinned locale (`src/i18n/index.ts` initializes at import time).
+if (LANG) {
+  const version = await (await fetch(`http://127.0.0.1:${PORT}/json/version`)).json();
+  await send("Emulation.setLocaleOverride", { locale: LANG });
+  await send("Emulation.setUserAgentOverride", {
+    userAgent: version["User-Agent"],
+    acceptLanguage: LANG,
+  });
+  console.log(`cdp: locale ${LANG}`);
+}
 
 // Start recording before navigating so the video includes the first paint.
 if (FRAMES_DIR)

@@ -819,7 +819,11 @@ def run_scenario(platform: str, name: str, spec: dict, out_dir: Path, cd_endpoin
         shutil.rmtree(frames_dir, ignore_errors=True)
         frames_dir.mkdir(parents=True, exist_ok=True)
 
-    url = spec.get("url", config["url"])
+    # `query` is appended to the platform's own `url`, so a scenario that only
+    # needs a different fixture (`?parser=1`) follows whatever port the harness
+    # is serving on. A full `url` still wins, for a scenario that lands on a
+    # different app or a page outside it.
+    url = spec.get("url") or (config["url"] + spec.get("query", ""))
     command = [
         "node", str(SCRIPTS / "cdp.mjs"),
         "--port", str(cd_endpoint),
@@ -842,6 +846,11 @@ def run_scenario(platform: str, name: str, spec: dict, out_dir: Path, cd_endpoin
         command += ["--baseline", str(baseline)]
     if not config.get("touch", True):
         command += ["--touch", "false"]
+    # A scenario can pin the browser locale (`"lang": "en-US"`): the app takes
+    # its language from the system locale, so a capture that has to be in one
+    # language pins the locale instead of a harness-only switch.
+    if spec.get("lang"):
+        command += ["--lang", str(spec["lang"])]
     print(f"── {platform}/{name}{shot_suffix}")
     # `text=True` with no encoding decodes with the locale's, which on a Windows
     # console is a legacy code page: the step runner prints whatever the page said
@@ -1520,10 +1529,13 @@ TUI_SCENARIO_KEYS: dict[str, str] = {
 TUI_SCENARIO_AGENT_ENV: dict[str, dict[str, str]] = {
     "scrolled": {"FUTURE_DEMO_LONG": "1"},
     "queue": {"FUTURE_DEMO_QUEUE": "1"},
-    # `composing` is the frame of a reader mid-write *behind a reply in flight*:
-    # the composer's draft, the queue band above it, and the last turn's opened
-    # process above that. The band needs the demo agent to report queued runs.
-    "composing": {"FUTURE_DEMO_QUEUE": "1"},
+    # `composing` is the frame of a reader mid-write with prompts waiting: the
+    # composer's draft, the queue band above it, and the last turn's opened
+    # process above that. `idle` is the state the band belongs to but the run does
+    # not — the reply has finished, the queued prompts have not been sent yet, so
+    # the transcript keeps its *settled* shape (folds, and a tree when opened)
+    # instead of the flat running one.
+    "composing": {"FUTURE_DEMO_QUEUE": "idle"},
 }
 
 # Scenarios that end by opening the folded process of a turn — the row that reads
@@ -1536,15 +1548,30 @@ TUI_SCENARIO_AGENT_ENV: dict[str, dict[str, str]] = {
 # `▸ 工具调用 2 次 · 1 条思考`). Matched as a substring of the row the click is
 # resolved from, so the marker, the count and the thought count can all change
 # without breaking the step.
-TUI_FOLD_WORDS: tuple[str, ...] = ("tool call", "工具调用")
-# ...and the reasoning row inside an opened process, `▸ thinking` / `▸ 思考`: it is
-# a fold of its own, so the thought is one more press away.
-TUI_THOUGHT_WORDS: tuple[str, ...] = ("thinking", "思考")
+# The two shapes the conversation rail draws: its flat *Recent* list and the
+# workspace view that files each conversation under a heading. `TabRecent` /
+# `TabWorkspaces` are the captions a click would land on.
+TUI_RECENT_TABS: tuple[str, ...] = ("Recent", "最近")
+TUI_WORKSPACES_TABS: tuple[str, ...] = ("Workspaces", "工作区")
 
-TUI_SCENARIO_FOLD: dict[str, tuple[tuple[tuple[str, ...], bool], ...]] = {
-    # Open the last turn's process (its tool calls and thought markers), then the
-    # thought inside it — the row that just appeared under the one we pressed.
-    "composing": ((TUI_FOLD_WORDS, True), (TUI_THOUGHT_WORDS, False)),
+TUI_SCENARIO_STEPS: dict[str, tuple[tuple[str, object], ...]] = {
+    # Open the last turn's process and the thought inside it, then switch the rail
+    # from its flat *Recent* list to the workspace view.
+    #
+    # All by keyboard, and the count is exact because the payload is: `tab` walks
+    # the transcript's own stops in reading order — the two fold rows here — so
+    # two `tab`s land on the last turn's, `enter` opens it, the next `tab` walks
+    # into its first thought and `enter` opens that. `shift+right` is the Next
+    # panel key (`preferences.rs`: `PanelNext`), which is the rail's two shapes.
+    #
+    # A pointer would be the reader's own gesture, but a click on a transcript row
+    # does not arrive: measured here, `\x1b[<0;col;rowM`/`m` on a `▸ … tool calls`
+    # row leaves the fold shut, while the same bytes on a rail tab or the divider
+    # work — so the capture uses the keys the surface also answers to.
+    "composing": (
+        ("keys", b"\t\t\r\t\r"),
+        ("keys", b"\x1b[1;2C"),
+    ),
 }
 
 # Seconds between the steps *after* the first one. The default capture budget is
@@ -1552,7 +1579,7 @@ TUI_SCENARIO_FOLD: dict[str, tuple[tuple[tuple[str, ...], bool], ...]] = {
 # run its last one after the pty had already been closed — measured: the thought
 # row stayed shut and the frame looked like the click had done nothing. The first
 # step keeps the full settle: the surface has to be up before anything is typed.
-TUI_STEP_GAP = 1.2
+TUI_STEP_GAP = 1.0
 
 # The one scenario whose keystrokes are *prose* rather than a verb: `streaming`
 # submits a prompt, so the words are the reader's and have to be in the language
@@ -1643,64 +1670,6 @@ def _tui_click_tab(words: tuple[str, ...], cols: int, rows: int, settle: float):
     return (settle, action)
 
 
-def _tui_click_row(
-    words: tuple[str, ...], cols: int, rows: int, settle: float, *, last: bool = True
-):
-    """A step that clicks a transcript row whose own marker introduces `words`.
-
-    Two rows are opened this way, and the difference is only *which* one:
-
-    * a finished turn's process — `▸ 2 tool calls · 1 thought` — which a click
-      opens into the calls, their arguments and the reasoning between them. A
-      transcript only ever shows the fold, never the work, unless the capture
-      presses it. The **lowest** such row is the one to press: it sits nearest
-      the tail, so what it opens lands above the composer instead of off the top.
-    * a thought *inside* an opened process — `▸ thinking` — which is a fold of its
-      own. That one is the **first** on screen: it is the process that was just
-      opened.
-
-    The row is resolved from the frame on screen, like the tabs and the divider,
-    because where it sits moves with the transcript, the window and the terminal
-    size. Clicking it is also what keeps this deterministic: `tab` walks the
-    stops in reading order from wherever the cursor happens to be, which opened a
-    *different* fold when the view was scrolled — measured, and the frame looked
-    plausible anyway.
-    """
-
-    def action(text: str) -> bytes | None:
-        import tui_terminal
-
-        cells, _ = tui_terminal.screen_from_stream(text, cols, rows)
-        order = range(len(cells) - 1, -1, -1) if last else range(len(cells))
-        target: tuple[int, int] | None = None
-        for row_index in order:
-            painted = _painted_cells(cells[row_index])
-            # The row's own marker, wherever the rail ends it: with the sidebar on
-            # the left, a transcript row is not the start of the *line*.
-            for at, (column, ch) in enumerate(painted):
-                if ch not in ("▸", "▾"):
-                    continue
-                # …and the label it opens must follow it on the same row.
-                following = "".join(c for _, c in painted[at : at + 40])
-                if any(word in following for word in words):
-                    target = (row_index, column)
-                    break
-            if target is not None:
-                break
-        if target is None:
-            raise SystemExit(
-                f"error: the frame has no {words!r} row to open at {cols}x{rows}. "
-                "The scenario needs a transcript whose visible turns made tool calls "
-                "(and `--lang` has to match the demo agent's data language)."
-            )
-        row_index, column = target
-        press = f"\x1b[<0;{column + 1};{row_index + 1}M".encode()
-        release = f"\x1b[<0;{column + 1};{row_index + 1}m".encode()
-        return press + release
-
-    return (settle, action)
-
-
 def _tui_drag_divider(dx: int, cols: int, rows: int, settle: float):
     """A step that grabs the sidebar divider and drags it `dx` columns right.
 
@@ -1751,8 +1720,8 @@ def _tui_steps(scenario: str, cols: int, rows: int, settle: float = 2.5, lang: s
         if lang.startswith("en"):
             keys = TUI_SCENARIO_KEYS_EN.get(scenario, keys)
         steps = [(settle, keys.encode())] if keys else []
-        for words, last in TUI_SCENARIO_FOLD.get(scenario, ()):
-            steps.append(_tui_click_row(words, cols, rows, TUI_STEP_GAP, last=last))
+        for _, payload in TUI_SCENARIO_STEPS.get(scenario, ()):
+            steps.append((TUI_STEP_GAP, payload))
         return steps
     if scenario in TUI_SCENARIO_TABS:
         return [_tui_click_tab(TUI_SCENARIO_TABS[scenario], cols, rows, settle)]

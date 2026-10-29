@@ -537,7 +537,7 @@ fn item_rows(
         };
         return vec![vec![palette.dim(&fit(&format!("  {message}"), columns))]];
     }
-    let tail = tail_columns(panel, data, &model);
+    let tail = tail_columns(panel, data, &model, lang);
     let items: Vec<Vec<String>> = model
         .iter()
         .enumerate()
@@ -572,7 +572,7 @@ fn item_rows(
                 None => vec![fit("", columns)],
             },
             Row::Session(at) => match data.sessions.get(*at) {
-                Some(session) => session_rows(panel, session, palette, columns, frame, tail),
+                Some(session) => session_rows(panel, session, palette, columns, frame, tail, lang),
                 None => vec![fit("", columns)],
             },
             Row::File(at) => match data.tree.get(*at) {
@@ -604,13 +604,18 @@ fn item_rows(
 /// The columns this frame's tails share, measured over the rows about to be
 /// painted — not over everything the agent listed: a filtered or folded panel
 /// should not reserve a column for a row it is not showing.
-fn tail_columns(panel: PanelId, data: &WorkbenchData, model: &[Row]) -> TailColumns {
+fn tail_columns(
+    panel: PanelId,
+    data: &WorkbenchData,
+    model: &[Row],
+    lang: Language,
+) -> TailColumns {
     let mut columns = TailColumns::default();
     for row in model {
         match row {
             Row::Session(at) => {
                 if let Some(session) = data.sessions.get(*at) {
-                    columns.age = columns.age.max(width(&session.age));
+                    columns.age = columns.age.max(width(&age_text(lang, &session.age)));
                     // 工作区 groups by the workspace already: its rows are under
                     // a heading that names it, so only the age reaches the
                     // tail there.
@@ -621,7 +626,7 @@ fn tail_columns(panel: PanelId, data: &WorkbenchData, model: &[Row]) -> TailColu
             }
             Row::Workspace(at) => {
                 if let Some(workspace) = data.workspaces.get(*at) {
-                    columns.age = columns.age.max(width(&workspace.age));
+                    columns.age = columns.age.max(width(&age_text(lang, &workspace.age)));
                     let units = workspace.session_ids.len().to_string();
                     columns.units = columns.units.max(width(&units));
                 }
@@ -726,6 +731,16 @@ fn section_row(
     fit(&painted, columns)
 }
 
+/// A row's age as the reader reads it: `now` is a word (刚刚), the rest are a
+/// number and a unit that need no translation.
+fn age_text(lang: Language, age: &str) -> std::borrow::Cow<'_, str> {
+    if age == "now" {
+        std::borrow::Cow::Borrowed(t(lang, Key::AgeNow))
+    } else {
+        std::borrow::Cow::Borrowed(age)
+    }
+}
+
 /// A workspace's heading: the fold marker, its name, and how many
 /// conversations sit under it.
 #[allow(clippy::too_many_arguments)] // one painted row, one argument per fact it draws
@@ -744,7 +759,7 @@ fn workspace_row(
     // the list and the age keeps its own column beside it — `313 会话 · now`
     // over `5 会话 · 26m`.
     let units = align_right(&units.to_string(), tail.units);
-    let age = align_right(&workspace.age, tail.age);
+    let age = align_right(&age_text(lang, &workspace.age), tail.age);
     let tail_text = format!("{units} {} · {age}", t(lang, Key::SummaryUnitsSessions));
     // Never more than the row can leave the name. A rail that narrow falls back
     // to the age alone, which is the fact a heading cannot supply itself.
@@ -788,6 +803,7 @@ fn session_rows(
     columns: usize,
     frame: Option<usize>,
     tail: TailColumns,
+    lang: Language,
 ) -> Vec<String> {
     // The leading cell is the row's state slot, the desktop rail's indicator
     // seen from a terminal: a run still in flight spins there (the one thing in
@@ -843,7 +859,7 @@ fn session_rows(
                 .workspace
                 .min(usable / WORKSPACE_SHARE)
                 .min(usable.saturating_sub(width(TAIL_SEPARATOR) + tail.age));
-            let age = align_right(&session.age, tail.age);
+            let age = align_right(&age_text(lang, &session.age), tail.age);
             let tail_text = if session.workspace.is_empty() || workspace_column == 0 {
                 age
             } else {
@@ -886,7 +902,8 @@ fn session_rows(
             // Under a workspace heading the heading already names the group, so
             // the row ends with its age — the same age a heading above prints,
             // in the same column: the pad puts it against the panel's edge.
-            let tail_width = width(&session.age);
+            let age_text = age_text(lang, &session.age);
+            let tail_width = width(&age_text);
             // ` marker ` is three cells (a space, the marker, a space).
             let title = fit(&session.title, columns.saturating_sub(3 + tail_width));
             let pad = columns.saturating_sub(3 + width(&title) + tail_width);
@@ -898,7 +915,7 @@ fn session_rows(
             vec![format!(
                 " {marker} {title}{}{}",
                 " ".repeat(pad),
-                palette.dim(&session.age)
+                palette.dim(&age_text)
             )]
         }
         // The file tree paints one row per entry, so a conversation's own row
@@ -1049,7 +1066,10 @@ mod tests {
         for session in &data.sessions {
             assert!(text.contains(&session.title), "{session:?}: {text}");
             assert!(text.contains(&session.workspace), "{session:?}: {text}");
-            assert!(text.contains(&session.age), "{session:?}: {text}");
+            assert!(
+                text.contains(&*age_text(LANG, &session.age)),
+                "{session:?}: {text}"
+            );
         }
     }
 
@@ -1272,7 +1292,10 @@ mod tests {
                 .iter()
                 .find(|line| line.contains(&session.title))
                 .unwrap_or_else(|| panic!("no row for {}", session.title));
-            assert!(line.trim_end().ends_with(&session.age), "{line:?}");
+            assert!(
+                line.trim_end().ends_with(&*age_text(LANG, &session.age)),
+                "{line:?}"
+            );
             assert_eq!(width(line.trim_end()), 60, "{line:?}");
         }
     }
