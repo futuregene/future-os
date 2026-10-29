@@ -560,6 +560,8 @@ pub enum Key {
     HelpKeyFiles,
     HelpKeyPrevPanel,
     HelpKeyNextPanel,
+    /// The close chip in every overlay's top border: `[× 关闭]`.
+    OverlayClose,
     // ── the preview box and clipboard paste ──────────────────────────
     PreviewZoomIn,
     PreviewZoomOut,
@@ -1083,6 +1085,7 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "查看草稿里最新那张图片",
             "View the newest image attached to the draft",
         ),
+        OverlayClose => ("关闭", "Close"),
         PreviewZoomIn => ("放大", "Zoom in"),
         PreviewZoomOut => ("缩小", "Zoom out"),
         PreviewFit => ("适应", "Fit"),
@@ -1393,7 +1396,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 333] = {
+    const ALL_KEYS: [Key; 334] = {
         use Key::*;
         [
             TabTodo,
@@ -1675,6 +1678,7 @@ mod tests {
             HelpKeyNextPanel,
             HelpKeyPasteImage,
             HelpKeyPreviewAttachment,
+            OverlayClose,
             PreviewZoomIn,
             PreviewZoomOut,
             PreviewFit,

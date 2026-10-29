@@ -436,6 +436,7 @@ click on the rail's tab strip are the doors to the same places.
 | Click a queued prompt | Recall it into the draft, exactly as `enter` does there — the band above the composer and the `/queue` box speak the same verb |
 | Click the queue band's header | Open `/queue` (the count is the door to the manager) |
 | Click the page around an overlay | Close it; a click on the box itself is absorbed, never passed to the control behind it |
+| Click the `[× 关闭]` chip | Close the panel — every box paints one at the right end of its top border, and it runs the very handler `esc` does: one level out for the preview (back to the panel the file came from), back to the preferences list from the shortcut editor, and out for everything else. A reader with no keyboard has no other way out, which is why the chip is on all of them, the full-screen `/git` and 文件 panels included |
 
 Mouse reporting is SGR 1006 and starts with the persisted preference (enabled by default). `/mouse` releases and restores it at runtime and saves the choice; the terminal is always restored on exit. Draft text, cursor, folded pastes and image attachments are kept per session across overlays, launchpad visits and session switches (for the lifetime of this TUI process, not persisted to disk).
 

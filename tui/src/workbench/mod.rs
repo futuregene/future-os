@@ -557,6 +557,13 @@ const ZOOM_FIT: &str = "preview.fit";
 const PREV_IMAGE: &str = "preview.prev";
 const NEXT_IMAGE: &str = "preview.next";
 
+/// The close chip every overlay paints in its top border.
+///
+/// One id for all of them: the chip means "leave this panel" whatever the panel
+/// is, and what that answer *is* stays the panel's own business — a click on it
+/// runs exactly the handler `esc` runs (see [`Workbench::close_overlay`]).
+pub(crate) const OVERLAY_CLOSE: &str = "overlay.close";
+
 /// Columns one `←` / `→` pans a `/git` pane.
 ///
 /// Neither pane wraps, and eight cells a press crosses a date or a graph lane
@@ -3417,6 +3424,24 @@ impl Workbench {
         }
     }
 
+    /// Leave an overlay the way `esc` does — the chip in its top border.
+    ///
+    /// The chip is the pointer's spelling of that key, never a second verb: the
+    /// preview steps back to the panel it was opened from rather than to the
+    /// chat, the shortcut editor goes back to the preferences list, and the
+    /// other panels close. A button that did something else would put two
+    /// answers to "close" on one screen.
+    fn close_overlay(&mut self, overlay: Overlay, data: &WorkbenchData) -> Vec<WbAction> {
+        if overlay == Overlay::FilePreview {
+            // The preview owns `esc` itself (`preview_key`), so it is the one
+            // overlay `handle_overlay_key` does not close.
+            return self
+                .preview_key("escape", data)
+                .unwrap_or_else(|| vec![WbAction::Redraw]);
+        }
+        self.handle_overlay_key(overlay, "escape", data)
+    }
+
     /// The `enter` on a picker row, expressed with a pointer: the click moves
     /// the highlight to the row it landed on and then applies it, because a
     /// mouse has no second `enter`. The wheel walks the list.
@@ -3525,6 +3550,9 @@ impl Workbench {
             return vec![WbAction::Redraw];
         };
         match id.as_str() {
+            // The chip every panel paints in its top border: the pointer's way
+            // out, which is the same answer `esc` gives.
+            OVERLAY_CLOSE => self.close_overlay(overlay, data),
             // The box's own padding, its title rule, its hints: part of the
             // overlay, so a click there is absorbed rather than dismissing it.
             "overlay.surface" => Vec::new(),
@@ -3726,6 +3754,8 @@ impl Workbench {
                         }
                         self.apply_picker(kind, data)
                     }
+                    // The chip in the box's top border: out, holding nothing.
+                    Some(OVERLAY_CLOSE) => self.dismiss_picker(kind),
                     // The box itself (its search line, its hints, its padding) is
                     // not a choice and not a dismissal.
                     Some("picker.body") => Vec::new(),
@@ -7435,6 +7465,183 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Every panel is left with the mouse.
+    ///
+    /// `esc` is the only way out of most of these boxes, which is no way out at
+    /// all for a reader with a pointer: the chip in the top border is the
+    /// pointer's spelling of that key, so a click on it must leave the panel
+    /// exactly as `esc` does — and it must be *drawn* where the hit map says it
+    /// is, or the button is a decoration.
+    #[test]
+    fn every_panel_paints_a_close_chip_that_leaves_it() {
+        // The overlays whose box needs data before it paints at all; the rest
+        // draw their empty state, which still carries the border.
+        fn data_for(overlay: Overlay) -> WorkbenchData {
+            let mut data = demo::chat();
+            match overlay {
+                Overlay::Git => data.git = Some(demo::git()),
+                Overlay::FilePreview => data.preview = Some(demo::preview_image()),
+                _ => {}
+            }
+            data
+        }
+        let cases = [
+            Overlay::Help,
+            Overlay::Palette,
+            Overlay::PanelFull,
+            Overlay::Queue,
+            Overlay::Approval,
+            Overlay::Diff,
+            Overlay::Git,
+            Overlay::Files,
+            Overlay::History,
+            Overlay::Tree,
+            Overlay::Fork,
+            Overlay::Worktree,
+            Overlay::Preferences,
+            Overlay::Keybindings,
+            Overlay::DeleteSession,
+            Overlay::FilePreview,
+            Overlay::Picker(PickerKind::Language),
+        ];
+        for overlay in cases {
+            let data = data_for(overlay);
+            let mut workbench = workbench();
+            workbench.overlay = Some(overlay);
+            if overlay == Overlay::DeleteSession {
+                workbench.delete_target = Some(DeleteTarget {
+                    id: "s2".into(),
+                    title: "workbench 布局草图".into(),
+                    workspace: "future-os".into(),
+                });
+            }
+            let rows = workbench.render(&data, 120, 38);
+            // Painted: the chip's label is on the row the region names, and on
+            // the cells the region covers.
+            let (rect, _) = workbench
+                .hits()
+                .regions()
+                .iter()
+                .find(|(_, id)| id == OVERLAY_CLOSE)
+                .cloned()
+                .unwrap_or_else(|| panic!("{overlay:?} paints no close chip"));
+            let painted = crate::utils::strip_ansi_codes(&rows[rect.y as usize]);
+            let label = widgets::close_label(workbench.lang);
+            let byte = painted
+                .find(&label)
+                .unwrap_or_else(|| panic!("{overlay:?} paints no {label}: {painted:?}"));
+            assert_eq!(
+                ansi::width(&painted[..byte]) as u16,
+                rect.x,
+                "{overlay:?}: the region is not where the chip is painted"
+            );
+            assert_eq!(rect.w as usize, ansi::width(&label), "{overlay:?}");
+            // Clicked: the panel goes, holding nothing.
+            let actions = click_region(&mut workbench, &data, 120, 38, OVERLAY_CLOSE);
+            assert_eq!(actions, vec![WbAction::Redraw], "{overlay:?}");
+            match overlay {
+                // Two panels are one level deep: the shortcut editor is opened
+                // from the preferences list, and the preview from the panel the
+                // file came from. `esc` walks back, and so does the chip.
+                Overlay::Keybindings => assert_eq!(workbench.overlay, Some(Overlay::Preferences)),
+                _ => assert_eq!(workbench.overlay, None, "{overlay:?} stayed open"),
+            }
+        }
+    }
+
+    /// The chip on the full-height panels — `/git` and 文件 — is on the frame's
+    /// first row, flush against the right corner, and the rest of that row is
+    /// still the panel's own surface rather than a second button.
+    #[test]
+    fn the_full_height_panels_keep_their_chip_off_the_title() {
+        for overlay in [Overlay::Git, Overlay::Files] {
+            let mut data = demo::chat();
+            if overlay == Overlay::Git {
+                data.git = Some(demo::git());
+            }
+            let mut workbench = workbench();
+            workbench.overlay = Some(overlay);
+            let rows = workbench.render(&data, 120, 38);
+            let (rect, _) = workbench
+                .hits()
+                .regions()
+                .iter()
+                .find(|(_, id)| id == OVERLAY_CLOSE)
+                .cloned()
+                .unwrap_or_else(|| panic!("{overlay:?} paints no close chip"));
+            assert_eq!(rect.y, 0, "{overlay:?}: the chip is not on the top border");
+            let label = widgets::close_label(workbench.lang);
+            assert_eq!(rect.w as usize, ansi::width(&label), "{overlay:?}");
+            // The box's own right corner closes the border right after it.
+            let painted = crate::utils::strip_ansi_codes(&rows[0]);
+            assert!(
+                painted.trim_end().ends_with(&format!("{label}╮")),
+                "{overlay:?}: the chip is not against the corner: {painted:?}"
+            );
+            // Beside the chip the panel's own surface answers, not a button…
+            assert_eq!(
+                workbench.hits().hit(rect.x - 2, 0),
+                Some("overlay.surface"),
+                "{overlay:?}"
+            );
+            // …and a press on the chip leaves the panel, the way `esc` does.
+            let press = mouse::MouseEvent {
+                kind: mouse::MouseKind::Press,
+                x: rect.x + 1,
+                y: 0,
+                shift: false,
+                alt: false,
+                ctrl: false,
+            };
+            assert_eq!(
+                workbench.handle(WbEvent::Mouse(press), &data),
+                vec![WbAction::Redraw]
+            );
+            assert_eq!(workbench.overlay, None, "{overlay:?} stayed open");
+        }
+    }
+
+    /// The chip speaks the interface language, and its cells follow the label:
+    /// `[× 关闭]` is one cell narrower than `[× Close]`.
+    #[test]
+    fn the_close_chip_follows_the_interface_language() {
+        let mut data = demo::chat();
+        data.preview = Some(demo::preview_image());
+        let mut workbench = workbench();
+        workbench.overlay = Some(Overlay::FilePreview);
+        // The preview is a centred box, so the chip's row is whatever the hit
+        // map says it is rather than the frame's first row.
+        let chip = |workbench: &Workbench, rows: &[String]| -> (String, String) {
+            let (rect, _) = workbench
+                .hits()
+                .regions()
+                .iter()
+                .find(|(_, id)| id == OVERLAY_CLOSE)
+                .cloned()
+                .expect("the chip is a target");
+            // The box's own corner closes the row right after the chip.
+            assert!(
+                crate::utils::strip_ansi_codes(&rows[rect.y as usize])
+                    .trim_end()
+                    .ends_with("╮"),
+                "the chip is not on the border"
+            );
+            (
+                crate::utils::strip_ansi_codes(&rows[rect.y as usize]),
+                format!("{}x{}", rect.w, rect.h),
+            )
+        };
+        let zh = workbench.render(&data, 120, 38);
+        let (row, cells) = chip(&workbench, &zh);
+        assert!(row.contains("[× 关闭]"), "{row:?}");
+        assert_eq!(cells, format!("{}x1", ansi::width("[× 关闭]")));
+        workbench.set_language(LanguagePreference::En);
+        let en = workbench.render(&data, 120, 38);
+        let (row, cells) = chip(&workbench, &en);
+        assert!(row.contains("[× Close]"), "{row:?}");
+        assert_eq!(cells, format!("{}x1", ansi::width("[× Close]")));
     }
 
     /// Dragging the picture pans it: the pointer's counterpart of the arrows.

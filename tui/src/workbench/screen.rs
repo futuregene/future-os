@@ -19,7 +19,7 @@ use crate::workbench::state::{self, ActivityKind, GitRow, PanelId, WorkbenchData
 use crate::workbench::syntax;
 use crate::workbench::theme::Palette;
 use crate::workbench::widgets;
-use crate::workbench::{launchpad, panels, Overlay, Workbench, HELP_KEYS};
+use crate::workbench::{launchpad, panels, Overlay, Workbench, HELP_KEYS, OVERLAY_CLOSE};
 
 /// Compose one frame.
 pub(crate) fn compose(
@@ -1135,11 +1135,11 @@ fn queue_box(
     workbench
         .hit_map()
         .push(Rect::new(0, 0, columns as u16, h), "overlay.surface");
-    let mut rows = vec![widgets::box_top(
-        palette,
-        columns,
-        t(workbench.lang, Key::QueueTitle),
-    )];
+    let lang = workbench.lang;
+    let (top, close) =
+        widgets::box_top_with_close(palette, columns, t(lang, Key::QueueTitle), lang);
+    let mut rows = vec![top];
+    claim_close(workbench, 0, 0, close);
     rows.push(widgets::box_row(
         palette,
         t(workbench.lang, Key::QueueHint),
@@ -1209,7 +1209,15 @@ fn delete_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> V
     ];
     let geometry = box_geometry(w, h, 60, content.len());
     claim_box(workbench, &geometry);
-    framed(palette, t(lang, Key::DeleteTitle), content, w, h, &geometry)
+    framed(
+        palette,
+        t(lang, Key::DeleteTitle),
+        content,
+        w,
+        h,
+        &geometry,
+        Chrome::Panel(lang),
+    )
 }
 
 fn workflow_box(
@@ -1245,14 +1253,13 @@ fn workflow_box(
         Overlay::Worktree => (Key::WorktreeTitle, Key::WorktreeHint),
         _ => unreachable!(),
     };
-    let mut rows = vec![widgets::box_top(
-        palette,
-        columns,
-        t(workbench.lang, title_key),
-    )];
+    let lang = workbench.lang;
+    let (top, close) = widgets::box_top_with_close(palette, columns, t(lang, title_key), lang);
     if overlay == Overlay::Diff {
         return diff_review_box(workbench, data, palette, h, w, columns);
     }
+    let mut rows = vec![top];
+    claim_close(workbench, left as u16, 0, close);
     if overlay != Overlay::Approval {
         rows.push(widgets::box_row(
             palette,
@@ -1785,8 +1792,23 @@ fn framed(
     w: u16,
     h: u16,
     geometry: &BoxGeometry,
+    chrome: Chrome,
 ) -> Vec<String> {
-    paint_box(palette, title, content, w, h, geometry)
+    paint_box(palette, title, content, w, h, geometry, chrome)
+}
+
+/// What a box's top border carries, beyond its title.
+///
+/// Every panel gets the close chip ([`widgets::box_top_with_close`]); the mention
+/// menu is the one box drawn with [`Chrome::Plain`], because it is a completion
+/// list that closes as the reader types rather than a panel they opened — a
+/// close button there would be a button for something that was never "open".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Chrome {
+    /// A panel: the chip, labelled in this language.
+    Panel(Language),
+    /// The bare rule.
+    Plain,
 }
 
 /// Where a centred box lands. One struct for the painter and for anything that
@@ -1840,11 +1862,27 @@ fn box_geometry(w: u16, h: u16, min_width: u16, content_len: usize) -> BoxGeomet
 /// the box's own rows: a row registered later still wins at its own cells, and
 /// everything else in the box (its title rule, its padding, its hints) answers
 /// as the overlay instead of leaking through to the page underneath.
+///
+/// The close chip on the box's top border is claimed here too, because every
+/// box that claims a surface paints the same chip at the same place — see
+/// [`widgets::close_cells`], which the painter and this map both read.
 fn claim_box(workbench: &mut Workbench, geometry: &BoxGeometry) {
     workbench.hit_map().push(
         Rect::new(geometry.left, geometry.top, geometry.w, geometry.h),
         "overlay.surface",
     );
+    let cells = widgets::close_cells(geometry.w as usize, workbench.lang);
+    claim_close(workbench, geometry.left, geometry.top, cells);
+}
+
+/// Register the close chip drawn at `(left, top)`, as [`widgets::close_cells`]
+/// places it on a `columns`-wide top border.
+fn claim_close(workbench: &mut Workbench, left: u16, top: u16, cells: Option<(u16, u16)>) {
+    if let Some((x, w)) = cells {
+        workbench
+            .hit_map()
+            .push(Rect::new(left.saturating_add(x), top, w, 1), OVERLAY_CLOSE);
+    }
 }
 
 /// Shift an overlay's rows right by `left` so the box is *drawn* where its hit
@@ -2038,6 +2076,7 @@ fn paint_box(
     w: u16,
     h: u16,
     geometry: &BoxGeometry,
+    chrome: Chrome,
 ) -> Vec<String> {
     let inner = geometry.w.saturating_sub(2) as usize;
     let mut lines: Vec<String> = Vec::with_capacity(h as usize);
@@ -2045,12 +2084,14 @@ fn paint_box(
     for _ in 0..geometry.top {
         lines.push(fit("", w as usize));
     }
+    let top = match chrome {
+        Chrome::Panel(lang) => {
+            widgets::box_top_with_close(palette, geometry.w as usize, title, lang).0
+        }
+        Chrome::Plain => widgets::box_top(palette, geometry.w as usize, title),
+    };
     lines.push(fit(
-        &format!(
-            "{}{}",
-            " ".repeat(geometry.left as usize),
-            widgets::box_top(palette, geometry.w as usize, title)
-        ),
+        &format!("{}{}", " ".repeat(geometry.left as usize), top),
         w as usize,
     ));
     for row in content
@@ -2090,11 +2131,14 @@ fn diff_review_box(
 ) -> Vec<String> {
     use crate::workbench::workflows;
     let left = (w as usize).saturating_sub(columns) / 2;
-    let mut rows = vec![widgets::box_top(
+    let (top, close) = widgets::box_top_with_close(
         palette,
         columns,
         t(workbench.lang, Key::DiffTitle),
-    )];
+        workbench.lang,
+    );
+    let mut rows = vec![top];
+    claim_close(workbench, left as u16, 0, close);
     rows.push(widgets::box_row(
         palette,
         t(workbench.lang, Key::DiffHint),
@@ -2256,7 +2300,9 @@ fn git_box(
         Some(repo) if !repo.is_empty() => format!(" git · {repo} "),
         _ => " git ".to_string(),
     };
-    let mut rows = vec![widgets::box_top(palette, columns, &title)];
+    let (top, close) = widgets::box_top_with_close(palette, columns, &title, lang);
+    let mut rows = vec![top];
+    claim_close(workbench, left as u16, 0, close);
 
     // The tab strip. Its labels are the number keys, painted in the order
     // `GitSection::ALL` lists them, so what a reader sees and what `5` selects
@@ -2912,7 +2958,9 @@ fn files_box(
         "" => t(lang, Key::FilesTitle).to_string(),
         root => format!("{} · {root}", t(lang, Key::FilesTitle)),
     };
-    let mut rows = vec![widgets::box_top(palette, columns, &title)];
+    let (top, close) = widgets::box_top_with_close(palette, columns, &title, lang);
+    let mut rows = vec![top];
+    claim_close(workbench, left as u16, 0, close);
     // The box is the frame's full height: a tree is read by scrolling it.
     let available = (h as usize).saturating_sub(3);
     if available == 0 {
@@ -3037,7 +3085,15 @@ fn help_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec
     let content: Vec<String> = content.into_iter().skip(scroll).collect();
     let geometry = box_geometry(w, h, 72, content.len());
     claim_box(workbench, &geometry);
-    framed(palette, t(lang, Key::HelpTitle), content, w, h, &geometry)
+    framed(
+        palette,
+        t(lang, Key::HelpTitle),
+        content,
+        w,
+        h,
+        &geometry,
+        Chrome::Panel(lang),
+    )
 }
 
 fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec<String> {
@@ -3143,6 +3199,7 @@ fn preferences_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
         w,
         h,
         &geometry,
+        Chrome::Panel(lang),
     )
 }
 
@@ -3230,6 +3287,7 @@ fn keybindings_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16)
         w,
         h,
         &geometry,
+        Chrome::Panel(lang),
     )
 }
 
@@ -3275,6 +3333,7 @@ fn preview_box(
             w,
             h,
             &geometry,
+            Chrome::Panel(lang),
         );
     };
     let zoom = workbench.preview_zoom;
@@ -3425,7 +3484,15 @@ fn preview_box(
         }
         _ => preview.name().to_string(),
     };
-    paint_box(palette, &title, content, w, h, &geometry)
+    paint_box(
+        palette,
+        &title,
+        content,
+        w,
+        h,
+        &geometry,
+        Chrome::Panel(lang),
+    )
 }
 
 /// A previewed line with its syntax runs in the palette's token colours.
@@ -3548,6 +3615,7 @@ fn palette_box(
         w,
         h,
         &geometry,
+        Chrome::Panel(lang),
     )
 }
 
@@ -3718,6 +3786,7 @@ fn palette_columns(
         w,
         h,
         &geometry,
+        Chrome::Panel(lang),
     )
 }
 
@@ -3870,7 +3939,15 @@ fn mention_box(
         );
     }
     (
-        framed(palette, kind.title(lang), content, w, h, &geometry),
+        framed(
+            palette,
+            kind.title(lang),
+            content,
+            w,
+            h,
+            &geometry,
+            Chrome::Plain,
+        ),
         geometry,
     )
 }
@@ -4001,6 +4078,12 @@ fn picker_box(
         geometry.h,
     );
     workbench.hit_map().push(body, "picker.body");
+    claim_close(
+        workbench,
+        geometry.left,
+        geometry.top,
+        widgets::close_cells(geometry.w as usize, workbench.lang),
+    );
     let rows_y = geometry.top.saturating_add(3);
     for display in start..end {
         let Some(ordinal) = view.ordinal(display) else {
@@ -4025,6 +4108,7 @@ fn picker_box(
         w,
         h,
         &geometry,
+        Chrome::Panel(workbench.lang),
     )
 }
 
@@ -4065,7 +4149,7 @@ fn panel_box(
     );
     let geometry = box_geometry(w, h, PANEL_WIDTH, body.len());
     claim_box(workbench, &geometry);
-    framed(palette, title, body, w, h, &geometry)
+    framed(palette, title, body, w, h, &geometry, Chrome::Panel(lang))
 }
 
 /// Width the full-screen panel asks for (`ctrl+b` on a terminal too narrow for
