@@ -1574,7 +1574,14 @@ mod tests {
         let premature = rx.recv_timeout(Duration::from_millis(100));
         gate.wait(); // always release before assertions, including a regression failure
         if premature.is_err() {
-            rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+            // The assertion is the order of the two entries, not this wait: the
+            // recovery job must merely finish. Five seconds was a budget for a
+            // two-entry commit, and it is not one on a loaded machine — every
+            // writer commits with `synchronous = FULL`, so a suite running 32
+            // databases at once can spend longer than that in fsync alone
+            // (measured 2026-10-29: red at 32 threads, green at 8, `Timeout` at
+            // this line). Bound it, but bound it above a scheduling accident.
+            rx.recv_timeout(Duration::from_secs(60)).unwrap().unwrap();
         }
         worker.join().unwrap();
         persistence.barrier().unwrap();
