@@ -302,27 +302,6 @@ pub struct Live {
     /// The siblings a finished preview brought, waiting for the driver to hand
     /// them to the preview box (`take_preview_siblings`).
     preview_siblings: Option<(Vec<String>, usize)>,
-    /// The transcript's pictures, decoded and scaled down for a thumbnail
-    /// (`chat_area::render_pictures` reserves the cells; these are the pixels
-    /// that fill them). Keyed by path: two messages can carry the same picture,
-    /// and a conversation is re-read often enough that decoding it twice would
-    /// be the only slow thing about scrolling back.
-    ///
-    /// A path that could not be read is stored *empty* rather than left out:
-    /// an empty [`ImagePixels`] is the answer "there is nothing to draw here",
-    /// and the frame stops asking.
-    pictures: HashMap<String, super::image_view::ImagePixels>,
-    /// The order they were decoded in; an over-full cache gives the oldest up.
-    picture_order: VecDeque<String>,
-    /// Paths the frame asked for and nothing has answered yet, in the order it
-    /// asked. Read one at a time: a conversation with ten pictures in it should
-    /// not start ten decoders.
-    picture_queue: VecDeque<String>,
-    /// The one picture being read off the event loop, and the path it is for.
-    picture_read: Option<(
-        String,
-        std::sync::mpsc::Receiver<Result<super::image_view::ImagePixels, String>>,
-    )>,
 }
 
 struct PreviewLoaded {
@@ -425,10 +404,6 @@ impl Live {
             tree_read: None,
             tree_revision: 0,
             preview_siblings: None,
-            pictures: HashMap::new(),
-            picture_order: VecDeque::new(),
-            picture_queue: VecDeque::new(),
-            picture_read: None,
         };
 
         if let Some(id) = session.filter(|id| !id.is_empty()) {
@@ -1526,17 +1501,6 @@ impl Live {
             },
             files: self.files.clone(),
             tree: self.tree.clone(),
-            pictures: self
-                .chat
-                .pictures()
-                .into_iter()
-                .map(|block| super::state::ChatImage {
-                    row: block.row,
-                    rows: block.rows,
-                    pixels: self.pictures.get(&block.path).cloned(),
-                    path: block.path,
-                })
-                .collect(),
             preview: self.preview.clone(),
             sessions: rows,
             workspaces,
@@ -3166,84 +3130,6 @@ impl Live {
         self.preview_siblings.take()
     }
 
-    // ─── the transcript's pictures ──────────────────────────────────────
-
-    /// The frame asked for these pictures' pixels: read them, off the loop.
-    ///
-    /// Only what the frame could actually draw is asked for, and only once: a
-    /// transcript with a picture in it repaints for every streamed token, and a
-    /// reader who scrolls past ten attachments should not queue ten decodes for
-    /// the ones behind them.
-    pub fn want_pictures(&mut self, paths: Vec<String>) {
-        for path in paths {
-            if self.pictures.contains_key(&path)
-                || self.picture_queue.iter().any(|queued| *queued == path)
-                || self
-                    .picture_read
-                    .as_ref()
-                    .is_some_and(|(reading, _)| *reading == path)
-            {
-                continue;
-            }
-            self.picture_queue.push_back(path);
-        }
-        self.begin_picture_read();
-    }
-
-    /// Start the next read, if one is not already in flight.
-    fn begin_picture_read(&mut self) {
-        if self.picture_read.is_some() {
-            return;
-        }
-        let Some(path) = self.picture_queue.pop_front() else {
-            return;
-        };
-        let (tx, rx) = std::sync::mpsc::channel();
-        let read = path.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(read_thumbnail(&read));
-        });
-        self.picture_read = Some((path, rx));
-    }
-
-    /// Install every finished picture read. Returns whether the frame changed —
-    /// a thumbnail becoming visible is a repaint, and the slot it fills is
-    /// already on screen waiting for it.
-    pub fn poll_thumbnails(&mut self) -> bool {
-        let Some((_path, rx)) = self.picture_read.as_ref() else {
-            return false;
-        };
-        let outcome = rx.try_recv();
-        let path = self.picture_read.as_ref().map(|(path, _)| path.clone());
-        match outcome {
-            Ok(result) => {
-                self.picture_read = None;
-                let Some(path) = path else {
-                    return false;
-                };
-                let pixels = result.unwrap_or_default();
-                // A path that failed is remembered as "nothing to draw": the
-                // file may have been moved, and asking again every frame would
-                // be a read per frame for a picture that will never appear.
-                self.pictures.insert(path.clone(), pixels);
-                self.picture_order.push_back(path);
-                while self.picture_order.len() > MAX_PICTURE_CACHE {
-                    if let Some(old) = self.picture_order.pop_front() {
-                        self.pictures.remove(&old);
-                    }
-                }
-                self.begin_picture_read();
-                true
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => false,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.picture_read = None;
-                self.begin_picture_read();
-                false
-            }
-        }
-    }
-
     /// Show the newest image already attached to the draft.
     ///
     /// The bytes are read on a blocking thread by [`Self::start_preview`]; the
@@ -3718,17 +3604,6 @@ pub const MAX_PREVIEW_IMAGE_PX: u32 = 2048;
 /// to be refused.
 const MAX_PREVIEW_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
 
-/// How many decoded pictures the transcript keeps, and the longest side each is
-/// scaled down to.
-///
-/// A window shows a handful; the rest are kept so scrolling back over a picture
-/// re-places it instead of decoding it again. `320` is sharp at a thumbnail's
-/// size — it is drawn into at most `screen::PICTURE_SLOT_COLUMNS` cells, and a
-/// cell is at most ten transmitted pixels wide (`run::TRANSMIT_PX_PER_CELL`) —
-/// and sixteen of them are a few megabytes rather than a few hundred.
-const MAX_PICTURE_CACHE: usize = 16;
-const MAX_THUMBNAIL_PX: u32 = 320;
-
 /// Decode a picture, scaled down so its longest side is at most `max_px`.
 ///
 /// Shared by the preview box and the transcript's thumbnails: the two differ
@@ -3752,11 +3627,6 @@ fn decode_image(
         height: rgba.height() as usize,
         rgba: rgba.into_raw().into(),
     })
-}
-
-/// One picture for the transcript, read off the event loop.
-fn read_thumbnail(path: &str) -> Result<super::image_view::ImagePixels, String> {
-    decode_image(path, MAX_THUMBNAIL_PX, Language::En)
 }
 
 /// Read an image file without trusting its size on disk.
@@ -4970,80 +4840,6 @@ mod tests {
         assert_eq!(siblings.0.len(), 1);
     }
 
-    /// A transcript picture is read off the loop like a preview, scaled down to
-    /// a thumbnail's worth of pixels, and asked for exactly once. A path that
-    /// cannot be read is remembered as "nothing to draw" rather than retried
-    /// for as long as its slot is on screen.
-    #[tokio::test]
-    async fn a_transcripts_picture_is_decoded_once_and_cached() {
-        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[(
-            "get_state",
-            r#"{"sessionId":"s-1"}"#,
-        )]);
-        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
-        let (mut live, _events) = Live::attach(&addr, None, false, None).await.unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let png = dir.path().join("shot.png");
-        // Wider than a thumbnail is allowed to be, so the cap is observable.
-        let mut wide = image::RgbaImage::new(MAX_THUMBNAIL_PX * 3, 40);
-        wide.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
-        let mut bytes = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::ImageRgba8(wide)
-            .write_to(&mut bytes, image::ImageFormat::Png)
-            .expect("encode");
-        std::fs::write(&png, bytes.into_inner()).unwrap();
-        let path = png.to_string_lossy().to_string();
-
-        // The same picture named twice is one read: two messages can carry it,
-        // and the frame asks again on every repaint.
-        live.want_pictures(vec![path.clone(), path.clone()]);
-        assert!(live.picture_queue.is_empty(), "{:?}", live.picture_queue);
-        assert_eq!(
-            live.picture_read
-                .as_ref()
-                .map(|(reading, _)| reading.clone()),
-            Some(path.clone()),
-            "one read, not two"
-        );
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while !live.poll_thumbnails() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the picture never landed"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-        let pixels = live.pictures.get(&path).expect("decoded").clone();
-        assert_eq!(
-            pixels.width, MAX_THUMBNAIL_PX as usize,
-            "a thumbnail is scaled to its own size, not the picture's"
-        );
-        assert!(pixels.height > 0, "{pixels:?}");
-
-        // Asked again: the decode is behind us, so nothing is queued.
-        live.want_pictures(vec![path.clone()]);
-        assert!(live.picture_queue.is_empty(), "{:?}", live.picture_queue);
-
-        // A file that is gone becomes an *empty* picture: the frame sees an
-        // answer, stops asking, and the block keeps its caption.
-        live.want_pictures(vec!["/definitely/not/here.png".into()]);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while !live.poll_thumbnails() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the failed read never answered"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-        let missing = live
-            .pictures
-            .get("/definitely/not/here.png")
-            .expect("a remembered failure");
-        assert!(missing.is_empty(), "{missing:?}");
-        live.want_pictures(vec!["/definitely/not/here.png".into()]);
-        assert!(live.picture_queue.is_empty(), "no retry loop");
-    }
-
     /// A launchpad has no session to subscribe to, but a successful attach
     /// still means the agent is there. A later stream edge is what turns the
     /// dot dark.
@@ -5205,7 +5001,11 @@ mod tests {
     /// approval in a project directory) — which is exactly what must not leak
     /// into a fresh screen.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // FUTURE_HOME is process-global and must stay pinned across awaits.
     async fn a_fresh_launchpad_names_the_product_defaults() {
+        // The expected chat directory is read from the process environment, as
+        // the screen reads it: a peer test's swap must not answer for it.
+        let _guard = crate::test_env::lock();
         let state = r#"{"sessionId":"s-1","cwd":"/work/alpha","model":"future/old","thinkingLevel":"high","sandboxTier":"manual"}"#;
         let models = r#"{"models":[
             {"id":"old","label":"old","provider":"future","thinkingLevel":"default",
@@ -5305,7 +5105,11 @@ mod tests {
     /// has room for. On the launchpad the 工作区 chip stages the directory the
     /// next session is created in.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // FUTURE_HOME is process-global and must stay pinned across awaits.
     async fn the_rail_names_workspaces_and_the_chip_stages_the_next_one() {
+        // The chat row is named from the process environment, so this test
+        // reads it under the same lock as a peer test's swap of `FUTURE_HOME`.
+        let _guard = crate::test_env::lock();
         let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
         let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
         let (mut live, _events) = Live::attach(&addr, None, false, None)
@@ -5487,6 +5291,7 @@ mod tests {
     /// remembered as a workspace.
     #[test]
     fn the_apps_own_scratch_directory_is_never_the_launch_workspace() {
+        let _guard = crate::test_env::lock();
         let remembered = tempfile::tempdir().unwrap();
         let remembered = remembered.path().to_string_lossy();
         let chat = chat_workspace();
@@ -5502,6 +5307,11 @@ mod tests {
     /// not.
     #[test]
     fn ambient_directories_are_the_ones_a_shell_sits_in() {
+        // Every path below is derived from `HOME`/`FUTURE_HOME` at read time,
+        // so a peer test's `EnvVarGuard` must be resting while this runs: a
+        // scratch tree under the swapped root is ambient, and the last
+        // assertion below would fail for a directory this test never chose.
+        let _guard = crate::test_env::lock();
         assert!(is_ambient_directory("/"), "the filesystem root");
         assert!(is_ambient_directory("/tmp"));
         assert!(is_ambient_directory("/tmp/"), "a trailing separator");
@@ -5564,7 +5374,11 @@ mod tests {
     /// project is inherited, a chat is not (the next message mints a fresh chat
     /// directory of its own).
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // FUTURE_HOME is process-global and must stay pinned across awaits.
     async fn a_new_conversation_keeps_the_workspace_it_left() {
+        // `chat_workspace()` is read here and classified by the launchpad: a
+        // swap in between would make the two name different directories.
+        let _guard = crate::test_env::lock();
         let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
         let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
         let (mut live, _events) = Live::attach(&addr, None, false, None)
@@ -5850,6 +5664,7 @@ mod tests {
 
     #[test]
     fn a_workspace_is_shown_home_relative() {
+        let _guard = crate::test_env::lock();
         let home = crate::home::home_dir_or_default().display().to_string();
         if home.is_empty() {
             return;
@@ -5902,6 +5717,10 @@ mod tests {
     /// even when it is not the freshest.
     #[test]
     fn conversations_are_filed_by_the_directory_they_ran_in() {
+        // The scratch tree is read from the process environment twice — once
+        // for the fixture, once by `ChatRoots::detect()` — and only a stable
+        // environment makes the two the same directory.
+        let _guard = crate::test_env::lock();
         // The scratch tree belongs to *this* home, so the fixture builds it the
         // way the app does rather than pasting another machine's path.
         let scratch = crate::home::future_state_dir()
@@ -6003,6 +5822,10 @@ mod tests {
     /// two scratch directories are chats, a directory the reader chose is not.
     #[test]
     fn the_hoisted_roots_answer_which_directories_are_chats() {
+        // The roots and the directories compared against them are both
+        // read from the process environment, so they must be read apart from a
+        // peer test's swap of it.
+        let _guard = crate::test_env::lock();
         let roots = ChatRoots::detect();
         let state = crate::home::future_state_dir();
         let default_workspace = state.join("agent").join("workspace").display().to_string();
@@ -6202,6 +6025,7 @@ mod tests {
     /// `thread-20261026-121352-6627dd` came to read like a project in the rail.
     #[test]
     fn a_plain_chat_names_no_workspace() {
+        let _guard = crate::test_env::lock();
         let scratch = crate::home::future_state_dir()
             .join("workspaces")
             .join("chat")

@@ -401,6 +401,11 @@ fn header(
     // tail, so the chat list is the last one standing: it is the only door with
     // no other pointer route (the rail is a keyboard surface, and a narrow frame
     // does not even put it beside the conversation).
+    //
+    // A door carries its chord — `[ctrl+r] 会话` — and it is the only place some
+    // of them are named: the footer's hint row leaves the chat list out for
+    // exactly this reason (see `hint_row`), so the header is where that key is
+    // learned.
     let doors: Vec<Door> = vec![
         Door {
             id: "header.sessions",
@@ -674,14 +679,6 @@ fn header_right(palette: &Palette, data: &WorkbenchData, avail: usize) -> String
 
 // ─── conversation ──────────────────────────────────────────────────────────
 
-/// The widest a transcript picture's thumbnail may be drawn, in cells.
-///
-/// A picture in the conversation is a *preview*: the reader can see what it is
-/// and open it in the box, which is where the whole thing lives. Capped rather
-/// than fitted to the content width so a wide screenshot does not take the same
-/// room as the reply it came with.
-const PICTURE_SLOT_COLUMNS: usize = 28;
-
 /// A picture the preview box wants on screen, in frame cells.
 ///
 /// The frame is text and a bitmap is not: the terminal places it at a cell, out
@@ -906,30 +903,6 @@ fn conversation(
         .collect();
     let badge = usize::from(start > 0);
     let shown = end.saturating_sub(start);
-    // The pictures in this window, by the row their slot starts on. An overlay
-    // covers the transcript, so a picture under it is not asked for — and one
-    // already placed is removed, because the driver places what the frame asks
-    // for and nothing else.
-    let mut window_pictures: Vec<(usize, (usize, usize))> = Vec::new();
-    let can_place = !matches!(
-        crate::terminal_image::get_capabilities().images,
-        crate::terminal_image::ImageProtocol::None
-    );
-    if workbench.overlay.is_none() && can_place {
-        for (index, picture) in data.pictures.iter().enumerate() {
-            if picture.row < start || picture.row >= end {
-                continue;
-            }
-            // A block cut by the bottom of the window shows the part of the
-            // picture that fits: a bitmap placed over rows the frame never
-            // painted would land on the composer.
-            let visible_rows = picture.rows.min(end - picture.row);
-            if visible_rows == 0 {
-                continue;
-            }
-            window_pictures.push((picture.row, (index, visible_rows)));
-        }
-    }
     let mut lines: Vec<String> = Vec::new();
     if start > 0 {
         lines.push(fit(
@@ -992,49 +965,6 @@ fn conversation(
                     format!("chat.row.{}", stop.row),
                 );
             }
-        }
-        // A picture's block: a bitmap the terminal places over the empty cells
-        // the renderer reserved, and a click target over all of them — a
-        // pointer aimed at a three-column portrait is a pointer aiming at
-        // nothing.
-        if let Some((picture_index, visible_rows)) = window_pictures
-            .iter()
-            .find(|(row, _)| *row == index)
-            .map(|(_, block)| *block)
-        {
-            let picture = &data.pictures[picture_index];
-            let slot_w = inner.clamp(1, PICTURE_SLOT_COLUMNS);
-            let x = area.x.saturating_add(padding as u16);
-            match picture.pixels.as_ref().filter(|pixels| !pixels.is_empty()) {
-                Some(pixels) => {
-                    // The visible part of the slot, cropped off the top of the
-                    // picture: the same scale as the whole block, so a block
-                    // half-scrolled out is cut, not shrunk.
-                    let crop_h = (pixels.height * visible_rows / picture.rows.max(1)).max(1);
-                    let crop = (0, 0, pixels.width, crop_h.min(pixels.height));
-                    let (cells_w, cells_h) =
-                        image_view::fitted_cells(pixels.width, crop.3, slot_w, visible_rows, 1);
-                    workbench.image_requests.push(PlacedPicture {
-                        request: ImageRequest {
-                            source: image_source_key(&picture.path, pixels, crop),
-                            x,
-                            y,
-                            columns: cells_w.max(1) as u16,
-                            rows: cells_h.max(1) as u16,
-                            crop,
-                        },
-                        pixels: pixels.clone(),
-                    });
-                }
-                // The block is up and the picture is one decode away. Asking is
-                // a set insert in the driver, which is what keeps a frame that
-                // paints forty times a second from queueing forty reads.
-                None => workbench.want_picture(&picture.path),
-            }
-            workbench.hit_map().push(
-                Rect::new(x, y, slot_w as u16, visible_rows as u16),
-                format!("chat.picture.{picture_index}"),
-            );
         }
     }
     // Bottom-anchored like a chat view: a short conversation sits on the input
@@ -1461,12 +1391,12 @@ fn sidebar_rows(
         );
         x = x.saturating_add(tab_width + 1);
     }
-    // A focused rail says which keys work from here: `shift+←→` the tabs,
-    // `shift+↑↓` the conversations, with the chat following the cursor. `↑↓`
-    // alone only moves the list cursor and `⏎` only opens what it stands on, so
-    // a reader who guessed wrong learns the chords here. It costs the list one
-    // row and saves the guesswork, so it is only shown while the rail actually
-    // owns the keys.
+    // A focused rail says which keys work from here: `ctrl+↑↓` switch the
+    // conversation (the chat follows the cursor, from here or from the draft),
+    // `shift+←→` the tabs. `↑↓` alone move this list's cursor and `⏎` only opens
+    // what it stands on. A reader who guessed wrong learns the chords here; it
+    // costs the list one row and saves the guesswork, so it is only shown while
+    // the rail actually owns the keys.
     let footer = usize::from(workbench.sidebar_focus && area.h >= 4);
     let content = Rect::new(area.x, area.y + 1, area.w, area.h - 1 - footer as u16);
     let index = workbench.panel.index();
@@ -1632,6 +1562,10 @@ fn hint_row(
     // where it went; the cells it frees are what keep both `ctrl+q` and
     // `ctrl+n` on the row in English at 120 columns.
     //
+    // The chat list (`ctrl+r 会话`) is not listed either: the header's own door
+    // beside the title spells `[ctrl+r] 会话`, so a hint here would be the same
+    // key taught twice on one screen. Its cells went to the entries above.
+    //
     // `esc` is not listed either: it is the key that leaves *whatever the reader
     // is in* — an overlay, the queue, a scrolled-back transcript — so a hint
     // that spelled it named one of the five things it does, and the boxes that
@@ -1643,7 +1577,6 @@ fn hint_row(
     // overlay's own inline table does.
     let wide = [
         (workbench.keys.key(Action::Sidebar), Key::HintSidebar),
-        (workbench.keys.key(Action::Sessions), Key::HintSessions),
         (workbench.keys.key(Action::Palette), Key::HintCommands),
         (workbench.keys.key(Action::Preferences), Key::HintSettings),
         (workbench.keys.key(Action::NewSession), Key::HintNewChat),
@@ -4356,14 +4289,17 @@ mod tests {
             Some("? 帮助"),
             "{wide:?}"
         );
+        // The chat list is the header's to teach: the door beside the title
+        // spells it, so the hint row leaves it out.
+        assert!(!wide.contains("ctrl+r"), "{wide:?}");
         // Narrow keeps the head of the row whole and drops the tail, and never
         // cuts a hint in half. Measured at a width where the dropped entry is
         // gone in *both* languages: the Chinese labels are half as wide as the
-        // English ones, so a 40-column row that ends after `ctrl+r` in English
-        // still reaches `ctrl+p` in Chinese.
+        // English ones, so a 40-column row that ends after `ctrl+p` in English
+        // still reaches it in Chinese.
         let narrow = plain(&hint_row(&workbench, &FUTURE_DARK, 40, true)[0]);
         assert!(narrow.contains("ctrl+d"), "{narrow:?}");
-        assert!(narrow.contains("ctrl+r"), "{narrow:?}");
+        assert!(narrow.contains("ctrl+p"), "{narrow:?}");
         let narrow = plain(&hint_row(&workbench, &FUTURE_DARK, 24, true)[0]);
         assert!(narrow.contains("ctrl+d"), "{narrow:?}");
         assert!(
