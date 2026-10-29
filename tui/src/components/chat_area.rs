@@ -2073,7 +2073,14 @@ impl ChatArea {
         }
         let plan = self.layout();
         self.fold_bits = bits;
-        if fold_layout_extends(&self.compact_layout, &plan.heads) {
+        // A fold's *counts* can move while its structure stands: a prose slice's
+        // reasoning joins the counts above it, and the row that counts them is
+        // drawn from them (`push_reply_summary`). `heads` alone would say
+        // "nothing moved" and leave the old numbers, and a marker the counts
+        // just took over would stay on screen. Those are earlier messages' rows
+        // too, so the transcript is rebuilt rather than spliced.
+        if fold_layout_extends(&self.compact_layout, &plan.heads) && plan.folds == self.reply_folds
+        {
             self.compact_layout = plan.heads;
             self.reply_folds = plan.folds;
             return false;
@@ -2356,7 +2363,13 @@ impl ChatArea {
         let has_thinking = msg
             .thinking
             .as_deref()
-            .is_some_and(|t| !t.trim().is_empty());
+            .is_some_and(|t| !t.trim().is_empty())
+            // Reasoning that has started but not sent its first token yet is
+            // still the row the reader is watching: drawing nothing until the
+            // first delta made the marker arrive a frame late, on a line the
+            // transcript had already counted (a blank) — one more row appearing
+            // under a bottom-anchored transcript, one more jump.
+            || (msg.pending && msg.content.trim().is_empty() && msg.thinking.is_some());
 
         // The reading level folded this reply's work (and this answer's own
         // reasoning) away: one summary row stands in for it, above the answer.
@@ -4032,6 +4045,83 @@ mod tests {
         };
         assert!(at("first paragraph") < at("thinking"), "{lines:?}");
         assert!(at("thinking") < at("second paragraph"), "{lines:?}");
+        assert_matches_fresh_render(&mut chat);
+    }
+
+    /// The marker the reader is watching never leaves the screen when the
+    /// thought it announces stops growing: it drops its ellipsis and stays.
+    ///
+    /// Running replies never fold, so the bottom-anchored transcript cannot
+    /// pull every line above the marker down when reasoning ends.
+    #[test]
+    fn the_live_marker_keeps_its_row_when_the_thought_ends() {
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.add_message(ChatMessage::new("u".into(), ChatRole::User, "go"));
+        chat.begin_reply_run();
+
+        // Reasoning that has started but sent no token yet is already the row
+        // the reader is waiting on: it appears with the thought, not with its
+        // first byte.
+        chat.start_thinking();
+        assert_eq!(compact_lines(&mut chat), vec!["go", "▸ thinking…"]);
+        chat.append_thinking_delta("weighing it");
+        let live = compact_lines(&mut chat);
+        assert_eq!(live, vec!["go", "▸ thinking…"], "{live:?}");
+        let rows = chat.render_all(W).len();
+
+        chat.end_thinking();
+        let ended = compact_lines(&mut chat);
+        assert_eq!(ended, vec!["go", "▸ thinking"], "{ended:?}");
+        assert_eq!(
+            chat.render_all(W).len(),
+            rows,
+            "the marker left the screen: every line above it would jump down"
+        );
+        assert_matches_fresh_render(&mut chat);
+    }
+
+    /// A running reply's transcript only ever grows.
+    ///
+    /// The view is bottom-anchored — its window is the transcript's last rows —
+    /// so a row that *disappears* at the tail pulls every line above it down,
+    /// and the next event pushes them back up. Folding the step the reader was
+    /// watching the instant it finished did that once per step.
+    #[test]
+    fn a_running_reply_only_ever_grows() {
+        let mut chat = new_chat();
+        chat.render(W);
+        let mut rows = vec![chat.render_all(W).len()];
+        chat.add_message(ChatMessage::new("u".into(), ChatRole::User, "go"));
+        rows.push(chat.render_all(W).len());
+        chat.begin_reply_run();
+        rows.push(chat.render_all(W).len());
+        for i in 0..4 {
+            chat.start_thinking();
+            rows.push(chat.render_all(W).len());
+            chat.append_thinking_delta("weighing it");
+            rows.push(chat.render_all(W).len());
+            chat.end_thinking();
+            rows.push(chat.render_all(W).len());
+            let id = format!("c{i}");
+            chat.add_tool_start(&id, "read", Some(r#"{"path":"/a.rs"}"#.into()));
+            rows.push(chat.render_all(W).len());
+            chat.finish_tool(&id, None, false);
+            rows.push(chat.render_all(W).len());
+        }
+        chat.start_thinking();
+        chat.append_thinking_delta("one more look");
+        chat.end_thinking();
+        rows.push(chat.render_all(W).len());
+        chat.append_to_last_message("the answer");
+        rows.push(chat.render_all(W).len());
+
+        for pair in rows.windows(2) {
+            assert!(
+                pair[1] >= pair[0],
+                "a row left the tail, so every line above it moved: {rows:?}"
+            );
+        }
         assert_matches_fresh_render(&mut chat);
     }
 

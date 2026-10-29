@@ -69,6 +69,26 @@ async fn wait_for(what: &str, mut predicate: impl FnMut() -> bool) {
     }
 }
 
+/// Wait until the broker has registered the events lane before publishing on it.
+///
+/// `connect_with_emitter` returns once the `SUB` has left the client, not once
+/// the broker has applied it: `async-nats`'s `Client::flush()` flushes the write
+/// buffer and awaits no acknowledgement, so a publish from the host's *other*
+/// connection can reach the broker first — and NATS Core has no replay, so the
+/// event is gone and the test reads as "the stream is broken" while the lane was
+/// simply not installed yet. Registered 300 ms late in the fake broker, this
+/// reproduces the macOS CI red exactly (`the burst never fully arrived`,
+/// 2026-10-29) and this wait makes it green; the sibling tests that already
+/// asserted on a delivered event were the ones that waited first.
+async fn wait_for_the_events_lane(fx: &Fixture) {
+    fx.nats
+        .wait_for_sub(
+            &format!("p.{}.evt.>", fx.pair_id),
+            std::time::Duration::from_secs(10),
+        )
+        .await;
+}
+
 pub(crate) fn find(peers: &[PeerSummary], desktop_id: &str) -> PeerSummary {
     peers
         .iter()
@@ -727,6 +747,7 @@ async fn a_connected_host_streams_its_events_to_the_emitter() {
     connect_with_emitter(&desktop_id, Some(emitter))
         .await
         .expect("connect with a stream");
+    wait_for_the_events_lane(&fx).await;
 
     crate::remote::publish_event(
         "sess_rt_events",
@@ -835,6 +856,7 @@ async fn a_lean_event_recovers_its_session_from_the_subject() {
     connect_with_emitter(&desktop_id, Some(emitter))
         .await
         .expect("connect with a stream");
+    wait_for_the_events_lane(&fx).await;
 
     // The declaration belongs to the host bridge that will publish these
     // events, so it is set on that pairing rather than process-wide.
@@ -1184,6 +1206,7 @@ async fn a_burst_of_events_reaches_the_emitter_in_order() {
     connect_with_emitter(&desktop_id, Some(emitter))
         .await
         .expect("connect with a stream");
+    wait_for_the_events_lane(&fx).await;
 
     let burst = 80u64;
     for idx in 0..burst {
