@@ -235,7 +235,6 @@ function ComposerImpl({
     setContextActionPending(false);
   }, [draftKey]);
 
-  const [fusionEnabled, setFusionEnabled] = useState(false);
   const contextTools = useMemo<ContextToolOption[]>(() => {
     const fusion = { id: "fusion", name: "/fusion", description: t("fusion.enableDescription"), searchText: "fusion 讨论 多模型 思考" };
     if (!onCompactContext || sending || compactionPending)
@@ -285,7 +284,6 @@ function ComposerImpl({
       return;
     const text = editorRef.current ? editorRef.current.getContent() : lastTextRef.current;
     lastTextRef.current = text;
-    setFusionEnabled(fusionTask(text) !== null);
     saveComposerDraft(key, { attachments: attachmentsRef.current, text });
   }, [attachmentsRef, draftKeyRef]);
 
@@ -293,7 +291,6 @@ function ComposerImpl({
     if (toolId === "fusion") {
       const current = editorRef.current?.getContent() ?? "";
       editorRef.current?.restore(`/fusion ${fusionTask(current) ?? current}`);
-      setFusionEnabled(true);
       saveDraft();
       return;
     }
@@ -320,7 +317,6 @@ function ComposerImpl({
     editorRef.current?.restore(text);
     lastTextRef.current = text;
     restoredTextRef.current = text;
-    setFusionEnabled(fusionTask(text) !== null);
     setAttachments(draft?.attachments ?? []);
     setAttachError(null);
   }, [draftKey, setAttachError, setAttachments]);
@@ -405,7 +401,6 @@ function ComposerImpl({
     const trimmed = (editorRef.current?.getContent() ?? "").trim();
     if (fusionTask(trimmed) === "") {
       editorRef.current?.restore("/fusion ");
-      setFusionEnabled(true);
       return;
     }
     // Block submission while a reply streams (the send button is already an
@@ -431,7 +426,6 @@ function ComposerImpl({
         // Handed over: the text now lives in the panel's queue, so this box gives it
         // up the same way a delivered message does.
         editorRef.current?.clear();
-        setFusionEnabled(false);
         lastTextRef.current = "";
         const remaining = attachmentsRef.current.filter(item => !submittedAttachments.includes(item));
         attachmentsRef.current = remaining;
@@ -554,7 +548,6 @@ function ComposerImpl({
       if ((editorRef.current.getContent() ?? "").trim().length > 0)
         return;
       editorRef.current.restore(submittedText);
-      setFusionEnabled(fusionTask(submittedText) !== null);
       lastTextRef.current = submittedText;
       const restored = [...submittedAttachments, ...attachmentsRef.current];
       attachmentsRef.current = restored;
@@ -712,22 +705,6 @@ function ComposerImpl({
             </div>
           )
         : null}
-      {fusionEnabled && (
-        <div className="flex items-center gap-2 px-1 pb-2 text-xs text-ink-muted">
-          <span>{t("fusion.enabled")}</span>
-          <button
-            type="button"
-            className="cursor-pointer hover:text-ink"
-            onClick={() => {
-              editorRef.current?.restore(fusionTask(editorRef.current?.getContent() ?? "") ?? "");
-              setFusionEnabled(false);
-              saveDraft();
-            }}
-          >
-            {t("fusion.remove")}
-          </button>
-        </div>
-      )}
       <MentionEditor
         ref={editorRef}
         className={textareaClassName}

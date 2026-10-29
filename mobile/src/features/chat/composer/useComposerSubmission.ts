@@ -40,7 +40,7 @@ export function useComposerSubmission(options: Options) {
     if (attemptRef.current || initial.restoring || initial.remote.busy
       || initial.remote.compacting) return;
     if (!initial.message.trim() && !initial.attachments.length) return;
-    if (fusionTask(initial.message) === "") { initial.setMessage("/fusion "); showToast(initial.t("chat.fusionEnabled")); return; }
+    if (fusionTask(initial.message) === "") { initial.setMessage("/fusion "); return; }
     if (fusionTask(initial.message) !== null && !initial.remote.capabilities.has("fusion_v1")) {showToast(initial.t("chat.fusionUnavailable"));return;}
     const attempt = {};
     attemptRef.current = attempt;

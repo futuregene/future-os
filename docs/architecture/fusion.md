@@ -255,7 +255,7 @@ Negotiate proposed `fusion_v1`. Old hosts show an upgrade explanation in menus a
 
 | Client | Required experience |
 |---|---|
-| Desktop | `/fusion` completion/parsing, removable pending activation, normal main-flow tool activity, four-stage progress and model-status rows, stop/history/reconnect |
+| Desktop | `/fusion` completion/parsing, visible `/fusion` draft prefix without an activation banner, normal main-flow tool activity, four-stage progress and model-status rows, stop/history/reconnect |
 | Mobile, Android and iOS | Same command/submission metadata, main-flow tool card, compact stage progress and model-status rows, stop, outbox resend and foreground/background recovery |
 | TUI and CLI | TUI `/fusion` palette/parsing, main-flow tool progress, compact discussion status and step transcript queries; CLI ordinary submission recognizes the same directive and offers JSON queries, stop and history |
 
@@ -263,7 +263,7 @@ All clients read/configure moderator and panelists from one source, showing iden
 
 ## Discussion and review interface
 
-Use one term, “discussion”, and the `user-round-group` icon for Fusion. The expanded activity shows four real stages (independent thinking, issue mapping, cross discussion, summary) above one status row per model. Stage progress is not an elapsed-time prediction.
+Use one term, “discussion”, and the `user-round-group` icon for Fusion. Use the same icon in slash-command completion. Choosing the command inserts `/fusion ` into the draft without an enabled banner or toast; removing that prefix cancels activation. A bare directive stays in the draft until a task is supplied. The expanded activity shows four real stages (independent thinking, issue mapping, cross discussion, summary) above one status row per model. Stage progress is not an elapsed-time prediction.
 
 Rows distinguish waiting, thinking, complete, failed, timeout, output limit, stopped, interrupted and partial completion. A retry replaces its earlier attempt for presentation only. A partial result preserves participant failure states and a short completeness notice. Discussion completion does not mean the outer task completed.
 

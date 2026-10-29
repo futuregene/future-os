@@ -1835,7 +1835,6 @@ impl Live {
             "fusion" => {
                 if arg.is_empty() {
                     self.set_draft("/fusion ".into(), 8);
-                    self.notice = Some(t(self.lang, Key::FusionEnabled).into());
                 } else {
                     self.submit(&format!("/fusion {arg}")).await;
                 }

@@ -1,4 +1,3 @@
-import { fusionTask } from "@future-os/thread-projection";
 import { INPUT_MIN_HEIGHT, INPUT_MAX_HEIGHT } from "../composer/composerMetrics";
 import { ArrowDown, CircleAlert, FileText, Paperclip, X } from "lucide-react-native";
 import { Pressable, ScrollView, Text, TextInput, useWindowDimensions, View, type TextInputInstance } from "react-native";
@@ -356,7 +355,6 @@ function ComposerDockView({
                 {`${message}\u200b`}
               </Text>
             </View>
-            {fusionTask(message) !== null ? <Pressable accessibilityRole="button" onPress={() => setMessage(fusionTask(message) ?? message)}><View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}><Text style={{ color: colors.inkSoft, fontSize: 12 }}>{t("chat.fusionEnabled")}</Text><X size={12} color={colors.inkMuted} /></View></Pressable> : null}
       <TextInput
               ref={inputRef}
               selection={completion.inputSelection}

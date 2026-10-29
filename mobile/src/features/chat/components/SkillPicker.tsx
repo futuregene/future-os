@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Info, X } from "lucide-react-native";
+import { Info, UserRoundGroup, X } from "lucide-react-native";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import type { RemoteSkill } from "../../../remote/types";
 import { layout, radius, spacing } from "../../../theme/tokens";
@@ -85,8 +85,13 @@ export function SkillPicker({ query, supported, load, onSelect, onClose, onShowD
               accessibilityHint={action.description}
               onPress={() => onActionSelect?.(action)}
               style={({ pressed }) => [styles.select, pressed && styles.pressed]}>
-              <Text numberOfLines={1} style={styles.name}>{action.label}</Text>
-              <Text numberOfLines={1} style={styles.description}>{action.description}</Text>
+              <View style={styles.actionRow}>
+                {action.id === "fusion" ? <UserRoundGroup size={18} color={colors.inkSoft} /> : null}
+                <View style={styles.actionText}>
+                  <Text numberOfLines={1} style={styles.name}>{action.label}</Text>
+                  <Text numberOfLines={1} style={styles.description}>{action.description}</Text>
+                </View>
+              </View>
             </Pressable>
           </View>
         ))}
@@ -144,6 +149,8 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   close: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center" },
   option: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.colors.lineSoft },
   row: { flexDirection: "row", alignItems: "center" },
+  actionRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  actionText: { flex: 1, minWidth: 0, gap: spacing.xs },
   select: { flex: 1, minWidth: 0, minHeight: SKILL_ROW_HEIGHT, flexDirection: "column", alignItems: "stretch",
     justifyContent: "center", gap: spacing.xs, paddingLeft: spacing.lg, paddingRight: spacing.md, paddingVertical: spacing.sm },
   detailsButton: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center" },
