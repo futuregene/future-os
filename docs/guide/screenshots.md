@@ -461,19 +461,30 @@ transcript (`desktop/shot/mock/data.ts` reads the same parameter). A rail whose
 heading said `Sessions` over rows that said `整理两篇文献的结论对比表` is neither
 language, so each scenario fails if a word of the other one reaches the frame.
 
-The surface draws a settled reply folded onto its answer, so the frame keeps the
-first reply folded — `查看过程 · 工具调用 2 次 · 思考 1 次`, which is the TUI's own
-`▸` line — and opens the second reply's work the way the TUI frame opens its tree:
-`查看过程`, then the step summary, then the first thought. The calls themselves
-are the desktop's idiom, rows of verbs (`已运行`, `已编辑`) whose command sits in
-the inspector; everything the two frames have to agree on — the bug, the
-reasoning, the diagnosis with its highlighted `rust` block and three-row table,
-the closing line, the two commits — is word for word the TUI's. The `eval` holds
-the scenario to that, and also to the frame being whole: the conversation column
-must not be scrolled and the reply's last line must sit above the composer. That
-is why these two scenarios declare a `height` (1720) — the whole two-turn session
-has to be in one picture, and the desktop draws it much taller than a terminal
-cell does.
+The window is a 16-inch laptop's default 1728×1117 at 2×, and the frame reads as
+a normal desktop app: the session rail, the transcript, and — opened from the
+header's own panel button (`展开上下文面板` / `Expand context panel`) — the
+workspace's files on the right. The panel seeds its **Files** tab when it opens
+from that button, so the scenario taps it once and then the `src` row; what it
+lists is the checkout the conversation is about — `parser.rs` and `args.rs` beside
+`lexer.rs`, `main.rs`, `Cargo.toml` and `AGENTS.md`, from `workspaceFiles` keyed by
+the workspace path. Opening it takes 384 px off the conversation column (1440 →
+1056 at this width), but the reading column is capped, so the text re-centres
+rather than re-wrapping; in a window too narrow for a third column the panel opens
+as an overlay over the conversation instead (`context-panel-narrow` captures that).
+
+A settled reply folds onto its answer, so the frame stands at the first turn and
+keeps its work folded — `查看过程 · 工具调用 2 次 · 思考 1 次`, which is the TUI's own
+`▸` line. `上一个问题` (`Previous question`, the transcript's own ↑ control) lands
+the reader's previous question just under the header, which is what puts a whole
+turn on one screen: the question, the folded process, and the diagnosis with its
+highlighted `rust` block, three-row table and closing line, the text word for word
+the TUI's. The second turn starts at the fold — its question is on screen, its
+answer is not — because a laptop window cannot hold both turns, and a
+taller-than-a-screen "window" was the alternative. The `eval` holds the frame to
+that: every block of the first turn above the composer, the second question still
+visible at the fold, and no word of the other language anywhere, the files panel
+included.
 
 Two limits worth stating. Desktop captures are **not** byte-reproducible the way
 the TUI's are: they differ run to run in exactly two places — the relative age
