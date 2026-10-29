@@ -497,6 +497,9 @@ async fn event_loop(
                         workbench.set_preview_siblings(siblings);
                     }
                 }
+                // A decoded thumbnail is a repaint: its slot is already on
+                // screen, waiting for the picture (see `draw`).
+                let pictures_arrived = live.poll_thumbnails();
                 paint = clock.tick(
                     animating,
                     workbench.spinner_frame(),
@@ -505,7 +508,8 @@ async fn event_loop(
                 ) || changed
                     || arrived
                     || connected
-                    || preview_arrived;
+                    || preview_arrived
+                    || pictures_arrived;
             }
             notice = update_notice(update_rx) => {
                 if let Some(notice) = notice {
@@ -1731,7 +1735,14 @@ fn draw(
     if !bytes.is_empty() {
         terminal.write(&bytes);
     }
-    paint_image(terminal, workbench, &data, !painted.rows_written);
+    paint_images(terminal, workbench, &painted.written);
+    // The pictures this frame could not draw yet: the adapter reads them off
+    // the loop, and the next paint puts them in the slots that are already on
+    // screen.
+    let wanted = std::mem::take(&mut workbench.picture_wants);
+    if !wanted.is_empty() {
+        live.want_pictures(wanted);
+    }
     Ok(())
 }
 
@@ -1804,123 +1815,147 @@ fn repaint_after_resets(line: &str, paint: &str) -> String {
     out
 }
 
-/// Paint (or remove) the picture the frame asked for.
+/// Paint (or remove) every picture the frame asked for.
 ///
 /// A terminal bitmap is not a row of text: it is placed at a cell by the
-/// terminal itself, above whatever the frame wrote there. So the preview box
-/// only *describes* what it wants ([`screen::ImageRequest`]) and this — the one
-/// place holding the terminal — writes it after the frame it belongs to,
+/// terminal itself, above whatever the frame wrote there. So the surface only
+/// *describes* what it wants ([`screen::PlacedPicture`]) and this — the one
+/// place holding the terminal — writes them after the frame they belong to,
 /// leaving the hardware cursor exactly where the frame put it.
 ///
 /// The pixels are transmitted once per source (the file, and the crop of it a
-/// zoomed box shows); every later frame only re-places the image, which is a
-/// hundred bytes instead of a megabyte. Re-placing every frame is what keeps a
-/// picture on screen: the frame under it is rewritten each paint, and a placed
-/// image is not part of that text.
-fn paint_image(
-    terminal: &mut Terminal,
-    workbench: &mut Workbench,
-    data: &super::WorkbenchData,
-    rows_intact: bool,
-) {
-    let request = workbench.image_request;
-    let Some(request) = request else {
-        if let Some(painted) = workbench.painted_image.take() {
-            terminal.write(&crate::terminal_image::delete_kitty_image(painted.id));
-        }
-        workbench.painted_iterm = None;
-        return;
-    };
-    // The pixels are the box's own preview: the same image the frame drew.
-    let Some(super::state::PreviewView::Image { pixels, .. }) = data.preview.as_ref() else {
-        return;
-    };
+/// zoomed box or a half-scrolled slot shows); every later frame only re-places
+/// the image, which is a hundred bytes instead of a megabyte. Re-placing every
+/// frame is what keeps a picture on screen: the frame under it is rewritten
+/// each paint, and a placed image is not part of that text. A picture the frame
+/// no longer asks for is deleted, which is how a thumbnail that scrolled out of
+/// the window leaves the cells it used to cover.
+fn paint_images(terminal: &mut Terminal, workbench: &mut Workbench, written_rows: &[usize]) {
+    let requests = workbench.image_requests.clone();
     let protocol = crate::terminal_image::get_capabilities().images;
-    if protocol == crate::terminal_image::ImageProtocol::Iterm2 {
-        // iTerm2 images are inline text, not an independently addressable layer:
-        // a frame that rewrites any cell over the picture erases it, so the
-        // image is placed again only then (or when the shown crop changes).
-        if rows_intact && workbench.painted_iterm == Some(request.source) {
-            return;
+    if protocol == crate::terminal_image::ImageProtocol::None {
+        if !workbench.painted_images.ids.is_empty()
+            || !workbench.painted_images.iterm_shown.is_empty()
+        {
+            workbench.painted_images.clear();
         }
-        let (rgb, w, h) = transmit_bitmap(
-            pixels,
-            request.crop,
-            request.columns as usize,
-            request.rows as usize,
-        );
-        let Some(sequence) = crate::terminal_image::encode_iterm2_rgb_png(
-            &rgb,
-            w as u32,
-            h as u32,
-            request.columns as usize,
-            request.rows as usize,
-        ) else {
-            return;
-        };
-        let mut out = format!("\x1b[{};{}H{sequence}", request.y + 1, request.x + 1);
-        if let Some((x, y)) = workbench.cursor() {
-            out.push_str(&format!("\x1b[{};{}H", y + 1, x + 1));
-        }
-        terminal.write(&out);
-        workbench.painted_iterm = Some(request.source);
-        return;
-    }
-    if protocol != crate::terminal_image::ImageProtocol::Kitty {
-        workbench.painted_iterm = None;
         return;
     }
     let mut out = String::new();
-    match workbench.painted_image {
-        Some(painted) if painted.source == request.source => {
-            // Same bytes, new place: `a=p` places an already-transmitted image
-            // by id, and `p=1` keeps the placement one thing (a new `a=p` each
-            // frame would otherwise stack copies).
-            out.push_str(&format!(
-                "\x1b[{};{}H\x1b_Ga=p,i={},p=1,c={},r={},q=2,C=1\x1b\\",
-                request.y + 1,
-                request.x + 1,
-                painted.id,
-                request.columns,
-                request.rows
-            ));
-        }
-        other => {
-            if let Some(painted) = other {
-                out.push_str(&crate::terminal_image::delete_kitty_image(painted.id));
-            }
-            let id = crate::terminal_image::allocate_image_id();
-            // Transmit what the cells can show, not the source: the decoder
-            // keeps enough pixels for a zoomed window to stay sharp, but a
-            // whole 2048px picture across a hundred cells is fifteen megabytes
-            // over the pty that the terminal would immediately throw away.
-            let (rgb, w, h) = transmit_bitmap(
-                pixels,
-                request.crop,
-                request.columns as usize,
-                request.rows as usize,
-            );
-            out.push_str(&format!("\x1b[{};{}H", request.y + 1, request.x + 1));
-            out.push_str(&crate::terminal_image::encode_kitty_rgb(
-                &rgb,
-                w,
-                h,
-                request.columns as usize,
-                request.rows as usize,
-                id,
-            ));
-            workbench.painted_image = Some(super::PaintedImage {
-                source: request.source,
-                id,
-            });
+    // Everything the frame dropped goes first: an image left behind sits on top
+    // of the rows painted over it, and a scrolled thumbnail would stay where it
+    // was.
+    let wanted: Vec<u64> = requests
+        .iter()
+        .map(|placed| placed.request.source)
+        .collect();
+    let stale: Vec<u64> = workbench
+        .painted_images
+        .ids
+        .keys()
+        .copied()
+        .filter(|source| !wanted.contains(source))
+        .collect();
+    for source in stale {
+        if let Some(id) = workbench.painted_images.take(source) {
+            out.push_str(&crate::terminal_image::delete_kitty_image(id));
         }
     }
-    // Put the cursor back where the frame left it; the image itself does not
-    // move it (`C=1`), but the addressing above did.
+    let mut iterm_now: Vec<(u64, (u16, u16, u16, u16))> = Vec::new();
+    for placed in &requests {
+        let request = placed.request;
+        let placement = (request.x, request.y, request.columns, request.rows);
+        match protocol {
+            crate::terminal_image::ImageProtocol::Iterm2 => {
+                // iTerm2 images are inline text, not an independently
+                // addressable layer: a frame that rewrites any cell over the
+                // picture erases it, so it is placed again only then (or when
+                // the shown crop or its cells changed).
+                let untouched = !written_rows.iter().any(|row| {
+                    let row = *row as u16;
+                    row >= request.y && row < request.y.saturating_add(request.rows)
+                });
+                let already = workbench
+                    .painted_images
+                    .iterm_shown
+                    .iter()
+                    .any(|(source, at)| *source == request.source && *at == placement);
+                if !(untouched && already) {
+                    let (rgb, w, h) = transmit_bitmap(
+                        &placed.pixels,
+                        request.crop,
+                        request.columns as usize,
+                        request.rows as usize,
+                    );
+                    if let Some(sequence) = crate::terminal_image::encode_iterm2_rgb_png(
+                        &rgb,
+                        w as u32,
+                        h as u32,
+                        request.columns as usize,
+                        request.rows as usize,
+                    ) {
+                        out.push_str(&format!(
+                            "\x1b[{};{}H{sequence}",
+                            request.y + 1,
+                            request.x + 1
+                        ));
+                    }
+                }
+                iterm_now.push((request.source, placement));
+            }
+            crate::terminal_image::ImageProtocol::Kitty => {
+                match workbench.painted_images.ids.get(&request.source).copied() {
+                    // Same bytes, new place: `a=p` places an already-transmitted
+                    // image by id, and `p=1` keeps the placement one thing (a new
+                    // `a=p` each frame would otherwise stack copies).
+                    Some(id) => out.push_str(&format!(
+                        "\x1b[{};{}H\x1b_Ga=p,i={},p=1,c={},r={},q=2,C=1\x1b\\",
+                        request.y + 1,
+                        request.x + 1,
+                        id,
+                        request.columns,
+                        request.rows
+                    )),
+                    None => {
+                        let id = crate::terminal_image::allocate_image_id();
+                        // Transmit what the cells can show, not the source: the
+                        // decoder keeps enough pixels for a zoomed window to
+                        // stay sharp, but a whole 2048px picture across a
+                        // hundred cells is fifteen megabytes over the pty that
+                        // the terminal would immediately throw away.
+                        let (rgb, w, h) = transmit_bitmap(
+                            &placed.pixels,
+                            request.crop,
+                            request.columns as usize,
+                            request.rows as usize,
+                        );
+                        out.push_str(&format!("\x1b[{};{}H", request.y + 1, request.x + 1));
+                        out.push_str(&crate::terminal_image::encode_kitty_rgb(
+                            &rgb,
+                            w,
+                            h,
+                            request.columns as usize,
+                            request.rows as usize,
+                            id,
+                        ));
+                        for evicted in workbench.painted_images.remember(request.source, id) {
+                            out.push_str(&crate::terminal_image::delete_kitty_image(evicted));
+                        }
+                    }
+                }
+            }
+            crate::terminal_image::ImageProtocol::None => {}
+        }
+    }
+    workbench.painted_images.iterm_shown = iterm_now;
+    // Put the cursor back where the frame left it; the images do not move it
+    // (`C=1`), but the addressing above did.
     if let Some((x, y)) = workbench.cursor() {
         out.push_str(&format!("\x1b[{};{}H", y + 1, x + 1));
     }
-    terminal.write(&out);
+    if !out.is_empty() {
+        terminal.write(&out);
+    }
 }
 
 /// How many source pixels per placed cell are worth transmitting.
@@ -2029,9 +2064,11 @@ struct FrameCache {
     rows: Vec<String>,
     width: usize,
     cursor: Option<(u16, u16)>,
-    /// Did the last call erase and rewrite any cell? iTerm2 images live in the
-    /// text grid, so only a row write invalidates one.
-    rows_written: bool,
+    /// The rows the last call erased and rewrote. iTerm2 images live in the text
+    /// grid rather than in a layer of their own, so a picture is only erased by
+    /// a write to *its own* rows — a streamed reply repainting the tail must not
+    /// cost a re-transmission of a thumbnail further up.
+    written: Vec<usize>,
 }
 
 /// The bytes needed to turn `cache` into `rows` at `width`.
@@ -2049,21 +2086,21 @@ fn frame_bytes_since(
     let full = cache.width != width || cache.rows.len() != rows.len();
     let mut frame = String::new();
     frame.push_str("\x1b[?25l");
-    let mut wrote = false;
+    let mut written: Vec<usize> = Vec::new();
     for (index, row) in rows.iter().enumerate() {
         if !full && cache.rows.get(index) == Some(row) {
             continue;
         }
-        wrote = true;
+        written.push(index);
         frame.push_str(&format!("\x1b[0m\x1b[{};1H", index + 1));
         frame.push_str("\x1b[K");
         frame.push_str(row);
     }
-    if !wrote && cursor == cache.cursor {
-        cache.rows_written = false;
+    if written.is_empty() && cursor == cache.cursor {
+        cache.written.clear();
         return String::new();
     }
-    cache.rows_written = wrote;
+    cache.written = written;
     frame.push_str("\x1b[0m");
     if let Some((x, y)) = cursor {
         frame.push_str(&format!("\x1b[{};{}H\x1b[?25h", y + 1, x + 1));

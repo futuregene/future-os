@@ -93,16 +93,25 @@ newest attached image. `/paste` is the same verb from the palette — it is ther
 because Windows Terminal binds `ctrl+v` to its own paste (which cannot carry an
 image), so on that terminal the key never arrives.
 
-Pictures **in the conversation** are links rather than bitmaps: a markdown
-`![caption](path)` paints its caption (its path, when it has none) linked to the
-file, and a path written in prose that names a picture which exists is a target
-too. `tab` steps onto it and `⏎` — or a click — opens it in the preview box, so a
-reply can show the screenshot it just took without the reader retyping a path.
-A picture **you** sent comes back the same way: the entry keeps the attachment's
-path rather than its bytes, so the message renders that file's name linked to it
-and the cursor can open it there too.
-The terminal's own `cmd`/`ctrl`+click cannot do this: it hands the destination to
-the browser, which is the wrong door for a file and for a conversation link.
+Pictures **in the conversation** are thumbnails with a linked caption. A picture
+that came with a message is drawn as a small preview over the empty cells the
+transcript reserves for it — one bitmap, fitted into its block without changing
+the picture's shape — and the file's name sits under it as a link to the path. A
+markdown `![caption](path)` an agent writes paints its caption (its path, when it
+has none) linked to the file the same way, and a path written in prose that names
+a picture which exists is a target too. `tab` steps onto the caption (one stop per
+picture, whatever its block draws) and `⏎` — or a click on the caption, or on the
+thumbnail itself — opens it in the preview box, so a reply can show the screenshot
+it just took without the reader retyping a path. A picture **you** sent comes back
+the same way: the entry keeps the attachment's path rather than its bytes, so the
+message renders that file's thumbnail and name, and the cursor can open it there
+too. On a terminal with no graphics protocol the block reserves nothing and the
+caption alone is the picture — exactly what it was before there were thumbnails.
+The terminal's own `cmd`/`ctrl`+click cannot open one: it hands the destination to
+the browser, which is the wrong door for a file and for a conversation link. The
+thumbnail's bytes are read and decoded off the event loop like the box's
+(otherwise the first frame would freeze on a decode), scaled down to a
+thumbnail's worth of pixels, and kept for the pictures a reader is looking at.
 
 An image is placed by the terminal's *graphics protocol*: a real bitmap at a cell
 (kitty's `a=T` placement, transmitted once per source and only re-placed on later

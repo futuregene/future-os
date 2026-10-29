@@ -674,11 +674,19 @@ fn header_right(palette: &Palette, data: &WorkbenchData, avail: usize) -> String
 
 // ─── conversation ──────────────────────────────────────────────────────────
 
+/// The widest a transcript picture's thumbnail may be drawn, in cells.
+///
+/// A picture in the conversation is a *preview*: the reader can see what it is
+/// and open it in the box, which is where the whole thing lives. Capped rather
+/// than fitted to the content width so a wide screenshot does not take the same
+/// room as the reply it came with.
+const PICTURE_SLOT_COLUMNS: usize = 28;
+
 /// A picture the preview box wants on screen, in frame cells.
 ///
 /// The frame is text and a bitmap is not: the terminal places it at a cell, out
 /// of band. So the box asks for one here and the driver writes it after the
-/// frame (`run::paint_image`), which is the only place that owns the terminal.
+/// frame (`run::paint_images`), which is the only place that owns the terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImageRequest {
     /// A hash of the bytes that will be transmitted (the file, and the crop of
@@ -694,6 +702,18 @@ pub struct ImageRequest {
     /// The part of the image being shown, in pixels: the whole picture at 1x,
     /// the window a zoomed picture has been panned to otherwise.
     pub crop: (usize, usize, usize, usize),
+}
+
+/// A placement and the pixels it shows.
+///
+/// The two travel together because the driver needs both and the surface is the
+/// only side that has them at the same time: the frame knows the cells (it laid
+/// the rows out) and the data knows the picture. The pixels are an `Arc` inside
+/// [`ImagePixels`], so carrying them per frame copies nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlacedPicture {
+    pub request: ImageRequest,
+    pub pixels: image_view::ImagePixels,
 }
 
 /// The window of a picture that a zoomed, panned box shows, in pixels.
@@ -886,6 +906,30 @@ fn conversation(
         .collect();
     let badge = usize::from(start > 0);
     let shown = end.saturating_sub(start);
+    // The pictures in this window, by the row their slot starts on. An overlay
+    // covers the transcript, so a picture under it is not asked for — and one
+    // already placed is removed, because the driver places what the frame asks
+    // for and nothing else.
+    let mut window_pictures: Vec<(usize, (usize, usize))> = Vec::new();
+    let can_place = !matches!(
+        crate::terminal_image::get_capabilities().images,
+        crate::terminal_image::ImageProtocol::None
+    );
+    if workbench.overlay.is_none() && can_place {
+        for (index, picture) in data.pictures.iter().enumerate() {
+            if picture.row < start || picture.row >= end {
+                continue;
+            }
+            // A block cut by the bottom of the window shows the part of the
+            // picture that fits: a bitmap placed over rows the frame never
+            // painted would land on the composer.
+            let visible_rows = picture.rows.min(end - picture.row);
+            if visible_rows == 0 {
+                continue;
+            }
+            window_pictures.push((picture.row, (index, visible_rows)));
+        }
+    }
     let mut lines: Vec<String> = Vec::new();
     if start > 0 {
         lines.push(fit(
@@ -948,6 +992,49 @@ fn conversation(
                     format!("chat.row.{}", stop.row),
                 );
             }
+        }
+        // A picture's block: a bitmap the terminal places over the empty cells
+        // the renderer reserved, and a click target over all of them — a
+        // pointer aimed at a three-column portrait is a pointer aiming at
+        // nothing.
+        if let Some((picture_index, visible_rows)) = window_pictures
+            .iter()
+            .find(|(row, _)| *row == index)
+            .map(|(_, block)| *block)
+        {
+            let picture = &data.pictures[picture_index];
+            let slot_w = inner.clamp(1, PICTURE_SLOT_COLUMNS);
+            let x = area.x.saturating_add(padding as u16);
+            match picture.pixels.as_ref().filter(|pixels| !pixels.is_empty()) {
+                Some(pixels) => {
+                    // The visible part of the slot, cropped off the top of the
+                    // picture: the same scale as the whole block, so a block
+                    // half-scrolled out is cut, not shrunk.
+                    let crop_h = (pixels.height * visible_rows / picture.rows.max(1)).max(1);
+                    let crop = (0, 0, pixels.width, crop_h.min(pixels.height));
+                    let (cells_w, cells_h) =
+                        image_view::fitted_cells(pixels.width, crop.3, slot_w, visible_rows, 1);
+                    workbench.image_requests.push(PlacedPicture {
+                        request: ImageRequest {
+                            source: image_source_key(&picture.path, pixels, crop),
+                            x,
+                            y,
+                            columns: cells_w.max(1) as u16,
+                            rows: cells_h.max(1) as u16,
+                            crop,
+                        },
+                        pixels: pixels.clone(),
+                    });
+                }
+                // The block is up and the picture is one decode away. Asking is
+                // a set insert in the driver, which is what keeps a frame that
+                // paints forty times a second from queueing forty reads.
+                None => workbench.want_picture(&picture.path),
+            }
+            workbench.hit_map().push(
+                Rect::new(x, y, slot_w as u16, visible_rows as u16),
+                format!("chat.picture.{picture_index}"),
+            );
         }
     }
     // Bottom-anchored like a chat view: a short conversation sits on the input
@@ -3133,15 +3220,18 @@ fn preview_box(
                 let crop = crop_of(pixels, cells_w, cells_h, pan, shown_w, shown_h);
                 let left = (inner.saturating_sub(shown_w) / 2) as u16;
                 let top = (picture_h.saturating_sub(shown_h) / 2) as u16;
-                workbench.image_request = Some(ImageRequest {
-                    // The *source* is what a repaint must not retransmit; the
-                    // placement is the part that is cheap to repeat.
-                    source: image_source_key(path, pixels, crop),
-                    x: geometry.left + 1 + left,
-                    y: geometry.top + 2 + top,
-                    columns: shown_w as u16,
-                    rows: shown_h as u16,
-                    crop,
+                workbench.image_requests.push(PlacedPicture {
+                    request: ImageRequest {
+                        // The *source* is what a repaint must not retransmit; the
+                        // placement is the part that is cheap to repeat.
+                        source: image_source_key(path, pixels, crop),
+                        x: geometry.left + 1 + left,
+                        y: geometry.top + 2 + top,
+                        columns: shown_w as u16,
+                        rows: shown_h as u16,
+                        crop,
+                    },
+                    pixels: pixels.clone(),
                 });
                 // The box keeps its own background under the bitmap: the frame
                 // is text, and the picture is a layer above it.

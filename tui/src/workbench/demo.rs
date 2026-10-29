@@ -197,6 +197,7 @@ fn base() -> WorkbenchData {
         worktrees: Vec::new(),
         git: None,
         tree: demo_tree(),
+        pictures: Vec::new(),
         preview: None,
     }
 }
@@ -308,6 +309,16 @@ fn row(key: Option<&str>, prefix: &str, pieces: &[(&str, GitKind)]) -> GitRow {
 
 pub fn preview_image() -> crate::workbench::state::PreviewView {
     use crate::workbench::state::PreviewView;
+    PreviewView::Image {
+        path: "/home/dev/future-os/design.png".into(),
+        pixels: picture_pixels(),
+    }
+}
+
+/// The pixels those pictures are drawn from: a two-axis gradient with a
+/// diagonal band, large enough that fitting it into cells has a visible aspect
+/// ratio and a zoom has something to cut into.
+pub fn picture_pixels() -> crate::workbench::image_view::ImagePixels {
     let (width, height) = (96usize, 64usize);
     let mut rgba = Vec::with_capacity(width * height * 4);
     for y in 0..height {
@@ -319,13 +330,10 @@ pub fn preview_image() -> crate::workbench::state::PreviewView {
             rgba.extend_from_slice(&[r, g, b, 255]);
         }
     }
-    PreviewView::Image {
-        path: "/home/dev/future-os/design.png".into(),
-        pixels: crate::workbench::image_view::ImagePixels {
-            width,
-            height,
-            rgba: rgba.into(),
-        },
+    crate::workbench::image_view::ImagePixels {
+        width,
+        height,
+        rgba: rgba.into(),
     }
 }
 
