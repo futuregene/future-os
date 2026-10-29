@@ -40,7 +40,7 @@
 | [Goal 控制面](architecture/goal-control-plane.zh-CN.md)（[en](architecture/goal-control-plane.md)） | `future-goal` — 目标/todos/门禁/监控、should-run 内核、配额、事件溯源、交付闭环、多 agent、supervisor/worker 消息、web dashboard |
 | [长程证据账本](architecture/long-run-evidence-ledger.zh-CN.md)（[en](architecture/long-run-evidence-ledger.md)） | 长程 goal 目标问责记录 — 墙钟、花费、验证结果、每个已关闭目标的显式边界 |
 | [定时任务](architecture/tasks.zh-CN.md)（[en](architecture/tasks.md)） | `future-tasks` — 可复用提示词 + 触发器（按计划或随时手动）、全权限运行、确定性 `next_due` 内核、运行台账与提示词版本历史 |
-| [Fusion 开发设计](architecture/fusion.zh-CN.md)（[en](architecture/fusion.md)） | 待实现的手动多模型讨论、四个只读工具、持久化复盘与诊断、桌面/移动/终端三端支持，以及 Windows/macOS/Linux 验收 |
+| [Fusion 开发设计](architecture/fusion.zh-CN.md)（[en](architecture/fusion.md)） | 待实现的 `/fusion` 主流程思考工具、聚焦决策与内层只读讨论、持久化复盘诊断、桌面/移动/终端三端支持及 Windows/macOS/Linux 验收 |
 | [SQLite 迁移](architecture/sqlite-migration.zh-CN.md)（[en](architecture/sqlite-migration.md)） | Agent/Desktop SQLite 存储布局与迁移策略 |
 | [精简会话存储开发计划](architecture/stream-storage-development.zh-CN.md)（[en](architecture/stream-storage-development.md)） | 2026-10-27 review 修订：直接替换未发布布局，紧凑变更与历史迁移复测；待实现 |
 | [会话存储空间基线](architecture/stream-storage-space-baselines.zh-CN.md)（[en](architecture/stream-storage-space-baselines.md)） | 原始调查、上一版两次合成测量、实际结构审计和内存原型；旧记录保留不覆盖 |
