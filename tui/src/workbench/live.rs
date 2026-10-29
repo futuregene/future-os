@@ -1638,8 +1638,9 @@ impl Live {
             WbAction::ToggleFolder(path) => self.toggle_folder(&path),
             WbAction::RefreshFiles => self.refresh_tree(),
             // The preview itself is opened by the driver, which owns the
-            // overlay; loading the bytes is ours.
+            // overlay; loading the bytes — and the list a step walks — is ours.
             WbAction::PreviewFile(path) => self.start_preview(&path),
+            WbAction::PreviewChatFile(path) => self.start_picture(&path),
             WbAction::PasteClipboard => self.paste_clipboard().await, // The box is the driver's to open (`run::quit`): this layer reads
             // the bytes, the surface paints them.
             WbAction::PreviewAttachment => {}
@@ -3060,8 +3061,44 @@ impl Live {
 
     /// Read a file for the preview box. The box opens immediately with a
     /// loading row; `poll_preview` installs the bytes when the blocking read
-    /// finishes.
+    /// finishes. An image the reader opened from a panel steps through the
+    /// folder it sits in.
     pub fn start_preview(&mut self, path: &str) {
+        self.read_preview(path, None);
+    }
+
+    /// Read a picture the conversation carries — a caption in the transcript, or
+    /// the draft's own attachment. The same read, but an image steps through
+    /// *this session's* pictures instead of its folder: clipboard captures from
+    /// every conversation are written to one temp directory, so a folder step
+    /// from a picture pasted here walks into other sessions' drafts.
+    pub fn start_picture(&mut self, path: &str) {
+        let pictures = self.conversation_pictures();
+        self.read_preview(path, Some(pictures));
+    }
+
+    /// Every picture this conversation carries, oldest first: the transcript's
+    /// own, then the images still attached to the draft.
+    fn conversation_pictures(&self) -> Vec<String> {
+        let mut pictures: Vec<String> = self
+            .chat
+            .pictures()
+            .map(|picture| picture.path.clone())
+            .collect();
+        let pending = self.draft.editor.pending();
+        pictures.extend(
+            pending
+                .attachments()
+                .iter()
+                .filter(|attachment| attachment.kind == "image")
+                .map(|attachment| attachment.path.clone()),
+        );
+        pictures
+    }
+
+    /// `pictures` is the list an image steps through, or `None` for the folder
+    /// it sits in.
+    fn read_preview(&mut self, path: &str, pictures: Option<Vec<String>>) {
         let path = path.to_string();
         self.preview_revision = self.preview_revision.wrapping_add(1);
         let revision = self.preview_revision;
@@ -3073,7 +3110,10 @@ impl Live {
             let kind = super::files::preview_kind(std::path::Path::new(&path));
             let view = read_preview_lang(&path, kind, lang);
             let siblings = if matches!(view, PreviewView::Image { .. }) {
-                super::files::image_siblings(&path)
+                match pictures {
+                    Some(pictures) => super::files::conversation_siblings(&path, &pictures),
+                    None => super::files::image_siblings(&path),
+                }
             } else {
                 (Vec::new(), 0)
             };
@@ -3117,7 +3157,7 @@ impl Live {
 
     /// Show the newest image already attached to the draft.
     ///
-    /// The bytes are read on a blocking thread by [`Self::start_preview`]; the
+    /// The bytes are read on a blocking thread by [`Self::start_picture`]; the
     /// box opens at once with its loading row. Returns whether there is a box
     /// to open.
     pub fn load_attachment(&mut self) -> bool {
@@ -3128,7 +3168,7 @@ impl Live {
             .find(|attachment| attachment.kind == "image")
         {
             Some(attachment) => {
-                self.start_preview(&attachment.path);
+                self.start_picture(&attachment.path);
                 true
             }
             None => {
@@ -4786,6 +4826,67 @@ mod tests {
         let siblings = live.take_preview_siblings().expect("picture neighbours");
         assert_eq!(siblings.1, 0);
         assert_eq!(siblings.0.len(), 1);
+    }
+
+    /// A picture the conversation named steps through this session's pictures —
+    /// not the folder it sits in, which every conversation's pasted screenshots
+    /// share.
+    #[tokio::test]
+    async fn a_conversation_picture_steps_through_this_sessions_pictures() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[(
+            "get_state",
+            r#"{"sessionId":"s-1"}"#,
+        )]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None).await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut paths = Vec::new();
+        for name in ["a.png", "b.png", "other-session.png"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, png_bytes()).unwrap();
+            paths.push(path.to_string_lossy().to_string());
+        }
+        // Two of the three belong to this conversation; the third is another
+        // session's capture that happens to sit in the same directory.
+        for path in &paths[..2] {
+            let mut message = crate::components::chat_area::ChatMessage::new(
+                format!("m-{path}"),
+                ChatRole::User,
+                "",
+            );
+            message
+                .pictures
+                .push(crate::components::chat_area::ChatPicture {
+                    path: path.clone(),
+                    name: String::new(),
+                });
+            live.chat.add_message(message);
+        }
+
+        live.start_picture(&paths[0]);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !live.poll_preview() {
+            assert!(std::time::Instant::now() < deadline, "preview never landed");
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let (siblings, index) = live.take_preview_siblings().expect("picture neighbours");
+        assert_eq!(
+            siblings,
+            paths[..2].to_vec(),
+            "the conversation's own pictures, in its order"
+        );
+        assert_eq!(index, 0);
+
+        // The same file opened from a panel still steps through its folder: that
+        // is a different question, and the panel's answer is the directory.
+        live.start_preview(&paths[0]);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !live.poll_preview() {
+            assert!(std::time::Instant::now() < deadline, "preview never landed");
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let (folder, _) = live.take_preview_siblings().expect("folder neighbours");
+        assert_eq!(folder.len(), 3, "the directory holds all three: {folder:?}");
     }
 
     /// A launchpad has no session to subscribe to, but a successful attach
