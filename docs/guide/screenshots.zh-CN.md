@@ -344,6 +344,8 @@ python3 scripts/screenshots/capture.py capture-mobile fleet-picker-en   # → .s
 
 两次截图里都没有「正在跑」的会话：`running` / `queued` 的行会画一个 `ActivityIndicator`，它的帧每次都不一样，所以 fixture 里两个未结束的会话都是「等我批准」的阻塞态。连跑两次得到逐字节相同的 PNG。
 
+这四帧是「手机设成深色」的状态（`"appearance": "dark"`），场景也断言了这一点：行所在的底色必须是深色 token 之一、标题必须用深色的 `ink`——如果回落到了浅色主题，截图会失败而不是把错的观感发出去。
+
 ### 聊天转录是正的（inverted 列表那一层多余翻转）
 
 `mobile/src/features/chat/components/ChatTimeline.tsx` 用 `inverted` 的 FlatList 渲染转录。react-native-web 靠**两层**翻转实现它——滚动视图翻一次、每个 cell 再翻回来——两层相消，所以最新的一行在底部。列表一旦同时带 `refreshControl`，就会多出**第三层**：`ScrollView.render` 用滚动视图自己的样式克隆 refresh control（`dist/exports/ScrollView/index.js` 里的 `React.cloneElement(refreshControl, { style: props.style })`），而这套样式里带着那个翻转。于是整份转录上下颠倒——字是镜像的、行序也是反的——真机不是这样，所以这种截图会和设备对不上。（在 react-native-web 0.21.4 上复现，也就是 `serve-mobile` 现在装的那版。）
@@ -393,6 +395,7 @@ python3 scripts/screenshots/capture.py check-upright-mobile chat
 
 - **`ready`** 是驱动会反复轮询直到为真的 JavaScript 表达式，它也是截图快的关键：热缓存下约 1 秒就绪，冷启动可能要 20 秒。`settle` 只是就绪后的一小段缓冲。如果截图抢在界面绘制之前，应该调大 `readyTimeout` 而不是 `settle`。
 - **`lang` 固定的是浏览器区域设置，不是一条只给 harness 用的开关。** 必须使用某种语言的场景写 `"lang": "en-US"`，`cdp.mjs` 会在应用第一个脚本运行之前把页面的系统区域设置改成它：`Emulation.setLocaleOverride` 管 `Intl`，用户代理覆盖里的 `acceptLanguage` 管 `navigator.language`（Chrome 156 上实测——只设前者时 `navigator.language` 仍是宿主机的 `zh-CN`）。应用读的就是系统区域设置，与真机一致；应用内已保存的语言偏好仍然优先。
+- **`appearance` 固定的是平台的「外观」，就像 `lang` 固定区域设置。** `"appearance": "dark"` 让页面上报 `prefers-color-scheme: dark`（`Emulation.setEmulatedMedia`）——这正是把手机设成深色模式时它上报的东西，而应用的「跟随系统」主题就是拿它来解析（`mobile/src/theme/theme.ts` 的 `resolveScheme("system", …)`）。应用内已保存的偏好仍然优先，所以这条固定的是手机，不是读者的选择；桌面端反过来用 `?theme=` 固定自己的窗口，因为窗口没有可问的平台。
 - **`query` 拼在平台 URL 后面。** `"query": "?parser=1"` 让场景跟着 `serve-mobile` 当前服务的端口走，而不像写全 `url` 那样把 `http://localhost:8099/` 钉在场景里。
 - **`tap` 需要可访问名称。** 先匹配 `aria-label`，再匹配可交互元素自身的文字。两者都没有就用 `tapText`；如果你发现自己在写坐标点击，那通常说明这个控件缺标签。
 - **点不到的状态用 `eval`。** 只在悬停时出现的控件，需要先对它的容器加一个 `hover` 步骤（否则驱动会报告目标尺寸为 0，而不是去点页面角落）。例如对话内搜索是 ⌘F 打开的，驱动没法把它当按键发出去，所以场景改为访问 `?press=meta%2Bf`，由 `desktop/shot/main.tsx` 把快捷键派发给真实的 window 监听器。
