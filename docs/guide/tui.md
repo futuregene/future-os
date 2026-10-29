@@ -172,10 +172,12 @@ spinner in its state slot; the rest follow under
 the rail's shape). The two headings are only drawn while there is a split: with
 nothing running the list is simply the list. A row names its workspace by *name*
 (`future-os`), not by path: the rail is 36 columns wide and a clipped path says
-less than the word. The name gets at most a third of the row, with a space kept
-between it and the conversation's name: a longer one (`session-supervisor`) is
-ellipsised rather than allowed to shorten every title in the list, since the
-title is what the row is for. **工作区** files the same conversations the way the
+less than the word. The name is measured on its own row, so a short one hands
+the cells it does not need back to that row's title, and it gets at most a third
+of the row with a space always kept between it and the conversation's name: a
+longer one (`session-supervisor`) is ellipsised rather than allowed to crowd the
+title out, since the title is what the row is for. The `·` and the ages still
+line up down the list. **工作区** files the same conversations the way the
 desktop's rail does: 置顶 (the conversations pinned with `/pin`, lifted out of
 the workspace that would otherwise file them), then 工作区 (one heading per
 workspace, its conversations beneath), then 对话会话 (conversations that belong
@@ -482,6 +484,7 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | Fork | `/fork` lists real user-message points from `get_fork_messages`; enter calls `fork` and opens the child |
 | Worktrees | `/worktree` lists real git worktrees and enter sets the session cwd. `/worktree new <branch>` creates under `.worktrees/` and moves the session. No remove/prune/reset/clean operations |
 | Existing settings | `/mode` (or `/sandbox`) opens the approval-mode chooser, `/thinking` the reasoning chooser, `/compact [instructions]`, `/tools a,b` or `/tools off`, `/providers`. Every chooser takes the words after its verb as its search line (`/model deepseek` opens the list filtered to it). `/compact`, `/export` and `/tools` name the conversation on screen, so on the launchpad they say so instead of acting on the one the reader left — `/tools` is staged and applied to the session the first message creates |
+| Manual compaction (`/compact`) | The agent acknowledges and summarises on its own worker, so the window in between is the surface's to show: the activity row reads `compacting` with its clock (a compaction makes no tool calls, so the tally is dropped), the composer's title says sending is paused, and `enter` on a prompt leaves the draft where it is instead of sending one the agent would refuse (`session_busy`). `get_state`'s `isCompacting` is the agent's own flag and is what ends the row if the terminal event is missed (an attach into a compaction already running). `compaction_committed` reports the checkpoint's two counts in the notice row (`62203 → 33281 tokens`) and writes the divider into the transcript, so the cut is visible without a reload — the same row a restart builds from the stored checkpoint. `compaction_unchanged` says there was nothing to compact, `compaction_failed` carries the agent's error |
 | Sessions panel | `list_sessions`, newest first: 最近 split into a 活跃 stretch (a run still in flight, spinner in the row's state slot) and 更早, the headings drawn only while both are non-empty. The list is re-read every five seconds while the rail is on screen, because another client's run reaches this surface no other way. 工作区 filed by directory, with the conversations pinned by `/pin` in their own 置顶 block instead of under their workspace (a group left with nothing has no heading). A pin is this client's own choice and persists in `settings.json` (`pinnedSessions`, by session id) |
 | Usage / context / cost | `get_state`'s usage block, refreshed on the same events |
 | `ctrl+n` / `/new`, `ctrl+c` stop, `/refresh` | |

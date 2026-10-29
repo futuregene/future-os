@@ -389,6 +389,9 @@ pub enum ActivityKind {
     Thinking,
     Tool,
     Streaming,
+    /// A manual compaction holds the session: the agent is writing the
+    /// handoff summary, and nothing can be sent until the checkpoint lands.
+    Compacting,
 }
 
 impl ActivityKind {
@@ -398,6 +401,7 @@ impl ActivityKind {
             Self::Thinking => "thinking",
             Self::Tool => "tool",
             Self::Streaming => "streaming",
+            Self::Compacting => "compacting",
         }
     }
 }
@@ -563,6 +567,10 @@ pub struct WorkbenchData {
     pub row_stops: Vec<crate::components::chat_area::RowStop>,
     pub input: InputView,
     pub activity: Activity,
+    /// A manual compaction is running and the agent will refuse a prompt until
+    /// it commits (`session_busy`). The composer says so in its title and
+    /// `enter` leaves the draft alone instead of sending into that refusal.
+    pub compacting: bool,
     /// A failed request or command, shown in place of the hint row until
     /// something succeeds. Distinct from the transcript: it is about the
     /// surface's own last action, not part of the conversation.

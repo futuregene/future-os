@@ -437,6 +437,72 @@ The captured PNGs land in `.screenshots/` (gitignored). Open
 a stand-in PTY server on port 7391 so the embedded terminal panel has something
 to show.
 
+### One session, two surfaces: the `parser-*` scenarios
+
+`.screenshots/tui-zh/` and `.screenshots/tui-en/` are the TUI's pictures of one
+scripted session — an off-by-one in an expression parser
+(`tui/examples/demo_agent.rs`, `journal_zh` / `journal_en`). `parser-zh` and
+`parser-en` show that same session in the app:
+
+```bash
+python3 scripts/screenshots/capture.py serve-desktop               # terminal 1
+python3 scripts/screenshots/capture.py capture-desktop parser-zh   # → .screenshots/desktop-zh.png
+python3 scripts/screenshots/capture.py capture-desktop parser-en   # → .screenshots/desktop-en.png
+```
+
+Both live in `scripts/screenshots/scenarios.d/parser-session.json` — a fragment,
+so the shared table is not edited by a session that only adds a scenario.
+
+`?thread=th_parser` opens that conversation and brings its workspace row with it;
+the default fixture, which every other scenario starts from, is left exactly as
+it was. `?lang=zh|en` pins **both halves** of the frame: the interface (read by
+`shot/prefs.ts` before the app boots) and the fixture's own session list and
+transcript (`desktop/shot/mock/data.ts` reads the same parameter). A rail whose
+heading said `Sessions` over rows that said `整理两篇文献的结论对比表` is neither
+language, so each scenario fails if a word of the other one reaches the frame.
+
+The window is a 16-inch laptop's default 1728×1117 at 2×, and the frame reads as
+a normal desktop app: the session rail, the transcript, and — opened from the
+header's own panel button (`展开上下文面板` / `Expand context panel`) — the
+workspace's files on the right. The panel seeds its **Files** tab when it opens
+from that button, so the scenario taps it once and then the `src` row; what it
+lists is the checkout the conversation is about — `parser.rs` and `args.rs` beside
+`lexer.rs`, `main.rs`, `Cargo.toml` and `AGENTS.md`, from `workspaceFiles` keyed by
+the workspace path. Opening it takes 384 px off the conversation column (1440 →
+1056 at this width), but the reading column is capped, so the text re-centres
+rather than re-wrapping; in a window too narrow for a third column the panel opens
+as an overlay over the conversation instead (`context-panel-narrow` captures that).
+
+A settled reply folds onto its answer, so the frame stands at the first turn and
+keeps its work folded — `查看过程 · 工具调用 2 次 · 思考 1 次`, which is the TUI's own
+`▸` line. `上一个问题` (`Previous question`, the transcript's own ↑ control) lands
+the reader's previous question just under the header, which is what puts a whole
+turn on one screen: the question, the folded process, and the diagnosis with its
+highlighted `rust` block, three-row table and closing line, the text word for word
+the TUI's. The second turn starts at the fold — its question is on screen, its
+answer is not — because a laptop window cannot hold both turns, and a
+taller-than-a-screen "window" was the alternative. The `eval` holds the frame to
+that: every block of the first turn above the composer, the second question still
+visible at the fold, and no word of the other language anywhere, the files panel
+included.
+
+Two limits worth stating. Desktop captures are **not** byte-reproducible the way
+the TUI's are: they differ run to run in exactly two places — the relative age
+labels beside each message (`刚刚` / `1分钟前`, read from the wall clock) and the
+rotating indicator on a session the fixture reports as running. The content is
+stable; those pixels are not. (`capture-desktop steps-folded` moves the same two,
+so it is the surface rather than these scenarios.) And the fixture carries the
+session list and transcript in both languages; the settings, tasks and skills
+fixtures are still Chinese, which no English capture opens today.
+
+The transcript itself needed two handlers the mock did not have. A history read
+goes through the bounded transfer lane (`begin_session_history_transfer` and its
+chunked reads), and with only the inline command answered every conversation came
+out as `invalid_history_transfer` with a retry link — the transcript a screenshot
+exists to show never rendered; opening a step row also reads
+`list_approval_assessments`, which answered `null` and unmounted the app. Both are
+answered in `desktop/shot/mock/backend.ts` now.
+
 ## Mobile
 
 ```bash
@@ -479,6 +545,32 @@ The TUI's tree of tool rows has no phone equivalent: it is the fold row, whose
 spoken label (`Show process · Tool calls 2× · Thought 1×`) is where the counts
 live, and the scenario asserts those counts. The scenario is deterministic: two
 runs produce byte-identical PNGs, because nothing in the frame reads the clock.
+
+### Five desktops on one home screen: the `fleet-*` scenarios
+
+The home screen opens on the recency page — every conversation, newest reply
+first — and with more than one paired desktop the list merges them
+(`mergeSessions`, the picker's *all desktops*). `?fleet=1` swaps in five machines
+with fourteen conversations between them (`mobile/shot/mock/fleet.ts`):
+
+```bash
+python3 scripts/screenshots/capture.py capture-mobile fleet-zh          # → .screenshots/home-devices-zh.png
+python3 scripts/screenshots/capture.py capture-mobile fleet-en          # → .screenshots/home-devices-en.png
+python3 scripts/screenshots/capture.py capture-mobile fleet-picker-zh   # → .screenshots/home-devices-picker-zh.png
+python3 scripts/screenshots/capture.py capture-mobile fleet-picker-en   # → .screenshots/home-devices-picker-en.png
+```
+
+The two list scenarios assert the merge rather than the picture: the row order
+is the reply time each machine reported (not the machine), all five machines
+contribute rows, and the two captions count 2 and 12. The `-picker-` pair opens
+the sheet above the list, which is where the five machines are *named* — a row
+names its machine by glyph alone, because a name there would eat the title's
+width.
+
+Nothing in either capture is still running: a `running` or `queued` row draws an
+`ActivityIndicator`, whose frame differs every capture, so the fixture has both
+unsettled conversations blocked on the reader's approval instead. Two runs
+produce byte-identical PNGs.
 
 ### The transcript is upright (the inverted list's extra flip)
 

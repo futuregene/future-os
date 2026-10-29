@@ -282,6 +282,28 @@ python3 scripts/screenshots/capture.py capture-desktop rail-tree steps-folded   
 
 截图写到 `.screenshots/`（已 gitignore）。你也可以自己打开 <http://localhost:5299/shot/> 手动探索；工具还会在 7391 端口起一个替身 PTY 服务，让内嵌终端面板有东西可显示。
 
+### 同一个会话，两个界面：`parser-*` 两个场景（桌面端）
+
+`.screenshots/tui-zh/` 与 `.screenshots/tui-en/` 是 TUI 给同一个脚本会话拍的两张图——表达式解析器里的一个 off-by-one（`tui/examples/demo_agent.rs` 的 `journal_zh` / `journal_en`）。`parser-zh`、`parser-en` 把同一个会话拍在桌面端：
+
+```bash
+python3 scripts/screenshots/capture.py serve-desktop               # 终端 1
+python3 scripts/screenshots/capture.py capture-desktop parser-zh   # → .screenshots/desktop-zh.png
+python3 scripts/screenshots/capture.py capture-desktop parser-en   # → .screenshots/desktop-en.png
+```
+
+两个场景写在 `scripts/screenshots/scenarios.d/parser-session.json`——用片段而不是改公共表，这样只加一个场景的会话不会去动别人也在改的 `scenarios.json`。
+
+`?thread=th_parser` 打开这段对话，并把它所在的工作区行一起带进来；默认那套 fixture（其它所有场景的起点）原样不动。`?lang=zh|en` 同时钉住一帧的**两半**：界面（`shot/prefs.ts` 在应用启动前读）和 fixture 自己的会话列表与转录（`desktop/shot/mock/data.ts` 读的是同一个参数）。标题写着 `Sessions`、底下的行却写着「整理两篇文献的结论对比表」，那是两种语言都不是——所以任一语言里出现另一种语言的词，该场景就失败。
+
+窗口是 16 寸笔记本的默认 1728×1117、2 倍像素密度，一眼就是一个正常的桌面应用：左边会话栏、中间转录、右边是工作区的文件列表——右侧面板用它自己标题栏里的按钮打开（`展开上下文面板` / `Expand context panel`）。从那个按钮打开时面板会把标签停在**文件**，所以场景只点它一次、再点开 `src` 一行；列出来就是这段对话所在的仓库：`parser.rs` 与 `args.rs`，旁边是 `lexer.rs`、`main.rs`、`Cargo.toml`、`AGENTS.md`，来自按工作区路径索引的 `workspaceFiles`。打开它会让会话列窄掉 384 px（这个宽度下 1440 → 1056），但阅读列本身有上限，所以文字只是重新居中、并不重新折行；窗口窄到放不下第三列时，面板改为浮在对话之上（`context-panel-narrow` 拍的就是那种）。
+
+桌面端把已经结束的回复折到答案上，所以这一帧停在第一轮、让那轮的工作保持折叠——`查看过程 · 工具调用 2 次 · 思考 1 次`，正是 TUI 里那行 `▸`。`上一个问题`（转录自己的 ↑ 按钮）会把读者上一条提问落在标题栏下面，这才让「一整轮」进得了同一屏：提问、折叠的过程、带高亮 `rust` 块与三行表格的诊断、以及结尾那句，文字与 TUI 逐字相同。第二轮从折线处开始——它的问题在屏上，答案不在——因为笔记本窗口装不下两轮，而另一条路是给一张比屏幕还高的「窗口」。`eval` 就把这一帧钉在这里：第一轮的每个块都在输入框之上、第二轮的提问仍在折线处可见、并且任意一种语言的词都不会跑到另一种语言的帧里——右侧文件面板也算在内。
+
+两点要说清。桌面端截到的图**不**像 TUI 那样逐字节可复现：每次跑只有两处会动——每条消息旁的相对时间（`刚刚` / `1分钟前`，读的是墙钟）和 fixture 里标成「运行中」的那条会话上的旋转指示。内容稳定，那几处像素不稳定。（`capture-desktop steps-folded` 动的也是这两处，所以这是这个界面的性质，而不是这两个场景的问题。）另外 fixture 里只有会话列表和转录有双语；设置、定时任务、技能那几套数据仍只有中文，而目前没有英文场景会打开它们。
+
+转录本身还需要补两个 mock 没实现的命令。历史读取走的是有界传输通道（`begin_session_history_transfer` 加它的分块读），而只实现了内联那条命令时，每段对话都显示成 `invalid_history_transfer` 加一个重试链接——截图本来要看的那段转录根本没画出来；点开一行工具调用还会读 `list_approval_assessments`，它返回 `null` 直接把整个界面卸掉。这两条现在都在 `desktop/shot/mock/backend.ts` 里答了。
+
 ## 手机端
 
 ```bash
@@ -304,6 +326,21 @@ python3 scripts/screenshots/capture.py capture-mobile parser-en   # → .screens
 `?parser=1` 把整个演示目录换成这个会话——配对机器名、三个工作区分组、这段对话（`mobile/shot/mock/parserSession.ts`）——而 `lang` 固定浏览器区域设置（`zh-CN` / `en-US`），所以界面与转录是同一种语言：mock 取词用的 `navigator.language`，正是应用取界面语言的那个输入；任一帧里出现另一种语言的词，该场景就会失败。
 
 手机装不下两轮对话——转录高 1125 css px，而顶栏与输入框之间只有 672——所以这一帧从提问开始，装着折叠后的过程、诊断、改好的那行代码和那张表；第二轮（两个 commit）在往上一屏的位置。TUI 的工具行树在手机上没有对应物：它就是那行折叠摘要，计数写在它的可访问标签里（`查看过程 · 工具调用 2 次 · 思考 1 次`），场景断言的正是这些计数。这两个场景是确定性的：连跑两次得到逐字节相同的 PNG，因为帧里没有任何东西读时钟。
+
+### 五个桌面端摆在同一个首页：`fleet-*` 场景
+
+手机首页打开的是「最近」页——所有会话按最后回复时间排序——配对多于一台桌面端时列表会把它们合并（`mergeSessions`，选择器上的「全部桌面」）。`?fleet=1` 换成五台机器、十四段对话（`mobile/shot/mock/fleet.ts`）：
+
+```bash
+python3 scripts/screenshots/capture.py capture-mobile fleet-zh          # → .screenshots/home-devices-zh.png
+python3 scripts/screenshots/capture.py capture-mobile fleet-en          # → .screenshots/home-devices-en.png
+python3 scripts/screenshots/capture.py capture-mobile fleet-picker-zh   # → .screenshots/home-devices-picker-zh.png
+python3 scripts/screenshots/capture.py capture-mobile fleet-picker-en   # → .screenshots/home-devices-picker-en.png
+```
+
+两个列表场景断言的是「合并」本身而不是画面：行序是各台机器自己报的最后回复时间（不是按机器分组）、五台机器都供了行、两个分段标题分别是 2 与 12。`-picker-` 那两个打开列表上方的选择面板，五台机器的**名字**在那里——列表里一行只用图标表示它属于哪台机器，名字写上去会吃掉标题的宽度。
+
+两次截图里都没有「正在跑」的会话：`running` / `queued` 的行会画一个 `ActivityIndicator`，它的帧每次都不一样，所以 fixture 里两个未结束的会话都是「等我批准」的阻塞态。连跑两次得到逐字节相同的 PNG。
 
 ### 聊天转录是正的（inverted 列表那一层多余翻转）
 

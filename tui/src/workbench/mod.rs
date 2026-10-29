@@ -4274,6 +4274,16 @@ impl Workbench {
         if text.is_empty() {
             return Vec::new();
         }
+        // A compaction holds the session: the agent answers a prompt with
+        // `session_busy` until its checkpoint lands, so the draft stays exactly
+        // where the reader can see it and the notice says why. Anything that is
+        // not a prompt (`/compact`'s own second press, a picker's verb) is
+        // still the reader's to run.
+        if data.compacting && known_command(&text).is_none() {
+            return vec![WbAction::Notice(
+                t(self.lang, Key::ComposerCompacting).to_string(),
+            )];
+        }
         // A typed command is a command, never a prompt: `/model` in the draft
         // used to be sent to the agent as text, which is why no picker ever
         // opened from the input box. Only the surface's own verbs are claimed —
@@ -7332,6 +7342,154 @@ mod tests {
         assert!(workbench.preview_scroll > 5, "wheel down moves the text");
     }
 
+    /// A preview box is the screen less its two-row margin, whatever the
+    /// document holds.
+    ///
+    /// The body used to stop where the *text* stopped, so a short file or the
+    /// last page of a long one ended the box early: the bottom half of the
+    /// screen was the conversation underneath, with the box's own hint standing
+    /// on the line it stopped at. Both cases are here because they failed for
+    /// different reasons — a file shorter than the box, and an offset past the
+    /// end of a file longer than it.
+    #[test]
+    fn a_preview_box_fills_its_rectangle_whether_or_not_the_text_does() {
+        fn bottom_row(rows: &[String]) -> usize {
+            rows.iter()
+                .position(|row| crate::utils::strip_ansi_codes(row).contains('╰'))
+                .expect("the box closes")
+        }
+        let (w, h) = (100u16, 30u16);
+        // The box takes all but a two-row margin: 28 rows from row 1, so its
+        // bottom border belongs on row 28 and nothing of it may fall short.
+        let last_box_row = 1 + (h as usize - 2) - 1;
+
+        let mut data = demo::chat();
+        data.preview = Some(state::PreviewView::Text {
+            path: "notes.txt".into(),
+            lines: (0..3)
+                .map(|n| super::syntax::Line::plain(format!("line {n}")))
+                .collect::<Vec<_>>()
+                .into(),
+            truncated: false,
+        });
+        let (mut workbench, _rows) = frame(&data, w, h);
+        workbench.overlay = Some(Overlay::FilePreview);
+        let short = workbench.render(&data, w, h);
+        assert_eq!(
+            bottom_row(&short),
+            last_box_row,
+            "a three-line file still fills the box:\n{}",
+            plain(&short)
+        );
+
+        // The same file, long enough to scroll, opened at the very bottom.
+        data.preview = Some(state::PreviewView::Text {
+            path: "long.txt".into(),
+            lines: (0..200)
+                .map(|n| super::syntax::Line::plain(format!("line {n}")))
+                .collect::<Vec<_>>()
+                .into(),
+            truncated: false,
+        });
+        workbench.preview_scroll = 10_000;
+        let end = workbench.render(&data, w, h);
+        assert_eq!(
+            bottom_row(&end),
+            last_box_row,
+            "the last page fills the box too:\n{}",
+            plain(&end)
+        );
+
+        // And the document that is rendered rather than parsed: markdown's own
+        // line count is the renderer's business, so the box may not trust it
+        // to fill the body either.
+        data.preview = Some(state::PreviewView::Markdown {
+            path: "notes.md".into(),
+            text: (0..120)
+                .map(|n| format!("## heading {n}\n\nbody {n}\n\n"))
+                .collect::<String>()
+                .into(),
+        });
+        workbench.preview_scroll = 10_000;
+        let markdown = workbench.render(&data, w, h);
+        assert_eq!(
+            bottom_row(&markdown),
+            last_box_row,
+            "the last page of markdown fills the box:\n{}",
+            plain(&markdown)
+        );
+        // And the margin around the box is the surface's, not the page's: a
+        // preview leaves no row of the conversation beside its own.
+        for y in [0, last_box_row + 1] {
+            assert!(
+                crate::utils::strip_ansi_codes(&markdown[y])
+                    .trim()
+                    .is_empty(),
+                "row {y} is the margin and holds no page text: {:?}",
+                crate::utils::strip_ansi_codes(&markdown[y])
+            );
+        }
+    }
+
+    /// Scrolling stops at the last full page, and the offset follows.
+    ///
+    /// Past the end the box used to draw an ever-shorter body — the text climbed
+    /// its own band while the page under it showed through — and the offset
+    /// stayed where the reader had pushed it, so the first `pageUp` afterwards
+    /// moved nothing. The painter pins both: the window is a full page, and the
+    /// number the keys read is the one that page starts at.
+    #[test]
+    fn a_document_stops_scrolling_at_its_last_full_page() {
+        let mut data = demo::chat();
+        data.preview = Some(state::PreviewView::Text {
+            path: "long.txt".into(),
+            lines: (0..200)
+                .map(|n| super::syntax::Line::plain(format!("line {n}")))
+                .collect::<Vec<_>>()
+                .into(),
+            truncated: false,
+        });
+        let (mut workbench, _rows) = frame(&data, 100, 30);
+        workbench.overlay = Some(Overlay::FilePreview);
+        workbench.preview_scroll = 10_000;
+        workbench.render(&data, 100, 30);
+        let at_end = workbench.preview_scroll;
+        let page = workbench.list_page;
+        // The last page starts `page` rows before the end of the file, which is
+        // the offset that keeps the window full.
+        assert_eq!(at_end, 200 - page, "the window stops at a full page");
+
+        // One `pageUp` from there moves, rather than burning the overshoot the
+        // old clamp left in the state.
+        workbench.handle(WbEvent::Key("pageUp".into()), &data);
+        assert_eq!(workbench.preview_scroll, at_end - page);
+    }
+
+    /// A floating box's margin is the page's, not its own.
+    ///
+    /// The rows above a centred box used to be painted as full-width panel
+    /// rows — a lighter rectangle over the page, with nothing in it, while the
+    /// rows below the same box were the page's own. A menu floats *over* the
+    /// page; only the preview (which owns the frame) paints its margin.
+    #[test]
+    fn an_overlay_leaves_the_page_above_its_box_alone() {
+        let data = demo::chat();
+        let (mut workbench, page) = frame(&data, 100, 30);
+        workbench.overlay = Some(Overlay::Picker(PickerKind::Theme));
+        let with_box = workbench.render(&data, 100, 30);
+        let top = with_box
+            .iter()
+            .position(|row| crate::utils::strip_ansi_codes(row).contains('╭'))
+            .expect("the box is painted");
+        assert!(top > 0, "a floating box has a margin above it");
+        for y in 0..top {
+            assert_eq!(
+                with_box[y], page[y],
+                "row {y} above the box is the page's row, escape for escape"
+            );
+        }
+    }
+
     /// The box's own controls: the buttons are the pointer's spelling of keys
     /// the box already answers, and the folder's pictures step with `[` / `]`.
     #[test]
@@ -9449,6 +9607,34 @@ mod tests {
         workbench.handle(WbEvent::Key("enter".into()), data)
     }
 
+    /// While a compaction holds the session, `enter` on a prompt leaves the
+    /// draft and says why: the agent refuses a prompt with `session_busy` until
+    /// its checkpoint lands, so sending one would be a card that never runs.
+    /// A slash verb is still the reader's — `/compact` itself, a picker.
+    #[test]
+    fn enter_cannot_send_a_prompt_while_a_compaction_holds_the_session() {
+        let mut data = demo::chat();
+        data.compacting = true;
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let actions = submit_draft(&mut workbench, &mut data, "hello");
+        assert_eq!(
+            actions,
+            vec![WbAction::Notice(
+                t(workbench.lang, Key::ComposerCompacting).to_string()
+            )],
+            "the draft stays, and nothing is submitted"
+        );
+        assert_eq!(data.input.text, "hello");
+
+        // The same box, with no compaction: the prompt goes out.
+        let mut data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        assert_eq!(
+            submit_draft(&mut workbench, &mut data, "hello"),
+            vec![WbAction::Submit("hello".into())]
+        );
+    }
+
     #[test]
     fn typing_a_menu_command_opens_it_instead_of_prompting_the_agent() {
         let mut data = demo::chat();
@@ -10177,11 +10363,20 @@ mod tests {
         for ch in "mobile".chars() {
             workbench.handle(WbEvent::Key(ch.to_string()), &data);
         }
-        let text = plain(&workbench.render(&data, 120, 38));
+        let rows = workbench.render(&data, 120, 38);
+        let text = plain(&rows);
         assert!(text.contains("mobile 恢复会话"), "{text}");
+        // The check is on the box, not the frame: the header above it names the
+        // conversation the picker was opened from, which is the same title the
+        // filtered row wears.
+        let box_top = rows
+            .iter()
+            .position(|row| crate::utils::strip_ansi_codes(row).contains('╭'))
+            .expect("the picker is painted");
+        let listed = plain(&rows[box_top..]);
         assert!(
-            !text.contains("修复 parser 的 off-by-one"),
-            "filtered out: {text}"
+            !listed.contains("修复 parser 的 off-by-one"),
+            "filtered out: {listed}"
         );
         assert_eq!(
             workbench.handle(WbEvent::Key("enter".into()), &data),

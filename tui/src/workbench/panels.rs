@@ -53,26 +53,27 @@ const ROW_GAP: usize = 1;
 /// What fraction of a conversation row the workspace *name* may claim: a third
 /// of the cells left once [`ROW_LEAD`] and [`ROW_GAP`] are paid for.
 ///
-/// The column is a table, so all rows share one width — but sizing it to the
-/// longest workspace in the list let one checkout directory decide how many
-/// characters every title in the rail gets (`session-supervisor`, 18 cells, is
-/// a fifth of a 48-column rail). A name wider than its share is ellipsised
-/// instead; on a wide rail the share is wide enough to keep the whole name.
+/// The name is measured per row, so a long directory costs only its own title —
+/// but without a ceiling one `session-supervisor` (18 cells) would leave its own
+/// title a stub. A name wider than its share is ellipsised instead; on a wide
+/// rail the share is wide enough to keep the whole name.
 const WORKSPACE_SHARE: usize = 3;
 
-/// The widths a panel's right-hand tail reserves, measured over the rows it is
+/// The widths a panel's right-hand tail *shares*, measured over the rows it is
 /// about to paint.
 ///
 /// A rail's tail is read *down* the list rather than across one row — `313 会话 ·
-/// now` above `15 会话 · 6m` — so each of its parts is padded to a column: the
-/// `·` then stands in one cell and every age flushes against the same right
+/// now` above `15 会话 · 6m` — so the counts and the ages are padded to a column:
+/// the `·` then stands in one cell and every age flushes against the same right
 /// edge, instead of each row putting the divider wherever its own text ended.
+///
+/// A 最近 row's workspace name is deliberately *not* one of these: it is measured
+/// per row, so a long directory takes width from its own title and nobody
+/// else's (see [`WORKSPACE_SHARE`]).
 #[derive(Debug, Clone, Copy, Default)]
 struct TailColumns {
     /// The workspace headings' conversation count (`313` / `5`).
     units: usize,
-    /// The workspace a 最近 row is filed under (`future-os`).
-    workspace: usize,
     /// The age every tail ends with (`now` / `16h`).
     age: usize,
 }
@@ -537,7 +538,7 @@ fn item_rows(
         };
         return vec![vec![palette.dim(&fit(&format!("  {message}"), columns))]];
     }
-    let tail = tail_columns(panel, data, &model, lang);
+    let tail = tail_columns(data, &model, lang);
     let items: Vec<Vec<String>> = model
         .iter()
         .enumerate()
@@ -604,24 +605,16 @@ fn item_rows(
 /// The columns this frame's tails share, measured over the rows about to be
 /// painted — not over everything the agent listed: a filtered or folded panel
 /// should not reserve a column for a row it is not showing.
-fn tail_columns(
-    panel: PanelId,
-    data: &WorkbenchData,
-    model: &[Row],
-    lang: Language,
-) -> TailColumns {
+fn tail_columns(data: &WorkbenchData, model: &[Row], lang: Language) -> TailColumns {
     let mut columns = TailColumns::default();
     for row in model {
         match row {
             Row::Session(at) => {
                 if let Some(session) = data.sessions.get(*at) {
+                    // Only the age is shared: a workspace name is measured on
+                    // its own row, so one long directory cannot take width out
+                    // of the titles around it.
                     columns.age = columns.age.max(width(&age_text(lang, &session.age)));
-                    // 工作区 groups by the workspace already: its rows are under
-                    // a heading that names it, so only the age reaches the
-                    // tail there.
-                    if panel == PanelId::Recent {
-                        columns.workspace = columns.workspace.max(width(&session.workspace));
-                    }
                 }
             }
             Row::Workspace(at) => {
@@ -837,39 +830,39 @@ fn session_rows(
             // reserved first; the workspace takes its share of what is left,
             // and a plain chat (no workspace at all) shows only its age.
             //
-            // `workspace · age`, each half padded to its column so the same two
-            // cells hold the divider and the ages down the whole list. A plain
-            // chat (no workspace at all) shows its age alone: a divider with
-            // nothing in front of it reads as a name that went missing.
+            // The tail is measured **per row**, not as one column for the whole
+            // list: a shared column is sized by the longest directory name in
+            // it, so `session-supervisor` (18 cells) used to take the same
+            // width out of the title of a conversation filed under `tmp`. What
+            // stays shared is the age, and only the age: every one of them ends
+            // against the rail's edge, so the divider and the ages still read as
+            // one table down the list while the titles use whatever their own
+            // row leaves.
             //
-            // The title is what the row is *for*, so the workspace name gets a
-            // share of the row rather than the row getting sized to the longest
-            // name in the list: a third of the budget (see
-            // [`WORKSPACE_SHARE`]). The divider and the age are reserved first
-            // — the age is short and never worth cutting — and one cell is kept
-            // between the title and the name so the two can only meet across a
-            // space.
+            // The title is what the row is *for*, so a name that would crowd it
+            // out is cut at its own share of the row ([`WORKSPACE_SHARE`]) with
+            // an ellipsis, and one cell is always kept between the title and the
+            // name so the two can only ever meet across a space. A plain chat
+            // (no workspace at all) shows its age alone: a divider with nothing
+            // in front of it reads as a name that went missing.
             //
-            // The name sits against the right of its column, so the names read
-            // as one column *ending* at the divider (`future-os` and
-            // `session-supervisor` both stop where the `·` is) rather than a
-            // column that starts together and leaves the dot to move.
+            // The name ends flush against the divider — `future-os` and
+            // `session-supervisor` both stop where the `·` is — rather than
+            // being padded out to a column, which is what used to leave the
+            // blank cells a shorter name did not need.
             let usable = columns.saturating_sub(ROW_LEAD + ROW_GAP);
-            let workspace_column = tail
-                .workspace
-                .min(usable / WORKSPACE_SHARE)
+            let room = (usable / WORKSPACE_SHARE)
                 .min(usable.saturating_sub(width(TAIL_SEPARATOR) + tail.age));
             let age = align_right(&age_text(lang, &session.age), tail.age);
-            let tail_text = if session.workspace.is_empty() || workspace_column == 0 {
+            let tail_text = if session.workspace.is_empty() || room == 0 {
                 age
             } else {
-                // A name too wide for the column is cut at its tail instead,
-                // which keeps the head of a directory name and still fills the
-                // column edge to edge.
-                let name = if width(&session.workspace) <= workspace_column {
-                    align_right(&session.workspace, workspace_column)
+                // A name too wide for its share is cut at its tail instead,
+                // which keeps the head of a directory name.
+                let name = if width(&session.workspace) <= room {
+                    session.workspace.clone()
                 } else {
-                    fit(&session.workspace, workspace_column)
+                    fit(&session.workspace, room)
                 };
                 format!("{name}{TAIL_SEPARATOR}{age}")
             };
@@ -1300,15 +1293,14 @@ mod tests {
         }
     }
 
-    /// The workspace column reads to its *right* edge: a short name stops at
-    /// the divider exactly where a long one does, so the shortest row is not
-    /// a name followed by a gap the `·` floats away from.
+    /// A name sits against the divider rather than in a padded cell: a short
+    /// one stops at the `·` exactly where a long one does, so the shortest row
+    /// is not a name followed by a gap the divider floats away from.
     #[test]
     fn the_recent_rows_set_their_workspace_against_the_divider() {
         let mut data = demo::chat();
-        // The fixture's widest workspace takes the column; these two are much
-        // narrower than it, which is what leaves room to fall short of the
-        // divider.
+        // Two names of very different widths, so a row that padded its name out
+        // to anybody else's width would show it in the gap before the divider.
         data.sessions[0].workspace = "tmp".into();
         data.sessions[1].workspace = "session-supervisor".into();
         let lines = plain_rows(PanelId::Recent, &data, 80, 20);
@@ -1326,10 +1318,10 @@ mod tests {
         }
     }
 
-    /// The rail spends its width on the titles and gives the workspace *name* a
-    /// share of it: sizing that column to the longest name in the list let one
-    /// checkout directory (`session-supervisor`, 18 cells) decide how many
-    /// characters every title in a 48-column rail got.
+    /// The rail spends its width on the titles: a workspace name wider than its
+    /// share of *its own* row is ellipsised rather than allowed to cut the title
+    /// beside it down to a stub (`session-supervisor`, 18 cells, inside a
+    /// 48-column rail).
     #[test]
     fn a_long_workspace_name_gives_way_to_the_titles() {
         let mut data = demo::chat();
@@ -1360,6 +1352,47 @@ mod tests {
         // … and the two only ever meet across a space.
         let at = row.find("session-super").expect("the name is painted");
         assert!(row[..at].ends_with(' '), "a space before the name: {row:?}");
+    }
+
+    /// A row is measured on its own: a long directory name is not allowed to
+    /// take width out of the titles of conversations filed under a short one
+    /// (`tmp` used to lose exactly the cells `session-supervisor` claimed),
+    /// while the divider and the ages still line up down the list.
+    #[test]
+    fn a_short_workspace_name_hands_the_row_back_to_its_title() {
+        let mut data = demo::chat();
+        data.sessions[0].title = "tui 中，edit 的内容点击展开能不能展示".into();
+        data.sessions[1].title = "workbench 布局草图改成两行显示再收起来".into();
+        data.sessions[1].workspace = "session-supervisor".into();
+        data.sessions[2].title = "mobile 恢复会话时标题也要能长一些才好读".into();
+        data.sessions[2].workspace = "tmp".into();
+        let lines = plain_rows(PanelId::Recent, &data, 48, 20);
+        let long = lines
+            .iter()
+            .find(|line| line.contains("session-super"))
+            .unwrap_or_else(|| panic!("no row for the long name: {lines:?}"));
+        let short = lines
+            .iter()
+            .find(|line| line.contains("tmp"))
+            .unwrap_or_else(|| panic!("no row for the short name: {lines:?}"));
+        // The short row's title runs on past the cell where the long row's name
+        // *begins*: that name's width is nobody else's business …
+        let long_name = column_of(long, "session-super").expect("the long name is painted");
+        let short_cut = column_of(short, "…").expect("the short row's title is cut");
+        assert!(
+            short_cut >= long_name,
+            "the short row keeps its spare cells: {short:?} / {long:?}"
+        );
+        // … and the list still reads as a table: one cell for the divider, and
+        // both ages flush against the rail's edge.
+        assert_eq!(
+            column_of(long, " · "),
+            column_of(short, " · "),
+            "{long:?} / {short:?}"
+        );
+        for row in [long, short] {
+            assert_eq!(width(row.trim_end()), 48, "{row:?}");
+        }
     }
 
     /// Whatever the rail's width, a row keeps its age and one cell between its

@@ -186,6 +186,15 @@ pub struct Live {
     pub notice: Option<String>,
     activity: Activity,
     activity_start: Option<Instant>,
+    /// When the manual compaction holding this session started, if one is
+    /// running.
+    ///
+    /// `/compact` answers with an acknowledgement before the work is done, so
+    /// the surface has to track the operation itself: the row says a compaction
+    /// is in progress, `enter` leaves the draft alone (the agent refuses a
+    /// prompt with `session_busy`), and the terminal event — committed, failed
+    /// or unchanged — is what clears it again.
+    compaction_start: Option<Instant>,
     /// The tool calls this run has made, by the agent's own call id — what the
     /// row's `· {n} 工具` counts.
     ///
@@ -372,6 +381,7 @@ impl Live {
             notice: None,
             activity: Activity::default(),
             activity_start: None,
+            compaction_start: None,
             run_tools: HashSet::new(),
             draft: InputView::from_editor(
                 super::editor::EditorState::default(),
@@ -494,6 +504,7 @@ impl Live {
         }
         self.state = state;
         self.reconcile_queue();
+        self.adopt_compaction();
         self.refresh_local();
     }
 
@@ -1087,6 +1098,54 @@ impl Live {
                 self.run_tools.clear();
             }
             "usage" => self.apply_usage(event.data.get("usage")),
+            // ── a compaction of this conversation ───────────────────────
+            //
+            // Only a standalone (manual) compaction takes the session from
+            // the reader: `/compact` is refused while a run streams, and the
+            // desktop treats the whole window as "cannot send". An automatic
+            // one happens *inside* a run, whose own activity row is the truth
+            // while it streams — so it leaves the row alone and only reports
+            // itself when it commits.
+            "compaction_started" => {
+                if is_standalone_compaction(&event.data) {
+                    self.begin_compaction();
+                }
+            }
+            "compaction_committed" => {
+                let before = token_count(&event.data, "tokens_before");
+                let after = token_count(&event.data, "tokens_after");
+                self.end_compaction();
+                // The divider is written here as well as into the history's
+                // own projection: the live transcript has to show where the
+                // conversation was cut without a reload, and a later reload
+                // replaces every row anyway (`session_rows` builds the same
+                // one from the checkpoint).
+                self.chat.add_message(ChatMessage::new(
+                    crate::session_rows::random_id(),
+                    ChatRole::System,
+                    &crate::session_rows::compaction_text_of(before, after),
+                ));
+                self.revision = self.revision.wrapping_add(1);
+                self.notice = Some(match (before, after) {
+                    (Some(before), Some(after)) => {
+                        i18n::render(self.lang, Key::CompactDoneTokens, &[&before, &after])
+                    }
+                    _ => t(self.lang, Key::CompactDone).to_string(),
+                });
+            }
+            "compaction_unchanged" => {
+                self.end_compaction();
+                self.notice = Some(t(self.lang, Key::CompactUnchanged).into());
+            }
+            "compaction_failed" => {
+                self.end_compaction();
+                let error = str_field(&event.data, "error");
+                self.notice = Some(if error.is_empty() {
+                    t(self.lang, Key::CompactFailed).to_string()
+                } else {
+                    i18n::render(self.lang, Key::WorkflowFailed, &[&error])
+                });
+            }
             "approval_request" => {
                 self.approval = Some(ApprovalPrompt {
                     request_id: str_field(&event.data, "approval_request_id"),
@@ -1147,6 +1206,10 @@ impl Live {
         self.run_started = None;
         self.run_output_tokens = 0;
         self.run_tps = 0.0;
+        // A compaction belongs to the conversation that started it, like the
+        // run: the next one's session is not held by it. `get_state` puts the
+        // new session's own flag back (`adopt_compaction`).
+        self.compaction_start = None;
         // No run is writing this transcript any more: its last reply is
         // settled, and the reading level may fold it (a switch, a fork or a
         // stop leaves nothing that will still send slices for it).
@@ -1162,12 +1225,40 @@ impl Live {
     /// run made before the switch are the transcript's to show, not this row's.
     fn adopt_run(&mut self) {
         self.forget_run();
+        // A compaction belongs to the session that started it like a run does
+        // — but `install_state` has just put the *new* session's flag on
+        // screen, so the forget above must not be the last word: switching into
+        // (or attaching to) a conversation that is compacting has to keep
+        // saying so.
+        self.adopt_compaction();
         if self.state.is_streaming {
             self.mark(ActivityKind::Thinking);
             self.run_started = Some(Instant::now());
             // The trailing reply is being written by a run this client did not
             // start: every row stays in place until that run ends.
             self.chat.begin_reply_run();
+        }
+    }
+
+    /// Put the compaction row in step with the agent's own flag.
+    ///
+    /// `get_state` reports `isCompacting` for the session on screen, whatever
+    /// client started it, so a compaction another client ran — or one this
+    /// terminal attached to mid-flight — is visible here too. The flag is the
+    /// agent's, so a state that says "not compacting" ends the row: the event
+    /// that carries the token counts may have been missed by an attach, and a
+    /// surface stuck on "compacting" would refuse the reader's prompts forever.
+    fn adopt_compaction(&mut self) {
+        if self.state.is_compacting {
+            self.begin_compaction();
+        } else if self.compacting() {
+            // This client attached after the operation began and its terminal
+            // event is gone: the flag is the agent's, so the sentence that
+            // promised a wait must not outlive it either.
+            self.end_compaction();
+            if self.notice.as_deref() == Some(t(self.lang, Key::NoticeCompacting)) {
+                self.notice = None;
+            }
         }
     }
 
@@ -1598,6 +1689,7 @@ impl Live {
             row_stops: self.chat.row_stops(),
             input,
             activity,
+            compacting: self.compacting(),
             notice: self.notice.clone(),
             queue: self
                 .state
@@ -1639,6 +1731,17 @@ impl Live {
                 ),
                 elapsed_secs: 0,
                 tools: self.run_tools.len(),
+            };
+        }
+        // A manual compaction is what the session is doing, and it is the
+        // answer to "why does enter not send": it outranks the idle row the
+        // finished run left behind.
+        if let Some(start) = self.compaction_start {
+            return Activity {
+                kind: ActivityKind::Compacting,
+                detail: String::new(),
+                elapsed_secs: start.elapsed().as_secs(),
+                tools: 0,
             };
         }
         Activity {
@@ -1771,21 +1874,53 @@ impl Live {
         Outcome::Continue
     }
 
+    /// `/compact`: ask the agent to compact this conversation.
+    ///
+    /// The answer is an acknowledgement, not the result — the agent summarises
+    /// on its own worker — so the surface takes the session over here and gives
+    /// it back when the operation's terminal event arrives (the token counts
+    /// travel with `compaction_committed`).
     async fn compact(&mut self, instructions: String) {
         match self
             .client
             .compact((!instructions.is_empty()).then_some(instructions.as_str()))
             .await
         {
-            Ok(_) => {
-                self.notice = Some(t(self.lang, Key::CompactDone).into());
+            Ok(ack) if ack.accepted => {
+                self.begin_compaction();
+                // The agent's own flag is authoritative — and the gauge the
+                // footer draws has nothing to do with this request.
                 self.refresh_state().await;
-                self.load_tail().await;
+            }
+            Ok(_) => {
+                self.notice = Some(t(self.lang, Key::CompactFailed).into());
             }
             Err(error) => {
-                self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
+                self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]));
+                // A refusal (a run in flight, a compaction already running)
+                // leaves the agent's state as it was, and that state is what
+                // the row should keep showing.
+                self.refresh_state().await;
             }
         }
+    }
+
+    /// Is a compaction holding this session right now?
+    pub fn compacting(&self) -> bool {
+        self.compaction_start.is_some()
+    }
+
+    /// Take the session over for a compaction, if it is not already.
+    fn begin_compaction(&mut self) {
+        if self.compaction_start.is_none() {
+            self.compaction_start = Some(Instant::now());
+            self.notice = Some(t(self.lang, Key::NoticeCompacting).into());
+        }
+    }
+
+    /// Give the session back: the operation reached a terminal event.
+    fn end_compaction(&mut self) {
+        self.compaction_start = None;
     }
 
     /// Send the draft. A submission while a run is in flight joins the agent's
@@ -1799,6 +1934,13 @@ impl Live {
     /// until it goes out, are what make "queued" visible instead of looking
     /// already sent.
     async fn submit(&mut self, text: &str) {
+        // A compaction owns the session: the agent answers a prompt with
+        // `session_busy` until the checkpoint lands, and the draft is the
+        // reader's, so it stays where it is with the reason on the notice row.
+        if self.compacting() {
+            self.notice = Some(t(self.lang, Key::ComposerCompacting).into());
+            return;
+        }
         self.draft.editor.record_submission();
         // The draft is read first because it is what carries the folded pastes
         // that `pending()` expands into the prompt. It is *not* the only source:
@@ -3485,7 +3627,37 @@ fn wants_state_refresh(event_type: &str) -> bool {
     // this client submitted while the previous turn was streaming, and the
     // agent's next state is what moves that submission from the composer's band
     // into the transcript (`reconcile_queue`).
-    matches!(event_type, "usage" | "agent_start" | "agent_end")
+    //
+    // The compaction events are here for the same kind of reason: a checkpoint
+    // replaces the prompt the next turn sends, so the context gauge is stale
+    // the moment one lands, and `isCompacting` is the flag the row and the
+    // composer are drawn from.
+    matches!(
+        event_type,
+        "usage"
+            | "agent_start"
+            | "agent_end"
+            | "compaction_started"
+            | "compaction_committed"
+            | "compaction_failed"
+            | "compaction_unchanged"
+    )
+}
+
+/// Is this compaction event a standalone (manual) one — `/compact`, rather
+/// than the agent trimming its own context inside a run?
+///
+/// The trigger is the answer the desktop keys its "compaction pending" state
+/// on; `phase` is the fallback for an older agent that named only the phase.
+fn is_standalone_compaction(data: &Value) -> bool {
+    str_field(data, "trigger") == "manual" || str_field(data, "phase") == "standalone"
+}
+
+/// One token count from a compaction payload, `None` when it is absent or
+/// zero: a pair of zeroes is not a before/after worth printing.
+fn token_count(data: &Value, key: &str) -> Option<u64> {
+    let value = token_field(data, key);
+    (value > 0).then_some(value as u64)
 }
 
 /// Fold one `usage` event into `state`: the two token totals add up, the context
@@ -6822,6 +6994,112 @@ mod tests {
         assert_eq!(live.data(&frame()).activity.tools, 0);
     }
 
+    /// `/compact` takes the session over until its checkpoint lands.
+    ///
+    /// The acknowledgement names the operation, not the result: the agent
+    /// summarises on a worker, so the surface has to show that something is
+    /// happening, refuse the reader's prompt (the agent answers `session_busy`
+    /// until then), and hand back the pair of token counts on the event that
+    /// ends it — the same pair the stored history's divider carries.
+    #[tokio::test]
+    async fn a_manual_compaction_holds_the_session_until_it_commits() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+
+        live.handle_event(event(
+            "compaction_started",
+            serde_json::json!({"operation_id": "cmp-1", "trigger": "manual", "phase": "standalone"}),
+        ));
+        assert!(live.compacting(), "the session is held");
+        assert_eq!(live.activity_kind(), ActivityKind::Compacting);
+        assert!(live.data(&frame()).compacting);
+        assert_eq!(
+            live.notice.as_deref(),
+            Some(t(live.language(), Key::NoticeCompacting))
+        );
+
+        // A prompt is left in the draft with the reason on the notice row: the
+        // agent would refuse it, and the text is the reader's.
+        live.set_draft("keep me".into(), 7);
+        live.apply(WbAction::Submit("keep me".into())).await;
+        assert_eq!(live.draft.text, "keep me", "the draft survives");
+        assert_eq!(
+            live.notice.as_deref(),
+            Some(t(live.language(), Key::ComposerCompacting))
+        );
+
+        live.handle_event(event(
+            "compaction_committed",
+            serde_json::json!({
+                "operation_id": "cmp-1",
+                "trigger": "manual",
+                "phase": "standalone",
+                "tokens_before": 62203,
+                "tokens_after": 33281,
+            }),
+        ));
+        assert!(!live.compacting(), "the session is given back");
+        let expected = i18n::render(
+            live.language(),
+            Key::CompactDoneTokens,
+            &[&62203u64, &33281u64],
+        );
+        assert_eq!(live.notice.as_deref(), Some(expected.as_str()));
+        // The transcript says where the conversation was cut, in the same words
+        // a reload builds from the checkpoint (`session_rows`).
+        let rows: Vec<String> = live
+            .chat
+            .render_all(120)
+            .iter()
+            .map(|line| crate::utils::strip_ansi_codes(line))
+            .collect();
+        assert!(
+            rows.iter()
+                .any(|line| line.contains("Context compacted: 62203 → 33281 tokens")),
+            "{rows:?}"
+        );
+    }
+
+    /// An automatic compaction happens *inside* a run: the run's own activity
+    /// row is the truth while it streams, so it must not take the session (or
+    /// the reader's queue) the way `/compact` does.
+    #[tokio::test]
+    async fn an_automatic_compaction_leaves_the_session_to_its_run() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+
+        live.handle_event(event(
+            "compaction_started",
+            serde_json::json!({"operation_id": "op-2", "trigger": "automatic", "phase": "pre_turn"}),
+        ));
+        assert!(!live.compacting());
+    }
+
+    /// The agent's own `isCompacting` is authoritative: a terminal event this
+    /// client never saw (it attached after the compaction began, or another
+    /// client ran it) must not leave the surface refusing prompts forever.
+    #[tokio::test]
+    async fn a_state_that_says_the_compaction_ended_gives_the_session_back() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+
+        live.state.is_compacting = true;
+        live.adopt_compaction();
+        assert!(live.compacting());
+        live.state.is_compacting = false;
+        live.adopt_compaction();
+        assert!(!live.compacting());
+    }
+
     /// `agent_start` and `agent_end` are what tell the transcript a reply is
     /// still being written: between them its prose stays on screen, and only
     /// when the run ends does the reading level fold it onto its answer.
@@ -7584,6 +7862,48 @@ mod tests {
                 assert!(
                     !notice.is_empty() && !notice.contains("/tools"),
                     "the notice says the choice is staged, not that it took effect: {notice:?}"
+                );
+            })
+        });
+    }
+
+    /// `/compact` on an attached conversation is one round trip to the agent
+    /// and a surface that says what it is doing: the agent acknowledges, the
+    /// row turns to "compacting", and the reader's prompt is refused until the
+    /// terminal event arrives (see
+    /// `a_manual_compaction_holds_the_session_until_it_commits` for the
+    /// event half, which this test does not have to repeat).
+    #[test]
+    fn the_compact_verb_takes_the_session_over_on_its_acknowledgement() {
+        with_big_stack(|| {
+            Box::pin(async {
+                let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+                    (
+                        "get_state",
+                        // The agent's own flag is what the surface trusts; the
+                        // real one sets it before it answers `compact`.
+                        r#"{"sessionId":"s1","model":"mock","isCompacting":true}"#,
+                    ),
+                    ("get_session_entries", r#"{"entries":[]}"#),
+                    ("compact", r#"{"accepted":true,"operationId":"cmp-1"}"#),
+                ]);
+                let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock.clone()).await;
+                let (mut live, _events) = Live::attach(&addr, None, false, None)
+                    .await
+                    .expect("attach to the test agent");
+
+                live.apply(WbAction::Command("/compact".into())).await;
+
+                let commands = seen.lock().unwrap().clone();
+                assert!(
+                    commands.iter().any(|command| command == "compact"),
+                    "`/compact` must reach the agent, saw {commands:?}"
+                );
+                assert!(live.compacting(), "the acknowledgement holds the session");
+                assert_eq!(
+                    live.notice.as_deref(),
+                    Some(t(live.language(), Key::NoticeCompacting)),
+                    "the page says the compaction is running"
                 );
             })
         });

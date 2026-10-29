@@ -189,6 +189,7 @@ fn base() -> WorkbenchData {
             ..InputView::default()
         },
         activity: Activity::default(),
+        compacting: false,
         notice: None,
         queue: Vec::new(),
         revision: 0,
