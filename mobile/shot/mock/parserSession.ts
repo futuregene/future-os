@@ -6,37 +6,25 @@
  * `RemoteContext.tsx`): the paired machine's name, the three workspace groups
  * and the conversation a capture opens. A phone frame and the TUI frames under
  * `.screenshots/tui-zh/` and `.screenshots/tui-en/` are then two pictures of
- * *one* session
- * — same bug, same two turns, same code block and table, same two commits —
- * rather than two sessions that happen to share a subject.
+ * *one* session — same bug, same two turns, same code block and table, same two
+ * commits — rather than two sessions that happen to share a subject.
  *
  * The words come from `tui/examples/demo_agent.rs` (`journal_zh` / `journal_en`,
  * `session_name`, `sessions`); only the shapes are the phone's (`blocks`,
  * `createdAtMs`, `runId`, the entry a tool result travels in). Each language is
  * written as that reader's frame, exactly like the TUI's two journals: the
- * English payload is not a translation of the Chinese one.
+ * English payload is not a translation of the Chinese one. Which language that
+ * is comes from `./language`, the harness's one place for it.
  *
  * The rail is the TUI's newest rows per workspace rather than all 58: a phone
  * list shows a screenful, and the three groups, their titles and their ages are
  * the part that carries over.
  */
 
+import { shotLanguage } from "./language";
+
 /** The conversation a `?parser=1` capture opens; also the TUI's `demo-session`. */
 export const parserSessionId = "sess_parser_offbyone";
-
-/**
- * The language of the scripted data: the one the app is drawn in.
- *
- * A capture pins the interface language with `--lang` (a Chrome locale
- * override, so `navigator.language` is what expo-localization reads), and this
- * reads the same signal — so a frame cannot end up with an English chrome over
- * a Chinese transcript. The TUI does the same thing through
- * `FUTURE_DEMO_LANG`, which its capture passes alongside the interface pin.
- */
-export const shotLanguage: "zh" | "en" = typeof navigator !== "undefined" &&
-  (navigator.languages?.[0] ?? navigator.language ?? "").toLowerCase().startsWith("zh")
-  ? "zh"
-  : "en";
 
 /** The user's own name for the machine this conversation lives on. */
 export const parserDesktopName = shotLanguage === "zh" ? "实验室的 MacBook Pro" : "Lab MacBook Pro";

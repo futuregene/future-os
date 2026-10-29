@@ -535,6 +535,32 @@ spoken label (`Show process · Tool calls 2× · Thought 1×`) is where the coun
 live, and the scenario asserts those counts. The scenario is deterministic: two
 runs produce byte-identical PNGs, because nothing in the frame reads the clock.
 
+### Five desktops on one home screen: the `fleet-*` scenarios
+
+The home screen opens on the recency page — every conversation, newest reply
+first — and with more than one paired desktop the list merges them
+(`mergeSessions`, the picker's *all desktops*). `?fleet=1` swaps in five machines
+with fourteen conversations between them (`mobile/shot/mock/fleet.ts`):
+
+```bash
+python3 scripts/screenshots/capture.py capture-mobile fleet-zh          # → .screenshots/home-devices-zh.png
+python3 scripts/screenshots/capture.py capture-mobile fleet-en          # → .screenshots/home-devices-en.png
+python3 scripts/screenshots/capture.py capture-mobile fleet-picker-zh   # → .screenshots/home-devices-picker-zh.png
+python3 scripts/screenshots/capture.py capture-mobile fleet-picker-en   # → .screenshots/home-devices-picker-en.png
+```
+
+The two list scenarios assert the merge rather than the picture: the row order
+is the reply time each machine reported (not the machine), all five machines
+contribute rows, and the two captions count 2 and 12. The `-picker-` pair opens
+the sheet above the list, which is where the five machines are *named* — a row
+names its machine by glyph alone, because a name there would eat the title's
+width.
+
+Nothing in either capture is still running: a `running` or `queued` row draws an
+`ActivityIndicator`, whose frame differs every capture, so the fixture has both
+unsettled conversations blocked on the reader's approval instead. Two runs
+produce byte-identical PNGs.
+
 ### The transcript is upright (the inverted list's extra flip)
 
 `mobile/src/features/chat/components/ChatTimeline.tsx` renders the transcript as
