@@ -1386,10 +1386,16 @@ async fn quit(
             Outcome::Quit => return Ok(true),
             Outcome::Continue => {}
         }
+        // A switch that began and has not answered yet still names the
+        // conversation being left on screen, so following "the conversation on
+        // screen" here would put the rail's cursor back where the reader came
+        // from — for a frame, and visibly. The answer's own arm (`switch_rx`)
+        // does the follow when the rows land.
+        let begun = live.take_switch_started();
         // A switch the rail did not make itself (a click on the launchpad's
         // recents, a `ctrl+r` pick) still has to move its cursor: the rail would
         // otherwise highlight a conversation the transcript is not showing.
-        if moved {
+        if moved && !begun {
             let data = live.data(frame);
             workbench.follow_current(&data);
         }
