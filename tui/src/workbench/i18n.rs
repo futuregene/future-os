@@ -960,8 +960,8 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         // The band above the composer: one row per prompt the agent accepted
         // but has not started. `{}` is the count.
         QueueBandTitle => (
-            "排队 {} 条 · 当前回复结束后依次发送",
-            "{} queued · sent when this reply finishes",
+            "排队 {} 条 · 当前回复结束后一起发送",
+            "{} queued · sent together when this reply finishes",
         ),
         QueueBandManage => ("/queue 管理", "/queue to manage"),
         QueueBandMore => ("… 还有 {} 条", "… {} more"),

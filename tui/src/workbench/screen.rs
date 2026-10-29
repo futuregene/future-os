@@ -870,15 +870,15 @@ fn conversation(
     let mut offset = workbench.chat_scroll_offset().min(ceiling);
     // The rows the reader can actually read at `offset`: the window, less the
     // row the badge takes off its bottom.
-    let shown_window = |offset: usize| -> (usize, usize) {
+    // The rows a frame at `offset` actually paints: the window, minus the oldest
+    // row when the `↑ 更早` marker is standing in front of it. The marker takes
+    // one of the window's rows instead of the newest message — see the `badge`
+    // note below — so every cursor walk that reveals a row has to know where
+    // the painted window really starts.
+    let painted_window = |offset: usize| -> (usize, usize) {
         let end = total.saturating_sub(offset);
         let start = end.saturating_sub(visible);
-        let end = if start > 0 {
-            end.saturating_sub(1)
-        } else {
-            end
-        };
-        (start, end)
+        (start.saturating_add(usize::from(start > 0)), end)
     };
     // `tab` can walk the cursor to a stop far above or below the window, and a
     // highlight nobody can see is not a cursor: the transcript follows it, the
@@ -890,7 +890,7 @@ fn conversation(
     if workbench.take_stop_reveal() {
         if let Some(row) = workbench.selected_stop_row(data) {
             let row = row.min(total.saturating_sub(1));
-            let (start, end) = shown_window(offset);
+            let (start, end) = painted_window(offset);
             if row < start {
                 // Up to it, not past it: a stop the walk stepped back to
                 // belongs on the window's top row, and dropping the page a
@@ -898,7 +898,11 @@ fn conversation(
                 // A top row is inside the ceiling by construction (`ceiling` is
                 // the offset that puts the oldest row there), so this one needs
                 // no clamp of its own.
-                offset = total.saturating_sub(row.saturating_add(visible).min(total));
+                // One row less than the window: the marker takes one of them,
+                // so the row walked to lands on the window's first message row.
+                offset = total
+                    .saturating_sub(row.saturating_add(visible.saturating_sub(1)).min(total))
+                    .min(ceiling);
             } else if row >= end {
                 // Two rows of room below it: one is the badge's, one is the row
                 // itself, so the selection is never the line that gets dropped.
@@ -915,6 +919,15 @@ fn conversation(
     workbench.set_chat_scroll(offset);
     let end = total.saturating_sub(offset);
     let start = end.saturating_sub(visible);
+    // The `↑ 更早` row costs one of the window's rows, and it stands in for the
+    // oldest one: the window keeps its *bottom* (so the newest row is always
+    // painted when the view follows the tail) and the row above the window's
+    // top is what the marker says is there. Without this the marker was an extra
+    // row that `truncate(visible)` paid for by dropping the newest message — the
+    // last line of a long conversation was one the reader could not see.
+    let badge = usize::from(start > 0);
+    let shown = visible.saturating_sub(badge);
+    let first = start.saturating_add(badge);
     // The stop the cursor is on, and the half of it that is a link: the paint
     // below needs `workbench` for its hit regions, and the lists it came from
     // borrow it.
@@ -941,7 +954,7 @@ fn conversation(
         spans
             .iter()
             .enumerate()
-            .filter(|(_, span)| span.row >= start && span.row < end)
+            .filter(|(_, span)| span.row >= first && span.row < end)
             .map(|(index, span)| (index, span.clone()))
             .collect()
     };
@@ -949,13 +962,11 @@ fn conversation(
     let visible_rows: Vec<crate::components::chat_area::RowStop> = data
         .row_stops
         .iter()
-        .filter(|stop| stop.row >= start && stop.row < end)
+        .filter(|stop| stop.row >= first && stop.row < end)
         .cloned()
         .collect();
-    let badge = usize::from(start > 0);
-    let shown = end.saturating_sub(start);
     let mut lines: Vec<String> = Vec::new();
-    if start > 0 {
+    if badge > 0 {
         lines.push(fit(
             &format!(" {} ", palette.dim(t(workbench.lang, Key::ChatOlderHint))),
             columns,
@@ -963,7 +974,7 @@ fn conversation(
     }
     let pad = visible.saturating_sub(badge + shown);
     let mut marked: Option<String>;
-    for (index, line) in messages.iter().enumerate().skip(start).take(shown) {
+    for (index, line) in messages.iter().enumerate().skip(first).take(shown) {
         let mut text = line.as_str();
         if let Some((row, from, to)) = selected_row_marked {
             if row == index {
@@ -982,7 +993,7 @@ fn conversation(
             .y
             .saturating_add(pad as u16)
             .saturating_add(badge as u16)
-            .saturating_add((index - start) as u16);
+            .saturating_add((index - first) as u16);
         for (span_index, span) in visible_links.iter().filter(|(_, span)| span.row == index) {
             let from = span.start.min(inner);
             let to = span.end.min(inner);
@@ -1047,7 +1058,7 @@ fn conversation(
 
 /// How many queued prompts the band above the composer lists before it counts
 /// the rest in one row. A band is a preview, not a queue manager — the count in
-/// its header and `/queue` are what the rest of a long queue gets.
+/// its title and `/queue` are what the rest of a long queue gets.
 const QUEUE_BAND_ITEMS: usize = 4;
 
 /// The rows of the queue band, as `(hit id, row)` pairs.
@@ -1056,8 +1067,13 @@ const QUEUE_BAND_ITEMS: usize = 4;
 /// is deliberately absent from the transcript (`ChatArea::waits_in_queue`), so
 /// this band is the whole answer to "did my message go?". One row per prompt, in
 /// the order the agent will run them; `room` is how many rows the band may take
-/// from the conversation, and fewer than two buys no band at all (a header alone
-/// names nothing).
+/// from the conversation.
+///
+/// It is a **box**, like the composer under it and the rail beside it: bare
+/// dimmed lines on the canvas read as a continuation of the transcript, which
+/// is what made the first version look pasted over the conversation. The title
+/// carries the count (`排队 2 条 · 当前回复结束后一起发送`) and the door to the
+/// manager sits on the rule's right end, where a panel's close chip sits.
 fn queue_band(
     workbench: &Workbench,
     data: &WorkbenchData,
@@ -1065,29 +1081,39 @@ fn queue_band(
     columns: usize,
     room: usize,
 ) -> Vec<(Option<String>, String)> {
-    if data.queue.is_empty() || room < 2 || columns == 0 {
+    // Two rules, a title and at least one prompt row: below that there is no
+    // box to draw, and `/queue` is still a keystroke away.
+    if data.queue.is_empty() || room < 3 || columns < 12 {
         return Vec::new();
     }
     let lang = workbench.lang;
+    let title = i18n::render(lang, Key::QueueBandTitle, &[&data.queue.len()]);
+    // The count is the one word worth colour: it is what the reader came to
+    // check, and the rest of the title only says when they go out.
+    let count = data.queue.len().to_string();
+    let (before, after) = title
+        .split_once(count.as_str())
+        .map_or((title.as_str(), ""), |(before, after)| (before, after));
     let title = format!(
-        " {} ",
-        palette.strong(
-            palette.amber,
-            &i18n::render(lang, Key::QueueBandTitle, &[&data.queue.len()])
-        )
+        "{}{}{}",
+        palette.dim(before),
+        palette.strong(palette.amber, &count),
+        palette.dim(after)
     );
-    let manage = format!(" {} ", palette.dim(t(lang, Key::QueueBandManage)));
-    // The header carries the count and the door to the manager: the count says
-    // how many are waiting, the last two words say where they can be cancelled
-    // or recalled one by one. A narrow band keeps the count and drops the door.
-    let header = if width(&title) + width(&manage) + 2 <= columns {
-        let pad = columns - width(&title) - width(&manage);
-        format!("{title}{}{manage}", " ".repeat(pad))
-    } else {
-        fit(&title, columns)
-    };
-    let mut rows = vec![(Some("queue.open".to_string()), header)];
-    let item_room = room - 1;
+    // The door to the manager, on the rule's right end. Wide boxes get it; a
+    // narrow one keeps the count, which is the part it cannot say elsewhere.
+    let manage = t(lang, Key::QueueBandManage);
+    // One cell of rule is kept between the chip and the title, and the chip
+    // itself starts with a space so it never touches the right corner.
+    let chip = (width(&title) + width(manage) + 6 <= columns)
+        .then(|| palette.text(palette.iris, &format!(" {manage}")));
+    let mut rows: Vec<(Option<String>, String)> = Vec::new();
+    rows.push((
+        Some("queue.open".to_string()),
+        widgets::box_top_with_chip(palette, columns, &title, chip.as_deref()),
+    ));
+    // The box needs both rules before it can list anything.
+    let item_room = room - 2;
     let shown = if data.queue.len() <= item_room.min(QUEUE_BAND_ITEMS) {
         data.queue.len()
     } else {
@@ -1099,26 +1125,36 @@ fn queue_band(
             .min(data.queue.len() - 1)
     };
     for (index, item) in data.queue.iter().take(shown).enumerate() {
-        // A queued prompt is shown as one line: the queue is a list of turns,
+        // A queued prompt is shown as one line: the queue is a list of prompts,
         // not a second transcript. A draft that did include newlines keeps its
         // shape as a `↵` so the row still says where they are.
         let text = item.text.replace('\n', " ↵ ");
-        let row = format!(
+        let content = format!(
             " {}{}",
-            palette.strong(palette.amber, &format!("{}. ", index + 1)),
+            palette.dim(&format!("{}. ", index + 1)),
             palette.body(&text)
         );
-        rows.push((Some(format!("queue.band.{index}")), fit(&row, columns)));
+        rows.push((
+            Some(format!("queue.band.{index}")),
+            widgets::box_row(palette, &content, columns),
+        ));
     }
     let rest = data.queue.len().saturating_sub(shown);
     if rest > 0 {
-        let row = format!(
-            "   {}",
-            palette.dim(&i18n::render(lang, Key::QueueBandMore, &[&rest]))
-        );
         // Not a prompt: the count row is nobody's verb, so it takes no hit.
-        rows.push((None, fit(&row, columns)));
+        rows.push((
+            None,
+            widgets::box_row(
+                palette,
+                &format!(
+                    "  {}",
+                    palette.dim(&i18n::render(lang, Key::QueueBandMore, &[&rest]))
+                ),
+                columns,
+            ),
+        ));
     }
+    rows.push((None, widgets::box_bottom(palette, columns)));
     rows
 }
 

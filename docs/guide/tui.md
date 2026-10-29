@@ -60,19 +60,30 @@ reader needs is taught only in the help box, and nothing is taught twice.
 Between the conversation and the input box sits the **queue band**, and only
 while something is in it. A prompt sent while a run is in flight is not sent:
 the agent accepted it and put it behind the running turn, so the band lists it —
-one row per prompt, in the order the agent will run them — and the transcript
-stays silent about it until its run actually starts. That is the whole point of
-the band: a queued prompt drawn as a normal user card reads as a message that
-went out, and `hi` appearing mid-reply is exactly what a reader cannot tell
-apart from a sent message. The band's header names the count (`排队 2 条 ·
-当前回复结束后依次发送`) and its right end is the door to `/queue`, which cancels
-(`x`) or recalls (`r` / `enter`) one row at a time; clicking a row in the band
-is the same verb as clicking it in that box — the prompt goes back into the
-draft and leaves the queue. A long queue shows four rows and counts the rest;
-the band takes those rows from the conversation rather than growing the frame.
-The submission joins the queue with `enqueue_if_busy`, not the coalescing
-policy the inline TUI used: a folded request never runs as its own turn, and a
-queue a reader can cancel row by row has to keep every row's identity.
+one row per prompt, in the order it was queued — and the transcript stays silent
+about it until it goes out. That is the whole point of the band: a queued prompt
+drawn as a normal user card reads as a message that went out, and `hi` appearing
+mid-reply is exactly what a reader cannot tell apart from a sent message.
+
+The band is a box, like the composer under it: two rules, the interior on the
+panel background the rail uses. Bare dimmed lines on the canvas read as a
+continuation of the transcript, which is what made the first version look pasted
+over the conversation. Its title is the count and when the prompts go out
+(`排队 2 条 · 当前回复结束后一起发送`), and the right end of that rule is the door
+to `/queue`, which cancels (`x`) or recalls (`r` / `enter`) one row at a time;
+clicking a row in the band is the same verb as clicking it in that box — the
+prompt goes back into the draft and leaves the queue. A long queue shows four
+rows and counts the rest, and the band takes its rows from the conversation
+rather than growing the frame — the conversation keeps its own bottom, so the
+newest rows stay on screen above it (see the `↑ 更早` note below).
+
+**At the boundary they go out together.** The composer submits with
+`enqueue_coalescing`: when the running turn ends, the prompts waiting there are
+folded into **one** message, in queue order, and answered together — a burst of
+supplements is a follow-up, not three turns. Until that moment each one is its
+own row (its own `cancel_queued_run`), which is what makes the band a queue a
+reader can manage; the fold happens once, at the boundary, and the transcript
+then shows the message that actually ran, carrying every text.
 
 The rail is a *column*, not a panel that stops one band early: it (and its
 divider) run from under the header down to the footer, so the space beside the
@@ -391,7 +402,8 @@ click on the rail's tab strip are the doors to the same places.
 | `ctrl+w`, `alt+d`, `ctrl+u`, `ctrl+k`, `ctrl+y` | Delete a word, kill to line start/end, yank |
 | `ctrl+z` / `ctrl+shift+z` (or `alt+y`) | Undo / redo draft edits |
 | `pageUp` / `pageDown` | Scroll the conversation a screen at a time. The rail pages with `shift+pageUp`/`shift+pageDown`; `esc` returns to the latest output |
-| Conversation that fits | A conversation no taller than the band does not scroll at all — up asks the app for an older page and otherwise leaves the frame alone, because moving it would paint blank rows above the transcript and hide rows the terminal was tall enough to show. `↑ 更早` appears once the oldest loaded row is *above* the band, and the ceiling is that row reaching the top of it |
+| Conversation that fits | A conversation no taller than the band does not scroll at all — up asks the app for an older page and otherwise leaves the frame alone, because moving it would paint blank rows above the transcript and hide rows the terminal was tall enough to show. `↑ 更早` appears once the oldest loaded row is *above* the band, and the ceiling is that row reaching the top of it. The marker takes the window's **oldest** row, never the newest: a scrolled window used to pay for that extra row by dropping the last message off the bottom, which is the one row a reader following the tail cannot do without |
+
 | Reading above the tail | A reader parked above the newest row keeps their place while the transcript changes height on its own: rows streaming in at the tail, a reply settling into its `▸ 4 tool calls · 2 thoughts` summary, a burst of calls collapsing into one row, a page of older rows arrived above — the band stays on the rows it was showing, and `↓ 新输出` (then `esc`) is how the tail is reached again. The window is a place in the conversation, not a distance from its end; a resize is the one change that rewraps every row, so it is left to keep that distance |
 | `enter` | Send the draft. With an **empty** draft there is nothing to send, so it opens the rail's selected row instead: a workspace heading folds or unfolds, a conversation opens. That is the one key the rail shares with the composer, and the empty draft is what tells the two apart |
 | `/queue` | List queued prompts — the ones sent while a run was in flight, also listed one row at a time in the band above the composer; `x` cancels, `r` / `enter` cancels and recalls into the draft (`ctrl+c` stops the active run, not the queue) |
@@ -457,8 +469,8 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 |---|---|
 | Session attach, `--session`, `--continue` | `get_state` + `switch_session` |
 | History with paging | The newest page on attach, older pages when the top is reached (`get_session_entries`, a bounded backward cursor) |
-| Prompting and streaming | `prompt` with `enqueue_if_busy` — a submission behind a running turn waits in the agent's queue and starts when that turn ends; `text_chunk`, `thinking_*`, `tool_*` and `agent_end` drive the transcript |
-| Queue management | `/queue` and the band above the composer both read `get_state.queuedRuns`; cancel and recall use the existing `cancel_queued_run`, with no second client-side queue. A queued submission draws no transcript rows until its run starts (`agent_start` / `get_state`), and a submission the agent reports as never run (`cancelled`, `superseded`, `merged`) leaves the transcript entirely |
+| Prompting and streaming | `prompt` with `enqueue_coalescing` — a submission behind a running turn waits in the agent's queue, and the prompts waiting at the turn boundary go out as one message (`start_next_scheduled` joins their texts in queue order); `text_chunk`, `thinking_*`, `tool_*` and `agent_end` drive the transcript |
+| Queue management | `/queue` and the band above the composer both read `get_state.queuedRuns`; cancel and recall use the existing `cancel_queued_run`, with no second client-side queue. A queued submission draws no transcript rows until it goes out; at the boundary the run's card grows by the texts it absorbed (a `merged` ack), and a submission the agent reports as never sent (`cancelled`, `superseded`, `session_deleted`) drops its card |
 | Draft attachments | Reuses `components/input.rs` folded-paste and image-marker machinery; attachments travel with the prompt. `ctrl+v` / `/paste` read the system clipboard through `paste::ClipboardCapture` (osascript on macOS, PowerShell `-STA` on Windows, `wl-paste`/`xclip` on Linux) on a blocking thread, and an image it writes becomes an `[Image #N]` attachment. Nothing leaves the machine |
 | File panel and preview | `r` re-reads the directory in the panel; a directory is read when it opens (400 entries per level, said out loud when cut). A preview decodes an image to at most 2048 px on its long edge — those pixels are what keeps a zoom sharp — and downsamples the bitmap it transmits to the cells on screen; text is read bounded and cut on a character boundary |
 | Approvals | A parked request opens a full card with tool, kind, risk, action/paths, requested action and sandbox boundary. `y` / `n` allow once or deny; `a` first adds the agent-suggested **this-run** workspace rule, then approves. A rule failure leaves the request pending. Escape closes the card without deciding |
