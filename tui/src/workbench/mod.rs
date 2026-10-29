@@ -905,32 +905,51 @@ impl Workbench {
     /// skill, and their rows are marked as skills so the two cannot be confused
     /// (a skill's `<name>` is a prompt token the agent expands; a command never
     /// reaches the model).
+    ///
+    /// Inside each half the rows are ordered by [`palette_rank`], with the
+    /// declaration order kept between rows of one rank: the best answer to what
+    /// the reader is typing is first, and `enter` runs it.
     pub fn palette_rows(&self, data: &WorkbenchData) -> Vec<PaletteRow> {
         let needle = self.palette_query.trim_start_matches('/').to_lowercase();
-        let matches = |values: &[&str]| {
-            needle.is_empty()
-                || values
-                    .iter()
-                    .any(|value| value.to_lowercase().contains(&needle))
+        let ranked = |mut rows: Vec<(PaletteMatch, PaletteRow)>| {
+            // Stable, so rows of one rank stay in the order they are declared.
+            rows.sort_by_key(|(rank, _)| *rank);
+            rows.into_iter().map(|(_, row)| row)
         };
-        let mut rows: Vec<PaletteRow> = COMMANDS
+        let commands: Vec<(PaletteMatch, PaletteRow)> = COMMANDS
             .iter()
-            .filter(|(command, key)| matches(&[command, t(self.lang, *key)]))
-            .map(|(command, key)| PaletteRow::Command {
-                command,
-                description: t(self.lang, *key),
+            .filter_map(|(command, key)| {
+                let description = t(self.lang, *key);
+                palette_rank(command, description, &needle).map(|rank| {
+                    (
+                        rank,
+                        PaletteRow::Command {
+                            command,
+                            description,
+                        },
+                    )
+                })
             })
             .collect();
-        rows.extend(
-            data.skills
-                .iter()
-                .filter(|skill| matches(&[skill.name.as_str(), skill.description.as_str()]))
-                .take(PALETTE_SKILL_LIMIT)
-                .map(|skill| PaletteRow::Skill {
-                    name: skill.name.clone(),
-                    description: skill.description.clone(),
-                }),
-        );
+        let skills: Vec<(PaletteMatch, PaletteRow)> = data
+            .skills
+            .iter()
+            .filter_map(|skill| {
+                palette_rank(&skill.name, &skill.description, &needle).map(|rank| {
+                    (
+                        rank,
+                        PaletteRow::Skill {
+                            name: skill.name.clone(),
+                            description: skill.description.clone(),
+                        },
+                    )
+                })
+            })
+            .collect();
+        // The limit is applied after ranking, so the rows it drops are the worst
+        // matches rather than whichever ones happened to be installed first.
+        let mut rows: Vec<PaletteRow> = ranked(commands).collect();
+        rows.extend(ranked(skills).take(PALETTE_SKILL_LIMIT));
         rows
     }
 
@@ -3896,6 +3915,55 @@ impl PaletteRow {
     }
 }
 
+/// How well one palette row answers the query. The order of the variants is the
+/// order the rows are listed in, so a name hit is *always* above a description
+/// hit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PaletteMatch {
+    /// The row's own name starts with the query — the strongest answer there is.
+    Prefix,
+    /// The name contains the query further in.
+    Name,
+    /// Only the description mentions the query.
+    Description,
+}
+
+/// The rank of one row against an already lower-cased `needle`, or `None` when
+/// it does not match at all.
+///
+/// A description *finds* a row; the name is what the reader is typing, so a name
+/// hit outranks a description hit no matter where in the name it lands. Without
+/// that split `/model` listed `/providers` first (its English description, "List
+/// model providers", contains the word and the verb sits earlier in [`COMMANDS`]),
+/// and `enter` ran a verb the reader had not asked for.
+///
+/// A query that matches no name at all — every Chinese query, since the verbs
+/// are declared in English — can only reach rows through their descriptions, and
+/// those tiers stay equal: `/model` and `/providers` are then ordered as they are
+/// declared. Ranking cannot tell them apart, because "选择模型" and "列出模型提供商"
+/// both merely mention the word.
+///
+/// An empty query matches everything at the best rank, so an opened palette keeps
+/// its own order.
+fn palette_rank(name: &str, description: &str, needle: &str) -> Option<PaletteMatch> {
+    if needle.is_empty() {
+        return Some(PaletteMatch::Prefix);
+    }
+    // A command's name carries the slash the reader types to open the palette;
+    // the needle has already had it stripped, so the name loses it here too.
+    let name = name.trim_start_matches('/').to_lowercase();
+    if name.starts_with(needle) {
+        return Some(PaletteMatch::Prefix);
+    }
+    if name.contains(needle) {
+        return Some(PaletteMatch::Name);
+    }
+    if description.to_lowercase().contains(needle) {
+        return Some(PaletteMatch::Description);
+    }
+    None
+}
+
 /// The token the caret is at the end of, when it is a mention: `(kind, byte
 /// offset of the sigil, text after the sigil)`.
 ///
@@ -6368,6 +6436,63 @@ mod tests {
             "{actions:?}"
         );
         assert_eq!(workbench.overlay, None);
+    }
+
+    /// A row whose *description* mentions the query only finds its place in the
+    /// list; the row whose *name* is the query comes first, so `enter` runs what
+    /// the reader typed for.
+    ///
+    /// `/providers` is the case that regressed: its English description ("List
+    /// model providers") contains `model` and the verb is declared one line above
+    /// `/model`, so an unranked filter put it at the top of the list.
+    #[test]
+    fn a_name_match_ranks_above_a_description_match() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.set_language(LanguagePreference::En);
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        for key in ["m", "o", "d", "e", "l"] {
+            workbench.handle(WbEvent::Key(key.into()), &data);
+        }
+        let rows = workbench.palette_rows(&data);
+        assert_eq!(rows[0].command(), "/model", "{rows:?}");
+        let providers = rows
+            .iter()
+            .position(|row| row.command() == "/providers")
+            .expect("a description hit still finds its row");
+        assert!(providers > 0, "the description hit sorts below: {rows:?}");
+        assert_eq!(
+            workbench.palette_selection(&data).map(|row| row.command()),
+            Some("/model".to_string()),
+            "enter runs the verb the reader typed"
+        );
+    }
+
+    /// The three tiers of [`palette_rank`]: a name prefix, a match inside the
+    /// name, and a description that merely mentions the query.
+    #[test]
+    fn palette_rank_orders_name_before_description() {
+        assert_eq!(
+            palette_rank("/model", "Choose a model", "model"),
+            Some(PaletteMatch::Prefix)
+        );
+        assert_eq!(
+            palette_rank("/mode", "Thinking mode", "ode"),
+            Some(PaletteMatch::Name)
+        );
+        assert_eq!(
+            palette_rank("/providers", "List model providers", "model"),
+            Some(PaletteMatch::Description)
+        );
+        assert_eq!(
+            palette_rank("/providers", "List model providers", "zzz"),
+            None
+        );
+        assert_eq!(
+            palette_rank("/help", "Show this help", ""),
+            Some(PaletteMatch::Prefix),
+            "an opened palette matches everything at the best rank"
+        );
     }
 
     /// `tab` completes the row into the draft and leaves the palette: the reader

@@ -216,11 +216,13 @@ pub struct Live {
     /// without creating one, so the header's own state (connection, version)
     /// stays and the first message creates the session the reader wanted.
     launchpad: bool,
-    /// The model and reasoning level chosen while nothing was attached. The
-    /// agent cannot be told `set_model` without a session, so the picker (and
-    /// the launchpad's own chips) stage the choice here instead: the header
-    /// shows it, and the session the next message creates is asked for with it.
-    /// Cleared once that session exists — from then on the agent is the source.
+    /// The model and reasoning level the reader last chose. On the launchpad
+    /// (nothing attached) the agent cannot be told `set_model`, so the picker
+    /// and the launchpad's own chips stage the choice here; in a session the
+    /// same choice is recorded here too, so it survives both a `/new` and a
+    /// restart — the driver persists it as `settings.json` `defaultModel` /
+    /// `defaultThinkingLevel`. Seeded from that file at attach, so the next
+    /// session starts where the reader left off instead of the agent's default.
     pending_model: Option<String>,
     pending_effort: Option<String>,
     /// The approval mode chosen while nothing was attached. `set_sandbox_policy`
@@ -368,8 +370,8 @@ impl Live {
             theme_id: theme.id.to_string(),
             lang,
             launchpad: false,
-            pending_model: None,
-            pending_effort: None,
+            pending_model: settings.and_then(|settings| settings.default_model.clone()),
+            pending_effort: settings.and_then(|settings| settings.default_thinking_level.clone()),
             pending_mode: None,
             pending_cwd: None,
             run_started: None,
@@ -1895,10 +1897,7 @@ impl Live {
             // A model named in the command line is a choice like any other, so
             // it takes the launchpad road too when nothing is attached.
             "model" if !arg.is_empty() && self.detached() => self.set_pending_model(&arg),
-            "model" if !arg.is_empty() => match self.client.set_model(&arg).await {
-                Ok(()) => self.refresh_state().await,
-                Err(error) => self.notice = Some(format!("Could not set the model: {error}")),
-            },
+            "model" if !arg.is_empty() => self.set_model(&arg).await,
             "model" => self.cycle_model().await,
             // The launchpad's parameter chips. With a session attached each
             // floats a wire call rather than carrying state of its own: the
@@ -2266,12 +2265,12 @@ impl Live {
     /// The model the surface should name: the staged one while the launchpad
     /// has no session to read it from, otherwise the agent's own.
     ///
-    /// A launchpad with nothing staged names the agent's *default* model — the
-    /// one `new_session` would pick for a session that asks for none (the same
-    /// model `list_models` flags `isDefault`) — rather than the model of the
-    /// conversation `/new` just left behind. A fresh screen is a fresh choice:
-    /// carrying the last conversation's model into the next one made `/new` a
-    /// copy of what came before instead of a clean start.
+    /// A launchpad with nothing staged this visit names the reader's remembered
+    /// default — the model they last selected, kept in `settings.json` — before
+    /// falling back to the agent's default (the model `list_models` flags
+    /// `isDefault`). That remembered default is the reader's own choice, not
+    /// the model of the conversation `/new` just left behind: attaching to a
+    /// session that runs a different model does not overwrite it.
     fn shown_model(&self) -> Option<String> {
         if self.detached() {
             return self
@@ -2522,11 +2521,11 @@ impl Live {
             Ok(_) => {
                 self.launchpad = false;
                 self.drafts.remove("launchpad");
-                // The agent now owns the choice (the session was created with
-                // it), so the staging is spent — keeping it would let a stale
-                // pick override the session's own on the next `/new`.
-                self.pending_model = None;
-                self.pending_effort = None;
+                // The workspace and approval mode are spent once the session
+                // exists (the agent holds them now). The model and level are
+                // kept: they are the reader's remembered default, so the next
+                // `/new` starts where the reader left off instead of the
+                // agent's own default.
                 self.pending_cwd = None;
                 self.pending_mode = None;
                 // The approval mode has no `new_session` argument: it is one
@@ -2553,23 +2552,27 @@ impl Live {
         }
     }
 
-    /// Apply one model by id (the `/model` picker's row).
+    /// Apply one model by id (the `/model` picker's row), and remember it as
+    /// the reader's default so the next session starts with it.
     async fn set_model(&mut self, model_id: &str) {
         match self.client.set_model(model_id).await {
             Ok(()) => {
                 self.notice = None;
+                self.pending_model = Some(model_id.to_string());
                 self.refresh_state().await;
             }
             Err(error) => self.notice = Some(format!("Could not set the model: {error}")),
         }
     }
 
-    /// Apply one reasoning level (the model picker's slider).
+    /// Apply one reasoning level (the model picker's slider), and remember it
+    /// as the reader's default.
     async fn set_thinking(&mut self, level: &str) {
-        let level = self.wire_thinking_level(level);
-        match self.client.set_thinking_level(&level).await {
+        let wire = self.wire_thinking_level(level);
+        match self.client.set_thinking_level(&wire).await {
             Ok(()) => {
                 self.notice = None;
+                self.pending_effort = Some(level.to_string());
                 self.refresh_state().await;
             }
             Err(error) => self.notice = Some(format!("Could not set thinking: {error}")),
@@ -2586,6 +2589,7 @@ impl Live {
             Ok(value) => {
                 if let Some(model) = value.get("model").and_then(Value::as_str) {
                     self.state.model = Some(model.to_string());
+                    self.pending_model = Some(model.to_string());
                 }
             }
             Err(error) => self.notice = Some(format!("Could not cycle the model: {error}")),
@@ -2601,6 +2605,7 @@ impl Live {
             Ok(value) => {
                 if let Some(level) = value.get("level").and_then(Value::as_str) {
                     self.state.thinking_level = level.to_string();
+                    self.pending_effort = Some(level.to_string());
                 }
             }
             Err(error) => self.notice = Some(format!("Could not cycle thinking: {error}")),
@@ -4808,6 +4813,53 @@ mod tests {
         assert_eq!(data.model, "future/old");
         assert_eq!(data.effort, "high");
         assert_eq!(data.mode, "manual");
+    }
+
+    /// A model and level the reader chose on an earlier run are remembered as
+    /// the terminal UI's default: a fresh launchpad names them over both the
+    /// agent's `isDefault` model and the conversation `/new` left behind, so
+    /// the next session starts where the reader left off.
+    #[tokio::test]
+    async fn a_stored_default_model_is_the_launchpad_default() {
+        // The conversation the client came from runs a different model and
+        // level, and the agent flags `gpt-9` as its default — neither may win
+        // over the reader's remembered choice.
+        let state = r#"{"sessionId":"s-1","cwd":"/work/alpha","model":"future/old","thinkingLevel":"high"}"#;
+        let models = r#"{"models":[
+            {"id":"old","label":"old","provider":"future","thinkingLevel":"default",
+             "thinkingLevels":["default","high"],"defaultThinkingLevel":"high"},
+            {"id":"deepseek-flash","label":"deepseek-flash","provider":"future",
+             "thinkingLevel":"default","thinkingLevels":["default","high"],
+             "defaultThinkingLevel":"default"},
+            {"id":"gpt-9","label":"gpt-9","provider":"future","isDefault":true,
+             "thinkingLevel":"default","thinkingLevels":["default","high"],
+             "defaultThinkingLevel":"default"}
+        ]}"#;
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("get_state", state),
+            ("list_models", models),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let settings = crate::settings::TuiSettings::from_json(&serde_json::json!({
+            "defaultModel": "future/deepseek-flash",
+            "defaultThinkingLevel": "high"
+        }));
+        let (mut live, _events) = Live::attach(&addr, None, false, Some(&settings))
+            .await
+            .expect("attach to the test agent");
+        live.state.session_id.clear();
+        live.state.cwd = None;
+        live.to_launchpad();
+
+        let frame = crate::workbench::layout::Frame::new(
+            120,
+            38,
+            36,
+            crate::workbench::preferences::SidebarPosition::Right,
+        );
+        let data = live.data(&frame);
+        assert_eq!(data.model, "future/deepseek-flash", "the remembered model");
+        assert_eq!(data.effort, "high", "the remembered level");
     }
 
     /// The rail, the `ctrl+r` list and the 工作区 tab name a workspace by its
