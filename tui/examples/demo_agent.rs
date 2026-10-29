@@ -305,7 +305,7 @@ fn long_turns_en(entries: &mut Vec<Value>) {
 
 /// `get_state`: what the header, the status bar and the session list draw.
 fn state() -> Value {
-    json!({
+    let mut state = json!({
         "sessionId": SESSION_ID,
         "sessionName": session_name(),
         "cwd": session_cwd(),
@@ -329,7 +329,33 @@ fn state() -> Value {
             "cacheReadTokens": 88_000, "cacheWriteTokens": 2_100,
             "costCny": 0.0137
         }
-    })
+    });
+    // `FUTURE_DEMO_QUEUE=1` also reports a turn in flight and the prompts waiting
+    // behind it, which is what the composer's queue band draws. Gated like
+    // `FUTURE_DEMO_CWD`: a stand-in that always had a queue would put a band in
+    // every other frame's baseline.
+    if std::env::var_os("FUTURE_DEMO_QUEUE").is_some() {
+        state["isStreaming"] = json!(true);
+        state["activeRun"] = json!({
+            "runId": "demo-run-live", "epoch": 1, "state": "running", "lastEventIdx": 0
+        });
+        state["queuedRuns"] = json!([
+            {
+                "runId": "demo-run-queued-1", "runSequence": 2,
+                "clientRequestId": "demo-request-queued-1", "state": "queued",
+                "queuePosition": 1, "acceptedAt": "2026-03-04T10:00:00Z",
+                "displayText": "顺手把 tui 的 clippy 警告也清掉"
+            },
+            {
+                "runId": "demo-run-queued-2", "runSequence": 3,
+                "clientRequestId": "demo-request-queued-2", "state": "queued",
+                "queuePosition": 2, "acceptedAt": "2026-03-04T10:00:04Z",
+                "displayText": "再看一下 diff 面板的滚动，别一滚就跳到底\n顺便补个回归测试"
+            }
+        ]);
+        state["queuedCount"] = json!(2);
+    }
+    state
 }
 
 fn session_name() -> &'static str {

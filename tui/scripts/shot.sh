@@ -29,7 +29,9 @@
 #
 # Scenarios: chat help palette todo usage skills sessions launchpad scrolled
 #            palette-filter full-panel drag light command-usage command-skills
-#            rail-search git
+#            rail-search git queue
+# (`queue` is the chat with two prompts waiting behind a live turn — the queue
+# band above the composer.)
 # (the table lives in scripts/screenshots/capture.py; an unknown name is an
 # error rather than a silently different frame. `git` is the one scenario that
 # reads the checkout, so it needs `FUTURE_DEMO_CWD=$PWD` for the scripted
