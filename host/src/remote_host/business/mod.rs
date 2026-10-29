@@ -43,7 +43,7 @@ pub(crate) enum Route {
 pub(crate) fn route(cmd_type: &str) -> Option<Route> {
     Some(match cmd_type {
         "list_sessions" | "list_workspaces" => Route::Catalog,
-        "get_messages" | "get_session_entries" | "get_events_since" | "get_tool_call_args" | "get_event_content_range" => {
+        "get_fusion" | "get_messages" | "get_session_entries" | "get_events_since" | "get_tool_call_args" | "get_event_content_range" => {
             Route::History
         }
         "upload_init" | "upload_complete" | "upload_cancel" | "list_session_files"
@@ -108,7 +108,8 @@ pub(crate) fn route(cmd_type: &str) -> Option<Route> {
 fn needs_content_capability(cmd: &str) -> bool {
     matches!(
         cmd,
-        "get_messages"
+        "get_fusion"
+            | "get_messages"
             | "get_session_entries"
             | "get_events_since"
             | "get_tool_call_args"

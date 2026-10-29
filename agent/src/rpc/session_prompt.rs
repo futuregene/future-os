@@ -22,6 +22,8 @@ struct ScheduledPromptPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ScheduledSettingsSnapshot {
     settings_schema_version: u32,
+    #[serde(default)]
+    fusion_enabled: bool,
     model: String,
     thinking_level: String,
     cwd: String,
@@ -331,8 +333,26 @@ impl ServerSession {
         {
             return Err(crate::runtime::RunQueueError::PersistenceUnavailable(error).into());
         }
+        let fusion_enabled = future_fusion::fusion_prompt(prompt.message).is_some();
+        if fusion_enabled {
+            anyhow::ensure!(
+                self.created_by != "fusion",
+                "Recursive Fusion is prohibited"
+            );
+            anyhow::ensure!(
+                !future_fusion::fusion_prompt(prompt.message)
+                    .unwrap_or_default()
+                    .is_empty(),
+                "Use /fusion followed by a task"
+            );
+            anyhow::ensure!(
+                crate::fusion::available(),
+                "Fusion is unavailable: start or upgrade the FutureOS host"
+            );
+        }
         let settings = ScheduledSettingsSnapshot {
             settings_schema_version: 1,
+            fusion_enabled,
             model: self.model.clone(),
             thinking_level: self.thinking_level.clone(),
             cwd: self.cwd.clone(),
@@ -523,6 +543,7 @@ impl ServerSession {
                     .push_str(&trailing_payload.model_context);
                 payload.images.extend(trailing_payload.images);
                 payload.attachments.extend(trailing_payload.attachments);
+                payload.settings.fusion_enabled |= trailing_payload.settings.fusion_enabled;
             }
             // The front request keeps the run identity it was acknowledged with
             // (run id, sequence, client request id) — only the effective settings
@@ -541,6 +562,9 @@ impl ServerSession {
                 snapshot.ok_or_else(|| anyhow::anyhow!("accepted run snapshot is unavailable"))?;
             // Keep the payload's own copy of the effective settings consistent, so a
             // later reader sees the configuration this run actually uses.
+            let fusion_enabled = payload.settings.fusion_enabled;
+            let mut snapshot = snapshot;
+            snapshot.settings.fusion_enabled = fusion_enabled;
             payload.settings = snapshot.settings.clone();
             debug_assert_eq!(snapshot.settings.model, payload.settings.model);
             #[cfg(test)]
@@ -666,9 +690,14 @@ impl ServerSession {
         let run_auto_compaction = accepted_settings
             .map(|settings| settings.auto_compaction)
             .unwrap_or(self.auto_compaction);
-        let run_no_context_files = accepted_settings
-            .map(|settings| settings.no_context_files)
-            .unwrap_or(self.no_context_files);
+        let fusion_enabled = accepted_settings
+            .map(|settings| settings.fusion_enabled)
+            .unwrap_or_else(|| future_fusion::fusion_prompt(prompt.message).is_some());
+        let fusion_inner = self.created_by == "fusion";
+        let run_no_context_files = fusion_inner
+            || accepted_settings
+                .map(|settings| settings.no_context_files)
+                .unwrap_or(self.no_context_files);
         let run_permission_level = accepted_settings
             .map(|settings| settings.permission_level.clone())
             .unwrap_or_else(|| self.permission_level.clone());
@@ -1014,6 +1043,48 @@ impl ServerSession {
             None => crate::sandbox::ResolvedSandbox::disabled(&session_cwd),
         });
 
+        if fusion_inner {
+            let snapshot = crate::fusion::inner_snapshot(&self.source_meta)?
+                .ok_or_else(|| anyhow::anyhow!("Fusion session is missing its immutable source"))?;
+            anyhow::ensure!(
+                std::path::Path::new(&snapshot.root).canonicalize()?
+                    == std::path::Path::new(&session_cwd).canonicalize()?,
+                "Fusion session workspace differs from snapshot"
+            );
+            run_loop.tools = crate::fusion::inner_tools();
+            run_loop.fusion_context = Some(crate::fusion::ContextScope::Inner(Arc::new(snapshot)));
+            run_loop.config.max_turns = 5;
+            run_loop.config.max_retries = 1;
+            run_loop.provider = Arc::new(crate::fusion::LimitedProvider(run_loop.provider.clone()));
+            run_loop.parallel_tools = false;
+        } else if fusion_enabled {
+            anyhow::ensure!(crate::fusion::available(), "Fusion host is unavailable");
+            let identity = self.session_manager.storage()?.storage_identity()?;
+            run_loop
+                .tools
+                .retain(|tool| tool.def.function.name != "fusion");
+            run_loop.tools.push(crate::fusion::main_tool());
+            run_loop.parallel_tools = false;
+            run_loop.fusion_context = Some(crate::fusion::ContextScope::Parent {
+                parent: future_fusion::Parent {
+                    database_id: format!(
+                        "{}:{}",
+                        identity.database_id, identity.restore_generation
+                    ),
+                    session_id: session_id.clone(),
+                    run_id: run_lease.run_id.clone(),
+                    tool_call_id: String::new(),
+                },
+                workspace: std::path::PathBuf::from(&session_cwd),
+                store: future_fusion::Store::existing(&crate::utils::future_home())?,
+                sandbox: sandbox.clone(),
+                cancelled: run_loop.interrupt_flag(),
+            });
+            let guidance = "\nFusion is enabled for this run only. Use it for a focused decision after gathering necessary facts; directly handle routine work. Provide question, goal, background, constraints and evidence. It only thinks; implement recommendations yourself under the original user authorization. Honor explicit instructions requiring or prohibiting consultation.\n";
+            run_loop.system_prompt.push_str(guidance);
+            run_loop.config.system_prompt = run_loop.system_prompt.clone();
+        }
+
         // Auto is an approval reviewer, never a new OS sandbox tier. A failed
         // sandbox probe always retains the existing human Manual flow.
         let mut review_initializer = None;
@@ -1186,6 +1257,14 @@ impl ServerSession {
         let approval_sandbox = sandbox.clone();
         let permission_level = run_permission_level.clone();
         run_loop.config.before_tool_call = Some(Arc::new(move |tool_name, tool_id, arguments| {
+            if fusion_inner {
+                return (!future_fusion::INNER_TOOL_NAMES.contains(&tool_name)).then(|| {
+                    crate::types::ToolCallResult {
+                        result: format!("Fusion is read-only; tool `{tool_name}` is prohibited"),
+                        is_error: true,
+                    }
+                });
+            }
             match permission_level.as_str() {
                 "all" => {
                     // Legacy tool access does not grant extra OS sandbox

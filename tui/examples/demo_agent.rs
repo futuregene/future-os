@@ -48,43 +48,74 @@ fn session_cwd() -> String {
 /// tests and answers. Written in the display projection's shape (`blocks`), so
 /// it travels the same mapper a real session's journal does.
 fn journal() -> Value {
-    json!({"entries": [
-        {
+    let mut entries = vec![
+        json!({
             "id": "e1", "kind": "user", "role": "user",
             "blocks": [{"kind": "text",
                 "text": "parser 里有个 off-by-one，找出来并补一个回归测试"}],
-        },
-        {
+        }),
+        json!({
             "id": "e2", "kind": "assistant", "role": "assistant",
             "blocks": [{"kind": "reasoning",
                 "text": "先看 parse_expr 的边界条件，怀疑是最后一个 token 的处理。"}],
-        },
-        {
+        }),
+        json!({
             "id": "e3", "kind": "assistant", "role": "assistant",
             "blocks": [{"kind": "tool_call", "toolCallId": "call_read", "name": "read",
                         "arguments": {"path": "src/parser.rs"}}],
-        },
-        {
+        }),
+        json!({
             "id": "e4", "kind": "tool", "role": "tool",
             "blocks": [{"kind": "tool_result", "toolCallId": "call_read", "isError": false,
                 "text": "142  fn parse_expr(&mut self) -> Result<Expr> {\n143      while self.peek() <= self.end { ... }\n"}],
-        },
-        {
+        }),
+        json!({
             "id": "e5", "kind": "assistant", "role": "assistant",
             "blocks": [{"kind": "tool_call", "toolCallId": "call_test", "name": "shell",
                         "arguments": {"command": "cargo test -p parser"}}],
-        },
-        {
+        }),
+        json!({
             "id": "e6", "kind": "tool", "role": "tool",
             "blocks": [{"kind": "tool_result", "toolCallId": "call_test", "isError": false,
                 "text": "test result: ok. 40 passed; 0 failed\n"}],
-        },
-        {
+        }),
+        json!({
             "id": "e7", "kind": "assistant", "role": "assistant",
             "blocks": [{"kind": "text",
                 "text": "`while self.peek() <= self.end` 在最后一个 token 上多读一次。改成 `<` 之后，41 个用例全过。"}],
-        }
-    ]})
+        }),
+    ];
+    if std::env::var_os("FUTURE_DEMO_LONG").is_some() {
+        long_turns(&mut entries);
+    }
+    json!({ "entries": entries })
+}
+
+/// How many extra turns `FUTURE_DEMO_LONG=1` appends: enough rows to outrun the
+/// transcript band of a tall terminal, which is what a `scrolled` capture needs.
+const LONG_TURNS: usize = 16;
+
+/// More exchanges after the tutorial's, for the one scenario that is *about*
+/// scrolling (`scrolled`, which wheels up to reach the `↑ 更早` badge).
+///
+/// A conversation that fits the band has nowhere to scroll — the ceiling counts
+/// the window as well as the rows (see `Workbench::scroll`) — so that shot needs
+/// a transcript taller than the band. Opt-in rather than always: the other
+/// scenarios' frames are byte-identical pictures, and rows nobody asked for
+/// would change them.
+fn long_turns(entries: &mut Vec<Value>) {
+    for turn in 1..=LONG_TURNS {
+        entries.push(json!({
+            "id": format!("lu{turn}"), "kind": "user", "role": "user",
+            "blocks": [{"kind": "text",
+                "text": format!("第 {turn} 轮：这一层重试为什么不直接拿掉？")}],
+        }));
+        entries.push(json!({
+            "id": format!("la{turn}"), "kind": "assistant", "role": "assistant",
+            "blocks": [{"kind": "text", "text": format!(
+                "第 {turn} 轮：上游会在 45 秒静默断开，这一层把它挡在界面之外。\n日志里能查到 `retry attempt {turn}`，超时的那条没有收尾行。")}],
+        }));
+    }
 }
 
 /// `get_state`: what the header, the status bar and the session list draw.

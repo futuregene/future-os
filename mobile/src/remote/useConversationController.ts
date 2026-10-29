@@ -283,10 +283,15 @@ export function useConversationController({
    * on a miss cannot turn into a request per render. Keyed by session too: the
    * same call id in another conversation must never answer here.
    */
-  const resolveToolCallTarget = useCallback(async (toolCallId: string, runId: string) => {
+  const resolveToolCallTarget = useCallback(async (toolCallId: string, runId: string, fusion?: { stepId?: string; offset?: number }) => {
     const client = clientRef.current;
     const sessionId = selectedRef.current;
     if (!client || !sessionId) throw new Error("not_connected");
+    if (fusion) {
+      const response = await client.requestRetry({ type: "get_fusion", sessionId, runId, toolCallId, entryId: fusion.stepId, offset: fusion.offset }, sessionId);
+      if (!response.success) throw new Error(response.error ?? "fusion_read_failed");
+      return JSON.stringify(response.data);
+    }
     const key = `${sessionId}\u0000${runId}\u0000${toolCallId}`;
     const cached = toolTargetsRef.current.get(key);
     if (cached !== undefined) return cached;

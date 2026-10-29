@@ -328,7 +328,9 @@ pub enum Key {
     ModeSandboxDesc,
     ModeAutoDesc,
     ModeOffDesc,
-    RailHint,
+    RailHintStep,
+    RailHintPage,
+    RailHintTabs,
     // ── the files panel (its own overlay, not a rail tab) ──────────
     FilesHint,
     FilesNoWorkspace,
@@ -342,6 +344,7 @@ pub enum Key {
     ActivityStreaming,
     ActivityTools,
     HintBackToChat,
+    HintLatest,
     HintSidebar,
     HintSessions,
     HintFocus,
@@ -463,6 +466,7 @@ pub enum Key {
     CmdRefresh,
     CmdMouse,
     CmdDelete,
+    CmdPin,
     DeleteTitle,
     DeleteBody,
     DeleteWhere,
@@ -498,7 +502,6 @@ pub enum Key {
     CmdModel,
     CmdLanguage,
     CmdReplyDetail,
-    CmdToolOutput,
     CmdWorkspace,
     CmdTheme,
     CmdUsage,
@@ -506,6 +509,10 @@ pub enum Key {
     CmdTodo,
     CmdExport,
     CmdTranscript,
+    CmdFusion,
+    CmdFusionLog,
+    FusionEnabled,
+    FusionLogTitle,
     CmdHelp,
     CmdQuit,
     CmdPreferences,
@@ -736,6 +743,7 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         // from, a panel to the chat — so the hint names the walk, not one of
         // its stops.
         HintBackToChat => ("返回上一级 / 回到聊天", "Back one level / to the chat"),
+        HintLatest => ("回到最新", "Back to the newest"),
         HintSidebar => ("侧栏", "Sidebar"),
         HintSessions => ("会话", "Sessions"),
         HintFocus => ("焦点", "Focus"),
@@ -743,10 +751,12 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         HintHelp => ("帮助", "Help"),
         HintNewChat => ("新会话", "New Chat"),
         HintSettings => ("偏好设置", "Preferences"),
-        RailHint => (
-            "ctrl+↑↓ 切换会话 · shift+←→ 页签",
-            "ctrl+↑↓ switches session · shift+←→ tabs",
-        ),
+        // The rail's key hints, as parts: the rail is narrow and resizable, so
+        // the painter drops whole parts from the tail rather than cutting one
+        // in half (see `screen::rail_hint`).
+        RailHintStep => ("shift+↑↓ 选择", "shift+↑↓ select"),
+        RailHintPage => ("shift+pg↑↓ 翻页", "shift+pg↑↓ page"),
+        RailHintTabs => ("ctrl+1/2 页签 · shift+←→ 轮换", "ctrl+1/2 tabs · shift+←→ cycles"),
         FilesHint => (
             "↑↓ 选择 · ⏎ 打开 · ⌫ 上一层 · r 刷新 · esc 关闭",
             "↑↓ select · enter opens · ⌫ up a level · r refreshes · esc closes",
@@ -904,6 +914,10 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ForkEmptyId => ("fork 未返回会话 id", "Fork returned no session id"),
         CmdQueue => ("查看、取消或取回排队消息", "List, cancel or recall queued prompts"),
         CmdDelete => ("删除这条会话（先确认）", "Delete this conversation (asks first)"),
+        CmdPin => (
+            "置顶 / 取消置顶侧栏光标所在会话的工作区",
+            "Pin or unpin the workspace of the row the rail's cursor is on",
+        ),
         CmdCopy => ("复制最后一条回答", "Copy the last assistant answer"),
         CmdPaste => (
             "粘贴剪贴板（图片会变成附件）",
@@ -949,7 +963,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "过程展示：只留回答 / 全部过程",
             "Process detail: answer only / the whole process",
         ),
-        CmdToolOutput => ("工具调用正文：展开 / 收起", "Tool call bodies: expand / collapse"),
         CmdWorkspace => ("workspace 目录", "Workspace directory"),
         CmdTheme => ("切换主题", "Switch theme"),
         CmdUsage => ("用量与成本", "Usage and cost"),
@@ -959,6 +972,10 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ),
         CmdSkills => ("技能列表", "Installed skills"),
         CmdExport => ("导出会话", "Export the session"),
+        CmdFusion => ("启用 Fusion 思考工具", "Enable the Fusion thinking tool"),
+        CmdFusionLog => ("查看 Fusion 讨论与诊断", "Inspect Fusion discussion and diagnostics"),
+        FusionEnabled => ("Fusion 工具已启用：输入任务后发送；会商只读，主流程照常执行", "Fusion enabled: enter a task; consultation is read-only, main flow retains execution"),
+        FusionLogTitle => ("Fusion 讨论记录（只读）", "Fusion discussion record (read-only)"),
         CmdTranscript => ("完整记录", "The whole record"),
         CmdHelp => ("帮助与快捷键", "Help and shortcuts"),
         CmdQuit => ("退出 workbench", "Leave the workbench"),
@@ -989,12 +1006,12 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "删除选中的会话（先确认）",
             "Delete the selected conversation (asks first)",
         ),
-        HelpKeySidebar => ("侧栏：打开 / 聚焦 / 收起", "Sidebar: show / focus / hide"),
+        HelpKeySidebar => ("侧栏：显示 / 收起", "Sidebar: show / hide"),
         HelpKeyFocus => (
             "在对话里逐个选中链接与图片，⏎ 打开、再按一次收起",
             "Step through the conversation's links and pictures: enter opens one, enter again folds it",
         ),
-        HelpKeyScroll => ("滚动聊天，或侧栏列表", "Scroll the chat, or the sidebar's list"),
+        HelpKeyScroll => ("滚动聊天", "Scroll the chat"),
         HelpKeyPage => ("整页滚动聊天", "Scroll the chat a page at a time"),
         HelpKeyPalette => ("命令面板", "Command palette"),
         HelpKeyMentionFile => (
@@ -1348,7 +1365,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 325] = {
+    const ALL_KEYS: [Key; 332] = {
         use Key::*;
         [
             TabTodo,
@@ -1418,7 +1435,9 @@ mod tests {
             ModeSandboxDesc,
             ModeAutoDesc,
             ModeOffDesc,
-            RailHint,
+            RailHintStep,
+            RailHintPage,
+            RailHintTabs,
             FilesHint,
             FilesNoWorkspace,
             LangSystem,
@@ -1430,6 +1449,7 @@ mod tests {
             ActivityStreaming,
             ActivityTools,
             HintBackToChat,
+            HintLatest,
             HintSidebar,
             HintSessions,
             HintFocus,
@@ -1537,6 +1557,7 @@ mod tests {
             ForkEmptyId,
             CmdQueue,
             CmdDelete,
+            CmdPin,
             CmdCopy,
             CmdPaste,
             CmdPreview,
@@ -1567,7 +1588,6 @@ mod tests {
             CmdModel,
             CmdLanguage,
             CmdReplyDetail,
-            CmdToolOutput,
             CmdWorkspace,
             CmdTheme,
             CmdUsage,
@@ -1575,6 +1595,10 @@ mod tests {
             CmdTodo,
             CmdExport,
             CmdTranscript,
+            CmdFusion,
+            CmdFusionLog,
+            FusionEnabled,
+            FusionLogTitle,
             CmdHelp,
             CmdQuit,
             CmdPreferences,

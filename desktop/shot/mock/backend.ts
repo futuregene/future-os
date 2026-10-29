@@ -9,6 +9,7 @@
  * `[mock] UNHANDLED COMMAND <name>` — add a handler for it and re-capture.
  */
 import type { MockEntry } from "./data";
+import fusionFixture from "../../../scripts/screenshots/fixtures/fusion.json";
 import {
   appSettings,
   availableSkills,
@@ -151,6 +152,8 @@ export function patchSettings(patch: Record<string, unknown>) {
 }
 
 export function entriesForThread(threadId: string): MockEntry[] {
+  if (new URLSearchParams(window.location.search).get("fusion") === "1")
+    return fusionFixture.entries as unknown as MockEntry[];
   // `?compactHistory=1` swaps in the history of a run that compacted mid-turn,
   // so a capture can assert the reply after the divider survives the durable
   // projection (the schemaVersion 3 path).
@@ -314,7 +317,27 @@ function peerList(): typeof remotePeers {
 /** Mutable copy so a capture can show a task being toggled or deleted. */
 const taskList = tasks.map(task => ({ ...task }));
 
+const historyTransfers = new Map<string, Uint8Array>();
 const handlers: Record<string, (args: any) => unknown> = {
+  begin_session_history_transfer: (args) => {
+    const entries = entriesForThread(args?.threadId ?? "");
+    const bytes = new TextEncoder().encode(JSON.stringify({ entries, hasMore: false, nextOffset: entries.length }));
+    const id = crypto.randomUUID();
+    historyTransfers.set(id, bytes);
+    return { id, totalBytes: bytes.length, chunkBytes: 64 * 1024 };
+  },
+  read_session_history_transfer: args => Array.from(historyTransfers.get(args?.transferId)?.slice(args?.offset, args?.offset + 64 * 1024) ?? []),
+  release_session_history_transfer: (args) => {
+    historyTransfers.delete(args?.transferId);
+    return null;
+  },
+  get_fusion: (args) => {
+    if (!args?.stepId)
+      return fusionFixture.discussion;
+    const step = fusionFixture.discussion.steps.find(s => s.id === args.stepId);
+    const transcript = JSON.stringify([{ role: "user", content: [{ type: "text", text: step?.input }] }, { role: "assistant", content: [{ type: "text", text: step?.output }] }]);
+    return { ...step, transcript, next_offset: transcript.length, total_bytes: transcript.length };
+  },
   // ── App bootstrap ──────────────────────────────────────────────────────
   initialize_app_store: () => null,
   app_build_info: () => buildInfo,
@@ -496,8 +519,8 @@ const handlers: Record<string, (args: any) => unknown> = {
       ? [{ id: `out_${args.toolCallId}`, toolCallId: args.toolCallId, kind: "text", content, createdAt: Date.now() }]
       : [];
   },
-  list_approval_requests: args => (args?.threadId === pendingApproval.threadId ? [pendingApproval] : []),
-  list_pending_approval_requests: () => [pendingApproval],
+  list_approval_requests: args => (new URLSearchParams(window.location.search).has("fusion") ? [] : args?.threadId === pendingApproval.threadId ? [pendingApproval] : []),
+  list_pending_approval_requests: () => new URLSearchParams(window.location.search).has("fusion") ? [] : [pendingApproval],
   decide_approval_request: () => null,
   save_approval_rule: () => null,
   save_approval_rules: () => null,

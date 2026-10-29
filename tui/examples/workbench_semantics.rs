@@ -659,8 +659,8 @@ fn sidebar_tab() -> Result<(), String> {
     let (x, y) = centre(tab);
     match wb.handle(WbEvent::Mouse(press(x, y)), &data).as_slice() {
         [WbAction::SwitchPanel(PanelId::Workspaces)] => {
-            if !wb.sidebar_focus {
-                return Err("the tab did not take the keys".into());
+            if wb.panel != PanelId::Workspaces {
+                return Err("the tab did not switch the panel".into());
             }
             Ok(())
         }

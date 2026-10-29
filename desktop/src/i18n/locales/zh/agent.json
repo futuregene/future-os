@@ -337,5 +337,53 @@
     "dismiss": "收起教学入口",
     "dismissed": "已收起教学入口 · 随时可在左侧「技能」页重新打开教程",
     "loadFailed": "教学配置加载失败：{{message}}"
+  },
+  "fusion": {
+    "enabled": "Fusion 工具已启用 · 按需只读会商",
+    "enableDescription": "为本次主流程加入多模型思考工具；讨论不执行动作",
+    "remove": "移除",
+    "discussion": "讨论记录",
+    "discussing": "正在会商",
+    "issues": "分歧与结论",
+    "diagnostics": "诊断",
+    "original": "原始发言与工具证据",
+    "more": "继续读取",
+    "input": "实际输入",
+    "loading": "正在读取讨论记录",
+    "noIssues": "暂未形成议题",
+    "unavailable": "当前宿主不支持 Fusion",
+    "missingParent": "缺少父任务信息",
+    "phases": {
+      "preparing": "准备资料",
+      "analyzing": "独立分析",
+      "issue_mapping": "整理议题",
+      "reviewing": "交叉评议",
+      "synthesizing": "综合结论"
+    },
+    "states": {
+      "preparing": "准备中",
+      "queued": "排队中",
+      "running": "会商中",
+      "delivering": "返回结果",
+      "completed": "会商完成，主流程继续处理",
+      "failed": "会商失败",
+      "cancelled": "已停止",
+      "interrupted": "已中断",
+      "starting": "启动中"
+    },
+    "retry": "重试 {{count}}",
+    "completeness": {
+      "full": "完整讨论",
+      "partial": "部分模型参与",
+      "single": "单模型意见"
+    },
+    "result": {
+      "rationale": "判断依据",
+      "conditions": "适用条件",
+      "unresolved": "待确认事项",
+      "next_steps": "建议后续动作"
+    },
+    "title": "Fusion · 讨论记录",
+    "runningTitle": "Fusion · 正在会商"
   }
 }

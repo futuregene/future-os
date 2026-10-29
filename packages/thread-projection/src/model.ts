@@ -7,7 +7,7 @@ import type { ShellResult } from "./shellResult";
 
 export type MessageRole = "user" | "assistant" | "system";
 
-export type AgentActivityKind = "thinking" | "read" | "shell" | "edit" | "write";
+export type AgentActivityKind = "thinking" | "read" | "shell" | "edit" | "write" | "fusion";
 
 export interface AgentActivityItem {
   id: string;

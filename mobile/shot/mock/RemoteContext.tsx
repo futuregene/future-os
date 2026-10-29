@@ -1,3 +1,4 @@
+import fusionFixture from "../../../scripts/screenshots/fixtures/fusion.json";
 /**
  * Screenshot harness stand-in for `src/remote/RemoteContext`.
  *
@@ -171,7 +172,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     const search = new URLSearchParams(window.location.search);
     const renderFixture = leanRenderTimeline(renderMode);
     if (renderFixture) return renderFixture;
-    const historyEntries = search.get("compactHistory") === "1"
+    const historyEntries = search.get("fusion")==="1" ? fusionFixture.entries : search.get("compactHistory") === "1"
       ? compactResumeEntries
       : search.get("multiTurn") === "1"
         ? olderLoaded
@@ -363,6 +364,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       "provider_management_v1",
       "workspace_pinning_v1",
       "compaction_v1",
+      "fusion_v1",
       "fork_v1",
       "tasks_v1",
       // What the shipping client declares (src/remote/client.ts); the lean
@@ -397,7 +399,13 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     // A lean history row with no target fetches its command on open: the app
     // goes through the bridge (`get_tool_call_args`), the harness answers from
     // the full-feed fixture with the shipping target derivation.
-    resolveToolCallTarget: async (toolCallId: string) => leanTargetForToolCall(toolCallId),
+    resolveToolCallTarget: async (toolCallId: string, _run?:string, fusion?:{stepId?:string;offset?:number}) => {
+      if (!fusion) return leanTargetForToolCall(toolCallId);
+      if (!fusion.stepId) return JSON.stringify(fusionFixture.discussion);
+      const step=fusionFixture.discussion.steps.find(s=>s.id===fusion.stepId);
+      const transcript=JSON.stringify([{role:"user",content:[{type:"text",text:step?.input}]},{role:"assistant",content:[{type:"text",text:step?.output}]}]);
+      return JSON.stringify({...step,transcript,next_offset:transcript.length,total_bytes:transcript.length});
+    },
     switchDesktop: async (id: string) => setDesktopId(id),
     // Local-only labels, like the real store: a blank value clears the field.
     renameDesktop: async (id: string, name: string) => setDesktops(current => current.map(item =>

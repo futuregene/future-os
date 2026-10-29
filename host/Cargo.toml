@@ -14,6 +14,7 @@ default = []
 test-support = ["future-remote-server/test-support", "future-remote-client/test-support"]
 
 [dependencies]
+future-fusion = { path = "../orchestration/fusion" }
 future-remote-crypto = { path = "../packages/remote-crypto" }
 future-remote-protocol = { path = "../packages/remote-protocol" }
 async-nats = "0.50"

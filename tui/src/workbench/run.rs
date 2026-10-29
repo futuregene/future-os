@@ -218,8 +218,8 @@ pub async fn run(options: Options) -> Result<(), String> {
     if settings.language.as_deref() != Some(workbench.language_pref.as_wire()) {
         settings.language = Some(workbench.language_pref.as_wire().to_string());
     }
-    // The reading level is deliberately not written: `ctrl+e` expands the
-    // transcript for this run only, so the next terminal opens folded.
+    // The reading level is deliberately not written: `/reply-detail` expands
+    // the transcript for this run only, so the next terminal opens folded.
     let preferences_saved = persist_preferences(&workbench, &mut settings, &options.settings_path);
     let keys_saved = workbench
         .keys
@@ -613,10 +613,10 @@ impl PendingOpen {
 
 /// The net step a *session* key asks for, if this event is one.
 ///
-/// The driver reads this before the key reaches `quit`, so a held `ctrl+↑` /
-/// `ctrl+↓` (or `shift+↑` / `shift+↓`) becomes one switch instead of one per
-/// repeat. The guards are the same ones that decide whether any global shortcut
-/// fires: an overlay owns the keys it paints.
+/// The driver reads this before the key reaches `quit`, so a held `shift+↑` /
+/// `shift+↓` becomes one switch instead of one per repeat. The guards are the
+/// same ones that decide whether any global shortcut fires: an overlay owns the
+/// keys it paints.
 fn session_step_of(workbench: &Workbench, event: &WbEvent) -> Option<i32> {
     let WbEvent::Key(key) = event else {
         return None;
@@ -845,15 +845,6 @@ async fn quit(
                     live.abort().await;
                     return Ok(false);
                 }
-                Some(super::preferences::Action::ReplyDetail) => {
-                    // The same cycle `/reply-detail` walks: everything, the
-                    // work folded, the process folded too.
-                    live.set_detail(live.detail().next());
-                    // A view toggle, not a preference: nothing is written back,
-                    // so the next start opens folded again whatever the reader
-                    // peeked at here (see `ReplyDetail`).
-                    return Ok(false);
-                }
                 Some(super::preferences::Action::NewSession) => {
                     return match live.apply(WbAction::Command("/new".into())).await {
                         Outcome::Quit => Ok(true),
@@ -1005,12 +996,26 @@ async fn quit(
                 "/preview" => {
                     if live.load_attachment() {
                         workbench.reset_preview();
-                        workbench.open_preview();
+                        workbench.set_preview_siblings((Vec::new(), 0));
+                        workbench.open_preview(super::PreviewScope::Conversation);
                     }
                     continue;
                 }
                 "/mouse" => {
                     toggle_mouse(live, terminal, workbench, settings, settings_path);
+                    continue;
+                }
+                // Pinning is the rail's verb and the app owns the result: `p`
+                // is a letter in the draft, so `/pin` is the door, and its
+                // action (`SetWorkspacePinned`) has to reach the driver the
+                // same way the chord's did.
+                "/pin" => {
+                    let actions = workbench.toggle_pin_selected(&live.data(frame));
+                    for action in actions {
+                        if matches!(live.apply(action).await, Outcome::Quit) {
+                            return Ok(true);
+                        }
+                    }
                     continue;
                 }
                 _ => {}
@@ -1115,23 +1120,21 @@ async fn quit(
             continue;
         }
         // The preview box is the driver's to open: the adapter reads the bytes
-        // and the surface paints them, but only this loop knows both.
+        // and the surface paints them, but only this loop knows both — and which
+        // list the box's `[` / `]` walk.
         if let WbAction::PreviewFile(path) = &action {
-            live.start_preview(path);
-            workbench.reset_preview();
-            // The pictures beside this one arrive with the decoded image, on
-            // the same background thread; the box opens now with a loading
-            // row rather than freezing the frame on a large file.
-            workbench.set_preview_siblings((Vec::new(), 0));
-            // Opened *over* the panel the row came from: `esc` from the box
-            // walks back to that panel (see `Workbench::open_preview`).
-            workbench.open_preview();
+            open_preview_box(live, workbench, path, super::PreviewScope::Folder);
+            continue;
+        }
+        if let WbAction::PreviewChatFile(path) = &action {
+            open_preview_box(live, workbench, path, super::PreviewScope::Conversation);
             continue;
         }
         if matches!(action, WbAction::PreviewAttachment) {
             if live.load_attachment() {
                 workbench.reset_preview();
-                workbench.open_preview();
+                workbench.set_preview_siblings((Vec::new(), 0));
+                workbench.open_preview(super::PreviewScope::Conversation);
             }
             continue;
         }
@@ -1651,6 +1654,27 @@ async fn copy_last(live: &mut Live) {
         }
         Err(error) => live.notice = Some(error),
     }
+}
+
+/// Open the preview box on `path`, stepping through `scope`'s pictures.
+///
+/// The pictures beside this one arrive with the decoded image, on the same
+/// background thread — the box opens now with a loading row rather than freezing
+/// the frame on a large file. Opened *over* whatever the reader was looking at:
+/// `esc` from the box walks back to it (see [`Workbench::open_preview`]).
+fn open_preview_box(
+    live: &mut Live,
+    workbench: &mut Workbench,
+    path: &str,
+    scope: super::PreviewScope,
+) {
+    match scope {
+        super::PreviewScope::Folder => live.start_preview(path),
+        super::PreviewScope::Conversation => live.start_picture(path),
+    }
+    workbench.reset_preview();
+    workbench.set_preview_siblings((Vec::new(), 0));
+    workbench.open_preview(scope);
 }
 
 fn toggle_mouse(

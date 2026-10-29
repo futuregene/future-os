@@ -296,7 +296,7 @@ impl Action {
     /// absent on a compact one.
     ///
     /// The letters are not free to pick, and the exclusions are why the map
-    /// stops at fifteen:
+    /// stops where it does:
     ///
     /// * `ctrl+h` / `ctrl+i` / `ctrl+j` / `ctrl+m` never arrive as themselves —
     ///   a terminal sends Backspace, Tab, `\n` and Enter for them (see
@@ -307,8 +307,11 @@ impl Action {
     /// * `ctrl+u` / `ctrl+k` / `ctrl+w` / `ctrl+y` / `ctrl+z` are the composer's
     ///   readline set — a global chord there would shadow editing the draft,
     ///   which is what the reader does most. `ctrl+a` / `ctrl+e` / `ctrl+f`
-    ///   only duplicate Home / End / Right, so `e` and `f` are the two the map
-    ///   does take (Home/End/arrows still edit the draft).
+    ///   only duplicate Home / End / Right, so letters from that set are cheap
+    ///   to borrow: `f` is the one the map still holds (its files panel), and
+    ///   `ctrl+e` — the shell's own end of line — is the composer's, because a
+    ///   caret nudge that re-lays the whole transcript out is the one borrow a
+    ///   reader's reflex cannot survive (see `ReplyDetail`'s chord below).
     ///
     /// `ctrl+c` is the one letter whose meaning is not ours to choose: raw mode
     /// turns the signal off (`ISIG`, see `terminal_posix`), so the byte arrives
@@ -322,15 +325,16 @@ impl Action {
     /// `/preview`, `/lang`, `/refresh`…) and a visible control instead: `""` is
     /// that "no default", and [`Keybindings::action`] never resolves it.
     ///
-    /// The fifteen go to what is pressed *while working*: stopping the run
-    /// under them, the commands, the sessions, the three answers that decide
-    /// what runs next (model, effort, approval), the two places a reader keeps
-    /// going back to (the workspace list and the files of this session's
-    /// workspace), the rail, the repository, and leaving. Switching the interface
-    /// language, refreshing the view, the queue of prompts sent mid-run, and
-    /// deleting a conversation are things a reader does once in a while, so they
-    /// keep commands instead of taking a letter from something pressed every
-    /// minute.
+    /// The chords go to what is pressed *while working*: stopping the run under
+    /// them, the commands, the sessions, the three answers that decide what runs
+    /// next (model, effort, approval), the places a reader keeps going back to
+    /// (the rail and its two tabs, the workspace list, the files of this
+    /// session's workspace), the repository, and leaving. Switching the
+    /// interface language, refreshing the view, the queue of prompts sent
+    /// mid-run, re-reading a reply's process (`/reply-detail`), pinning a
+    /// workspace and deleting a conversation are things a reader does once in a
+    /// while, so they keep commands instead of taking a letter from something
+    /// pressed every minute.
     pub fn default_key(self) -> &'static str {
         match self {
             // `x` leaves: the interrupt chord is spoken for (see above), and a
@@ -342,7 +346,13 @@ impl Action {
             // The shell's own meaning of the byte: interrupt the foreground
             // turn. Idle, it is a no-op (`Live::abort`).
             Self::Stop => "ctrl+c",
-            Self::ReplyDetail => "ctrl+e",
+            // No chord: `ctrl+e` is the composer's end of line, and this is a
+            // *reading* toggle — pressed when re-reading a reply, not while
+            // working, and the letter it had was the one place the map and a
+            // reader's shell reflex disagreed. `/reply-detail` is the door, the
+            // shortcut editor binds one back for anyone who wants it, and the
+            // transcript's folding is unchanged.
+            Self::ReplyDetail => "",
             Self::Palette => "ctrl+p",
             // `m` is Enter on a terminal that does not report modifiers; `o`
             // (the chooser's own options) is the nearest free letter.
@@ -387,19 +397,21 @@ impl Action {
             // a diagnostic the status bar already counts, not something pressed
             // while working.
             Self::Queue => "",
-            Self::PanelRecent | Self::PanelWorkspaces => "",
-            // Arrows with a modifier: stepping is navigation, and a bare arrow
-            // is already the draft's (and the transcript's). The tabs keep
-            // `shift`, the conversations take `ctrl` because `ctrl+↑/↓` is what
-            // a terminal actually delivers — a shifted arrow arrives at many of
-            // them as a bare arrow (see the legacy "\x1b[a" in `keys`), which
-            // is how a reader ends up switching nothing. `shift+↑/↓` stays live
-            // as the spellings this surface shipped first (see
-            // [`Keybindings::action`]).
+            // The rail's two tabs, named by number: `1`/`2` are the tabs in the
+            // order the strip paints them. A digit chord needs a terminal that
+            // reports modifiers (the kitty protocol or `modifyOtherKeys`), the
+            // same bargain `ctrl+j` makes; `shift+←`/`shift+→` walk the same two
+            // tabs and work everywhere.
+            Self::PanelRecent => "ctrl+1",
+            Self::PanelWorkspaces => "ctrl+2",
+            // Arrows, not chords: stepping is navigation, and these four are
+            // the only defaults that are not `ctrl`. `ctrl+↑/↓` is deliberately
+            // *not* a step: macOS gives it to Mission Control (the key never
+            // reaches the terminal), and one action gets one chord here.
             Self::PanelPrev => "shift+left",
             Self::PanelNext => "shift+right",
-            Self::PrevSession => "ctrl+up",
-            Self::NextSession => "ctrl+down",
+            Self::PrevSession => "shift+up",
+            Self::NextSession => "shift+down",
         }
     }
 }
@@ -425,18 +437,7 @@ impl Keybindings {
         if key.is_empty() {
             return None;
         }
-        let exact = ACTIONS.into_iter().find(|action| self.key(*action) == key);
-        if exact.is_some() {
-            return exact;
-        }
-        // The two step actions answer to two spellings each, and the second door
-        // only opens while the action still holds *a* step spelling: a reader who
-        // moved the step onto a chord of their own loses both of ours rather than
-        // keeping a hidden one. See `step_spellings`.
-        ACTIONS.into_iter().find(|action| {
-            let spellings = step_spellings(*action);
-            spellings.contains(&key) && spellings.contains(&self.key(*action))
-        })
+        ACTIONS.into_iter().find(|action| self.key(*action) == key)
     }
     pub fn is_default(&self, action: Action) -> bool {
         self.key(action) == action.default_key()
@@ -515,21 +516,6 @@ pub fn keybindings_path(settings_path: &Path) -> PathBuf {
         .join("keybindings.json")
 }
 
-/// The two chords a conversation step answers to: `ctrl+↑/↓` is the one the
-/// surface shows and rebinds, `shift+↑/↓` is the spelling it shipped first.
-///
-/// Both are kept because a terminal is not obliged to report the modifier: many
-/// send a *bare* arrow for `shift+↑` (the reason `keys` still maps the legacy
-/// `"\x1b[a"`), while `ctrl+↑/↓` is a standard xterm sequence every terminal
-/// and multiplexer forwards. An action that is not a step answers to nothing.
-fn step_spellings(action: Action) -> [&'static str; 2] {
-    match action {
-        Action::PrevSession => ["ctrl+up", "shift+up"],
-        Action::NextSession => ["ctrl+down", "shift+down"],
-        _ => ["", ""],
-    }
-}
-
 fn validate_key(key: &str) -> Result<(), String> {
     if key.is_empty() || key.len() > 32 || key.chars().any(char::is_whitespace) {
         return Err("shortcut".into());
@@ -550,8 +536,6 @@ fn validate_key(key: &str) -> Result<(), String> {
                 | "pageDown"
                 | "shift+left"
                 | "shift+right"
-                | "ctrl+up"
-                | "ctrl+down"
                 | "shift+up"
                 | "shift+down"
         );
@@ -568,9 +552,18 @@ fn validate_key(key: &str) -> Result<(), String> {
     }
 }
 
-/// The rows of the preferences box, in the order it lists them: the frame's
-/// shape, then its input and its feedback, then the two choices that are
-/// themselves menus (the language and the palette), then the doors.
+/// The rows of the preferences box, in the order it lists them: the two choices
+/// that repaint the whole surface (the language and the palette), then the
+/// frame's shape, then its input and its feedback, then the doors.
+///
+/// The language leads because it is the one row a reader has to be able to find
+/// without reading the rows around it: every other label here is written in
+/// whatever that row says, so a reader who cannot read the box is looking at a
+/// list that does not tell them where the door is. It has no chord either
+/// (`/lang` is a command they would have to be told about), so this box is the
+/// only place the setting is discoverable. The theme follows it as its pair —
+/// the other choice that changes the whole surface rather than one part of it,
+/// and the only other row that opens a list instead of stepping in place.
 ///
 /// Every row here is one persisted setting: the box is the one screen a reader
 /// visits to see what this terminal client remembers, so a preference with no
@@ -593,6 +586,8 @@ pub enum PreferenceRow {
 }
 
 pub const PREFERENCE_ROWS: [PreferenceRow; 11] = [
+    PreferenceRow::Language,
+    PreferenceRow::Theme,
     PreferenceRow::Position,
     PreferenceRow::Width,
     PreferenceRow::SidebarVisible,
@@ -600,8 +595,6 @@ pub const PREFERENCE_ROWS: [PreferenceRow; 11] = [
     PreferenceRow::Notifications,
     PreferenceRow::NotificationBell,
     PreferenceRow::Motion,
-    PreferenceRow::Language,
-    PreferenceRow::Theme,
     PreferenceRow::Shortcuts,
     PreferenceRow::Reset,
 ];
@@ -681,40 +674,31 @@ mod tests {
         assert_eq!(restored.key(Action::Palette), "");
     }
 
-    /// The conversation step answers to two chords: `ctrl+↑/↓` is the one the
-    /// surface shows, `shift+↑/↓` the spelling it shipped first. Both are live
-    /// while the action is on a step chord, and a reader who moves the step onto
-    /// a chord of their own closes both doors rather than keeping a hidden one.
+    /// One action, one chord: the conversation step is `shift+↑`/`shift+↓` and
+    /// nothing else. `ctrl+↑/↓` is not a step (macOS hands it to Mission
+    /// Control, so on the terminal this surface is developed against the key
+    /// never arrives) and is not offered as a rebind target either.
     #[test]
-    fn the_conversation_step_answers_to_both_of_its_spellings() {
-        let mut keys = Keybindings::default();
-        assert_eq!(keys.key(Action::PrevSession), "ctrl+up");
-        assert_eq!(keys.key(Action::NextSession), "ctrl+down");
-        for (key, action) in [
-            ("ctrl+up", Action::PrevSession),
-            ("shift+up", Action::PrevSession),
-            ("ctrl+down", Action::NextSession),
-            ("shift+down", Action::NextSession),
-        ] {
-            assert_eq!(keys.action(key), Some(action), "{key}");
-        }
-        // The bare arrows stay the draft's: nothing steps on them.
+    fn the_conversation_step_has_exactly_one_chord() {
+        let keys = Keybindings::default();
+        assert_eq!(keys.key(Action::PrevSession), "shift+up");
+        assert_eq!(keys.key(Action::NextSession), "shift+down");
+        assert_eq!(keys.action("shift+up"), Some(Action::PrevSession));
+        assert_eq!(keys.action("shift+down"), Some(Action::NextSession));
+        // The ctrl arrows are nobody's step — and the bare arrows stay the
+        // draft's, so nothing steps on them either.
+        assert_eq!(keys.action("ctrl+up"), None);
+        assert_eq!(keys.action("ctrl+down"), None);
         assert_eq!(keys.action("up"), None);
         assert_eq!(keys.action("down"), None);
 
-        // Rebound: the step still works on its new chord, and neither spelling
-        // of ours answers any more.
+        // A reader may still move the step, and the default then stops working:
+        // the action has one chord wherever it lives.
+        let mut keys = Keybindings::default();
         keys.bind(Action::PrevSession, "alt+p").unwrap();
         assert_eq!(keys.action("alt+p"), Some(Action::PrevSession));
-        assert_eq!(keys.action("ctrl+up"), None);
         assert_eq!(keys.action("shift+up"), None);
-        // The other half of the pair still answers to both of its own.
         assert_eq!(keys.action("shift+down"), Some(Action::NextSession));
-
-        // Both spellings are legal targets for the shortcut editor.
-        let mut keys = Keybindings::default();
-        assert!(keys.bind(Action::PrevSession, "ctrl+up").is_ok());
-        assert!(keys.bind(Action::NextSession, "shift+down").is_ok());
     }
 
     #[test]
@@ -741,6 +725,26 @@ mod tests {
         for position in [SidebarPosition::Left, SidebarPosition::Right] {
             assert_eq!(SidebarPosition::from_wire(position.as_wire()), position);
         }
+    }
+
+    /// The language leads the box, and the theme follows it. Every other label
+    /// on that screen is written in whatever the language row says, so it is
+    /// the one row a reader has to find without reading its neighbours — and
+    /// the box is its only door, since it has no chord. This ordering is a
+    /// decision, not an accident of the array, so it is asserted here.
+    #[test]
+    fn the_language_row_leads_the_box() {
+        assert_eq!(PREFERENCE_ROWS[0], PreferenceRow::Language);
+        assert_eq!(PREFERENCE_ROWS[1], PreferenceRow::Theme);
+        // `index()` is what the cursor, the click regions and the key handler
+        // address rows by, so it has to agree with the array they are painted
+        // from.
+        for (index, row) in PREFERENCE_ROWS.iter().enumerate() {
+            assert_eq!(row.index(), index, "{row:?}");
+        }
+        // The doors stay last: `restore defaults` is the row a reader reaches
+        // for once, and it is the one that cannot be undone by pressing again.
+        assert_eq!(PREFERENCE_ROWS[10], PreferenceRow::Reset);
     }
 
     /// No function key is a default. `F1`–`F12` sit behind an `Fn` modifier on a
@@ -771,6 +775,25 @@ mod tests {
                 "{action:?} defaults to a chord the editor would reject: {key}"
             );
         }
+    }
+
+    /// `ctrl+e` is the composer's: the reading level gave the chord back (see
+    /// `default_key`), because the shell's end of line was the one reflex the
+    /// map could not survive borrowing — pressing it re-laid the whole
+    /// transcript out instead of moving the caret. The level keeps its typed
+    /// door (`/reply-detail`), and the shortcut editor can bind one back.
+    #[test]
+    fn the_reading_level_has_no_chord() {
+        let keys = Keybindings::default();
+        assert_eq!(keys.key(Action::ReplyDetail), "");
+        assert_eq!(
+            keys.action("ctrl+e"),
+            None,
+            "nothing intercepts the composer's end of line"
+        );
+        // The editor's own keys are the editor's: `ctrl+a` is the start of the
+        // line, and the map never took it.
+        assert_eq!(keys.action("ctrl+a"), None);
     }
 
     /// Two defaults on one chord would make one of them dead: the map resolves a

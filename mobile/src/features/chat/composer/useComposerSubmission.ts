@@ -1,3 +1,4 @@
+import { fusionTask } from "@future-os/thread-projection";
 import { useCallback, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type { TFunction } from "i18next";
 import type { useRemote } from "../../../remote/RemoteContext";
@@ -39,6 +40,8 @@ export function useComposerSubmission(options: Options) {
     if (attemptRef.current || initial.restoring || initial.remote.busy
       || initial.remote.compacting) return;
     if (!initial.message.trim() && !initial.attachments.length) return;
+    if (fusionTask(initial.message) === "") { initial.setMessage("/fusion "); showToast(initial.t("chat.fusionEnabled")); return; }
+    if (fusionTask(initial.message) !== null && !initial.remote.capabilities.has("fusion_v1")) {showToast(initial.t("chat.fusionUnavailable"));return;}
     const attempt = {};
     attemptRef.current = attempt;
     const isCurrent = captureOperation();
@@ -55,7 +58,7 @@ export function useComposerSubmission(options: Options) {
         initial.setMessage(composed);
       } else if (dismiss || initial.recommendation.suggestion) {
         initial.recommendation.dismiss();
-      } else {
+      } else if (fusionTask(initial.message) === null) {
         const held = await initial.recommendation.evaluate(initial.message);
         if (held || !unchanged()) return;
       }

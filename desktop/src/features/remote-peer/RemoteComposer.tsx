@@ -5,6 +5,7 @@ import type { RemoteCommand, RemoteSkillChoice, RemoteSlashItem } from "./remote
 import type { RemotePeer, RemoteSkillInfo, RemoteUpload } from "./remotePeerClient";
 import type { PendingPrompt } from "./remotePromptOutbox";
 import type { RemoteReferenceMap, RemoteReferenceOption } from "./remoteSessionReference";
+import { fusionTask } from "@future-os/thread-projection";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ArrowUp, Loader2, Paperclip, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -66,15 +67,19 @@ function growToContent(node: HTMLTextAreaElement): void {
  */
 function useRemoteCommands({
   canCompact,
+  canFusion,
   canReference,
   onCompact,
 }: {
   canCompact: boolean;
+  canFusion: boolean;
   canReference: boolean;
   onCompact: () => void;
 }): RemoteCommand[] {
   const { t } = useTranslation("remotePeer");
+  const { t: agentT } = useTranslation("agent");
   return [
+    ...(canFusion ? [{ id: "fusion", label: "/fusion", description: agentT("fusion.enableDescription"), insert: "/fusion " }] : []),
     ...(canReference
       ? [{
           description: t("referenceConversationDescription"),
@@ -262,6 +267,7 @@ export function RemoteComposer({
   freshThinkingLevel?: string | null;
 }) {
   const { t } = useTranslation("remotePeer");
+  const { t: fusionT } = useTranslation("agent");
   const [text, setText] = useState("");
   /**
    * Whether another paired device drives the host, which is what closes every
@@ -586,7 +592,16 @@ export function RemoteComposer({
     // asked, and a returned card keeps it unsubmitted until the user acts
     // (install, dismiss, or send again). A timeout, no match or a refusal sends
     // normally — recommendation is best-effort.
-    const reco = skillRecommendation;
+    const task = fusionTask(message);
+    if (task !== null && !peer?.features.includes("fusion_v1")) {
+      setError(fusionT("fusion.unavailable"));
+      return;
+    }
+    if (task === "") {
+      setText("/fusion ");
+      return;
+    }
+    const reco = task === null ? skillRecommendation : undefined;
     if (reco && message) {
       // A card on screen and not yet acted on: a plain send means "send without
       // it", which is what the card's secondary button does. The send button
@@ -668,6 +683,7 @@ export function RemoteComposer({
   );
 
   const commands = useRemoteCommands({
+    canFusion: peer?.features.includes("fusion_v1") === true,
     // A compact request is a command to the host too, and a host another device
     // drives refuses it. Left out of the menu rather than drawn disabled: a
     // slash menu is a list of things you can ask for.
@@ -747,6 +763,13 @@ export function RemoteComposer({
     setActiveItem(0);
     if (item.kind === "command") {
       const withoutWord = withoutSlashWord(text);
+      if (item.command.id === "fusion") {
+        const placed = `/fusion ${fusionTask(withoutWord) ?? withoutWord}`;
+        setText(placed);
+        pendingCaretRef.current = placed.length;
+        textareaRef.current?.focus();
+        return;
+      }
       if (item.command.insert) {
         // A token is a word: it needs the space the slash word sat after, or
         // `hello#` would be typed where `hello #` was meant.

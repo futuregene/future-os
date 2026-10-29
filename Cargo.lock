@@ -1858,6 +1858,7 @@ dependencies = [
  "dirs",
  "fd-lock",
  "fs2",
+ "future-fusion",
  "future-http",
  "future-rpc",
  "futures",
@@ -1970,6 +1971,7 @@ dependencies = [
  "future-app-settings",
  "future-app-workspaces",
  "future-channel",
+ "future-fusion",
  "future-goal",
  "future-host",
  "future-remote-crypto",
@@ -2012,6 +2014,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "future-fusion"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "globset",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
 name = "future-goal"
 version = "0.1.0"
 dependencies = [
@@ -2049,6 +2067,7 @@ dependencies = [
  "future-app-settings",
  "future-app-workspaces",
  "future-config",
+ "future-fusion",
  "future-http",
  "future-remote-client",
  "future-remote-crypto",
@@ -2223,6 +2242,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "future-config",
+ "future-fusion",
  "future-http",
  "future-rpc",
  "futures-util",

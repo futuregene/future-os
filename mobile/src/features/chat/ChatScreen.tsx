@@ -388,8 +388,8 @@ export function ChatScreen() {
     [],
   );
   const handleResolveToolTarget = useCallback(
-    (toolCallId: string, runId: string) =>
-      timelineActionsRef.current.resolveToolTarget(toolCallId, runId),
+    (toolCallId: string, runId: string, fusion?: { stepId?: string; offset?: number }) =>
+      fusion ? timelineActionsRef.current.resolveToolTarget(toolCallId, runId, fusion) : timelineActionsRef.current.resolveToolTarget(toolCallId, runId),
     [],
   );
 
