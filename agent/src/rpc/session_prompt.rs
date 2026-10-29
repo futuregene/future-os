@@ -1044,18 +1044,32 @@ impl ServerSession {
         });
 
         if fusion_inner {
-            let snapshot = crate::fusion::inner_snapshot(&self.source_meta)?
-                .ok_or_else(|| anyhow::anyhow!("Fusion session is missing its immutable source"))?;
+            let execution = crate::fusion::inner_execution(
+                &self.source_meta,
+                &session_id,
+                &run_lease.run_id,
+                &run_model,
+                &run_thinking_level,
+            )?
+            .ok_or_else(|| anyhow::anyhow!("Fusion session is missing its immutable source"))?;
+            let snapshot = execution.snapshot;
             anyhow::ensure!(
                 std::path::Path::new(&snapshot.root).canonicalize()?
                     == std::path::Path::new(&session_cwd).canonicalize()?,
                 "Fusion session workspace differs from snapshot"
             );
-            run_loop.tools = crate::fusion::inner_tools();
+            run_loop.tools = if execution.file_tools {
+                crate::fusion::inner_tools()
+            } else {
+                Vec::new()
+            };
             run_loop.fusion_context = Some(crate::fusion::ContextScope::Inner(Arc::new(snapshot)));
             run_loop.config.max_turns = 5;
             run_loop.config.max_retries = 1;
-            run_loop.provider = Arc::new(crate::fusion::LimitedProvider(run_loop.provider.clone()));
+            run_loop.provider = Arc::new(crate::fusion::LimitedProvider {
+                provider: run_loop.provider.clone(),
+                max_output_tokens: execution.settings.max_output_tokens,
+            });
             run_loop.parallel_tools = false;
         } else if fusion_enabled {
             anyhow::ensure!(crate::fusion::available(), "Fusion host is unavailable");

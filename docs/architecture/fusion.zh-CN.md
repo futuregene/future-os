@@ -16,11 +16,13 @@ Fusion 是主 Agent 可调用的多模型思考工具，编排内核位于 `orch
 - 共享 Host 通过 `~/.future/fusion/fusion.db` 的有界持久队列接收 Agent 工具调用，避免 Agent 反向依赖 Host。Host 实例锁保证执行器唯一，事务认领每次讨论，最多同时执行两个讨论。服务不可用或旧 Agent/Host 不支持时明确失败。
 - Agent 从原始用户提交开头的独立命令 token 验证启用，并冻结到 `ScheduledSettingsSnapshot.fusion_enabled`，同原文与请求键一起持久化；不新增持久会话开关。Remote outbox 保留原始 `/fusion`，重发继续使用原请求键。内层会话标记为 `created_by=fusion`，每次运行都强制替换成四个快照工具，不从普通会话设置继承 shell/写工具。
 - 调用时仅捕获显式 `read_scope` 中经父权限允许的 UTF-8 文件，生成同一份有哈希的文件快照，所有轮次读取它；空范围适用于纯概念问题。拒绝越界、链接/reparse point、特殊文件和越限资料。单文件 1 MiB、合计 16 MiB、最多 1024 个文件/目录；记录捕获起止时间并检测观察到的变化，不声称文件系统原子快照。
-- 输入最多 48 KiB，最终结果最多 32 KiB，单次 completion 输出最多 4096 token、每步最多五轮工具循环。每个父 run 最多两次讨论，步骤超时 180 秒、总等待上限 900 秒、每步骤最多两次尝试。失败尝试单独记录；结果只标记 `full`、`partial` 或 `single` 的实际完整性。
+- 输入最多 48 KiB，最终工具结果最多 32 KiB，中间模型回答单独限制为 128 KiB。所有参与者及主持模型每次 completion 的输出上限为 16384 token，只有输出超限重试时提高到 32768。DeepSeek Flash、Qwen 3.7 Plus 及 DeepSeek 主持模型的思考等级固定为 `medium`，GLM 5.3 Flash 固定为 `low`。每步最多五轮工具循环，整个步骤限时 300 秒；整次讨论从创建起限时 2700 秒，重试不能重置总时限。每个父 run 最多两次讨论，每步骤最多两次尝试。整步超时、取消、鉴权及未知错误不原样重试；输出超限会提高预算并要求更精简的完整回答，结构错误会带修正要求重试，明确的临时服务错误可有限重试。空 `read_scope` 不提供文件工具。失败尝试单独记录；结果只标记 `full`、`partial` 或 `single` 的实际完整性。
 - `fusion_runs/inputs/participants/steps/messages/issues/positions/events` 保存结构、输入、状态、引用和诊断，完整正文/工具证据仍由 Agent 子会话持久化。详情预览有界，原文按 UTF-8 字节分页读取；查询校验父会话、数据库来源及步骤归属。重启中断未完成讨论，不静默重新计费；父任务取消会停止讨论，晚到结果不能覆盖取消。
 - 删除父会话时先停止并清理关联子会话，再清理讨论与快照。`future data` 离线备份包含 Fusion 数据库和快照，恢复继续保留原始消息/run ID。历史查询允许同一数据库恢复后的存档，执行仍要求当前恢复代身份匹配。
 
 以下章节保留后续产品契约：可编辑模型/思考设置、独立脱敏导出、更完整的立场变化结构及货币预算尚未提供。当前开发版使用上述固定配置和 token/次数/超时限制。跨系统构建与单元回归由 CI 验证，本机静态检查与隔离实测记录见 [实现验证](../testing/fusion-implementation.md)。另见 [真机数据库核查与精简 UI 验证](../testing/fusion-database-audit.md)。
+
+固定开发配置集中在 `orchestration/fusion/src/config.rs`。每次讨论保存配置快照，每次尝试保存实际思考等级、输出上限、有效超时和重试原因。Host 与 Agent 校验 generation-policy 版本及子会话、模型和思考等级绑定；旧记录缺少这些可选字段时仍可查询。桌面、移动、终端统一使用同一 Host/Agent 策略，客户端不独立选择生成参数。验证记录见 [预算策略验证](../testing/fusion-budget-policy.md)。
 
 ## 产品边界
 

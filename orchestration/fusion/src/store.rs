@@ -173,11 +173,22 @@ impl Store {
             status: "preparing".into(),
             phase: "preparing".into(),
             completeness: "full".into(),
+            configuration: Some(crate::Configuration::default()),
             result: None,
             error: None,
             created_at: now_ms(),
             updated_at: now_ms(),
         };
+        let config = run
+            .configuration
+            .as_ref()
+            .context("Missing Fusion configuration")?;
+        config.validate()?;
+        let models = config
+            .panel
+            .iter()
+            .map(|entry| entry.model.as_str())
+            .collect::<Vec<_>>();
         tx.execute("INSERT INTO fusion_runs(id,parent_session,parent_run,tool_call,status,data) VALUES(?1,?2,?3,?4,?5,?6)",params![run.id,run.parent.session_id,run.parent.run_id,run.parent.tool_call_id,run.status,serde_json::to_string(&run)?])?;
         tx.execute(
             "INSERT INTO fusion_inputs VALUES(?1,?2)",
@@ -187,7 +198,7 @@ impl Store {
             &tx,
             &run.id,
             "created",
-            json!({"question":run.input.question,"models":crate::PANEL_MODELS,"moderator":crate::MODERATOR_MODEL}),
+            json!({"question":run.input.question,"models":models,"moderator":config.moderator.model,"configuration":config}),
         )?;
         tx.commit()?;
         Ok((run, true))
@@ -317,7 +328,7 @@ impl Store {
             &tx,
             &step.fusion_run_id,
             "step",
-            json!({"step_id":step.id,"phase":step.phase,"participant":step.participant,"status":step.status}),
+            json!({"step_id":step.id,"phase":step.phase,"participant":step.participant,"status":step.status,"settings":step.settings}),
         )?;
         tx.commit()?;
         Ok(())
@@ -530,6 +541,7 @@ mod tests {
             .prepare(parent.clone(), input.clone(), dir.path())
             .unwrap();
         assert!(created);
+        assert_eq!(run.configuration, Some(crate::Configuration::default()));
         assert!(
             !store
                 .prepare(parent.clone(), input.clone(), dir.path())
@@ -545,5 +557,18 @@ mod tests {
         store.cancel(&run.id).unwrap();
         assert!(!store.phase(&run.id, "owner", "synthesizing").unwrap());
         assert_eq!(store.get(&run.id).unwrap().status, "cancelled");
+        // Existing archived rows predate configuration snapshots. Reading or
+        // reattaching must not invent a policy that was never used.
+        let mut legacy = serde_json::to_value(store.get(&run.id).unwrap()).unwrap();
+        legacy.as_object_mut().unwrap().remove("configuration");
+        store
+            .connect()
+            .unwrap()
+            .execute(
+                "UPDATE fusion_runs SET data=?1 WHERE id=?2",
+                params![legacy.to_string(), run.id],
+            )
+            .unwrap();
+        assert!(store.get(&run.id).unwrap().configuration.is_none());
     }
 }

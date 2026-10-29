@@ -1402,7 +1402,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 346] = {
+    const ALL_KEYS: [Key; 350] = {
         use Key::*;
         [
             TabTodo,
