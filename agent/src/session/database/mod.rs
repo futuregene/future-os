@@ -29,6 +29,11 @@ pub(crate) struct Database {
 struct DatabaseWorker {
     reclaim_requested: Arc<AtomicBool>,
     readers: readers::Readers,
+    /// The fence lane, opened on first use. Most processes never ask for one
+    /// (a CLI run, a test that only writes), and an idle connection is a file
+    /// descriptor every future `Database::open` in a test binary would pay for.
+    fence: parking_lot::Mutex<Option<Arc<readers::Readers>>>,
+    fence_path: std::path::PathBuf,
     snapshots: snapshots::Readers,
     wal: wal::Checkpointer,
     metrics: Arc<metrics::Metrics>,
@@ -89,7 +94,13 @@ impl Database {
                             if worker_reclaim.load(Ordering::Acquire)
                                 && std::time::Instant::now() >= next_reclaim
                             {
-                                match reclaim_space_when_idle(&mut connection) {
+                                // Timed like a job: this slice runs on the same
+                                // thread as every write, so it is one of the
+                                // things a stalled caller can be waiting for.
+                                let started = std::time::Instant::now();
+                                let slice = reclaim_space_when_idle(&mut connection);
+                                slow::report("reclaim", started.elapsed(), Duration::ZERO);
+                                match slice {
                                     Ok(done) => {
                                         reclaim_error_reported = false;
                                         worker_reclaim.store(!done, Ordering::Release);
@@ -135,6 +146,7 @@ impl Database {
         let wal = match wal::Checkpointer::open(&read_path, metrics.clone()) {
             Ok(wal) => wal,
             Err(error) => {
+                drop(snapshots);
                 drop(readers);
                 drop(sender);
                 let _ = thread.join();
@@ -144,6 +156,8 @@ impl Database {
         Ok(Self {
             inner: Arc::new(DatabaseWorker {
                 readers,
+                fence: parking_lot::Mutex::new(None),
+                fence_path: read_path,
                 snapshots,
                 wal,
                 metrics,
@@ -158,6 +172,18 @@ impl Database {
         &self,
         operation: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
     ) -> Result<T> {
+        self.call_as("other", operation)
+    }
+
+    /// A writer job that names itself, so a job holding the thread long enough
+    /// to stall its callers can be pointed at. Every production caller that can
+    /// plausibly own seconds of work names itself; the rest keep `call`'s
+    /// `job=other`, which is itself the answer when such a row appears.
+    pub(crate) fn call_as<T: Send + 'static>(
+        &self,
+        job: &'static str,
+        operation: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         let queued = std::time::Instant::now();
         let metrics = self.inner.metrics.clone();
@@ -167,10 +193,13 @@ impl Database {
             .as_ref()
             .ok_or_else(|| anyhow!("SQLite worker is closed"))?
             .try_send(Box::new(move |connection| {
-                metrics.writer_queue.record(queued.elapsed(), true);
+                let waited = queued.elapsed();
+                metrics.writer_queue.record(waited, true);
                 let started = std::time::Instant::now();
                 let result = operation(connection);
-                metrics.writer_job.record(started.elapsed(), result.is_ok());
+                let elapsed = started.elapsed();
+                metrics.writer_job.record(elapsed, result.is_ok());
+                slow::report(job, elapsed, waited);
                 let _ = reply_tx.send(result);
             }))
             .map_err(|error| match error {
@@ -209,6 +238,9 @@ impl Database {
     /// the host to incorrectly report Stopped or release instance ownership.
     pub(crate) fn shutdown(&self) -> Result<()> {
         self.inner.snapshots.shutdown();
+        if let Some(fence) = self.inner.fence.lock().take() {
+            fence.shutdown()?;
+        }
         self.inner.readers.shutdown()?;
         self.inner.sender.lock().take();
         if let Some(thread) = self.inner.thread.lock().take() {
@@ -218,6 +250,40 @@ impl Database {
         }
         self.inner.wal.shutdown()?;
         Ok(())
+    }
+
+    /// A fence read: small, current, and never behind the ordered writer.
+    ///
+    /// Session presence and the source identity decide whether a caller may
+    /// proceed, and they were read on the writer's lane — the only connection
+    /// that existed when they were written. Every credential rotation and every
+    /// run terminal then put them behind whatever job held that lane: measured
+    /// 2026-10-29, four remote commands released together after 18–21 s because
+    /// one writer job was running, and two of them had already hit their 30 s
+    /// deadline.
+    ///
+    /// The trade is ordering, not freshness: a reader sees every *committed*
+    /// write, but not one still queued. Callers that mutate and then read in the
+    /// same sequence keep `call`; a fence gets a second look instead (see
+    /// `agent_bridge::presence`).
+    pub(crate) fn fence<T: Send + 'static>(
+        &self,
+        operation: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        // Opened once, on demand: a process that never asks for a fence read
+        // (every CLI run, most tests) must not carry the connection.
+        let lane = {
+            let mut slot = self.inner.fence.lock();
+            match slot.as_ref() {
+                Some(lane) => lane.clone(),
+                None => {
+                    let lane = Arc::new(readers::Readers::open_fence(&self.inner.fence_path)?);
+                    *slot = Some(lane.clone());
+                    lane
+                }
+            }
+        };
+        lane.call(operation)
     }
 
     /// Non-blocking hint. Idle worker slices give queued foreground writes
@@ -233,6 +299,7 @@ mod metrics;
 mod readers;
 mod reclamation;
 mod schema;
+mod slow;
 mod snapshots;
 pub(crate) use snapshots::ReadSnapshot;
 mod transactions;

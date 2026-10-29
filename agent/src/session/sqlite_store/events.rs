@@ -126,7 +126,7 @@ impl SqliteStore {
         }
         let (session, run) = (session.to_owned(), run.to_owned());
         let expected_run = run.clone();
-        let (rows,snapshot) = self.db.call(move |db| {
+        let (rows,snapshot) = self.db.read(move |db| {
             let tx = db.transaction()?;
             let snapshot: Option<(i64,String)> = tx.query_row(
                 "SELECT cursor,payload FROM run_snapshots WHERE session_id=?1 AND run_id=?2 AND version=1",
@@ -191,7 +191,7 @@ impl SqliteStore {
             ));
         }
         let (session, run) = (session.to_owned(), run.to_owned());
-        let (known, rows) = self.db.call(move |db| {
+        let (known, rows) = self.db.read(move |db| {
             let tx = db.transaction()?;
             let known = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM run_events WHERE session_id=?1 AND run_id=?2)",
@@ -276,7 +276,7 @@ impl SqliteStore {
     /// coordinates remain addressable for replay and cursor compatibility.
     pub(crate) fn append_events(&self, session: &str, events: Vec<Value>) -> Result<()> {
         let session = session.to_owned();
-        self.db.call(move |db| {
+        self.db.call_as("events_append", move |db| {
             let tx = crate::session::database::begin_write_transaction(db)?;
             for event in events {
                 insert_event_record(&tx, &session, event)?;
@@ -300,7 +300,7 @@ impl SqliteStore {
 
     fn bind_events_with_format(&self, session: &str, new_format: i64) -> Result<()> {
         let session = session.to_owned();
-        self.db.call(move |db| {
+        self.db.call_as("events_bind", move |db| {
             let tx = crate::session::database::begin_write_transaction(db)?;
             let mut session=crate::session::identity::BoundIdentity::session(&tx,&session)?;
             let (deleted, imported, skipped): (bool, bool, bool) = tx.query_row(
@@ -337,7 +337,7 @@ impl SqliteStore {
 
     pub fn prune_events(&self, session: &str, run: &str) -> Result<()> {
         let (session, run) = (session.to_owned(), run.to_owned());
-        let result = self.db.call(move |db| {
+        let result = self.db.call_as("events_prune", move |db| {
             let tx = crate::session::database::begin_write_transaction(db)?;
             tx.execute(
                 "DELETE FROM run_events WHERE session_id=?1 AND run_id=?2",

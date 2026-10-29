@@ -145,7 +145,7 @@ impl SqliteStore {
         let _active = ActiveOperation::claim(&operation);
         let prefix = format!("metadata:{operation}:");
         let (s, op, p) = (session.to_owned(), operation.clone(), prefix.clone());
-        self.db.call(move |db| {
+        self.db.call_as("content_metadata", move |db| {
             let tx=database::begin_write_transaction(db)?;
             let s=crate::session::identity::BoundIdentity::session(&tx,&s)?;
             let revision:Option<i64>=tx.query_row("SELECT revision FROM sessions WHERE id=?1 AND revision>=0",[&s],|row|row.get(0)).optional()?;
@@ -171,7 +171,7 @@ impl SqliteStore {
                 "run boundary exceeds its header byte budget"
             );
             let (s, op, p) = (session.to_owned(), operation.clone(), prefix.clone());
-            self.db.call(move |db| {
+            self.db.call_as("content_metadata", move |db| {
                 let tx=database::begin_write_transaction(db)?;
             let s=crate::session::identity::BoundIdentity::session(&tx,&s)?;
                 let receipt:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM content_operations o JOIN sessions s ON s.id=o.session_id WHERE o.operation_id=?1 AND o.session_id=?2 AND o.kind='metadata' AND s.revision>=0)",params![op,s],|row|row.get(0))?;
