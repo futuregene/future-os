@@ -127,8 +127,14 @@ pub async fn run(options: Options) -> Result<(), String> {
         live.attach_most_recent().await;
     }
     // `cd project && future tui` starts that project's conversation: the
-    // launchpad stages the working directory, not the app's scratch tree.
-    live.stage_launch_workspace();
+    // launchpad stages the working directory, not the app's scratch tree. A
+    // launch from somewhere ambient (the home directory, a temp directory)
+    // stages the workspace chosen last time instead (see `launch_workspace`).
+    live.stage_launch_workspace(settings.last_workspace.as_deref());
+    // …and whatever that staging came to is what the next start should reopen,
+    // so a first launch from an ambient directory is the last one that lands
+    // there by accident.
+    persist_pending(&mut live, &mut settings, &options.settings_path);
 
     if let Some(prompt) = options
         .initial_prompt
@@ -1306,8 +1312,8 @@ async fn quit(
     Ok(false)
 }
 
-/// Write the reader's last chosen model and level into `settings.json`, which
-/// is where the terminal UI keeps its defaults.
+/// Write the reader's last chosen model, level and workspace into
+/// `settings.json`, which is where the terminal UI keeps its defaults.
 ///
 /// Called after every applied action and writes only on a change — a pick is
 /// rare, and a launchpad chip that cycles through the list would otherwise
@@ -1323,6 +1329,14 @@ fn persist_pending(live: &mut Live, settings: &mut TuiSettings, path: &Path) {
     if let Some(effort) = live.pending_effort() {
         if settings.default_thinking_level.as_deref() != Some(effort) {
             settings.default_thinking_level = Some(effort.to_string());
+            changed = true;
+        }
+    }
+    // The workspace is drained rather than read: `None` is "nothing new", which
+    // is also what a client in the middle of a conversation reports.
+    if let Some(workspace) = live.take_workspace_to_remember() {
+        if settings.last_workspace.as_deref() != Some(workspace.as_str()) {
+            settings.last_workspace = Some(workspace);
             changed = true;
         }
     }
@@ -2671,6 +2685,44 @@ mod tests {
         let mut restored = super::super::Workbench::new();
         restored.set_folded_workspaces(written.folded_workspaces.unwrap_or_default());
         assert_eq!(restored.folded_workspaces(), workbench.folded_workspaces());
+    }
+
+    /// The workspace a reader picked while a conversation was attached is what
+    /// `settings.json` remembers, and what the next start opens on.
+    ///
+    /// Read back from the file rather than from the value the writer kept: the
+    /// point is that a *next start* sees it.
+    #[tokio::test]
+    async fn the_chosen_workspace_reaches_the_settings_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let workspace = tempfile::tempdir().unwrap();
+        let chosen = workspace.path().to_string_lossy().to_string();
+
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = crate::workbench::live::Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        // The launchpad's own road: nothing attached, so the directory is staged
+        // for the session the first message creates.
+        live.select_workspace(&chosen).await;
+
+        let mut settings = TuiSettings::default();
+        persist_pending(&mut live, &mut settings, &path);
+        assert_eq!(
+            load_settings(&path).last_workspace.as_deref(),
+            Some(chosen.as_str())
+        );
+
+        // A second pass with nothing staged leaves the value alone — the write
+        // happens on a change, not on every action.
+        let mut settings = load_settings(&path);
+        persist_pending(&mut live, &mut settings, &path);
+        assert_eq!(
+            load_settings(&path).last_workspace.as_deref(),
+            Some(chosen.as_str())
+        );
     }
 
     /// A held `shift+↑/↓` opens one conversation, the one the reader stops on.

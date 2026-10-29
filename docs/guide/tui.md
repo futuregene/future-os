@@ -163,11 +163,16 @@ names them, and what the box takes beyond a sentence — `/` commands, `@` files
 four chips are the desktop composer's own controls (model, thinking effort,
 approval mode) plus the workspace this TUI starts from. The workspace inherits:
 `cd project && future tui` opens on that **start directory** (so the first
-message creates the conversation there), a launch from one of the app's own
-scratch directories (or an explicit 对话会话 choice) is the **plain chat** — no
-workspace, filed under the app's own `~/.future/workspaces/chat/<session id>` —
-and `/new` (`ctrl+n`) keeps the workspace the conversation was just in (a chat is
-not inherited: the next message mints its own chat directory). The other three
+message creates the conversation there), a launch from somewhere *ambient* — the
+home directory, a temp directory, the filesystem root — reopens the workspace
+chosen last time (`lastWorkspace` in `settings.json`, so `future tui` typed
+wherever the terminal happened to sit no longer files conversations under a
+directory named `tmp`), a launch from one of the app's own scratch directories
+(or an explicit 对话会话 choice) is the **plain chat** — no workspace, filed
+under the app's own `~/.future/workspaces/chat/<session id>` — and `/new`
+(`ctrl+n`) keeps the workspace the conversation was just in (a chat is
+not inherited: the next message mints its own chat directory). A remembered
+workspace that no longer exists (a removed worktree) is skipped. The other three
 chips name the product defaults a fresh screen opens on: the agent's default
 model at the level that model starts at, and 完全访问 (full access). The first
 message creates the session with exactly what the chips name, so a chip never

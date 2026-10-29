@@ -234,6 +234,12 @@ pub struct Live {
     /// Nothing is sent: the agent has no session to set a directory on until
     /// the first message creates one.
     pending_cwd: Option<String>,
+    /// A workspace the reader picked while a conversation was attached (a
+    /// workspace picker row, a `/git` worktree row) that
+    /// `~/.future/tui/settings.json` has not been told about yet. The driver
+    /// drains it after every action ([`Self::take_workspace_to_remember`]); the
+    /// launchpad's own staging is read from `pending_cwd` instead.
+    remembered_cwd: Option<String>,
     /// When the current run started and how many output tokens it has reported:
     /// tok/s is the two divided. Cleared at `agent_start`, frozen at
     /// `agent_end` so an idle surface still shows the turn it just finished.
@@ -374,6 +380,7 @@ impl Live {
             pending_effort: settings.and_then(|settings| settings.default_thinking_level.clone()),
             pending_mode: None,
             pending_cwd: None,
+            remembered_cwd: None,
             run_started: None,
             run_output_tokens: 0,
             run_tps: 0.0,
@@ -2234,21 +2241,53 @@ impl Live {
         self.refresh_local();
     }
 
-    /// Stage the directory this process was started from for the first
-    /// conversation — the launchpad's default, so `cd project && future tui`
-    /// creates that project's conversation.
+    /// Stage the workspace the first conversation will run in — the launchpad's
+    /// default, so `cd project && future tui` creates that project's
+    /// conversation, and a `future tui` typed wherever the terminal happened to
+    /// sit reopens the workspace chosen last time (`remembered`).
     ///
     /// Called by the driver rather than by [`Self::attach`]: attaching is also
     /// how tests and an embedding caller open the surface, and those must not
     /// inherit whatever directory the process happens to run in.
-    pub fn stage_launch_workspace(&mut self) {
+    pub fn stage_launch_workspace(&mut self, remembered: Option<&str>) {
         if !self.detached() {
             return;
         }
-        if let Some(workspace) = launch_workspace() {
+        let launched = std::env::current_dir()
+            .ok()
+            .map(|dir| dir.to_string_lossy().to_string());
+        if let Some(workspace) = launch_workspace(launched.as_deref(), remembered) {
             self.pending_cwd = Some(workspace);
             self.refresh_local();
         }
+    }
+
+    /// The workspace `settings.json` should remember (`lastWorkspace`), if this
+    /// client holds one it has not handed over yet.
+    ///
+    /// Two sources, both of them a *choice* rather than a directory the reader
+    /// merely visited: the workspace the launchpad has staged for the next
+    /// conversation, and a workspace picked while one was attached. A
+    /// conversation the reader only switched to is not one — remembering it
+    /// would make an old session's directory the next start's default.
+    ///
+    /// Draining rather than reading keeps the driver's write cheap: it compares
+    /// this against the file and writes only when the two differ. The launchpad's
+    /// staging is read, not drained — the chip keeps naming that workspace until
+    /// the session exists — so the driver sees it again on the next action; that
+    /// comparison is what makes the repeat free.
+    pub fn take_workspace_to_remember(&mut self) -> Option<String> {
+        if let Some(chosen) = self.remembered_cwd.take() {
+            return Some(chosen);
+        }
+        if !self.detached() {
+            return None;
+        }
+        let staged = self.pending_cwd.as_deref()?.trim().to_string();
+        if staged.is_empty() || is_chat_directory(&staged) {
+            return None;
+        }
+        Some(staged)
     }
 
     /// Is the surface on the launchpad (no session attached)?
@@ -2879,6 +2918,9 @@ impl Live {
                 self.refresh_state().await;
                 self.refresh_worktrees();
                 self.diff = None;
+                // A worktree the reader entered is the workspace they chose:
+                // the next start from somewhere ambient reopens it.
+                self.remembered_cwd = Some(path.to_string());
             }
             Err(error) => {
                 self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
@@ -2973,6 +3015,9 @@ impl Live {
                 self.refresh_worktrees();
                 self.diff = None;
                 self.notice = Some(notice);
+                // The workspace the reader picked is the one the next start
+                // reopens (see [`Self::take_workspace_to_remember`]).
+                self.remembered_cwd = Some(path.to_string());
             }
             Err(error) => {
                 self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
@@ -3847,18 +3892,92 @@ fn chat_dir_for(session_id: &str) -> String {
     chat_root().join(session_id).to_string_lossy().to_string()
 }
 
-/// The directory the TUI process was started from, when it can be a workspace.
+/// The workspace the first conversation of a fresh `future tui` runs in: the
+/// directory it was started from when that is a directory the reader chose,
+/// otherwise the workspace they chose last time, otherwise none at all (a plain
+/// chat).
 ///
-/// `cd project && future tui` starts the first conversation in that project
-/// rather than in the app's scratch tree; a launch from one of those scratch
-/// directories is still a chat, and so is a directory that cannot be resolved.
-fn launch_workspace() -> Option<String> {
-    let dir = std::env::current_dir().ok()?;
-    let path = dir.to_string_lossy().to_string();
-    if path.trim().is_empty() || is_chat_directory(&path) {
-        return None;
+/// `cd project && future tui` opens that project, which is what makes the two
+/// commands one gesture. A launch from somewhere *ambient* — the home directory,
+/// a temp directory, the filesystem root — is not a choice of workspace: the
+/// shell merely happens to sit there, so the remembered workspace comes back
+/// instead of a conversation filed under a directory named `tmp`
+/// (2026-10-29: sessions created by `future tui` started in `/private/tmp`
+/// kept coming back after the reader had picked `future-os` in the previous
+/// one). A launch from one of the app's own scratch directories is a chat, and
+/// so is a launch directory that cannot be resolved.
+///
+/// The remembered path is used only while it still exists: a removed worktree
+/// must not become the next conversation's directory.
+fn launch_workspace(launched: Option<&str>, remembered: Option<&str>) -> Option<String> {
+    let launched = launched
+        .map(str::trim)
+        .filter(|path| !path.is_empty() && !is_chat_directory(path));
+    if let Some(path) = launched.filter(|path| !is_ambient_directory(path)) {
+        return Some(path.to_string());
     }
-    Some(path)
+    let remembered = remembered
+        .map(str::trim)
+        .filter(|path| !path.is_empty() && !is_chat_directory(path))
+        .filter(|path| std::path::Path::new(path).is_dir());
+    remembered.map(str::to_string)
+}
+
+/// Is this directory one a shell happens to sit in rather than a workspace the
+/// reader chose — their home, the filesystem root, or a temp directory?
+///
+/// Home and temp are compared with their contents in mind in opposite
+/// directions: a project *under* the home directory is an ordinary workspace
+/// (`~/code/app`), while everything under a temp root is scratch
+/// (`/var/folders/…/T/…`, `/tmp/x`).
+fn is_ambient_directory(path: &str) -> bool {
+    let trimmed = path.trim().trim_end_matches(['/', '\\']);
+    if trimmed.is_empty() {
+        return true;
+    }
+    let path = std::path::Path::new(trimmed);
+    // `/` and `C:\` have no parent: the filesystem root itself.
+    if path.parent().is_none() {
+        return true;
+    }
+    if let Some(home) = crate::home::home_dir() {
+        if same_existing_path(path, &home) {
+            return true;
+        }
+    }
+    if under_directory(path, &std::env::temp_dir()) {
+        return true;
+    }
+    // The temp root the system names is per-user on macOS (`$TMPDIR`), while a
+    // shell's `/tmp` is the shared one; both are ambient, and on macOS the two
+    // spellings of the shared one are the same directory.
+    ["/tmp", "/private/tmp"]
+        .into_iter()
+        .any(|fixed| under_directory(path, std::path::Path::new(fixed)))
+}
+
+/// Is `path` `root` or something inside it, comparing the resolved directories
+/// when both exist (`/tmp` and `/private/tmp` are one directory on macOS)?
+fn under_directory(path: &std::path::Path, root: &std::path::Path) -> bool {
+    if path.strip_prefix(root).is_ok() {
+        return true;
+    }
+    match (std::fs::canonicalize(path), std::fs::canonicalize(root)) {
+        (Ok(path), Ok(root)) => path.strip_prefix(&root).is_ok(),
+        _ => false,
+    }
+}
+
+/// [`under_directory`] for one directory rather than a tree: a project under the
+/// home directory is a workspace, the home directory itself is not.
+fn same_existing_path(path: &std::path::Path, other: &std::path::Path) -> bool {
+    if path == other {
+        return true;
+    }
+    match (std::fs::canonicalize(path), std::fs::canonicalize(other)) {
+        (Ok(path), Ok(other)) => path == other,
+        _ => false,
+    }
 }
 
 /// Milliseconds since the epoch, read once per frame rather than once per row.
@@ -5004,21 +5123,155 @@ mod tests {
             .expect("attach to the test agent");
         assert_eq!(live.pending_cwd, None, "attach stages nothing by itself");
 
-        live.stage_launch_workspace();
+        live.stage_launch_workspace(None);
         let started_from = std::env::current_dir().unwrap();
         assert_eq!(
             live.pending_cwd.as_deref(),
             Some(started_from.to_string_lossy().as_ref()),
             "the first conversation runs where the TUI was opened"
         );
-        // A launch from one of the app's own scratch directories stays a chat
-        // (see `launch_workspace`), and a session already attached is not
-        // re-staged.
+        // …and that staging is what `settings.json` is told to remember, so the
+        // next start reopens it.
+        assert_eq!(
+            live.take_workspace_to_remember().as_deref(),
+            Some(started_from.to_string_lossy().as_ref())
+        );
+        // A session already attached is not re-staged.
         live.launchpad = false;
         live.state.session_id = "s-1".into();
         live.pending_cwd = None;
-        live.stage_launch_workspace();
+        live.stage_launch_workspace(Some("/work/alpha"));
         assert_eq!(live.pending_cwd, None, "an attached session keeps its cwd");
+    }
+
+    /// A launch from somewhere ambient is not a choice of workspace: the one
+    /// picked last time comes back, which is what stops `future tui` typed in a
+    /// scratch directory from filing the next conversations under it.
+    #[test]
+    fn a_launch_from_an_ambient_directory_reopens_the_remembered_workspace() {
+        let remembered = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let remembered = remembered.path().to_string_lossy();
+        let scratch = scratch.path().to_string_lossy();
+        assert!(
+            is_ambient_directory(&scratch),
+            "a directory under the temp root is ambient: {scratch}"
+        );
+        assert_eq!(
+            launch_workspace(Some(&scratch), Some(&remembered)).as_deref(),
+            Some(remembered.as_ref())
+        );
+    }
+
+    /// `cd project && future tui` is still that project, whatever was picked
+    /// last time.
+    #[test]
+    fn a_project_directory_wins_over_the_remembered_workspace() {
+        let remembered = tempfile::tempdir().unwrap();
+        let remembered = remembered.path().to_string_lossy();
+        assert_eq!(
+            launch_workspace(Some("/work/future-os"), Some(&remembered)).as_deref(),
+            Some("/work/future-os")
+        );
+    }
+
+    /// A workspace that is gone (a removed worktree) is skipped instead of
+    /// becoming the next conversation's directory.
+    #[test]
+    fn a_remembered_workspace_that_no_longer_exists_is_not_staged() {
+        let scratch = tempfile::tempdir().unwrap();
+        let scratch = scratch.path().to_string_lossy();
+        let missing = std::env::temp_dir().join("future-tui-workspace-that-is-gone");
+        let missing = missing.to_string_lossy();
+        assert_eq!(launch_workspace(Some(&scratch), Some(&missing)), None);
+    }
+
+    /// Nothing remembered yet, and the shell sat somewhere ambient: the first
+    /// conversation is a plain chat rather than a workspace named `tmp` — the
+    /// one launch that still lands in the scratch directory, and the one the
+    /// remembered workspace makes unnecessary afterwards.
+    #[test]
+    fn a_first_launch_from_a_temp_directory_is_a_chat_not_a_workspace() {
+        let scratch = tempfile::tempdir().unwrap();
+        let scratch = scratch.path().to_string_lossy();
+        assert_eq!(launch_workspace(Some(&scratch), None), None);
+    }
+
+    /// One of the app's own scratch directories is a chat, and a chat is never
+    /// remembered as a workspace.
+    #[test]
+    fn the_apps_own_scratch_directory_is_never_the_launch_workspace() {
+        let remembered = tempfile::tempdir().unwrap();
+        let remembered = remembered.path().to_string_lossy();
+        let chat = chat_workspace();
+        assert_eq!(
+            launch_workspace(Some(&chat), Some(&remembered)).as_deref(),
+            Some(remembered.as_ref())
+        );
+        assert_eq!(launch_workspace(Some(&chat), None), None);
+    }
+
+    /// Ambient is about *where the shell sits*, not where the reader works: the
+    /// home directory and the temp tree are ambient, a project under either is
+    /// not.
+    #[test]
+    fn ambient_directories_are_the_ones_a_shell_sits_in() {
+        assert!(is_ambient_directory("/"), "the filesystem root");
+        assert!(is_ambient_directory("/tmp"));
+        assert!(is_ambient_directory("/tmp/"), "a trailing separator");
+        assert!(is_ambient_directory("/private/tmp"), "the macOS spelling");
+        assert!(is_ambient_directory("/tmp/scratch/notes"));
+        let temp = std::env::temp_dir();
+        assert!(is_ambient_directory(&temp.to_string_lossy()));
+        assert!(is_ambient_directory(&temp.join("child").to_string_lossy()));
+        if let Some(home) = crate::home::home_dir() {
+            let home = home.to_string_lossy().to_string();
+            assert!(is_ambient_directory(&home), "{home}");
+            assert!(
+                !is_ambient_directory(&format!("{home}/code/app")),
+                "a project under the home directory is a workspace"
+            );
+        }
+        assert!(!is_ambient_directory("/work/future-os"));
+        assert!(
+            !is_ambient_directory(&chat_workspace()),
+            "the app's scratch tree is not ambient — it is a chat, which is a\n             different rule (`is_chat_directory`)"
+        );
+    }
+
+    /// What the driver writes is a choice, not a directory the reader merely
+    /// visited: the launchpad's staging and an explicit workspace pick, not the
+    /// workspace of a conversation they switched to.
+    #[tokio::test]
+    async fn only_a_chosen_workspace_is_remembered() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+
+        // Nothing staged, no session: nothing to remember.
+        assert_eq!(live.take_workspace_to_remember(), None);
+        // A chat is not a workspace.
+        live.pending_cwd = None;
+        assert_eq!(live.take_workspace_to_remember(), None);
+        // The launchpad's staging is.
+        live.pending_cwd = Some("/work/alpha".into());
+        assert_eq!(
+            live.take_workspace_to_remember().as_deref(),
+            Some("/work/alpha")
+        );
+        assert_eq!(
+            live.take_workspace_to_remember().as_deref(),
+            Some("/work/alpha"),
+            "still staged: the chip keeps naming it, and the driver's compare\n             against the file is what makes the repeat a no-op"
+        );
+        // A session attached with a cwd of its own is not a choice — the reader
+        // merely opened a conversation — so switching does not rewrite it.
+        live.launchpad = false;
+        live.state.session_id = "s-1".into();
+        live.state.cwd = Some("/work/legacy".into());
+        assert_eq!(live.take_workspace_to_remember(), None);
     }
 
     /// `/new` starts the next conversation where the one on screen ran: a

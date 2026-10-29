@@ -162,7 +162,8 @@ agent 解析 `auth.json` 时会先读 `~/.future/agent/auth.json`，只有该文
 
 归 `future-tui` 所有。`settings.json` 持久化客户端侧设置（`defaultModel`、
 `defaultThinkingLevel`、`defaultPermissionLevel`、`enabledModelIds`、`themeId`、
-`skillRecommend`）；按键绑定覆盖放在 `keybindings.json`（`/keymap` 写入与默认值不同的
+`skillRecommend`、`lastWorkspace`——从「环境目录」（家目录、临时目录、根目录）启动
+时打开的工作区）；按键绑定覆盖放在 `keybindings.json`（`/keymap` 写入与默认值不同的
 绑定，启动时读取）；`skill_reco.json` 保存当天技能推荐配额（已推荐过哪些技能、已评估过
 哪些草稿——按天滚动，从不跨天读取）；`debug.log` 在设置 `PI_DEBUG_REDRAW=1` 时写入调试重绘日志，设置 `PI_TUI_WRITE_LOG=1` 时 `write.log` 记录原始屏幕写入；`crash.log` 在 TUI 崩溃时接收 panic 回溯。
 见 [tui.zh-CN.md](tui.zh-CN.md)。整个目录遵循 `FUTURE_HOME`（见下文），
