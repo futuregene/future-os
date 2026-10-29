@@ -388,18 +388,14 @@ impl Action {
             // while working.
             Self::Queue => "",
             Self::PanelRecent | Self::PanelWorkspaces => "",
-            // Arrows with a modifier: stepping is navigation, and a bare arrow
-            // is already the draft's (and the transcript's). The tabs keep
-            // `shift`, the conversations take `ctrl` because `ctrl+↑/↓` is what
-            // a terminal actually delivers — a shifted arrow arrives at many of
-            // them as a bare arrow (see the legacy "\x1b[a" in `keys`), which
-            // is how a reader ends up switching nothing. `shift+↑/↓` stays live
-            // as the spellings this surface shipped first (see
-            // [`Keybindings::action`]).
+            // Arrows, not chords: stepping is navigation, and these four are
+            // the only defaults that are not `ctrl`. `ctrl+↑/↓` is deliberately
+            // *not* a step: macOS gives it to Mission Control (the key never
+            // reaches the terminal), and one action gets one chord here.
             Self::PanelPrev => "shift+left",
             Self::PanelNext => "shift+right",
-            Self::PrevSession => "ctrl+up",
-            Self::NextSession => "ctrl+down",
+            Self::PrevSession => "shift+up",
+            Self::NextSession => "shift+down",
         }
     }
 }
@@ -425,18 +421,7 @@ impl Keybindings {
         if key.is_empty() {
             return None;
         }
-        let exact = ACTIONS.into_iter().find(|action| self.key(*action) == key);
-        if exact.is_some() {
-            return exact;
-        }
-        // The two step actions answer to two spellings each, and the second door
-        // only opens while the action still holds *a* step spelling: a reader who
-        // moved the step onto a chord of their own loses both of ours rather than
-        // keeping a hidden one. See `step_spellings`.
-        ACTIONS.into_iter().find(|action| {
-            let spellings = step_spellings(*action);
-            spellings.contains(&key) && spellings.contains(&self.key(*action))
-        })
+        ACTIONS.into_iter().find(|action| self.key(*action) == key)
     }
     pub fn is_default(&self, action: Action) -> bool {
         self.key(action) == action.default_key()
@@ -515,21 +500,6 @@ pub fn keybindings_path(settings_path: &Path) -> PathBuf {
         .join("keybindings.json")
 }
 
-/// The two chords a conversation step answers to: `ctrl+↑/↓` is the one the
-/// surface shows and rebinds, `shift+↑/↓` is the spelling it shipped first.
-///
-/// Both are kept because a terminal is not obliged to report the modifier: many
-/// send a *bare* arrow for `shift+↑` (the reason `keys` still maps the legacy
-/// `"\x1b[a"`), while `ctrl+↑/↓` is a standard xterm sequence every terminal
-/// and multiplexer forwards. An action that is not a step answers to nothing.
-fn step_spellings(action: Action) -> [&'static str; 2] {
-    match action {
-        Action::PrevSession => ["ctrl+up", "shift+up"],
-        Action::NextSession => ["ctrl+down", "shift+down"],
-        _ => ["", ""],
-    }
-}
-
 fn validate_key(key: &str) -> Result<(), String> {
     if key.is_empty() || key.len() > 32 || key.chars().any(char::is_whitespace) {
         return Err("shortcut".into());
@@ -550,8 +520,6 @@ fn validate_key(key: &str) -> Result<(), String> {
                 | "pageDown"
                 | "shift+left"
                 | "shift+right"
-                | "ctrl+up"
-                | "ctrl+down"
                 | "shift+up"
                 | "shift+down"
         );
@@ -681,40 +649,31 @@ mod tests {
         assert_eq!(restored.key(Action::Palette), "");
     }
 
-    /// The conversation step answers to two chords: `ctrl+↑/↓` is the one the
-    /// surface shows, `shift+↑/↓` the spelling it shipped first. Both are live
-    /// while the action is on a step chord, and a reader who moves the step onto
-    /// a chord of their own closes both doors rather than keeping a hidden one.
+    /// One action, one chord: the conversation step is `shift+↑`/`shift+↓` and
+    /// nothing else. `ctrl+↑/↓` is not a step (macOS hands it to Mission
+    /// Control, so on the terminal this surface is developed against the key
+    /// never arrives) and is not offered as a rebind target either.
     #[test]
-    fn the_conversation_step_answers_to_both_of_its_spellings() {
-        let mut keys = Keybindings::default();
-        assert_eq!(keys.key(Action::PrevSession), "ctrl+up");
-        assert_eq!(keys.key(Action::NextSession), "ctrl+down");
-        for (key, action) in [
-            ("ctrl+up", Action::PrevSession),
-            ("shift+up", Action::PrevSession),
-            ("ctrl+down", Action::NextSession),
-            ("shift+down", Action::NextSession),
-        ] {
-            assert_eq!(keys.action(key), Some(action), "{key}");
-        }
-        // The bare arrows stay the draft's: nothing steps on them.
+    fn the_conversation_step_has_exactly_one_chord() {
+        let keys = Keybindings::default();
+        assert_eq!(keys.key(Action::PrevSession), "shift+up");
+        assert_eq!(keys.key(Action::NextSession), "shift+down");
+        assert_eq!(keys.action("shift+up"), Some(Action::PrevSession));
+        assert_eq!(keys.action("shift+down"), Some(Action::NextSession));
+        // The ctrl arrows are nobody's step — and the bare arrows stay the
+        // draft's, so nothing steps on them either.
+        assert_eq!(keys.action("ctrl+up"), None);
+        assert_eq!(keys.action("ctrl+down"), None);
         assert_eq!(keys.action("up"), None);
         assert_eq!(keys.action("down"), None);
 
-        // Rebound: the step still works on its new chord, and neither spelling
-        // of ours answers any more.
+        // A reader may still move the step, and the default then stops working:
+        // the action has one chord wherever it lives.
+        let mut keys = Keybindings::default();
         keys.bind(Action::PrevSession, "alt+p").unwrap();
         assert_eq!(keys.action("alt+p"), Some(Action::PrevSession));
-        assert_eq!(keys.action("ctrl+up"), None);
         assert_eq!(keys.action("shift+up"), None);
-        // The other half of the pair still answers to both of its own.
         assert_eq!(keys.action("shift+down"), Some(Action::NextSession));
-
-        // Both spellings are legal targets for the shortcut editor.
-        let mut keys = Keybindings::default();
-        assert!(keys.bind(Action::PrevSession, "ctrl+up").is_ok());
-        assert!(keys.bind(Action::NextSession, "shift+down").is_ok());
     }
 
     #[test]
