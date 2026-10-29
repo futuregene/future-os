@@ -1850,16 +1850,57 @@ impl Workbench {
     /// inside a long transcript: running off the last stop and having nothing
     /// happen reads as "this conversation has nothing to open", when the first
     /// one is one more press away.
+    ///
+    /// The walk starts from the window, not from the transcript: a reader who
+    /// scrolled up into history and pressed `tab` used to land on the first link
+    /// of a conversation that may begin two thousand rows above them. So with no
+    /// cursor yet — or with one the reader scrolled away from — the first press
+    /// puts the cursor on the stop at the window's own edge, and only a press
+    /// that steps off that edge leaves the window (see [`Self::stop_reveal`] for
+    /// the frame that follows it).
     fn step_stop(&mut self, delta: isize, data: &WorkbenchData) -> Vec<WbAction> {
-        let count = self.chat_stops(data).len();
-        if count == 0 {
+        // The walk needs the rows, not just the stops: what makes a stop
+        // reachable is where it is painted, and the window is about rows.
+        let link_rows: Vec<usize> = self.link_spans(data).iter().map(|span| span.row).collect();
+        let stops = self.chat_stops(data);
+        if stops.is_empty() {
             self.chat_index = None;
             return vec![WbAction::Redraw];
         }
+        let rows: Vec<usize> = stops
+            .iter()
+            .map(|stop| match stop {
+                ChatStop::Link(index) => link_rows[*index],
+                ChatStop::Row(stop) => stop.row,
+            })
+            .collect();
+        let count = stops.len();
+        let (start, end) = self.chat_shown_rows(data.messages.len());
+        let on_screen = |row: usize| row >= start && row < end;
+        // A reveal still waiting for its frame means the window is simply behind
+        // the cursor the last press placed: that cursor is the reader's, and the
+        // next press steps from it rather than starting the walk over.
+        let owned = |row: usize| self.stop_reveal || on_screen(row);
         let next = match self.chat_index {
-            None if delta < 0 => count - 1,
-            None => 0,
-            Some(index) => (index as isize + delta).rem_euclid(count as isize) as usize,
+            Some(index) if rows.get(index).is_some_and(|row| owned(*row)) => {
+                (index as isize + delta).rem_euclid(count as isize) as usize
+            }
+            // No cursor, or one the keys took away: the walk starts again at
+            // the window's own edge — the first stop on screen going forward,
+            // the last one going back. A window that holds no stop at all takes
+            // the nearest one outside it, so a reader paging through prose lands
+            // on the link just past the edge rather than at the far end of the
+            // conversation; the frame that paints it scrolls to it.
+            _ if delta < 0 => rows
+                .iter()
+                .rposition(|row| *row < end)
+                .or_else(|| rows.iter().position(|row| *row >= end))
+                .unwrap_or(count - 1),
+            _ => rows
+                .iter()
+                .position(|row| on_screen(*row))
+                .or_else(|| rows.iter().position(|row| *row >= start))
+                .unwrap_or(count - 1),
         };
         self.chat_index = Some(next);
         // The transcript follows a cursor that moved; see `stop_reveal`.
@@ -4009,7 +4050,36 @@ impl Workbench {
 
     pub(crate) fn set_chat_scroll(&mut self, scroll: usize) {
         self.chat_scroll = scroll;
-        self.scroll.offset = scroll;
+        // The follow state is the same number seen from the other end: a window
+        // parked above the tail is not following it, so output that arrives
+        // later must not reset the offset and yank it back down (see
+        // [`scroll::ScrollState::set_offset`]).
+        self.scroll.set_offset(scroll);
+    }
+
+    /// The transcript rows the reader can actually read right now.
+    ///
+    /// `chat_scroll` counts rows up from the tail, the window is `chat_window`
+    /// rows tall (measured by the renderer, because the composer takes rows from
+    /// the band as the draft grows), and the bottom row belongs to the `earlier`
+    /// badge once the window is off the tail. `tab` has to anchor on the rows the
+    /// painter works from, so it reads the same three numbers here that
+    /// `screen::conversation` does.
+    fn chat_shown_rows(&self, total: usize) -> (usize, usize) {
+        // No frame has measured a band yet (a key pressed before the first
+        // paint): the whole transcript is the only window there is.
+        if self.chat_window == 0 {
+            return (0, total);
+        }
+        let offset = self.chat_scroll.min(total.saturating_sub(self.chat_window));
+        let end = total.saturating_sub(offset);
+        let start = end.saturating_sub(self.chat_window);
+        let end = if start > 0 {
+            end.saturating_sub(1)
+        } else {
+            end
+        };
+        (start, end)
     }
 
     /// Spend the cursor's move, if it made one: the frame that follows brings
@@ -8218,6 +8288,147 @@ mod tests {
         let settled = workbench.chat_scroll;
         workbench.render(&data, 120, 38);
         assert_eq!(workbench.chat_scroll, settled);
+    }
+
+    /// A conversation taller than the band, with a link every `every` rows — so
+    /// a window can be parked where there are stops above it, on it and below
+    /// it, which is the only place the `tab` walk's anchoring shows.
+    fn linked_chat(rows: usize, every: usize) -> WorkbenchData {
+        let mut data = demo::chat();
+        data.messages = (0..rows)
+            .map(|n| {
+                if n % every == 0 {
+                    let href = format!("https://e.example/{n}");
+                    format!("row {n}: {}", md_link(&href, &format!("link {n}")))
+                } else {
+                    format!("row {n}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .into();
+        data.row_stops.clear();
+        data
+    }
+
+    /// `tab` belongs to the window the reader is looking at: with the transcript
+    /// scrolled into history, the first press puts the cursor on the stop *on
+    /// screen*, not on the conversation's first link two thousand rows above —
+    /// which is where the page used to jump.
+    #[test]
+    fn tab_starts_from_the_window_the_reader_scrolled_to() {
+        let data = linked_chat(60, 20);
+        let (mut workbench, _rows) = frame(&data, 120, 24);
+        // Park the window so it holds the middle link only.
+        let offset = data.messages.len() - 30;
+        workbench.set_chat_scroll(offset);
+        let rows = workbench.render(&data, 120, 24);
+        let text = plain(&rows);
+        assert!(text.contains("link 20"), "the window holds it: {text}");
+        assert!(
+            !text.contains("link 0"),
+            "the first link is above it: {text}"
+        );
+        assert!(
+            !text.contains("link 40"),
+            "the last one is below it: {text}"
+        );
+        // The first press lands on the stop the window shows…
+        assert_eq!(
+            workbench.handle(WbEvent::Key("tab".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert_eq!(workbench.chat_index, Some(1), "the window's first stop");
+        // …and leaves the page where the reader put it: a stop already on
+        // screen is not a reason to move anything.
+        workbench.render(&data, 120, 24);
+        assert_eq!(workbench.chat_scroll, offset);
+    }
+
+    /// The press that steps off the window's edge takes the page with it: a stop
+    /// below the window is revealed on the last readable row, and one above it
+    /// on the first — a highlight nobody can see is not a cursor.
+    #[test]
+    fn tab_reveals_the_stop_it_steps_onto_outside_the_window() {
+        let data = linked_chat(60, 20);
+        let (mut workbench, _rows) = frame(&data, 120, 24);
+        let band = workbench.chat_window;
+        workbench.set_chat_scroll(data.messages.len() - 30);
+        workbench.render(&data, 120, 24);
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        assert_eq!(workbench.chat_index, Some(1));
+        // Down to the link below the window: the page follows it to the bottom.
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        assert_eq!(workbench.chat_index, Some(2));
+        let rows = workbench.render(&data, 120, 24);
+        let text = plain(&rows);
+        assert!(text.contains("link 40"), "the cursor is on screen: {text}");
+        assert_eq!(
+            workbench.chat_scroll,
+            data.messages.len() - (40 + 2),
+            "the revealed row is the last one the window can read"
+        );
+        // Back up to the link above the window: the page follows it to the top,
+        // which is where that stop was anyway — it must not drop a screen
+        // further and bury the rows just above it.
+        workbench.handle(WbEvent::Key("shift+tab".into()), &data);
+        assert_eq!(workbench.chat_index, Some(1));
+        workbench.handle(WbEvent::Key("shift+tab".into()), &data);
+        assert_eq!(workbench.chat_index, Some(0));
+        let rows = workbench.render(&data, 120, 24);
+        let text = plain(&rows);
+        assert!(text.contains("link 0"), "the cursor is on screen: {text}");
+        assert_eq!(
+            workbench.chat_scroll,
+            data.messages.len() - band,
+            "the revealed row is the window's first one"
+        );
+    }
+
+    /// A scroll moves the aim as well as the page: the key path drops the cursor
+    /// it scrolled away from, and the next `tab` starts from the window again
+    /// rather than from a stop nobody can see.
+    #[test]
+    fn tab_starts_from_the_window_after_a_scroll_took_the_cursor_away() {
+        let data = linked_chat(60, 20);
+        let (mut workbench, _rows) = frame(&data, 120, 24);
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        assert_eq!(workbench.chat_index, Some(2), "the tail window's only stop");
+        workbench.render(&data, 120, 24);
+        // A page up takes the window above the link the cursor stood on.
+        workbench.handle(WbEvent::Key("pageUp".into()), &data);
+        assert_eq!(workbench.chat_index, None);
+        // …and the press after it anchors on the window the reader is on now.
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        let (start, end) = workbench.chat_shown_rows(data.messages.len());
+        let rows = [0, 20, 40];
+        let expected = rows
+            .iter()
+            .position(|row| *row >= start && *row < end)
+            .or_else(|| rows.iter().position(|row| *row >= start))
+            .unwrap_or(rows.len() - 1);
+        assert_eq!(workbench.chat_index, Some(expected));
+    }
+
+    /// The frame that followed the press is the only one: a reader who parks the
+    /// window somewhere else afterwards keeps it there.
+    #[test]
+    fn the_revealed_cursor_does_not_drag_the_window_back() {
+        let data = linked_chat(60, 20);
+        let (mut workbench, _rows) = frame(&data, 120, 24);
+        let band = workbench.chat_window;
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        assert_eq!(workbench.chat_index, Some(2));
+        workbench.render(&data, 120, 24);
+        let parked = data.messages.len() - 12;
+        workbench.set_chat_scroll(parked);
+        let rows = workbench.render(&data, 120, 24);
+        let text = plain(&rows);
+        assert!(!text.contains("link 40"), "the window stayed up: {text}");
+        assert_eq!(
+            workbench.chat_scroll,
+            parked.min(data.messages.len() - band),
+            "the highlight did not pull the page back"
+        );
     }
 
     /// The rail names the keys it answers, whether or not the reader is

@@ -861,15 +861,24 @@ fn conversation(
         if let Some(row) = workbench.selected_stop_row(data) {
             let row = row.min(total.saturating_sub(1));
             let (start, end) = shown_window(offset);
-            if row < start || row >= end {
+            if row < start {
+                // Up to it, not past it: a stop the walk stepped back to
+                // belongs on the window's top row, and dropping the page a
+                // screen further buries the rows the reader was about to read.
+                // A top row is inside the ceiling by construction (`ceiling` is
+                // the offset that puts the oldest row there), so this one needs
+                // no clamp of its own.
+                offset = total.saturating_sub(row.saturating_add(visible).min(total));
+            } else if row >= end {
                 // Two rows of room below it: one is the badge's, one is the row
                 // itself, so the selection is never the line that gets dropped.
                 // Clamped to the ceiling in the same frame: an offset past it
                 // paints blank rows over the top of the transcript, and the next
                 // frame then has to walk itself back — a second jump for a
                 // reader who only pressed `tab`.
-                offset = total.saturating_sub((row + 2).min(total)).min(ceiling);
-                workbench.set_chat_scroll(offset);
+                offset = total
+                    .saturating_sub(row.saturating_add(2).min(total))
+                    .min(ceiling);
             }
         }
     }
