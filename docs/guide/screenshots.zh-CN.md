@@ -300,6 +300,8 @@ python3 scripts/screenshots/capture.py capture-desktop parser-en   # → .screen
 
 桌面端把已经结束的回复折到答案上，所以这一帧停在第一轮、让那轮的工作保持折叠——`查看过程 · 工具调用 2 次 · 思考 1 次`，正是 TUI 里那行 `▸`。`上一个问题`（转录自己的 ↑ 按钮）会把读者上一条提问落在标题栏下面，这才让「一整轮」进得了同一屏：提问、折叠的过程、带高亮 `rust` 块与三行表格的诊断、以及结尾那句，文字与 TUI 逐字相同。第二轮从折线处开始——它的问题在屏上，答案不在——因为笔记本窗口装不下两轮，而另一条路是给一张比屏幕还高的「窗口」。`eval` 就把这一帧钉在这里：第一轮的每个块都在输入框之上、第二轮的提问仍在折线处可见、并且任意一种语言的词都不会跑到另一种语言的帧里——右侧文件面板也算在内。
 
+配色用的是应用自己的深色外观：`?theme=dark` 和 `?lang=` 一样是 `shot/prefs.ts` 在应用启动前钉的，所以两帧是出厂默认（`futureos`）的深色，不是某个变体；场景还断言 `documentElement` 上有 `dark`，截图不会悄悄变回浅色。**变的只有颜色。**几何与浅色截图逐像素相同——两个场景仍报第一轮结束于输入框上方 292 px（中文）/ 268 px（英文）——对比度也是量出来的而不是看出来的：正文与标题 14:1，次要的表格单元与引用 7.6:1，文件树 15:1，全部高于 WCAG AA；整帧只有 0.6% 的像素比 200 更亮（就是字本身）。读者可能跨配色比较的颜色——*审查* 标签里的 `+18` / `-2` 与 diff 行——取自同一套 `text-success` / `text-danger` token，所以它们跟着配色走、不是每个主题各写一份；这一帧开的是*文件*，显示的是文件树而不是 diff。
+
 两点要说清。桌面端截到的图**不**像 TUI 那样逐字节可复现：每次跑只有两处会动——每条消息旁的相对时间（`刚刚` / `1分钟前`，读的是墙钟）和 fixture 里标成「运行中」的那条会话上的旋转指示。内容稳定，那几处像素不稳定。（`capture-desktop steps-folded` 动的也是这两处，所以这是这个界面的性质，而不是这两个场景的问题。）另外 fixture 里只有会话列表和转录有双语；设置、定时任务、技能那几套数据仍只有中文，而目前没有英文场景会打开它们。
 
 转录本身还需要补两个 mock 没实现的命令。历史读取走的是有界传输通道（`begin_session_history_transfer` 加它的分块读），而只实现了内联那条命令时，每段对话都显示成 `invalid_history_transfer` 加一个重试链接——截图本来要看的那段转录根本没画出来；点开一行工具调用还会读 `list_approval_assessments`，它返回 `null` 直接把整个界面卸掉。这两条现在都在 `desktop/shot/mock/backend.ts` 里答了。
@@ -341,6 +343,8 @@ python3 scripts/screenshots/capture.py capture-mobile fleet-picker-en   # → .s
 两个列表场景断言的是「合并」本身而不是画面：行序是各台机器自己报的最后回复时间（不是按机器分组）、五台机器都供了行、两个分段标题分别是 2 与 12。`-picker-` 那两个打开列表上方的选择面板，五台机器的**名字**在那里——列表里一行只用图标表示它属于哪台机器，名字写上去会吃掉标题的宽度。
 
 两次截图里都没有「正在跑」的会话：`running` / `queued` 的行会画一个 `ActivityIndicator`，它的帧每次都不一样，所以 fixture 里两个未结束的会话都是「等我批准」的阻塞态。连跑两次得到逐字节相同的 PNG。
+
+这四帧是「手机设成深色」的状态（`"appearance": "dark"`），场景也断言了这一点：行所在的底色必须是深色 token 之一、标题必须用深色的 `ink`——如果回落到了浅色主题，截图会失败而不是把错的观感发出去。
 
 ### 聊天转录是正的（inverted 列表那一层多余翻转）
 
@@ -391,6 +395,7 @@ python3 scripts/screenshots/capture.py check-upright-mobile chat
 
 - **`ready`** 是驱动会反复轮询直到为真的 JavaScript 表达式，它也是截图快的关键：热缓存下约 1 秒就绪，冷启动可能要 20 秒。`settle` 只是就绪后的一小段缓冲。如果截图抢在界面绘制之前，应该调大 `readyTimeout` 而不是 `settle`。
 - **`lang` 固定的是浏览器区域设置，不是一条只给 harness 用的开关。** 必须使用某种语言的场景写 `"lang": "en-US"`，`cdp.mjs` 会在应用第一个脚本运行之前把页面的系统区域设置改成它：`Emulation.setLocaleOverride` 管 `Intl`，用户代理覆盖里的 `acceptLanguage` 管 `navigator.language`（Chrome 156 上实测——只设前者时 `navigator.language` 仍是宿主机的 `zh-CN`）。应用读的就是系统区域设置，与真机一致；应用内已保存的语言偏好仍然优先。
+- **`appearance` 固定的是平台的「外观」，就像 `lang` 固定区域设置。** `"appearance": "dark"` 让页面上报 `prefers-color-scheme: dark`（`Emulation.setEmulatedMedia`）——这正是把手机设成深色模式时它上报的东西，而应用的「跟随系统」主题就是拿它来解析（`mobile/src/theme/theme.ts` 的 `resolveScheme("system", …)`）。应用内已保存的偏好仍然优先，所以这条固定的是手机，不是读者的选择；桌面端反过来用 `?theme=` 固定自己的窗口，因为窗口没有可问的平台。
 - **`query` 拼在平台 URL 后面。** `"query": "?parser=1"` 让场景跟着 `serve-mobile` 当前服务的端口走，而不像写全 `url` 那样把 `http://localhost:8099/` 钉在场景里。
 - **`tap` 需要可访问名称。** 先匹配 `aria-label`，再匹配可交互元素自身的文字。两者都没有就用 `tapText`；如果你发现自己在写坐标点击，那通常说明这个控件缺标签。
 - **点不到的状态用 `eval`。** 只在悬停时出现的控件，需要先对它的容器加一个 `hover` 步骤（否则驱动会报告目标尺寸为 0，而不是去点页面角落）。例如对话内搜索是 ⌘F 打开的，驱动没法把它当按键发出去，所以场景改为访问 `?press=meta%2Bf`，由 `desktop/shot/main.tsx` 把快捷键派发给真实的 window 监听器。
