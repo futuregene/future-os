@@ -1589,34 +1589,27 @@ fn hint_row(
     // beside the title spells `[ctrl+r] 会话`, so a hint here would be the same
     // key taught twice on one screen. Its cells went to the entries above.
     //
-    // `esc` is listed only in the one state where it has something to do
-    // *here*: a transcript the reader scrolled away from, where it walks back to
-    // the newest message. It goes first, so a narrow terminal drops the keys
-    // around it rather than the one the reader needs right now — and it is the
-    // only entry whose key changes with the frame, because a permanent one would
-    // promise a key that has nothing to act on: every other thing `esc` answers
-    // (an overlay, the queue, the mention menu, a picker) prints it in that box's
-    // own hint row (`FilesHint`, `PickerHint*`, `HelpFooter`).
+    // `esc` leads the row because it is the one key whose meaning is a *place*
+    // rather than a door: it walks the reader back — to the newest message from a
+    // transcript they scrolled away from, out of an overlay or a menu that is
+    // covering the chat. Two jobs, one key, so the label names both and the row
+    // shows it whether or not either is true right now: a reader who has to
+    // discover `esc` by pressing it in a box is the reader this line is for. The
+    // boxes that answer it still print it in their own hint row (`FilesHint`,
+    // `PickerHint*`, `HelpFooter`) — this is the surface's own copy, not theirs.
     //
     // `?` is a literal rather than `Action::Help`'s chord: help has no chord on
     // purpose (a printable key that opens a box cannot also be typed into the
     // draft), so the row names the character that opens it, as the help
     // overlay's own inline table does.
-    let mut wide: Vec<(&str, Key)> = Vec::new();
-    // Whether the row is claiming `esc` this frame: the one entry that comes and
-    // goes with the state the frame paints.
-    let scrolled_back =
-        !workbench.following_latest() && workbench.overlay.is_none() && workbench.mention.is_none();
-    if scrolled_back {
-        wide.push(("esc", Key::HintLatest));
-    }
-    wide.extend([
+    let wide: Vec<(&str, Key)> = vec![
+        ("esc", Key::HintBackToChat),
         (workbench.keys.key(Action::Sidebar), Key::HintSidebar),
         (workbench.keys.key(Action::Palette), Key::HintCommands),
         (workbench.keys.key(Action::Preferences), Key::HintSettings),
         (workbench.keys.key(Action::NewSession), Key::HintNewChat),
         ("?", Key::HintHelp),
-    ]);
+    ];
     // A rebindable action whose chord the reader cleared (`preferences`, see
     // `default_key`) would otherwise be hinted as " 布局" — a hint with no key
     // is not a hint.
@@ -1625,11 +1618,9 @@ fn hint_row(
         .filter(|(key, _)| !key.is_empty())
         .collect();
     let parts: &[(&str, Key)] = if compact {
-        // The contextual `esc` does not cost the reader a permanent hint: at the
-        // tail this row is the four cells it always was, and only a scrolled-back
-        // transcript spends one more on the way back down.
-        let budget = if scrolled_back { 5 } else { 4 };
-        &wide[..budget.min(wide.len())]
+        // Compact keeps the head of the row — `esc` and the three doors after it
+        // — rather than squeezing all six into cells that cannot hold them.
+        &wide[..5.min(wide.len())]
     } else {
         &wide
     };
@@ -4442,9 +4433,12 @@ mod tests {
         assert!(wide.contains("ctrl+q"), "{wide:?}");
         assert!(wide.contains("ctrl+n"), "{wide:?}");
         assert!(!wide.contains("\u{2014}"), "{wide:?}");
-        // `esc` is not on the row: it leaves whatever the reader is in, and the
-        // box that answers it prints it in its own hint. The row ends on `?`
-        // instead — a character, not a chord, and the way into this list.
+        // `esc` is the head of the row: the one key whose job is a *place* rather
+        // than a door (back to the newest message, or out of the box the reader is
+        // in), so it is taught whether or not the reader is in one of those places.
+        // The row still ends on `?` — a character, not a chord, and the way into
+        // this list.
+        assert!(wide.trim_start().starts_with("esc "), "{wide:?}");
         assert_eq!(
             wide.trim_end().split(" · ").last().map(str::trim),
             Some("? 帮助"),
@@ -4454,17 +4448,20 @@ mod tests {
         // spells it, so the hint row leaves it out.
         assert!(!wide.contains("ctrl+r"), "{wide:?}");
         // Narrow keeps the head of the row whole and drops the tail, and never
-        // cuts a hint in half. Measured at a width where the dropped entry is
-        // gone in *both* languages: the Chinese labels are half as wide as the
-        // English ones, so a 40-column row that ends after `ctrl+p` in English
-        // still reaches it in Chinese.
+        // cuts a hint in half. The head is `esc` now, so that is what the narrowest
+        // rows keep: the way out survives the doors, because a reader who cannot
+        // see the doors can still press `/` — but nothing else spells `esc`.
         let narrow = plain(&hint_row(&workbench, &FUTURE_DARK, 40, true)[0]);
-        assert!(narrow.contains("ctrl+d"), "{narrow:?}");
-        assert!(narrow.contains("ctrl+p"), "{narrow:?}");
-        let narrow = plain(&hint_row(&workbench, &FUTURE_DARK, 24, true)[0]);
+        assert!(narrow.contains("esc"), "{narrow:?}");
         assert!(narrow.contains("ctrl+d"), "{narrow:?}");
         assert!(
             !narrow.contains("ctrl+p"),
+            "the doors give up their cells first: {narrow:?}"
+        );
+        let narrow = plain(&hint_row(&workbench, &FUTURE_DARK, 24, true)[0]);
+        assert!(narrow.contains("esc"), "{narrow:?}");
+        assert!(
+            !narrow.contains("ctrl+d"),
             "whole hints are dropped: {narrow:?}"
         );
         assert!(
