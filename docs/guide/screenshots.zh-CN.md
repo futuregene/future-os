@@ -164,6 +164,14 @@ python3 scripts/screenshots/capture.py tui tui-chat.png
   `/Users/you/future-os`，面板会如实说那个目录不存在。
 - `--addr <host:port>` 接到已在运行的 agent（也就是**真会话**），而不是启 `demo_agent`；
   并且不动调用方的 `FUTURE_HOME`。
+- `--lang <system|zh|en>` 钉住整张图的语言（默认 `zh`，即已入仓那些帧的语言）：界面文案写进
+  TUI 的 `settings.json`，脚本数据由 `FUTURE_DEMO_LANG` 交给 `demo_agent`——两边必须一致，
+  否则就是英文外壳套一份中文会话列表。英文 `streaming` 场景提交的提问也会跟着变英文
+  （提问是读者的话，不是按键）。`demo_agent` 的英文会话不是中文的逐句翻译，而是一个
+  更长更满的会话：会话列表 47 条、正文十几轮，因为面板是空的时候图看着像 mock。
+- `--sidebar-width <cols>` 钉住侧栏宽度（默认交给界面自己，`SIDEBAR_DEFAULT` = 36）。侧栏会
+  给工作区名留三分之一，于是 36 列下英文标题只剩十九格就出省略号，而中文同样长度放得下；
+  想拍标题完整的英文帧就传它（上限 60）。
 
 仓库里拍这些帧的入口是 `tui/scripts/shot.sh <scenario> [WxH] [out.png]`，它是
 `capture.py tui` 的一层包装：补上 `--scenario` 与尺寸，并按对应资产命名文件。
@@ -172,7 +180,12 @@ python3 scripts/screenshots/capture.py tui tui-chat.png
 tui/scripts/shot.sh chat 120x38 $PWD/docs/tui/assets/workbench-chat.png
 tui/scripts/shot.sh usage 120x38 $PWD/docs/tui/assets/workbench-panel-usage.png
 tui/scripts/shot.sh drag 120x38 $PWD/docs/tui/assets/workbench-drag-fixed.png
+# 英文帧（界面与会话列表/正文一起），并给英文标题留够宽度：
+FUTURE_DEMO_LONG=1 SHOT_LANG=en SHOT_SIDEBAR_WIDTH=56 tui/scripts/shot.sh chat 190x54
 ```
+
+`FUTURE_DEMO_LONG=1` 是「往会话里追加轮次，直到正文高过面板」的那颗开关（`scrolled` 场景
+也用它）；英文默认会话在一张 54 行高的屏幕里会短八行，所以拍「满」的帧要带上它。
 
 第三个参数是输出路径；不传时脚本按「场景 + 尺寸」自动命名
 （`workbench-chat-120x38.png`、`workbench-usage-120x38.png`），

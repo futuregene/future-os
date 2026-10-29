@@ -245,6 +245,22 @@ What the flags are for:
 - `--addr <host:port>` attaches to an agent that is already running (a *real*
   session) instead of starting `demo_agent`, and leaves the caller's
   `FUTURE_HOME` alone.
+- `--lang <system|zh|en>` pins the whole frame's language (default `zh`, the
+  language every committed asset was shot in): the chrome's copy goes into the
+  TUI's `settings.json` and the scripted data is handed to `demo_agent` as
+  `FUTURE_DEMO_LANG`. Both halves have to agree, or the frame is an English
+  shell around a Chinese session list. The English `streaming` scenario also
+  submits its prompt in English — the question is the reader's words, not a
+  keystroke. The English session is not a sentence-by-sentence translation: it
+  is a fuller one (47 conversations in the rail, a dozen turns of transcript),
+  because a panel with three rows in it is a picture of a mock. A 190×54 frame
+  still wants `FUTURE_DEMO_LONG=1` (the switch `scrolled` uses to outrun the
+  band): at that height the default conversation stops eight rows short.
+- `--sidebar-width <cols>` pins the rail's width (default: the surface's own,
+  `SIDEBAR_DEFAULT` = 36). The rail reserves a third of itself for the workspace
+  name, so at 36 columns an English session title gets about nineteen cells
+  before the ellipsis while the same list in Chinese fits; pass this when a
+  frame needs the titles to read through (the ceiling is 60).
 
 The repository's own entry point for these frames is
 `tui/scripts/shot.sh <scenario> [WxH] [out.png]`, a thin wrapper that supplies
@@ -254,6 +270,8 @@ The repository's own entry point for these frames is
 tui/scripts/shot.sh chat 120x38 $PWD/docs/tui/assets/workbench-chat.png
 tui/scripts/shot.sh usage 120x38 $PWD/docs/tui/assets/workbench-panel-usage.png
 tui/scripts/shot.sh drag 120x38 $PWD/docs/tui/assets/workbench-drag-fixed.png
+# An English frame — chrome, session list and transcript — with room for the titles:
+FUTURE_DEMO_LONG=1 SHOT_LANG=en SHOT_SIDEBAR_WIDTH=56 tui/scripts/shot.sh chat 190x54
 ```
 
 The third argument is the output path; without it the wrapper names the file
