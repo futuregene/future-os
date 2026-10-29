@@ -76,16 +76,26 @@ pub(super) fn read_display_page(
         FROM history_display d LEFT JOIN entry_records e ON e.session_id=d.session_id AND e.position=d.source_position
         WHERE d.session_id=?1 AND d.ordinal>=?2 AND d.ordinal<?3 ORDER BY d.ordinal {direction}")
     };
-    let sql = if canonical {
+    // A backward page is bounded by the *exchange* window its caller named:
+    // `start` is the oldest requested user turn, so cutting the range by a row
+    // count hands back fewer exchanges than were asked for. One busy run is
+    // dozens of rows on its own (an assistant step and a tool entry per call), so
+    // a fixed row ceiling made a page that should hold ten exchanges hold nothing
+    // but the newest reply — to the reader, the conversation above it was gone.
+    //
+    // Forward pages keep the ceiling: their `limit` counts rows and the client
+    // resumes them through `nextOffset`.
+    let sql = if canonical && before.is_none() {
         format!("{sql} LIMIT 64")
     } else {
         sql
     };
-    let read_budget = if canonical {
-        crate::session::content::READ_BYTES
-    } else {
-        HISTORY_PAGE_BYTE_BUDGET
-    };
+    // Canonical rows carry no bodies — the text a row ships is read at
+    // `materialize_display_page` — so their payload sizes say nothing about what
+    // the page will weigh. With the row ceiling gone for backward reads the page
+    // is bounded where the bodies are: that materializer's byte budget, which
+    // splits an oversized entry into fragments instead of dropping it.
+    let read_budget = HISTORY_PAGE_BYTE_BUDGET;
     let mut stmt = db.prepare(&sql)?;
     let mut cursor = stmt.query(params![&stored_session, start, end])?;
     let mut rows = Vec::new();
@@ -115,7 +125,7 @@ pub(super) fn read_display_page(
             break;
         }
         anyhow::ensure!(
-            !canonical || size <= read_budget,
+            !canonical || size <= crate::session::content::READ_BYTES,
             "canonical display header exceeds the read budget"
         );
         body_bytes = body_bytes.saturating_add(size);

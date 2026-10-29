@@ -998,6 +998,9 @@ impl Workbench {
             }
             WbEvent::Resize(_, _) => vec![WbAction::Redraw],
             WbEvent::Paste(text) => {
+                // A paste is the reader typing: the prompt owns the keys, so the
+                // `enter` that follows sends it (see `handle_key`).
+                self.blur_rail();
                 let mut view = data.input.editor.clone();
                 view.paste(&text);
                 vec![WbAction::EditEditor(Box::new(view))]
@@ -1265,7 +1268,14 @@ impl Workbench {
             // palette's own entry is what the key runs.
             Some(preferences::Action::Git) => return vec![WbAction::OpenGit],
             // The clipboard: an image becomes an attachment, text is pasted.
-            Some(preferences::Action::PasteImage) => return vec![WbAction::PasteClipboard],
+            Some(preferences::Action::PasteImage) => {
+                // What lands is the draft's, so the prompt takes the keys with
+                // it — the rail must not answer the `enter` that follows a
+                // paste (a picture pasted into a prompt used to send the reader
+                // into the rail's selected conversation instead).
+                self.blur_rail();
+                return vec![WbAction::PasteClipboard];
+            }
             Some(preferences::Action::PreviewAttachment) => {
                 return vec![WbAction::PreviewAttachment]
             }
@@ -1370,12 +1380,17 @@ impl Workbench {
             "enter" => self.submit_draft(data),
             "up" if self.sidebar_focus => self.move_selection(-1, data),
             "down" if self.sidebar_focus => self.move_selection(1, data),
-            // The rail's two tabs, from the rail itself: a focused panel
-            // answers left/right with its neighbour the way a tab strip does
-            // with a click. The cursor lands on the conversation on screen,
-            // exactly as the click on a tab leaves it.
-            "left" if self.sidebar_focus => self.switch_panel(-1, data),
-            "right" if self.sidebar_focus => self.switch_panel(1, data),
+            // `←`/`→` never walk the tabs — not from a focused rail either. The
+            // rail can hold the keys while the prompt is on screen (a click on
+            // a tab, a conversation opened from a row, `ctrl+d`), and a reader
+            // standing in the draft reads the arrow keys as the caret's: a rail
+            // that jumped to its neighbour was a stray keystroke happening to
+            // them. The tabs' chord is `shift+←`/`shift+→`
+            // ([`Action::PanelPrev`]/[`Action::PanelNext`]), which works from
+            // anywhere. The keys stop here rather than falling through to the
+            // editor: with the rail focused that caret is not the reader's, and
+            // moving one they cannot see is the same surprise a layer down.
+            "left" | "right" if self.sidebar_focus => Vec::new(),
             // Pin the workspace the selected conversation belongs to, so the
             // 置顶 section is reachable with the keyboard. Only a *focused* rail
             // takes it: elsewhere `p` is a letter in the draft.
@@ -1385,6 +1400,14 @@ impl Workbench {
             // own `esc` is answered before this, in `rail_search_key`.)
             "escape" if self.sidebar_focus && !self.rail.query.is_empty() => {
                 self.clear_rail_search(data)
+            }
+            // A second `escape` hands the keys back to the prompt. Without it a
+            // reader who stepped into the rail had only `ctrl+d` (or the mouse)
+            // to get out, and every `enter` in the meantime opened the row under
+            // the cursor instead of sending the draft.
+            "escape" if self.sidebar_focus => {
+                self.blur_rail();
+                vec![WbAction::Redraw]
             }
             // The rail's destructive verb, spelled the way a file tree's delete
             // is spelled everywhere else. `ctrl+d` is the rebindable chord
@@ -1411,6 +1434,13 @@ impl Workbench {
             | "ctrl+z" | "ctrl+-" | "ctrl+/" | "ctrl+_" | "ctrl+shift+z" | "alt+y"
             | "alt+backspace" | "alt+d" | "alt+delete" | "ctrl+left" | "ctrl+right"
             | "alt+left" | "alt+right" | "shift+enter" | "alt+enter" | "ctrl+enter" | "ctrl+j" => {
+                // An editing chord is the reader typing, so the prompt owns the
+                // keys from here on. A rail that kept them answered the next
+                // `enter` by opening its selected conversation — the draft was
+                // typed but never sent. None of the arms above this one reach
+                // here while the rail is focused (`up`/`down`/`left`/`right`,
+                // `delete`, `p` and `/` are the rail's own).
+                self.blur_rail();
                 let mut view = data.input.editor.clone();
                 view.resize(self.composer_width);
                 view.key(key);
@@ -1419,6 +1449,9 @@ impl Workbench {
             // Space is a character in the draft, not the "select" key the
             // menus use: the prompt has to be able to contain words.
             "space" => {
+                // Space is text, so it takes the keys back to the prompt the
+                // way every other character does (see the `other` arm).
+                self.blur_rail();
                 let mut view = data.input.editor.clone();
                 view.paste(" ");
                 vec![WbAction::EditEditor(Box::new(view))]
@@ -1440,6 +1473,10 @@ impl Workbench {
                     if data.on_launchpad() {
                         self.launch_field = LaunchField::Prompt;
                     }
+                    // …and the rail stops holding the keys with it: a character
+                    // in the draft means the next `enter` sends that draft, not
+                    // the row the rail happens to light up.
+                    self.blur_rail();
                     let mut view = data.input.editor.clone();
                     view.paste(other);
                     vec![WbAction::EditEditor(Box::new(view))]
@@ -3753,24 +3790,6 @@ impl Workbench {
         vec![WbAction::SwitchPanel(panel)]
     }
 
-    /// The rail's neighbouring tab: `←`/`→` while the rail has the keys, which
-    /// is the keyboard spelling of a click on the tab strip.
-    fn switch_panel(&mut self, delta: i32, data: &WorkbenchData) -> Vec<WbAction> {
-        let panel = if delta < 0 {
-            self.panel.previous()
-        } else {
-            self.panel.next()
-        };
-        self.panel = panel;
-        self.sidebar_focus = true;
-        // The cursor is an index into *this* panel's rows: carry it to the
-        // conversation on screen rather than leaving it on whatever the other
-        // tab's row at that index happened to be.
-        let row = self.current_row(data);
-        self.select_row(row, data);
-        vec![WbAction::SwitchPanel(panel)]
-    }
-
     /// Carry out a `/…` verb that belongs to the *surface* rather than to the
     /// agent: naming a panel, or saying where a workspace comes from.
     ///
@@ -5111,11 +5130,21 @@ mod tests {
     fn a_focused_rail_deletes_its_cursor_row_not_the_one_on_screen() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
-        // `x` stays a letter in the draft even with the rail focused: the rail
-        // takes the list keys, not the alphabet.
+        // `ctrl+d` shows the rail and gives it the keys.
         workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
+        assert!(workbench.sidebar_focus);
+        // `x` stays a letter in the draft: the rail takes the list keys, not
+        // the alphabet — and the letter takes the keys back with it, so the
+        // next `enter` would send the draft rather than delete a conversation
+        // nobody named (see `input_that_reaches_the_draft_takes_the_keys_back_from_the_rail`).
         workbench.handle(WbEvent::Key("x".into()), &data);
         assert_eq!(workbench.overlay, None);
+        assert!(!workbench.sidebar_focus, "the letter belongs to the draft");
+        // Back in the rail (the second `ctrl+d` only gives it the keys), the
+        // cursor lands on the conversation on screen and `delete` walks from
+        // there.
+        workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
+        assert!(workbench.sidebar_focus);
         workbench.handle(WbEvent::Key("down".into()), &data);
         workbench.handle(WbEvent::Key("delete".into()), &data);
         assert_eq!(workbench.overlay, Some(Overlay::DeleteSession));
@@ -5445,54 +5474,59 @@ mod tests {
         assert!(workbench.rail.folded.is_empty(), "nothing was recorded");
     }
 
-    /// The rail's two tabs answer `←`/`→` while the rail has the keys: the
-    /// keyboard spelling of a click on the tab strip, and the cursor follows
-    /// the switch to the conversation on screen.
+    /// The plain arrows belong to the caret, not the tab strip — even while the
+    /// rail has the keys.
+    ///
+    /// The rail can hold the keys with the prompt on screen (a click on a tab, a
+    /// conversation opened from a row, `ctrl+d`), and a reader standing in the
+    /// draft reads `←`/`→` as movement inside it. Before this, those two keys
+    /// switched 最近 ↔ 工作区 from there and the caret never moved, which looked
+    /// like a keystroke going somewhere else. The tabs are the shift arrows'
+    /// (`Action::PanelPrev`/`PanelNext`), which work from anywhere.
     #[test]
-    fn left_and_right_move_the_rail_between_its_two_tabs() {
+    fn the_plain_arrows_never_walk_the_rail_tabs() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
-        assert!(workbench.sidebar_focus);
+        assert!(workbench.sidebar_focus, "the rail has the keys");
         assert_eq!(workbench.panel, PanelId::Recent);
 
-        assert_eq!(
-            workbench.handle(WbEvent::Key("right".into()), &data),
-            vec![WbAction::SwitchPanel(PanelId::Workspaces)]
-        );
-        assert_eq!(workbench.panel, PanelId::Workspaces);
-        assert!(workbench.sidebar_focus, "the rail keeps the keys");
-        // The cursor is an index into *this* panel's rows, and it landed on the
-        // conversation the transcript shows.
-        let rows = panels::rows(PanelId::Workspaces, &data);
-        let current = data
-            .sessions
-            .iter()
-            .position(|session| session.current)
-            .expect("the fixture marks one conversation current");
-        assert_eq!(rows[workbench.sidebar_index].session(), Some(current));
+        for key in ["right", "left"] {
+            let actions = workbench.handle(WbEvent::Key(key.into()), &data);
+            assert!(
+                !actions
+                    .iter()
+                    .any(|action| matches!(action, WbAction::SwitchPanel(_))),
+                "{key} switched the tab: {actions:?}"
+            );
+            assert_eq!(workbench.panel, PanelId::Recent, "{key}");
+            assert!(
+                !actions
+                    .iter()
+                    .any(|action| matches!(action, WbAction::EditEditor(_))),
+                "{key} moved a caret the reader cannot see: {actions:?}"
+            );
+            assert!(workbench.sidebar_focus, "{key} kept the rail's keys");
+        }
 
-        // …and back the other way, wrapping to 最近 from 最近's neighbour.
-        assert_eq!(
-            workbench.handle(WbEvent::Key("left".into()), &data),
-            vec![WbAction::SwitchPanel(PanelId::Recent)]
-        );
-        assert_eq!(workbench.panel, PanelId::Recent);
-
-        // The keys belong to the focused rail only: from the composer `left`
-        // is still the caret.
+        // From the composer the arrows are the editor's, exactly as before: the
+        // draft is where a reader typing a prompt expects them.
         workbench.sidebar_focus = false;
         let actions = workbench.handle(WbEvent::Key("right".into()), &data);
         assert!(
-            !actions.contains(&WbAction::SwitchPanel(PanelId::Workspaces)),
+            matches!(actions.as_slice(), [WbAction::EditEditor(_)]),
             "{actions:?}"
         );
+        assert!(!actions
+            .iter()
+            .any(|action| matches!(action, WbAction::SwitchPanel(_))));
     }
 
-    /// The shift arrows are the documented way through the rail's tabs: they
-    /// work from anywhere (a hidden rail is shown and takes the keys), they
-    /// wrap, and they land on the same tab the plain arrows reach inside the
-    /// rail. 文件 is not one of them — it is its own session-scoped panel.
+    /// The shift arrows are the *only* way through the rail's tabs: they work
+    /// from anywhere (a hidden rail is shown and takes the keys), they wrap,
+    /// and the plain arrows never reach a tab even with the rail focused — the
+    /// caret in the draft is theirs. 文件 is not one of them — it is its own
+    /// session-scoped panel.
     #[test]
     fn shift_left_and_right_walk_the_two_tabs() {
         let data = demo::chat();
@@ -5531,15 +5565,15 @@ mod tests {
             workbench.handle(WbEvent::Key(previous), &data),
             vec![WbAction::SwitchPanel(PanelId::Workspaces)]
         );
-        // The plain arrows inside the rail reach the same two tabs, so the two
-        // chords agree wherever the keys are.
-        assert_eq!(
-            workbench.handle(WbEvent::Key("right".into()), &data),
-            vec![WbAction::SwitchPanel(PanelId::Recent)]
-        );
+        // The plain arrows are the caret's even here: with the rail focused they
+        // change no tab (the shift arrows above are the whole way through).
+        assert!(workbench
+            .handle(WbEvent::Key("right".into()), &data)
+            .is_empty());
+        assert_eq!(workbench.panel, PanelId::Workspaces);
         assert_eq!(
             workbench.handle(WbEvent::Key("shift+right".into()), &data),
-            vec![WbAction::SwitchPanel(PanelId::Workspaces)]
+            vec![WbAction::SwitchPanel(PanelId::Recent)]
         );
     }
 
@@ -5909,6 +5943,83 @@ mod tests {
         assert!(workbench
             .handle(WbEvent::Key("enter".into()), &empty)
             .is_empty());
+    }
+
+    /// Input that lands in the draft takes the keys back from the rail.
+    ///
+    /// The rail can hold the keys while the prompt is on screen (a click in it,
+    /// or `ctrl+b` until `esc`). Text, a paste and the clipboard chord all still
+    /// reach the draft — they are the reader typing — so `enter` after one of
+    /// them has to send it. Before this, `enter` stayed the rail's and opened
+    /// its selected conversation instead: a prompt with a pasted picture
+    /// "sent" by landing on somebody else's streaming session.
+    #[test]
+    fn input_that_reaches_the_draft_takes_the_keys_back_from_the_rail() {
+        // Text.
+        let data = demo::launchpad();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.sidebar_visible = true;
+        workbench.sidebar_focus = true;
+        let actions = workbench.handle(WbEvent::Key("h".into()), &data);
+        assert!(matches!(actions.as_slice(), [WbAction::EditEditor(_)]));
+        assert!(!workbench.sidebar_focus, "typing is the prompt's");
+        let rail = data.sessions[0].id.clone();
+        let mut typed = data.clone();
+        typed.input.text = "h".into();
+        typed.input.cursor = 1;
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &typed),
+            vec![WbAction::Submit("h".into())],
+            "enter sends the draft, not {rail}"
+        );
+
+        // A bracketed paste.
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.sidebar_visible = true;
+        workbench.sidebar_focus = true;
+        let actions = workbench.handle(WbEvent::Paste("pasted".into()), &data);
+        assert!(matches!(actions.as_slice(), [WbAction::EditEditor(_)]));
+        assert!(!workbench.sidebar_focus, "a paste is the prompt's");
+
+        // The clipboard chord (ctrl+v): the draft reads the clipboard, so the
+        // prompt is where the reader's next key belongs — including a picture.
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.sidebar_visible = true;
+        workbench.sidebar_focus = true;
+        assert_eq!(
+            workbench.handle(WbEvent::Key("ctrl+v".into()), &data),
+            vec![WbAction::PasteClipboard]
+        );
+        assert!(!workbench.sidebar_focus, "the clipboard goes to the draft");
+    }
+
+    /// `escape` hands the keys back from the rail to the prompt.
+    ///
+    /// A rail a reader could only leave with `ctrl+d` (or the mouse) is a trap,
+    /// and every `enter` typed at it in the meantime opened the row under the
+    /// cursor. A search line still answers its own `escape` first — clearing the
+    /// filter keeps the rail, and the next one leaves it.
+    #[test]
+    fn escape_hands_the_keys_back_from_the_rail_to_the_prompt() {
+        let data = demo::launchpad();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
+        assert!(workbench.sidebar_focus);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("escape".into()), &data),
+            vec![WbAction::Redraw]
+        );
+        assert!(!workbench.sidebar_focus);
+        // With a filter in force, the first `escape` only puts the list back.
+        workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        workbench.handle(WbEvent::Key("h".into()), &data);
+        assert!(!workbench.rail.query.is_empty());
+        workbench.handle(WbEvent::Key("escape".into()), &data);
+        assert!(workbench.rail.query.is_empty());
+        assert!(workbench.sidebar_focus, "the filter went, the rail stays");
+        workbench.handle(WbEvent::Key("escape".into()), &data);
+        assert!(!workbench.sidebar_focus);
     }
 
     /// On the launchpad `tab` walks the prompt and the parameter chips, `enter`

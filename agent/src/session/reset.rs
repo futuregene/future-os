@@ -696,16 +696,24 @@ mod tests;
 
 #[cfg(test)]
 #[allow(clippy::type_complexity)]
-static RESET_RACE_HOOK: parking_lot::Mutex<Option<(String, Box<dyn Fn(&super::Manager) + Send>)>> =
-    parking_lot::Mutex::new(None);
+static RESET_RACE_HOOKS: std::sync::LazyLock<
+    parking_lot::Mutex<std::collections::HashMap<String, Box<dyn Fn(&super::Manager) + Send>>>,
+> = std::sync::LazyLock::new(Default::default);
 
 /// Test-only hook fired by `reset_history` in the window between the digest it
 /// captured and the rewrite transaction that re-reads the history — the one
 /// place a concurrent writer can slip in. It makes that race deterministic
 /// instead of hoping for one, so the refusal path is tested rather than assumed.
+///
+/// Keyed by session: four tests register one, and a single slot let whichever ran
+/// last replace the others' registration. The reset then found no hook for its
+/// own id and succeeded where the test expected `history_changed` — a failure
+/// that showed up only at high test parallelism (measured 2026-10-29: red with 32
+/// threads, green with 8). The id was always meant to gate the hook; now the
+/// storage agrees.
 #[cfg(test)]
 pub(crate) fn set_reset_race_hook(session: &str, hook: Box<dyn Fn(&super::Manager) + Send>) {
-    *RESET_RACE_HOOK.lock() = Some((session.to_string(), hook));
+    RESET_RACE_HOOKS.lock().insert(session.to_string(), hook);
 }
 
 /// Result of one reset call: the plan that was computed (and, when applied, the
@@ -758,12 +766,13 @@ impl super::Manager {
         };
         #[cfg(test)]
         {
-            // Id-gated so unrelated resets never consume the hook.
-            let mut slot = RESET_RACE_HOOK.lock();
-            if matches!(slot.as_ref(), Some((sid, _)) if sid == id) {
-                if let Some((_, hook)) = slot.take() {
-                    hook(self);
-                }
+            // Id-gated so unrelated resets never consume the hook, and taken
+            // out of the map before it runs: the hook writes through the same
+            // manager, and holding the registry across that work would
+            // serialize every other test's reset.
+            let hook = RESET_RACE_HOOKS.lock().remove(id);
+            if let Some(hook) = hook {
+                hook(self);
             }
         }
         let backup = self.write_reset_backup(id, selectors, &planned.plan, &raw)?;

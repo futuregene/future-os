@@ -134,7 +134,9 @@ desktop's rail does: 置顶 (the workspaces pinned with `p`), then 工作区 (on
 heading per workspace, its conversations beneath), then 对话会话 (conversations
 that belong to no workspace — the app's own scratch directories). Usage figures
 live on the status bar, so no panel repeats them; skills are the palette's. With
-the rail focused, `←`/`→` move between the two tabs.
+the rail focused, the two tabs are still `shift+←`/`shift+→` and nothing else: a
+plain `←`/`→` is the draft caret's from every state, because the prompt stays on
+screen (and can hold the keys' next keystroke) while the rail is up.
 
 Both tabs list the same conversations, so **one search narrows both**: `/` while
 the rail has the keys opens the line under its tabs (`/ 搜索会话` while it is
@@ -313,7 +315,7 @@ click on the rail's tab strip are the doors to the same places.
 | Key | Action |
 |---|---|
 | `tab` / `shift+tab` | Conversation: step through everything that opens, in reading order — its **links and pictures** and the transcript's own **rows** (a folded reply, a burst of work, a tool call, a `▸ thinking` marker). The stop under the cursor is drawn in reverse video, and the transcript scrolls to it. `enter` opens it: a link goes to the browser / switches conversation / opens the preview box (see below); a **row** opens what it hides — a folded reply replays in place, a burst reveals the calls it stood for, a tool call shows its body, a reasoning marker shows its text — and `enter` again closes it. Launchpad: move between the prompt and the parameter chips (`enter` cycles the chip under the cursor; `escape` or typing goes back to the prompt). The rail has its own chord (`ctrl+d`) |
-| `←` `→` | Move the draft cursor; in a focused rail, switch to the neighbouring tab (最近 ↔ 工作区) — the same two `shift+←`/`shift+→` step through from anywhere |
+| `←` `→` | Move the draft cursor — in every state, a focused rail included: the rail does not answer them, so a reader standing in the prompt never watches 最近 ↔ 工作区 switch under a caret that should have moved. The tabs are `shift+←`/`shift+→` |
 | `↑` `↓` | Move through draft lines / submission history; in a focused rail, move the list cursor (headings are skipped). `enter` opens the row under it; switching the conversation itself needs no `enter` — that is `shift+↑`/`shift+↓` |
 | `shift+←` / `shift+→` | The rail's two tabs (最近 / 工作区), wherever the keys are: the rail is shown and takes the keys, and its cursor lands on the conversation on screen. Wraps |
 | `shift+↑` / `shift+↓` | Switch to the previous / next conversation in the rail's order, wherever the keys are: the rail's cursor follows every step, and the transcript opens the one you stop on (80 ms after the last repeat) rather than each one you pass. A conversation you have already read comes back from memory with no wait at all |
@@ -326,7 +328,6 @@ click on the rail's tab strip are the doors to the same places.
 | `/queue` | List queued prompts — the ones sent while a run was in flight; `x` cancels, `r` / `enter` cancels and recalls into the draft (`ctrl+x` stops the active run, not the queue) |
 | `ctrl+g` or `[ctrl+g] git` in the header | The repository browser: 提交 / 引用 / 改动 / 暂存 tabs, a lane-coloured graph log across every branch, and the selected row's patch. `1`–`4` pick a tab, `tab` switches list/detail, `PgUp`/`PgDn` page the patch, `y` copies the row |
 | `ctrl+o` | Model picker (`/model`): every model the agent offers, grouped by provider, with the reasoning slider on its first row |
-| `shift+left` / `shift+right` | The rail's two tabs, one step at a time: 最近 (conversations by refresh time) and 工作区 (filed by directory). The rail takes the keys and its cursor lands on the conversation on screen; clicking a tab is the same switch |
 | `ctrl+f` or `/files` | The **files panel**: this conversation's workspace as a tree, in a box over the frame — the same session scope as `/git`. `↑`/`↓` walk it, `⏎`/`→` open, `⌫`/`←` go up a level, `r` re-reads the directory, `esc` closes. The header's `[ctrl+f] 文件` button is the pointer's door to it, and `[ctrl+g] git` sits beside it |
 | `ctrl+v` | Read the clipboard: an image becomes a draft attachment, text is pasted. `/paste` does the same for terminals that bind the key themselves |
 | `/preview` | Preview the newest image attached to the draft (no chord: the fifteen go to the actions pressed while working) |
@@ -351,7 +352,7 @@ click on the rail's tab strip are the doors to the same places.
 
 | Mouse | Action |
 |---|---|
-| Click a sidebar tab | Switch panel (`←`/`→` do the same while the rail has the keys) |
+| Click a sidebar tab | Switch panel (`shift+←`/`shift+→` from the keyboard; a plain `←`/`→` is always the draft caret's) |
 | Click the rail's `›` edge (or the `‹` it leaves behind) | Hide the rail / bring it back. `shift+←`/`shift+→` do the same from the keyboard |
 | Click a session row | Open that conversation (a workspace heading only takes the keys) |
 | Click a tree row | A file previews, a directory opens — the same two verbs `enter` runs |
