@@ -288,7 +288,6 @@ pub enum Key {
     PanelEmptyGoalTodo,
     PanelEmptyJobs,
     PanelEmptySessions,
-    PanelEmptySearch,
     PanelEmptySkills,
     // ── the picker overlay ────────────────────────────────────────────
     PickerTitleModel,
@@ -327,9 +326,6 @@ pub enum Key {
     ModeAutoDesc,
     ModeOffDesc,
     RailHint,
-    /// The search line's placeholder, and the keys it answers while it is open.
-    RailSearch,
-    RailSearchHint,
     // ── the files panel (its own overlay, not a rail tab) ──────────
     FilesHint,
     FilesNoWorkspace,
@@ -648,7 +644,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         PanelEmptyGoalTodo => ("这个目标还没有待办", "this goal has no todos yet"),
         PanelEmptyJobs => ("没有定时任务", "no scheduled jobs"),
         PanelEmptySessions => ("没有会话", "no sessions"),
-        PanelEmptySearch => ("没有匹配的会话", "no matching sessions"),
         PanelEmptySkills => ("没有技能", "no skills"),
 
         PickerTitleModel => ("模型", "Models"),
@@ -745,11 +740,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         RailHint => (
             "shift+←→ 页签 · shift+↑↓ 切换会话",
             "shift+←→ tabs · shift+↑↓ switches session",
-        ),
-        RailSearch => ("搜索会话", "Search sessions"),
-        RailSearchHint => (
-            "输入筛选 · ⏎ 保留 · esc 清除",
-            "type to filter · enter keeps · esc clears",
         ),
         FilesHint => (
             "↑↓ 选择 · ⏎ 打开 · ⌫ 上一层 · r 刷新 · esc 关闭",
@@ -1352,7 +1342,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 325] = {
+    const ALL_KEYS: [Key; 322] = {
         use Key::*;
         [
             TabTodo,
@@ -1386,7 +1376,6 @@ mod tests {
             PanelEmptyGoalTodo,
             PanelEmptyJobs,
             PanelEmptySessions,
-            PanelEmptySearch,
             PanelEmptySkills,
             PickerTitleModel,
             PickerTitleTheme,
@@ -1424,8 +1413,6 @@ mod tests {
             ModeAutoDesc,
             ModeOffDesc,
             RailHint,
-            RailSearch,
-            RailSearchHint,
             FilesHint,
             FilesNoWorkspace,
             LangSystem,
