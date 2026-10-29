@@ -1353,12 +1353,12 @@ fn sidebar_rows(
             )
         })
         .collect();
-    lines.push(widgets::tab_strip(
-        palette,
-        &tabs,
-        workbench.sidebar_focus,
-        columns,
-    ));
+    // The rail's collapse button owns its outer edge: on the left that is
+    // column 0, so the strip starts one cell in — a tab painted over the button
+    // would take the click that hides the rail.
+    let inset = usize::from(workbench.sidebar_position == preferences::SidebarPosition::Left);
+    let strip = widgets::tab_strip(palette, &tabs, columns.saturating_sub(inset));
+    lines.push(fit(&format!("{}{strip}", " ".repeat(inset)), columns));
     // The rail's own collapse button, on the edge it will leave from: one column
     // at the outer edge, in the same place whether the rail is here or gone (see
     // the spine `compose` paints). A reader who aims at the arrow twice — once
@@ -1382,7 +1382,7 @@ fn sidebar_rows(
         );
     }
     // Each tab registers its own click region; tab labels are ` label ` wide.
-    let mut x: u16 = if workbench.sidebar_focus { 1 } else { 0 };
+    let mut x: u16 = inset as u16;
     for panel in PanelId::TABS {
         let tab_width = width(panel.label(workbench.lang)) as u16 + 2;
         workbench.hit_map().push(
@@ -1391,13 +1391,11 @@ fn sidebar_rows(
         );
         x = x.saturating_add(tab_width + 1);
     }
-    // A focused rail says which keys work from here: `shift+←→` the tabs,
-    // `shift+↑↓` the conversations (the chat follows the cursor), because `↑↓`
-    // alone move this list's cursor and `⏎` only opens what it stands on. A
-    // reader who guessed wrong learns the chords here; it costs the list one
-    // row and saves the guesswork, so it is only shown while the rail actually
-    // owns the keys.
-    let footer = usize::from(workbench.sidebar_focus && area.h >= 4);
+    // The rail says which keys work on it. Every one of them lives behind
+    // `shift`: the rail never holds the keyboard, so `↑↓` are the transcript's
+    // and a reader who presses them here scrolls the conversation, not this
+    // list. It costs the list one row and saves that guesswork.
+    let footer = usize::from(area.h >= 4);
     let content = Rect::new(area.x, area.y + 1, area.w, area.h - 1 - footer as u16);
     let index = workbench.panel.index();
     let view = panels::PanelView {
@@ -1422,8 +1420,7 @@ fn sidebar_rows(
     );
     lines.extend(body);
     if footer == 1 {
-        let hint = fit(t(lang, Key::RailHint), columns);
-        lines.push(fit(&palette.dim(&hint), columns));
+        lines.push(rail_hint(lang, palette, columns));
     }
     lines.truncate(area.h as usize);
     // A rail row carries no background of its own, the same as the chat beside
@@ -1541,6 +1538,30 @@ fn status_row(
     let left = fit(&left, columns.saturating_sub(right_width + 1));
     let pad = columns.saturating_sub(width(&left) + right_width);
     vec![fit(&format!("{left}{}{right}", " ".repeat(pad)), columns)]
+}
+
+/// The rail's own key hints: whole parts, dropped from the tail when the rail is
+/// narrower than they are.
+///
+/// The rail is the one band the reader resizes, so its hint row has to survive a
+/// drag: a chord cut in half (`shift+pgU`) is not a hint, and a rail 24 columns
+/// wide cannot hold three of them. What survives is the front of the list — the
+/// step keys first, because they are the ones a reader who just pressed `↑`
+/// needs.
+fn rail_hint(lang: Language, palette: &Palette, columns: usize) -> String {
+    let parts = [
+        t(lang, Key::RailHintStep),
+        t(lang, Key::RailHintPage),
+        t(lang, Key::RailHintTabs),
+    ];
+    let mut keep = parts.len();
+    loop {
+        let row = format!(" {}", parts[..keep].join(" · "));
+        if width(&row) <= columns || keep == 0 {
+            return fit(&palette.dim(&row), columns);
+        }
+        keep -= 1;
+    }
 }
 
 /// The one-line key hints, dropped **whole** from the tail when the terminal is

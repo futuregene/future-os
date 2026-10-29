@@ -1013,6 +1013,19 @@ async fn quit(
                     toggle_mouse(live, terminal, workbench, settings, settings_path);
                     continue;
                 }
+                // Pinning is the rail's verb and the app owns the result: `p`
+                // is a letter in the draft, so `/pin` is the door, and its
+                // action (`SetWorkspacePinned`) has to reach the driver the
+                // same way the chord's did.
+                "/pin" => {
+                    let actions = workbench.toggle_pin_selected(&live.data(frame));
+                    for action in actions {
+                        if matches!(live.apply(action).await, Outcome::Quit) {
+                            return Ok(true);
+                        }
+                    }
+                    continue;
+                }
                 _ => {}
             }
             if let Some(branch) = command.trim().strip_prefix("/worktree new ") {

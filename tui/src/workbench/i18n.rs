@@ -328,7 +328,9 @@ pub enum Key {
     ModeSandboxDesc,
     ModeAutoDesc,
     ModeOffDesc,
-    RailHint,
+    RailHintStep,
+    RailHintPage,
+    RailHintTabs,
     // ── the files panel (its own overlay, not a rail tab) ──────────
     FilesHint,
     FilesNoWorkspace,
@@ -463,6 +465,7 @@ pub enum Key {
     CmdRefresh,
     CmdMouse,
     CmdDelete,
+    CmdPin,
     DeleteTitle,
     DeleteBody,
     DeleteWhere,
@@ -743,10 +746,12 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         HintHelp => ("帮助", "Help"),
         HintNewChat => ("新会话", "New Chat"),
         HintSettings => ("偏好设置", "Preferences"),
-        RailHint => (
-            "shift+←→ 页签 · shift+↑↓ 切换会话",
-            "shift+←→ tabs · shift+↑↓ switches session",
-        ),
+        // The rail's key hints, as parts: the rail is narrow and resizable, so
+        // the painter drops whole parts from the tail rather than cutting one
+        // in half (see `screen::rail_hint`).
+        RailHintStep => ("shift+↑↓ 选择", "shift+↑↓ select"),
+        RailHintPage => ("shift+pg↑↓ 翻页", "shift+pg↑↓ page"),
+        RailHintTabs => ("ctrl+1/2 页签 · shift+←→ 轮换", "ctrl+1/2 tabs · shift+←→ cycles"),
         FilesHint => (
             "↑↓ 选择 · ⏎ 打开 · ⌫ 上一层 · r 刷新 · esc 关闭",
             "↑↓ select · enter opens · ⌫ up a level · r refreshes · esc closes",
@@ -904,6 +909,10 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ForkEmptyId => ("fork 未返回会话 id", "Fork returned no session id"),
         CmdQueue => ("查看、取消或取回排队消息", "List, cancel or recall queued prompts"),
         CmdDelete => ("删除这条会话（先确认）", "Delete this conversation (asks first)"),
+        CmdPin => (
+            "置顶 / 取消置顶侧栏光标所在会话的工作区",
+            "Pin or unpin the workspace of the row the rail's cursor is on",
+        ),
         CmdCopy => ("复制最后一条回答", "Copy the last assistant answer"),
         CmdPaste => (
             "粘贴剪贴板（图片会变成附件）",
@@ -1348,7 +1357,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 325] = {
+    const ALL_KEYS: [Key; 328] = {
         use Key::*;
         [
             TabTodo,
@@ -1418,7 +1427,9 @@ mod tests {
             ModeSandboxDesc,
             ModeAutoDesc,
             ModeOffDesc,
-            RailHint,
+            RailHintStep,
+            RailHintPage,
+            RailHintTabs,
             FilesHint,
             FilesNoWorkspace,
             LangSystem,
@@ -1537,6 +1548,7 @@ mod tests {
             ForkEmptyId,
             CmdQueue,
             CmdDelete,
+            CmdPin,
             CmdCopy,
             CmdPaste,
             CmdPreview,

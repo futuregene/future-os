@@ -296,7 +296,7 @@ impl Action {
     /// absent on a compact one.
     ///
     /// The letters are not free to pick, and the exclusions are why the map
-    /// stops at fifteen:
+    /// stops where it does:
     ///
     /// * `ctrl+h` / `ctrl+i` / `ctrl+j` / `ctrl+m` never arrive as themselves —
     ///   a terminal sends Backspace, Tab, `\n` and Enter for them (see
@@ -322,15 +322,15 @@ impl Action {
     /// `/preview`, `/lang`, `/refresh`…) and a visible control instead: `""` is
     /// that "no default", and [`Keybindings::action`] never resolves it.
     ///
-    /// The fifteen go to what is pressed *while working*: stopping the run
-    /// under them, the commands, the sessions, the three answers that decide
-    /// what runs next (model, effort, approval), the two places a reader keeps
-    /// going back to (the workspace list and the files of this session's
-    /// workspace), the rail, the repository, and leaving. Switching the interface
-    /// language, refreshing the view, the queue of prompts sent mid-run, and
-    /// deleting a conversation are things a reader does once in a while, so they
-    /// keep commands instead of taking a letter from something pressed every
-    /// minute.
+    /// The chords go to what is pressed *while working*: stopping the run under
+    /// them, the commands, the sessions, the three answers that decide what runs
+    /// next (model, effort, approval), the places a reader keeps going back to
+    /// (the rail and its two tabs, the workspace list, the files of this
+    /// session's workspace), the repository, and leaving. Switching the
+    /// interface language, refreshing the view, the queue of prompts sent
+    /// mid-run, pinning a workspace and deleting a conversation are things a
+    /// reader does once in a while, so they keep commands instead of taking a
+    /// letter from something pressed every minute.
     pub fn default_key(self) -> &'static str {
         match self {
             // `x` leaves: the interrupt chord is spoken for (see above), and a
@@ -387,7 +387,13 @@ impl Action {
             // a diagnostic the status bar already counts, not something pressed
             // while working.
             Self::Queue => "",
-            Self::PanelRecent | Self::PanelWorkspaces => "",
+            // The rail's two tabs, named by number: `1`/`2` are the tabs in the
+            // order the strip paints them. A digit chord needs a terminal that
+            // reports modifiers (the kitty protocol or `modifyOtherKeys`), the
+            // same bargain `ctrl+j` makes; `shift+←`/`shift+→` walk the same two
+            // tabs and work everywhere.
+            Self::PanelRecent => "ctrl+1",
+            Self::PanelWorkspaces => "ctrl+2",
             // Arrows, not chords: stepping is navigation, and these four are
             // the only defaults that are not `ctrl`. `ctrl+↑/↓` is deliberately
             // *not* a step: macOS gives it to Mission Control (the key never

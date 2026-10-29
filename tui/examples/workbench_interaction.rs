@@ -142,10 +142,7 @@ fn fixture(name: &str) -> (WorkbenchData, fn(&mut Workbench, &WorkbenchData)) {
         "workspaces" => (demo::data(demo::Scenario::Workspaces), noop),
         "panel-recent" => (chat(), |wb, _| wb.panel = PanelId::Recent),
         "panel-workspaces" => (chat(), |wb, _| wb.panel = PanelId::Workspaces),
-        "panel-files" => (chat(), |wb, _| {
-            wb.panel = PanelId::Files;
-            wb.sidebar_focus = true;
-        }),
+        "panel-files" => (chat(), |wb, _| wb.panel = PanelId::Files),
         "preview-image" => (
             {
                 let mut data = chat();
@@ -666,10 +663,9 @@ fn describe(actions: &[WbAction]) -> String {
 /// The state a click could have changed, as one comparable string.
 fn digest(wb: &Workbench) -> String {
     format!(
-        "{:?}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        "{:?}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
         wb.overlay,
         wb.panel,
-        wb.sidebar_focus,
         wb.sidebar_visible,
         wb.sidebar_w,
         wb.workflow_index,
