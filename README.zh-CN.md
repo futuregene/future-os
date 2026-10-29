@@ -144,50 +144,29 @@ future auth login
 
 ### 启动主机，再启动终端
 
-终端与 CLI 客户端都是轻量 gRPC 客户端，默认使用**每用户本地 IPC**（macOS/Linux 为 Unix socket，Windows 为仅当前用户可访问的命名管道）。端点始终位于实例的 FutureOS home 之下：默认 `~/.future/run/agent.sock`，用 `FUTURE_HOME=DIR` 指定自己的 home 时是 `<FUTURE_HOME>/run/agent.sock`——见[多实例运行](docs/guide/directory-layout.zh-CN.md#多实例运行future_home)。若 FutureOS home 位于无法承载 Unix socket 的文件系统（如 NFS），请将 `FUTURE_HOME` 指向本地文件系统上的目录。
-
-**Agent 由它的宿主负责，不由终端负责。** 先启动一个宿主——它会持有并维持 Agent：
+**Agent 由它的宿主负责，不由终端负责。** 先启动宿主，然后可以同时开任意多个终端连它：
 
 ```bash
 future host       # 把本机作为 FutureOS 主机：本地运行、定时任务，以及已配对的远程桌面
+future tui        # 终端界面——连接上面那个宿主
 ```
 
-如果要从手机或另一台桌面接入这台机器，请在**上面那条命令之前**登录，并把设备配对好——否则 `future host` 只提供本地能力：
+<p align="center">
+  <img src="docs/tui-screenshot.zh-CN.png" alt="FutureOS 终端界面——按工作区分组的会话列表，一轮回复的过程展开成树，正文里有代码块与表格" width="820">
+</p>
+
+### 远程接入
+
+手机或另一台桌面可以驱动这台机器上的 Agent。配对是唯一需要账号的一步，而且只在官方中继上需要：
 
 ```bash
 future auth login           # 用来配对设备的 FutureOS 账号
 future remote devices add   # 打印邀请，供手机或另一台桌面输入
 ```
 
-这次登录是给**官方中继**用的。如果你改用自建中继（`--relay URL`），整条路径上没有账号，`future auth login` 也就不需要了——见[自建中继](docs/guide/self-hosted-relay.zh-CN.md)。
+手机与主机之间的通道是**端到端加密**的（Noise 握手 + ChaCha20-Poly1305 记录），中继上只经过密文。没有账号时宿主照常提供全部本地能力，只是已配对的远程桌面保持关闭——这次登录也可以稍后再做。
 
-`future host` 做本地工作**不需要先登录**：没有账号时它用你自己的模型 provider 提供全部本地能力，上面那些已配对的远程桌面会一直保持关闭，直到执行过 `future auth login`——这一步也可以稍后在另一个终端做，主机会无需重启就接管；`--relay URL` 则完全绕开 Future 平台——直接自建中继，见[自建中继](docs/guide/self-hosted-relay.zh-CN.md)。桌面 GUI 与主机模式先尝试连接兼容的外部 Agent；默认端点上没有服务且其实例锁空闲时，它们在自己的进程内运行完整 Agent；不兼容或锁被占用/不可用时直接报错，不会另起第二个 Agent。
-
-退出内置 Agent 的 Desktop 会停止所有客户端的任务，包括 CLI/TUI 对话；连接外部 Agent 时只取消本 Desktop 提交的运行，外部服务保持存活。详见 [Desktop Agent 生命周期与恢复](docs/guide/desktop-agent.zh-CN.md)。
-
-然后用同一个 `future` 命令启动终端界面：
-
-```bash
-future tui        # 终端界面
-```
-
-TUI **只连接**正在提供服务的 Agent，自己从不启动或重启 Agent。没有可达的 Agent 时它会说明这一点并给出该执行的命令（`future host`、桌面应用或 `future agent`）；若它连上的 Agent 之后消失，它只会继续重连并显示该状态，而不会另起一个。因此**可以同时开任意多个终端**连接同一个宿主——关掉其中一个不会影响 Agent 和其它终端。
-
-正式发布的构建会在 TUI 启动后于后台检查一次更新：发现新版本时仅在本地提示
-并给出官方安装脚本链接，不会自动安装。release 构建检查 release 通道，
-test/nightly 构建检查 nightly；本地/源码构建跳过检查。网络失败静默忽略；
-`future tui --offline` 关闭该检查，非交互命令从不执行检查。
-
-<p align="center">
-  <img src="docs/tui-screenshot.zh-CN.png" alt="FutureOS 终端界面——按工作区分组的会话列表，一轮回复的过程展开成树，正文里有代码块与表格" width="820">
-</p>
-
-> `future <cmd>` 是所有 Rust 组件的统一入口：`future agent`、`future tui`、
-> `future channel`、`future goal`。每个都运行与同名独立二进制完全相同的代码
-> （`future-*` 二进制仍是构建目标，可用 `cargo build -p future-tui` 等构建，
-> 但已不再默认安装）。
->
-> 若连接失败，检查 Agent 发现、兼容性和实例所有权——见 [故障排查](#故障排查)。
+**自建中继。** `--relay URL` 可以把 Future 平台整条路径拿掉：没有账号，协议、配对与加密都不变（[自建中继](docs/guide/self-hosted-relay.zh-CN.md)）。把宿主跑在服务器上就是同一条命令走 SSH，无需窗口或 WebView（[主机模式](docs/guide/desktop-host.zh-CN.md)）；配对设备能做什么见[远程](docs/wiki/zh/Remote.md)。
 
 ## 故障排查
 

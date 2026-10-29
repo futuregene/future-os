@@ -146,82 +146,39 @@ Many self-hosted endpoints accept only some thinking levels (often just `low`/`h
 
 ### Run the Agent, then the terminals
 
-The terminal and CLI clients are thin gRPC clients. They connect over
-**per-user local IPC** by default (a Unix-domain socket on macOS/Linux,
-a current-user-only named pipe on Windows). The endpoint always lives under the
-instance's FutureOS home: `~/.future/run/agent.sock` by default, or
-`<FUTURE_HOME>/run/agent.sock` for an instance started with its own home — see
-[isolated instances](docs/guide/directory-layout.md#running-several-isolated-instances-future_home).
-If the FutureOS home sits on a filesystem that cannot host Unix sockets (e.g.
-NFS), point `FUTURE_HOME` at a directory on a local filesystem.
-
-**The Agent belongs to its host, not to the terminal.** Start a host first — it
-owns the Agent and keeps it running:
+**The Agent belongs to its host, not to the terminal.** Start the host, then open
+as many terminals as you like against it:
 
 ```bash
 future host      # this machine as a FutureOS host: local runs, tasks, and paired remote desktops
+future tui       # terminal UI — attaches to that host
 ```
 
-If a phone or another desktop should reach this machine, sign in **before** that
-command and pair the device — otherwise `future host` serves local work only:
+<p align="center">
+  <img src="docs/tui-screenshot.png" alt="FutureOS terminal UI — session rail grouped by workspace, a reply's process opened as a tree, markdown with a code block and a table" width="820">
+</p>
+
+### Remote access
+
+A phone or another desktop can drive this machine's agent. Pairing it is the one
+step that needs an account, and only on the official relay:
 
 ```bash
 future auth login           # the FutureOS account that pairs your devices
 future remote devices add   # print the invitation a phone or another desktop types in
 ```
 
-That sign-in is for the **official relay**. If you run your own relay instead
-(`--relay URL`), no account is involved and `future auth login` is not needed —
-see [self-hosted relay](docs/guide/self-hosted-relay.md).
+The phone↔host channel is **end-to-end encrypted** — a Noise handshake with
+ChaCha20-Poly1305 records — so the relay only carries ciphertext. Without an
+account the host still serves everything local; the paired desktops simply stay
+closed until that sign-in exists, which can also happen later.
 
-`future host` needs **no sign-in** for local work: without an account it serves
-everything locally with your own model providers. The paired remote desktops
-above stay closed until `future auth login` has run — it may also happen later,
-in another terminal, and the host picks the account up without a restart.
-`--relay URL` skips the Future platform entirely; run your own relay instead
-([self-hosted relay](docs/guide/self-hosted-relay.md)).
-
-Desktop GUI and host mode first attach to a compatible external Agent; when the
-default endpoint is absent and its instance lock is free, they run the complete
-Agent in their own process. Incompatible or locked/unavailable services produce
-an error without starting a second Agent.
-
-Quitting an embedded Desktop stops work from every connected client, including
-CLI/TUI conversations. An attached external Agent stays running; Desktop cancels
-its own submitted runs. See [Desktop Agent lifecycle and recovery](docs/guide/desktop-agent.md).
-
-Then launch the terminal UI from the same `future` command:
-
-```bash
-future tui       # terminal UI
-```
-
-The TUI only ever **attaches** to a serving Agent: it never starts or restarts
-one. With no Agent reachable it says so and names the command to run
-(`future host`, the desktop app, or `future agent`), and if the Agent it was
-attached to goes away it keeps reconnecting and showing that state instead of
-bringing a replacement up. So you can open **as many terminals as you like**
-against one host — and closing one leaves the Agent and the other terminals
-untouched.
-
-Published builds check for updates once in the background after TUI startup.
-A newer version is shown as a local notice with the official installer link;
-nothing is installed automatically. Release builds check the release channel,
-and test/nightly builds check nightly. Local/source builds skip the check.
-Network failures are silent; `future tui --offline` disables the check, and
-non-interactive commands never perform it.
-
-<p align="center">
-  <img src="docs/tui-screenshot.png" alt="FutureOS terminal UI — session rail grouped by workspace, a reply's process opened as a tree, markdown with a code block and a table" width="820">
-</p>
-
-> `future <cmd>` is the unified entry point for every Rust component: `future agent`,
-> `future tui`, `future channel`, `future goal`. Each runs the same code as the
-> standalone binary of the same name (the `future-*` binaries still exist as
-> build targets — `cargo build -p future-tui` etc. — but are no longer
-> installed by default).
->
-> If connection fails, check Agent discovery, compatibility and instance ownership — see [Troubleshooting](#troubleshooting).
+**Your own relay.** `--relay URL` takes the Future platform out of the path
+entirely: no account, same protocol, same pairing, same encryption
+([self-hosted relay](docs/guide/self-hosted-relay.md)). Running the host on a
+server is the same command over SSH, with no window or WebView
+([host mode](docs/guide/desktop-host.md)); what a paired device can do is in
+[remote](docs/wiki/en/Remote.md).
 
 ## Troubleshooting
 
