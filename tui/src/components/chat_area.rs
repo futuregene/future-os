@@ -2606,16 +2606,13 @@ impl ChatArea {
         let fold = self.reply_folds.get(&msg_idx).copied();
         let tree = self.opened_trees.get(&msg_idx).copied();
         // An opened fold draws its header first — the row that folds it away
-        // again — with a row of air under it, and hangs every row it stands for
-        // beneath that: the tree is a block of its own, not the title's next
-        // line.
+        // again — then a gap that carries the rail on down, and hangs every row
+        // it stands for beneath that: the tree is a block of its own, not the
+        // title's next line.
         if let Some(tree) = tree {
             if let Some(summary) = tree.banner {
                 self.push_fold_header(msg_idx, summary, tree, origin);
-                self.rendered_lines.push(RenderedLine {
-                    text: String::new(),
-                    dim: true,
-                });
+                self.push_rail_row();
             }
         }
         // The rows below the header are laid out one gutter narrower and hung
@@ -2721,14 +2718,21 @@ impl ChatArea {
             _ => false,
         };
         if same_tree {
-            let text = self.rail().trim_end().to_string();
-            self.rendered_lines.push(RenderedLine { text, dim: true });
+            self.push_rail_row();
         } else {
             self.rendered_lines.push(RenderedLine {
                 text: String::new(),
                 dim: true,
             });
         }
+    }
+
+    /// A row that carries the tree's rail and nothing else: the spine keeps
+    /// running where the transcript has a gap (between two rows of one fold, and
+    /// under its header).
+    fn push_rail_row(&mut self) {
+        let text = self.rail().trim_end().to_string();
+        self.rendered_lines.push(RenderedLine { text, dim: true });
     }
 
     /// Record that the row just pushed is the one `action` opens, spanning the
@@ -4393,8 +4397,8 @@ mod tests {
             .position(|row| row.contains("off-by-one"))
             .unwrap();
         assert!(
-            rows[header + 1].trim().is_empty(),
-            "a row of air separates the header from its tree: {rows:?}"
+            rows[header + 1].trim() == TREE_RAIL,
+            "a gap under the header carries the rail on down (and nothing else): {rows:?}"
         );
         assert!(
             rows[header + 2..answer - 1]
