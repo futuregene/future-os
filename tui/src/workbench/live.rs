@@ -3347,7 +3347,13 @@ impl SessionList {
     /// Replace the list, answering whether anything changed — an unchanged list
     /// keeps its version, so the rail is not re-filed (nor repainted) for a poll
     /// that read the same rows.
+    ///
+    /// The listing is filtered on the way in (`is_conversation`), so every
+    /// reader of the list — the rail, the 工作区 filing, `--continue`, the row a
+    /// delete slides into place — walks conversations rather than session
+    /// records.
     fn replace(&mut self, rows: Vec<SessionSummary>) -> bool {
+        let rows: Vec<SessionSummary> = rows.into_iter().filter(is_conversation).collect();
         if rows == self.rows {
             return false;
         }
@@ -3674,6 +3680,26 @@ fn display_name(session: &SessionSummary) -> String {
         .or_else(|| session.first_message.clone())
         .filter(|name| !name.trim().is_empty())
         .unwrap_or_else(|| session.id.chars().take(8).collect())
+}
+
+/// Whether a listed session is a conversation the rail paints.
+///
+/// The agent lists a session from the moment a client creates it, before the
+/// first prompt arrives, so a session opened and never spoken in stays behind as
+/// a record with no entries, and `queryCount: 0` is how the agent says so. The
+/// desktop's rail never shows those — its importer waits for the first message
+/// (`host/src/agent_bridge/import.rs`, `has_message`) — and this rail is the same
+/// view, so the row is dropped here too. Left in, it has neither a name nor a
+/// prompt to be called by, and [`display_name`] falls back to the head of its
+/// id: the agent spells ids `YYYYMMDD-HHMMSS-<hash>`, so the rail ends up showing
+/// `20261019`, a date that is not a title, on a conversation that was never
+/// spoken in.
+///
+/// Only a count the agent actually sent decides. A peer that predates the field
+/// omits it, and an unknown count is not an empty session: hiding on it would
+/// drop a whole history from the rail because a client talked to an older agent.
+fn is_conversation(session: &SessionSummary) -> bool {
+    session.query_count != Some(0)
 }
 
 /// `~/future-os` — the row's workspace column has room for the home-relative
@@ -4678,6 +4704,10 @@ mod tests {
             parent_session_id: None,
             is_streaming: None,
             first_message: None,
+            // The field a peer may omit: these fixtures stand for rows an agent
+            // listed without the count, which the rail keeps (see
+            // `is_conversation`).
+            query_count: None,
         }
     }
 
@@ -5206,6 +5236,73 @@ mod tests {
         assert_eq!(
             display_name(&row("0123456789abcdef", None, "/tmp")),
             "01234567"
+        );
+    }
+
+    /// A session the agent lists before its first prompt — opened, never spoken
+    /// in — is not a conversation, and the rail must not paint it.
+    ///
+    /// Left in, it has no name and no prompt to be called by, so the title falls
+    /// back to the head of its id; ids are spelled `YYYYMMDD-HHMMSS-<hash>`, and
+    /// the rail showed `20261019` for a conversation nobody ever had. The desktop
+    /// never listed these (its importer waits for the first message), so dropping
+    /// the row is also what makes the two surfaces agree.
+    #[test]
+    fn a_session_with_no_message_never_reaches_the_rail() {
+        let mut empty = row("20261019-211257-845dff47", None, "/private/tmp");
+        empty.query_count = Some(0);
+        let mut spoken = row("20261019-171039-1f02dedd", None, "/private/tmp");
+        spoken.first_message = Some("why does the rail show a date".into());
+        spoken.query_count = Some(2);
+        let mut named = row("s-named", Some("会话总管"), "/work/alpha");
+        named.query_count = Some(1);
+
+        let mut list = SessionList::default();
+        assert!(list.replace(vec![empty, spoken, named]));
+        let ids: Vec<&str> = list.iter().map(|session| session.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["20261019-171039-1f02dedd", "s-named"],
+            "the session that was never spoken in is dropped"
+        );
+        // What the rail paints carries no id head: the fallback is still there
+        // for a row that has no title yet, but no such row survives the filter.
+        let titles: Vec<String> = list.iter().map(display_name).collect();
+        assert_eq!(
+            titles,
+            ["why does the rail show a date", "会话总管"],
+            "no date-headed row is left to paint"
+        );
+
+        // A session given a name but never spoken in is no conversation either:
+        // the agent lists it, the desktop never imports it, and opening it shows
+        // an empty transcript.
+        let mut labelled = row("s-labelled", Some("hand-named"), "/work/alpha");
+        labelled.query_count = Some(0);
+        assert!(list.replace(vec![labelled]));
+        assert!(list.is_empty(), "nothing to paint");
+
+        // An agent that predates `queryCount` sends no count at all. Unknown is
+        // not empty: its rows must stay, or a client that talked to an older
+        // agent would lose every conversation it has.
+        let legacy_empty = row("0123456789abcdef", None, "/tmp");
+        assert_eq!(legacy_empty.query_count, None, "the fixture carries none");
+        let mut legacy_spoken = row("s-legacy", None, "/work/alpha");
+        legacy_spoken.first_message = Some("look at this test".into());
+        assert!(list.replace(vec![legacy_empty, legacy_spoken]));
+        let ids: Vec<&str> = list.iter().map(|session| session.id.as_str()).collect();
+        assert_eq!(ids, ["0123456789abcdef", "s-legacy"], "no count, no hiding");
+
+        // A listing that only moves an invisible row changed nothing the rail
+        // paints, so no frame is owed.
+        let mut quiet = row("s-quiet", Some("quiet"), "/work/alpha");
+        quiet.first_message = Some("look at this test".into());
+        assert!(list.replace(vec![quiet.clone()]));
+        let mut hidden = row("s-hidden", None, "/private/tmp");
+        hidden.query_count = Some(0);
+        assert!(
+            !list.replace(vec![quiet, hidden]),
+            "a row the rail never paints cannot owe it a frame"
         );
     }
 
@@ -6395,10 +6492,11 @@ mod tests {
                     updated_at_ms: 1_700_000_000_000,
                     created_at_ms: 0,
                     model: "m".into(),
-                    session_name: None,
+                    session_name: Some("moved".into()),
                     parent_session_id: None,
                     is_streaming: None,
                     first_message: None,
+                    query_count: Some(1),
                 }]);
             live.data(&frame);
             let cold = start.elapsed().as_secs_f64() * 1000.0;

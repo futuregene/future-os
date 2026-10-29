@@ -123,8 +123,14 @@ with its size instead of being loaded.
 
 The rail is a *task* panel, in two tabs. **最近** (the default) lists every
 conversation — its name, then the workspace it is filed under and when it was
-last refreshed — newest first. A conversation whose run is still in flight leads
-it under a 活跃 heading, with a spinner in its state slot; the rest follow under
+last refreshed — newest first. A *conversation* is a session that holds a
+message: the agent lists a session from the moment it is created, before its
+first prompt, and one opened and never spoken in has no name and no prompt to be
+called by — only an id, whose first eight characters read as a date
+(`20261019`). The desktop's rail leaves those out of its list as well, so the
+rail here does too, and the row appears once the first message lands. A
+conversation whose run is still in flight leads it under a 活跃 heading, with a
+spinner in its state slot; the rest follow under
 更早, captioned with how many each stretch holds (the desktop's recent view, in
 the rail's shape). The two headings are only drawn while there is a split: with
 nothing running the list is simply the list. A row names its workspace by *name*
