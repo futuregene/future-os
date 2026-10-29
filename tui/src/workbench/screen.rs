@@ -819,6 +819,10 @@ fn conversation(
     // reads as a clipped message rather than as a prompt waiting below it.
     let gap = usize::from(rows > 1);
     let visible = rows.saturating_sub(gap);
+    // The key handler's ceiling is this number's other half: the transcript
+    // band is measured here, and `Workbench::scroll` subtracts it from the row
+    // count (see `chat_window`).
+    workbench.chat_window = visible;
     // One definition of the conversation's text width, shared with the driver
     // that wraps the transcript — see `layout::chat_inner`.
     let padding = layout::chat_padding(area.w);
@@ -828,14 +832,12 @@ fn conversation(
     workbench.chat_inner = inner;
     let messages = &data.messages;
     let total = messages.len();
-    // `chat_scroll` counts rows up from the tail; it is clamped so a stale
-    // offset from a longer conversation cannot index past the start.
-    let mut offset = workbench.chat_scroll_offset().min(total);
-    // Scrolling up costs one row to the "↑ 更早" badge, so the last reachable
-    // offset is one short of the first message.
-    if total > visible && offset + visible >= total {
-        offset = total - visible + 1;
-    }
+    // `chat_scroll` counts rows up from the tail; it is clamped to the offset
+    // that puts the oldest row on the band's top row, so a stale offset from a
+    // longer conversation — or from a taller band before the composer grew —
+    // paints the top of the transcript instead of blank rows over it.
+    let ceiling = total.saturating_sub(visible);
+    let mut offset = workbench.chat_scroll_offset().min(ceiling);
     // The rows the reader can actually read at `offset`: the window, less the
     // row the badge takes off its bottom.
     let shown_window = |offset: usize| -> (usize, usize) {
