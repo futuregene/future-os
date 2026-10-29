@@ -358,6 +358,7 @@ pub enum Key {
     HelpFooter,
     PaletteTitle,
     PaletteFilter,
+    PaletteFilterSplit,
     PaletteEmpty,
     PaletteCommandsHeading,
     PaletteSkillsHeading,
@@ -382,7 +383,6 @@ pub enum Key {
     // ── the palette's verbs ───────────────────────────────────────────
     CmdNew,
     CmdStop,
-    CmdDiff,
     CmdApproval,
     CmdThinking,
     CmdMode,
@@ -455,6 +455,9 @@ pub enum Key {
     CompactDone,
     ToolsDone,
     ToolsUsage,
+    ToolsPending,
+    NeedsConversation,
+    ProvidersEmpty,
     WorkflowFailed,
     ForkEmptyId,
     CmdQueue,
@@ -769,6 +772,11 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "输入以过滤命令与技能 · tab 补全 · ⏎ 运行",
             "Type to filter commands and skills · tab completes · enter runs",
         ),
+        // The two-column layout, where `←`/`→` have somewhere to go.
+        PaletteFilterSplit => (
+            "输入以过滤 · ←→ 切换命令/技能 · tab 补全 · ⏎ 运行",
+            "Type to filter · ←→ switches commands/skills · tab completes · enter runs",
+        ),
         PaletteEmpty => (" 没有匹配的命令或技能", " No matching command or skill"),
         PaletteCommandsHeading => (" 命令", " Commands"),
         PaletteSkillsHeading => (
@@ -814,7 +822,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
 
         CmdNew => ("新建会话", "New chat"),
         CmdStop => ("停止当前生成", "Stop the current run"),
-        CmdDiff => ("审查工作区改动", "Review working-tree changes"),
         CmdApproval => ("查看完整审批详情", "Inspect the pending approval"),
         CmdHistory => ("搜索历史会话", "Search session history"),
         CmdTree => ("浏览会话父子树", "Browse the session tree"),
@@ -903,6 +910,23 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         CompactDone => ("上下文已压缩", "Context compacted"),
         ToolsDone => ("工具设置已更新", "Tool settings updated"),
         ToolsUsage => ("用法：/tools read,shell · /tools off", "Usage: /tools read,shell · /tools off"),
+        // The launchpad has no session to tell, so the choice is staged for the
+        // one the first message creates. The notice says *that*, rather than
+        // the session-scoped "updated" a verb with nowhere to write used to
+        // claim.
+        ToolsPending => (
+            "工具设置将用于这个会话（发出第一条消息后生效）",
+            "Tool settings apply to this conversation (from its first message)",
+        ),
+        // A verb that acts on the conversation on screen, typed with none.
+        NeedsConversation => (
+            "先发一条消息开始一个会话（或 /new 新建）",
+            "Send a message to start a conversation first (or /new)",
+        ),
+        ProvidersEmpty => (
+            "没有配置任何模型提供商",
+            "No model providers are configured",
+        ),
         WorkflowFailed => ("操作失败：{}", "Operation failed: {}"),
         ForkEmptyId => ("fork 未返回会话 id", "Fork returned no session id"),
         CmdQueue => ("查看、取消或取回排队消息", "List, cancel or recall queued prompts"),
@@ -1358,7 +1382,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 327] = {
+    const ALL_KEYS: [Key; 330] = {
         use Key::*;
         [
             TabTodo,
@@ -1455,6 +1479,7 @@ mod tests {
             HelpFooter,
             PaletteTitle,
             PaletteFilter,
+            PaletteFilterSplit,
             PaletteEmpty,
             PaletteCommandsHeading,
             PaletteSkillsHeading,
@@ -1476,7 +1501,6 @@ mod tests {
             WorkspaceNone,
             CmdNew,
             CmdStop,
-            CmdDiff,
             CmdApproval,
             CmdThinking,
             CmdMode,
@@ -1544,6 +1568,9 @@ mod tests {
             CompactDone,
             ToolsDone,
             ToolsUsage,
+            ToolsPending,
+            NeedsConversation,
+            ProvidersEmpty,
             WorkflowFailed,
             ForkEmptyId,
             CmdQueue,

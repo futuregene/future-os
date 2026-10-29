@@ -78,7 +78,7 @@ struct Paging {
 /// ([`super::Workbench::surface_command`]) and this list have to account for
 /// every entry exactly once. That is the check whose absence let five entries
 /// advertise themselves and then answer `Unknown command`.
-pub const APP_COMMANDS: [&str; 21] = [
+pub const APP_COMMANDS: [&str; 20] = [
     "/new",
     "/stop",
     "/reply-detail",
@@ -92,7 +92,6 @@ pub const APP_COMMANDS: [&str; 21] = [
     "/compact",
     "/tools",
     "/providers",
-    "/diff",
     "/git",
     "/files",
     "/approval",
@@ -229,6 +228,17 @@ pub struct Live {
     /// the `/mode` menu stage it here and the session the next message creates
     /// is told once it exists.
     pending_mode: Option<String>,
+    /// The tool set staged on the launchpad: `Some(vec![])` is `/tools off`,
+    /// `Some(tools)` is `/tools a,b`.
+    ///
+    /// Tools belong to a session — `set_tools` and `disable_tools` name one — so
+    /// a `/tools` typed before one exists has nowhere to go. It used to be sent
+    /// anyway, to whatever session this client last had (or to none), and the
+    /// notice claimed the choice took effect while the session the first message
+    /// created came up with every tool on. Staged here, it is applied to that
+    /// session once it exists, and spent — like the approval mode, a tool set
+    /// belongs to the conversation that was told it.
+    pending_tools: Option<Vec<String>>,
     /// The workspace the next session will run in, chosen on the launchpad.
     /// Nothing is sent: the agent has no session to set a directory on until
     /// the first message creates one.
@@ -378,6 +388,7 @@ impl Live {
             pending_model: settings.and_then(|settings| settings.default_model.clone()),
             pending_effort: settings.and_then(|settings| settings.default_thinking_level.clone()),
             pending_mode: None,
+            pending_tools: None,
             pending_cwd: None,
             remembered_cwd: None,
             run_started: None,
@@ -1856,6 +1867,9 @@ impl Live {
             "sessions" => {
                 self.refresh_sessions().await;
             }
+            "compact" if self.detached() => {
+                self.notice = Some(t(self.lang, Key::NeedsConversation).into());
+            }
             "compact" => {
                 self.compact(arg).await;
             }
@@ -1868,7 +1882,7 @@ impl Live {
                     self.cycle_mode().await;
                 }
             }
-            "diff" | "history" | "fork" => {}
+            "history" | "fork" => {}
             "worktree" if !arg.is_empty() => {
                 if arg.strip_prefix("new ").is_some() {
                     self.notice = Some(t(self.lang, Key::WorktreeCreating).into());
@@ -1876,10 +1890,34 @@ impl Live {
                     self.notice = Some(crate::worktree::WORKTREE_USAGE.into());
                 }
             }
+            // The launchpad has no session yet, so a tool set has nowhere to
+            // take effect: it is staged for the one the first message creates,
+            // exactly like the model and effort chips. Sending it anyway named
+            // the session the reader had just left and told them it worked.
+            "tools" if self.detached() => {
+                if arg.is_empty() {
+                    self.notice = Some(t(self.lang, Key::ToolsUsage).into());
+                } else {
+                    let tools: Vec<String> = if arg == "off" {
+                        Vec::new()
+                    } else {
+                        arg.split(',')
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string)
+                            .collect()
+                    };
+                    self.pending_tools = Some(tools);
+                    self.notice = Some(t(self.lang, Key::ToolsPending).into());
+                }
+            }
             "tools" => {
                 if arg.is_empty() {
                     self.notice = Some(t(self.lang, Key::ToolsUsage).into());
                 } else if arg == "off" {
+                    // The choice is this conversation's, so a `/new` after it
+                    // starts with the tools the agent gives a session.
+                    self.pending_tools = None;
                     match self.client.disable_tools().await {
                         Ok(()) => self.notice = Some(t(self.lang, Key::ToolsDone).into()),
                         Err(error) => {
@@ -1905,13 +1943,18 @@ impl Live {
             }
             "providers" => match self.client.list_providers().await {
                 Ok(providers) => {
-                    self.notice = Some(
+                    // An empty list used to paint an empty notice row, which
+                    // reads as "the verb did nothing" rather than "there are no
+                    // providers": an unconfigured agent is a real state.
+                    self.notice = Some(if providers.is_empty() {
+                        t(self.lang, Key::ProvidersEmpty).into()
+                    } else {
                         providers
                             .iter()
                             .map(|provider| format!("{} ({})", provider.id, provider.model_count))
                             .collect::<Vec<_>>()
-                            .join(" · "),
-                    );
+                            .join(" · ")
+                    });
                 }
                 Err(error) => {
                     self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]))
@@ -1945,6 +1988,12 @@ impl Live {
             // The whole record, through the agent's own exporter (the same one
             // the desktop uses). The path it wrote is the whole answer, so it
             // goes on the notice row rather than into the transcript.
+            "export" if self.detached() => {
+                // `/export` writes *a* conversation; with none on screen it used
+                // to write the one the reader had left, and to report the path
+                // as if that were the record they asked for.
+                self.notice = Some(t(self.lang, Key::NeedsConversation).into());
+            }
             "export" => match self.client.export_html().await {
                 Ok(value) => {
                     let path = value
@@ -1967,7 +2016,15 @@ impl Live {
             // exist — the notice the whole family used to produce. The four
             // choosers (`/model`, `/thinking`, `/mode`, `/workspace`) come back
             // to the surface the same way: the picker is not the agent's.
-            "usage" | "skills" | "workspace" | "transcript" | "help" | "thinking" | "mode" => {}
+            // The verbs the *driver* answers before this handler ever runs: the
+            // boxes it opens (`/preview`, `/git`, `/files`, `/approval`,
+            // `/tree`), the choosers the surface opens for the reader, and the
+            // names the panels took with them (`/usage`, `/skills`). They are
+            // listed so a caller that bypasses the driver is not told a command
+            // the palette advertises does not exist — the notice the whole
+            // family used to produce.
+            "usage" | "skills" | "workspace" | "transcript" | "help" | "thinking" | "mode"
+            | "preview" | "git" | "files" | "approval" | "tree" | "worktree" => {}
             other => self.notice = Some(format!("Unknown command /{other}")),
         }
         Outcome::Continue
@@ -2589,6 +2646,21 @@ impl Live {
                         Err(error) => {
                             self.notice = Some(format!("Could not set the approval mode: {error}"))
                         }
+                    }
+                }
+                // The tool set staged on the launchpad (`/tools off`,
+                // `/tools read,shell`) is one call too, and it is spent here:
+                // it described *this* conversation, not a default for the next
+                // one. A failure keeps the reader's attention on the notice row
+                // — the session exists either way.
+                if let Some(tools) = self.pending_tools.take() {
+                    let result = if tools.is_empty() {
+                        self.client.disable_tools().await
+                    } else {
+                        self.client.set_tools(&tools).await
+                    };
+                    if let Err(error) = result {
+                        self.notice = Some(i18n::render(self.lang, Key::WorkflowFailed, &[&error]));
                     }
                 }
                 self.refresh_state().await;
@@ -4455,6 +4527,34 @@ fn find_model<'a>(models: &'a [ModelInfo], reference: &str) -> Option<&'a ModelI
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Run `future` on a thread with a big stack.
+    ///
+    /// `Live::apply(WbAction::Command(..))` is one async fn over every verb the
+    /// adapter answers, so a debug build lays all of their locals into one frame
+    /// — about 9 MB, more than the 8 MB a `cargo test` thread gets, and the
+    /// abort takes the whole test binary with it. A release build's frame is a
+    /// fraction of that, which is why the shipped surface never notices.
+    fn with_big_stack<T: Send + 'static>(
+        body: impl FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = T>>> + Send + 'static,
+    ) -> T {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(move || {
+                // The future is *built* on the big stack, so nothing has to be
+                // `Send`: the surface holds `Rc`s and a client the runtime owns.
+                let future = body();
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("a test runtime")
+                    .block_on(future)
+            })
+            .expect("a test thread")
+            .join()
+            .expect("the test body did not panic")
+    }
+
     use crate::components::chat_area::{ChatMessage, ChatRole, RowAction};
     use crate::rpc::types::SessionSummary;
 
@@ -7066,5 +7166,215 @@ mod tests {
                 "{quiet} must not add an RPC per token"
             );
         }
+    }
+
+    /// Every verb the adapter carries out answers *something*.
+    ///
+    /// The bug class this catches is the palette advertising a verb that comes back
+    /// `Unknown command /…` — five of them did once, and nothing failed. `/paste`
+    /// is left out on purpose: it reads the host clipboard, which a test machine
+    /// may not have.
+    #[test]
+    fn every_app_command_is_answered_by_the_adapter() {
+        with_big_stack(|| {
+            Box::pin(async {
+                let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+                    ("get_state", r#"{"sessionId":"s1","model":"mock"}"#),
+                    ("get_session_entries", r#"{"entries":[]}"#),
+                    ("export_html", r#"{"path":"/tmp/x.html"}"#),
+                    ("list_providers", r#"{"providers":[]}"#),
+                    ("list_sessions", r#"{"sessions":[]}"#),
+                    ("list_models", r#"{"models":[]}"#),
+                ]);
+                let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+                let (mut live, _events) = Live::attach(&addr, None, false, None)
+                    .await
+                    .expect("attach to the test agent");
+                for command in APP_COMMANDS {
+                    if command == "/paste" {
+                        continue;
+                    }
+                    live.notice = None;
+                    live.apply(WbAction::Command(command.into())).await;
+                    let notice = live.notice.clone().unwrap_or_default();
+                    assert!(
+                        !notice.starts_with("Unknown command"),
+                        "the palette advertises {command}, and the adapter refuses it: {notice}"
+                    );
+                }
+            })
+        });
+    }
+
+    /// `/tools off` must reach the agent as `disable_tools` with the session this
+    /// client is attached to — and the notice must say it took effect.
+    ///
+    /// The reader's report was the opposite: a prompt sent after `/tools off` still
+    /// called tools. That can only be told apart from a stale binary by pinning the
+    /// two facts here — the RPC leaves, and it names the attached session.
+    #[test]
+    fn tools_off_sends_disable_tools_for_the_attached_session() {
+        with_big_stack(|| {
+            Box::pin(async {
+                let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+                    ("get_state", r#"{"sessionId":"s1","model":"mock"}"#),
+                    ("get_session_entries", r#"{"entries":[]}"#),
+                    ("disable_tools", "{}"),
+                ]);
+                let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock.clone()).await;
+                let (mut live, _events) = Live::attach(&addr, None, false, None)
+                    .await
+                    .expect("attach to the test agent");
+
+                live.apply(WbAction::Command("/tools off".into())).await;
+
+                let commands = seen.lock().unwrap().clone();
+                assert!(
+                    commands.iter().any(|command| command == "disable_tools"),
+                    "`/tools off` must reach the agent, saw {commands:?}"
+                );
+                let request =
+                    crate::rpc::grpc_client::tests::last_request_of(&mock, "disable_tools");
+                assert_eq!(
+                    request.session_id, "s1",
+                    "the tool set belongs to the session on screen, not to a default one"
+                );
+                assert!(
+                    !live.notice.clone().unwrap_or_default().contains("/tools"),
+                    "the notice confirms the choice rather than printing usage"
+                );
+
+                // The launchpad is the case the reader hit: no session exists yet, so a
+                // tool set has nowhere to live. It must not answer for the conversation
+                // just left behind either — that session's tools are not this one's — and
+                // it must not claim the choice took effect.
+                live.to_launchpad();
+                live.apply(WbAction::Command("/tools off".into())).await;
+                let after = seen.lock().unwrap().clone();
+                assert_eq!(
+                    after
+                        .iter()
+                        .filter(|c| c.as_str() == "disable_tools")
+                        .count(),
+                    1,
+                    "the launchpad has no session to disable tools in: {after:?}"
+                );
+                assert_eq!(
+                    live.pending_tools,
+                    Some(Vec::new()),
+                    "the choice is staged for the session the first message creates"
+                );
+                let notice = live.notice.clone().unwrap_or_default();
+                assert!(
+                    !notice.is_empty() && !notice.contains("/tools"),
+                    "the notice says the choice is staged, not that it took effect: {notice:?}"
+                );
+            })
+        });
+    }
+
+    /// The staged tool set is applied to the session the first message creates —
+    /// after it exists, and before the message that created it runs.
+    ///
+    /// This is the reported bug: `/tools off` on the launchpad reached the agent
+    /// *before* a session existed, so the conversation the reader then started came
+    /// up with every tool on and the very next prompt called one.
+    #[test]
+    #[allow(clippy::await_holding_lock)] // FUTURE_HOME is process-global and must stay pinned across awaits.
+    fn a_launchpad_tool_set_is_applied_to_the_session_the_first_message_creates() {
+        with_big_stack(|| {
+            Box::pin(async {
+                // FUTURE_HOME is process-global and must stay pinned across awaits.
+                let _guard = crate::test_env::lock();
+                let home = tempfile::tempdir().unwrap();
+                let _home = crate::test_env::EnvVarGuard::set("FUTURE_HOME", home.path());
+                let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+                    ("new_session", r#"{"sessionId":"s-new"}"#),
+                    ("get_state", r#"{"sessionId":"s-new","model":"mock"}"#),
+                    ("get_session_entries", r#"{"entries":[]}"#),
+                    ("prompt", r#"{"runId":"r-1","acceptedState":"running"}"#),
+                    ("disable_tools", "{}"),
+                    ("list_sessions", r#"{"sessions":[]}"#),
+                    ("list_models", r#"{"models":[]}"#),
+                ]);
+                let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock.clone()).await;
+                let (mut live, _events) = Live::attach(&addr, None, false, None)
+                    .await
+                    .expect("attach to the test agent");
+                live.to_launchpad();
+
+                live.apply(WbAction::Command("/tools off".into())).await;
+                assert_eq!(
+                    seen.lock()
+                        .unwrap()
+                        .iter()
+                        .filter(|c| c.as_str() == "disable_tools")
+                        .count(),
+                    0,
+                    "with no session, the verb has nothing to tell"
+                );
+
+                live.set_draft("hello there".into(), 11);
+                live.set_draft(String::new(), 0);
+                live.apply(WbAction::Submit("hello there".into())).await;
+
+                let commands = seen.lock().unwrap().clone();
+                let created = commands
+                    .iter()
+                    .position(|command| command == "new_session")
+                    .unwrap_or_else(|| {
+                        panic!("the first message creates the session: {commands:?}")
+                    });
+                let disabled = commands
+                    .iter()
+                    .position(|command| command == "disable_tools")
+                    .unwrap_or_else(|| {
+                        panic!("the staged tool set reaches the new session: {commands:?}")
+                    });
+                assert!(
+                    created < disabled,
+                    "the tool set is applied once the session exists: {commands:?}"
+                );
+                assert!(
+                    live.pending_tools.is_none(),
+                    "the staged set is spent on this conversation"
+                );
+            })
+        });
+    }
+
+    /// `/compact` and `/export` name the conversation on screen, so on the launchpad
+    /// they say so instead of compacting — or exporting — the one the reader left.
+    #[test]
+    fn verbs_that_need_a_conversation_say_so_on_the_launchpad() {
+        with_big_stack(|| {
+            Box::pin(async {
+                let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+                    ("get_state", r#"{"sessionId":"s-prev","model":"mock"}"#),
+                    ("get_session_entries", r#"{"entries":[]}"#),
+                    ("compact", "{}"),
+                    ("export_html", r#"{"path":"/tmp/x.html"}"#),
+                ]);
+                let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+                let (mut live, _events) = Live::attach(&addr, None, false, None)
+                    .await
+                    .expect("attach to the test agent");
+                live.to_launchpad();
+                for command in ["/compact", "/export"] {
+                    let before = seen.lock().unwrap().clone();
+                    live.apply(WbAction::Command(command.into())).await;
+                    let after = seen.lock().unwrap().clone();
+                    assert_eq!(
+            after.len(),
+            before.len(),
+            "{command} must not reach the agent with no conversation on screen: {after:?}"
+        );
+                    assert!(
+                        !live.notice.clone().unwrap_or_default().is_empty(),
+                        "{command} says what it needs instead of pretending"
+                    );
+                }
+            })
+        });
     }
 }

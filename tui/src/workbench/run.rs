@@ -877,36 +877,6 @@ async fn quit(
                     workbench.overlay_scroll = 0;
                     continue;
                 }
-                "/diff" => {
-                    let selected = workbench.workflow_index;
-                    let cwd = live.data(frame).session.cwd;
-                    let previous = live.selected_diff_path(selected);
-                    let result = tokio::task::spawn_blocking(move || {
-                        let mut view = super::state::DiffView::default();
-                        match super::diff_review::load(std::path::Path::new(&cwd), &previous) {
-                            Ok(review) => {
-                                view.selected = review
-                                    .files
-                                    .iter()
-                                    .position(|file| file.path == previous)
-                                    .unwrap_or(0);
-                                view.files = review.files;
-                                view.patch = super::diff_review::bounded_patch(&review.patch);
-                            }
-                            Err(error) => view.error = Some(error),
-                        }
-                        view
-                    })
-                    .await;
-                    match result {
-                        Ok(view) => live.set_diff(view),
-                        Err(error) => live.notice = Some(error.to_string()),
-                    }
-                    workbench.overlay = Some(super::Overlay::Diff);
-                    workbench.workflow_index = selected;
-                    workbench.overlay_scroll = 0;
-                    continue;
-                }
                 "/history" | "/tree" => {
                     live.refresh_sessions().await;
                     workbench.overlay = Some(if command.trim() == "/history" {
@@ -1062,6 +1032,40 @@ async fn quit(
                 live.notice = notice;
                 continue;
             }
+        }
+        // The working-tree review: `d` in the repository browser, and its own
+        // `r`. It has no palette verb — the 改动 tab of `/git` is where the same
+        // question is asked, so the box is a *detail* of the browser rather than
+        // a second door to it.
+        if matches!(action, WbAction::OpenDiff) {
+            let selected = workbench.workflow_index;
+            let cwd = live.data(frame).session.cwd;
+            let previous = live.selected_diff_path(selected);
+            let result = tokio::task::spawn_blocking(move || {
+                let mut view = super::state::DiffView::default();
+                match super::diff_review::load(std::path::Path::new(&cwd), &previous) {
+                    Ok(review) => {
+                        view.selected = review
+                            .files
+                            .iter()
+                            .position(|file| file.path == previous)
+                            .unwrap_or(0);
+                        view.files = review.files;
+                        view.patch = super::diff_review::bounded_patch(&review.patch);
+                    }
+                    Err(error) => view.error = Some(error),
+                }
+                view
+            })
+            .await;
+            match result {
+                Ok(view) => live.set_diff(view),
+                Err(error) => live.notice = Some(error.to_string()),
+            }
+            workbench.overlay = Some(super::Overlay::Diff);
+            workbench.workflow_index = selected;
+            workbench.overlay_scroll = 0;
+            continue;
         }
         // A committed palette is persisted now, not only at exit: a reader who
         // picks a theme and then loses the terminal keeps the choice.

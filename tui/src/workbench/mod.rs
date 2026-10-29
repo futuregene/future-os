@@ -2646,6 +2646,30 @@ impl Workbench {
                     self.palette_index = self.palette_index.saturating_sub(1);
                     vec![WbAction::Redraw]
                 }
+                // The columns are a second way to *see* one list, so a
+                // horizontal step only moves the highlight into the other
+                // column — the row at the same visual line, clamped to what the
+                // neighbour has. On a narrow frame (one column) they do nothing:
+                // there is nothing to step to.
+                "left" | "right" => {
+                    let rows = self.palette_rows(data);
+                    let commands = rows.iter().take_while(|row| !row.is_skill()).count();
+                    let current = self.palette_index.min(rows.len().saturating_sub(1));
+                    if commands > 0 && commands < rows.len() {
+                        self.palette_index = if key == "left" {
+                            if current < commands {
+                                current
+                            } else {
+                                (current - commands).min(commands - 1)
+                            }
+                        } else if current < commands {
+                            (commands + current).min(rows.len() - 1)
+                        } else {
+                            current
+                        };
+                    }
+                    vec![WbAction::Redraw]
+                }
                 "down" => {
                     let count = self.palette_rows(data).len();
                     if self.palette_index + 1 < count {
@@ -2894,6 +2918,12 @@ impl Workbench {
                 None => Vec::new(),
             },
             "r" => vec![WbAction::GitRefresh],
+            // The working tree has a box of its own — files on one side, the
+            // selected patch on the other — and the repository browser is its
+            // door now: `/diff` was a second name for what the 改动 tab already
+            // holds. `d` is the diff review, anywhere in the panel (the box
+            // says what it shows, so it does not depend on the tab).
+            "d" => vec![WbAction::OpenDiff],
             "backspace" if git.filter.is_some() => {
                 self.overlay_scroll = 0;
                 vec![WbAction::GitFilter(None)]
@@ -3078,10 +3108,10 @@ impl Workbench {
                 }];
             }
             "r" if matches!(overlay, Overlay::Diff | Overlay::Worktree) => {
-                return vec![WbAction::Command(match overlay {
-                    Overlay::Diff => "/diff".into(),
-                    _ => "/worktree".into(),
-                })];
+                return vec![match overlay {
+                    Overlay::Diff => WbAction::OpenDiff,
+                    _ => WbAction::Command("/worktree".into()),
+                }];
             }
             "enter" => {
                 if overlay != Overlay::Diff {
@@ -4145,18 +4175,17 @@ impl Workbench {
                 cursor: 0,
             }];
             match PickerKind::from_command(&command.name) {
-                // The workspace chooser takes its argument as the search line:
-                // `/workspace ../other` is a request for *that* directory, and a
-                // command that opened an empty list (its highlight on the
-                // current row) looked like a no-op.
-                Some(PickerKind::Workspace) => {
-                    actions.extend(self.open_picker(PickerKind::Workspace, data));
+                // The words after the verb are the picker's search line — for
+                // every picker, not only the workspace chooser's path
+                // (`/workspace ../other`). `/model deepseek` used to open the
+                // full list with the argument dropped on the floor: the picker
+                // intercepted the line before the adapter's own `set_model`
+                // could see it, so the id the reader typed was never applied.
+                Some(kind) => {
+                    actions.extend(self.open_picker(kind, data));
                     for ch in command.arg.chars() {
                         self.picker.push(ch, data);
                     }
-                }
-                Some(kind) if command.arg.is_empty() => {
-                    actions.extend(self.open_picker(kind, data))
                 }
                 // `/pin` is the one verb that has to hand the app an action
                 // rather than a notice, so it is answered here — the palette's
@@ -4351,7 +4380,7 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
 /// The command palette's entries: `(command, description)`. Kept here rather
 /// than in the app so the palette, the help overlay and the tests share one
 /// list.
-pub const COMMANDS: [(&str, Key); 35] = [
+pub const COMMANDS: [(&str, Key); 34] = [
     ("/new", Key::CmdNew),
     ("/stop", Key::CmdStop),
     ("/delete", Key::CmdDelete),
@@ -4362,7 +4391,6 @@ pub const COMMANDS: [(&str, Key); 35] = [
     ("/preview", Key::CmdPreview),
     ("/refresh", Key::CmdRefresh),
     ("/mouse", Key::CmdMouse),
-    ("/diff", Key::CmdDiff),
     ("/git", Key::CmdGit),
     ("/files", Key::CmdFiles),
     ("/approval", Key::CmdApproval),
@@ -7505,6 +7533,161 @@ mod tests {
         assert_eq!(workbench.overlay, None);
     }
 
+    /// A word after a chooser's verb is that chooser's search line.
+    ///
+    /// `/model deepseek` used to open the whole list with the argument dropped:
+    /// the picker claimed the line before the adapter's `set_model` could see
+    /// it, so the id the reader typed was never applied and nothing said so.
+    #[test]
+    fn a_word_after_a_chooser_filters_it() {
+        let data = demo::chat();
+        let mut data = data;
+        let line = "/model deepseek";
+        data.input.text = line.into();
+        data.input.cursor = line.len();
+        let mut workbench = workbench();
+        let actions = workbench.handle(WbEvent::Key("enter".into()), &data);
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, WbAction::Redraw)),
+            "the picker paints: {actions:?}"
+        );
+        assert_eq!(workbench.overlay, Some(Overlay::Picker(PickerKind::Model)));
+        assert_eq!(
+            workbench.picker.query, "deepseek",
+            "the argument filters it"
+        );
+        // The workspace chooser keeps its own contract: a path becomes the
+        // search line, so `enter` on the one row creates that workspace.
+        workbench.overlay = None;
+        let line = "/workspace ../other";
+        let mut data = demo::chat();
+        data.input.text = line.into();
+        data.input.cursor = line.len();
+        workbench.handle(WbEvent::Key("enter".into()), &data);
+        assert_eq!(
+            workbench.overlay,
+            Some(Overlay::Picker(PickerKind::Workspace))
+        );
+        assert_eq!(workbench.picker.query, "../other");
+    }
+
+    /// A frame with room for both lists puts them side by side: the verbs on
+    /// the left, the skills the agent expands on the right, each under its own
+    /// heading on the same line.
+    ///
+    /// The one list they came from is unchanged — this is a second way to see
+    /// it, so `↑`/`↓` still walk commands and then skills.
+    #[test]
+    fn a_wide_palette_lists_verbs_and_skills_in_two_columns() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        let painted = plain(&workbench.render(&data, 120, 38));
+        let heading = painted
+            .lines()
+            .find(|line| line.contains("命令") && line.contains("技能（"))
+            .unwrap_or_else(|| panic!("one line carries both headings:\n{painted}"));
+        assert!(
+            heading.find("命令").unwrap() < heading.find("技能").unwrap(),
+            "the verbs lead: {heading}"
+        );
+        // A verb and a skill on one painted line: the columns really are two.
+        let shared = painted
+            .lines()
+            .find(|line| line.contains("/new") && line.contains("future-versioning"))
+            .unwrap_or_else(|| panic!("a verb and a skill share a row:\n{painted}"));
+        assert!(
+            shared.find("/new").unwrap() < shared.find("future-versioning").unwrap(),
+            "the skill column is on the right: {shared}"
+        );
+        // The list underneath is still one list: commands first, skills after.
+        let rows = workbench.palette_rows(&data);
+        let commands = rows.iter().filter(|row| !row.is_skill()).count();
+        assert_eq!(commands, COMMANDS.len());
+        assert!(rows[commands].is_skill());
+    }
+
+    /// A narrow frame keeps the single column: two 30-cell columns would hold a
+    /// truncated label and no description at all, which is worse than one list.
+    #[test]
+    fn a_narrow_palette_keeps_one_column() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 80, 38);
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        let painted = plain(&workbench.render(&data, 80, 38));
+        assert!(
+            !painted
+                .lines()
+                .any(|line| line.contains("命令") && line.contains("技能（")),
+            "the headings are not side by side on a narrow frame:\n{painted}"
+        );
+        assert!(
+            !painted
+                .lines()
+                .any(|line| line.contains("/new") && line.contains("future-versioning")),
+            "one list, one row each:\n{painted}"
+        );
+    }
+
+    /// `→` steps into the skill column and `←` steps back, landing on the row at
+    /// the same visual line rather than starting over.
+    #[test]
+    fn the_arrow_keys_step_between_the_palette_columns() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        workbench.handle(WbEvent::Key("down".into()), &data);
+        let first = workbench.palette_selection(&data).expect("a row");
+        assert!(!first.is_skill(), "the palette opens on the verbs");
+
+        workbench.handle(WbEvent::Key("right".into()), &data);
+        let stepped = workbench.palette_selection(&data).expect("a row");
+        assert!(stepped.is_skill(), "right lands in the skill column");
+        assert_eq!(
+            stepped.label(),
+            data.skills[1].name,
+            "the row at the same visual line, not the top of the column"
+        );
+
+        workbench.handle(WbEvent::Key("left".into()), &data);
+        let back = workbench.palette_selection(&data).expect("a row");
+        assert!(!back.is_skill());
+        assert_eq!(back.label(), first.label(), "back on the row it left");
+    }
+
+    /// A click on the right column selects that skill: the hit regions follow
+    /// the columns the rows were painted in, not one full-width band.
+    #[test]
+    fn a_click_on_the_skill_column_selects_that_row() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        workbench.render(&data, 120, 38);
+        let commands = workbench
+            .palette_rows(&data)
+            .iter()
+            .filter(|row| !row.is_skill())
+            .count();
+        let target = format!("palette.row.{commands}");
+        let (rect, _) = workbench
+            .hits()
+            .regions()
+            .iter()
+            .find(|(_, id)| *id == target)
+            .cloned()
+            .unwrap_or_else(|| panic!("the first skill row has a target"));
+        assert!(
+            rect.x > 60,
+            "the skill column starts right of the verbs: {rect:?}"
+        );
+        click_region(&mut workbench, &data, 120, 38, &target);
+        let selected = workbench.palette_selection(&data).expect("a row");
+        assert!(selected.is_skill(), "the click landed in the skill column");
+        assert_eq!(selected.label(), data.skills[0].name);
+    }
+
     /// A row whose *description* mentions the query only finds its place in the
     /// list; the row whose *name* is the query comes first, so `enter` runs what
     /// the reader typed for.
@@ -8763,25 +8946,22 @@ mod tests {
             submit_draft(&mut workbench, &mut data, command);
             assert_eq!(workbench.overlay, Some(Overlay::Picker(kind)), "{command}");
         }
-        // A markdown-ish prompt that starts with a slash is still a prompt, and
-        // a verb with an argument keeps going to the agent.
+        // A markdown-ish prompt that starts with a slash is still a prompt.
         let mut data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         assert_eq!(
             submit_draft(&mut workbench, &mut data, "/etc/hosts 里少了一行"),
             vec![WbAction::Submit("/etc/hosts 里少了一行".into())]
         );
-        assert_eq!(
-            submit_draft(&mut workbench, &mut data, "/model Qwen"),
-            vec![
-                WbAction::EditInput {
-                    text: String::new(),
-                    cursor: 0
-                },
-                WbAction::Command("/model Qwen".into()),
-            ]
-        );
-        assert_eq!(workbench.overlay, None);
+        // A word after a chooser's verb is that chooser's search line, not a
+        // detached argument: the picker claims the line, so `/model Qwen` opens
+        // the model list filtered to it instead of half-applying an id nobody
+        // reads.
+        let mut data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        submit_draft(&mut workbench, &mut data, "/model Qwen");
+        assert_eq!(workbench.overlay, Some(Overlay::Picker(PickerKind::Model)));
+        assert_eq!(workbench.picker.query, "Qwen");
     }
 
     #[test]
@@ -9937,6 +10117,31 @@ mod tests {
         }
     }
 
+    /// The working-tree review has one door now: `d` in the repository browser.
+    ///
+    /// It used to be `/diff` as well, which was a second name for what the 改动
+    /// tab already holds — and the palette then advertised two ways into the
+    /// same worktree. The box itself is unchanged: same loader, same `r`.
+    #[test]
+    fn the_git_panel_opens_the_diff_review_on_d() {
+        let mut data = demo::chat();
+        data.git = Some(demo::git());
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.overlay = Some(Overlay::Git);
+        assert_eq!(
+            workbench.handle(WbEvent::Key("d".into()), &data),
+            vec![WbAction::OpenDiff]
+        );
+        // …and the palette no longer offers the verb, so a reader cannot learn a
+        // second name for it.
+        assert!(!workbench
+            .palette_rows(&data)
+            .iter()
+            .any(|row| row.command() == "/diff"));
+        let keys: Vec<&str> = COMMANDS.iter().map(|(command, _)| *command).collect();
+        assert!(!keys.contains(&"/diff"), "{keys:?}");
+    }
+
     /// An empty section is still a panel. The 改动 and 储藏 tabs of a clean
     /// checkout used to stop after their own four rows, so the conversation
     /// underneath showed through the rest of the box's rectangle.
@@ -10778,7 +10983,7 @@ mod tests {
         let data = demo::chat();
         let mut wb = workbench();
         wb.overlay = Some(Overlay::Palette);
-        for ch in "diff".chars() {
+        for ch in "model".chars() {
             wb.handle(WbEvent::Key(ch.to_string()), &data);
         }
         wb.render(&data, 120, 38);

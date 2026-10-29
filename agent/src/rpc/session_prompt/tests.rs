@@ -3609,3 +3609,27 @@ async fn an_automatic_reviewer_policy_reviews_a_sandboxed_run_without_asking_the
         "an automatic policy never parks a human request"
     );
 }
+
+/// `/tools off` has to reach the *next* run's request: the palette says "tool
+/// settings updated" and a reader who then sends a prompt expects a model with
+/// no tools at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disable_tools_removes_every_tool_from_the_next_run() {
+    let provider = ScriptedProvider::new(vec![text_turn("no tools needed")]);
+    let fixture = run_fixture(provider.clone(), "disable-tools-run");
+    let mut session = fixture.session;
+    session.disable_tools();
+    session.prompt("say hi", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1, "one turn, one request");
+    assert!(
+        requests[0].tools.is_empty(),
+        "a disabled tool set must not be sent: {:?}",
+        requests[0]
+            .tools
+            .iter()
+            .map(|t| &t.function.name)
+            .collect::<Vec<_>>()
+    );
+}
