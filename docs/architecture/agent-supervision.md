@@ -37,7 +37,9 @@ records the existing `interrupted_by_restart` state with
 `interruption_cause=system_shutdown`; a user stop remains `cancelled` and wins races
 with shutdown. A durable `run_stop_requested` records user intent before cooperative
 cancellation; it does
-not acknowledge that execution stopped. A crash during cancellation, a stop racing
+not acknowledge that execution stopped. That write is started first but awaited only
+briefly: the stop itself is in-memory work, and a store that cannot answer must not
+delay it. A crash during cancellation, a stop racing
 system finalization, or a stop during the startup delay cannot resurrect that work.
 A refused continuation never falls back to a new prompt.
 

@@ -98,10 +98,11 @@ fn wait_next(backend: &platform::Backend, timeout_ms: i32, _stdin_gone: bool) ->
 /// A `SIGTERM` that leaves the process running is worse than one that is never
 /// handled: `kill` returns 0, scripts and supervisors report success, and the
 /// process is still there (only `SIGKILL` could remove it). The callback below
-/// hands the app a ctrl+c and waits for its own exit, which is the right path
-/// when it works and no path at all when the app loop is blocked (agent read
-/// hanging, a terminal that never drains, a loop already gone). Override with
-/// `FUTURE_TUI_EXIT_DEADLINE_MS` — the shutdown tests cannot wait ten seconds.
+/// hands the app an exit event and waits for its own exit, which is the right
+/// path when it works and no path at all when the app loop is blocked (agent
+/// read hanging, a terminal that never drains, a loop already gone). Override
+/// with `FUTURE_TUI_EXIT_DEADLINE_MS` — the shutdown tests cannot wait ten
+/// seconds.
 const SIGNAL_EXIT_DEADLINE: Duration = Duration::from_secs(10);
 const SIGNAL_EXIT_DEADLINE_ENV: &str = "FUTURE_TUI_EXIT_DEADLINE_MS";
 

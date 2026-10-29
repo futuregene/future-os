@@ -296,7 +296,7 @@ store to search is the session log the agent already exposes.
 
 ### P1-10 Steering vs queue vs interrupt
 
-`Enter` submits and queues behind a live run (`live.rs::submit`), `ctrl+x`
+`Enter` submits and queues behind a live run (`live.rs::submit`), `ctrl+c`
 aborts. dsh distinguishes steer (`Enter`), queue (`Tab`) and interrupt-and-send
 (`Ctrl+Enter`). Do this only after P1-4: the queue badge is what makes the
 distinction visible.
