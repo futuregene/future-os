@@ -765,10 +765,10 @@ fn conversation(
         };
         (start, end)
     };
-    // `tab` can walk the cursor to a span far above or below the window, and a
+    // `tab` can walk the cursor to a stop far above or below the window, and a
     // highlight nobody can see is not a cursor: the transcript follows it, the
     // way a search result brings itself into view.
-    if let Some(row) = workbench.selected_link(data).map(|(_, span)| span.row) {
+    if let Some(row) = workbench.selected_stop_row(data) {
         let row = row.min(total.saturating_sub(1));
         let (start, end) = shown_window(offset);
         if row < start || row >= end {
@@ -781,9 +781,22 @@ fn conversation(
     workbench.set_chat_scroll(offset);
     let end = total.saturating_sub(offset);
     let start = end.saturating_sub(visible);
-    // The span the cursor is on, cloned: the paint below needs `workbench` for
-    // its hit regions, and the list it came from borrows it.
-    let selected = workbench.selected_link(data);
+    // The stop the cursor is on, and the half of it that is a link: the paint
+    // below needs `workbench` for its hit regions, and the lists it came from
+    // borrow it.
+    let selected_span = match workbench.selected_stop(data) {
+        Some(crate::workbench::ChatStop::Link(index)) => workbench
+            .link_spans(data)
+            .get(index)
+            .map(|span| (span.row, span.start, span.end)),
+        _ => None,
+    };
+    // A row under the cursor is marked the same way a link is: the glyphs it is
+    // made of reverse, so the highlight sits on the label rather than on a band.
+    let selected_row_marked = match workbench.selected_stop(data) {
+        Some(crate::workbench::ChatStop::Row(stop)) => Some((stop.row, stop.start, stop.end)),
+        _ => None,
+    };
     // Every span on a painted row answers a click, not just the one the cursor
     // is on: the pointer names its own target, and a link a reader can see but
     // not click is the one thing a terminal hyperlink cannot express (the
@@ -798,6 +811,13 @@ fn conversation(
             .map(|(index, span)| (index, span.clone()))
             .collect()
     };
+    // The transcript's own rows that answer a click, in the same window.
+    let visible_rows: Vec<crate::components::chat_area::RowStop> = data
+        .row_stops
+        .iter()
+        .filter(|stop| stop.row >= start && stop.row < end)
+        .cloned()
+        .collect();
     let badge = usize::from(start > 0);
     let shown = end.saturating_sub(start);
     let mut lines: Vec<String> = Vec::new();
@@ -811,9 +831,14 @@ fn conversation(
     let mut marked: Option<String>;
     for (index, line) in messages.iter().enumerate().skip(start).take(shown) {
         let mut text = line.as_str();
-        if let Some((_, span)) = &selected {
-            if span.row == index {
-                marked = Some(super::links::highlight(line, span.start, span.end));
+        if let Some((row, from, to)) = selected_row_marked {
+            if row == index {
+                marked = Some(super::links::highlight(line, from, to));
+                text = marked.as_deref().unwrap_or(line);
+            }
+        } else if let Some((row, from, to)) = selected_span {
+            if row == index {
+                marked = Some(super::links::highlight(line, from, to));
                 text = marked.as_deref().unwrap_or(line);
             }
         }
@@ -838,6 +863,23 @@ fn conversation(
                         1,
                     ),
                     format!("chat.link.{span_index}"),
+                );
+            }
+        }
+        for stop in visible_rows.iter().filter(|stop| stop.row == index) {
+            let from = stop.start.min(inner);
+            let to = stop.end.min(inner);
+            if to > from {
+                workbench.hit_map().push(
+                    Rect::new(
+                        area.x
+                            .saturating_add(padding as u16)
+                            .saturating_add(from as u16),
+                        y,
+                        (to - from) as u16,
+                        1,
+                    ),
+                    format!("chat.row.{}", stop.row),
                 );
             }
         }
