@@ -4119,8 +4119,18 @@ impl Workbench {
         // used to be sent to the agent as text, which is why no picker ever
         // opened from the input box. Only the surface's own verbs are claimed —
         // `/something else` (a skill, a path) still reaches the agent, and a
-        // verb with arguments keeps them (`/model <id>`).
+        // verb with arguments keeps them (`/model <id>`), and a verb that takes
+        // none claims only the bare word — `/pin explain this` is a sentence,
+        // not a pin.
         if let Some(command) = known_command(&text) {
+            // `/pin` names a workspace action and has no argument to give the
+            // words to, so a line that follows it with any is the reader's
+            // prompt. Claiming the verb there answered the pin and dropped what
+            // came after it, which is how a draft meant for the agent ended up
+            // toggling the rail instead of starting a session.
+            if command.name.eq_ignore_ascii_case("/pin") && !command.arg.is_empty() {
+                return vec![WbAction::Submit(text)];
+            }
             let mut actions = vec![WbAction::EditInput {
                 text: String::new(),
                 cursor: 0,
@@ -4141,7 +4151,9 @@ impl Workbench {
                 }
                 // `/pin` is the one verb that has to hand the app an action
                 // rather than a notice, so it is answered here — the palette's
-                // row takes the driver's own arm for the same verb.
+                // row takes the driver's own arm for the same verb. Only the
+                // bare word arrives: a line with words after it was answered as
+                // a prompt above, since a pin has nowhere to put them.
                 _ if command.name == "/pin" => actions.extend(self.toggle_pin_selected(data)),
                 _ => actions.push(WbAction::Command(command.raw)),
             }
@@ -6158,6 +6170,32 @@ mod tests {
                 .iter()
                 .any(|action| matches!(action, WbAction::Notice(_))),
             "a conversation outside every workspace says so: {actions:?}"
+        );
+    }
+
+    /// A word after `/pin` is the reader's prompt, not a pin: the verb takes no
+    /// argument, so claiming the line would answer the pin and drop everything
+    /// the reader typed after it — the sentence never reached the agent, and on
+    /// the launchpad no session was ever started for it.
+    #[test]
+    fn a_word_after_pin_is_a_prompt_and_the_rail_is_left_alone() {
+        let mut data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.sidebar_visible = true;
+        workbench.sidebar_index = 0;
+        let mut typed = data.clone();
+        let line = "/pin 这个会话太长了";
+        typed.input.text = line.into();
+        typed.input.cursor = line.len();
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &typed),
+            vec![WbAction::Submit(line.into())],
+            "a pin has nowhere to put the words, so the line is a prompt"
+        );
+        // The case of the verb does not change that.
+        assert_eq!(
+            submit_draft(&mut workbench, &mut data, "/PIN 你好"),
+            vec![WbAction::Submit("/PIN 你好".into())]
         );
     }
 
