@@ -50,6 +50,8 @@ pub mod theme;
 pub mod widgets;
 pub mod workflows;
 
+use std::time::{Duration, Instant};
+
 use picker::{Picker, PickerKind, PickerRow};
 use state::{PanelId, WorkbenchData};
 use theme::Palette;
@@ -450,6 +452,31 @@ struct Drag {
     grab_width: u16,
 }
 
+/// Silence that ends a wheel burst.
+///
+/// Terminals have no gesture: a trackpad fling or a free-spinning wheel arrives
+/// as a long run of reports that nothing separates from deliberate rolling. The
+/// one thing that does separate them is time — consecutive reports of one burst
+/// are milliseconds apart, and a reader who stops, aims, and rolls again takes
+/// far longer than this.
+const WHEEL_BURST_GAP: Duration = Duration::from_millis(200);
+
+/// Which surface the wheel burst in progress belongs to.
+///
+/// The rail and the conversation are the two things a wheel can scroll while
+/// both are on screen, and a burst stays on the one it began over: reports
+/// arriving less than [`WHEEL_BURST_GAP`] after the last one continue it, a
+/// longer silence starts a new burst wherever the pointer is by then. Without
+/// it the tail of a fling follows the pointer across the divider and the rail's
+/// list walks under a hand that never aimed at it.
+#[derive(Debug, Clone, Copy)]
+struct WheelBurst {
+    /// True when the burst began over the rail.
+    over_rail: bool,
+    /// When its last report arrived.
+    at: Instant,
+}
+
 /// A picture pan in progress: where the pointer went down, and the pan the
 /// picture had at that moment.
 ///
@@ -647,6 +674,9 @@ pub struct Workbench {
     /// The frame size of the last render; mouse coordinates are resolved
     /// against it.
     last_frame: (u16, u16),
+    /// The wheel burst in progress, if its last report is recent enough to still
+    /// be one (see [`WheelBurst`]).
+    wheel_burst: Option<WheelBurst>,
     hit: layout::HitMap,
     /// The hit map's length when the overlay started painting — see
     /// [`Self::overlay_mark`].
@@ -768,6 +798,7 @@ impl Workbench {
             mention: None,
             mention_dismissed: None,
             last_frame: (0, 0),
+            wheel_burst: None,
             hit: layout::HitMap::new(),
             overlay_mark: 0,
             cursor: None,
@@ -3071,10 +3102,23 @@ impl Workbench {
                 } else {
                     3
                 };
-                if frame
+                // Where the burst began decides where it keeps going, not where
+                // each report lands: the pointer crossing the divider mid-fling
+                // used to hand the rest of the gesture to the rail, whose list
+                // then walked under a hand that never aimed at it (see
+                // `WheelBurst`).
+                let under_pointer = frame
                     .sidebar
-                    .is_some_and(|rect| rect.contains(event.x, event.y))
-                {
+                    .is_some_and(|rect| rect.contains(event.x, event.y));
+                let now = Instant::now();
+                let over_rail = match self.wheel_burst {
+                    Some(burst) if now.duration_since(burst.at) <= WHEEL_BURST_GAP => {
+                        burst.over_rail
+                    }
+                    _ => under_pointer,
+                };
+                self.wheel_burst = Some(WheelBurst { over_rail, at: now });
+                if over_rail {
                     let index = self.panel.index();
                     let next = self.panel_scroll[index] as i32 + delta;
                     self.panel_scroll[index] = next.max(0) as usize;
@@ -7228,6 +7272,103 @@ mod tests {
         assert!(
             workbench.panel_scroll[slot] > 2,
             "the wheel over the rail scrolls it"
+        );
+    }
+
+    fn roll(
+        workbench: &mut Workbench,
+        data: &WorkbenchData,
+        kind: mouse::MouseKind,
+        x: u16,
+        y: u16,
+    ) {
+        workbench.handle(
+            WbEvent::Mouse(mouse::MouseEvent {
+                kind,
+                x,
+                y,
+                shift: false,
+                alt: false,
+                ctrl: false,
+            }),
+            data,
+        );
+    }
+
+    /// End the burst in progress, the way a reader who stops, aims and rolls
+    /// again does it.
+    fn pause_between_bursts(workbench: &mut Workbench) {
+        workbench.wheel_burst = workbench.wheel_burst.map(|burst| WheelBurst {
+            at: Instant::now() - WHEEL_BURST_GAP - Duration::from_millis(50),
+            ..burst
+        });
+    }
+
+    /// A burst belongs to the surface it began over. A terminal reports a fling
+    /// (or a free-spinning wheel) as a long run of wheel events, and they follow
+    /// the pointer: crossing the divider mid-fling handed the rest of the
+    /// gesture to the rail, whose list then walked under a hand that never aimed
+    /// at it.
+    #[test]
+    fn a_wheel_burst_keeps_scrolling_the_conversation_it_began_over() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let slot = workbench.panel.index();
+
+        roll(&mut workbench, &data, mouse::MouseKind::WheelUp, 40, 15);
+        let scrolled = workbench.chat_scroll;
+        assert!(scrolled > 0, "the wheel over the conversation scrolls it");
+
+        // The pointer is over the rail now; the burst is still the one that
+        // began in the conversation, so the rail's list stays put.
+        roll(&mut workbench, &data, mouse::MouseKind::WheelUp, 110, 15);
+        assert_eq!(
+            workbench.panel_scroll[slot], 0,
+            "the burst did not hand the rail its tail"
+        );
+        assert!(
+            workbench.chat_scroll > scrolled,
+            "the burst kept scrolling the conversation"
+        );
+    }
+
+    /// The same rule the other way: a burst that began over the rail scrolls the
+    /// rail even after the pointer leaves it.
+    #[test]
+    fn a_wheel_burst_keeps_scrolling_the_rail_it_began_over() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let slot = workbench.panel.index();
+
+        roll(&mut workbench, &data, mouse::MouseKind::WheelDown, 110, 15);
+        let scrolled = workbench.panel_scroll[slot];
+        assert!(scrolled > 0, "the wheel over the rail scrolls it");
+
+        roll(&mut workbench, &data, mouse::MouseKind::WheelDown, 40, 15);
+        assert_eq!(
+            workbench.chat_scroll, 0,
+            "the conversation did not take the burst over"
+        );
+        assert!(
+            workbench.panel_scroll[slot] > scrolled,
+            "the rail kept scrolling"
+        );
+    }
+
+    /// Stop, aim, roll again: a silence longer than the burst gap is a new
+    /// gesture, and it scrolls whatever the pointer is over by then.
+    #[test]
+    fn a_new_wheel_burst_follows_the_pointer() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let slot = workbench.panel.index();
+
+        roll(&mut workbench, &data, mouse::MouseKind::WheelDown, 40, 15);
+        pause_between_bursts(&mut workbench);
+        roll(&mut workbench, &data, mouse::MouseKind::WheelDown, 110, 15);
+        assert!(
+            workbench.panel_scroll[slot] > 0,
+            "the new burst scrolled the rail under the pointer"
         );
     }
 
