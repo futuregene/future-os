@@ -1502,6 +1502,16 @@ TUI_SCENARIO_KEYS: dict[str, str] = {
 # `FUTURE_DEMO_LONG`. See `TUI_SCENARIO_KEYS` above.
 TUI_SCENARIO_LONG: dict[str, str] = {"scrolled": "1"}
 
+# The one scenario whose keystrokes are *prose* rather than a verb: `streaming`
+# submits a prompt, so the words are the reader's and have to be in the language
+# the frame is pinned to — a Chinese question in an English frame (or the other
+# way round) is the mismatch this payload exists to avoid. Everything else in
+# `TUI_SCENARIO_KEYS` is a verb, a key or a query word, and reads the same in
+# both languages.
+TUI_SCENARIO_KEYS_EN: dict[str, str] = {
+    "streaming": "Explain this off-by-one in detail, and where else it hides\r",
+}
+
 
 # Each entry lists the label in every language the surface ships: the capture
 # pins one language (`--lang`), and a tab the frame spells differently is a
@@ -1613,10 +1623,17 @@ def _tui_drag_divider(dx: int, cols: int, rows: int, settle: float):
     return (settle, action)
 
 
-def _tui_steps(scenario: str, cols: int, rows: int, settle: float = 2.5):
-    """The input script for a scenario, or a clear error for an unknown one."""
+def _tui_steps(scenario: str, cols: int, rows: int, settle: float = 2.5, lang: str = "zh"):
+    """The input script for a scenario, or a clear error for an unknown one.
+
+    `lang` only reaches the scenarios that submit prose (see
+    `TUI_SCENARIO_KEYS_EN`); every other keystroke is a verb or a key, and the
+    same bytes work in both languages.
+    """
     if scenario in TUI_SCENARIO_KEYS:
         keys = TUI_SCENARIO_KEYS[scenario]
+        if lang.startswith("en"):
+            keys = TUI_SCENARIO_KEYS_EN.get(scenario, keys)
         return [(settle, keys.encode())] if keys else []
     if scenario in TUI_SCENARIO_TABS:
         return [_tui_click_tab(TUI_SCENARIO_TABS[scenario], cols, rows, settle)]
@@ -1653,7 +1670,7 @@ def tui(args: argparse.Namespace) -> int:
     home = work / "home"
     home.mkdir()
     agent = None
-    steps = _tui_steps(args.scenario, args.cols, args.rows)
+    steps = _tui_steps(args.scenario, args.cols, args.rows, lang=args.lang)
     try:
         if args.addr:
             # Attaching to an agent that is already running (the "real session"
@@ -1662,12 +1679,13 @@ def tui(args: argparse.Namespace) -> int:
             addr = args.addr
             env = None
         else:
-            agent_env = None
+            # One flag pins the whole frame: the chrome's language (`--lang`,
+            # written into the TUI's settings below) and the scripted data's
+            # (`FUTURE_DEMO_LANG`, which the demo agent reads) have to agree, or
+            # the picture is English around a Chinese session list.
+            agent_env = {**os.environ, "FUTURE_DEMO_LANG": args.lang}
             if args.scenario in TUI_SCENARIO_LONG:
-                agent_env = {
-                    **os.environ,
-                    "FUTURE_DEMO_LONG": TUI_SCENARIO_LONG[args.scenario],
-                }
+                agent_env["FUTURE_DEMO_LONG"] = TUI_SCENARIO_LONG[args.scenario]
             agent = subprocess.Popen(
                 [str(agent_bin), "--port", "0"],
                 stdout=subprocess.PIPE,
@@ -1688,9 +1706,20 @@ def tui(args: argparse.Namespace) -> int:
             # `docs/tui/assets/` are of a reader who has it open — so whether a
             # frame carries the rail stays the scenario's choice instead of
             # following a product default that can change under it.
+            #
+            # Its width is usually left to the surface (`SIDEBAR_DEFAULT`), and
+            # `--sidebar-width` is for the frames where the default is the
+            # problem: the rail reserves a third of its own width for the
+            # workspace name, so at 36 columns an English session title has
+            # about nineteen cells before the ellipsis and most of them end in
+            # `…`, while the same list in Chinese fits. Pinning it keeps the
+            # layout a decision of the capture instead of the reader's terminal.
+            pinned = {"language": args.lang, "sidebarVisible": True}
+            if args.sidebar_width is not None:
+                pinned["sidebarWidth"] = args.sidebar_width
             (home / "tui").mkdir(parents=True, exist_ok=True)
             (home / "tui" / "settings.json").write_text(
-                json.dumps({"language": args.lang, "sidebarVisible": True}),
+                json.dumps(pinned),
                 encoding="utf-8",
             )
         argv = [str(tui_bin), "tui", "--offline", "--grpc-addr", addr]
@@ -1772,6 +1801,25 @@ def _self_test() -> int:
     check("no phantom find", _find_word_column(cells, "不存在"), None)
     # A word starting mid-slot is still found; a partial match is not a match.
     check("chat tab", _find_word_column(cells, "待办")[1], 2)
+
+    # One flag pins the whole frame. `--lang en` has to reach the *keystrokes* as
+    # well as the chrome and the scripted data: `streaming` submits a prompt, and
+    # an English frame that asks its question in Chinese is the mismatch the
+    # language pin exists to avoid. Every other scenario is a verb or a key, so
+    # the bytes must stay the same in both languages.
+    #
+    # The second check is the one with teeth: comparing the English prompt to the
+    # English table alone would still pass if `--lang` stopped reaching this
+    # function, because the table is what the expected value comes from.
+    en_prompt = _tui_steps("streaming", 40, 2, settle=0.0, lang="en")[0][1]
+    zh_prompt = _tui_steps("streaming", 40, 2, settle=0.0)[0][1]
+    check("en prompt comes from the en table", en_prompt, TUI_SCENARIO_KEYS_EN["streaming"].encode())
+    check("en prompt is not the zh one", en_prompt == zh_prompt, False)
+    check(
+        "verbs are language-free",
+        _tui_steps("help", 40, 2, settle=0.0, lang="en")[0][1],
+        TUI_SCENARIO_KEYS["help"].encode(),
+    )
 
     if problems:
         for problem in problems:
@@ -1997,7 +2045,14 @@ def main() -> int:
         "--lang",
         default="zh",
         choices=("system", "zh", "en"),
-        help="interface language the capture pins (default zh, the documented screenshots)",
+        help="interface language the capture pins, chrome and scripted data alike "
+        "(default zh, the documented screenshots)",
+    )
+    tui_parser.add_argument(
+        "--sidebar-width",
+        type=int,
+        default=None,
+        help="columns the sidebar is pinned to (default: the surface's own default)",
     )
     tui_parser.add_argument("--release", action="store_true", help="look in target/release instead of target/debug")
     tui_parser.add_argument("--keep-stream", default=None,
