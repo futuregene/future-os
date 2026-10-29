@@ -4647,18 +4647,24 @@ mod tests {
             !text.contains("future-tui"),
             "the corner names the build: {text}"
         );
-        // A door is its name: the chord is the footer hint row's job, and the
-        // header spends its cells on the conversation's title instead.
         assert!(
-            text.contains(t(Language::Zh, Key::TabSessions)),
+            text.contains(&format!(
+                "[{}] {}",
+                workbench.keys.key(preferences::Action::Sessions),
+                t(Language::Zh, Key::TabSessions)
+            )),
             "the chat list's door: {text}"
         );
-        assert!(
-            !text.contains(&format!(
-                "[{}]",
-                workbench.keys.key(preferences::Action::Sessions)
-            )),
-            "no chord rides in the header: {text}"
+        // …and the hint row does not repeat it: the door is where it is taught.
+        assert_eq!(
+            text.matches(&format!(
+                "[{}] {}",
+                workbench.keys.key(preferences::Action::Sessions),
+                t(Language::Zh, Key::TabSessions)
+            ))
+            .count(),
+            1,
+            "the key is named once: {text}"
         );
         assert!(text.contains("修复 parser 的 off-by-one"), "{text}");
         assert!(text.contains("dev-huichen"), "{text}");
@@ -6185,9 +6191,10 @@ mod tests {
             .find(|(_, id)| id == "header.sessions")
             .cloned()
             .expect("the header's chat-list door");
-        // The region is the cells the button is *painted* on: the door's name
-        // and nothing else. The chord it answers to is the footer hint row's
-        // (`ctrl+r 会话`) and the help box's.
+        // The region is the cells the button is *painted* on, and it is the
+        // `[key] label` shape the panel doors use — the chord is how a reader
+        // finds out what it is, and this door is the only place the row beside
+        // the title dares to spend cells on it.
         let painted = ansi::slice_cols(
             &rows[rect.y as usize],
             rect.x as usize,
@@ -6195,7 +6202,11 @@ mod tests {
         );
         assert_eq!(
             crate::utils::strip_ansi_codes(&painted).trim_end(),
-            t(Language::Zh, Key::TabSessions)
+            format!(
+                "[{}] {}",
+                surface.keys.key(preferences::Action::Sessions),
+                t(Language::Zh, Key::TabSessions)
+            )
         );
         // A click is the key: same verb, same box, same list.
         assert_eq!(
@@ -6207,26 +6218,11 @@ mod tests {
         keyboard.handle(WbEvent::Key("ctrl+r".into()), &data);
         assert_eq!(surface.overlay, keyboard.overlay);
 
-        // Narrower, the brand gives way before this door: the rail is not beside
-        // the conversation there, and it is keyboard-only, so the button is the
-        // pointer's one way to the list.
+        // A narrow frame gives up the panel browsers and the brand before this
+        // door — the rail is not beside the conversation there, and it is
+        // keyboard-only, so the button is the pointer's one way to the list.
         let (mut narrow, rows) = frame(&data, 40, 38);
-        let row = plain(&rows[..1]);
-        assert!(
-            row.contains("修复 parser"),
-            "the title is still named: {row:?}"
-        );
-        assert!(!row.contains("FUTURE OS"), "the brand gave way: {row:?}");
-        assert_eq!(
-            click_region(&mut narrow, &data, 40, 38, "header.sessions"),
-            vec![WbAction::Redraw]
-        );
-        assert_eq!(narrow.overlay, Some(Overlay::Picker(PickerKind::Sessions)));
-
-        // Narrower still, the panel browsers go and the chat list is what is
-        // left beside the title.
-        let (mut sliver, rows) = frame(&data, 24, 38);
-        let ids: Vec<String> = sliver
+        let ids: Vec<String> = narrow
             .hits()
             .regions()
             .iter()
@@ -6242,13 +6238,15 @@ mod tests {
         );
         let row = plain(&rows[..1]);
         assert!(
-            row.contains(t(Language::Zh, Key::TabSessions)),
-            "the chat list is still a door: {row:?}"
+            row.contains("修复 parser"),
+            "the title is still named: {row:?}"
         );
+        assert!(!row.contains("FUTURE OS"), "the brand gave way: {row:?}");
         assert_eq!(
-            click_region(&mut sliver, &data, 24, 38, "header.sessions"),
+            click_region(&mut narrow, &data, 40, 38, "header.sessions"),
             vec![WbAction::Redraw]
         );
+        assert_eq!(narrow.overlay, Some(Overlay::Picker(PickerKind::Sessions)));
     }
 
     /// The files panel is not a tab: the strip names two of them, no strip cell
@@ -6271,8 +6269,8 @@ mod tests {
         assert!(ids.contains(&"header.files"), "{ids:?}");
 
         // The region is the cells the button is *painted* on, not a rectangle
-        // beside it: the cells it names carry `文件` and nothing else — the
-        // header names doors, the footer's hint row and the help box teach keys.
+        // beside it: the cells it names carry `[ctrl+f] 文件` (the panel has a
+        // chord, and the header is one of the two places it is spelled).
         let (rect, _) = workbench
             .hits()
             .regions()
@@ -6287,7 +6285,11 @@ mod tests {
         );
         assert_eq!(
             crate::utils::strip_ansi_codes(&painted).trim_end(),
-            t(Language::Zh, Key::FilesTitle)
+            format!(
+                "[{}] {}",
+                workbench.keys.key(preferences::Action::Files),
+                t(Language::Zh, Key::FilesTitle)
+            )
         );
         assert_eq!(workbench.keys.key(preferences::Action::Files), "ctrl+f");
 
@@ -6297,8 +6299,8 @@ mod tests {
             vec![WbAction::OpenFiles]
         );
 
-        // Its neighbour is the repository browser: its own region, its own
-        // verb, and its name painted without a chord beside it.
+        // Its neighbour is the repository browser: same `[key] label` shape, its
+        // own region, and its own verb.
         let (rect, _) = workbench
             .hits()
             .regions()
@@ -6311,7 +6313,10 @@ mod tests {
             rect.x as usize,
             rect.right() as usize,
         );
-        assert_eq!(crate::utils::strip_ansi_codes(&painted).trim_end(), "git");
+        assert_eq!(
+            crate::utils::strip_ansi_codes(&painted).trim_end(),
+            format!("[{}] git", workbench.keys.key(preferences::Action::Git))
+        );
         assert_eq!(
             click_region(&mut workbench, &data, 120, 38, "header.git"),
             vec![WbAction::OpenGit]

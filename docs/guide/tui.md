@@ -49,8 +49,13 @@ conversations, to see the rail's window and its `↓ N more` row).
  input box (❯ multiline draft, grows)      │  (the rail runs down beside it)
  activity: ⠋ 思考 … · 3s · 2 工具                   42 tok/s · 缓存 96%
  status:   model · effort · approval   ░░ ctx 6.9k/1.0M 0.7% · ≈¥0.01
- hint:     Esc 回到聊天 · ctrl+d 侧栏 · ctrl+r 会话 · ctrl+p 命令 · ctrl+q 偏好设置
+ hint:     Esc 回到聊天 · ctrl+d 侧栏 · ctrl+p 命令 · ctrl+q 偏好设置
 ```
+
+The hint row teaches keys whose door is not already on screen: `ctrl+r` is not on
+it, because the header's own `[ctrl+r] 会话` button spells that chord a row
+above, and `ctrl+f`/`ctrl+g` ride on their buttons the same way. Nothing a
+reader needs is taught only in the help box, and nothing is taught twice.
 
 The rail is a *column*, not a panel that stops one band early: it (and its
 divider) run from under the header down to the footer, so the space beside the
@@ -358,9 +363,9 @@ click on the rail's tab strip are the doors to the same places.
 | `ctrl+z` / `ctrl+shift+z` (or `alt+y`) | Undo / redo draft edits |
 | `pageUp` / `pageDown` | Scroll the conversation ten rows — always, including while the rail has the keys (`ctrl+d`): paging the transcript is the one thing these keys mean. The rail moves its own cursor with `↑`/`↓`, `ctrl+↑`/`↓` switches conversations, and the wheel over the rail scrolls it; `esc` returns to the latest output |
 | `/queue` | List queued prompts — the ones sent while a run was in flight; `x` cancels, `r` / `enter` cancels and recalls into the draft (`ctrl+c` stops the active run, not the queue) |
-| `ctrl+g` or the `git` button in the header | The repository browser: 提交 / 引用 / 改动 / 暂存 tabs, a lane-coloured graph log across every branch, and the selected row's patch. `1`–`4` pick a tab, `tab` switches list/detail, `PgUp`/`PgDn` page the patch, `y` copies the row |
+| `ctrl+g` or `[ctrl+g] git` in the header | The repository browser: 提交 / 引用 / 改动 / 暂存 tabs, a lane-coloured graph log across every branch, and the selected row's patch. `1`–`4` pick a tab, `tab` switches list/detail, `PgUp`/`PgDn` page the patch, `y` copies the row |
 | `ctrl+o` | Model picker (`/model`): every model the agent offers, grouped by provider, with the reasoning slider on its first row |
-| `ctrl+f` or `/files` | The **files panel**: this conversation's workspace as a tree, in a box over the frame — the same session scope as `/git`. `↑`/`↓` walk it, `⏎`/`→` open, `⌫`/`←` go up a level, `r` re-reads the directory, `esc` closes. The header's 文件 button is the pointer's door to it, and its `git` neighbour sits beside it — the header names where the reader can go, and the keys are this table's and the footer's to teach |
+| `ctrl+f` or `/files` | The **files panel**: this conversation's workspace as a tree, in a box over the frame — the same session scope as `/git`. `↑`/`↓` walk it, `⏎`/`→` open, `⌫`/`←` go up a level, `r` re-reads the directory, `esc` closes. The header's `[ctrl+f] 文件` button is the pointer's door to it, and `[ctrl+g] git` sits beside it |
 | `ctrl+v` | Read the clipboard: an image becomes a draft attachment, text is pasted. `/paste` does the same for terminals that bind the key themselves |
 | `/preview` | Preview the newest image attached to the draft (no chord: the fifteen go to the actions pressed while working) |
 | `+` / `-` / `0`, arrows, drag, wheel | In the preview box: zoom a picture (up to 6×), pan it, reset; scroll a document |
@@ -375,7 +380,7 @@ click on the rail's tab strip are the doors to the same places.
 | `ctrl+l` | Workspaces: opens the workspace chooser — every directory this client has a conversation in, a row that creates one from the path typed into its search line (`/workspace <path>` prefills that line), and a row that is a plain chat instead: no workspace at all, which mints `~/.future/workspaces/chat/<session id>` for the conversation and is filed under 对话会话 |
 | `ctrl+d` | Sidebar: show + focus, then unfocus, then hide; full-screen on a narrow terminal. The rail's own `›` edge button does the same hide/show with one click. The show/hide choice is written to `sidebarVisible` and is where the next start begins (a first start begins hidden) |
 | `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run |
-| `ctrl+r`, or `[ctrl+r] 会话` in the header | Session picker (name, workspace and age of each conversation; the footer names the key). The header's button is the pointer's door to it, and the one button a narrow frame keeps |
+| `ctrl+r`, or `[ctrl+r] 会话` in the header | Session picker (name, workspace and age of each conversation). The header's button is both the pointer's door to it and the place the key is spelled — the hint row leaves this one out, so the chord is not taught twice — and it is the one button a narrow frame keeps |
 | `ctrl+q` or `/preferences` | Preferences: sidebar position, width and visibility, mouse capture, notifications, reduced motion, interface language, color theme and the shortcut editor. The key is also printed in the footer hint row, so it is on screen while the reader is wondering |
 | `?` (or the full-width `？`) | Help overlay (effective keys, grouped by area, then the commands; the key requires an empty draft). Rows are listed only where an action has a chord — the verbs with none keep their typed door in the command list at the end of the same box |
 | `/lang` | Interface language: opens the picker — follow the system, Chinese or English |

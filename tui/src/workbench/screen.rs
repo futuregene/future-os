@@ -45,7 +45,7 @@ pub(crate) fn compose(
     let frame: Layout = layout::layout_with_position(w, h, sidebar_w, workbench.sidebar_position);
 
     let lang = workbench.lang;
-    let (header_lines, doors) = header(&palette, data, &frame, columns, lang);
+    let (header_lines, doors) = header(&palette, data, &frame, columns, &workbench.keys, lang);
     paint(&mut rows, frame.header, header_lines);
     for (id, (x, w)) in doors {
         workbench
@@ -383,6 +383,7 @@ fn header(
     data: &WorkbenchData,
     frame: &Layout,
     columns: usize,
+    keys: &preferences::Keybindings,
     lang: Language,
 ) -> (Vec<String>, Vec<DoorSpan>) {
     let compact = frame.compact;
@@ -401,24 +402,34 @@ fn header(
     // no other pointer route (the rail is a keyboard surface, and a narrow frame
     // does not even put it beside the conversation).
     //
-    // A door is its *name*, never `[ctrl+r] 会话`: the header names where the
-    // reader can go, and the keys are the footer's and the help box's to teach.
-    // A chord printed here was one more thing to read on the row that names the
-    // conversation, and it repeated a key the hint row already spells.
+    // A door carries its chord — `[ctrl+r] 会话` — and it is the only place some
+    // of them are named: the footer's hint row leaves the chat list out for
+    // exactly this reason (see `hint_row`), so the header is where that key is
+    // learned.
     let doors: Vec<Door> = vec![
         Door {
             id: "header.sessions",
-            text: header_button(palette, t(lang, Key::TabSessions)),
+            text: header_button(
+                palette,
+                keys,
+                preferences::Action::Sessions,
+                t(lang, Key::TabSessions),
+            ),
         },
         Door {
             id: "header.files",
-            text: header_button(palette, t(lang, Key::FilesTitle)),
+            text: header_button(
+                palette,
+                keys,
+                preferences::Action::Files,
+                t(lang, Key::FilesTitle),
+            ),
         },
         Door {
             id: "header.git",
             // `git` is a proper noun: it reads the same in both languages, and
             // the panel's own title says `git · <repo>`.
-            text: header_button(palette, "git"),
+            text: header_button(palette, keys, preferences::Action::Git, "git"),
         },
     ];
     let doors: Vec<Door> = doors
@@ -572,15 +583,27 @@ fn door_spans(doors: &[Door], left: usize, pad: usize) -> Vec<DoorSpan> {
     spans
 }
 
-/// The header's button: the door's own name, in the accent tone.
+/// The header's button: `[ctrl+f] 文件`, the same `[key] label` shape the
+/// approval box uses for its answers — or the bare name when the action has no
+/// chord, because `[] 文件` reads as a broken label.
 ///
-/// A pointer target on a header row has to look like one, and a name in the
-/// accent colour is how this surface marks the things a click opens. The chord
-/// it answers to is not painted beside it: the footer's hint row and the help
-/// box are where keys are taught, and a header that repeated them spent the row
-/// that names the conversation.
-fn header_button(palette: &Palette, label: &str) -> String {
-    palette.strong(palette.iris, label)
+/// A pointer target on a header row has to look like one, and the chord beside
+/// the name is how a reader who never opened the help discovers the key.
+fn header_button(
+    palette: &Palette,
+    keys: &preferences::Keybindings,
+    action: preferences::Action,
+    label: &str,
+) -> String {
+    let key = keys.key(action);
+    let label = palette.strong(palette.iris, label);
+    if key.is_empty() {
+        return label;
+    }
+    format!(
+        "{} {label}",
+        palette.text(palette.iris, &format!("[{key}]"))
+    )
 }
 
 /// The header's one row, resolved: how much of the corner is drawn, which doors
@@ -1539,6 +1562,10 @@ fn hint_row(
     // where it went; the cells it frees are what keep both `ctrl+q` and
     // `ctrl+n` on the row in English at 120 columns.
     //
+    // The chat list (`ctrl+r 会话`) is not listed either: the header's own door
+    // beside the title spells `[ctrl+r] 会话`, so a hint here would be the same
+    // key taught twice on one screen. Its cells went to the entries above.
+    //
     // `esc` is not listed either: it is the key that leaves *whatever the reader
     // is in* — an overlay, the queue, a scrolled-back transcript — so a hint
     // that spelled it named one of the five things it does, and the boxes that
@@ -1550,7 +1577,6 @@ fn hint_row(
     // overlay's own inline table does.
     let wide = [
         (workbench.keys.key(Action::Sidebar), Key::HintSidebar),
-        (workbench.keys.key(Action::Sessions), Key::HintSessions),
         (workbench.keys.key(Action::Palette), Key::HintCommands),
         (workbench.keys.key(Action::Preferences), Key::HintSettings),
         (workbench.keys.key(Action::NewSession), Key::HintNewChat),
@@ -4125,11 +4151,9 @@ mod tests {
             "{row:?}"
         );
         assert!(!row.contains("已"), "{row:?}");
-        // Narrower still, the corner is what pays: the doors stay, the build
-        // number goes, and nothing is cut in half on the way. (The doors are
-        // their names now, so the rung where this happens is a lot further left
-        // than it was when each one carried its chord.)
-        let rows = workbench.render(&data, 60, 24);
+        // Ten cells narrower, the corner is what pays: the doors and the brand
+        // stay, the build number goes, and nothing is cut in half on the way.
+        let rows = workbench.render(&data, 90, 24);
         let row = plain(&rows[0]);
         assert!(!row.contains("v0.0.2"), "{row:?}");
         assert!(row.trim_end().ends_with('●'), "{row:?}");
@@ -4265,14 +4289,17 @@ mod tests {
             Some("? 帮助"),
             "{wide:?}"
         );
+        // The chat list is the header's to teach: the door beside the title
+        // spells it, so the hint row leaves it out.
+        assert!(!wide.contains("ctrl+r"), "{wide:?}");
         // Narrow keeps the head of the row whole and drops the tail, and never
         // cuts a hint in half. Measured at a width where the dropped entry is
         // gone in *both* languages: the Chinese labels are half as wide as the
-        // English ones, so a 40-column row that ends after `ctrl+r` in English
-        // still reaches `ctrl+p` in Chinese.
+        // English ones, so a 40-column row that ends after `ctrl+p` in English
+        // still reaches it in Chinese.
         let narrow = plain(&hint_row(&workbench, &FUTURE_DARK, 40, true)[0]);
         assert!(narrow.contains("ctrl+d"), "{narrow:?}");
-        assert!(narrow.contains("ctrl+r"), "{narrow:?}");
+        assert!(narrow.contains("ctrl+p"), "{narrow:?}");
         let narrow = plain(&hint_row(&workbench, &FUTURE_DARK, 24, true)[0]);
         assert!(narrow.contains("ctrl+d"), "{narrow:?}");
         assert!(
