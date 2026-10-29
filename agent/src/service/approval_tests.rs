@@ -48,7 +48,16 @@ async fn shutdown_releases_a_blocking_tool_approval() {
         assert!(Instant::now() < deadline, "tool approval never registered");
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    let report = handle.shutdown(Duration::from_secs(3)).await;
+    // The invariant is that the drain releases the admitted caller (and that it
+    // releases the approval it was waiting on), not how fast the OS closes
+    // SQLite and folds the journal: Windows runners run thousands of tests at
+    // once, and the storage lane's own measurement (2026-10-29) has one writer
+    // job holding it for 18–30 s on a real machine. A 3 s deadline was a bound on
+    // the runner — it failed red there on 2026-10-29 with `Agent shutdown deadline
+    // exceeded during journal compactor and SQLite` while every assertion below
+    // held. The final-state assertions are unchanged; only the budget moves, as
+    // in `cli_prompt_and_follow_up_use_real_run_finalization_without_dequeuing_on_shutdown`.
+    let report = handle.shutdown(Duration::from_secs(30)).await;
     assert_eq!(
         report.status,
         ShutdownStatus::Stopped,

@@ -650,8 +650,18 @@ impl PeerSession {
             format!("p.{}.xfer.down.*.chunk.*", self.pair_id),
         )
         .await?;
-        // SUB enqueueing is not broker readiness. A different connection may
-        // publish immediately after connect returns; wait for the ordered PONG.
+        // SUB enqueueing is not broker readiness, and this flush does not make it
+        // so: `Client::flush()` writes the buffered frames and awaits no
+        // acknowledgement (async-nats 0.50 has no ping/pong round trip on it). It
+        // buys exactly one thing — the `SUB` frames are on the socket, not in a
+        // buffer the client might still be batching — so the window in which a
+        // publish from another connection can beat our registration is as small
+        // as this process can make it. What it does not buy: a host publishing
+        // in that window still loses the event (NATS Core has no replay), which
+        // is why a redelivery-shaped gap is healed by `get_events_since` and why
+        // a test that publishes immediately after connect must wait for the
+        // broker's own subscription table (`FakeNats::wait_for_sub`), not for
+        // this call to return.
         tokio::time::timeout(request_budget(), self.client.flush())
             .await
             .map_err(|_| {
