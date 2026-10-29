@@ -19,7 +19,7 @@ use crate::workbench::state::{self, ActivityKind, GitRow, PanelId, WorkbenchData
 use crate::workbench::syntax;
 use crate::workbench::theme::Palette;
 use crate::workbench::widgets;
-use crate::workbench::{launchpad, panels, Overlay, Workbench, COMMANDS, HELP_KEYS};
+use crate::workbench::{launchpad, panels, Overlay, Workbench, HELP_KEYS};
 
 /// Compose one frame.
 pub(crate) fn compose(
@@ -2866,11 +2866,13 @@ fn help_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec
         )
     };
     // A key table lists keys. An action with no chord has a typed door instead
-    // (`/queue`, `/lang`, `/copy`, `/refresh`…), and those are listed further
-    // down under the commands — so printing an empty-key row here (one per
-    // chordless action, standing in the same column as the chords) spent a line
-    // saying "there is nothing to say". The shortcut *editor* still lists every
-    // action: that screen exists to give the chordless ones a chord.
+    // (`/queue`, `/lang`, `/copy`, `/refresh`…), and the palette (`/`, `ctrl+p`)
+    // is where every verb is spelled — so printing an empty-key row here (one
+    // per chordless action, standing in the same column as the chords) spent a
+    // line saying "there is nothing to say", and reprinting the palette's own
+    // list below the table spent thirty-five more on a box the reader opens to
+    // find a key. The shortcut *editor* still lists every action: that screen
+    // exists to give the chordless ones a chord.
     let mut group = None;
     for action in ACTIONS {
         let key = workbench.keys.key(action);
@@ -2899,15 +2901,11 @@ fn help_box(workbench: &mut Workbench, palette: &Palette, w: u16, h: u16) -> Vec
     for (key, description) in HELP_KEYS {
         content.push(row(key, t(lang, description), palette));
     }
-    content.push(String::new());
-    content.push(palette.strong(palette.iris, t(lang, Key::PalettePanelTitle)));
-    for (command, description) in COMMANDS {
-        content.push(format!(
-            "   {}  {}",
-            palette.text(palette.iris, &fit(command, 18)),
-            palette.body(t(lang, description))
-        ));
-    }
+    // The verbs are not repeated here: the palette is one key away (`/` or
+    // `ctrl+p`, spelled in the inline table above), and a second copy of that
+    // list under the key table turned a box about keys into a scroll of
+    // thirty-five commands the reader had not asked for.
+    //
     // The window: the overlay scrolls rather than growing past the screen.
     let visible = h.saturating_sub(5) as usize;
     let max_scroll = content.len().saturating_sub(visible);

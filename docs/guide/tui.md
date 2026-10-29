@@ -207,7 +207,7 @@ sessions, `ctrl+d` the rail, `ctrl+x` quit, `ctrl+p` commands, `ctrl+o` model,
 preferences, and `ctrl+1`/`ctrl+2` the rail's two tabs. Everything else is a
 typed verb or a pointer target: `/delete`, `/pin`, `/queue`, `/copy`, `/mouse`,
 `/preview`, `/refresh`, `/lang`, `/reply-detail`, and `?` for help — the help
-overlay lists only the actions that have a chord, and its command list names the
+overlay lists only the actions that have a chord, and the palette names the
 door for the rest.
 
 The map stops there because the letters do: a terminal sends Backspace, Tab,
@@ -342,8 +342,9 @@ the terminal; notification payloads are sanitized, flattened and bounded.
 draft) help. No default binding is a function key or an `alt+` chord — see
 "One prefix" above for why — and a reader may still *rebind* to either. Help and
 footer hints show the effective bindings, not stale defaults, and the help
-overlay groups them (chats / choices / panels / interface / inline keys /
-commands) instead of printing one flat list. In the shortcut
+overlay groups them (chats / choices / panels / interface / inline keys) instead
+of printing one flat list. The verbs are not in it: the palette is one key away
+and already lists them with their descriptions. In the shortcut
 editor, press Enter and then a chord; conflicts swap owners, `r` restores
 defaults, and Escape cancels capture. Supported chords include Ctrl/Alt plus an
 ASCII letter or digit, F1–F24, Tab, navigation keys and Enter/Escape.
@@ -394,7 +395,7 @@ click on the rail's tab strip are the doors to the same places.
 | `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run |
 | `ctrl+r`, or `[ctrl+r] 会话` in the header | Session picker (name, workspace and age of each conversation). The header's button is both the pointer's door to it and the place the key is spelled — the hint row leaves this one out, so the chord is not taught twice — and it is the one button a narrow frame keeps |
 | `ctrl+q` or `/preferences` | Preferences, in the order the box lists them: interface language and color theme first (the two rows that repaint the whole surface — the language leads, because every other label there is written in whatever it says), then sidebar position, width and visibility, mouse capture, notifications, reduced motion, the shortcut editor and restore defaults. The key is also printed in the footer hint row, so it is on screen while the reader is wondering |
-| `?` (or the full-width `？`) | Help overlay (effective keys, grouped by area, then the commands; the key requires an empty draft). Rows are listed only where an action has a chord — the verbs with none keep their typed door in the command list at the end of the same box |
+| `?` (or the full-width `？`) | Help overlay (effective keys, grouped by area; the key requires an empty draft). Rows are listed only where an action has a chord — a verb with none is the palette's (`/` or `ctrl+p`), which is named in the same box and prints the list once |
 | `/lang` | Interface language: opens the picker — follow the system, Chinese or English |
 | `/reply-detail` | Process detail (no chord — `ctrl+e` is the draft's end of line): two levels, the desktop's `replyDetail` — **answer only** (a settled reply keeps the answer it ended on, and the reasoning, calls and notes that produced it fold into one summary row above it; a reply that never wrote prose folds onto the slice it stopped at) and **whole process** (every slice keeps its own row, in the order it happened). The terminal opens on **answer only**, the desktop's default, and the level applies to the whole conversation at once — one press re-reads every reply, not the one under the cursor. Neither level shows a tool call's body or a reasoning block's text: a call is one row, a thought a `▸ thinking` marker (or a count in the summary row), and the details open one row at a time with `tab` + `enter` (or a click). A reply folds only once its run has ended (`agent_start` … `agent_end`); while it streams, no work folds at either level — every thought, call and piece of prose keeps its own row, so the transcript only grows or updates in place until `agent_end`, and the level never changes what a running reply looks like. The counts are words in the reader's language — `61 tool calls · 30 thoughts`, or `工具调用 61 次 · 思考 30 次` in Chinese, whose word order and counter (`次`) the templates carry — and so is the bare reasoning marker (`▸ 思考`); the summary row is drawn in the faintest colour the chrome has, one step under body text, so it sits behind the answer it stands above. History loaded from a session folds the same way, so a reopened conversation reads as one answer per reply. A view toggle for the run it is used in, not a preference: every start opens on the folded level |
 | `ctrl+c` | Stop the run in flight — the shell's own meaning of the byte. With nothing running it is a no-op rather than an error |
