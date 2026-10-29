@@ -1693,6 +1693,22 @@ struct BoxGeometry {
     top: u16,
 }
 
+/// The cells a palette row gives its label (the verb or the skill name).
+const PALETTE_LABEL_CELLS: usize = 20;
+
+/// The narrowest frame the palette splits into two columns on.
+///
+/// Below it a column would hold a truncated label and no description, which is
+/// worse than one list: the split is a *widening*, not the layout.
+const PALETTE_SPLIT_MIN_WIDTH: u16 = 96;
+
+/// The widest the split gets: two readable columns and the gap between them,
+/// and no wider — a box that filled the frame would stop reading as one.
+const PALETTE_SPLIT_BOX: u16 = 120;
+
+/// The cells between the verbs and the skills.
+const PALETTE_SPLIT_GAP: usize = 2;
+
 /// The box's width for a terminal of `w`: the requested width, never narrower
 /// than 40 columns (a box narrower than that cannot hold a row and its value),
 /// never wider than the frame.
@@ -3339,12 +3355,22 @@ fn palette_box(
     w: u16,
     h: u16,
 ) -> Vec<String> {
-    let lang = workbench.lang;
     let rows = workbench.palette_rows(data);
-    let query = workbench.palette_query.clone();
     let selection = workbench.palette_index.min(rows.len().saturating_sub(1));
     let room = h.saturating_sub(6) as usize;
     workbench.set_list_page(room);
+    // Two columns, verbs on the left and the agent's skills on the right, once
+    // the frame leaves each list a readable description. The lists are disjoint
+    // by construction (a command never reaches the model, a skill is a prompt
+    // token it expands), so putting them side by side costs no ordering: the
+    // single list below is what a narrow frame — or a filter that leaves one
+    // kind — still gets.
+    let commands = rows.iter().take_while(|row| !row.is_skill()).count();
+    if w >= PALETTE_SPLIT_MIN_WIDTH && commands > 0 && commands < rows.len() {
+        return palette_columns(workbench, palette, &rows, commands, selection, w, h);
+    }
+    let lang = workbench.lang;
+    let query = workbench.palette_query.clone();
     // Keep the highlighted entry inside the window.
     let start = selection.saturating_sub(room.saturating_sub(1));
     let shown = rows.len().saturating_sub(start).min(room);
@@ -3370,15 +3396,7 @@ fn palette_box(
     claim_box(workbench, &geometry);
 
     let mut content: Vec<String> = Vec::new();
-    content.push(format!(
-        " {} {}",
-        palette.text(palette.accent, "❯"),
-        if query.is_empty() {
-            palette.dim(t(lang, Key::PaletteFilter))
-        } else {
-            palette.body(&query)
-        }
-    ));
+    content.push(palette_filter_line(palette, &query, lang, false));
     content.push(String::new());
     if rows.is_empty() {
         content.push(palette.dim(t(lang, Key::PaletteEmpty)));
@@ -3397,22 +3415,12 @@ fn palette_box(
             }));
             line += 1;
         }
-        let marker = if index == selection { "›" } else { " " };
-        let label = if row.is_skill() {
-            format!("/{}", row.label())
-        } else {
-            row.label().to_string()
-        };
-        let body = format!(
-            " {marker} {}  {}",
-            palette.text(palette.iris, &fit(&label, 20)),
-            palette.dim(row.description())
-        );
-        content.push(if index == selection {
-            palette.strong(palette.fg, &body)
-        } else {
-            body
-        });
+        content.push(palette_row_line(
+            palette,
+            row,
+            index == selection,
+            geometry.w.saturating_sub(2) as usize,
+        ));
         // Filter line, blank line, then the rows and their headings: the first
         // entry sits on the box's fourth line.
         workbench.hit_map().push(
@@ -3434,6 +3442,186 @@ fn palette_box(
         h,
         &geometry,
     )
+}
+
+/// The filter line both palette layouts open with. `split` picks the hint that
+/// names the keys of the layout it sits in: `←`/`→` step between the columns,
+/// and on a narrow frame there are no columns to step between.
+fn palette_filter_line(palette: &Palette, query: &str, lang: Language, split: bool) -> String {
+    format!(
+        " {} {}",
+        palette.text(palette.accent, "❯"),
+        if query.is_empty() {
+            palette.dim(t(
+                lang,
+                if split {
+                    Key::PaletteFilterSplit
+                } else {
+                    Key::PaletteFilter
+                },
+            ))
+        } else {
+            palette.body(query)
+        }
+    )
+}
+
+/// One row of either layout: the selection marker, the label, its description.
+///
+/// `columns` is the whole width the row may use (one column, or the box), so the
+/// description gets whatever the label and the two gaps leave — which is what
+/// makes a two-column row truncate instead of pushing its neighbour off the box.
+fn palette_row_line(
+    palette: &Palette,
+    row: &crate::workbench::PaletteRow,
+    selected: bool,
+    columns: usize,
+) -> String {
+    let marker = if selected { "›" } else { " " };
+    let label = if row.is_skill() {
+        format!("/{}", row.label())
+    } else {
+        row.label().to_string()
+    };
+    // Cells spent before the description: the marker and the space either side
+    // of it, the label column, and the gap after it.
+    let chrome = 3 + PALETTE_LABEL_CELLS + 2;
+    let description = columns.saturating_sub(chrome).max(8);
+    let body = format!(
+        " {marker} {}  {}",
+        palette.text(palette.iris, &fit(&label, PALETTE_LABEL_CELLS)),
+        palette.dim(&fit(row.description(), description))
+    );
+    let body = if selected {
+        palette.strong(palette.fg, &body)
+    } else {
+        body
+    };
+    ansi::pad(&body, columns)
+}
+
+/// The two-column palette: the surface's verbs on the left, the agent's skills
+/// on the right, each with its own heading and its own window.
+///
+/// The selection stays one linear list (commands, then skills) because that is
+/// what `↑`/`↓` walk and what the palette's index means; the columns are only a
+/// second way to *see* it. `←`/`→` step between the columns, landing on the
+/// neighbour's row at the same visual line.
+#[allow(clippy::too_many_arguments)]
+fn palette_columns(
+    workbench: &mut Workbench,
+    palette: &Palette,
+    rows: &[crate::workbench::PaletteRow],
+    commands: usize,
+    selection: usize,
+    w: u16,
+    h: u16,
+) -> Vec<String> {
+    let lang = workbench.lang;
+    let (left, right) = rows.split_at(commands);
+    // The two headings share the first body line, so each column shows one row
+    // fewer than the single-column palette has room for.
+    let rows_room = h.saturating_sub(7) as usize;
+    workbench.set_list_page(rows_room);
+    let left_selected = selection < commands;
+    let left_start = if left_selected {
+        list_start(selection, left.len(), rows_room)
+    } else {
+        0
+    };
+    let right_start = if left_selected {
+        0
+    } else {
+        list_start(selection - commands, right.len(), rows_room)
+    };
+    let shown = left
+        .len()
+        .saturating_sub(left_start)
+        .min(rows_room)
+        .max(right.len().saturating_sub(right_start).min(rows_room));
+    let geometry = box_geometry(w, h, PALETTE_SPLIT_BOX, 3 + shown);
+    claim_box(workbench, &geometry);
+    let inner = geometry.w.saturating_sub(2) as usize;
+    let left_column = inner.saturating_sub(PALETTE_SPLIT_GAP) / 2;
+    let right_column = inner.saturating_sub(PALETTE_SPLIT_GAP) - left_column;
+
+    let mut content: Vec<String> = Vec::new();
+    content.push(palette_filter_line(
+        palette,
+        &workbench.palette_query,
+        lang,
+        true,
+    ));
+    content.push(String::new());
+    content.push(format!(
+        "{}{}{}",
+        ansi::pad(
+            &palette.dim(t(lang, Key::PaletteCommandsHeading)),
+            left_column
+        ),
+        " ".repeat(PALETTE_SPLIT_GAP),
+        palette.dim(t(lang, Key::PaletteSkillsHeading)),
+    ));
+    for offset in 0..shown {
+        let drawn = |column: &[crate::workbench::PaletteRow],
+                     start: usize,
+                     base: usize,
+                     width: usize,
+                     palette: &Palette| {
+            column
+                .get(start + offset)
+                .map(|row| {
+                    let index = base + start + offset;
+                    palette_row_line(palette, row, index == selection, width)
+                })
+                .unwrap_or_else(|| " ".repeat(width))
+        };
+        let left_line = drawn(left, left_start, 0, left_column, palette);
+        let right_line = drawn(right, right_start, commands, right_column, palette);
+        content.push(format!(
+            "{left_line}{}{right_line}",
+            " ".repeat(PALETTE_SPLIT_GAP)
+        ));
+        // The left column starts at the box's inner left; the right one after
+        // the gap. A click is resolved against the same columns the rows were
+        // painted in.
+        let line = geometry.top + 4 + offset as u16;
+        if left.get(left_start + offset).is_some() {
+            workbench.hit_map().push(
+                Rect::new(geometry.left + 1, line, left_column as u16, 1),
+                format!("palette.row.{}", left_start + offset),
+            );
+        }
+        if right.get(right_start + offset).is_some() {
+            workbench.hit_map().push(
+                Rect::new(
+                    geometry.left + 1 + (left_column + PALETTE_SPLIT_GAP) as u16,
+                    line,
+                    right_column as u16,
+                    1,
+                ),
+                format!("palette.row.{}", commands + right_start + offset),
+            );
+        }
+    }
+    framed(
+        palette,
+        t(lang, Key::PaletteTitle),
+        content,
+        w,
+        h,
+        &geometry,
+    )
+}
+
+/// The first row of a `room`-tall window that keeps `selection` visible.
+fn list_start(selection: usize, len: usize, room: usize) -> usize {
+    if room == 0 {
+        return 0;
+    }
+    selection
+        .min(len.saturating_sub(1))
+        .saturating_sub(room.saturating_sub(1))
 }
 
 /// The most candidates a mention menu shows at once. The menu completes one
