@@ -329,6 +329,10 @@ pub struct Live {
     /// surface nobody drives (tests, the demos), where every switch waits for
     /// its own answer instead.
     switch_tx: Option<tokio::sync::mpsc::UnboundedSender<SwitchLoaded>>,
+    /// A switch this client began and did not wait for (see
+    /// [`Self::open_conversation`]): the driver's cue that the rail's cursor
+    /// belongs to the answer rather than to the frame it is about to paint.
+    switch_started: bool,
 }
 
 /// The agent's answer to the two reads a switch makes, handed from the task
@@ -445,6 +449,7 @@ impl Live {
             preview_siblings: None,
             switch_load: None,
             switch_tx: None,
+            switch_started: false,
         };
 
         if let Some(id) = session.filter(|id| !id.is_empty()) {
@@ -1874,7 +1879,7 @@ impl Live {
             WbAction::Command(command) => return self.command(&command).await,
             WbAction::Scroll(_) => {}
             WbAction::LoadOlder => self.load_older().await,
-            WbAction::SwitchSession(id) => self.switch(&id).await,
+            WbAction::SwitchSession(id) => self.open_conversation(&id).await,
             // A delete also loads the successor. Keep that nested async state
             // off the caller's stack, which is small on Windows.
             WbAction::DeleteSession(id) => Box::pin(self.delete_session(&id)).await,
@@ -2301,20 +2306,48 @@ impl Live {
 
     /// Show one conversation: the synchronous half and the round trip.
     ///
-    /// Kept as one call for every door that is not a held key (a click in the
-    /// rail, the launchpad's recents, `--continue`, a deleted row's
-    /// successor). Those doors paint once after this returns, so a cache hit's
-    /// rows and the reconcile's are one frame.
-    ///
-    /// `shift+↑/↓` does *not* come through here: a step has to stay off the
-    /// agent's clock entirely, or a held key spends its burst waiting on the
-    /// first conversation it passed through (see [`Self::start_step_switch`]).
+    /// Kept for the doors that have no driver to hand an answer to, and for
+    /// `--continue` (which runs before the loop exists). Everything the driver
+    /// owns — a click in the rail, the launchpad's recents, a `ctrl+r` pick —
+    /// goes through [`Self::open_conversation`] instead, which is the same
+    /// switch without the wait.
     async fn switch(&mut self, session_id: &str) {
         if self.already_showing(session_id) {
             return;
         }
         self.begin_switch(session_id);
         self.finish_switch(session_id).await;
+    }
+
+    /// Open a conversation from a door that is not a step the driver already
+    /// owns: a click in the rail, the launchpad's recents, a `ctrl+r` pick.
+    ///
+    /// Off the loop when there is one — the same non-blocking switch a step
+    /// takes, because a click is as deliberate as a step and the agent's answer
+    /// just as slow (75 ms warm, seconds cold, measured) — and awaited when
+    /// there is no driver to hand the answer to (the frame tests, the demos).
+    ///
+    /// The driver is told the switch *began* rather than shown its answer
+    /// ([`Self::take_switch_started`]): the frame painted before the rows land
+    /// still names the conversation being left, so following "the conversation
+    /// on screen" then would park the rail's cursor back where the reader came
+    /// from. The answer's own arm does that follow when the rows arrive.
+    async fn open_conversation(&mut self, session_id: &str) {
+        if self.switch_tx.is_none() {
+            self.switch(session_id).await;
+            return;
+        }
+        if self.already_showing(session_id) {
+            return;
+        }
+        self.start_step_switch(session_id);
+        self.switch_started = true;
+    }
+
+    /// Take the "a switch began" flag: `true` when the last action opened a
+    /// conversation that has not answered yet.
+    pub fn take_switch_started(&mut self) -> bool {
+        std::mem::take(&mut self.switch_started)
     }
 
     /// Everything about a switch that costs no round trip.
@@ -2390,6 +2423,8 @@ impl Live {
     /// The non-blocking half of a switch: swap what the cache can show onto the
     /// screen *now* and read the rest in a task.
     ///
+    /// Used by both doors that have a driver behind them — a `shift+↑/↓` step
+    /// (`run::show_conversation`) and a click ([`Self::open_conversation`]).
     /// Returns whether cached rows are on screen — the caller's cue to paint
     /// before the answer arrives. A surface with no driver attached (the frame
     /// tests, the demos) has nowhere to hand the answer, so it sends nothing:
@@ -7703,7 +7738,101 @@ mod tests {
         );
     }
 
-    // ─── a step off the loop ──────────────────────────────────────────
+    // ─── a switch off the loop ────────────────────────────────────────
+
+    /// A click in the rail is the same switch as a step, and takes the same
+    /// road: the read happens in a task, the surface keeps painting, and the
+    /// driver is told the switch *began* so it does not follow "the conversation
+    /// on screen" — which is still the one being left — and park the rail's
+    /// cursor there for a frame.
+    #[tokio::test]
+    async fn a_click_reads_off_the_loop_and_tells_the_driver_it_began() {
+        let first = page_of(&["q1"]);
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_slow(
+            &[
+                ("switch_session", r#"{"success":true}"#),
+                ("get_state", r#"{"sessionId":"s-a"}"#),
+                ("get_session_entries", &first),
+            ],
+            250,
+        );
+        let table = mock.data_by_type.clone();
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s-a"), false, None)
+            .await
+            .expect("attach to the slow test agent");
+        let (tx, mut answers) = tokio::sync::mpsc::unbounded_channel();
+        live.set_switch_sender(tx);
+
+        table
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-b"}"#.into());
+        table
+            .lock()
+            .unwrap()
+            .insert("get_session_entries".into(), page_of(&["q-b"]));
+        let started = std::time::Instant::now();
+        live.apply(WbAction::SwitchSession("s-b".into())).await;
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(200),
+            "a click does not wait for the agent ({:?})",
+            started.elapsed()
+        );
+        assert!(live.take_switch_started(), "the driver is told it began");
+        assert!(!live.take_switch_started(), "and only once");
+        assert_eq!(
+            live.data(&frame()).session.id,
+            "s-a",
+            "the frame before the answer still names the conversation being left"
+        );
+        assert_eq!(
+            live.data(&frame()).input.text,
+            "",
+            "while the box is already the conversation landed on"
+        );
+        assert!(
+            rows_on_screen(&mut live).join("\n").contains("q1"),
+            "and its rows are still on screen while the read is out"
+        );
+
+        let loaded = answers.recv().await.expect("the click's read answers");
+        assert!(live.install_switch_load(loaded), "the answer owes a frame");
+        assert_eq!(live.data(&frame()).session.id, "s-b");
+        assert!(rows_on_screen(&mut live).join("\n").contains("q-b"));
+        live.client.disconnect();
+    }
+
+    /// A surface with no driver behind it (the frame tests, the demos) has
+    /// nowhere to hand an answer, so its clicks wait for their own: the same
+    /// call, one round trip, nothing owed to a loop that does not exist.
+    #[tokio::test]
+    async fn a_click_with_no_driver_waits_for_its_own_answer() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("switch_session", r#"{"success":true}"#),
+            ("get_state", r#"{"sessionId":"s-a"}"#),
+            ("get_session_entries", &page_of(&["q1"])),
+        ]);
+        let table = mock.data_by_type.clone();
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s-a"), false, None)
+            .await
+            .expect("attach to the test agent");
+
+        table
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-b"}"#.into());
+        table
+            .lock()
+            .unwrap()
+            .insert("get_session_entries".into(), page_of(&["q-b"]));
+        live.apply(WbAction::SwitchSession("s-b".into())).await;
+        assert!(!live.take_switch_started(), "nothing was left outstanding");
+        assert_eq!(live.data(&frame()).session.id, "s-b");
+        assert!(rows_on_screen(&mut live).join("\n").contains("q-b"));
+        live.client.disconnect();
+    }
 
     /// `shift+↑/↓` hands the agent's two reads to a task: the step returns
     /// without waiting, and the conversation's rows arrive on their own
@@ -7987,15 +8116,27 @@ mod tests {
             .insert("get_session_entries".into(), page_of(&["q-c"]));
         live.apply(WbAction::SwitchSession("s-c".into())).await;
 
-        let stepped = pending.recv().await.expect("s-b was read");
-        assert_eq!(stepped.id, "s-b");
+        // Both answers land, in whichever order the tasks finish: the step's is
+        // dropped, the click's installs.
+        let mut seen: Vec<(String, bool)> = Vec::new();
+        while seen.len() < 2 {
+            let loaded = pending.recv().await.expect("a read answered");
+            let id = loaded.id.clone();
+            let installed = live.install_switch_load(loaded);
+            seen.push((id, installed));
+        }
         assert!(
-            !live.install_switch_load(stepped),
-            "the step was superseded by the conversation opened since"
+            seen.iter()
+                .any(|(id, installed)| id == "s-b" && !*installed),
+            "the step was superseded by the conversation opened since: {seen:?}"
+        );
+        assert!(
+            seen.iter().any(|(id, installed)| id == "s-c" && *installed),
+            "the clicked conversation is the one that lands: {seen:?}"
         );
         assert!(
             rows_on_screen(&mut live).join("\n").contains("q-c"),
-            "the clicked conversation is what stays on screen"
+            "and it is what stays on screen"
         );
 
         // The same for `/new`: a step's rows must not land on the launchpad.
