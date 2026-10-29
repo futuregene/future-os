@@ -1420,9 +1420,9 @@ mod tests {
     fn legacy_modified_sequences() {
         let _g = reset_kitty();
         assert_eq!(parse_key("\x1b[Z").as_deref(), Some("shift+tab"));
-        // The shift arrows are the rail's tab chords (`shift+←→`) and the older
-        // spelling of the conversation step (`shift+↑↓`, now `ctrl+↑↓`), so the
-        // runtime spelling is pinned here, not only in `matches_key`.
+        // The shift arrows are the rail's two chords (`shift+←→` tabs,
+        // `shift+↑↓` sessions), so the runtime spelling is pinned here, not only
+        // in `matches_key`.
         assert_eq!(parse_key("\x1b[1;2A").as_deref(), Some("shift+up"));
         assert_eq!(parse_key("\x1b[1;2B").as_deref(), Some("shift+down"));
         assert_eq!(parse_key("\x1b[1;2C").as_deref(), Some("shift+right"));

@@ -1391,12 +1391,12 @@ fn sidebar_rows(
         );
         x = x.saturating_add(tab_width + 1);
     }
-    // A focused rail says which keys work from here: `ctrl+↑↓` switch the
-    // conversation (the chat follows the cursor, from here or from the draft),
-    // `shift+←→` the tabs. `↑↓` alone move this list's cursor and `⏎` only opens
-    // what it stands on. A reader who guessed wrong learns the chords here; it
-    // costs the list one row and saves the guesswork, so it is only shown while
-    // the rail actually owns the keys.
+    // A focused rail says which keys work from here: `shift+←→` the tabs,
+    // `shift+↑↓` the conversations (the chat follows the cursor), because `↑↓`
+    // alone move this list's cursor and `⏎` only opens what it stands on. A
+    // reader who guessed wrong learns the chords here; it costs the list one
+    // row and saves the guesswork, so it is only shown while the rail actually
+    // owns the keys.
     let footer = usize::from(workbench.sidebar_focus && area.h >= 4);
     let content = Rect::new(area.x, area.y + 1, area.w, area.h - 1 - footer as u16);
     let index = workbench.panel.index();
