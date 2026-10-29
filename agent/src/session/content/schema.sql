@@ -87,6 +87,15 @@ CREATE TRIGGER IF NOT EXISTS stream_body_owner_scope_update BEFORE UPDATE OF str
         (SELECT 1 FROM stream_symbols WHERE id=NEW.key_id AND stream_id!=NEW.stream_id);
 END;
 CREATE INDEX IF NOT EXISTS stream_body_owners_content ON stream_body_owners(content_id);
+-- Teardown looks symbol references up one parent row at a time (deleting a
+-- session cascades `stream_runs` → `stream_symbols` → every child key), and only
+-- an index whose leading column is that key makes it a lookup. Without these
+-- seven SQLite scans the whole child table once per deleted symbol: measured
+-- 2026-10-29, deleting one 30k-change conversation spent 113 s of CPU here,
+-- inside the store's single ordered writer, which stalled every other session's
+-- writes for 71 s. This is the body-owner side; `stream_contexts` below has the
+-- other six.
+CREATE INDEX IF NOT EXISTS stream_body_owners_key ON stream_body_owners(key_id);
 CREATE TRIGGER IF NOT EXISTS stream_body_owner_removed AFTER DELETE ON stream_body_owners BEGIN
     INSERT OR IGNORE INTO content_collection(content_id) VALUES (OLD.content_id);
 END;
@@ -127,6 +136,17 @@ CREATE TRIGGER IF NOT EXISTS stream_context_immutable BEFORE UPDATE ON stream_co
     SELECT RAISE(ABORT,'stream contexts are immutable');
 END;
 CREATE INDEX IF NOT EXISTS stream_contexts_digest ON stream_contexts(stream_id,digest);
+-- The six symbol keys: the other half of the teardown indexes above. The scoped
+-- indexes below lead with `stream_id`, and three of them are partial on
+-- `event_kind`, so none of them can serve a lookup by symbol alone.
+-- `stream_contexts` is append-only (see the immutability trigger above), so each
+-- of these costs one insert and never an update.
+CREATE INDEX IF NOT EXISTS stream_contexts_entry_key ON stream_contexts(entry_id);
+CREATE INDEX IF NOT EXISTS stream_contexts_tool_key ON stream_contexts(tool_id);
+CREATE INDEX IF NOT EXISTS stream_contexts_content_key ON stream_contexts(content_key);
+CREATE INDEX IF NOT EXISTS stream_contexts_block_key ON stream_contexts(block_key);
+CREATE INDEX IF NOT EXISTS stream_contexts_tool_name_key ON stream_contexts(tool_name_key);
+CREATE INDEX IF NOT EXISTS stream_contexts_tool_type_key ON stream_contexts(tool_type_key);
 CREATE INDEX IF NOT EXISTS stream_contexts_entry ON stream_contexts(stream_id,entry_id,id) WHERE event_kind IN (4,11,13);
 CREATE INDEX IF NOT EXISTS stream_contexts_tool ON stream_contexts(stream_id,entry_id,tool_id,id) WHERE event_kind IN (11,12,13);
 CREATE INDEX IF NOT EXISTS stream_contexts_key ON stream_contexts(stream_id,entry_id,content_key,id) WHERE event_kind=10;
