@@ -1210,27 +1210,40 @@ impl GrpcClient {
 
 /// One-shot `ExecuteCommand` with a deadline (mirrors the CLI port; the TS
 /// client reuses a channel, per-call connect is equivalent for our use).
+///
+/// Both futures are `Box::pin`ned, and that is load-bearing: the connect (TCP
+/// plus the readiness handshake, a unary call of its own) and the command are
+/// debug-build tonic/hyper state machines of a few hundred kilobytes, and an
+/// `async fn` that awaits them inline keeps that state in its own frame. Every
+/// caller up the chain then pays for it — measured on the test binary:
+/// `Live::apply`'s frame 708 KiB inline against 316 KiB boxed, `Live::command`
+/// 620 KiB against 248 KiB, `run::quit` 780 KiB against 344 KiB. A single TUI
+/// test needed 1.9 MiB of the 2 MiB stack a `cargo test` thread gets and died
+/// there on x86-64 CI (`a_launchpad_submit_creates_the_session_and_sends_the_prompt`,
+/// stack overflow, SIGABRT); boxed, the same test needs 1.05 MiB. A release
+/// build's frames are a fraction of that, so the shipped surface never noticed
+/// — but the depth is not free, and the tests are where it lands.
 async fn execute_unary(addr: &str, cmd: RpcCommand, timeout_secs: u64) -> Result<Value, String> {
-    let mut client = future_rpc::connection::connect_verified(
+    let mut client = Box::pin(future_rpc::connection::connect_verified(
         addr,
         future_rpc::connection::EXPECTED_AGENT_VERSION,
         Duration::from_secs(timeout_secs.min(5)),
         Duration::from_secs(5),
-    )
+    ))
     .await
     .map_err(|error| error.to_string())?;
-    let response = client
-        .execute_command(future_rpc::command_policy::request_with_timeout(cmd))
-        .await
-        .map_err(|status| {
-            let msg = status.message();
-            if msg.is_empty() {
-                status.to_string()
-            } else {
-                msg.to_string()
-            }
-        })?
-        .into_inner();
+    let response =
+        Box::pin(client.execute_command(future_rpc::command_policy::request_with_timeout(cmd)))
+            .await
+            .map_err(|status| {
+                let msg = status.message();
+                if msg.is_empty() {
+                    status.to_string()
+                } else {
+                    msg.to_string()
+                }
+            })?
+            .into_inner();
 
     if !response.success {
         return Err(if response.error.is_empty() {
