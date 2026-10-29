@@ -304,6 +304,15 @@
     "modelNamePlaceholder": "留空使用模型 ID",
     "removeModel": "移除模型",
     "thinkingLevelsLabel": "思考等级",
+    "probe": {
+      "detect": "探测",
+      "detecting": "正在测试 {{level}}…",
+      "needBaseUrl": "请先填写 Base URL 和模型 ID。",
+      "calibrationFailed": "默认请求失败——请先检查 Base URL、API 类型、密钥和模型 ID。{{error}}",
+      "failed": "探测失败：{{error}}",
+      "accepted": "已自动选中 {{count}} 个可用等级。",
+      "none": "没有等级被接受，只保留默认。"
+    },
     "modalityLabel": "模态",
     "modalityText": "文本",
     "modalityImage": "图片",

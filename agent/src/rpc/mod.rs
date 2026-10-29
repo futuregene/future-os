@@ -29,6 +29,9 @@ pub use commands::handle_command_internal;
 #[cfg(test)]
 pub(crate) use commands::test_support::make_app_state as service_test_state;
 pub use protocol::{HistoryResetCommand, RpcCommand, RpcResponse, SseEvent};
+/// The level → thinking-budget map is the session's, and the custom-provider
+/// probe has to send exactly what a session would; one definition, re-exported.
+pub(crate) use session::thinking_budget_for;
 pub use session::ServerSession;
 
 /// Map one broadcaster/journal event into its replay payload carrier. The

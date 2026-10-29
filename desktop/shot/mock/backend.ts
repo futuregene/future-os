@@ -619,6 +619,12 @@ const handlers: Record<string, (args: any) => unknown> = {
   update_builtin_provider_key: () => providersView,
   set_builtin_provider_base_url: () => providersView,
   delete_custom_provider: () => providersView,
+  // Thinking-level detection: every level is accepted, so a screenshot scenario
+  // that clicks Detect shows a fully selected row.
+  probe_thinking_level: (args: { input?: { level?: string } }) => ({
+    level: args?.input?.level || "default",
+    ok: true,
+  }),
   set_default_model: () => null,
   get_future_auth_state: () => ({
     status: "authenticated",

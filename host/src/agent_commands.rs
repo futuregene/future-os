@@ -340,6 +340,7 @@ pub fn base_command(command_type: &str, session_id: String) -> RpcCommand {
         include_builtin_providers: false,
         auth_update: None,
         provider_config: None,
+        thinking_probe: None,
         suggest_query: String::new(),
         suggest_candidates: vec![],
         skill_id: String::new(),
