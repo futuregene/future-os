@@ -197,7 +197,6 @@ fn base() -> WorkbenchData {
         worktrees: Vec::new(),
         git: None,
         tree: demo_tree(),
-        pictures: Vec::new(),
         preview: None,
     }
 }
