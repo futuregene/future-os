@@ -47,7 +47,8 @@ Options:
 
 Keys (interactive):
   enter                 Send the prompt
-  tab / shift+tab       Move between the prompt and the launchpad's chips
+  tab / shift+tab       Step through links and the rows that open a call or a
+                        thought (enter opens the one under the cursor)
   ctrl+b                Sidebar: focus / show / hide (full-screen when narrow)
   ctrl+n                New session
   ctrl+e                Final answer only, or the whole process
