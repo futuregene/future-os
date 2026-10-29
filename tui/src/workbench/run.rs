@@ -69,6 +69,10 @@ struct DriverIo<'a> {
     notifications: &'a mut crate::notifications::NotifyCenter,
     theme_explicit: &'a mut bool,
     update_rx: &'a mut Option<tokio::sync::oneshot::Receiver<Option<String>>>,
+    /// The answers a switch's own reads come back on (see
+    /// [`show_conversation`]): handed to `Live` so a step never waits for the
+    /// agent, and drained by the loop that owns the surface.
+    switch_rx: tokio::sync::mpsc::UnboundedReceiver<super::live::SwitchLoaded>,
 }
 
 /// The layout a stored [`TuiSettings`] stands for, before the first frame.
@@ -171,6 +175,11 @@ pub async fn run(options: Options) -> Result<(), String> {
     terminal.set_mouse_mode(mouse_capture);
 
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<TerminalEvent>();
+    // The switch's agent reads answer here rather than inside the loop (see
+    // `show_conversation`): a step paints the cache it has, and the rows the
+    // agent sends arrive on their own wake-up.
+    let (switch_tx, switch_rx) = mpsc::unbounded_channel::<super::live::SwitchLoaded>();
+    live.set_switch_sender(switch_tx);
     let data_tx = input_tx.clone();
     let resize_tx = input_tx.clone();
     Terminal::start(
@@ -198,6 +207,7 @@ pub async fn run(options: Options) -> Result<(), String> {
             notifications: &mut notifications,
             theme_explicit: &mut theme_explicit,
             update_rx: &mut update_rx,
+            switch_rx,
         },
         &mut workbench,
         &mut live,
@@ -249,6 +259,7 @@ async fn event_loop(
         notifications,
         theme_explicit,
         update_rx,
+        switch_rx,
     } = io;
     // The first frame is composed for the size the terminal has *now*. The
     // cached size dates from `Terminal::new()`/`start()`, and a pane a terminal
@@ -279,6 +290,9 @@ async fn event_loop(
     // A stepped conversation the reader has not stopped on yet (see
     // [`OPEN_SETTLE`]).
     let mut pending_open: Option<PendingOpen> = None;
+    // When the last step landed, so the next one can tell a tap from a repeat
+    // (see [`STEP_TAP_GAP`]).
+    let mut last_step: Option<Instant> = None;
     let mut painted = FrameCache::default();
 
     loop {
@@ -346,13 +360,11 @@ async fn event_loop(
                     // they have already left. A step from this same burst counts
                     // — the cursor is already on it.
                     if let Some(open) = pending_open.take() {
-                        show_conversation(&open.id, terminal, workbench, live, &frame, &mut clock, &mut painted)
-                            .await?;
+                        show_conversation(&open.id, terminal, workbench, live, &frame, &mut clock, &mut painted)?;
                     } else if let Some(id) =
                         resolve_step(&mut session_steps, workbench, live, &frame)
                     {
-                        show_conversation(&id, terminal, workbench, live, &frame, &mut clock, &mut painted)
-                            .await?;
+                        show_conversation(&id, terminal, workbench, live, &frame, &mut clock, &mut painted)?;
                     }
                     if quit(workbench, live, event, &frame, &mut InputIo { terminal, settings, settings_path, theme_explicit }).await? {
                         return Ok(());
@@ -363,13 +375,19 @@ async fn event_loop(
                     // reader asked for it and it costs nothing to show. One the
                     // client would have to fetch waits for the keys to go quiet
                     // instead: a held `shift+↓` used to open every conversation
-                    // it passed through (see [`OPEN_SETTLE`]).
+                    // it passed through (see [`OPEN_SETTLE`]). A tap is not a
+                    // hold, and it does not pay that window: the read starts now
+                    // and the window becomes time the agent has already spent.
+                    let now = Instant::now();
+                    let tapped = last_step.is_none_or(|last| now.duration_since(last) >= STEP_TAP_GAP);
+                    last_step = Some(now);
                     if live.is_cached(&id) {
                         pending_open = None;
-                        show_conversation(&id, terminal, workbench, live, &frame, &mut clock, &mut painted)
-                            .await?;
+                        show_conversation(&id, terminal, workbench, live, &frame, &mut clock, &mut painted)?;
+                    } else if tapped {
+                        pending_open = Some(PendingOpen::now(id));
                     } else {
-                        pending_open = Some(PendingOpen::stepped(id, Instant::now()));
+                        pending_open = Some(PendingOpen::stepped(id, now));
                     }
                 }
                 paint = true;
@@ -378,10 +396,21 @@ async fn event_loop(
                     open_due.unwrap_or_else(Instant::now),
                 )), if open_due.is_some() => {
                 if let Some(open) = pending_open.take() {
-                    show_conversation(&open.id, terminal, workbench, live, &frame, &mut clock, &mut painted)
-                        .await?;
+                    show_conversation(&open.id, terminal, workbench, live, &frame, &mut clock, &mut painted)?;
                 }
                 paint = true;
+            }
+            Some(loaded) = switch_rx.recv() => {
+                // The conversation the reader stepped onto, answered off the
+                // loop (see [`show_conversation`]). Installed here so the
+                // client's run map, the rows it decides and the rail's cursor
+                // move on the frame that paints them, and dropped when the
+                // reader has stepped past it in the meantime.
+                if live.install_switch_load(loaded) {
+                    let data = live.data(&frame);
+                    workbench.follow_current(&data);
+                    paint = true;
+                }
             }
             Some(event) = agent_events.recv() => {
                 let was = live.activity_kind();
@@ -590,7 +619,23 @@ const INPUT_BURST_LIMIT: usize = 64;
 /// interval, so a held key keeps deferring, and shorter than the pause a reader
 /// notices, so letting go lands the conversation at once. A conversation the
 /// cache can paint skips the wait entirely — there is nothing to fetch.
+///
+/// What the window defers is the *asking*, not the answering: the two reads go
+/// out in a task ([`show_conversation`]), so the surface keeps painting, reading
+/// the keyboard and streaming while the agent works, and the rows land on the
+/// frame after. Only a burst pays the window; a single step pays it once.
 const OPEN_SETTLE: Duration = Duration::from_millis(80);
+
+/// How far apart two steps have to be to count as taps rather than a hold.
+///
+/// A tap and a repeat look the same to the surface — both are one
+/// `shift+↑/↓` — and only their spacing tells them apart. A held key repeats
+/// every 30–100 ms depending on the reader's keyboard settings, so anything
+/// under two [`OPEN_SETTLE`] windows is read as a hold: the step keeps
+/// deferring, and a burst of ten conversations is asked for once. A tap is
+/// slower than that, and pays no window at all: the read starts the moment the
+/// key is read, and the rows arrive as soon as the agent answers.
+const STEP_TAP_GAP: Duration = Duration::from_millis(160);
 
 /// A conversation the rail's cursor has landed on whose rows are not on screen
 /// yet, and when to open it.
@@ -607,6 +652,15 @@ impl PendingOpen {
         Self {
             id,
             due: now + OPEN_SETTLE,
+        }
+    }
+
+    /// The reader tapped onto `id`: due at once, so the read goes out on this
+    /// pass of the loop instead of a window later.
+    fn now(id: String) -> Self {
+        Self {
+            id,
+            due: Instant::now(),
         }
     }
 }
@@ -657,14 +711,20 @@ fn resolve_step(
         })
 }
 
-/// Open one conversation, painting what the cache can show of it before the
-/// round trip the agent still owes.
+/// Open one conversation, painting what the cache can show of it.
 ///
-/// The mid-switch paint is the payoff of keeping cached rows: the reader sees
-/// the conversation they landed on immediately, and the reconcile that follows
-/// only replaces the rows when that conversation moved on while they were away
-/// (see `Live::finish_switch`).
-async fn show_conversation(
+/// The agent's own half — the state and the tail page — is read in a task
+/// ([`Live::start_step_switch`]), never here: a step must not put the surface
+/// behind an agent answer. The rows the cache holds are painted immediately; a
+/// conversation the client has not shown yet keeps the one on screen until its
+/// page lands, which is the frame after.
+///
+/// Measured against a 146-conversation store (`agent.db` at 1.7 GB): the two
+/// reads behind a step were 75 ms warm — 25 ms of state, 50 ms of page — and
+/// seconds when the store was busy. Waiting for them in this loop froze the
+/// rail, the stream and the keyboard for that long on *every* step, which is
+/// what a held `shift+↑/↓` felt like.
+fn show_conversation(
     id: &str,
     terminal: &mut Terminal,
     workbench: &mut Workbench,
@@ -673,16 +733,10 @@ async fn show_conversation(
     clock: &mut TickClock,
     painted: &mut FrameCache,
 ) -> Result<(), String> {
-    if live.already_showing(id) {
-        return Ok(());
-    }
-    if live.begin_switch(id) {
+    if live.start_step_switch(id) {
         draw(terminal, workbench, live, frame, painted)?;
         clock.painted(workbench.spinner_frame(), Instant::now());
     }
-    live.finish_switch(id).await;
-    let data = live.data(frame);
-    workbench.follow_current(&data);
     Ok(())
 }
 
