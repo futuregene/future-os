@@ -4758,13 +4758,12 @@ mod tests {
         assert_eq!(first_painted(&mut wb), 0, "the oldest row is on top");
     }
 
-    /// The footer teaches `esc` exactly while there is a transcript to walk back
-    /// down to — the one state where the key does something this surface can
-    /// name. At the tail there is nothing to return to, so the row keeps the keys
-    /// it always shows; and a menu that answers `esc` before the transcript does
-    /// takes the hint back, because the box that owns the key prints its own.
+    /// `esc` is on the hint row in every state — following the tail, scrolled
+    /// back, and with a menu that answers it first — because its meaning is a
+    /// place rather than a door: back to the newest message, or out of what the
+    /// reader is in. The label names both jobs, so it is true in all of them.
     #[test]
-    fn the_footer_hints_esc_only_while_the_transcript_is_scrolled_back() {
+    fn the_footer_teaches_esc_whether_or_not_the_transcript_is_scrolled() {
         let mut data = demo::chat();
         data.messages = (0..100)
             .map(|n| format!("line {n}"))
@@ -4776,35 +4775,34 @@ mod tests {
             plain(&rows[rows.len() - 1..])
         };
         let tail = footer(&mut wb);
-        assert!(tail.contains("新会话"), "{tail:?}");
-        assert!(
-            !tail.contains("esc"),
-            "nothing to return to at the tail: {tail:?}"
-        );
+        assert!(tail.contains("esc 回到最新 / 上一级"), "{tail:?}");
 
         wb.handle(WbEvent::Key("pageUp".into()), &data);
         assert!(!wb.following_latest());
         let scrolled = footer(&mut wb);
-        assert!(scrolled.contains("esc 回到最新"), "{scrolled:?}");
-        // The contextual key costs the reader nothing permanent: the four hints
-        // the row always carries are still on it beside the return.
+        assert!(scrolled.contains("esc 回到最新 / 上一级"), "{scrolled:?}");
+        // The row is the same length either way: `esc` takes a cell of its own
+        // rather than replacing one of the four doors behind it.
         for hint in ["侧栏", "命令", "偏好设置", "新会话"] {
             assert!(scrolled.contains(hint), "{hint} left the row: {scrolled:?}");
         }
 
-        // The English row spells the same promise in its own words.
+        // The English row spells the same two jobs in its own words.
         wb.set_language(crate::workbench::i18n::LanguagePreference::En);
         let english = footer(&mut wb);
-        assert!(english.contains("esc Back to the newest"), "{english:?}");
+        assert!(
+            english.contains("esc Newest / one level back"),
+            "{english:?}"
+        );
 
-        // A menu that answers `esc` first keeps the key: its own hint row is
-        // where that meaning is taught (`MentionHintFile`).
+        // A menu that answers `esc` first does not take the hint away: the key
+        // still walks back, and the menu prints its own copy of it.
         wb.set_language(crate::workbench::i18n::LanguagePreference::Zh);
         let typing = with_input(&data, "@src");
         let rows = wb.render(&typing, 120, 38);
         assert!(wb.mention.is_some(), "the mention menu is up");
         let with_menu = plain(&rows[rows.len() - 1..]);
-        assert!(!with_menu.contains("回到最新"), "{with_menu:?}");
+        assert!(with_menu.contains("esc 回到最新 / 上一级"), "{with_menu:?}");
     }
 
     #[test]

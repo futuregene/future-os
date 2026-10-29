@@ -117,8 +117,18 @@ fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
             }
             store.ready(&run.id)?;
         }
-        let deadline = tokio::time::Instant::now()
-            + std::time::Duration::from_secs(future_fusion::RUN_TIMEOUT_SECS);
+        let timeout_ms = run
+            .configuration
+            .as_ref()
+            .map(|config| config.run_timeout_secs)
+            .unwrap_or(future_fusion::RUN_TIMEOUT_SECS)
+            .saturating_mul(1000);
+        let remaining_ms = timeout_ms.saturating_sub(
+            future_fusion::now_ms()
+                .saturating_sub(run.created_at)
+                .max(0) as u64,
+        );
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(remaining_ms);
         loop {
             if cancelled.load(Ordering::Acquire) {
                 store.cancel(&run.id)?;
@@ -222,14 +232,53 @@ pub(crate) fn inner_tools() -> Vec<AgentTool> {
     ]
 }
 
-pub(crate) fn inner_snapshot(meta: &Value) -> Result<Option<Snapshot>> {
+pub(crate) struct InnerExecution {
+    pub snapshot: Snapshot,
+    pub settings: future_fusion::StepSettings,
+    pub file_tools: bool,
+}
+
+pub(crate) fn inner_execution(
+    meta: &Value,
+    session: &str,
+    agent_run: &str,
+    model: &str,
+    thinking: &str,
+) -> Result<Option<InnerExecution>> {
     let Some(id) = meta.get("fusionRunId").and_then(Value::as_str) else {
         return Ok(None);
     };
     let store = Store::existing(&crate::utils::future_home())?;
     let run = store.get(id)?;
     ensure!(run.status == "running", "Fusion is not active");
-    Ok(Some(Snapshot::load(Path::new(&run.snapshot_root))?))
+    let step_id = meta["stepId"]
+        .as_str()
+        .context("Fusion step identity is missing")?;
+    let step = store
+        .steps(id)?
+        .into_iter()
+        .find(|step| step.id == step_id)
+        .context("Fusion step not found")?;
+    ensure!(
+        step.session_id == session && step.agent_run_id == agent_run && step.model == model,
+        "Fusion child execution differs from recorded step"
+    );
+    let settings = step
+        .settings
+        .context("Fusion generation settings are missing; upgrade Host and Agent together")?;
+    ensure!(
+        settings.thinking_level == thinking,
+        "Fusion thinking level differs from configured policy; fallback prohibited"
+    );
+    ensure!(
+        settings.max_output_tokens > 0,
+        "Invalid Fusion output limit"
+    );
+    Ok(Some(InnerExecution {
+        snapshot: Snapshot::load(Path::new(&run.snapshot_root))?,
+        settings,
+        file_tools: !run.input.read_scope.is_empty(),
+    }))
 }
 
 pub(crate) fn record_delivery(result: &str) -> Result<()> {
@@ -258,21 +307,26 @@ pub(crate) fn record_delivery(result: &str) -> Result<()> {
 }
 
 /// Bound each inner completion without changing any live session settings.
-pub(crate) struct LimitedProvider(pub Arc<dyn crate::types::LLMProvider>);
+pub(crate) struct LimitedProvider {
+    pub provider: Arc<dyn crate::types::LLMProvider>,
+    pub max_output_tokens: i32,
+}
 #[async_trait::async_trait]
 impl crate::types::LLMProvider for LimitedProvider {
     async fn stream_model(
         &self,
         request: crate::llm::schema::ModelRequest,
     ) -> Result<tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>> {
-        self.0.stream_model_with_output_limit(request, 4096).await
+        self.provider
+            .stream_model_with_output_limit(request, self.max_output_tokens)
+            .await
     }
 }
 
 pub(crate) fn query_status(state: &crate::rpc::AppState) -> Result<Value> {
     let identity = state.session_manager.storage()?.storage_identity()?;
     Ok(
-        json!({"available":available(),"database_id":format!("{}:{}",identity.database_id,identity.restore_generation),"panel_models":future_fusion::PANEL_MODELS,"moderator_model":future_fusion::MODERATOR_MODEL}),
+        json!({"available":available(),"database_id":format!("{}:{}",identity.database_id,identity.restore_generation),"panel_models":future_fusion::PANEL_MODELS,"moderator_model":future_fusion::MODERATOR_MODEL,"generation_policy_version":future_fusion::GENERATION_POLICY_VERSION}),
     )
 }
 
