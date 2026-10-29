@@ -1697,6 +1697,90 @@ mod runtime_tests {
         stop();
     }
 
+    /// A credential rotation rebuilds the transport underneath a client that
+    /// never reconnects. The declaration it made on `secure_ready` belongs to
+    /// *that connection*, so the rebuilt lanes must keep it: dropping it served
+    /// the phone the legacy lane for the rest of its connection, which for a
+    /// segmented conversation is not a downgrade but a refusal
+    /// (`client_upgrade_required` on every read and every prompt).
+    ///
+    /// Measured 2026-10-29: credentials live 15 minutes, so a phone broke within
+    /// 15 minutes of connecting and stayed broken until the app reconnected.
+    #[tokio::test]
+    async fn credential_refresh_keeps_the_connection_declaration() {
+        let _home = HomeGuard::new("remote-refresh-declaration");
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        let nats2 = FakeNats::start().await;
+        sign_in(platform.url());
+        // Expiring credential → refresh is due on the first tick.
+        let creds = test_creds("pair_declare", nats.url(), 30);
+        pairing::save_creds(&creds).unwrap();
+        platform.respond_refresh(nats2.url());
+
+        let state = fake_state(&nats, "pair_declare").await;
+        let confirmed = state.pairing_confirmed.clone();
+        install_state(state);
+        let handshake = commands::new_handshake_state(
+            creds.clone(),
+            confirmed.clone(),
+            "bridge_declare".to_string(),
+        );
+        // What a 684a4fd phone declares on `secure_ready`.
+        future_remote_server::commands::apply_declared_features(
+            &handshake,
+            "pair_declare",
+            &[
+                future_remote_protocol::SEGMENTED_CONTENT_FEATURE.to_string(),
+                future_remote_server::commands::REPLY_GZIP_FEATURE.to_string(),
+            ],
+        );
+        assert!(handshake.segmented_content.load(Ordering::Acquire));
+
+        let handle = spawn_credential_refresh(
+            "pair_declare".to_string(),
+            commands::new_reply_slots(),
+            confirmed,
+            handshake.clone(),
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let swapped = {
+                let guard = SUPERVISOR.state.lock().unwrap();
+                guard
+                    .as_ref()
+                    .map(|state| state.nats_url == nats2.url())
+                    .unwrap_or(false)
+            };
+            if swapped {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "generation never swapped"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        // The command path reads the handshake's flag, the event publisher the
+        // runtime's. The rebuilt generation must still answer both.
+        assert!(
+            handshake.segmented_content.load(Ordering::Acquire),
+            "a rebuilt transport withdrew the declaration the connection made"
+        );
+        assert!(handshake.gzip_replies.load(Ordering::Acquire));
+        assert!(
+            SUPERVISOR
+                .segmented_content("pair_declare")
+                .load(Ordering::Acquire),
+            "the event lane lost the declaration the connection made"
+        );
+
+        handle.abort();
+        stop();
+    }
+
     #[tokio::test]
     async fn credential_refresh_logs_credential_save_failures() {
         let _home = HomeGuard::new("remote-refresh-savefail");
@@ -2564,8 +2648,8 @@ mod runtime_tests {
         let creds = pairing_creds(&pair);
         let _shared = shared_runtime(&creds, true, false);
         // A declaration is authoritative and always written, so this is the
-        // state an older client leaves behind (`build_transport` clears it, and
-        // `secure_ready` never sets it).
+        // state an older client leaves behind after its `secure_ready` sent no
+        // capability at all.
         declare_features(&creds, &pair, &[]);
 
         let handle = spawn_presence_heartbeat(client.clone(), pair.clone(), "bridge_legacy".into());

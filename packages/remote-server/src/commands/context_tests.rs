@@ -250,7 +250,8 @@ fn clearing_the_capability_reaches_the_loop_copy() {
     // The loop receives a clone, exactly as `build_transport` hands it over.
     let loop_copy = handshake.clone();
     assert!(loop_copy.gzip_replies.load(Ordering::Acquire));
-    // The next connection clears it before anything can declare otherwise.
+    // The next connection's own `secure_ready` overwrites it — an empty
+    // declaration included — before it can send business commands.
     handshake.gzip_replies.store(false, Ordering::Release);
     assert!(
         !loop_copy.gzip_replies.load(Ordering::Acquire),

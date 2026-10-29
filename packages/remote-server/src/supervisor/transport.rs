@@ -29,30 +29,26 @@ impl Supervisor {
         let mut candidate_tasks = lifecycle::CandidateTasks::default();
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(4096);
         let coalesce = self.coalesce_events(pair_id);
-        // A live-lane capability belongs to the connection that declared it. Reset
-        // it here so a client that never declares it — an older build on the same
-        // pairing — is served the legacy lane instead of inheriting the previous
-        // client's request.
-        coalesce.store(false, Ordering::Release);
-        // The catalog's recency packets are the same kind of permission: they
-        // replace a whole session list with a few dozen bytes, which only a client
-        // that applies packets can be served.
-        self.catalog_activity(pair_id)
-            .store(false, Ordering::Release);
-        // Same rule for the reply encoding: an older client has no gzip magic-byte
-        // detection and would fail to parse a compressed reply, so the permission
-        // must not outlive the connection that asked for it.
-        handshake.gzip_replies.store(false, Ordering::Release);
-        handshake.lean_events.store(false, Ordering::Release);
-        handshake.segmented_content.store(false, Ordering::Release);
-        self.segmented_content(pair_id)
-            .store(false, Ordering::Release);
+        // The declared capabilities are deliberately NOT reset here. They belong
+        // to the client's connection, and this function rebuilds the *desktop's*
+        // half of it: a credential rotation replaces the link every JWT lifetime
+        // (~15 minutes) while the client sits on an unchanged socket and declares
+        // only once, on `secure_ready`. Clearing them there withdrew a live
+        // client's declarations behind its back and served it the legacy lane;
+        // for `segmented_content_v1` that is not a downgrade but a refusal, so
+        // every read and prompt of a segmented conversation answered
+        // `client_upgrade_required` until the phone reconnected (2026-10-29).
+        //
+        // "Never inherit another client's request" is still guaranteed: a client
+        // that reaches business commands has activated over `secure_ready`, which
+        // records its declaration verbatim — an empty one included — so the flags
+        // always describe the connection that is talking. Tearing the bridge down
+        // clears the whole per-pairing runtime (`Supervisor::stop_with`).
         self.shared_or_insert(pair_id)
             .content_refusals
             .lock()
             .unwrap()
             .clear();
-        self.lean_events(pair_id).store(false, Ordering::Release);
         let event_task = self.spawn_generation_for(
             epoch,
             crate::events::run_event_publisher(
