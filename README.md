@@ -281,12 +281,12 @@ Run `/help` in the TUI for the full list (40+ commands).
 | `ctrl+l` | Workspaces |
 | `ctrl+f` | Files panel |
 | `ctrl+g` | Git browser |
-| `ctrl+e` | Process detail: answer only / whole process |
 | `ctrl+v` | Paste clipboard (image or text) |
 | `ctrl+q` | Preferences (including the shortcut editor) |
 | `?` | Help: the effective keys, grouped |
 | `enter` | Send — while a run is in flight the prompt queues behind it |
 | `ctrl+j` | Newline in the draft |
+| `ctrl+e` / `end` | End of the draft line (`ctrl+a` / `home` go to the start) |
 | `page up` / `page down` | Scroll the conversation |
 | `escape` | Close an overlay; return to the latest output |
 

@@ -218,8 +218,8 @@ pub async fn run(options: Options) -> Result<(), String> {
     if settings.language.as_deref() != Some(workbench.language_pref.as_wire()) {
         settings.language = Some(workbench.language_pref.as_wire().to_string());
     }
-    // The reading level is deliberately not written: `ctrl+e` expands the
-    // transcript for this run only, so the next terminal opens folded.
+    // The reading level is deliberately not written: `/reply-detail` expands
+    // the transcript for this run only, so the next terminal opens folded.
     let preferences_saved = persist_preferences(&workbench, &mut settings, &options.settings_path);
     let keys_saved = workbench
         .keys
@@ -843,15 +843,6 @@ async fn quit(
                     // Idle, this is a no-op (see `Live::abort`): `ctrl+c` means
                     // the turn in flight, and there is none.
                     live.abort().await;
-                    return Ok(false);
-                }
-                Some(super::preferences::Action::ReplyDetail) => {
-                    // The same cycle `/reply-detail` walks: everything, the
-                    // work folded, the process folded too.
-                    live.set_detail(live.detail().next());
-                    // A view toggle, not a preference: nothing is written back,
-                    // so the next start opens folded again whatever the reader
-                    // peeked at here (see `ReplyDetail`).
                     return Ok(false);
                 }
                 Some(super::preferences::Action::NewSession) => {

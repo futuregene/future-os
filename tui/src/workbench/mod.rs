@@ -4170,7 +4170,7 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
 /// The command palette's entries: `(command, description)`. Kept here rather
 /// than in the app so the palette, the help overlay and the tests share one
 /// list.
-pub const COMMANDS: [(&str, Key); 36] = [
+pub const COMMANDS: [(&str, Key); 35] = [
     ("/new", Key::CmdNew),
     ("/stop", Key::CmdStop),
     ("/delete", Key::CmdDelete),
@@ -4199,7 +4199,6 @@ pub const COMMANDS: [(&str, Key); 36] = [
     ("/thinking", Key::CmdThinking),
     ("/lang", Key::CmdLanguage),
     ("/reply-detail", Key::CmdReplyDetail),
-    ("/tool-output", Key::CmdToolOutput),
     ("/workspace", Key::CmdWorkspace),
     ("/theme", Key::CmdTheme),
     ("/preferences", Key::CmdPreferences),
@@ -6049,6 +6048,35 @@ mod tests {
         );
         // The drag is over: another move changes nothing.
         assert!(workbench.handle(WbEvent::Mouse(drag), &data).is_empty());
+    }
+
+    /// `ctrl+e` is the composer's end of line: the shell's own meaning of the
+    /// byte, and the one chord the map gave back (see `Action::default_key`).
+    /// The reading level it used to toggle is `/reply-detail`, which has no
+    /// chord — so nothing intercepts the key before the editor sees it.
+    #[test]
+    fn ctrl_e_moves_the_draft_caret_to_the_end() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        assert_eq!(
+            workbench.keys.action("ctrl+e"),
+            None,
+            "no global action claims the chord"
+        );
+        let mut data = data;
+        data.input.editor.paste("one two");
+        data.input.text = "one two".into();
+        let actions = workbench.handle(WbEvent::Key("ctrl+a".into()), &data);
+        let [WbAction::EditEditor(editor)] = actions.as_slice() else {
+            panic!("{actions:?}")
+        };
+        assert_eq!(editor.cursor(), 0, "ctrl+a is the line's start");
+        data.input.editor = editor.as_ref().clone();
+        let actions = workbench.handle(WbEvent::Key("ctrl+e".into()), &data);
+        let [WbAction::EditEditor(editor)] = actions.as_slice() else {
+            panic!("ctrl+e must edit the draft, not toggle a view: {actions:?}")
+        };
+        assert_eq!(editor.cursor(), 7, "ctrl+e is the line's end");
     }
 
     #[test]

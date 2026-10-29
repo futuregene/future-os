@@ -307,8 +307,11 @@ impl Action {
     /// * `ctrl+u` / `ctrl+k` / `ctrl+w` / `ctrl+y` / `ctrl+z` are the composer's
     ///   readline set — a global chord there would shadow editing the draft,
     ///   which is what the reader does most. `ctrl+a` / `ctrl+e` / `ctrl+f`
-    ///   only duplicate Home / End / Right, so `e` and `f` are the two the map
-    ///   does take (Home/End/arrows still edit the draft).
+    ///   only duplicate Home / End / Right, so letters from that set are cheap
+    ///   to borrow: `f` is the one the map still holds (its files panel), and
+    ///   `ctrl+e` — the shell's own end of line — is the composer's, because a
+    ///   caret nudge that re-lays the whole transcript out is the one borrow a
+    ///   reader's reflex cannot survive (see `ReplyDetail`'s chord below).
     ///
     /// `ctrl+c` is the one letter whose meaning is not ours to choose: raw mode
     /// turns the signal off (`ISIG`, see `terminal_posix`), so the byte arrives
@@ -328,9 +331,10 @@ impl Action {
     /// (the rail and its two tabs, the workspace list, the files of this
     /// session's workspace), the repository, and leaving. Switching the
     /// interface language, refreshing the view, the queue of prompts sent
-    /// mid-run, pinning a workspace and deleting a conversation are things a
-    /// reader does once in a while, so they keep commands instead of taking a
-    /// letter from something pressed every minute.
+    /// mid-run, re-reading a reply's process (`/reply-detail`), pinning a
+    /// workspace and deleting a conversation are things a reader does once in a
+    /// while, so they keep commands instead of taking a letter from something
+    /// pressed every minute.
     pub fn default_key(self) -> &'static str {
         match self {
             // `x` leaves: the interrupt chord is spoken for (see above), and a
@@ -342,7 +346,13 @@ impl Action {
             // The shell's own meaning of the byte: interrupt the foreground
             // turn. Idle, it is a no-op (`Live::abort`).
             Self::Stop => "ctrl+c",
-            Self::ReplyDetail => "ctrl+e",
+            // No chord: `ctrl+e` is the composer's end of line, and this is a
+            // *reading* toggle — pressed when re-reading a reply, not while
+            // working, and the letter it had was the one place the map and a
+            // reader's shell reflex disagreed. `/reply-detail` is the door, the
+            // shortcut editor binds one back for anyone who wants it, and the
+            // transcript's folding is unchanged.
+            Self::ReplyDetail => "",
             Self::Palette => "ctrl+p",
             // `m` is Enter on a terminal that does not report modifiers; `o`
             // (the chooser's own options) is the nearest free letter.
@@ -736,6 +746,25 @@ mod tests {
                 "{action:?} defaults to a chord the editor would reject: {key}"
             );
         }
+    }
+
+    /// `ctrl+e` is the composer's: the reading level gave the chord back (see
+    /// `default_key`), because the shell's end of line was the one reflex the
+    /// map could not survive borrowing — pressing it re-laid the whole
+    /// transcript out instead of moving the caret. The level keeps its typed
+    /// door (`/reply-detail`), and the shortcut editor can bind one back.
+    #[test]
+    fn the_reading_level_has_no_chord() {
+        let keys = Keybindings::default();
+        assert_eq!(keys.key(Action::ReplyDetail), "");
+        assert_eq!(
+            keys.action("ctrl+e"),
+            None,
+            "nothing intercepts the composer's end of line"
+        );
+        // The editor's own keys are the editor's: `ctrl+a` is the start of the
+        // line, and the map never took it.
+        assert_eq!(keys.action("ctrl+a"), None);
     }
 
     /// Two defaults on one chord would make one of them dead: the map resolves a

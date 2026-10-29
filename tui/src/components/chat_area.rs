@@ -48,19 +48,18 @@ pub enum ToolStatus {
 /// `replyDetail` levels, and only those two: `default` and `detailed`.
 ///
 /// Neither level ever shows a tool call's body or a reasoning block's text
-/// (`ctrl+e` is not what opens those; the row itself is — see [`RowAction`],
-/// and `/tool-output` opens every body at once). What the level decides is
-/// whether a *settled* reply keeps its process where it happened or folds it
-/// into one row above the answer it ended on.
+/// (`/reply-detail` is not what opens those; the row itself is — see
+/// [`RowAction`]). What the level decides is whether a *settled* reply keeps
+/// its process where it happened or folds it into one row above the answer it
+/// ended on.
 ///
-/// The terminal starts at [`Default`](Self::Default) every time: `ctrl+e` (and
-/// the `/reply-detail` verb) is a view toggle for the run it is pressed in, not
-/// a preference written back to `settings.json`. A reader who peeks at the
-/// process used to find every later start expanded, because the peek *became*
-/// the stored level — the one thing a terminal must not do with a key that
-/// reads as "show me this once". The level applies to every reply in the
-/// conversation at once: one press re-reads the whole transcript, not the
-/// reply under the cursor.
+/// The terminal starts at [`Default`](Self::Default) every time: `/reply-detail`
+/// is a view toggle for the run it is used in, not a preference written back to
+/// `settings.json`. A reader who peeks at the process used to find every later
+/// start expanded, because the peek *became* the stored level — the one thing a
+/// terminal must not do with a verb that reads as "show me this once". The
+/// level applies to every reply in the conversation at once: one use re-reads
+/// the whole transcript, not the reply under the cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReplyDetail {
     /// The desktop's `detailed`: every slice of a settled reply keeps its own
@@ -83,7 +82,7 @@ pub enum ReplyDetail {
 }
 
 impl ReplyDetail {
-    /// The level one `ctrl+e` press moves to: the whole transcript flips
+    /// The level one `/reply-detail` moves to: the whole transcript flips
     /// between the answer alone and the answer with its process where it
     /// happened.
     pub fn next(self) -> Self {
@@ -853,20 +852,16 @@ pub struct ChatArea {
     md: MarkdownRenderer,
     md_thinking: MarkdownRenderer,
     theme: Theme,
-    /// `/tool-output`: render each tool call's body beneath its row — the one
-    /// door to a body, since the chord this used to answer (`ctrl+g`) now opens
-    /// the git browser. Collapsed, every call is one row, a failure included
-    /// (it carries a `✗` and nothing red — see `render_tool_message`).
-    tool_output_expanded: bool,
     /// `ctrl+d`: fold runs of consecutive tool calls and thinking blocks into
     /// compact summary rows (see [`Self::compact_heads`]). Off by default: the
     /// transcript renders exactly as it does without it.
     compact_activity: bool,
-    /// `ctrl+e`: how much of a settled reply stays on screen (see
+    /// `/reply-detail`: how much of a settled reply stays on screen (see
     /// [`ReplyDetail`]). `default` keeps the answer a reply ends on and folds
     /// the process that produced it into one summary row; `detailed` keeps
     /// every slice where it happened. Neither level shows a call's body or a
-    /// reasoning block's text — the rows do, one at a time.
+    /// reasoning block's text — the rows do, one at a time (`/reply-detail`
+    /// moves the level; it has no chord).
     reply_detail: ReplyDetail,
     /// The words the process rows are drawn in — the reader's interface
     /// language, not the model's output (see [`FoldWords`]).
@@ -944,7 +939,6 @@ impl ChatArea {
             md,
             md_thinking,
             theme,
-            tool_output_expanded: false,
             compact_activity: false,
             reply_detail: ReplyDetail::Default,
             fold_words: FoldWords::default(),
@@ -965,14 +959,13 @@ impl ChatArea {
     /// A session switch swaps whole [`ChatArea`]s (the outgoing conversation's
     /// rows are kept for the way back — see `Live::begin_switch`), so the
     /// incoming side has to start empty *without* losing the settings the
-    /// transcript does not share with the conversation: the theme, `ctrl+e`'s
-    /// reading level, `ctrl+d`'s folding and `/tool-output`'s expanded bodies belong
-    /// to the reader, not to the conversation they are leaving.
+    /// transcript does not share with the conversation: the theme, the
+    /// reading level (`/reply-detail`) and `ctrl+d`'s folding belong to the
+    /// reader, not to the conversation they are leaving.
     pub fn empty_like(&self) -> Self {
         let mut fresh = Self::new(self.width.max(1), Some(self.theme));
         fresh.reply_detail = self.reply_detail;
         fresh.fold_words = self.fold_words;
-        fresh.tool_output_expanded = self.tool_output_expanded;
         fresh.compact_activity = self.compact_activity;
         fresh.viewport_height = self.viewport_height;
         fresh
@@ -1054,23 +1047,6 @@ impl ChatArea {
         self.theme
     }
 
-    pub fn tool_output_expanded(&self) -> bool {
-        self.tool_output_expanded
-    }
-
-    pub fn set_tool_output_expanded(&mut self, expanded: bool) {
-        if self.tool_output_expanded != expanded {
-            self.tool_output_expanded = expanded;
-            self.rerender();
-        }
-    }
-
-    /// Flip tool-output expansion (`/tool-output`); returns the new state.
-    pub fn toggle_tool_output_expanded(&mut self) -> bool {
-        self.set_tool_output_expanded(!self.tool_output_expanded);
-        self.tool_output_expanded
-    }
-
     /// Is the compact-activity view on (`ctrl+d`)?
     pub fn compact_activity(&self) -> bool {
         self.compact_activity
@@ -1083,10 +1059,6 @@ impl ChatArea {
     /// one-line marker — the vertical-space equivalent of the desktop's
     /// collapsed activity bursts. Off (the default) is the transcript exactly
     /// as it always renders.
-    ///
-    /// Expanding tool output (`/tool-output`) wins over folding: asking for every
-    /// tool body and hiding the calls are contradictory, so with bodies
-    /// expanded the calls stay individual rows.
     pub fn set_compact_activity(&mut self, on: bool) {
         if self.compact_activity == on {
             return;
@@ -1105,12 +1077,12 @@ impl ChatArea {
         self.compact_activity
     }
 
-    /// The reading level of a settled reply (`ctrl+e`).
+    /// The reading level of a settled reply (`/reply-detail`).
     pub fn reply_detail(&self) -> ReplyDetail {
         self.reply_detail
     }
 
-    /// Set the reading level (`/reply-detail`, or `ctrl+e`'s cycle).
+    /// Set the reading level (`/reply-detail`, the only door: it has no chord).
     ///
     /// One level for the whole transcript: every reply re-reads at once, and
     /// no row's open state is discarded by the flip — a burst the reader
@@ -1123,9 +1095,9 @@ impl ChatArea {
         self.rerender();
     }
 
-    /// Flip the reading level (`ctrl+e`); returns the new one. The transcript's
-    /// height changes by however much was folded, so the view jumps to the
-    /// bottom like the other view toggles. The cycle runs
+    /// Flip the reading level (`/reply-detail`); returns the new one. The
+    /// transcript's height changes by however much was folded, so the view
+    /// jumps to the bottom like the other view toggles. The cycle runs
     /// `default ↔ detailed` — the desktop's two levels, and nothing between
     /// them (see [`ReplyDetail::next`]).
     pub fn toggle_reply_detail(&mut self) -> ReplyDetail {
@@ -1137,7 +1109,7 @@ impl ChatArea {
 
     /// Fold an uninterrupted run of *completed* calls to the same tool?
     fn folds_tool_runs(&self) -> bool {
-        self.compact_activity && !self.tool_output_expanded
+        self.compact_activity
     }
 
     pub fn last_message(&self) -> Option<&ChatMessage> {
@@ -1773,7 +1745,7 @@ impl ChatArea {
     /// its pager. The reading level, the open rows and the compact view are
     /// screen preferences; a transcript is a record, so it shows the reasoning
     /// and the notes the screen keeps folded. Tool call bodies are still
-    /// `/tool-output`'s (or `/export`'s): a record of twenty `cargo test` runs is
+    /// `/export`'s: a record of twenty `cargo test` runs is
     /// their rows, not twenty logs. The screen's own layout is restored before
     /// returning.
     pub fn render_all_detailed(&mut self, width: usize) -> Vec<String> {
@@ -1992,8 +1964,9 @@ impl ChatArea {
     /// answer *and* whatever ran after it. Before this, only the stretch above
     /// the answer folded, so a reply whose last prose came before its last few
     /// calls (an interrupted run, a turn that ended on a tool call) kept those
-    /// rows: `ctrl+e` then read as "only part of it folded", and scrolling up
-    /// the unfolded calls were the first thing in sight. A settled reply is one
+    /// rows: the folded level then read as "only part of it folded", and
+    /// scrolling up the unfolded calls were the first thing in sight. A settled
+    /// reply is one
     /// unit, and its summary row counts all of the work.
     ///
     /// `live` says the run is still writing *this* reply (see
@@ -2762,8 +2735,8 @@ impl ChatArea {
         // text on this surface: a one-line marker says the model reasoned — the
         // row the desktop's `Thinking` block and the phone's thought row use —
         // and opening it (`enter` on the marker) shows the text beneath it.
-        // `ctrl+e` is *not* what opens reasoning: no level of it shows a body's
-        // text or a call's output (see [`ReplyDetail`]).
+        // `/reply-detail` is *not* what opens reasoning: no level of it shows a
+        // body's text or a call's output (see [`ReplyDetail`]).
         //
         // A folded reply hides the marker too: its summary row already counts
         // the thought, except when reasoning is the reply's whole output and
@@ -2910,8 +2883,9 @@ impl ChatArea {
     /// One row for a folded run of calls to the same tool (`▸ read 3 files`).
     ///
     /// The row carries what the individual rows would have said at a glance —
-    /// which tool, and how much of it — and nothing else: no bodies (that is
-    /// `/tool-output`), no targets (twenty paths is what the fold exists to
+    /// which tool, and how much of it — and nothing else: no bodies (a folded
+    /// run has no row of its own to open, and `/export` is where a record's
+    /// bodies live), no targets (twenty paths is what the fold exists to
     /// avoid).
     /// The `▸` marks it as a fold rather than a call.
     fn render_tool_run(&mut self, msg_idx: usize, run: usize, origin: usize) {
@@ -3159,8 +3133,7 @@ impl ChatArea {
             line.push_str(&summary);
         }
         // The one mark a failed row carries. No red, and no body: whatever went
-        // wrong is in the output, which is `/tool-output` — or `/export`, or the
-        // desktop — away.
+        // wrong is in the output, which is `/export` — or the desktop — away.
         if status == ToolStatus::Error {
             line.push_str(&fg(self.theme.dim as u8, " ✗"));
         }
@@ -3172,11 +3145,10 @@ impl ChatArea {
         self.mark_last_row(msg_idx, origin, RowAction::Tool { msg: msg_idx });
 
         // A call is one row — the call itself, however it ended. The body waits
-        // behind that row: opened one at a time by `enter` on it (or a click),
-        // or all at once by `/tool-output`. A transcript of twenty calls is
-        // twenty rows rather than twenty previews, and a failure is one of the
-        // twenty.
-        if !self.tool_output_expanded && !self.is_open(&msg.id, RowKind::Tool) {
+        // behind that row: opened one at a time by `enter` on it (or a click).
+        // A transcript of twenty calls is twenty rows rather than twenty
+        // previews, and a failure is one of the twenty.
+        if !self.is_open(&msg.id, RowKind::Tool) {
             return;
         }
 
@@ -3614,7 +3586,7 @@ mod tests {
         assert!(!plain.contains("hmm"), "{plain:?}");
     }
 
-    /// No reading level shows the reasoning text, and `ctrl+e` never did: it
+    /// No reading level shows the reasoning text, and none of them ever did: it
     /// flips between the answer alone and the reply with its process, and the
     /// thought stays a marker at both. Opening the marker is the row's own
     /// door (see `a_marker_opens_its_reasoning_text_and_closes_again`).
@@ -3706,7 +3678,6 @@ mod tests {
     fn assert_matches_fresh_render_at(chat: &mut ChatArea, width: usize) {
         let incremental = chat.render_all(width);
         let mut fresh = ChatArea::new(width, None);
-        fresh.set_tool_output_expanded(chat.tool_output_expanded());
         fresh.revealed = chat.revealed.clone();
         fresh.compact_activity = chat.compact_activity;
         fresh.reply_detail = chat.reply_detail;
@@ -3726,7 +3697,6 @@ mod tests {
         // The ground truth is a full re-layout of the same messages, not
         // another walk through the incremental paths.
         let mut fresh = ChatArea::new(W, None);
-        fresh.set_tool_output_expanded(chat.tool_output_expanded());
         fresh.revealed = chat.revealed.clone();
         fresh.fold_words = chat.fold_words;
         fresh.compact_activity = chat.compact_activity;
@@ -3868,7 +3838,7 @@ mod tests {
     /// is what happened. A call the fold cannot describe is still counted.
     /// A live failure is marked from the event's own structured result, so the
     /// fold cannot swallow it: the failed call keeps its row — one row, like
-    /// every other call, its body behind `/tool-output`.
+    /// every other call, its body behind that row.
     #[test]
     fn a_failed_call_is_not_folded() {
         let mut chat = detailed_chat();
@@ -3895,17 +3865,16 @@ mod tests {
         );
         assert!(
             !lines.iter().any(|line| line.contains("permission denied")),
-            "and its body waits for /tool-output like every other call: {lines:?}"
+            "and its body waits for its own row like every other call: {lines:?}"
         );
-        chat.set_tool_output_expanded(true);
+        open_all_rows(&mut chat);
         let expanded = compact_lines(&mut chat);
         assert!(
             expanded
                 .iter()
                 .any(|line| line.contains("permission denied")),
-            "the reason is one toggle away: {expanded:?}"
+            "the reason is one row away: {expanded:?}"
         );
-        chat.set_tool_output_expanded(false);
         assert_matches_fresh_render(&mut chat);
 
         // The calls after it start a new run instead of joining the folded one.
@@ -3968,7 +3937,7 @@ mod tests {
     }
 
     /// A failure keeps its own row — the fold may not swallow it — and, like
-    /// every other call, one row is all it shows until `/tool-output`.
+    /// every other call, one row is all it shows until that row opens.
     #[test]
     fn compact_view_never_folds_a_failed_call() {
         let mut chat = detailed_chat();
@@ -3988,13 +3957,12 @@ mod tests {
             !lines.iter().any(|line| line.contains("boom")),
             "one row is all it shows: {lines:?}"
         );
-        chat.set_tool_output_expanded(true);
+        open_all_rows(&mut chat);
         let expanded = compact_lines(&mut chat);
         assert!(
             expanded.iter().any(|line| line.contains("boom")),
-            "and the reason is one toggle away: {expanded:?}"
+            "and the reason is one row away: {expanded:?}"
         );
-        chat.set_tool_output_expanded(false);
         assert_matches_fresh_render(&mut chat);
     }
 
@@ -4057,26 +4025,6 @@ mod tests {
         chat.add_message(msg);
         let lines = compact_lines(&mut chat);
         assert_eq!(lines, vec!["▸ thinking", "answer"], "{lines:?}");
-    }
-
-    /// `/tool-output` asks for every tool body; that cannot be reconciled with hiding
-    /// the calls, so bodies win and the runs stay individual rows.
-    #[test]
-    fn expanded_tool_output_turns_folding_off() {
-        let mut chat = detailed_chat();
-        chat.render(W);
-        chat.set_compact_activity(true);
-        chat.add_message(read_of("/a.rs"));
-        chat.add_message(read_of("/b.rs"));
-        assert_eq!(compact_lines(&mut chat), vec!["▸ read 2 files"]);
-
-        chat.set_tool_output_expanded(true);
-        let lines = compact_lines(&mut chat);
-        assert_eq!(lines.len(), 4, "two calls, each with its body: {lines:?}");
-        assert!(lines[0].contains("read /a.rs"), "{lines:?}");
-        // …and back again.
-        chat.set_tool_output_expanded(false);
-        assert_eq!(compact_lines(&mut chat), vec!["▸ read 2 files"]);
     }
 
     /// A run built the way a live run builds one — one call at a time — folds as
@@ -4166,7 +4114,7 @@ mod tests {
         assert_matches_fresh_render(&mut chat);
     }
 
-    // ─── Reading level (ctrl+e) ─────────────────────────────────────────
+    // ─── Reading level (/reply-detail) ───────────────────────────────────
 
     fn assistant_with_thinking(id: &str, thinking: &str, content: &str) -> ChatMessage {
         ChatMessage {
@@ -4218,7 +4166,7 @@ mod tests {
     #[test]
     /// The detailed level is the desktop's `detailed`: every slice stays where
     /// it happened, interleaved in order — and a body or a reasoning text is
-    /// still nobody's default (`ctrl+e` opens neither; the rows do).
+    /// still nobody's default (`/reply-detail` opens neither; the rows do).
     fn the_detailed_level_keeps_every_slice_without_its_detail() {
         let mut chat = new_chat();
         chat.render(W);
@@ -4249,7 +4197,7 @@ mod tests {
             lines.iter().any(|l| l.contains("Fixed the off-by-one.")),
             "{lines:?}"
         );
-        // The call's body stays behind its own row (or `/tool-output`) at either
+        // The call's body stays behind its own row at either
         // level.
         assert!(!lines.iter().any(|l| l.contains("body")), "{lines:?}");
         assert_matches_fresh_render(&mut chat);
@@ -5545,8 +5493,8 @@ mod tests {
 
     /// The reading level applies to the *whole* transcript, not to whatever
     /// arrived most recently: a page of history prepended from the session
-    /// store folds with the live turns already on screen, and `ctrl+e` at any
-    /// point leaves every settled reply as one summary row.
+    /// store folds with the live turns already on screen, and `/reply-detail`
+    /// at any point leaves every settled reply as one summary row.
     #[test]
     fn the_reading_level_folds_history_loaded_from_the_store() {
         const FOLDED_TURN: &str = "▸ 1 tool call · 1 thought";
@@ -5580,8 +5528,8 @@ mod tests {
         chat.prepend_messages(stored_page());
         assert_folded(&mut chat, 3, "as loaded");
 
-        // `ctrl+e` round-trips: `default` has to come back from a transcript
-        // that was rendered unfolded. The cycle is default ↔ detailed.
+        // `/reply-detail` round-trips: `default` has to come back from a
+        // transcript that was rendered unfolded. The cycle is default ↔ detailed.
         assert_eq!(chat.toggle_reply_detail(), ReplyDetail::Detailed);
         let open = compact_lines(&mut chat);
         assert!(
@@ -5777,7 +5725,7 @@ mod tests {
     // painted every call while the desktop showed its counts (the numbers the
     // wrench and brain glyphs now carry).
     // The call that ends the turn keeps its row — one row is what tells a reader
-    // the work stopped there — and `ctrl+e` still replays every slice.
+    // the work stopped there — and `/reply-detail` still replays every slice.
 
     /// A settled turn with no prose folds onto its last slice, live path.
     #[test]
@@ -5801,7 +5749,8 @@ mod tests {
         );
         assert!(!lines.iter().any(|l| l.contains("thinking about cut")));
 
-        // `ctrl+e` replays the whole thing: every slice, each with its own row —
+        // `/reply-detail` replays the whole thing: every slice, each with its
+        // own row —
         // and the reasoning still behind its marker, as at every level.
         chat.set_reply_detail(ReplyDetail::Detailed);
         let open = compact_lines(&mut chat);
@@ -5871,7 +5820,7 @@ mod tests {
     /// A settled reply is one unit: the work *after* its last prose folds with
     /// the work before it. A run that was interrupted (or that ended on a tool
     /// call) leaves calls below its last answer, and folding only the stretch
-    /// above that answer is what made `ctrl+e` read as "only part of the
+    /// above that answer is what made the folded level read as "only part of the
     /// transcript collapsed" — scrolling up, those calls were the first rows in
     /// sight. Measured on a real interrupted session (2026-10-26): 89 of a
     /// reply's rows stayed while the other 296 folded.
@@ -5950,8 +5899,9 @@ mod tests {
         assert!(chat.compact_activity(), "and so is the compact view");
     }
 
-    /// The level a transcript opens at is the folded one — the state `ctrl+e`
-    /// produces — so a fresh terminal and a restarted one look the same. There
+    /// The level a transcript opens at is the folded one — the state
+    /// `/reply-detail` produces at its default — so a fresh terminal and a
+    /// restarted one look the same. There
     /// is no stored level to disagree with it any more (see `ReplyDetail`).
     #[test]
     fn a_new_transcript_opens_folded() {
@@ -6530,8 +6480,8 @@ mod tests {
     #[test]
     fn concatenates_consecutive_thinking_blocks_directly() {
         let mut chat = ChatArea::new(60, None);
-        // The reasoning text is the full-process level's (`ctrl+e`); the
-        // default starts it collapsed.
+        // The reasoning text is the full-process level's (`/reply-detail`
+        // Detailed); the default starts it collapsed.
         chat.set_reply_detail(ReplyDetail::Detailed);
         chat.add_message(ChatMessage::new("1".into(), ChatRole::Assistant, ""));
         chat.start_thinking();
@@ -6666,16 +6616,16 @@ mod tests {
         render_trimmed(chat)
     }
 
-    /// The same, in the state `/tool-output` puts the transcript in — the body
-    /// visible.
+    /// The same, with the call's own row open — the body visible.
     fn expanded_tool_lines(
         chat: &mut ChatArea,
         tool: &str,
         args: &str,
         output: &str,
     ) -> Vec<String> {
-        chat.set_tool_output_expanded(true);
-        tool_lines(chat, tool, args, output)
+        let _ = tool_lines(chat, tool, args, output);
+        open_all_rows(chat);
+        render_trimmed(chat)
     }
 
     /// `render_all` with the blank separator rows dropped.
@@ -6699,7 +6649,7 @@ mod tests {
         assert!(strip(&lines[0]).contains("$ ls"));
         assert!(!lines.iter().any(|l| strip(l).contains("alpha")));
 
-        chat.set_tool_output_expanded(true);
+        open_all_rows(&mut chat);
         let expanded = render_trimmed(&mut chat);
         assert_eq!(expanded.len(), 3, "row + 2 output lines: {expanded:?}");
         assert!(strip(&expanded[1]).contains("alpha"));
@@ -6730,43 +6680,20 @@ mod tests {
         assert_eq!(lines.len(), 1, "row only: {lines:?}");
         assert!(!lines.iter().any(|l| strip(l).contains("line 0")));
         assert!(!lines.iter().any(|l| strip(l).contains("more lines")));
-        assert!(!chat.tool_output_expanded());
-    }
-
-    #[test]
-    fn ctrl_g_expands_every_tool_output_body() {
-        let mut chat = new_chat();
-        let output: String = (0..12)
-            .map(|i| format!("line {i}\n"))
-            .collect::<Vec<_>>()
-            .join("");
-        let collapsed = tool_lines(&mut chat, "shell", r#"{"command":"ls"}"#, &output);
-        assert_eq!(collapsed.len(), 1, "row only: {collapsed:?}");
-        assert!(chat.toggle_tool_output_expanded());
-        let lines = render_trimmed(&mut chat);
-        assert_eq!(lines.len(), 13, "row + 12 output lines");
-        assert!(strip(&lines[12]).contains("line 11"));
-        assert!(!lines.iter().any(|l| strip(l).contains("more lines")));
-        // Toggling back collapses again.
-        assert!(!chat.toggle_tool_output_expanded());
-        assert_eq!(render_trimmed(&mut chat).len(), 1);
-        // Setting the same value is a no-op.
-        chat.set_tool_output_expanded(false);
-        assert!(!chat.tool_output_expanded());
     }
 
     #[test]
     fn a_unified_diff_body_is_parsed_and_summarised() {
         let mut chat = new_chat();
         let lines = tool_lines(&mut chat, "edit", r#"{"path":"src/a.rs"}"#, diff_output());
-        // The tool row carries the +N -M badge; the body itself waits for
-        // /tool-output.
+        // The tool row carries the +N -M badge; the body itself waits for the
+        // row to open.
         assert_eq!(lines.len(), 1, "row only: {lines:?}");
         let row = strip(&lines[0]);
         assert!(row.contains("+2 -1"), "{row:?}");
 
-        // Expanded: every add/remove row is rendered and coloured.
-        chat.set_tool_output_expanded(true);
+        // Opened: every add/remove row is rendered and coloured.
+        open_all_rows(&mut chat);
         let expanded = render_trimmed(&mut chat);
         let body: Vec<String> = expanded.iter().map(|l| strip(l)).collect();
         assert!(
@@ -6794,7 +6721,7 @@ mod tests {
     }
 
     #[test]
-    fn a_long_diff_is_collapsed_and_expands_with_tool_output() {
+    fn a_long_diff_is_collapsed_and_opens_with_its_row() {
         let mut chat = new_chat();
         let mut diff = String::from("--- a/f\n+++ b/f\n@@ -1,60 +1,60 @@\n");
         for i in 0..60 {
@@ -6802,8 +6729,8 @@ mod tests {
         }
         let lines = tool_lines(&mut chat, "write", r#"{"path":"f"}"#, &diff);
         assert_eq!(lines.len(), 1, "collapsed diff is one row: {lines:?}");
-        // Expanded shows the whole (123-line) diff — no marker left.
-        chat.set_tool_output_expanded(true);
+        // Opened, the whole (123-line) diff is shown — no marker left.
+        open_all_rows(&mut chat);
         let expanded = render_trimmed(&mut chat);
         assert_eq!(expanded.len(), 1 + 123, "every diff line is shown");
         assert!(!expanded.iter().any(|l| strip(l).contains("more lines")));
@@ -6815,7 +6742,7 @@ mod tests {
             huge.push_str(&format!("-old {i}\n+new {i}\n"));
         }
         tool_lines(&mut chat, "write", r#"{"path":"f"}"#, &huge);
-        chat.set_tool_output_expanded(true);
+        open_all_rows(&mut chat);
         let expanded = render_trimmed(&mut chat);
         assert_eq!(expanded.len(), 1 + EXPANDED_TOOL_OUTPUT_ROWS + 1);
         let marker = strip(expanded.last().unwrap());
@@ -6849,9 +6776,9 @@ mod tests {
             "the neutral band: {lines:?}"
         );
 
-        // `/tool-output` shows the reason — in the body colour, not the error
+        // Opening the row shows the reason — in the body colour, not the error
         // one: what went wrong is text to read, not an alarm.
-        chat.set_tool_output_expanded(true);
+        open_all_rows(&mut chat);
         let lines = render_trimmed(&mut chat);
         assert_eq!(lines.len(), 2, "row + the body: {lines:?}");
         assert!(strip(&lines[1]).contains("boom"));
@@ -6861,7 +6788,7 @@ mod tests {
 
     /// A failed call's long body is bounded by the same cap as any other, and
     /// the marker says the rest is cut — there is no collapsed preview left to
-    /// expand from, so it never advertises the toggle.
+    /// open from, so it never advertises it.
     #[test]
     fn a_long_error_body_is_truncated_at_the_same_cap() {
         let mut chat = new_chat();
@@ -6869,7 +6796,7 @@ mod tests {
         chat.add_tool_start("c1", "shell", Some(r#"{"command":"false"}"#.into()));
         chat.append_tool_delta("c1", &"line\n".repeat(EXPANDED_TOOL_OUTPUT_ROWS + 12));
         chat.messages.last_mut().unwrap().tool_status = Some(ToolStatus::Error);
-        chat.set_tool_output_expanded(true);
+        open_all_rows(&mut chat);
         let lines = render_trimmed(&mut chat);
         assert_eq!(lines.len(), 1 + EXPANDED_TOOL_OUTPUT_ROWS + 1, "{lines:?}");
         let marker = strip(lines.last().unwrap());
@@ -6883,7 +6810,7 @@ mod tests {
         chat.render(W);
         chat.add_tool_start("c9", "read", None);
         chat.finish_tool("c9", Some("from tool_end\n"), false);
-        chat.set_tool_output_expanded(true);
+        open_all_rows(&mut chat);
         let lines = render_trimmed(&mut chat);
         assert!(strip(&lines[1]).contains("from tool_end"));
         // A streamed body wins over the tool_end text.
@@ -6892,7 +6819,7 @@ mod tests {
         chat.add_tool_start("c9", "read", None);
         chat.append_tool_delta("c9", "streamed\n");
         chat.finish_tool("c9", Some("late\n"), false);
-        chat.set_tool_output_expanded(true);
+        open_all_rows(&mut chat);
         let lines = render_trimmed(&mut chat);
         assert!(strip(&lines[1]).contains("streamed"));
         assert!(!lines.iter().any(|l| strip(l).contains("late")));
@@ -7034,7 +6961,7 @@ mod tests {
         chat2.add_tool_start("c1", "shell", Some(r#"{"command":"ls"}"#.into()));
         chat2.append_tool_delta("c1", "out\n");
         chat2.set_theme(light);
-        chat2.set_tool_output_expanded(true);
+        open_all_rows(&mut chat2);
         let lines = render_trimmed(&mut chat2);
         assert!(lines[1].contains("\x1b[38;5;10m"), "{:?}", lines[1]);
     }
