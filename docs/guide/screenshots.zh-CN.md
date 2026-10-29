@@ -282,6 +282,26 @@ python3 scripts/screenshots/capture.py capture-desktop rail-tree steps-folded   
 
 截图写到 `.screenshots/`（已 gitignore）。你也可以自己打开 <http://localhost:5299/shot/> 手动探索；工具还会在 7391 端口起一个替身 PTY 服务，让内嵌终端面板有东西可显示。
 
+### 同一个会话，两个界面：`parser-*` 两个场景（桌面端）
+
+`.screenshots/tui-zh/` 与 `.screenshots/tui-en/` 是 TUI 给同一个脚本会话拍的两张图——表达式解析器里的一个 off-by-one（`tui/examples/demo_agent.rs` 的 `journal_zh` / `journal_en`）。`parser-zh`、`parser-en` 把同一个会话拍在桌面端：
+
+```bash
+python3 scripts/screenshots/capture.py serve-desktop               # 终端 1
+python3 scripts/screenshots/capture.py capture-desktop parser-zh   # → .screenshots/desktop-zh.png
+python3 scripts/screenshots/capture.py capture-desktop parser-en   # → .screenshots/desktop-en.png
+```
+
+两个场景写在 `scripts/screenshots/scenarios.d/parser-session.json`——用片段而不是改公共表，这样只加一个场景的会话不会去动别人也在改的 `scenarios.json`。
+
+`?thread=th_parser` 打开这段对话，并把它所在的工作区行一起带进来；默认那套 fixture（其它所有场景的起点）原样不动。`?lang=zh|en` 同时钉住一帧的**两半**：界面（`shot/prefs.ts` 在应用启动前读）和 fixture 自己的会话列表与转录（`desktop/shot/mock/data.ts` 读的是同一个参数）。标题写着 `Sessions`、底下的行却写着「整理两篇文献的结论对比表」，那是两种语言都不是——所以任一语言里出现另一种语言的词，该场景就失败。
+
+这个界面把已经结束的回复折到答案上，所以这一帧让第一条回复保持折叠——`查看过程 · 工具调用 2 次 · 思考 1 次`，正是 TUI 里那行 `▸`——再把第二条回复的过程按 TUI 展开树的方式展开：`查看过程`、步骤摘要、第一条思考。工具调用本身是桌面端自己的写法：一行行动词（`已运行`、`已编辑`），命令在检视面板里；两帧必须一致的东西——那个 bug、推理、带高亮 `rust` 块和三行表格的诊断、结尾那句、两个 commit——与 TUI 逐字相同。`eval` 断言的就是这些，外加这一帧是完整的：会话列不能是滚动状态、回复最后一行必须在输入框之上。这也是这两个场景要写 `height`（1720）的原因——两轮会话得装进同一张图，而桌面端画出来比一个终端格高得多。
+
+两点要说清。桌面端截到的图**不**像 TUI 那样逐字节可复现：每次跑只有两处会动——每条消息旁的相对时间（`刚刚` / `1分钟前`，读的是墙钟）和 fixture 里标成「运行中」的那条会话上的旋转指示。内容稳定，那几处像素不稳定。（`capture-desktop steps-folded` 动的也是这两处，所以这是这个界面的性质，而不是这两个场景的问题。）另外 fixture 里只有会话列表和转录有双语；设置、定时任务、技能那几套数据仍只有中文，而目前没有英文场景会打开它们。
+
+转录本身还需要补两个 mock 没实现的命令。历史读取走的是有界传输通道（`begin_session_history_transfer` 加它的分块读），而只实现了内联那条命令时，每段对话都显示成 `invalid_history_transfer` 加一个重试链接——截图本来要看的那段转录根本没画出来；点开一行工具调用还会读 `list_approval_assessments`，它返回 `null` 直接把整个界面卸掉。这两条现在都在 `desktop/shot/mock/backend.ts` 里答了。
+
 ## 手机端
 
 ```bash
