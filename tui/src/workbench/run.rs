@@ -613,10 +613,10 @@ impl PendingOpen {
 
 /// The net step a *session* key asks for, if this event is one.
 ///
-/// The driver reads this before the key reaches `quit`, so a held `ctrl+↑` /
-/// `ctrl+↓` (or `shift+↑` / `shift+↓`) becomes one switch instead of one per
-/// repeat. The guards are the same ones that decide whether any global shortcut
-/// fires: an overlay owns the keys it paints.
+/// The driver reads this before the key reaches `quit`, so a held `shift+↑` /
+/// `shift+↓` becomes one switch instead of one per repeat. The guards are the
+/// same ones that decide whether any global shortcut fires: an overlay owns the
+/// keys it paints.
 fn session_step_of(workbench: &Workbench, event: &WbEvent) -> Option<i32> {
     let WbEvent::Key(key) = event else {
         return None;
