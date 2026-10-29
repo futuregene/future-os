@@ -174,8 +174,15 @@ pub(crate) fn compose(
         // The composer's title counts the images waiting to be sent: the box
         // itself has no room for a line, and an attachment that is invisible
         // until the prompt is sent is one the reader cannot check.
+        //
+        // While a compaction holds the session the title says *that* instead:
+        // `enter` will not send (the agent refuses a prompt until the
+        // checkpoint lands), and a box that looks ready would take the draft as
+        // a send that silently did nothing.
         let images = data.input.editor.image_attachment_count();
-        let title = if images == 0 {
+        let title = if data.compacting {
+            t(workbench.lang, Key::ComposerCompacting).to_string()
+        } else if images == 0 {
             t(workbench.lang, Key::InputHintChat).to_string()
         } else {
             format!(
@@ -1637,12 +1644,22 @@ fn activity_row(
         ActivityKind::Streaming => {
             palette.text(palette.accent, t(workbench.lang, Key::ActivityStreaming))
         }
+        // The clock is inside the label: a compaction makes no tool calls, so
+        // the `· {n} 工具` tail below would count a zero at it.
+        ActivityKind::Compacting => palette.text(
+            palette.amber,
+            &i18n::render(
+                workbench.lang,
+                Key::ActivityCompacting,
+                &[&activity.elapsed_secs],
+            ),
+        ),
     };
     let mut left = format!(" {spinner}{kind}");
     if !activity.detail.is_empty() {
         left.push_str(&palette.dim(&format!(" {}", activity.detail)));
     }
-    if activity.is_busy() || activity.tools > 0 {
+    if activity.kind != ActivityKind::Compacting && (activity.is_busy() || activity.tools > 0) {
         left.push_str(&palette.dim(&i18n::render(
             workbench.lang,
             Key::ActivityTools,
@@ -4233,6 +4250,53 @@ mod tests {
             connected: true,
             ..WorkbenchData::default()
         }
+    }
+
+    /// While a compaction holds the session the frame says so twice: the
+    /// activity row names it (with the clock in the label — a compaction makes
+    /// no tool calls to count), and the composer's title is the answer to "why
+    /// does enter not send".
+    #[test]
+    fn a_compacting_session_names_itself_on_the_row_and_the_composer() {
+        let mut data = crate::workbench::demo::chat();
+        data.compacting = true;
+        data.activity = crate::workbench::state::Activity {
+            kind: crate::workbench::state::ActivityKind::Compacting,
+            detail: String::new(),
+            elapsed_secs: 12,
+            tools: 0,
+        };
+        let mut workbench = Workbench::new();
+        let lang = workbench.lang;
+        let rows = workbench.render(&data, 120, 38);
+        let painted: Vec<String> = rows.iter().map(|row| plain(row)).collect();
+        let joined = painted.join("\n");
+        assert!(
+            joined.contains(&crate::workbench::i18n::render(
+                lang,
+                Key::ActivityCompacting,
+                &[&12u64]
+            )),
+            "the row names the compaction and its clock:\n{joined}"
+        );
+        assert!(
+            !joined.contains("· 0 工具") && !joined.contains("· 0 tools"),
+            "a compaction makes no calls, so the tally is not drawn:\n{joined}"
+        );
+        assert!(
+            joined.contains(t(lang, Key::ComposerCompacting)),
+            "the composer says why nothing is sending:\n{joined}"
+        );
+        // …and a session that is not compacting keeps its ordinary title.
+        data.compacting = false;
+        let rows = workbench.render(&data, 120, 38);
+        let joined: Vec<String> = rows.iter().map(|row| plain(row)).collect();
+        let joined = joined.join("\n");
+        assert!(
+            !joined.contains(t(lang, Key::ComposerCompacting)),
+            "{joined}"
+        );
+        assert!(joined.contains(t(lang, Key::InputHintChat)), "{joined}");
     }
 
     /// The mention menu's own frame is one rectangle: the left border is in one

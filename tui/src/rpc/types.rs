@@ -290,6 +290,22 @@ pub struct RunTerminalState {
     pub error: Option<String>,
 }
 
+/// The agent's acknowledgement of a manual compaction (`compact`).
+///
+/// It carries no token counts: the compaction runs on the agent's own worker
+/// after this answer, and the numbers arrive with `compaction_committed` on
+/// the event stream. `operation_id` is the id every event of this compaction
+/// names, so a client watching a session can tell its own operation's
+/// terminal event from an older one's.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactAck {
+    #[serde(default)]
+    pub operation_id: String,
+    #[serde(default)]
+    pub accepted: bool,
+}
+
 // ============================================================================
 // Session Summary (from list_sessions)
 // ============================================================================

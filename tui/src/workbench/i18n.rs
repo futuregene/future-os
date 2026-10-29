@@ -343,6 +343,10 @@ pub enum Key {
     ActivityTool,
     ActivityStreaming,
     ActivityTools,
+    /// The activity row while a manual compaction holds the session: the
+    /// summary the agent is writing is the model's work, and it is the one
+    /// thing on screen that says why the prompt will not send.
+    ActivityCompacting,
     ActivityIdle,
     StatusNoModel,
     AgeNow,
@@ -464,6 +468,19 @@ pub enum Key {
     GitNoSelection,
     GitCopied,
     CompactDone,
+    /// The same sentence with the checkpoint's two counts: what `/compact`
+    /// actually did, the way the desktop's divider reports it.
+    CompactDoneTokens,
+    /// Nothing to compact: a checkpoint covers the conversation already.
+    CompactUnchanged,
+    /// The agent's worker reported a compaction that did not finish and named
+    /// no reason.
+    CompactFailed,
+    /// `/compact` was accepted and the worker is summarising.
+    NoticeCompacting,
+    /// The composer's own title while a compaction holds the session — the
+    /// reason a draft will not send, said where the draft is.
+    ComposerCompacting,
     ToolsDone,
     ToolsUsage,
     ToolsPending,
@@ -753,6 +770,9 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ActivityTool => ("工具", "Tool"),
         ActivityStreaming => ("生成", "Writing"),
         ActivityTools => (" · {}s · {} 工具", " · {}s · {} tools"),
+        // A compaction is the model summarising the conversation — not a run,
+        // so the row drops the tool tally and keeps the clock.
+        ActivityCompacting => ("压缩上下文 · {}s", "Compacting · {}s"),
         // The one activity label that used to be a literal: a settled session
         // says `· idle`, and a Chinese frame has to say 空闲.
         ActivityIdle => ("空闲", "idle"),
@@ -939,6 +959,20 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         GitNoSelection => ("选择一个条目查看详情", "Select an entry to see its detail"),
         GitCopied => ("已复制 {}", "copied {}"),
         CompactDone => ("上下文已压缩", "Context compacted"),
+        CompactDoneTokens => (
+            "上下文已压缩：{} → {} tokens（估算）",
+            "Context compacted: {} → {} tokens (estimated)",
+        ),
+        CompactUnchanged => ("上下文无需压缩", "Nothing to compact"),
+        CompactFailed => ("上下文压缩失败", "Context compaction failed"),
+        NoticeCompacting => (
+            "正在压缩上下文，请稍候…",
+            "Compacting the context — one moment…",
+        ),
+        ComposerCompacting => (
+            "压缩中，暂不能发送",
+            "Compacting — sending paused",
+        ),
         ToolsDone => ("工具设置已更新", "Tool settings updated"),
         ToolsUsage => ("用法：/tools read,shell · /tools off", "Usage: /tools read,shell · /tools off"),
         // The launchpad has no session to tell, so the choice is staged for the
@@ -1443,7 +1477,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 345] = {
+    const ALL_KEYS: [Key; 351] = {
         use Key::*;
         [
             TabTodo,
@@ -1526,6 +1560,7 @@ mod tests {
             ActivityTool,
             ActivityStreaming,
             ActivityTools,
+            ActivityCompacting,
             ActivityIdle,
             StatusNoModel,
             AgeNow,
@@ -1638,6 +1673,11 @@ mod tests {
             GitNoSelection,
             GitCopied,
             CompactDone,
+            CompactDoneTokens,
+            CompactUnchanged,
+            CompactFailed,
+            NoticeCompacting,
+            ComposerCompacting,
             ToolsDone,
             ToolsUsage,
             ToolsPending,

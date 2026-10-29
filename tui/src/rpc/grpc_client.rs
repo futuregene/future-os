@@ -26,8 +26,8 @@ use crate::rpc::provider_types::{
     parse_providers_response, validate_provider_input, ProviderInfo, ProviderInput,
 };
 use crate::rpc::types::{
-    AgentEvent, ModelInfo, ProjectedRunEvent, RpcSessionState, RunAck, SessionEntriesPage,
-    SessionSummary,
+    AgentEvent, CompactAck, ModelInfo, ProjectedRunEvent, RpcSessionState, RunAck,
+    SessionEntriesPage, SessionSummary,
 };
 use future_rpc::connection::ConnectionError;
 use future_rpc::proto::{Attachment, RpcCommand, StreamEvent, StreamRequest};
@@ -810,14 +810,20 @@ impl GrpcClient {
             .await
     }
 
-    /// `compact(customInstructions?)` — returns the result string.
-    pub async fn compact(&self, custom_instructions: Option<&str>) -> Result<String, String> {
+    /// `compact(customInstructions?)` — the agent's acknowledgement.
+    ///
+    /// The answer only says the compaction was accepted (and names its
+    /// operation): the work runs on the agent's worker, and the token counts
+    /// come with `compaction_committed` on the event stream.
+    pub async fn compact(&self, custom_instructions: Option<&str>) -> Result<CompactAck, String> {
         let cmd = RpcCommand {
             custom_instructions: custom_instructions.unwrap_or("").to_string(),
             ..Default::default()
         };
         let resp = self.call("compact", cmd).await?;
-        Ok(resp.as_str().unwrap_or("").to_string())
+        serde_json::from_value::<CompactAck>(resp).map_err(|error| {
+            format!("the agent acknowledged the compaction in a shape this client does not read: {error}")
+        })
     }
 
     /// `setCwd(cwd)`.

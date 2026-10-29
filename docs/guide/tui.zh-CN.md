@@ -320,6 +320,7 @@ worktree 被删）时跳过。其余三项没选过时显示的是产品
 | Fork | `/fork` 列出 `get_fork_messages` 的真实用户消息节点；回车调用 `fork` 并打开子会话 |
 | Worktree | `/worktree` 列出真实 git worktree，回车设为会话目录；`/worktree new <branch>` 在 `.worktrees/` 下创建并移动会话。不提供 remove/prune/reset/clean |
 | 已有设置入口 | `/mode`（或 `/sandbox`）打开审批模式选择框，`/thinking` 打开思考强度选择框，`/compact [说明]`、`/tools a,b` 或 `/tools off`、`/providers`。每个选择框都把命令后面的词当作搜索行（`/model deepseek` 打开时已按它过滤）。`/compact`、`/export`、`/tools` 说的是屏幕上那个会话，所以在 launchpad 上它们直接说明这一点，而不是作用在刚离开的会话上——`/tools` 会被暂存，作用于第一条消息创建的那个会话 |
+| 手动压缩（`/compact`） | agent 只回一个受理确认，真正的摘要由它自己的工作线程做，所以中间这段时间由终端这一端显示：活动行写成 `压缩上下文 · 12s`（压缩不调用工具，所以不画工具计数），输入框标题写明暂不能发送，回车不会把草稿发出去（agent 这时会以 `session_busy` 拒绝）。`get_state` 的 `isCompacting` 是 agent 自己的标志，终端在这一操作进行中接入、错过了终态事件时靠它把这一行收掉。`compaction_committed` 到时会用通知行报出检查点的前后两个 token 数（`62203 → 33281 tokens`），并把分隔行写进对话，不用重新加载就能看到上下文切在哪——重启后从存储的检查点读出来的就是同一行。`compaction_unchanged` 表示没有可压缩的内容，`compaction_failed` 带上 agent 的错误 |
 | 会话面板 | `list_sessions`，最新的在前：最近页签分成**活跃**（还在跑的会话，行的状态位是 spinner）和**更早**两组，两组都有内容时才画标题。侧栏在屏幕上时每五秒重读一次列表——别的客户端起的 run 没有别的途径能到这一端。工作区页签按目录归档，`/pin` 置顶的会话单独排在**置顶**区（不再列在它那个工作区下面，那个工作区如果除此之外没有别的会话，标题也就不画了）。置顶是这一端的偏好，记在 `settings.json`（`pinnedSessions`，按会话 id） |
 | 用量 / 上下文 / 成本 | `get_state` 的 usage，随同样的事件刷新 |
 | `ctrl+n` / `/new`、`ctrl+c` 停止、`ctrl+k` 刷新 | |
