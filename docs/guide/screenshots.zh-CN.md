@@ -291,6 +291,20 @@ python3 scripts/screenshots/capture.py capture-mobile       # 终端 2
 
 手机端以手机视口渲染（默认 390×844、2 倍像素密度），并通过 HTTP 提供演示图片，所以在聊天里内嵌的图片和可缩放预览都能正常显示。`serve-mobile` 会导出 `SHOT_WEB=1`；这是唯一的开关——`mobile/metro.config.js` **仅在 web 平台、仅在该变量为 1 时**把 remote context 和两个原生模块指向 `mobile/shot/mock/`，因此原生构建（`make run-mobile-android`）完全不受影响。
 
+### 同一个会话，两个界面：`parser-*` 两个场景
+
+`.screenshots/tui-zh/` 与 `.screenshots/tui-en/` 是 TUI 给同一个脚本会话拍的两张图——表达式解析器里的一个 off-by-one（`tui/examples/demo_agent.rs` 的 `journal_zh` / `journal_en`）。`parser-zh`、`parser-en` 把同一个会话拍在手机上：
+
+```bash
+SHOT_WEB=1 python3 scripts/screenshots/capture.py serve-mobile    # 终端 1
+python3 scripts/screenshots/capture.py capture-mobile parser-zh   # → .screenshots/mobile-zh.png
+python3 scripts/screenshots/capture.py capture-mobile parser-en   # → .screenshots/mobile-en.png
+```
+
+`?parser=1` 把整个演示目录换成这个会话——配对机器名、三个工作区分组、这段对话（`mobile/shot/mock/parserSession.ts`）——而 `lang` 固定浏览器区域设置（`zh-CN` / `en-US`），所以界面与转录是同一种语言：mock 取词用的 `navigator.language`，正是应用取界面语言的那个输入；任一帧里出现另一种语言的词，该场景就会失败。
+
+手机装不下两轮对话——转录高 1125 css px，而顶栏与输入框之间只有 672——所以这一帧从提问开始，装着折叠后的过程、诊断、改好的那行代码和那张表；第二轮（两个 commit）在往上一屏的位置。TUI 的工具行树在手机上没有对应物：它就是那行折叠摘要，计数写在它的可访问标签里（`查看过程 · 工具调用 2 次 · 思考 1 次`），场景断言的正是这些计数。这两个场景是确定性的：连跑两次得到逐字节相同的 PNG，因为帧里没有任何东西读时钟。
+
 ### 聊天转录是正的（inverted 列表那一层多余翻转）
 
 `mobile/src/features/chat/components/ChatTimeline.tsx` 用 `inverted` 的 FlatList 渲染转录。react-native-web 靠**两层**翻转实现它——滚动视图翻一次、每个 cell 再翻回来——两层相消，所以最新的一行在底部。列表一旦同时带 `refreshControl`，就会多出**第三层**：`ScrollView.render` 用滚动视图自己的样式克隆 refresh control（`dist/exports/ScrollView/index.js` 里的 `React.cloneElement(refreshControl, { style: props.style })`），而这套样式里带着那个翻转。于是整份转录上下颠倒——字是镜像的、行序也是反的——真机不是这样，所以这种截图会和设备对不上。（在 react-native-web 0.21.4 上复现，也就是 `serve-mobile` 现在装的那版。）
@@ -319,6 +333,8 @@ python3 scripts/screenshots/capture.py check-upright-mobile chat
 
 镜像时两个数字对调、命令以非零退出；两个分数相差不到 0.05 时报"inconclusive"而不是放行。判定逻辑与该方向由 `scripts/tests/test-screenshot-upright-check.py` 离线钉住（`make test-screenshot-harness`）。
 
+探针判定的是**看得见**的那个滚动容器，而不是最高的那个：手机把会话列表留着挂在打开的对话下面，于是长到需要滚动的侧栏自己也是一个滚动容器、而且更高。没有这层过滤时它圈中的是对话背后列表中的一行，于是本来完全正立的转录被判成 "no in-place tile"（`parser-zh` / `parser-en` 的侧栏就够长）。它也不再只认无子节点元素，而是接受**段落**——子节点全是行内片段的文本块；因为一帧里最大的纯文本叶子若只剩一行 13 px 的代码，它证明不了任何方向（实测正立 0.045、镜像 0.053，只能报 inconclusive）。
+
 ## 场景
 
 场景是数据不是代码：`scripts/screenshots/scenarios.json`。每个场景就是一串人也能照着复现的步骤。
@@ -337,6 +353,8 @@ python3 scripts/screenshots/capture.py check-upright-mobile chat
 步骤类型：`eval`、`wait`、`shot`、`tap`（按可访问名称）、`tapText`（按可见文字）、`hover`、`type`、`key`、`scroll`、`inject`，以及下面的标注 / 偏移 / 测量类步骤。三个平台级细节值得先知道：
 
 - **`ready`** 是驱动会反复轮询直到为真的 JavaScript 表达式，它也是截图快的关键：热缓存下约 1 秒就绪，冷启动可能要 20 秒。`settle` 只是就绪后的一小段缓冲。如果截图抢在界面绘制之前，应该调大 `readyTimeout` 而不是 `settle`。
+- **`lang` 固定的是浏览器区域设置，不是一条只给 harness 用的开关。** 必须使用某种语言的场景写 `"lang": "en-US"`，`cdp.mjs` 会在应用第一个脚本运行之前把页面的系统区域设置改成它：`Emulation.setLocaleOverride` 管 `Intl`，用户代理覆盖里的 `acceptLanguage` 管 `navigator.language`（Chrome 156 上实测——只设前者时 `navigator.language` 仍是宿主机的 `zh-CN`）。应用读的就是系统区域设置，与真机一致；应用内已保存的语言偏好仍然优先。
+- **`query` 拼在平台 URL 后面。** `"query": "?parser=1"` 让场景跟着 `serve-mobile` 当前服务的端口走，而不像写全 `url` 那样把 `http://localhost:8099/` 钉在场景里。
 - **`tap` 需要可访问名称。** 先匹配 `aria-label`，再匹配可交互元素自身的文字。两者都没有就用 `tapText`；如果你发现自己在写坐标点击，那通常说明这个控件缺标签。
 - **点不到的状态用 `eval`。** 只在悬停时出现的控件，需要先对它的容器加一个 `hover` 步骤（否则驱动会报告目标尺寸为 0，而不是去点页面角落）。例如对话内搜索是 ⌘F 打开的，驱动没法把它当按键发出去，所以场景改为访问 `?press=meta%2Bf`，由 `desktop/shot/main.tsx` 把快捷键派发给真实的 window 监听器。
 - **`eval` 里断言就是测试。** 步骤里的 `eval` 抛错会让这次截图以非零退出码失败（和点不到目标一样计入 `step(s) could not reach their target`），所以「界面必须处于某状态」写成 `eval` 断言才有意义：`if (document.body.innerText.includes('正在生成')) throw new Error('…');`。驱动内部自己的探测（`ready`、可选的元素读取）不在此列，不会因为读不到就判失败。

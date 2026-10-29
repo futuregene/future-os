@@ -819,7 +819,11 @@ def run_scenario(platform: str, name: str, spec: dict, out_dir: Path, cd_endpoin
         shutil.rmtree(frames_dir, ignore_errors=True)
         frames_dir.mkdir(parents=True, exist_ok=True)
 
-    url = spec.get("url", config["url"])
+    # `query` is appended to the platform's own `url`, so a scenario that only
+    # needs a different fixture (`?parser=1`) follows whatever port the harness
+    # is serving on. A full `url` still wins, for a scenario that lands on a
+    # different app or a page outside it.
+    url = spec.get("url") or (config["url"] + spec.get("query", ""))
     command = [
         "node", str(SCRIPTS / "cdp.mjs"),
         "--port", str(cd_endpoint),
@@ -842,6 +846,11 @@ def run_scenario(platform: str, name: str, spec: dict, out_dir: Path, cd_endpoin
         command += ["--baseline", str(baseline)]
     if not config.get("touch", True):
         command += ["--touch", "false"]
+    # A scenario can pin the browser locale (`"lang": "en-US"`): the app takes
+    # its language from the system locale, so a capture that has to be in one
+    # language pins the locale instead of a harness-only switch.
+    if spec.get("lang"):
+        command += ["--lang", str(spec["lang"])]
     print(f"── {platform}/{name}{shot_suffix}")
     # `text=True` with no encoding decodes with the locale's, which on a Windows
     # console is a legacy code page: the step runner prints whatever the page said
