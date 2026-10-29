@@ -45,7 +45,7 @@ conversations, to see the rail's window and its `↓ N more` row).
  ──────────────────────────────────────────┬──────────────────────
  conversation (bottom-anchored, ↑ 更早)     │ rail: 最近 工作区
                                             │ ▸ the conversation's name  ~/future-os · 2m
-                                            │
+ queue band (only while prompts wait)      │
  input box (❯ multiline draft, grows)      │  (the rail runs down beside it)
  activity: ⠋ 思考 … · 3s · 2 工具                   42 tok/s · 缓存 96%
  status:   model · effort · approval   ░░ ctx 6.9k/1.0M 0.7% · ≈¥0.01
@@ -56,6 +56,23 @@ The hint row teaches keys whose door is not already on screen: `ctrl+r` is not o
 it, because the header's own `[ctrl+r] 会话` button spells that chord a row
 above, and `ctrl+f`/`ctrl+g` ride on their buttons the same way. Nothing a
 reader needs is taught only in the help box, and nothing is taught twice.
+
+Between the conversation and the input box sits the **queue band**, and only
+while something is in it. A prompt sent while a run is in flight is not sent:
+the agent accepted it and put it behind the running turn, so the band lists it —
+one row per prompt, in the order the agent will run them — and the transcript
+stays silent about it until its run actually starts. That is the whole point of
+the band: a queued prompt drawn as a normal user card reads as a message that
+went out, and `hi` appearing mid-reply is exactly what a reader cannot tell
+apart from a sent message. The band's header names the count (`排队 2 条 ·
+当前回复结束后依次发送`) and its right end is the door to `/queue`, which cancels
+(`x`) or recalls (`r` / `enter`) one row at a time; clicking a row in the band
+is the same verb as clicking it in that box — the prompt goes back into the
+draft and leaves the queue. A long queue shows four rows and counts the rest;
+the band takes those rows from the conversation rather than growing the frame.
+The submission joins the queue with `enqueue_if_busy`, not the coalescing
+policy the inline TUI used: a folded request never runs as its own turn, and a
+queue a reader can cancel row by row has to keep every row's identity.
 
 The rail is a *column*, not a panel that stops one band early: it (and its
 divider) run from under the header down to the footer, so the space beside the
@@ -376,7 +393,7 @@ click on the rail's tab strip are the doors to the same places.
 | `pageUp` / `pageDown` | Scroll the conversation a screen at a time. The rail pages with `shift+pageUp`/`shift+pageDown`; `esc` returns to the latest output |
 | Conversation that fits | A conversation no taller than the band does not scroll at all — up asks the app for an older page and otherwise leaves the frame alone, because moving it would paint blank rows above the transcript and hide rows the terminal was tall enough to show. `↑ 更早` appears once the oldest loaded row is *above* the band, and the ceiling is that row reaching the top of it |
 | `enter` | Send the draft. With an **empty** draft there is nothing to send, so it opens the rail's selected row instead: a workspace heading folds or unfolds, a conversation opens. That is the one key the rail shares with the composer, and the empty draft is what tells the two apart |
-| `/queue` | List queued prompts — the ones sent while a run was in flight; `x` cancels, `r` / `enter` cancels and recalls into the draft (`ctrl+c` stops the active run, not the queue) |
+| `/queue` | List queued prompts — the ones sent while a run was in flight, also listed one row at a time in the band above the composer; `x` cancels, `r` / `enter` cancels and recalls into the draft (`ctrl+c` stops the active run, not the queue) |
 | `ctrl+g` or `[ctrl+g] git` in the header | The repository browser: 提交 / 引用 / 改动 / 暂存 tabs, a lane-coloured graph log across every branch, and the selected row's patch. `1`–`4` pick a tab, `tab` switches list/detail, `PgUp`/`PgDn` page the patch, `y` copies the row |
 | `ctrl+o` | Model picker (`/model`): every model the agent offers, grouped by provider, with the reasoning slider on its first row |
 | `ctrl+f` or `/files` | The **files panel**: this conversation's workspace as a tree, in a box over the frame — the same session scope as `/git`. `↑`/`↓` walk it, `⏎`/`→` open, `⌫`/`←` go up a level, `r` re-reads the directory, `esc` closes. The header's `[ctrl+f] 文件` button is the pointer's door to it, and `[ctrl+g] git` sits beside it |
@@ -416,7 +433,8 @@ click on the rail's tab strip are the doors to the same places.
 | Click a preference or shortcut row | Select it, open the shortcut editor or start key capture |
 | Click an approval action | Apply the same allow-once, allow-rule or deny decision as its key |
 | Click a palette entry | Run that command (the list a pointer cannot press leaves `ctrl+p` to the keyboard alone) |
-| Click a queued prompt | Recall it into the draft, exactly as `enter` does there |
+| Click a queued prompt | Recall it into the draft, exactly as `enter` does there — the band above the composer and the `/queue` box speak the same verb |
+| Click the queue band's header | Open `/queue` (the count is the door to the manager) |
 | Click the page around an overlay | Close it; a click on the box itself is absorbed, never passed to the control behind it |
 
 Mouse reporting is SGR 1006 and starts with the persisted preference (enabled by default). `/mouse` releases and restores it at runtime and saves the choice; the terminal is always restored on exit. Draft text, cursor, folded pastes and image attachments are kept per session across overlays, launchpad visits and session switches (for the lifetime of this TUI process, not persisted to disk).
@@ -437,8 +455,8 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 |---|---|
 | Session attach, `--session`, `--continue` | `get_state` + `switch_session` |
 | History with paging | The newest page on attach, older pages when the top is reached (`get_session_entries`, a bounded backward cursor) |
-| Prompting and streaming | `prompt` with the coalescing policy; `text_chunk`, `thinking_*`, `tool_*` and `agent_end` drive the transcript |
-| Queue management | `/queue` reads `get_state.queuedRuns`; cancel and recall use the existing `cancel_queued_run`, with no second client-side queue |
+| Prompting and streaming | `prompt` with `enqueue_if_busy` — a submission behind a running turn waits in the agent's queue and starts when that turn ends; `text_chunk`, `thinking_*`, `tool_*` and `agent_end` drive the transcript |
+| Queue management | `/queue` and the band above the composer both read `get_state.queuedRuns`; cancel and recall use the existing `cancel_queued_run`, with no second client-side queue. A queued submission draws no transcript rows until its run starts (`agent_start` / `get_state`), and a submission the agent reports as never run (`cancelled`, `superseded`, `merged`) leaves the transcript entirely |
 | Draft attachments | Reuses `components/input.rs` folded-paste and image-marker machinery; attachments travel with the prompt. `ctrl+v` / `/paste` read the system clipboard through `paste::ClipboardCapture` (osascript on macOS, PowerShell `-STA` on Windows, `wl-paste`/`xclip` on Linux) on a blocking thread, and an image it writes becomes an `[Image #N]` attachment. Nothing leaves the machine |
 | File panel and preview | `r` re-reads the directory in the panel; a directory is read when it opens (400 entries per level, said out loud when cut). A preview decodes an image to at most 2048 px on its long edge — those pixels are what keeps a zoom sharp — and downsamples the bitmap it transmits to the cells on screen; text is read bounded and cut on a character boundary |
 | Approvals | A parked request opens a full card with tool, kind, risk, action/paths, requested action and sandbox boundary. `y` / `n` allow once or deny; `a` first adds the agent-suggested **this-run** workspace rule, then approves. A rule failure leaves the request pending. Escape closes the card without deciding |

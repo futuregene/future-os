@@ -3570,13 +3570,10 @@ impl Workbench {
                 vec![WbAction::Redraw]
             }
             _ => {
-                if let Some(index) = id
-                    .strip_prefix("queue.row.")
-                    .and_then(|v| v.parse::<usize>().ok())
-                {
-                    // A queued prompt is a real verb (`recall`, the same one
-                    // `enter` runs); under the overlay the page's own click
-                    // handler is never reached, so it has to be repeated here.
+                // A queued prompt is a real verb (`recall`, the same one
+                // `enter` runs); under the overlay the page's own click
+                // handler is never reached, so it has to be repeated here.
+                if let Some(index) = queue_row_index(&id) {
                     self.queue_index = index;
                     return data
                         .queue
@@ -3769,10 +3766,10 @@ impl Workbench {
             self.chat_scroll = 0;
             return vec![WbAction::Redraw];
         }
-        if let Some(index) = id
-            .strip_prefix("queue.row.")
-            .and_then(|v| v.parse::<usize>().ok())
-        {
+        // A queued prompt, wherever it is drawn: the band above the composer
+        // (`queue.band.N`) and the manage box (`queue.row.N`) name the same
+        // verb — press one row to take that prompt back into the draft.
+        if let Some(index) = queue_row_index(id) {
             self.queue_index = index;
             return data
                 .queue
@@ -3854,6 +3851,13 @@ impl Workbench {
         }
         if id == "header.sessions" {
             return self.open_picker(PickerKind::Sessions, data);
+        }
+        if id == "queue.open" {
+            // The band above the composer names the queue; its header opens the
+            // box that manages it (the same box `/queue` opens), so a reader who
+            // can see "2 queued" is one click from cancelling or recalling
+            // either of them.
+            return vec![WbAction::OpenQueue];
         }
         if id == "header.files" {
             return vec![WbAction::OpenFiles];
@@ -4425,6 +4429,19 @@ struct TypedCommand {
     arg: String,
     /// The whole line, shaped like a `WbAction::Command`.
     raw: String,
+}
+
+/// A row's index in the agent's queue, from a hit id.
+///
+/// Two controls answer a press this way: the band above the composer
+/// (`queue.band.N`) and the manage box `/queue` opens (`queue.row.N`). They are
+/// separate ids because they are separate surfaces — one id for both would make
+/// a hit map hold two regions that name the same control, and the box's click
+/// would land on the band's row underneath it.
+fn queue_row_index(id: &str) -> Option<usize> {
+    id.strip_prefix("queue.row.")
+        .or_else(|| id.strip_prefix("queue.band."))
+        .and_then(|index| index.parse::<usize>().ok())
 }
 
 /// Split a submitted draft into a known command, or `None` when it is a prompt.
@@ -10993,6 +11010,109 @@ mod tests {
             vec![WbAction::Command(expected)]
         );
         assert_eq!(wb.overlay, None);
+    }
+
+    /// The queue band: a submission the agent has queued is listed *above the
+    /// composer*, one row per prompt — not in the transcript, where it used to
+    /// look exactly like a message already sent.
+    #[test]
+    fn the_queue_band_lists_queued_prompts_above_the_composer() {
+        use crate::workbench::i18n::{render, Key};
+        let mut data = demo::chat();
+        data.queue = vec![
+            state::QueuedPrompt {
+                run_id: "q1".into(),
+                text: "修一下 diff 面板的滚动".into(),
+            },
+            state::QueuedPrompt {
+                run_id: "q2".into(),
+                text: "然后跑一遍 clippy".into(),
+            },
+        ];
+        let (mut wb, rows) = frame(&data, 120, 38);
+        let text = plain(&rows);
+        let title = render(Language::Zh, Key::QueueBandTitle, &[&2]);
+        let first = wb
+            .render(&data, 120, 38)
+            .iter()
+            .map(|row| crate::utils::strip_ansi_codes(row))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(first.contains(&title), "no band header in:\n{first}");
+        assert!(first.contains("修一下 diff 面板的滚动"));
+        assert!(first.contains("然后跑一遍 clippy"));
+        // The band sits directly above the composer, not somewhere in the middle
+        // of the frame: the row above the box's top rule is its last prompt row.
+        let lines: Vec<&str> = text.lines().collect();
+        let header = lines.iter().position(|l| l.contains(&title)).unwrap();
+        let box_top = lines
+            .iter()
+            .position(|l| l.contains(t(Language::Zh, Key::InputHintChat)))
+            .expect("the composer's title rule");
+        assert_eq!(header + 2, box_top - 1, "{text}");
+        assert!(lines[header + 1].contains("1."));
+        assert!(lines[header + 2].contains("2."));
+    }
+
+    /// An empty queue has no band: the conversation keeps those rows.
+    #[test]
+    fn no_queue_means_no_band() {
+        let data = demo::chat();
+        let (wb, _rows) = frame(&data, 120, 38);
+        assert!(!wb
+            .hits()
+            .regions()
+            .iter()
+            .any(|(_, id)| id.starts_with("queue.")));
+    }
+
+    /// A queue longer than the band's four rows counts the rest instead of
+    /// growing the band over the conversation.
+    #[test]
+    fn a_long_queue_folds_its_tail_into_a_count_row() {
+        use crate::workbench::i18n::{render, Key};
+        let mut data = demo::chat();
+        data.queue = (0..6)
+            .map(|index| state::QueuedPrompt {
+                run_id: format!("run-{index}"),
+                text: format!("第 {index} 条"),
+            })
+            .collect();
+        let (_wb, rows) = frame(&data, 120, 38);
+        let text = plain(&rows);
+        assert!(text.contains("第 3 条"));
+        assert!(
+            !text.contains("第 4 条"),
+            "the band grew past four rows:\n{text}"
+        );
+        assert!(text.contains(&render(Language::Zh, Key::QueueBandMore, &[&2])));
+    }
+
+    /// The header names the count and answers a click by opening the manager;
+    /// each prompt row answers one by recalling that prompt into the draft.
+    #[test]
+    fn the_queue_band_opens_the_manager_and_recalls_a_row() {
+        let mut data = demo::chat();
+        data.queue = vec![
+            state::QueuedPrompt {
+                run_id: "q1".into(),
+                text: "first".into(),
+            },
+            state::QueuedPrompt {
+                run_id: "q2".into(),
+                text: "second".into(),
+            },
+        ];
+        let mut wb = workbench();
+        assert_eq!(
+            click_region(&mut wb, &data, 120, 38, "queue.open"),
+            vec![WbAction::OpenQueue]
+        );
+        let mut wb = workbench();
+        assert_eq!(
+            click_region(&mut wb, &data, 120, 38, "queue.band.1"),
+            vec![WbAction::RecallQueued("q2".into())]
+        );
     }
 
     /// A queued prompt is a verb under the overlay too: the page's own click

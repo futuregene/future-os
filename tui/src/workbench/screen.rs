@@ -81,32 +81,62 @@ pub(crate) fn compose(
         paint(&mut rows, frame.body, lines);
         workbench.set_cursor(cursor);
     } else {
+        // The queue band needs its rows *before* the conversation is painted:
+        // it takes them from the conversation's bottom, exactly like a draft
+        // that grew the composer. `0` room means the box would leave the chat
+        // nothing, and then the band is not drawn at all (`/queue` still is).
+        let queue_lines = queue_band(
+            workbench,
+            data,
+            &palette,
+            frame.body.w as usize,
+            frame
+                .body
+                .h
+                .saturating_sub(composer_extra)
+                .saturating_sub(3) as usize,
+        );
+        let queue_rows = queue_lines.len() as u16;
+        let conversation_rect = Rect::new(
+            frame.body.x,
+            frame.body.y,
+            frame.body.w,
+            frame
+                .body
+                .h
+                .saturating_sub(composer_extra)
+                .saturating_sub(queue_rows),
+        );
         // The band is claimed *before* it is painted: a link inside the
         // conversation registers its own cells while painting, and a region
         // claimed later would sit on top of them and answer every click with
         // "the chat" instead of with the link that was clicked.
         workbench.hit_map().push(frame.body, "chat");
-        let lines = conversation(
-            workbench,
-            data,
-            &palette,
-            Rect::new(
+        let lines = conversation(workbench, data, &palette, conversation_rect);
+        paint(&mut rows, conversation_rect, lines);
+        if queue_rows > 0 {
+            // Directly above the composer, and inside the conversation's band:
+            // one row per prompt the agent has accepted but not started.
+            let band = Rect::new(
                 frame.body.x,
-                frame.body.y,
+                conversation_rect.bottom(),
                 frame.body.w,
-                frame.body.h.saturating_sub(composer_extra),
-            ),
-        );
-        paint(
-            &mut rows,
-            Rect::new(
-                frame.body.x,
-                frame.body.y,
-                frame.body.w,
-                frame.body.h.saturating_sub(composer_extra),
-            ),
-            lines,
-        );
+                queue_rows,
+            );
+            for (index, (id, _)) in queue_lines.iter().enumerate() {
+                if let Some(id) = id {
+                    workbench.hit_map().push(
+                        Rect::new(band.x, band.y.saturating_add(index as u16), band.w, 1),
+                        id.clone(),
+                    );
+                }
+            }
+            paint(
+                &mut rows,
+                band,
+                queue_lines.into_iter().map(|(_, line)| line).collect(),
+            );
+        }
     }
 
     if let (Some(sidebar), Some(divider)) = (frame.sidebar, frame.divider) {
@@ -1013,6 +1043,83 @@ fn conversation(
     out.extend(vec![fit("", columns); gap]);
     out.truncate(rows);
     out
+}
+
+/// How many queued prompts the band above the composer lists before it counts
+/// the rest in one row. A band is a preview, not a queue manager — the count in
+/// its header and `/queue` are what the rest of a long queue gets.
+const QUEUE_BAND_ITEMS: usize = 4;
+
+/// The rows of the queue band, as `(hit id, row)` pairs.
+///
+/// A prompt listed here is one the agent accepted and has not started yet: it
+/// is deliberately absent from the transcript (`ChatArea::waits_in_queue`), so
+/// this band is the whole answer to "did my message go?". One row per prompt, in
+/// the order the agent will run them; `room` is how many rows the band may take
+/// from the conversation, and fewer than two buys no band at all (a header alone
+/// names nothing).
+fn queue_band(
+    workbench: &Workbench,
+    data: &WorkbenchData,
+    palette: &Palette,
+    columns: usize,
+    room: usize,
+) -> Vec<(Option<String>, String)> {
+    if data.queue.is_empty() || room < 2 || columns == 0 {
+        return Vec::new();
+    }
+    let lang = workbench.lang;
+    let title = format!(
+        " {} ",
+        palette.strong(
+            palette.amber,
+            &i18n::render(lang, Key::QueueBandTitle, &[&data.queue.len()])
+        )
+    );
+    let manage = format!(" {} ", palette.dim(t(lang, Key::QueueBandManage)));
+    // The header carries the count and the door to the manager: the count says
+    // how many are waiting, the last two words say where they can be cancelled
+    // or recalled one by one. A narrow band keeps the count and drops the door.
+    let header = if width(&title) + width(&manage) + 2 <= columns {
+        let pad = columns - width(&title) - width(&manage);
+        format!("{title}{}{manage}", " ".repeat(pad))
+    } else {
+        fit(&title, columns)
+    };
+    let mut rows = vec![(Some("queue.open".to_string()), header)];
+    let item_room = room - 1;
+    let shown = if data.queue.len() <= item_room.min(QUEUE_BAND_ITEMS) {
+        data.queue.len()
+    } else {
+        // The `… more` row is one of the rows the list could have used, so the
+        // band keeps promising a number that is true of what it does not show.
+        item_room
+            .saturating_sub(1)
+            .min(QUEUE_BAND_ITEMS)
+            .min(data.queue.len() - 1)
+    };
+    for (index, item) in data.queue.iter().take(shown).enumerate() {
+        // A queued prompt is shown as one line: the queue is a list of turns,
+        // not a second transcript. A draft that did include newlines keeps its
+        // shape as a `↵` so the row still says where they are.
+        let text = item.text.replace('\n', " ↵ ");
+        let row = format!(
+            " {}{}",
+            palette.strong(palette.amber, &format!("{}. ", index + 1)),
+            palette.body(&text)
+        );
+        rows.push((Some(format!("queue.band.{index}")), fit(&row, columns)));
+    }
+    let rest = data.queue.len().saturating_sub(shown);
+    if rest > 0 {
+        let row = format!(
+            "   {}",
+            palette.dim(&i18n::render(lang, Key::QueueBandMore, &[&rest]))
+        );
+        // Not a prompt: the count row is nobody's verb, so it takes no hit.
+        rows.push((None, fit(&row, columns)));
+    }
+    rows
 }
 
 fn queue_box(

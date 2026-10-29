@@ -25,15 +25,12 @@ where
 
 /// `busyPolicy` values: "enqueue_if_busy" (default) | "enqueue_coalescing" |
 /// "supersede_session".
+///
+/// The composer submits with `enqueue_if_busy`: the other values are the agent's
+/// (the IM bridges stream their own runs and the loop supervisor folds its
+/// outbox), and a queue the reader manages one row at a time — the band above
+/// the composer — cannot have rows that the agent folds away without running.
 pub const BUSY_ENQUEUE: &str = "enqueue_if_busy";
-
-/// Follow-up policy the composer submits with: the agent may fold a burst of
-/// submissions queued behind the running turn into ONE run, so a supplement
-/// sent seconds after the previous message is answered with it instead of in a
-/// separate reply. Folded submissions come back as terminal `merged` acks
-/// (`RunState::Merged`), which the composer renders instead of leaving them
-/// stuck at `queued`.
-pub const BUSY_ENQUEUE_COALESCING: &str = "enqueue_coalescing";
 
 /// `ThinkingLevel` — "off" | "minimal" | "low" | "medium" | "high" | "xhigh".
 pub type ThinkingLevel = String;

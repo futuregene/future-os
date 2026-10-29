@@ -478,6 +478,9 @@ pub enum Key {
     QueueTitle,
     QueueHint,
     QueueEmpty,
+    QueueBandTitle,
+    QueueBandManage,
+    QueueBandMore,
     QueueCancelled,
     QueueRecalled,
     QueueCancelFailed,
@@ -952,6 +955,14 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         QueueTitle => ("排队消息", "Queued prompts"),
         QueueHint => ("↑↓ 选择 · x 取消 · r/⏎ 取消并取回草稿 · esc 关闭 · ctrl+c 停止当前运行", "↑↓ choose · x cancels · r/enter recalls to draft · esc closes · ctrl+c stops the active run"),
         QueueEmpty => ("没有排队消息", "No queued prompts"),
+        // The band above the composer: one row per prompt the agent accepted
+        // but has not started. `{}` is the count.
+        QueueBandTitle => (
+            "排队 {} 条 · 当前回复结束后依次发送",
+            "{} queued · sent when this reply finishes",
+        ),
+        QueueBandManage => ("/queue 管理", "/queue to manage"),
+        QueueBandMore => ("… 还有 {} 条", "… {} more"),
         QueueCancelled => ("已取消排队消息", "Queued prompt cancelled"),
         QueueRecalled => ("已取消排队消息并取回草稿", "Queued prompt cancelled and recalled to draft"),
         QueueCancelFailed => ("无法取消排队消息：{}", "Could not cancel queued run: {}"),
@@ -1382,7 +1393,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 330] = {
+    const ALL_KEYS: [Key; 333] = {
         use Key::*;
         [
             TabTodo,
@@ -1584,6 +1595,9 @@ mod tests {
             QueueTitle,
             QueueHint,
             QueueEmpty,
+            QueueBandTitle,
+            QueueBandManage,
+            QueueBandMore,
             QueueCancelled,
             QueueRecalled,
             QueueCancelFailed,
