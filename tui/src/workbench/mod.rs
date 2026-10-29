@@ -682,6 +682,14 @@ pub struct Workbench {
     /// The width the transcript was last wrapped at. Part of the span cache's
     /// key, because a resize rewraps every row while no message changes.
     chat_inner: usize,
+    /// How many rows the conversation band had in the last frame it painted.
+    ///
+    /// Only the renderer knows this — the draft grows the composer and takes
+    /// rows from the band — and the scroll ceiling is `rows - this`: the offset
+    /// that puts the oldest row on the band's top row. A ceiling that does not
+    /// count the window lets a conversation shorter than the band be scrolled
+    /// into blank rows above and hidden rows below.
+    chat_window: usize,
     pub queue_index: usize,
     pub workflow_index: usize,
     /// How many list rows the last frame showed. Only the renderer knows,
@@ -841,6 +849,7 @@ impl Workbench {
             links: links::Cache::default(),
             chat_index: None,
             chat_inner: 0,
+            chat_window: 0,
             queue_index: 0,
             workflow_index: 0,
             list_page: 10,
@@ -1635,8 +1644,15 @@ impl Workbench {
     fn scroll(&mut self, up: i32, data: &WorkbenchData) -> Vec<WbAction> {
         let total = data.messages.len();
         // `chat_scroll` counts rows up from the tail: 0 is pinned to the newest
-        // row, and the ceiling is "everything loaded is above the viewport".
-        let ceiling = total.saturating_sub(1);
+        // row, and the ceiling is the offset that puts the oldest loaded row on
+        // the band's top row — the window's own height away from the tail.
+        //
+        // Counting rows alone (the old `total - 1`) ignored the window twice
+        // over: a conversation that fits the band could still be scrolled, which
+        // painted blank rows above it and hid rows the terminal was tall enough
+        // to show, and a long one stored offsets the painter then clamped, so
+        // the first presses of `↑` moved the offset without moving the screen.
+        let ceiling = total.saturating_sub(self.chat_window);
         let at_top = self.chat_scroll >= ceiling && total > 0;
         self.scroll.scroll(up, ceiling);
         self.chat_scroll = self.scroll.offset;
@@ -4299,6 +4315,22 @@ mod tests {
         (workbench, rows)
     }
 
+    /// A conversation taller than the band it is painted in.
+    ///
+    /// The keyboard and wheel cases below are about *moving* the transcript, and
+    /// a transcript that fits the window has nowhere to go: `↑` on it asks for
+    /// older rows instead (see [`Workbench::scroll`]). `demo::chat` is a short
+    /// conversation on purpose, so these cases bring their own rows.
+    fn scrollable_chat(rows: usize) -> WorkbenchData {
+        let mut data = demo::chat();
+        data.messages = (0..rows)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .into();
+        data.row_stops.clear();
+        data
+    }
+
     /// Press the middle of a painted region: the same path a real click takes,
     /// resolved against the hit map the last frame registered.
     fn click_region(
@@ -4544,11 +4576,7 @@ mod tests {
 
     #[test]
     fn new_output_never_steals_a_manual_scroll_position() {
-        let mut data = demo::chat();
-        data.messages = (0..100)
-            .map(|n| format!("line {n}"))
-            .collect::<Vec<_>>()
-            .into();
+        let mut data = scrollable_chat(100);
         let mut wb = workbench();
         wb.render(&data, 120, 38);
         wb.handle(WbEvent::Key("pageUp".into()), &data);
@@ -4562,6 +4590,114 @@ mod tests {
         wb.handle(WbEvent::Key("escape".into()), &data);
         assert!(wb.following_latest() && !wb.has_new_output());
         assert_eq!(wb.chat_scroll_offset(), 0);
+    }
+
+    /// A conversation shorter than the band it is painted in has nowhere to
+    /// scroll, and `↑` must not pretend otherwise: the scroll ceiling counts the
+    /// rows *and* the window, so a transcript the terminal is tall enough to
+    /// show in full stays whole instead of being pushed up into blank rows with
+    /// its newest lines hidden below.
+    #[test]
+    fn a_conversation_that_fits_the_band_is_never_scrolled_away() {
+        // The band's height is the renderer's to report — the composer takes a
+        // row or two off it — so ask it, then build a conversation three rows
+        // shorter than what it says.
+        let (mut wb, _rows) = frame(&scrollable_chat(1), 120, 40);
+        let band = wb.chat_window;
+        assert!(
+            band > 8,
+            "a 40-row terminal leaves a transcript band: {band}"
+        );
+        let total = band - 3;
+        let data = scrollable_chat(total);
+        let rows = wb.render(&data, 120, 40);
+        let text = plain(&rows);
+        for n in 0..total {
+            assert!(
+                text.contains(&format!("line {n} ")),
+                "row {n} is painted: {text}"
+            );
+        }
+
+        // Every gesture up — a row, a page, a wheel — leaves the conversation
+        // where it is: there is nothing above it to bring into view.
+        for _ in 0..5 {
+            wb.handle(WbEvent::Key("up".into()), &data);
+            wb.handle(WbEvent::Key("pageUp".into()), &data);
+            wb.handle(
+                WbEvent::Mouse(mouse::MouseEvent {
+                    kind: mouse::MouseKind::WheelUp,
+                    x: 10,
+                    y: 12,
+                    shift: false,
+                    alt: false,
+                    ctrl: false,
+                }),
+                &data,
+            );
+        }
+        assert_eq!(
+            wb.chat_scroll_offset(),
+            0,
+            "a fitting transcript does not scroll"
+        );
+        assert!(wb.following_latest());
+        let text = plain(&wb.render(&data, 120, 40));
+        for n in 0..total {
+            assert!(
+                text.contains(&format!("line {n} ")),
+                "row {n} left the screen: {text}"
+            );
+        }
+    }
+
+    /// Each `↑` moves the transcript exactly one row, all the way to the oldest
+    /// row sitting on the band's first line — and stops there instead of storing
+    /// an offset the painter clamps underneath it, which is a press that moves
+    /// nothing.
+    #[test]
+    fn every_arrow_moves_the_transcript_one_row_until_the_oldest_row_is_on_top() {
+        let total = 120usize;
+        let data = scrollable_chat(total);
+        let (mut wb, _rows) = frame(&data, 120, 40);
+        let band = wb.chat_window;
+        // The first row on screen, read out of the frame itself: every row
+        // carries its own number, so "the screen moved by one" is checkable.
+        let first_painted = |wb: &mut Workbench| -> usize {
+            let text = plain(&wb.render(&data, 120, 40));
+            (0..total)
+                .find(|n| text.contains(&format!("line {n} ")))
+                .unwrap_or_else(|| panic!("no transcript row painted: {text}"))
+        };
+        assert_eq!(
+            first_painted(&mut wb),
+            total - band,
+            "the tail fills the band"
+        );
+        for step in 1..=total - band {
+            assert!(
+                wb.handle(WbEvent::Key("up".into()), &data)
+                    .iter()
+                    .any(|action| matches!(action, WbAction::Scroll(-1))),
+                "press {step} scrolled"
+            );
+            assert_eq!(
+                first_painted(&mut wb),
+                total - band - step,
+                "press {step} moved the transcript one row"
+            );
+        }
+        assert_eq!(
+            wb.chat_scroll_offset(),
+            total - band,
+            "the ceiling is the window"
+        );
+        // At the top there is nothing left to move, only a page to ask for.
+        assert_eq!(
+            wb.handle(WbEvent::Key("up".into()), &data),
+            vec![WbAction::LoadOlder]
+        );
+        assert_eq!(first_painted(&mut wb), 0, "the oldest row is on top");
     }
 
     #[test]
@@ -5590,7 +5726,7 @@ mod tests {
     /// switches a tab — the tabs are `shift+←/→` and `ctrl+1`/`ctrl+2`.
     #[test]
     fn the_plain_arrows_never_walk_the_rail_tabs() {
-        let data = demo::chat();
+        let data = scrollable_chat(80);
         let (mut workbench, _rows) = frame(&data, 120, 38);
         workbench.sidebar_visible = true;
         assert_eq!(workbench.panel, PanelId::Recent);
@@ -7700,7 +7836,7 @@ mod tests {
     /// at it.
     #[test]
     fn a_wheel_burst_keeps_scrolling_the_conversation_it_began_over() {
-        let data = demo::chat();
+        let data = scrollable_chat(80);
         let (mut workbench, _rows) = frame(&data, 120, 38);
         let slot = workbench.panel.index();
 
@@ -7831,7 +7967,7 @@ mod tests {
 
     #[test]
     fn the_wheel_scrolls_and_reaching_the_top_asks_for_older_rows() {
-        let data = demo::chat();
+        let data = scrollable_chat(60);
         let (mut workbench, _rows) = frame(&data, 120, 38);
         let wheel = |kind| mouse::MouseEvent {
             kind,
@@ -7851,11 +7987,17 @@ mod tests {
             workbench.handle(WbEvent::Mouse(wheel(mouse::MouseKind::WheelUp)), &data),
             vec![WbAction::Scroll(-3)]
         );
-        // Enough wheel-up gestures reach the top of what is loaded, and the
-        // next one asks for a page above it.
-        for _ in 0..8 {
+        // Enough wheel-up gestures reach the top of what is loaded — the oldest
+        // row on the band's first line, and no further — and the next one asks
+        // for a page above it.
+        for _ in 0..16 {
             workbench.handle(WbEvent::Mouse(wheel(mouse::MouseKind::WheelUp)), &data);
         }
+        assert_eq!(
+            workbench.chat_scroll,
+            data.messages.len() - workbench.chat_window,
+            "the wheel stops at the oldest row, not past it"
+        );
         assert_eq!(
             workbench.handle(WbEvent::Mouse(wheel(mouse::MouseKind::WheelUp)), &data),
             vec![WbAction::LoadOlder]
