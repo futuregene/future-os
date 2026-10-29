@@ -717,6 +717,19 @@ pub struct Workbench {
     /// The width the transcript was last wrapped at. Part of the span cache's
     /// key, because a resize rewraps every row while no message changes.
     chat_inner: usize,
+    /// The rows the last frame painted, and the frame size they were painted
+    /// in.
+    ///
+    /// A transcript's height changes for reasons that have nothing to do with
+    /// the reader — a run streaming a row at a time, a reply settling and
+    /// folding its work into one summary row, a burst of calls collapsing, a
+    /// page of older rows prepended. `chat_scroll` is a distance from the tail,
+    /// so every one of those would drag the window with it (see
+    /// [`Self::hold_rows_across_height_change`]): the rows are kept to compare
+    /// against, and the size to leave resizes alone (a rewrap is a different row
+    /// set, not a longer one).
+    chat_rows: Option<std::sync::Arc<[String]>>,
+    chat_frame: (u16, u16),
     /// How many rows the conversation band had in the last frame it painted.
     ///
     /// Only the renderer knows this — the draft grows the composer and takes
@@ -889,6 +902,8 @@ impl Workbench {
             chat_index: None,
             stop_reveal: false,
             chat_inner: 0,
+            chat_rows: None,
+            chat_frame: (0, 0),
             chat_window: 0,
             queue_index: 0,
             workflow_index: 0,
@@ -1000,20 +1015,80 @@ impl Workbench {
     /// what is below it change.
     ///
     /// One frame only: the anchor is taken when the action is produced and
-    /// spent on the frame that shows its result.
-    fn anchor_after_row_toggle(&mut self, total: usize) {
+    /// spent on the frame that shows its result. Answers whether it held.
+    fn anchor_after_row_toggle(&mut self, total: usize) -> bool {
         let Some(before) = self.row_toggle_anchor.take() else {
-            return;
+            return false;
         };
         let delta = total as isize - before as isize;
         if delta == 0 {
-            return;
+            return false;
         }
         let offset = (self.chat_scroll as isize + delta).max(0) as usize;
         self.chat_scroll = offset;
         // The follow state is the same number seen from the other end: a
         // reader holding a row is reading, not following the tail.
         self.scroll.set_offset(offset);
+        true
+    }
+
+    /// Hold the reader's rows across a transcript that changed height on its
+    /// own.
+    ///
+    /// The offset is a distance from the tail, so a row that arrives or leaves
+    /// *anywhere* below the window moves every painted row with it. A run still
+    /// streaming does it a row at a time — the reader's page slides up under a
+    /// hand that is not touching the wheel — and one that folds its work away
+    /// (a reply settling into `▸ 61 tool calls`, a burst collapsing) drops the
+    /// page back down, which is the "it keeps coming back to that block" a
+    /// reader scrolling through an opened row sees. Neither is the reader
+    /// moving: the window is a place in the conversation, not a distance from
+    /// its end.
+    ///
+    /// Where the rows changed decides who moves. A change *below* the window's
+    /// first row leaves that row on its index, so the offset moves by the same
+    /// amount and the painted rows stay. A change *at or above* it — the page
+    /// of older rows `↑ 更早` prepends — carries the reader's rows with it: the
+    /// offset stays and the rows are where they were, with the new rows above
+    /// them. A resize is neither: it rewraps every row, and the offset is left
+    /// alone to mean the same distance from the tail.
+    fn hold_rows_across_height_change(&mut self, previous: &[String], current: &[String]) {
+        // A reader on the tail is following it: output arriving is exactly
+        // what they want to see, and there is nothing to hold.
+        if self.scroll.following() {
+            return;
+        }
+        let delta = current.len() as isize - previous.len() as isize;
+        if delta == 0 {
+            return;
+        }
+        // No frame has measured the band yet: there is no window to hold.
+        if self.chat_window == 0 {
+            return;
+        }
+        // The first painted row this frame is the one the last frame painted,
+        // so the window's first row is that far from the end.
+        let start = previous
+            .len()
+            .saturating_sub(self.chat_scroll)
+            .saturating_sub(self.chat_window);
+        // Where the transcript first differs: rows above it keep their index.
+        let shared = previous.len().min(current.len());
+        let mut changed = 0;
+        while changed < shared && previous[changed] == current[changed] {
+            changed += 1;
+        }
+        // Older rows prepended: every row the reader sees moved *down* by
+        // `delta`, and staying still is what holds them (see above).
+        let prepended =
+            changed == 0 && delta > 0 && previous.iter().eq(current[delta as usize..].iter());
+        let shift = if prepended || changed < start {
+            delta
+        } else {
+            0
+        };
+        let offset = (self.chat_scroll as isize + delta - shift).max(0) as usize;
+        self.set_chat_scroll(offset);
     }
 
     /// Render one frame: exactly `h` rows, each exactly `w` display columns.
@@ -1023,10 +1098,21 @@ impl Workbench {
             self.scroll.reset();
             // The cursor belonged to the conversation that just left the screen.
             self.chat_index = None;
+            // The rows of the conversation that left are not this one's: a
+            // row count compared across them would move the new one's page.
+            self.chat_rows = None;
             self.links.clear();
         }
         self.scroll.observe(data.revision);
-        self.anchor_after_row_toggle(data.messages.len());
+        let held = self.anchor_after_row_toggle(data.messages.len());
+        let previous = self
+            .chat_rows
+            .replace(std::sync::Arc::clone(&data.messages));
+        let resized = self.chat_frame != (w, h);
+        self.chat_frame = (w, h);
+        if let Some(previous) = previous.filter(|_| !held && !resized) {
+            self.hold_rows_across_height_change(&previous, &data.messages);
+        }
         self.mouse_capture = data.mouse_capture;
         // The menu is a reading of the draft, and a frame is the moment the
         // draft is as fresh as it will get in this iteration: a paste inserts a
@@ -8416,6 +8502,116 @@ mod tests {
         );
     }
 
+    /// A conversation as the app builds one: the real transcript renderer, the
+    /// real fold rows, the rows a session paints.
+    fn rendered_chat(turns: usize) -> crate::components::chat_area::ChatArea {
+        use crate::components::chat_area::{ChatArea, ChatMessage, ChatRole, ToolStatus};
+        let mut chat = ChatArea::new(layout::chat_inner(120), None);
+        for turn in 0..turns {
+            chat.add_message(ChatMessage::new(
+                format!("u{turn}"),
+                ChatRole::User,
+                &format!("第 {turn} 轮：这一层重试为什么不直接拿掉？"),
+            ));
+            let mut call = ChatMessage::new(
+                format!("t{turn}"),
+                ChatRole::Tool,
+                &format!("test result: ok. {} passed\nsecond line of output", turn),
+            );
+            call.name = Some("shell".into());
+            call.tool = Some(format!("call{turn}"));
+            call.tool_args = Some(
+                serde_json::json!({ "command": format!("cargo test -p parser --turn {turn}") })
+                    .to_string(),
+            );
+            call.tool_status = Some(ToolStatus::Complete);
+            chat.add_message(call);
+            chat.add_message(ChatMessage::new(
+                format!("a{turn}"),
+                ChatRole::Assistant,
+                &format!("第 {turn} 轮：上游会在 45 秒静默断开，这一层把它挡在界面之外。"),
+            ));
+        }
+        chat
+    }
+
+    /// The workbench's view of a live transcript, rebuilt the way `Live::data`
+    /// does it after the app has changed something.
+    fn chat_data(
+        chat: &mut crate::components::chat_area::ChatArea,
+        revision: u64,
+    ) -> WorkbenchData {
+        let mut data = demo::chat();
+        data.messages = chat.render_all_shared(layout::chat_inner(120));
+        data.row_stops = chat.row_stops();
+        data.revision = revision;
+        data
+    }
+
+    /// Opening a row and then rolling down goes *down*.
+    ///
+    /// A click that opens a `▸ 4 tool calls` row leaves the cursor standing on
+    /// it, and the rows it unfolded arrive with the next frame: the window has
+    /// to stay where the reader put it (the anchor) and then keep travelling
+    /// towards the tail with the wheel. It used to come back to the opened row
+    /// instead, which is the jump this pins.
+    #[test]
+    fn rolling_down_past_a_row_the_reader_opened_keeps_going_down() {
+        let mut chat = rendered_chat(8);
+        let mut data = chat_data(&mut chat, 1);
+        let mut workbench = workbench();
+        workbench.render(&data, 120, 28);
+        // Walk up into the transcript, a paint per turn like the driver does.
+        for _ in 0..8 {
+            roll(&mut workbench, &data, mouse::MouseKind::WheelUp, 40, 12);
+            workbench.render(&data, 120, 28);
+        }
+        let opened_at = workbench.chat_scroll;
+        assert!(opened_at > 0, "the wheel walked up the transcript");
+
+        // The pointer opens the first row on screen, exactly as a click does.
+        let target = workbench
+            .hits()
+            .regions()
+            .iter()
+            .filter(|(_, id)| id.starts_with("chat.row."))
+            .map(|(_, id)| id.clone())
+            .next()
+            .expect("a transcript row on screen");
+        let actions = click_region(&mut workbench, &data, 120, 28, &target);
+        let mut opened = false;
+        for action in actions {
+            if let WbAction::ToggleChatRow(row) = action {
+                chat.toggle_row(row);
+                opened = true;
+            }
+        }
+        assert!(opened, "the click asked for the row to open");
+        // The rows it unfolded arrive with the next frame (see `Live::data`).
+        data = chat_data(&mut chat, 2);
+        workbench.render(&data, 120, 28);
+        let after_open = workbench.chat_scroll;
+        assert!(
+            after_open > opened_at,
+            "opening a row above the tail keeps the reader's rows: {after_open} after {opened_at}"
+        );
+
+        // Now roll the other way: every turn moves the window towards the tail
+        // and the frame leaves it there.
+        let mut last = workbench.chat_scroll;
+        for turn in 0..24 {
+            roll(&mut workbench, &data, mouse::MouseKind::WheelDown, 40, 12);
+            workbench.render(&data, 120, 28);
+            assert!(
+                workbench.chat_scroll <= last,
+                "turn {turn} came back up: {} after {last}",
+                workbench.chat_scroll
+            );
+            last = workbench.chat_scroll;
+        }
+        assert_eq!(workbench.chat_scroll, 0, "the wheel reached the tail");
+    }
+
     /// End the burst in progress, the way a reader who stops, aims and rolls
     /// again does it.
     fn pause_between_bursts(workbench: &mut Workbench) {
@@ -8549,6 +8745,101 @@ mod tests {
     /// a highlight nobody moved is not a reason to revise it: a long enough
     /// append used to push the cursor row above the window and the frame then
     /// pulled the whole transcript back up to it.
+    /// The conversation band's rows as the frame painted them, with the two
+    /// badges (`↑ 更早`, `↓ 新输出`) left out: they describe where the window is,
+    /// and are not part of what the reader is reading.
+    fn band_rows(frame: &str) -> Vec<String> {
+        let lines: Vec<&str> = frame.lines().collect();
+        let rule = lines
+            .iter()
+            .position(|line| line.starts_with('─'))
+            .expect("the header rule");
+        lines[rule + 1..]
+            .iter()
+            .take_while(|line| !line.starts_with('╭'))
+            .filter(|line| !line.contains("更早") && !line.contains("新输出"))
+            // The rail's own column is beside the transcript, not part of it.
+            .map(|line| line.split('│').next().unwrap_or("").trim_end().to_string())
+            .filter(|line| !line.is_empty())
+            .collect()
+    }
+
+    /// The rows two frames painted in the same place. The band's last row is
+    /// left out of the comparison: output that arrives below puts the `↓ 新输出`
+    /// badge there, which is the point rather than a move.
+    fn assert_page_held(before: &[String], after: &[String], what: &str) {
+        let kept = before.len().min(after.len()).saturating_sub(1);
+        assert!(
+            kept >= 10,
+            "too few rows to compare ({what}): {before:?} vs {after:?}"
+        );
+        assert_eq!(after[..kept], before[..kept], "{what}");
+    }
+
+    /// A transcript whose height changes under a reader who is *reading* keeps
+    /// that reader's rows where they are.
+    ///
+    /// `chat_scroll` is a distance from the tail, so a row that arrives or
+    /// leaves anywhere below the window drags the whole page with it: a run
+    /// still streaming slides the rows up under the pointer, and a reply whose
+    /// work folds into one summary row (or a burst of calls collapsing) drops
+    /// the page back down onto the rows above — which is the "it comes back to
+    /// that block" a reader scrolling through an opened `▸ 4 tool calls` row
+    /// sees. The window is a place in the conversation, not a distance from its
+    /// end.
+    #[test]
+    fn a_transcript_that_changes_height_leaves_the_readers_rows_alone() {
+        let data = scrollable_chat(120);
+        let (mut workbench, _rows) = frame(&data, 120, 24);
+        workbench.set_chat_scroll(70);
+        let before = band_rows(&plain(&workbench.render(&data, 120, 24)));
+        assert!(
+            before[0].contains("line 35"),
+            "the band starts there: {before:?}"
+        );
+
+        // New output arrives at the tail: eight rows nobody asked to see yet.
+        let mut grown: Vec<String> = data.messages.to_vec();
+        grown.extend((120..128).map(|n| format!("line {n}")));
+        let mut grown_data = data.clone();
+        grown_data.messages = grown.into();
+        grown_data.revision += 1;
+        let after = band_rows(&plain(&workbench.render(&grown_data, 120, 24)));
+        assert_page_held(&before, &after, "the appended rows slid the page");
+
+        // …and a reply below settles: its work folds into one summary row, so
+        // the transcript is eight rows shorter.
+        let mut shrunk: Vec<String> = data.messages.iter().take(112).cloned().collect();
+        shrunk.push("▸ 8 tool calls · 2 thoughts".into());
+        let mut shrunk_data = data.clone();
+        shrunk_data.messages = shrunk.into();
+        shrunk_data.revision += 1;
+        let after = band_rows(&plain(&workbench.render(&shrunk_data, 120, 24)));
+        assert_page_held(&before, &after, "the fold dropped the page");
+    }
+
+    /// A page of older rows arriving above the window (`↑ 更早`) is the one
+    /// change that happens *above* the reader: the rows they are reading keep
+    /// their place on screen, with the new ones above them.
+    #[test]
+    fn a_page_of_older_rows_prepended_keeps_the_readers_rows() {
+        let data = scrollable_chat(80);
+        let (mut workbench, _rows) = frame(&data, 120, 24);
+        // The top of what is loaded: one press of `↑` from here asks for more
+        // (and the `↑ 更早` badge is on screen, as it is for that reader).
+        workbench.set_chat_scroll(80 - workbench.chat_window + 1);
+        let before = band_rows(&plain(&workbench.render(&data, 120, 24)));
+        assert!(before[0].contains("line 0"), "{before:?}");
+
+        let mut prepended: Vec<String> = (0..10).map(|n| format!("old {n}")).collect();
+        prepended.extend(data.messages.iter().cloned());
+        let mut older = data.clone();
+        older.messages = prepended.into();
+        older.revision += 1;
+        let after = band_rows(&plain(&workbench.render(&older, 120, 24)));
+        assert_page_held(&before, &after, "the older page moved the reader");
+    }
+
     #[test]
     fn streaming_output_does_not_chase_a_cursor_left_behind() {
         use crate::components::chat_area::{RowAction, RowStop};
