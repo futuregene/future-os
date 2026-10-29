@@ -65,6 +65,13 @@ import {
   parserSessions,
   parserWorkspaces,
 } from "./parserSession";
+import {
+  fleetActiveSessions,
+  fleetCatalogs,
+  fleetDesktops,
+  fleetOtherMachines,
+  fleetWorkspaces,
+} from "./fleet";
 import { seedComposerDraft, withApprovalRequest } from "./smallestType";
 
 type MockValue = Record<string, any>;
@@ -106,13 +113,23 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // the three workspace groups, the conversation. Everything else — screens,
   // projection, i18n — is untouched, so a capture is still the real phone UI.
   const parserDemo = new URLSearchParams(window.location.search).get("parser") === "1";
+  // `?fleet=1` pairs the phone with five desktops and merges their conversations
+  // into the home screen's recency page (`shot/mock/fleet.ts`). The product
+  // already draws a merged list — the picker's "all desktops", a machine glyph per
+  // row — but the default demo is one machine, which is the one shape that page
+  // cannot show.
+  const fleetDemo = new URLSearchParams(window.location.search).get("fleet") === "1";
   // `?single=1` leaves the phone with one pairing. It is the state where the
   // list has no other machine to fall back to, so `?held=1&single=1` is the one
   // that asks for the takeover page instead of the conversations.
   const singlePairing = new URLSearchParams(window.location.search).get("single") === "1";
   // The machine's name is the user's own label, and it is drawn in the chat's
   // top bar — so a frame pinned to English needs one in English too.
-  const pairedDesktops = (singlePairing ? demoDesktops.slice(0, 1) : demoDesktops).map(
+  const pairedDesktops = (fleetDemo
+    ? fleetDesktops
+    : singlePairing
+      ? demoDesktops.slice(0, 1)
+      : demoDesktops).map(
     (desktop, index) => (parserDemo && index === 0 ? { ...desktop, name: parserDesktopName } : desktop),
   );
   const [selectedSessionId, setSelectedSessionId] = useState("");
@@ -162,8 +179,16 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   ];
   // The catalogue and the conversation a capture opens come from one branch, so
   // `?parser=1` cannot pair the TUI's transcript with the dopamine rail.
-  const activeSessions = parserDemo ? parserSessions : catalogue;
-  const activeWorkspaces = parserDemo ? parserWorkspaces : demoWorkspaces;
+  const activeSessions = fleetDemo
+    ? fleetActiveSessions
+    : parserDemo
+      ? parserSessions
+      : catalogue;
+  const activeWorkspaces = fleetDemo
+    ? fleetWorkspaces(pairedDesktops[0]?.desktopId ?? "")
+    : parserDemo
+      ? parserWorkspaces
+      : demoWorkspaces;
   const primarySessionId = parserDemo ? parserSessionId : "sess_dopamine_review";
   const [compactionFinished, setCompactionFinished] = useState(false);
   const scriptedCompaction = compactionFinished || new URLSearchParams(window.location.search).get("compacted") === "1";
@@ -322,24 +347,27 @@ export function RemoteProvider({ children }: PropsWithChildren) {
      * it does on a phone paired to one desktop.
      */
     catalogs: {
-      catalogs: [{
-        desktopId,
-        label: pairedDesktop?.name ?? desktopId,
-        // The harness always renders a machine that is answering: its catalogue
-        // is the one this file builds, not a mirror of a connection that could
-        // be down. The merged list draws only `connected` machines.
-        status: "connected" as const,
-        sessions: activeSessions,
-      }],
+      catalogs: fleetDemo
+        ? fleetCatalogs
+        : [{
+          desktopId,
+          label: pairedDesktop?.name ?? desktopId,
+          // The harness always renders a machine that is answering: its catalogue
+          // is the one this file builds, not a mirror of a connection that could
+          // be down. The merged list draws only `connected` machines.
+          status: "connected" as const,
+          sessions: activeSessions,
+        }],
       // `?peers=1` gives the second paired desktop a live connection, the state
       // that puts the dialog below on its machine step; every other capture
-      // wants the ordinary one-machine phone this file describes above.
-      machines: peerMachines,
+      // wants the ordinary one-machine phone this file describes above. `?fleet=1`
+      // lists the other four machines instead, all connected.
+      machines: fleetDemo ? fleetOtherMachines : peerMachines,
       refresh: async () => {},
       reconnect: () => {},
-      commandsFor: (id: string) => (withPeers && id === peerId ? peerCommands : null),
+      commandsFor: (id: string) => (fleetDemo || (withPeers && id === peerId) ? peerCommands : null),
       takeControlFor: async () => undefined,
-      readWorkspaces: async () => activeWorkspaces,
+      readWorkspaces: async (id: string) => (fleetDemo ? fleetWorkspaces(id) : activeWorkspaces),
     },
     skillsRevision: 0,
     desktopSettingsRevision: 0,

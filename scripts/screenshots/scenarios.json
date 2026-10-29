@@ -3301,6 +3301,110 @@
       "mobile": true
     },
     "scenarios": {
+      "fleet-zh": {
+        "note": "The home screen's recency page with five paired desktops merged into one list (`?fleet=1`, `mobile/shot/mock/fleet.ts`): two runs still working, twelve finished, ordered by the reply time each machine reported rather than by machine. Every row opens on the desktop it lives on; the machine is named by its glyph, and the picker above the list is where the five names are.",
+        "query": "?fleet=1",
+        "lang": "zh-CN",
+        "ready": "/全部桌面/.test(document.body.innerText)",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  // The home screen's recency page, merged: one row per conversation across five\n  // paired desktops, ordered by the clock each machine reported. The order is the\n  // assertion — a merged list that ranked by machine, or dropped a machine, is\n  // not the page this scenario is about.\n  const rowIds = [...document.querySelectorAll('[data-testid^=\"recent-row:\"]')]\n    .map(el => el.getAttribute('data-testid'));\n  const expected = [\"recent-row:active:desktop_cloud::sess_fleet_coverage\", \"recent-row:active:desktop_office::sess_fleet_pr_diff\", \"recent-row:earlier:desktop_lab::sess_fleet_recency\", \"recent-row:earlier:desktop_home::sess_fleet_weekly\", \"recent-row:earlier:desktop_rack::sess_fleet_split_log\", \"recent-row:earlier:desktop_cloud::sess_fleet_nightly\", \"recent-row:earlier:desktop_office::sess_fleet_review\", \"recent-row:earlier:desktop_lab::sess_fleet_rail\", \"recent-row:earlier:desktop_home::sess_fleet_samples\", \"recent-row:earlier:desktop_rack::sess_fleet_prune\", \"recent-row:earlier:desktop_cloud::sess_fleet_canary\", \"recent-row:earlier:desktop_office::sess_fleet_outline\", \"recent-row:earlier:desktop_lab::sess_fleet_keymap\", \"recent-row:earlier:desktop_home::sess_fleet_minutes\"];\n  if (JSON.stringify(rowIds) !== JSON.stringify(expected))\n    throw new Error('the merged order is wrong: ' + JSON.stringify({ got: rowIds.slice(0, 6), want: expected.slice(0, 6), count: rowIds.length }));\n  // Every machine contributes rows, and each row carries its own machine's glyph.\n  const sources = new Set([...document.querySelectorAll('[data-testid^=\"recent-row:\"]')]\n    .map(row => [...row.querySelectorAll('[aria-label^=\"desktop_\"]')]\n      .map(el => el.getAttribute('aria-label'))[0])\n    .filter(Boolean));\n  const missing = [\"desktop_lab\", \"desktop_office\", \"desktop_home\", \"desktop_rack\", \"desktop_cloud\"].filter(id => !sources.has(id));\n  if (missing.length) throw new Error('a paired machine is missing from the list: ' + JSON.stringify(missing));\n  // The two stretches, with the counts the page prints beside them.\n  const caption = key => {\n    const el = document.querySelector(`[data-testid=\"recent-section:sessions.${key}\"]`);\n    return el ? (el.textContent || '').trim() : null;\n  };\n  const active = caption('activeSection');\n  const earlier = caption('earlierSection');\n  if (!active || !active.includes('2')) throw new Error('the active stretch is wrong: ' + active);\n  if (!earlier || !earlier.includes('12')) throw new Error('the earlier stretch is wrong: ' + earlier);\n  const text = document.body.innerText;\n  // The English captions are painted upper-case, and `innerText` is what the reader sees.\n  const missingText = [\"活跃\", \"更早\", \"全部桌面\"]\n    .filter(needle => !text.toLowerCase().includes(needle.toLowerCase()));\n  if (missingText.length) throw new Error('the frame is missing: ' + JSON.stringify(missingText));\n  const theirs = [\"All desktops\", \"Active\", \"Earlier\"].filter(needle => text.toLowerCase().includes(needle.toLowerCase()));\n  if (theirs.length) throw new Error('another language reached this frame: ' + JSON.stringify(theirs));\n  return 'five desktops, fourteen conversations, one clock';\n})()"
+          },
+          {
+            "shot": "home-devices-zh.png"
+          }
+        ]
+      },
+      "fleet-en": {
+        "note": "The home screen's recency page with five paired desktops merged into one list (`?fleet=1`, `mobile/shot/mock/fleet.ts`): two runs still working, twelve finished, ordered by the reply time each machine reported rather than by machine. Every row opens on the desktop it lives on; the machine is named by its glyph, and the picker above the list is where the five names are.",
+        "query": "?fleet=1",
+        "lang": "en-US",
+        "ready": "/All desktops/.test(document.body.innerText)",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  // The home screen's recency page, merged: one row per conversation across five\n  // paired desktops, ordered by the clock each machine reported. The order is the\n  // assertion — a merged list that ranked by machine, or dropped a machine, is\n  // not the page this scenario is about.\n  const rowIds = [...document.querySelectorAll('[data-testid^=\"recent-row:\"]')]\n    .map(el => el.getAttribute('data-testid'));\n  const expected = [\"recent-row:active:desktop_cloud::sess_fleet_coverage\", \"recent-row:active:desktop_office::sess_fleet_pr_diff\", \"recent-row:earlier:desktop_lab::sess_fleet_recency\", \"recent-row:earlier:desktop_home::sess_fleet_weekly\", \"recent-row:earlier:desktop_rack::sess_fleet_split_log\", \"recent-row:earlier:desktop_cloud::sess_fleet_nightly\", \"recent-row:earlier:desktop_office::sess_fleet_review\", \"recent-row:earlier:desktop_lab::sess_fleet_rail\", \"recent-row:earlier:desktop_home::sess_fleet_samples\", \"recent-row:earlier:desktop_rack::sess_fleet_prune\", \"recent-row:earlier:desktop_cloud::sess_fleet_canary\", \"recent-row:earlier:desktop_office::sess_fleet_outline\", \"recent-row:earlier:desktop_lab::sess_fleet_keymap\", \"recent-row:earlier:desktop_home::sess_fleet_minutes\"];\n  if (JSON.stringify(rowIds) !== JSON.stringify(expected))\n    throw new Error('the merged order is wrong: ' + JSON.stringify({ got: rowIds.slice(0, 6), want: expected.slice(0, 6), count: rowIds.length }));\n  // Every machine contributes rows, and each row carries its own machine's glyph.\n  const sources = new Set([...document.querySelectorAll('[data-testid^=\"recent-row:\"]')]\n    .map(row => [...row.querySelectorAll('[aria-label^=\"desktop_\"]')]\n      .map(el => el.getAttribute('aria-label'))[0])\n    .filter(Boolean));\n  const missing = [\"desktop_lab\", \"desktop_office\", \"desktop_home\", \"desktop_rack\", \"desktop_cloud\"].filter(id => !sources.has(id));\n  if (missing.length) throw new Error('a paired machine is missing from the list: ' + JSON.stringify(missing));\n  // The two stretches, with the counts the page prints beside them.\n  const caption = key => {\n    const el = document.querySelector(`[data-testid=\"recent-section:sessions.${key}\"]`);\n    return el ? (el.textContent || '').trim() : null;\n  };\n  const active = caption('activeSection');\n  const earlier = caption('earlierSection');\n  if (!active || !active.includes('2')) throw new Error('the active stretch is wrong: ' + active);\n  if (!earlier || !earlier.includes('12')) throw new Error('the earlier stretch is wrong: ' + earlier);\n  const text = document.body.innerText;\n  // The English captions are painted upper-case, and `innerText` is what the reader sees.\n  const missingText = [\"Active\", \"Earlier\", \"All desktops\"]\n    .filter(needle => !text.toLowerCase().includes(needle.toLowerCase()));\n  if (missingText.length) throw new Error('the frame is missing: ' + JSON.stringify(missingText));\n  const theirs = [\"全部桌面\", \"活跃\", \"更早\"].filter(needle => text.toLowerCase().includes(needle.toLowerCase()));\n  if (theirs.length) throw new Error('another language reached this frame: ' + JSON.stringify(theirs));\n  const han = document.body.innerText.match(/[\\u4e00-\\u9fff]+/);\n  if (han) throw new Error('Chinese text reached the English frame: ' + han[0]);\n  return 'five desktops, fourteen conversations, one clock';\n})()"
+          },
+          {
+            "shot": "home-devices-en.png"
+          }
+        ]
+      },
+      "fleet-picker-zh": {
+        "note": "The same page with the desktop picker open: 'all desktops' plus the five paired machines by name, which is where the merged list says who the glyphs on its rows belong to.",
+        "query": "?fleet=1",
+        "lang": "zh-CN",
+        "ready": "/全部桌面/.test(document.body.innerText)",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tap": "桌面选择"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => {\n  // The sheet that names them: the list itself names each machine by glyph, so the\n  // picker is where a reader (and this capture) can check which five are paired.\n  const text = document.body.innerText;\n  const missing = [\"实验室的 MacBook Pro\", \"办公室主机\", \"家里工作站\", \"楼下的服务器\", \"云端构建机\"].filter(name => !text.includes(name));\n  if (missing.length) throw new Error('the picker does not name every machine: ' + JSON.stringify(missing));\n  const radios = document.querySelectorAll('[role=radio]').length;\n  if (radios !== 6) throw new Error(\"'all desktops' plus five machines is six choices, got \" + radios);\n  return 'the picker names all five machines';\n})()"
+          },
+          {
+            "shot": "home-devices-picker-zh.png"
+          }
+        ]
+      },
+      "fleet-picker-en": {
+        "note": "The same page with the desktop picker open: 'all desktops' plus the five paired machines by name, which is where the merged list says who the glyphs on its rows belong to.",
+        "query": "?fleet=1",
+        "lang": "en-US",
+        "ready": "/All desktops/.test(document.body.innerText)",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tap": "Desktops"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => {\n  // The sheet that names them: the list itself names each machine by glyph, so the\n  // picker is where a reader (and this capture) can check which five are paired.\n  const text = document.body.innerText;\n  const missing = [\"Lab MacBook Pro\", \"Office Desktop\", \"Home Workstation\", \"Downstairs Server\", \"Cloud Build Machine\"].filter(name => !text.includes(name));\n  if (missing.length) throw new Error('the picker does not name every machine: ' + JSON.stringify(missing));\n  const radios = document.querySelectorAll('[role=radio]').length;\n  if (radios !== 6) throw new Error(\"'all desktops' plus five machines is six choices, got \" + radios);\n  return 'the picker names all five machines';\n})()"
+          },
+          {
+            "shot": "home-devices-picker-en.png"
+          }
+        ]
+      },
       "parser-zh": {
         "note": "The session the TUI frames were captured with, on the phone: `?parser=1` swaps in that scripted conversation (mobile/shot/mock/parserSession.ts) and `lang` pins the browser locale, so the interface and the transcript are in one language. The frame opens at the question and holds the diagnosis, the code and the table; the second turn (the two commits) sits below it, one scroll away.",
         "query": "?parser=1",

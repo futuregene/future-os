@@ -325,6 +325,21 @@ python3 scripts/screenshots/capture.py capture-mobile parser-en   # → .screens
 
 手机装不下两轮对话——转录高 1125 css px，而顶栏与输入框之间只有 672——所以这一帧从提问开始，装着折叠后的过程、诊断、改好的那行代码和那张表；第二轮（两个 commit）在往上一屏的位置。TUI 的工具行树在手机上没有对应物：它就是那行折叠摘要，计数写在它的可访问标签里（`查看过程 · 工具调用 2 次 · 思考 1 次`），场景断言的正是这些计数。这两个场景是确定性的：连跑两次得到逐字节相同的 PNG，因为帧里没有任何东西读时钟。
 
+### 五个桌面端摆在同一个首页：`fleet-*` 场景
+
+手机首页打开的是「最近」页——所有会话按最后回复时间排序——配对多于一台桌面端时列表会把它们合并（`mergeSessions`，选择器上的「全部桌面」）。`?fleet=1` 换成五台机器、十四段对话（`mobile/shot/mock/fleet.ts`）：
+
+```bash
+python3 scripts/screenshots/capture.py capture-mobile fleet-zh          # → .screenshots/home-devices-zh.png
+python3 scripts/screenshots/capture.py capture-mobile fleet-en          # → .screenshots/home-devices-en.png
+python3 scripts/screenshots/capture.py capture-mobile fleet-picker-zh   # → .screenshots/home-devices-picker-zh.png
+python3 scripts/screenshots/capture.py capture-mobile fleet-picker-en   # → .screenshots/home-devices-picker-en.png
+```
+
+两个列表场景断言的是「合并」本身而不是画面：行序是各台机器自己报的最后回复时间（不是按机器分组）、五台机器都供了行、两个分段标题分别是 2 与 12。`-picker-` 那两个打开列表上方的选择面板，五台机器的**名字**在那里——列表里一行只用图标表示它属于哪台机器，名字写上去会吃掉标题的宽度。
+
+两次截图里都没有「正在跑」的会话：`running` / `queued` 的行会画一个 `ActivityIndicator`，它的帧每次都不一样，所以 fixture 里两个未结束的会话都是「等我批准」的阻塞态。连跑两次得到逐字节相同的 PNG。
+
 ### 聊天转录是正的（inverted 列表那一层多余翻转）
 
 `mobile/src/features/chat/components/ChatTimeline.tsx` 用 `inverted` 的 FlatList 渲染转录。react-native-web 靠**两层**翻转实现它——滚动视图翻一次、每个 cell 再翻回来——两层相消，所以最新的一行在底部。列表一旦同时带 `refreshControl`，就会多出**第三层**：`ScrollView.render` 用滚动视图自己的样式克隆 refresh control（`dist/exports/ScrollView/index.js` 里的 `React.cloneElement(refreshControl, { style: props.style })`），而这套样式里带着那个翻转。于是整份转录上下颠倒——字是镜像的、行序也是反的——真机不是这样，所以这种截图会和设备对不上。（在 react-native-web 0.21.4 上复现，也就是 `serve-mobile` 现在装的那版。）
