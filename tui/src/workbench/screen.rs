@@ -3935,6 +3935,7 @@ mod tests {
             parent_id: None,
             streaming: false,
             created_at_ms: 0,
+            pinned: false,
         };
         let mut data = crate::workbench::demo::chat();
         data.sessions = (0..24).map(session).collect();

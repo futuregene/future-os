@@ -167,8 +167,8 @@ pub struct Live {
     /// [`Self::begin_sessions_refresh`]). The driver's clock drains it, so a
     /// slow answer costs a frame's worth of staleness instead of a freeze.
     sessions_refresh: Option<tokio::sync::oneshot::Receiver<Result<Vec<SessionSummary>, String>>>,
-    /// Bumped when the pinned workspaces change (a pin reorders and re-files the
-    /// 工作区 tab, so the view it feeds is stale from that moment).
+    /// Bumped when the pinned conversations change (a pin re-files the 工作区
+    /// tab, so the view it feeds is stale from that moment).
     pins_rev: u64,
     /// The rail's rows and filing, built for the key below.
     session_view: Option<SessionView>,
@@ -262,9 +262,9 @@ pub struct Live {
     /// The installed skills (machine-wide: read once, then reused for every
     /// frame), which the `/` palette offers beside its commands.
     local_skills: Option<Vec<SkillRow>>,
-    /// Workspace paths the reader pinned in the rail (the 置顶 section), as
+    /// Conversation ids the reader pinned in the rail (the 置顶 section), as
     /// `~/.future/tui/settings.json` last recorded them.
-    pinned_workspaces: Vec<String>,
+    pinned_sessions: Vec<String>,
     /// The `@` menu's candidates for `local_cwd`, read once per directory: a
     /// listing per keystroke would be a `git ls-files` per keystroke. Empty
     /// until [`LocalReads`] answers for the directory in force.
@@ -387,8 +387,8 @@ impl Live {
             local_cwd: String::new(),
             branch: super::git::BranchCache::new(),
             local_skills: None,
-            pinned_workspaces: settings
-                .and_then(|settings| settings.pinned_workspaces.clone())
+            pinned_sessions: settings
+                .and_then(|settings| settings.pinned_sessions.clone())
                 .unwrap_or_default(),
             files: Vec::new(),
             local_reads: None,
@@ -770,13 +770,16 @@ impl Live {
                 // 最近's 活跃 stretch a view of the agent and not of this
                 // terminal's own typing.
                 streaming: session.is_streaming.unwrap_or(false),
+                // The reader's own pin, not the agent's: `/pin` names one
+                // conversation, and the rail draws it in 置顶 instead of under
+                // the directory it ran in.
+                pinned: self.pinned_sessions.iter().any(|id| id == &session.id),
             })
             .collect();
         // The 工作区 tab: the same rows, filed the way the desktop's rail files
         // them. A conversation that ran in one of the app's own scratch
         // directories belongs to no workspace, so it is a plain chat.
-        let (workspaces, chats) =
-            file_sessions(&self.sessions, &rows, &self.pinned_workspaces, &roots);
+        let (workspaces, chats) = file_sessions(&self.sessions, &rows, &roots);
         SessionView {
             key,
             rows,
@@ -785,25 +788,31 @@ impl Live {
         }
     }
 
-    /// Pin or unpin one workspace, and answer what belongs on the notice row.
-    pub fn set_workspace_pinned(&mut self, path: &str, pinned: bool) -> String {
-        self.pinned_workspaces
-            .retain(|known| !same_path(known, path));
+    /// Pin or unpin one conversation, and answer what belongs on the notice row.
+    pub fn set_session_pinned(&mut self, id: &str, pinned: bool) -> String {
+        self.pinned_sessions.retain(|known| known != id);
         if pinned {
-            self.pinned_workspaces.push(path.to_string());
+            self.pinned_sessions.push(id.to_string());
         }
         self.pins_rev = self.pins_rev.wrapping_add(1);
-        let name = workspace_name(path);
+        // The row's own label, so the notice names the conversation the reader
+        // pinned rather than the id the agent filed it under.
+        let title = self
+            .sessions
+            .iter()
+            .find(|session| session.id == id)
+            .map(display_name)
+            .unwrap_or_else(|| id.to_string());
         if pinned {
-            i18n::render(self.lang, Key::NoticePinned, &[&name])
+            i18n::render(self.lang, Key::NoticePinned, &[&title])
         } else {
-            i18n::render(self.lang, Key::NoticeUnpinned, &[&name])
+            i18n::render(self.lang, Key::NoticeUnpinned, &[&title])
         }
     }
 
-    /// The workspace paths the rail currently pins, for the settings file.
-    pub fn pinned_workspaces(&self) -> &[String] {
-        &self.pinned_workspaces
+    /// The conversation ids the rail currently pins, for the settings file.
+    pub fn pinned_sessions(&self) -> &[String] {
+        &self.pinned_sessions
     }
 
     /// `--continue`: attach to the most recently active session.
@@ -1679,9 +1688,9 @@ impl Live {
             // not need a round trip for a rectangle or a local shortcut.
             WbAction::SetPreferences | WbAction::SetKeybindings => {}
             // The rail's pin lands in this client's settings file; the driver
-            // applies it through [`Live::set_workspace_pinned`], so here it is
+            // applies it through [`Live::set_session_pinned`], so here it is
             // only a shape the agent never sees.
-            WbAction::SetWorkspacePinned { .. } => {}
+            WbAction::SetSessionPinned { .. } => {}
             // The driver displays local notices; a demo adapter has no notice
             // dispatch of its own to perform.
             WbAction::Notice(_) => {}
@@ -3489,7 +3498,7 @@ struct SessionView {
 struct SessionViewKey {
     /// [`SessionList::rev`] — the list itself.
     sessions: u64,
-    /// [`Live::pins_rev`] — a pin reorders and re-files the 工作区 tab.
+    /// [`Live::pins_rev`] — a pin re-files the 工作区 tab.
     pins: u64,
     /// The attached conversation (`current` on its row).
     current: String,
@@ -3501,14 +3510,18 @@ struct SessionViewKey {
     minute: i64,
 }
 
-/// The 工作区 tab's filing: one group per workspace, pinned first, and the
-/// conversations that belong to no workspace at all.
+/// The 工作区 tab's filing: one group per workspace, and the conversations that
+/// belong to no workspace at all.
 ///
 /// A conversation is a plain chat when its directory is one of the app's own
 /// scratch roots — the agent's default workspace (a session started without a
 /// directory) or the per-chat scratch tree the desktop hands out. Everything
 /// else is filed under the directory it ran in, named by that directory and
 /// identified by its path: two checkouts can share a name.
+///
+/// A **pinned** conversation is filed here like any other — the lift into 置顶
+/// is the rail's (`panels::rows_with`), because 最近 draws the same list with
+/// the pin making no difference at all.
 ///
 /// Two indexes, not two scans: each row used to look its summary up with a
 /// linear walk of the session list and its group up with a linear walk of the
@@ -3520,7 +3533,6 @@ struct SessionViewKey {
 fn file_sessions(
     sessions: &[SessionSummary],
     rows: &[SessionRow],
-    pinned: &[String],
     roots: &ChatRoots,
 ) -> (Vec<WorkspaceGroup>, Vec<String>) {
     let mut by_id: HashMap<&str, &SessionSummary> = HashMap::with_capacity(sessions.len());
@@ -3532,7 +3544,7 @@ fn file_sessions(
     let mut group_at: HashMap<String, usize> = HashMap::new();
     // `rows` is most recently spoken first, so a group keeps that order inside
     // itself and the first time a path is seen is that workspace's newest
-    // activity.
+    // activity — which is also where its heading belongs.
     for row in rows {
         let Some(summary) = by_id.get(row.id.as_str()) else {
             continue;
@@ -3552,7 +3564,6 @@ fn file_sessions(
                 group_at.insert(path.clone(), groups.len());
                 groups.push(WorkspaceGroup {
                     name: workspace_name(&path),
-                    pinned: pinned.iter().any(|pin| same_path(pin, &path)),
                     path,
                     age: row.age.clone(),
                     session_ids: vec![row.id.clone()],
@@ -3560,9 +3571,6 @@ fn file_sessions(
             }
         }
     }
-    // Pinned workspaces lead (the desktop's rail does the same); the rest keep
-    // the newest-activity order the rows already carry.
-    groups.sort_by_key(|group| !group.pinned);
     (groups, chats)
 }
 
@@ -5762,8 +5770,8 @@ mod tests {
 
     /// The 工作区 tab's filing. A conversation is filed under the directory it
     /// ran in; two checkouts that share a name are two groups (the path is the
-    /// identity); a scratch directory is a plain chat; a pinned workspace leads
-    /// even when it is not the freshest.
+    /// identity); a scratch directory is a plain chat. A pin is the rail's
+    /// business, so the filing lists the conversation either way.
     #[test]
     fn conversations_are_filed_by_the_directory_they_ran_in() {
         // The scratch tree is read from the process environment twice — once
@@ -5793,16 +5801,17 @@ mod tests {
                 title: display_name(session),
                 workspace: ChatRoots::detect().workspace_label(&session.cwd),
                 age: format!("{index}h"),
+                pinned: session.id == "a",
                 ..SessionRow::default()
             })
             .collect();
-        let pinned = vec!["/other/future-os/".to_string()];
-        let (groups, chats) = file_sessions(&sessions, &rows, &pinned, &ChatRoots::detect());
+        let (groups, chats) = file_sessions(&sessions, &rows, &ChatRoots::detect());
 
-        // The pinned checkout leads although it is not the freshest.
-        assert_eq!(groups[0].path, "/other/future-os");
-        assert!(groups[0].pinned);
-        assert_eq!(groups[0].session_ids, vec!["d".to_string()]);
+        // A pin is the rail's own lift, not the filing's: the group keeps the
+        // conversation even when 工作区 draws it in 置顶.
+        assert!(groups
+            .iter()
+            .any(|group| group.session_ids.contains(&"a".to_string())));
 
         // A trailing slash is not a different workspace: `a` and `b` are one
         // group, newest first, and the group's age is that newest one.
@@ -5812,7 +5821,6 @@ mod tests {
             .expect("the main checkout");
         assert_eq!(main.session_ids, vec!["a".to_string(), "b".to_string()]);
         assert_eq!(main.age, "0h");
-        assert!(!main.pinned);
         assert_eq!(main.name, "future-os");
 
         // A worktree is its own group, and so is a second checkout with the
@@ -5856,7 +5864,7 @@ mod tests {
                 ..SessionRow::default()
             })
             .collect();
-        let (groups, chats) = file_sessions(&sessions, &rows, &[], &ChatRoots::detect());
+        let (groups, chats) = file_sessions(&sessions, &rows, &ChatRoots::detect());
         assert!(chats.is_empty(), "neither is a scratch directory");
         assert_eq!(groups.len(), 1, "one directory, one group: {groups:?}");
         assert_eq!(
@@ -5952,11 +5960,11 @@ mod tests {
 
         // A pin re-files the 工作区 tab.
         let before = live.session_view_builds();
-        live.set_workspace_pinned("/work/p3", true);
+        live.set_session_pinned("s3", true);
         live.data(&frame);
         assert!(
             live.session_view_builds() > before,
-            "a pinned workspace must re-file the tab"
+            "a pinned conversation must re-file the tab"
         );
 
         // Leaving for the launchpad moves `current` off every row.

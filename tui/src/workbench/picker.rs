@@ -1043,6 +1043,7 @@ mod tests {
                 parent_id: None,
                 streaming: false,
                 created_at_ms: 0,
+                pinned: false,
             },
             SessionRow {
                 id: "s2".into(),
@@ -1053,6 +1054,7 @@ mod tests {
                 parent_id: None,
                 streaming: false,
                 created_at_ms: 0,
+                pinned: false,
             },
         ];
         data
@@ -1069,7 +1071,6 @@ mod tests {
         data.workspaces = vec![WorkspaceGroup {
             name: "future-os".into(),
             path: "/home/dev/future-os".into(),
-            pinned: false,
             age: "5m".into(),
             session_ids: vec!["s1".into()],
         }];
@@ -1589,6 +1590,7 @@ mod tests {
                 parent_id: None,
                 streaming: false,
                 created_at_ms: 0,
+                pinned: false,
             };
         data.sessions = vec![
             session("s1", "会话总管", "session-supervisor", "1m", false),

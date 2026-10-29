@@ -592,6 +592,7 @@ pub enum Key {
     NoticePinned,
     NoticeUnpinned,
     NoticePinUnavailable,
+    NoticePinNewSession,
     NoticeModeUnknown,
     NoticeOpenLinkFailed,
     // ── the adapter (`live`, `local`, `widgets`) ──────────────────────
@@ -909,8 +910,8 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         CmdQueue => ("查看、取消或取回排队消息", "List, cancel or recall queued prompts"),
         CmdDelete => ("删除这条会话（先确认）", "Delete this conversation (asks first)"),
         CmdPin => (
-            "置顶 / 取消置顶侧栏光标所在会话的工作区",
-            "Pin or unpin the workspace of the row the rail's cursor is on",
+            "置顶 / 取消置顶侧栏光标所在会话",
+            "Pin or unpin the conversation under the rail's cursor",
         ),
         CmdCopy => ("复制最后一条回答", "Copy the last assistant answer"),
         CmdPaste => (
@@ -1020,7 +1021,7 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         HelpKeyReplyDetailSet => ("同上，直接设置", "The same, set directly"),
         HelpKeyPrevSession => ("上一个会话（侧栏随之切换）", "Previous conversation (the chat follows)"),
         HelpKeyNextSession => ("下一个会话（侧栏随之切换）", "Next conversation (the chat follows)"),
-        HelpKeyPin => ("置顶 / 取消置顶该工作区", "Pin / unpin this workspace"),
+        HelpKeyPin => ("置顶 / 取消置顶该会话", "Pin / unpin this conversation"),
         HelpKeyThinking => (
             "思考等级（弹出选择）",
             "Reasoning effort (opens the chooser)",
@@ -1118,7 +1119,11 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ),
         NoticePinned => ("已置顶 {} · 在 工作区 页签的 置顶 区", "Pinned {} · it leads the Workspaces tab"),
         NoticeUnpinned => ("已取消置顶 {}", "Unpinned {}"),
-        NoticePinUnavailable => ("这条会话不属于工作区，无法置顶", "This conversation belongs to no workspace"),
+        NoticePinUnavailable => ("这里没有可置顶的会话", "Nothing to pin here"),
+        NoticePinNewSession => (
+            "新会话还没创建，没有可置顶的会话",
+            "The new session has not been created yet, so there is nothing to pin",
+        ),
         DeleteTitle => ("删除会话", "Delete conversation"),
         DeleteBody => (
             "它会连同记录和文件一起删除，无法撤销。",
@@ -1355,7 +1360,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 327] = {
+    const ALL_KEYS: [Key; 328] = {
         use Key::*;
         [
             TabTodo,
@@ -1665,6 +1670,7 @@ mod tests {
             NoticePinned,
             NoticeUnpinned,
             NoticePinUnavailable,
+            NoticePinNewSession,
             NoticeOpenLinkFailed,
             DeleteTitle,
             DeleteBody,

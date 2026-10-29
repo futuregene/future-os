@@ -1007,13 +1007,22 @@ async fn quit(
                 }
                 // Pinning is the rail's verb and the app owns the result: `p`
                 // is a letter in the draft, so `/pin` is the door, and its
-                // action (`SetWorkspacePinned`) has to reach the driver the
-                // same way the chord's did.
+                // action (`SetSessionPinned`) has to reach the driver the same
+                // way the chord's did. The palette's row for the same verb
+                // lands here too, so this arm is what applies and persists a pin
+                // from either door.
                 "/pin" => {
                     let actions = workbench.toggle_pin_selected(&live.data(frame));
                     for action in actions {
-                        if matches!(live.apply(action).await, Outcome::Quit) {
-                            return Ok(true);
+                        match action {
+                            WbAction::SetSessionPinned { id, pinned } => {
+                                apply_pin(live, &id, pinned, settings, settings_path)
+                            }
+                            other => {
+                                if matches!(live.apply(other).await, Outcome::Quit) {
+                                    return Ok(true);
+                                }
+                            }
                         }
                     }
                     continue;
@@ -1110,13 +1119,11 @@ async fn quit(
                 ));
             }
         }
-        // A pinned workspace is a preference of this client's rail, so the
-        // surface's pin lands in `settings.json` beside the layout — and the
-        // rail's groups are rebuilt from it on the next frame.
-        if let WbAction::SetWorkspacePinned { path, pinned } = &action {
-            live.notice = Some(live.set_workspace_pinned(path, *pinned));
-            settings.pinned_workspaces = Some(live.pinned_workspaces().to_vec());
-            save_settings_notice(settings_path, settings, live);
+        // A pin is a preference of this client's rail, so the surface's pin
+        // lands in `settings.json` beside the layout — and the rail's groups are
+        // rebuilt from it on the next frame.
+        if let WbAction::SetSessionPinned { id, pinned } = &action {
+            apply_pin(live, id, *pinned, settings, settings_path);
             continue;
         }
         // The preview box is the driver's to open: the adapter reads the bytes
@@ -1368,6 +1375,22 @@ fn save_settings_notice(path: &Path, settings: &TuiSettings, live: &mut Live) {
     if let Err(error) = save_settings(path, settings) {
         settings_error_notice(live, &error);
     }
+}
+
+/// Apply one pin and persist it: a pin is this client's own preference (the
+/// agent has no such flag), so the rail's 置顶 block and `settings.json`
+/// (`pinnedSessions`) move together. Both doors to the verb land here — the
+/// draft's `/pin` and the palette's row for the same verb.
+fn apply_pin(
+    live: &mut Live,
+    id: &str,
+    pinned: bool,
+    settings: &mut TuiSettings,
+    settings_path: &Path,
+) {
+    live.notice = Some(live.set_session_pinned(id, pinned));
+    settings.pinned_sessions = Some(live.pinned_sessions().to_vec());
+    save_settings_notice(settings_path, settings, live);
 }
 
 fn settings_error_notice(live: &mut Live, error: &str) {

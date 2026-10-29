@@ -148,9 +148,10 @@ less than the word. The name gets at most a third of the row, with a space kept
 between it and the conversation's name: a longer one (`session-supervisor`) is
 ellipsised rather than allowed to shorten every title in the list, since the
 title is what the row is for. **工作区** files the same conversations the way the
-desktop's rail does: 置顶 (the workspaces pinned with `p`), then 工作区 (one
-heading per workspace, its conversations beneath), then 对话会话 (conversations
-that belong to no workspace — the app's own scratch directories). Usage figures
+desktop's rail does: 置顶 (the conversations pinned with `/pin`, lifted out of
+the workspace that would otherwise file them), then 工作区 (one heading per
+workspace, its conversations beneath), then 对话会话 (conversations that belong
+to no workspace — the app's own scratch directories). Usage figures
 live on the status bar, so no panel repeats them; skills are the palette's. The rail
 never *holds* the keyboard — there is no focus to step into or out of — so every
 key that acts on it carries `shift` (`shift+↕` steps, `shift+pageUp/Down` pages,
@@ -365,9 +366,9 @@ click on the rail's tab strip are the doors to the same places.
 | `ctrl+1` / `ctrl+2` | Name a tab outright: 最近 / 工作区, in the order the strip paints them (needs a terminal that reports modifiers — `shift+←`/`→` walk the same two tabs everywhere) |
 | `shift+↑` / `shift+↓` | Walk the rail, from anywhere. In 最近 every row is a conversation, so each step switches it — the cursor follows, and the transcript opens the one you stop on (80 ms after the last repeat) rather than each one you pass; a conversation you have already read comes back from memory with no wait at all. In 工作区 the cursor also stops on the workspace headings, and a step that lands on one switches nothing: `enter` folds or unfolds it there. One action, one chord: `ctrl+↑`/`ctrl+↓` is not a step — macOS gives it to Mission Control, so the key never reaches the terminal there |
 | `shift+pageUp` / `shift+pageDown` | Page the rail's list — the same scroll the wheel over it does. The rail's cursor (the conversation on screen) does not move |
-| `p` | Rails: pin / unpin the workspace the selected conversation belongs to |
+| `p` | A letter in the draft: pinning is `/pin`, with no chord of its own |
 | `/delete` | Delete a conversation: the confirm box names the one that would go — the row under the rail's cursor when the rail is on screen, otherwise the one on screen — and `⏎` is what deletes it (`esc` keeps it). The row that takes its place opens, and deleting the last one leaves the launchpad. The `delete` key is the draft's forward-delete, so it is not a door to this |
-| `/pin` | Pin or unpin the workspace of the row the rail's cursor is on (the 置顶 section of 工作区). No chord: `p` is a letter in the draft. The verb takes no argument, so a bare `/pin` is the pin and **anything after it is a prompt**: `/pin 这个文件` sent from the draft is a message to the agent, not a pin that swallows the sentence |
+| `/pin` | Pin or unpin the conversation under the rail's cursor (the 置顶 section of 工作区; a pinned row is drawn there instead of under its workspace, and 最近 keeps it where it was). No chord: `p` is a letter in the draft. Nothing to pin on the launchpad — the conversation the verb is about is the one the first message creates, and it does not exist yet — so the notice row says so. The verb takes no argument, so a bare `/pin` is the pin and **anything after it is a prompt**: `/pin 这个文件` sent from the draft is a message to the agent, not a pin that swallows the sentence |
 | `ctrl+j` / `ctrl+enter` | Insert a newline. `ctrl+j` is the one every terminal delivers; `ctrl+enter` arrives when the terminal reports modifiers (kitty keyboard protocol, xterm `modifyOtherKeys`, or a Windows Terminal `sendInput` binding), and `shift+enter` needs one of those too. Windows Terminal keeps `alt+enter` for fullscreen and sends plain Enter for `ctrl+enter` unless the reader binds it, e.g. `{"keys": "ctrl+enter", "command": {"action": "sendInput", "input": "\u001b[13;5u"}}` |
 | `ctrl+w`, `alt+d`, `ctrl+u`, `ctrl+k`, `ctrl+y` | Delete a word, kill to line start/end, yank |
 | `ctrl+z` / `ctrl+shift+z` (or `alt+y`) | Undo / redo draft edits |
@@ -448,7 +449,7 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | Fork | `/fork` lists real user-message points from `get_fork_messages`; enter calls `fork` and opens the child |
 | Worktrees | `/worktree` lists real git worktrees and enter sets the session cwd. `/worktree new <branch>` creates under `.worktrees/` and moves the session. No remove/prune/reset/clean operations |
 | Existing settings | `/mode` (or `/sandbox`) opens the approval-mode chooser, `/thinking` the reasoning chooser, `/compact [instructions]`, `/tools a,b` or `/tools off`, `/providers`; `/skills` and `/model` retain their existing surfaces |
-| Sessions panel | `list_sessions`, newest first: 最近 split into a 活跃 stretch (a run still in flight, spinner in the row's state slot) and 更早, the headings drawn only while both are non-empty. The list is re-read every five seconds while the rail is on screen, because another client's run reaches this surface no other way. 工作区 filed by directory with the pinned ones leading. Pins persist in `settings.json` (`pinnedWorkspaces`) |
+| Sessions panel | `list_sessions`, newest first: 最近 split into a 活跃 stretch (a run still in flight, spinner in the row's state slot) and 更早, the headings drawn only while both are non-empty. The list is re-read every five seconds while the rail is on screen, because another client's run reaches this surface no other way. 工作区 filed by directory, with the conversations pinned by `/pin` in their own 置顶 block instead of under their workspace (a group left with nothing has no heading). A pin is this client's own choice and persists in `settings.json` (`pinnedSessions`, by session id) |
 | Usage / context / cost | `get_state`'s usage block, refreshed on the same events |
 | `ctrl+n` / `/new`, `ctrl+c` stop, `/refresh` | |
 | Delete a conversation (`/delete`, or `delete` in the rail) | One confirm box, then `delete_session` for the id it named. The successor in the list opens, so the transcript never stays on a conversation that is gone; deleting the last one detaches to the launchpad. A refusal (the agent keeps a session a compaction holds) leaves everything as it was and says so in the notice row |
