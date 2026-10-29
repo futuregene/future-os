@@ -4040,7 +4040,11 @@ impl PaletteRow {
 ///
 /// A mention starts at a **word boundary**: the sigil must be the first
 /// character of the token, so `me@example.com` and a URL fragment are text, not
-/// a request for a menu.
+/// a request for a menu. The sigil must also begin that token rather than sit
+/// inside one of the tokens a paste writes into the draft (`[Image #1]`,
+/// `[Pasted Content 2000 chars #2]`): those carry a `#` of their own, and its
+/// `#1]` reads exactly like a query, so pasting an image opened the
+/// conversation list with `1]` in it.
 pub fn mention_token(input: &state::InputView) -> Option<(MentionKind, usize, String)> {
     let text = &input.text;
     let cursor = floor_char_boundary(text, input.cursor);
@@ -4057,7 +4061,24 @@ pub fn mention_token(input: &state::InputView) -> Option<(MentionKind, usize, St
         '#' => MentionKind::Session,
         _ => return None,
     };
+    if inside_paste_token(text, start) {
+        return None;
+    }
     Some((kind, start, token[1..].to_string()))
+}
+
+/// Is `at` strictly inside a token a paste wrote into the draft — an
+/// `[Image #N]` marker or a `[Pasted Content … chars #N]` placeholder?
+///
+/// Those spans are one display unit each: the characters in them are the
+/// marker's own text, not words the reader typed next to it.
+fn inside_paste_token(text: &str, at: usize) -> bool {
+    crate::paste::find_image_markers(text)
+        .into_iter()
+        .any(|(start, end, _)| start < at && at < end)
+        || crate::paste::find_placeholders(text)
+            .into_iter()
+            .any(|(start, end)| start < at && at < end)
 }
 
 /// How a picked conversation is written into the draft: the same
@@ -6795,6 +6816,34 @@ mod tests {
         // A bare `#` is one, with an empty query: the reader has typed the
         // sigil and nothing else yet.
         let data = with_input(&demo::chat(), "#");
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.render(&data, 120, 38);
+        assert_eq!(
+            workbench.mention.as_ref().map(|m| m.kind),
+            Some(MentionKind::Session)
+        );
+    }
+
+    #[test]
+    fn a_sigil_inside_a_pasted_token_is_not_a_mention() {
+        // Pasting an image writes `[Image #1]` into the draft. Its `#1]` is the
+        // marker's own text, but read as a token it looked exactly like `#`
+        // with the query `1]`, so the paste opened the conversation list and
+        // the reader had to dismiss it before sending.
+        for typed in [
+            "[Image #1]",
+            "识别这两张 [Image #1]",
+            "[Image #1][Image #2]",
+            "[Pasted Content 2000 chars #2]",
+        ] {
+            let data = with_input(&demo::chat(), typed);
+            let (mut workbench, _rows) = frame(&data, 120, 38);
+            workbench.render(&data, 120, 38);
+            assert!(workbench.mention.is_none(), "{typed}");
+        }
+        // …while a `#` the reader types after the marker still asks for the
+        // list.
+        let data = with_input(&demo::chat(), "[Image #1] #");
         let (mut workbench, _rows) = frame(&data, 120, 38);
         workbench.render(&data, 120, 38);
         assert_eq!(
