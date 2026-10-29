@@ -132,7 +132,7 @@ function ComposerDockView({
     [remote.sessions, remote.selectedSessionId],
   );
   const slashActions = useMemo<SlashAction[]>(() => {
-    const actions: SlashAction[] = remote.capabilities.has("fusion_v1") ? [{ id: "fusion", label: "/fusion", description: t("chat.fusionDescription"), searchText: "fusion 会商 多模型 思考", insert: "/fusion " }] : [];
+    const actions: SlashAction[] = remote.capabilities.has("fusion_v1") ? [{ id: "fusion", label: "/fusion", description: t("chat.fusionDescription"), searchText: "fusion 讨论 多模型 思考", insert: "/fusion " }] : [];
     if (canReference) {
       // The phone has no `#` key to speak of (it sits on the keyboard's symbol
       // page) while `/` has a button of its own, so the reference would be

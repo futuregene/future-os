@@ -237,7 +237,7 @@ function ComposerImpl({
 
   const [fusionEnabled, setFusionEnabled] = useState(false);
   const contextTools = useMemo<ContextToolOption[]>(() => {
-    const fusion = { id: "fusion", name: "/fusion", description: t("fusion.enableDescription"), searchText: "fusion 会商 多模型 思考" };
+    const fusion = { id: "fusion", name: "/fusion", description: t("fusion.enableDescription"), searchText: "fusion 讨论 多模型 思考" };
     if (!onCompactContext || sending || compactionPending)
       return [fusion];
     return [fusion, {

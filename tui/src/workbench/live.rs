@@ -1842,10 +1842,16 @@ impl Live {
             }
             "fusion-log" => match self.client.fusion_discussion(&arg, 0).await {
                 Ok(data) => {
-                    let mut text = data["transcript"]
-                        .as_str()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| serde_json::to_string_pretty(&data).unwrap_or_default());
+                    let mut text = if arg.is_empty() {
+                        super::fusion::progress(&data, self.lang)
+                    } else {
+                        data["transcript"]
+                            .as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| {
+                                serde_json::to_string_pretty(&data).unwrap_or_default()
+                            })
+                    };
                     let mut next = data["next_offset"].as_i64().unwrap_or(0);
                     let total = data["total_bytes"].as_i64().unwrap_or(0);
                     while next < total {

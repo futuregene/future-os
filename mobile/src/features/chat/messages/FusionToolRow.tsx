@@ -1,76 +1,68 @@
-import { fusionIssues, fusionTranscript, type FusionDiscussion, type FusionStep } from "@future-os/thread-projection";
-import { ChevronDown, ChevronUp } from "lucide-react-native";
-import { useEffect, useRef, useState } from "react";
+import { FUSION_PHASES, fusionProgress, type FusionDiscussion } from "@future-os/thread-projection";
+import { Check, ChevronDown, ChevronUp, Circle, Clock, LoaderCircle, TriangleAlert, UserRoundGroup } from "lucide-react-native";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AppState, Pressable, Text, View } from "react-native";
 import type { TimelineToolRow } from "../../../remote/types";
+import { useTheme } from "../../../theme/ThemeContext";
 import type { ToolTargetResolver } from "./types";
 import { useStyles } from "./messageStyles";
 
 export function FusionToolRow({ tool, resolveTarget }: { tool: TimelineToolRow; resolveTarget?: ToolTargetResolver }) {
   const styles = useStyles();
+  const { colors } = useTheme();
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState("discussion");
   const [data, setData] = useState<FusionDiscussion | null>(null);
-  const [error, setError] = useState("");
-  const [step, setStep] = useState<FusionStep | null>(null);
-  const [transcript, setTranscript] = useState("");
+  const [error, setError] = useState(false);
+  const progress = fusionProgress(data, tool.status);
   useEffect(() => {
-    if (!open || !resolveTarget || !tool.toolCallId || !tool.runId) return;
+    if (!open) return;
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const load = async () => {
       if (!active) return;
       if (AppState.currentState !== "active") { timer = setTimeout(() => void load(), 1500); return; }
       try {
-        const raw = await resolveTarget(tool.toolCallId!, tool.runId!, {});
+        if (!resolveTarget || !tool.toolCallId || !tool.runId) throw new Error("missing_fusion_source");
+        const raw = await resolveTarget(tool.toolCallId, tool.runId, {});
         if (!active) return;
-        if (!raw) throw new Error(t("chat.fusionUnavailable"));
+        if (!raw) throw new Error("missing_fusion_status");
         const value = JSON.parse(raw) as FusionDiscussion;
-        setData(value); setError("");
-        if (!value.run || ["preparing", "queued", "running", "delivering"].includes(value.run.status)) timer = setTimeout(() => void load(), 1500);
-      } catch (failure) {
-        if (active) { setError(String(failure)); timer = setTimeout(() => void load(), 3000); }
+        setData(value); setError(false);
+        if (!fusionProgress(value, tool.status).terminal) timer = setTimeout(() => void load(), 1500);
+      } catch {
+        if (active) { setError(true); timer = setTimeout(() => void load(), 3000); }
       }
     };
     void load();
     return () => { active = false; clearTimeout(timer); };
-  }, [open, resolveTarget, tool.toolCallId, tool.runId, t]);
-  const stepRequestRef=useRef(0);
-  const showStep = async (id: string, offset = 0) => {
-    const request=++stepRequestRef.current;
-    try {
-      if (!resolveTarget || !tool.toolCallId || !tool.runId) throw new Error(t("chat.fusionUnavailable"));
-      const raw = await resolveTarget(tool.toolCallId, tool.runId, { stepId: id, offset });
-      if (request!==stepRequestRef.current) return;
-      const value = JSON.parse(raw ?? "null") as FusionStep | null;
-      if (!value) throw new Error(t("chat.fusionUnavailable"));
-      setStep(value); setTranscript(old => offset ? old + (value.transcript ?? "") : value.transcript ?? ""); setError("");
-    } catch (failure) { setError(String(failure)); }
-  };
-  const issues = fusionIssues(data);
+  }, [open, resolveTarget, tool.toolCallId, tool.runId, tool.status]);
   return <View style={styles.inlineTool}>
     <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} onPress={() => setOpen(value => !value)} style={styles.toolHeader}>
-      <Text style={styles.toolText}>Fusion · {t(tool.status === "running" ? "chat.fusionDiscussing" : "chat.fusionDiscussion")}</Text>
-      {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+      <UserRoundGroup size={14} color={colors.inkMuted} />
+      <Text style={styles.toolText}>{t("chat.fusionTitle")}</Text>
+      {open ? <ChevronUp size={14} color={colors.inkMuted} /> : <ChevronDown size={14} color={colors.inkMuted} />}
     </Pressable>
-    {tool.detail ? <Text style={styles.toolDetailText}>{tool.detail}</Text> : null}
-    {open ? <View style={styles.inlineToolChildren}>
-      <Text style={styles.toolDetailText}>{data?.run ? `${t(`chat.fusionPhases.${data.run.phase}`)} · ${t(`chat.fusionStates.${data.run.status}`)} · ${t(`chat.fusionCompleteness.${data.run.completeness}`)}` : t("chat.fusionLoading")}</Text>
-      {error ? <Text accessibilityRole="alert" style={styles.toolDetailText}>{error}</Text> : null}
-      {data?.run?.error ? <Text selectable style={styles.toolDetailText}>{data.run.error}</Text> : null}
-      <View style={styles.toolHeader}>{["discussion", "issues", "diagnostics"].map(name => <Pressable key={name} accessibilityRole="button" accessibilityState={{ selected: tab === name }} onPress={() => setTab(name)}><Text style={styles.toolText}>{t(`chat.fusionTabs.${name}`)} </Text></Pressable>)}</View>
-      {tab === "discussion" ? data?.steps?.map(value => <View key={value.id}>
-        <Pressable accessibilityRole="button" onPress={() => void showStep(value.id)}><Text style={styles.toolText}>{t(`chat.fusionPhases.${value.phase}`)} · {value.participant} · {value.model} · {t(`chat.fusionStates.${value.status}`)}</Text></Pressable>
-        <Text selectable style={styles.toolDetailText}>{value.error ?? value.output}</Text>
-      </View>) : null}
-      {tab === "issues" ? <Text selectable style={styles.toolDetailText}>{issues.length ? issues.map(issue => `${issue.id} · ${issue.topic}\n${issue.stances.map(stance => `${stance.participant}: ${stance.position}`).join("\n")}`).join("\n\n") : t("chat.fusionNoIssues")}</Text> : null}
-      {tab === "diagnostics" ? <Text selectable style={styles.toolDetailText}>{JSON.stringify(data, null, 2)}</Text> : null}
-      {data?.run?.result ? <Text selectable style={styles.toolDetailText}>{data.run.result.conclusion}</Text> : null}
-      {step ? <View><Text style={styles.toolText}>{step.model} · {t("chat.fusionOriginal")}</Text><Text selectable style={styles.toolDetailText}>{fusionTranscript(transcript)}</Text>
-        {(step.next_offset ?? 0) < (step.total_bytes ?? 0) ? <Pressable accessibilityRole="button" onPress={() => void showStep(step.id, step.next_offset)}><Text style={styles.toolText}>{t("chat.fusionMore")}</Text></Pressable> : null}
-        <Text selectable style={styles.toolDetailText}>{step.input}</Text></View> : null}
+    {open ? <View style={styles.fusionProgress}>
+      <View style={styles.fusionStageHeading}>
+        <Text style={styles.fusionPhase}>{t(progress.terminal ? `chat.fusionStates.${progress.status}` : `chat.fusionPhases.${progress.phase}`)}</Text>
+        <Text style={styles.fusionStatus}>{t("chat.fusionStageCount", { current: progress.status === "completed" ? 4 : Math.max(1, progress.stageIndex + 1), total: 4 })}</Text>
+      </View>
+      <View style={styles.fusionStageBar} accessibilityRole="progressbar" accessibilityLabel={t("chat.fusionProgress")} aria-valuemin={0} aria-valuemax={4} aria-valuenow={progress.completedStages} aria-valuetext={t(`chat.fusionPhases.${progress.phase}`)}>
+        {FUSION_PHASES.map((phase, index) => <View key={phase} style={[styles.fusionStageSegment, { backgroundColor: index < progress.completedStages ? colors.accent : index === progress.stageIndex ? progress.terminal ? colors.danger : colors.accent : colors.line }]} />)}
+      </View>
+      {progress.terminal && progress.partial ? <Text style={styles.fusionStatus}>{t("chat.fusionPartialNotice")}</Text> : null}
+      {progress.models.map(model => {
+        const failed = ["failed", "timed_out", "output_limited"].includes(model.status);
+        const Icon = model.status === "thinking" ? LoaderCircle : model.status === "completed" ? Check : model.status === "timed_out" ? Clock : failed || model.status === "partial" ? TriangleAlert : Circle;
+        return <View key={model.model} style={styles.fusionModelRow}>
+          <Icon size={14} color={failed ? colors.danger : model.status === "thinking" ? colors.accent : colors.inkMuted} />
+          <Text style={styles.fusionModelName}>{model.label}</Text>
+          <Text style={[styles.fusionStatus, failed ? { color: colors.danger } : null]}>{t(`chat.fusionModelStates.${model.status}`)}</Text>
+        </View>;
+      })}
+      {error ? <Text accessibilityRole="alert" style={[styles.fusionStatus, { color: colors.danger }]}>{t("chat.fusionStatusUnavailable")}</Text> : null}
     </View> : null}
   </View>;
 }

@@ -354,21 +354,21 @@
     "missingParent": "Parent task identity missing",
     "phases": {
       "preparing": "Preparing evidence",
-      "analyzing": "Independent analysis",
+      "analyzing": "Independent thinking",
       "issue_mapping": "Mapping issues",
-      "reviewing": "Cross-review",
-      "synthesizing": "Synthesis"
+      "reviewing": "Cross discussion",
+      "synthesizing": "Summary"
     },
     "states": {
-      "preparing": "Preparing",
-      "queued": "Queued",
+      "preparing": "Preparing discussion",
+      "queued": "Waiting to discuss",
       "running": "Discussing",
-      "delivering": "Returning result",
-      "completed": "Consultation complete; main flow continues",
-      "failed": "Consultation failed",
-      "cancelled": "Cancelled",
-      "interrupted": "Interrupted",
-      "starting": "Starting"
+      "delivering": "Returning conclusion",
+      "completed": "Discussion complete",
+      "failed": "Discussion failed",
+      "cancelled": "Discussion stopped",
+      "interrupted": "Discussion interrupted",
+      "starting": "Preparing discussion"
     },
     "retry": "Retry {{count}}",
     "completeness": {
@@ -382,7 +382,22 @@
       "unresolved": "Unresolved",
       "next_steps": "Proposed next steps"
     },
-    "title": "Fusion discussion",
-    "runningTitle": "Fusion deliberating"
+    "title": "Fusion · Discussion",
+    "runningTitle": "Fusion · Discussing",
+    "modelStates": {
+      "waiting": "Waiting",
+      "thinking": "Thinking",
+      "completed": "Thinking complete",
+      "failed": "Thinking failed",
+      "timed_out": "Timed out",
+      "output_limited": "Output limit reached",
+      "cancelled": "Stopped",
+      "interrupted": "Interrupted",
+      "partial": "Partially complete"
+    },
+    "stageCount": "{{current}} / {{total}}",
+    "progress": "Discussion stage progress",
+    "partialNotice": "Some models did not complete the discussion",
+    "statusUnavailable": "Discussion status is temporarily unavailable"
   }
 }

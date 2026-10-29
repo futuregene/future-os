@@ -1,5 +1,5 @@
 import type { AgentActivityItem, AgentActivityKind } from "@future-os/thread-projection";
-import { Brain, ChevronDown, ChevronUp, FileText, Pencil, TerminalSquare, TriangleAlert } from "lucide-react";
+import { Brain, ChevronDown, ChevronUp, FileText, Pencil, TerminalSquare, TriangleAlert, UserRoundGroup } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import i18n from "../../i18n";
 import { cn } from "../../lib/cn";
@@ -348,6 +348,7 @@ function renderActivityIcon(kind: AgentActivityKind, running: boolean, failed = 
     case "read":
       return <FileText className={className} />;
     case "fusion":
+      return <UserRoundGroup className={className} />;
     case "thinking":
       return <Brain className={className} />;
   }
