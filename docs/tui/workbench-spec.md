@@ -403,7 +403,9 @@ No **default** is a function key: `F1`–`F12` need an `Fn` modifier on a laptop
 and are absent on a compact keyboard. Rebinding to an F key or to `alt` stays
 supported — only the shipped defaults are `ctrl`.
 The help overlay lists `ACTIONS` **grouped** (chats / choices / panels /
-interface), then the non-rebindable inline keys, then the commands.
+interface), then the non-rebindable inline keys. The verbs are not reprinted
+there: the palette lists them with their descriptions, and the inline table
+names its key (`/`, `ctrl+p`).
 
 A held `shift+↑`/`shift+↓` is one switch, not one per key repeat: the key returns
 `WbAction::SessionStep(delta)`, the driver reads the whole input burst and

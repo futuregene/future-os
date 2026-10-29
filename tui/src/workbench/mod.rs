@@ -6817,9 +6817,8 @@ mod tests {
         assert_eq!(workbench.overlay, None);
     }
     /// The help table and the shortcut editor read the same map the keys do: the
-    /// table lists only rows that *have* a chord (an action with none keeps its
-    /// typed door in the command list below), the editor lists every action, and
-    /// the two tabs' number chords are rows of their own now.
+    /// table lists only rows that *have* a chord, the editor lists every action,
+    /// and the two tabs' number chords are rows of their own now.
     #[test]
     fn the_help_table_lists_chords_not_chordless_actions() {
         let data = demo::chat();
@@ -6831,9 +6830,9 @@ mod tests {
             text.contains("ctrl+1") && text.contains("ctrl+2"),
             "the tab chords are in the table: {text}"
         );
-        // A chordless action is not a row: a key table lists keys, and the
-        // verbs with none are spelled in the command list at the end of the
-        // same box.
+        // A chordless action is not a row: a key table lists keys. Its typed
+        // door is in the palette, one key away — which is why the box does not
+        // reprint the palette's list under the table either.
         for chordless in ["界面语言", "刷新会话和用量"] {
             assert!(
                 !text.contains(chordless),
@@ -6844,6 +6843,44 @@ mod tests {
         for gone in ["ctrl+3", "ctrl+4"] {
             assert!(!text.contains(gone), "the help table still lists {gone}");
         }
+    }
+
+    /// The box `?` opens is a key table, and only that: the palette (`/`,
+    /// `ctrl+p`) already lists every verb with the same descriptions, so a
+    /// second copy at the end of the help box made a shortcut reference scroll
+    /// through thirty-five commands on the way to nothing it did not say
+    /// already. The palette's own list is the one that stays.
+    #[test]
+    fn the_help_box_does_not_reprint_the_command_palette() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 60);
+        workbench.overlay = Some(Overlay::Help);
+        let text = plain(&workbench.render(&data, 120, 60));
+        // A verb the palette names and the help box does not — one with a chord
+        // (`/model`, `/compact`) and one without (`/queue`, `/export`).
+        for gone in ["/model", "/compact", "/queue", "/export"] {
+            assert!(
+                !text.contains(gone),
+                "the help box still lists {gone}: {text}"
+            );
+        }
+        // The inline keys are not a command list and stay: they are how the
+        // reader learns the palette's own door.
+        for kept in ["/pin", "/delete"] {
+            assert!(text.contains(kept), "the inline table lost {kept}: {text}");
+        }
+        // The palette itself is unchanged — it is where the list lives now.
+        workbench.overlay = None;
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        let palette = plain(&workbench.render(&data, 120, 60));
+        assert!(
+            palette.contains("/model"),
+            "the palette names it: {palette}"
+        );
+        assert!(
+            palette.contains("/export"),
+            "the palette names it: {palette}"
+        );
     }
 
     /// The chat list's door on the header: the cells it paints, the click that
@@ -7850,8 +7887,9 @@ mod tests {
         let text = plain(&workbench.render(&data, 120, 38));
         assert!(text.contains("帮助"), "{text}");
         // The table is the ACTIONS map, minus the actions with no chord: a key
-        // table lists keys, and those verbs keep their typed door in the
-        // command list below (they are listed as `/queue`, `/lang`, …).
+        // table lists keys, and a chordless verb's door is the palette (`/` or
+        // `ctrl+p`), spelled in the inline table above rather than reprinted
+        // here as a second copy of that list.
         assert!(text.contains("ctrl+s"), "{text}");
         assert!(text.contains("ctrl+g"), "{text}");
         assert!(

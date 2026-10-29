@@ -356,7 +356,6 @@ pub enum Key {
     // ── the overlays ──────────────────────────────────────────────────
     HelpTitle,
     HelpFooter,
-    PalettePanelTitle,
     PaletteTitle,
     PaletteFilter,
     PaletteEmpty,
@@ -765,7 +764,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             " 按键与快捷键 · ↑↓ 滚动 · esc 关闭",
             " Keys and shortcuts · ↑↓ scrolls · esc closes",
         ),
-        PalettePanelTitle => (" 命令面板（/）", " Command palette (/)"),
         PaletteTitle => ("命令", "Commands"),
         PaletteFilter => (
             "输入以过滤命令与技能 · tab 补全 · ⏎ 运行",
@@ -1360,7 +1358,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 328] = {
+    const ALL_KEYS: [Key; 327] = {
         use Key::*;
         [
             TabTodo,
@@ -1455,7 +1453,6 @@ mod tests {
             ShortcutStop,
             HelpTitle,
             HelpFooter,
-            PalettePanelTitle,
             PaletteTitle,
             PaletteFilter,
             PaletteEmpty,
