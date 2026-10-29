@@ -3409,6 +3409,21 @@ fn palette_box(
         &geometry,
     )
 }
+
+/// The most candidates a mention menu shows at once. The menu completes one
+/// line of the draft, so it is a picker, not a file browser: a box that grew
+/// with the terminal would cover the conversation it is completing, and one
+/// that showed only a handful sent the reader scrolling through a long list of
+/// conversations. Sixteen rows is the middle — enough to recognise a target
+/// without moving, small enough that the draft and the transcript stay beside
+/// it.
+const MENTION_MAX_ROWS: usize = 16;
+
+/// The rows the mention box spends on everything except its candidates: the
+/// border pair, the query line, the blank under it, and the hint under its own
+/// blank.
+const MENTION_CHROME: usize = 6;
+
 /// `#[allow(clippy::too_many_arguments)]` is not needed: the box is one shape.
 fn mention_box(
     workbench: &mut Workbench,
@@ -3440,7 +3455,18 @@ fn mention_box(
         .map(|m| m.index)
         .unwrap_or(0)
         .min(rows.len().saturating_sub(1));
-    let room = h.saturating_sub(6) as usize;
+    // How many candidates the box can show, and where its window starts.
+    //
+    // Both come from *one* number: the space between the frame's top rule and
+    // the composer's own edge. The window used to be derived from the terminal's
+    // height while the box itself was capped at twelve lines, so the window
+    // "scrolled" through rows the box had already cut — `↓` past the eighth
+    // candidate moved a highlight nobody could see and the list read as frozen.
+    // A window derived from what the box can actually paint cannot drift from it.
+    let ceiling = (input_top as usize).saturating_sub(1);
+    let room = ceiling
+        .saturating_sub(MENTION_CHROME)
+        .clamp(1, MENTION_MAX_ROWS);
     let start = selection.saturating_sub(room.saturating_sub(1));
     let shown = rows.len().saturating_sub(start).min(room);
 
@@ -3490,12 +3516,13 @@ fn mention_box(
 
     // Above the composer and never on it: the menu completes the line the
     // reader is still typing, so it must not cover the draft, the composer's own
-    // frame, the status bar or the hints. Its height is bounded (a long candidate
-    // list scrolls inside the window) so it cannot reach the header either.
+    // frame, the status bar or the hints. Its height is bounded by the same
+    // ceiling the window was measured against, so a row the box paints is always
+    // a row the reader can reach with `↓`.
     let mut geometry = box_geometry(column.w, h, box_w, content.len());
     geometry.left = column.x + (column.w.saturating_sub(box_w)) / 2;
     geometry.w = box_w;
-    geometry.h = geometry.h.min(12);
+    geometry.h = geometry.h.min(ceiling.max(3) as u16);
     geometry.top = input_top.saturating_sub(geometry.h).max(1);
 
     workbench.hit_map().push(
@@ -3860,6 +3887,101 @@ mod tests {
             seen += 1;
         }
         assert!(seen >= 3, "the box has rows to check: {seen}");
+    }
+
+    /// The window the menu paints is the window `↓` moves through.
+    ///
+    /// It used to be measured against the terminal's height while the box itself
+    /// was capped at twelve lines, so the highlight walked past the last painted
+    /// candidate: every further `↓` moved a row nobody could see and the list
+    /// read as frozen, and the hint under the rows was cut away by the same cap.
+    /// Both come from one number now — the space above the composer.
+    #[test]
+    fn the_mention_window_follows_the_highlight_and_keeps_its_hint() {
+        let session = |index: usize| crate::workbench::state::SessionRow {
+            id: format!("s{index:02}"),
+            title: format!("会话 {index:02}"),
+            workspace: "future-os".into(),
+            age: "1m".into(),
+            current: index == 0,
+            parent_id: None,
+            streaming: false,
+            created_at_ms: 0,
+        };
+        let mut data = crate::workbench::demo::chat();
+        data.sessions = (0..24).map(session).collect();
+        let mut editor = data.input.editor.clone();
+        editor.set("#", 1);
+        data.input = crate::workbench::state::InputView::from_editor(editor, String::new());
+        let mut workbench = Workbench::new();
+        let render = |workbench: &mut Workbench| workbench.render(&data, 120, 40);
+        // The candidates the box actually paints, as the rows it made
+        // clickable: the rail lists sessions too, so counting titles in the
+        // whole frame could not tell the box's rows from the sidebar's.
+        let painted = |workbench: &mut Workbench, rows: &[String]| {
+            let text = plain(&rows.join("\n"));
+            let mut ys: Vec<(u16, String)> = workbench
+                .hits()
+                .regions()
+                .iter()
+                .filter(|(_, id)| id.starts_with("mention.row."))
+                .map(|(rect, id)| (rect.y, id.clone()))
+                .collect();
+            ys.sort();
+            (text, ys)
+        };
+
+        // The box asks for more rows than the old eight-row cap allowed, and the
+        // hint under them is part of it rather than clipped off it.
+        let rows = render(&mut workbench);
+        let lang = workbench.lang;
+        let (first, candidates) = painted(&mut workbench, &rows);
+        let shown = candidates.len();
+        assert!(shown > 8, "only {shown} candidates are painted: {first}");
+        assert!(shown <= MENTION_MAX_ROWS, "{shown} candidates");
+        assert!(
+            first.contains(t(lang, Key::MentionHintSession)),
+            "the hint is painted under the rows: {first}"
+        );
+
+        // Every painted candidate is a click target, and stepping past the last
+        // of them scrolls the list instead of losing the highlight: the window
+        // keeps the selection on its own last row.
+        for _ in 0..shown {
+            workbench.handle(crate::workbench::WbEvent::Key("down".into()), &data);
+        }
+        let index = workbench.mention.as_ref().map(|m| m.index).unwrap_or(0);
+        assert_eq!(index, shown, "every `↓` moved the highlight");
+        let rows = render(&mut workbench);
+        let (scrolled, candidates) = painted(&mut workbench, &rows);
+        assert_eq!(candidates.len(), shown, "the window kept its size");
+        let last = candidates.last().expect("the bottom candidate");
+        assert_eq!(
+            last.1,
+            format!("mention.row.{index}"),
+            "the highlight stays on the bottom row of the window: {candidates:?}"
+        );
+        assert!(
+            plain(&rows[last.0 as usize]).contains(&format!("会话 {index:02}")),
+            "the highlighted candidate {index} is painted: {scrolled}"
+        );
+
+        // A one-line draft leaves the whole ceiling free, so a tall terminal
+        // shows the full cap — the demo's own draft is several lines long, which
+        // is the case above.
+        let mut short = data.clone();
+        let mut editor = short.input.editor.clone();
+        editor.set("#", 1);
+        short.input = crate::workbench::state::InputView::from_editor(editor, String::new());
+        let mut workbench = Workbench::new();
+        workbench.render(&short, 120, 40);
+        let shown = workbench
+            .hits()
+            .regions()
+            .iter()
+            .filter(|(_, id)| id.starts_with("mention.row."))
+            .count();
+        assert_eq!(shown, MENTION_MAX_ROWS, "a one-line draft shows the cap");
     }
 
     /// The composer's box is as tall as the draft it draws, never as tall as
