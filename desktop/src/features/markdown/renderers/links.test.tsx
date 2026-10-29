@@ -339,7 +339,7 @@ describe("fileLink", () => {
     cleanup();
   });
 
-  it("preview mode opens every target with the OS handler and has no menu", () => {
+  it("preview mode opens every target with the OS handler when it cannot nest", () => {
     const md: StoredFile = { path: "/w/doc.md", name: "doc.md", relativePath: "doc.md", insideWorkspace: true };
     const { container, cleanup } = mount(
       <PreviewMarkdownContext value={{ basePath: "/w/other.md" }}>
@@ -351,6 +351,34 @@ describe("fileLink", () => {
     expect(document.querySelector(".fixed.inset-0")).toBeNull();
     rightClick(container.querySelector("a")!);
     expect(document.querySelectorAll(".fixed button").length).toBe(0);
+    cleanup();
+  });
+
+  it("preview mode follows a previewable link one level deeper instead of leaving the app", () => {
+    const md: StoredFile = { path: "/w/doc.md", name: "doc.md", relativePath: "doc.md", insideWorkspace: true };
+    const openPreview = vi.fn();
+    const { container, cleanup } = mount(
+      <PreviewMarkdownContext value={{ basePath: "/w/other.md", openPreview }}>
+        <FileLink file={md} />
+      </PreviewMarkdownContext>,
+    );
+    click(container.querySelector("a")!);
+    expect(openPreview).toHaveBeenCalledWith({ name: "doc.md", path: "/w/doc.md" });
+    expect(invokeMock).not.toHaveBeenCalled();
+    cleanup();
+  });
+
+  it("preview mode still hands a target it cannot preview to the OS, nested or not", () => {
+    const pdf: StoredFile = { path: "/w/paper.pdf", name: "paper.pdf", relativePath: "paper.pdf", insideWorkspace: true };
+    const openPreview = vi.fn();
+    const { container, cleanup } = mount(
+      <PreviewMarkdownContext value={{ basePath: "/w/other.md", openPreview }}>
+        <FileLink file={pdf} />
+      </PreviewMarkdownContext>,
+    );
+    click(container.querySelector("a")!);
+    expect(openPreview).not.toHaveBeenCalled();
+    expect(invokeMock).toHaveBeenCalledWith("open_path", { path: "/w/paper.pdf" });
     cleanup();
   });
 });
