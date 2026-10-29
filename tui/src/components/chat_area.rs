@@ -27,13 +27,6 @@ use crate::utils::{
 /// frame.
 const EXPANDED_TOOL_OUTPUT_ROWS: usize = 200;
 
-/// Rows a picture block reserves for its thumbnail. Small on purpose: the block
-/// is a *preview*, and the picture itself is one `enter` away in the preview
-/// box. Four rows is enough for a screenshot's shape to be recognisable at a
-/// glance, and short enough that a message with two of them still reads as one
-/// message.
-const PICTURE_SLOT_ROWS: usize = 4;
-
 // ─── Types ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,24 +204,6 @@ pub struct RowStop {
     pub action: RowAction,
     /// Is the row currently open (its hidden rows are on screen)?
     pub expanded: bool,
-}
-
-/// Where the transcript draws a picture: the rows a thumbnail may fill, and the
-/// file to draw there.
-///
-/// The block belongs to the *renderer* rather than to the message, because how
-/// many rows a picture takes is a layout decision — and a transcript that
-/// reserved them in the message would show blank rows on a terminal that
-/// cannot place a bitmap at all.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PictureBlock {
-    /// First rendered row of the block's thumbnail slot (`WorkbenchData::messages`
-    /// index). The caption is the row below the slot.
-    pub row: usize,
-    /// Rows the slot reserves for the thumbnail.
-    pub rows: usize,
-    /// The file to draw in it.
-    pub path: String,
 }
 
 /// What a folded stretch of a reply hides, as the summary row counts it.
@@ -986,15 +961,6 @@ pub struct ChatArea {
     /// paths (`rerender_message`, `append_last_message`) keep it correct for
     /// free: rows shift, offsets do not.
     row_meta: HashMap<usize, Vec<(usize, RowAction, usize, usize)>>,
-    /// The pictures each message draws, by message index: for each, its offset
-    /// inside the message's own rows, the rows its slot reserves, and the file.
-    /// Offset-keyed for the same reason as [`Self::row_meta`]: a splice moves
-    /// rows, never offsets.
-    picture_meta: HashMap<usize, Vec<(usize, usize, String)>>,
-    /// Do pictures draw a thumbnail slot? Off for a transcript that is being
-    /// copied out (`/transcript`, `/export`) — those rows are read as text, and
-    /// four blank rows per picture would be all a reader got of them.
-    draw_pictures: bool,
 }
 
 impl ChatArea {
@@ -1037,8 +1003,6 @@ impl ChatArea {
             on_change: None,
             message_line_ranges: Vec::new(),
             row_meta: HashMap::new(),
-            picture_meta: HashMap::new(),
-            draw_pictures: true,
         }
     }
 
@@ -1859,13 +1823,9 @@ impl ChatArea {
     pub fn render_all_detailed(&mut self, width: usize) -> Vec<String> {
         let detail = self.reply_detail;
         let compact = self.compact_activity;
-        let pictures = self.draw_pictures;
         let revealed = std::mem::take(&mut self.revealed);
         self.reply_detail = ReplyDetail::Detailed;
         self.compact_activity = false;
-        // A copy read as text: a picture's slot is four blank rows nobody asked
-        // for, so the block keeps its linked caption and nothing else.
-        self.draw_pictures = false;
         let ids: Vec<String> = self.messages.iter().map(|msg| msg.id.clone()).collect();
         for id in ids {
             self.revealed.insert(
@@ -1882,7 +1842,6 @@ impl ChatArea {
         let lines = self.render_all(width);
         self.reply_detail = detail;
         self.compact_activity = compact;
-        self.draw_pictures = pictures;
         self.revealed = revealed;
         self.rerender();
         lines
@@ -2656,7 +2615,6 @@ impl ChatArea {
         // A folded run renders as one summary row, written by its first message
         // (the rest render nothing at all — see `compact_heads`).
         self.row_meta.remove(&msg_idx);
-        self.picture_meta.remove(&msg_idx);
         // Where this message's own rows start: the actionable rows it draws are
         // remembered as offsets from here, so a splice that shifts them costs
         // nothing (see `row_stops`).
@@ -2687,7 +2645,7 @@ impl ChatArea {
         self.nested = tree.is_some();
         let msg = self.messages[msg_idx].clone();
         match msg.role {
-            ChatRole::User => self.render_user_message(msg_idx, &msg, origin),
+            ChatRole::User => self.render_user_message(&msg),
             ChatRole::Assistant => self.render_assistant_message(msg_idx, &msg, run, fold, origin),
             ChatRole::Tool if fold.is_some() => {
                 let fold = fold.unwrap();
@@ -2712,7 +2670,7 @@ impl ChatArea {
         // the card renders them inside itself (see `render_user_message`), so a
         // picture sits on the bubble rather than under it.
         if !matches!(msg.role, ChatRole::User) {
-            self.render_pictures(msg_idx, &msg, origin);
+            self.render_pictures(&msg);
         }
         self.nested = false;
         self.width = width;
@@ -2832,7 +2790,7 @@ impl ChatArea {
     /// right that it starts with on the left and the text never hugs the edge.
     const USER_CARD_INSET: usize = 2;
 
-    fn render_user_message(&mut self, msg_idx: usize, msg: &ChatMessage, origin: usize) {
+    fn render_user_message(&mut self, msg: &ChatMessage) {
         let bg = self.theme.user_bg;
         // The block is a surface, not a tinted row: one empty row of its own
         // colour above and below the text. Those rows are the card's padding —
@@ -2878,7 +2836,7 @@ impl ChatArea {
         // The pictures the reader attached, inside the bubble they came with —
         // and before the card's closing padding row, so the card keeps its
         // bottom edge under the caption rather than under a picture.
-        self.render_pictures(msg_idx, msg, origin);
+        self.render_pictures(msg);
         self.push_user_card_row("", bg);
     }
 
@@ -2897,23 +2855,20 @@ impl ChatArea {
 
     // ─── Pictures ───────────────────────────────────────────────────────
 
-    /// The pictures a message carried: a small thumbnail, and the file's name
-    /// linked beneath it.
+    /// The pictures a message carried: the file's name, linked to its path.
     ///
-    /// The thumbnail is not painted here. A text surface has no pixels of its
-    /// own, and the mosaic of half blocks this renderer used to try was removed
-    /// for being a guess at a picture rather than a picture (see
-    /// `workbench::image_view`). So the block *reserves* cells — a slot the
-    /// driver fills by asking the terminal to place a bitmap at them
-    /// (`workbench::run::paint_images`) — and the row a terminal without an
-    /// image protocol keeps is the caption.
+    /// The picture itself is not painted here — not as a thumbnail either. A
+    /// text surface has no pixels of its own (the mosaic of half blocks this
+    /// renderer used to try was removed for being a guess at a picture rather
+    /// than a picture, see `workbench::image_view`), and the blank block a
+    /// bitmap was then placed over cost every message four rows of height to
+    /// say "there is a picture here" less clearly than its own name does. The
+    /// picture is one `enter` (or one click) away in the preview box, where it
+    /// is drawn at full size; the transcript line is the door to it.
     ///
-    /// The caption is what a picture has always been in this transcript: the
-    /// file's name as a link to its path, openable with `tab` + `enter` and by a
-    /// click, in the preview box. So a picture is reachable either way, and a
-    /// pointer aimed at the picture itself opens it too (the slot is registered
-    /// as a click region, see `workbench::screen::conversation`).
-    fn render_pictures(&mut self, msg_idx: usize, msg: &ChatMessage, origin: usize) {
+    /// The caption is markdown's link, so `tab` + `enter` and a click both open
+    /// it — the same two ways every other link in the conversation opens.
+    fn render_pictures(&mut self, msg: &ChatMessage) {
         if msg.pictures.is_empty() {
             return;
         }
@@ -2933,26 +2888,7 @@ impl ChatArea {
         } else {
             self.width.saturating_sub(2).max(1)
         };
-        let slot = self.draw_pictures && Self::pictures_supported();
         for picture in &msg.pictures {
-            if slot {
-                let offset = self.rendered_lines.len().saturating_sub(origin);
-                for _ in 0..PICTURE_SLOT_ROWS {
-                    if card {
-                        self.push_user_card_row("", bg);
-                    } else {
-                        self.rendered_lines.push(RenderedLine {
-                            text: String::new(),
-                            dim: true,
-                        });
-                    }
-                }
-                self.picture_meta.entry(msg_idx).or_default().push((
-                    offset,
-                    PICTURE_SLOT_ROWS,
-                    picture.path.clone(),
-                ));
-            }
             // Markdown rather than a hand-built row: `[…](…)` is exactly the
             // link styling the transcript paints every other link in, and the
             // OSC 8 wrapper it writes is what `tab` and a click find.
@@ -2984,46 +2920,6 @@ impl ChatArea {
                 }
             }
         }
-    }
-
-    /// The pictures the rendered transcript draws, in reading order — the rows
-    /// whose cells the driver may place a bitmap over.
-    ///
-    /// Derived from the per-message offsets the render wrote, exactly like
-    /// [`Self::row_stops`], so a splice that moves a message moves its picture
-    /// with it.
-    pub fn pictures(&self) -> Vec<PictureBlock> {
-        let mut blocks: Vec<PictureBlock> = Vec::new();
-        for (msg, pictures) in &self.picture_meta {
-            let Some((from, to)) = self.message_line_ranges.get(*msg).copied() else {
-                continue;
-            };
-            if to < from as i64 {
-                continue;
-            }
-            for (offset, rows, path) in pictures {
-                blocks.push(PictureBlock {
-                    row: from + offset,
-                    rows: *rows,
-                    path: path.clone(),
-                });
-            }
-        }
-        blocks.sort_by_key(|block| block.row);
-        blocks
-    }
-
-    /// Can the terminal place a bitmap where the frame leaves a cell empty?
-    ///
-    /// Asked of the terminal, not of the conversation: the rows are laid out
-    /// once per width and the answer decides whether a picture's slot is
-    /// reserved at all. A terminal without a protocol gets the caption on its
-    /// own, with no blank rows standing in for a picture it could never show.
-    fn pictures_supported() -> bool {
-        !matches!(
-            crate::terminal_image::get_capabilities().images,
-            crate::terminal_image::ImageProtocol::None
-        )
     }
 
     // ─── Assistant message (markdown, thinking first) ───────────────────
@@ -8368,11 +8264,14 @@ mod tests {
         message
     }
 
-    /// The block is a slot of blank cells and the caption under it — and the
-    /// caption is a real link, so `tab` + `enter` reach the picture on a
-    /// terminal that can draw the thumbnail and on one that cannot.
+    /// A picture is one row in the transcript: its name, as a link.
+    ///
+    /// Nothing is reserved for a thumbnail — not on an image-capable terminal
+    /// either — because the picture is drawn in the preview box and nowhere
+    /// else. The row that remains is the door: the caption is a real link, so
+    /// `tab` + `enter` and a click both open it.
     #[test]
-    fn a_picture_reserves_a_slot_over_its_linked_caption() {
+    fn a_picture_is_its_linked_caption() {
         let _caps = crate::terminal_image::CapabilitiesGuard::pin(
             crate::terminal_image::ImageProtocol::Kitty,
         );
@@ -8382,27 +8281,26 @@ mod tests {
 
         let mut chat = new_chat();
         chat.add_message(message);
+        // The raw rows: the caption is a hyperlink, and its target lives in the
+        // OSC 8 wrapper that stripping would remove.
         let rows = chat.render(W);
-        let blocks = chat.pictures();
-        assert_eq!(blocks.len(), 1, "{blocks:?}");
-        assert_eq!(blocks[0].rows, PICTURE_SLOT_ROWS);
-        assert!(blocks[0].path.ends_with("a shot.png"));
-        // The slot itself is empty: a glyph there would be painted over by the
-        // bitmap the terminal places.
-        for row in &rows[blocks[0].row..blocks[0].row + PICTURE_SLOT_ROWS] {
-            assert!(
-                strip_ansi_codes(row).trim().is_empty(),
-                "the slot is blank: {row:?}"
-            );
-        }
-        // The caption is the row under it, and it is nothing but one link.
-        let caption = &rows[blocks[0].row + PICTURE_SLOT_ROWS];
-        assert!(
-            strip_ansi_codes(caption).contains("a shot.png"),
-            "{caption:?}"
+        let plain: Vec<String> = rows.iter().map(|row| strip_ansi_codes(row)).collect();
+        let text_row = plain
+            .iter()
+            .position(|row| row.contains("look at this"))
+            .unwrap_or_else(|| panic!("the text is there: {plain:?}"));
+        let caption_row = plain
+            .iter()
+            .position(|row| row.contains("a shot.png"))
+            .unwrap_or_else(|| panic!("the caption is there: {plain:?}"));
+        // One row between them: the block's own padding, never a blank slot.
+        assert_eq!(
+            caption_row,
+            text_row + 1,
+            "no thumbnail block above the caption: {plain:?}"
         );
         let spans = crate::workbench::links::scan(
-            std::slice::from_ref(caption),
+            std::slice::from_ref(&rows[caption_row]),
             &dir.to_string_lossy(),
             &mut Default::default(),
         );
@@ -8413,76 +8311,44 @@ mod tests {
             "{:?}",
             spans[0].target
         );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// A terminal that cannot place a bitmap gets no empty slot to scroll past:
-    /// the picture is its caption, exactly as it was before there were
-    /// thumbnails.
-    #[test]
-    fn a_terminal_without_pictures_gets_the_caption_alone() {
-        let _caps = crate::terminal_image::CapabilitiesGuard::pin(
-            crate::terminal_image::ImageProtocol::None,
-        );
-        let dir = std::env::temp_dir().join(format!("future-chat-nopic-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let message = picture_message(&dir);
-
-        let mut chat = new_chat();
-        chat.add_message(message);
-        let rows = chat.render(W);
-        assert!(chat.pictures().is_empty(), "no slot to place a bitmap in");
-        let text = rows
-            .iter()
-            .map(|row| strip_ansi_codes(row))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(text.contains("a shot.png"), "{text}");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// A transcript being copied out is read as text: the caption stays, the
-    /// slot does not.
-    #[test]
-    fn a_copied_transcript_keeps_the_caption_and_drops_the_slot() {
-        let _caps = crate::terminal_image::CapabilitiesGuard::pin(
-            crate::terminal_image::ImageProtocol::Kitty,
-        );
-        let dir = std::env::temp_dir().join(format!("future-chat-copy-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut chat = new_chat();
-        chat.add_message(picture_message(&dir));
-        let screen: Vec<String> = chat
-            .render(W)
-            .iter()
-            .map(|row| strip_ansi_codes(row))
-            .collect();
-        let on_screen = |rows: &[String]| -> (usize, usize) {
-            let text = rows
-                .iter()
-                .position(|row| row.contains("look at this"))
-                .unwrap_or_else(|| panic!("the text is there: {rows:?}"));
-            let caption = rows
-                .iter()
-                .position(|row| row.contains("a shot.png"))
-                .unwrap_or_else(|| panic!("the caption is there: {rows:?}"));
-            (text, caption)
-        };
-        let (text_row, caption_row) = on_screen(&screen);
-        assert_eq!(
-            caption_row - text_row,
-            PICTURE_SLOT_ROWS + 1,
-            "the screen reserves the slot between them: {screen:?}"
-        );
-        // The copy is read as text: the card's own blank row stays, the slot
-        // does not.
-        let lines: Vec<String> = chat
+        // A copy read as text is the same transcript: there is no slot to drop.
+        let copy: Vec<String> = chat
             .render_all_detailed(W)
             .iter()
             .map(|row| strip_ansi_codes(row))
             .collect();
-        let (text_row, caption_row) = on_screen(&lines);
-        assert_eq!(caption_row - text_row, 1, "no slot in the copy: {lines:?}");
+        let copied = copy
+            .iter()
+            .position(|row| row.contains("a shot.png"))
+            .unwrap_or_else(|| panic!("the caption is there: {copy:?}"));
+        assert!(
+            copy[copied - 1].contains("look at this"),
+            "the copy keeps the same rows: {copy:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A picture with no name falls back to its file's own.
+    #[test]
+    fn a_nameless_picture_names_its_file() {
+        let dir = std::env::temp_dir().join(format!("future-chat-noname-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("logo.png");
+        std::fs::write(&path, b"\x89PNG").unwrap();
+        let mut message = ChatMessage::new("m-pic2".into(), ChatRole::Assistant, "here");
+        message.pictures.push(ChatPicture {
+            path: path.to_string_lossy().into_owned(),
+            name: String::new(),
+        });
+        let mut chat = new_chat();
+        chat.add_message(message);
+        let text = chat
+            .render(W)
+            .iter()
+            .map(|row| strip_ansi_codes(row))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("logo.png"), "{text}");
         std::fs::remove_dir_all(&dir).ok();
     }
 }
