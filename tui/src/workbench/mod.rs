@@ -1500,11 +1500,8 @@ impl Workbench {
                 Some(notice) => vec![WbAction::Notice(notice)],
                 None => vec![WbAction::Redraw],
             },
-            // The page keys scroll; `ctrl+↑/↓` used to be the same verb and is
-            // now the conversation step (`Action::PrevSession`), so the two
-            // spellings of "ten rows" would otherwise fight over one chord.
-            "pageUp" => self.scroll(-10, data),
-            "pageDown" => self.scroll(10, data),
+            "ctrl+up" | "pageUp" => self.scroll(-10, data),
+            "ctrl+down" | "pageDown" => self.scroll(10, data),
             "end" if self.scroll.following() && data.input.text.is_empty() => self.scroll(1, data),
             "escape" if !self.scroll.following() => {
                 self.scroll.latest();
@@ -1982,10 +1979,10 @@ impl Workbench {
     /// second call moves a second conversation.
     ///
     /// The driver calls this once per input burst with the *net* step a held
-    /// `ctrl+↑`/`ctrl+↓` (or its older `shift+↑`/`shift+↓` spelling)
-    /// accumulated: every step still moves the cursor, but the conversation is
-    /// switched once — a switch is two round trips and a transcript load, and
-    /// paying that per key repeat is what made the rail feel stuck.
+    /// `shift+↑`/`shift+↓` accumulated: every step still moves the cursor, but
+    /// the conversation is switched once — a switch is two round trips and a
+    /// transcript load, and paying that per key repeat is what made the rail
+    /// feel stuck.
     pub(crate) fn step_session(&mut self, delta: i32, data: &WorkbenchData) -> Vec<WbAction> {
         if delta == 0 {
             return Vec::new();
@@ -7408,16 +7405,9 @@ mod tests {
             "the rail's list is not the page keys' to move"
         );
 
-        // `ctrl+↑/↓` is *not* the page's verb any more: it is the conversation
-        // step, so it neither scrolls the transcript nor moves the rail's list.
-        assert_eq!(
-            workbench.handle(WbEvent::Key("ctrl+up".into()), &data),
-            vec![WbAction::SessionStep(-1)]
-        );
-        assert_eq!(
-            workbench.chat_scroll, scrolled,
-            "ctrl+↑ left the page alone"
-        );
+        // `ctrl+↑` is the same verb, so it goes the same way.
+        workbench.handle(WbEvent::Key("ctrl+down".into()), &data);
+        assert!(workbench.chat_scroll < scrolled, "ctrl+↓ came back");
         assert_eq!(workbench.panel_scroll[slot], 2);
 
         // The wheel *over the rail* still moves the rail: that is a pointer
@@ -7542,22 +7532,22 @@ mod tests {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         let unfocused = plain(&workbench.render(&data, 120, 38));
-        assert!(!unfocused.contains("ctrl+↑↓"), "{unfocused}");
+        assert!(!unfocused.contains("shift+↑↓"), "{unfocused}");
         workbench.sidebar_focus = true;
         let rows = workbench.render(&data, 120, 38);
         // The footer is the rail's own last row and not a click target: a
         // reader aiming at a hint must not open the conversation that used to
         // be painted there.
         //
-        // It names the two chords that walk the rail from here — `ctrl+↑↓` the
-        // conversations (the chat follows), `shift+←→` the tabs — because `↑↓`
-        // alone is the draft's and `⏎` only opens what the cursor stands on.
+        // It names the two chords that walk the rail from here — `shift+←→` the
+        // tabs, `shift+↑↓` the conversations — because `↑↓` alone is the
+        // draft's and `⏎` only opens what the cursor stands on.
         let footer = rows
             .iter()
             .position(|row| crate::utils::strip_ansi_codes(row).contains("shift+←→ 页签"))
             .expect("the rail's footer");
         let hint = crate::utils::strip_ansi_codes(&rows[footer]);
-        assert!(hint.contains("ctrl+↑↓ 切换会话"), "{hint}");
+        assert!(hint.contains("shift+↑↓ 切换会话"), "{hint}");
         assert!(
             workbench
                 .hits()

@@ -744,8 +744,8 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         HintNewChat => ("新会话", "New Chat"),
         HintSettings => ("偏好设置", "Preferences"),
         RailHint => (
-            "ctrl+↑↓ 切换会话 · shift+←→ 页签",
-            "ctrl+↑↓ switches session · shift+←→ tabs",
+            "shift+←→ 页签 · shift+↑↓ 切换会话",
+            "shift+←→ tabs · shift+↑↓ switches session",
         ),
         FilesHint => (
             "↑↓ 选择 · ⏎ 打开 · ⌫ 上一层 · r 刷新 · esc 关闭",
