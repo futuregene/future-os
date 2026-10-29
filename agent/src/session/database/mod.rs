@@ -312,6 +312,8 @@ pub(crate) use transactions::{begin_write_transaction, try_maintenance_transacti
 #[cfg(test)]
 mod connection_tests;
 #[cfg(test)]
+mod fk_index_tests;
+#[cfg(test)]
 mod historical_upgrade_tests;
 #[cfg(test)]
 mod reader_tests;
