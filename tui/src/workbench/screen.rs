@@ -401,6 +401,11 @@ fn header(
     // tail, so the chat list is the last one standing: it is the only door with
     // no other pointer route (the rail is a keyboard surface, and a narrow frame
     // does not even put it beside the conversation).
+    //
+    // A door carries its chord — `[ctrl+r] 会话` — and it is the only place some
+    // of them are named: the footer's hint row leaves the chat list out for
+    // exactly this reason (see `hint_row`), so the header is where that key is
+    // learned.
     let doors: Vec<Door> = vec![
         Door {
             id: "header.sessions",
@@ -674,14 +679,6 @@ fn header_right(palette: &Palette, data: &WorkbenchData, avail: usize) -> String
 
 // ─── conversation ──────────────────────────────────────────────────────────
 
-/// The widest a transcript picture's thumbnail may be drawn, in cells.
-///
-/// A picture in the conversation is a *preview*: the reader can see what it is
-/// and open it in the box, which is where the whole thing lives. Capped rather
-/// than fitted to the content width so a wide screenshot does not take the same
-/// room as the reply it came with.
-const PICTURE_SLOT_COLUMNS: usize = 28;
-
 /// A picture the preview box wants on screen, in frame cells.
 ///
 /// The frame is text and a bitmap is not: the terminal places it at a cell, out
@@ -822,6 +819,10 @@ fn conversation(
     // reads as a clipped message rather than as a prompt waiting below it.
     let gap = usize::from(rows > 1);
     let visible = rows.saturating_sub(gap);
+    // The key handler's ceiling is this number's other half: the transcript
+    // band is measured here, and `Workbench::scroll` subtracts it from the row
+    // count (see `chat_window`).
+    workbench.chat_window = visible;
     // One definition of the conversation's text width, shared with the driver
     // that wraps the transcript — see `layout::chat_inner`.
     let padding = layout::chat_padding(area.w);
@@ -831,14 +832,12 @@ fn conversation(
     workbench.chat_inner = inner;
     let messages = &data.messages;
     let total = messages.len();
-    // `chat_scroll` counts rows up from the tail; it is clamped so a stale
-    // offset from a longer conversation cannot index past the start.
-    let mut offset = workbench.chat_scroll_offset().min(total);
-    // Scrolling up costs one row to the "↑ 更早" badge, so the last reachable
-    // offset is one short of the first message.
-    if total > visible && offset + visible >= total {
-        offset = total - visible + 1;
-    }
+    // `chat_scroll` counts rows up from the tail; it is clamped to the offset
+    // that puts the oldest row on the band's top row, so a stale offset from a
+    // longer conversation — or from a taller band before the composer grew —
+    // paints the top of the transcript instead of blank rows over it.
+    let ceiling = total.saturating_sub(visible);
+    let mut offset = workbench.chat_scroll_offset().min(ceiling);
     // The rows the reader can actually read at `offset`: the window, less the
     // row the badge takes off its bottom.
     let shown_window = |offset: usize| -> (usize, usize) {
@@ -906,30 +905,6 @@ fn conversation(
         .collect();
     let badge = usize::from(start > 0);
     let shown = end.saturating_sub(start);
-    // The pictures in this window, by the row their slot starts on. An overlay
-    // covers the transcript, so a picture under it is not asked for — and one
-    // already placed is removed, because the driver places what the frame asks
-    // for and nothing else.
-    let mut window_pictures: Vec<(usize, (usize, usize))> = Vec::new();
-    let can_place = !matches!(
-        crate::terminal_image::get_capabilities().images,
-        crate::terminal_image::ImageProtocol::None
-    );
-    if workbench.overlay.is_none() && can_place {
-        for (index, picture) in data.pictures.iter().enumerate() {
-            if picture.row < start || picture.row >= end {
-                continue;
-            }
-            // A block cut by the bottom of the window shows the part of the
-            // picture that fits: a bitmap placed over rows the frame never
-            // painted would land on the composer.
-            let visible_rows = picture.rows.min(end - picture.row);
-            if visible_rows == 0 {
-                continue;
-            }
-            window_pictures.push((picture.row, (index, visible_rows)));
-        }
-    }
     let mut lines: Vec<String> = Vec::new();
     if start > 0 {
         lines.push(fit(
@@ -992,49 +967,6 @@ fn conversation(
                     format!("chat.row.{}", stop.row),
                 );
             }
-        }
-        // A picture's block: a bitmap the terminal places over the empty cells
-        // the renderer reserved, and a click target over all of them — a
-        // pointer aimed at a three-column portrait is a pointer aiming at
-        // nothing.
-        if let Some((picture_index, visible_rows)) = window_pictures
-            .iter()
-            .find(|(row, _)| *row == index)
-            .map(|(_, block)| *block)
-        {
-            let picture = &data.pictures[picture_index];
-            let slot_w = inner.clamp(1, PICTURE_SLOT_COLUMNS);
-            let x = area.x.saturating_add(padding as u16);
-            match picture.pixels.as_ref().filter(|pixels| !pixels.is_empty()) {
-                Some(pixels) => {
-                    // The visible part of the slot, cropped off the top of the
-                    // picture: the same scale as the whole block, so a block
-                    // half-scrolled out is cut, not shrunk.
-                    let crop_h = (pixels.height * visible_rows / picture.rows.max(1)).max(1);
-                    let crop = (0, 0, pixels.width, crop_h.min(pixels.height));
-                    let (cells_w, cells_h) =
-                        image_view::fitted_cells(pixels.width, crop.3, slot_w, visible_rows, 1);
-                    workbench.image_requests.push(PlacedPicture {
-                        request: ImageRequest {
-                            source: image_source_key(&picture.path, pixels, crop),
-                            x,
-                            y,
-                            columns: cells_w.max(1) as u16,
-                            rows: cells_h.max(1) as u16,
-                            crop,
-                        },
-                        pixels: pixels.clone(),
-                    });
-                }
-                // The block is up and the picture is one decode away. Asking is
-                // a set insert in the driver, which is what keeps a frame that
-                // paints forty times a second from queueing forty reads.
-                None => workbench.want_picture(&picture.path),
-            }
-            workbench.hit_map().push(
-                Rect::new(x, y, slot_w as u16, visible_rows as u16),
-                format!("chat.picture.{picture_index}"),
-            );
         }
     }
     // Bottom-anchored like a chat view: a short conversation sits on the input
@@ -1423,12 +1355,12 @@ fn sidebar_rows(
             )
         })
         .collect();
-    lines.push(widgets::tab_strip(
-        palette,
-        &tabs,
-        workbench.sidebar_focus,
-        columns,
-    ));
+    // The rail's collapse button owns its outer edge: on the left that is
+    // column 0, so the strip starts one cell in — a tab painted over the button
+    // would take the click that hides the rail.
+    let inset = usize::from(workbench.sidebar_position == preferences::SidebarPosition::Left);
+    let strip = widgets::tab_strip(palette, &tabs, columns.saturating_sub(inset));
+    lines.push(fit(&format!("{}{strip}", " ".repeat(inset)), columns));
     // The rail's own collapse button, on the edge it will leave from: one column
     // at the outer edge, in the same place whether the rail is here or gone (see
     // the spine `compose` paints). A reader who aims at the arrow twice — once
@@ -1452,7 +1384,7 @@ fn sidebar_rows(
         );
     }
     // Each tab registers its own click region; tab labels are ` label ` wide.
-    let mut x: u16 = if workbench.sidebar_focus { 1 } else { 0 };
+    let mut x: u16 = inset as u16;
     for panel in PanelId::TABS {
         let tab_width = width(panel.label(workbench.lang)) as u16 + 2;
         workbench.hit_map().push(
@@ -1461,13 +1393,11 @@ fn sidebar_rows(
         );
         x = x.saturating_add(tab_width + 1);
     }
-    // A focused rail says which keys work from here: `shift+←→` the tabs,
-    // `shift+↑↓` the conversations, with the chat following the cursor. `↑↓`
-    // alone only moves the list cursor and `⏎` only opens what it stands on, so
-    // a reader who guessed wrong learns the chords here. It costs the list one
-    // row and saves the guesswork, so it is only shown while the rail actually
-    // owns the keys.
-    let footer = usize::from(workbench.sidebar_focus && area.h >= 4);
+    // The rail says which keys work on it. Every one of them lives behind
+    // `shift`: the rail never holds the keyboard, so `↑↓` are the transcript's
+    // and a reader who presses them here scrolls the conversation, not this
+    // list. It costs the list one row and saves that guesswork.
+    let footer = usize::from(area.h >= 4);
     let content = Rect::new(area.x, area.y + 1, area.w, area.h - 1 - footer as u16);
     let index = workbench.panel.index();
     let view = panels::PanelView {
@@ -1492,8 +1422,7 @@ fn sidebar_rows(
     );
     lines.extend(body);
     if footer == 1 {
-        let hint = fit(t(lang, Key::RailHint), columns);
-        lines.push(fit(&palette.dim(&hint), columns));
+        lines.push(rail_hint(lang, palette, columns));
     }
     lines.truncate(area.h as usize);
     // A rail row carries no background of its own, the same as the chat beside
@@ -1613,6 +1542,30 @@ fn status_row(
     vec![fit(&format!("{left}{}{right}", " ".repeat(pad)), columns)]
 }
 
+/// The rail's own key hints: whole parts, dropped from the tail when the rail is
+/// narrower than they are.
+///
+/// The rail is the one band the reader resizes, so its hint row has to survive a
+/// drag: a chord cut in half (`shift+pgU`) is not a hint, and a rail 24 columns
+/// wide cannot hold three of them. What survives is the front of the list — the
+/// step keys first, because they are the ones a reader who just pressed `↑`
+/// needs.
+fn rail_hint(lang: Language, palette: &Palette, columns: usize) -> String {
+    let parts = [
+        t(lang, Key::RailHintStep),
+        t(lang, Key::RailHintPage),
+        t(lang, Key::RailHintTabs),
+    ];
+    let mut keep = parts.len();
+    loop {
+        let row = format!(" {}", parts[..keep].join(" · "));
+        if width(&row) <= columns || keep == 0 {
+            return fit(&palette.dim(&row), columns);
+        }
+        keep -= 1;
+    }
+}
+
 /// The one-line key hints, dropped **whole** from the tail when the terminal is
 /// narrow.
 ///
@@ -1632,23 +1585,38 @@ fn hint_row(
     // where it went; the cells it frees are what keep both `ctrl+q` and
     // `ctrl+n` on the row in English at 120 columns.
     //
-    // `esc` is not listed either: it is the key that leaves *whatever the reader
-    // is in* — an overlay, the queue, a scrolled-back transcript — so a hint
-    // that spelled it named one of the five things it does, and the boxes that
-    // answer it print it in their own hint row (`FilesHint`, `PickerHint*`).
+    // The chat list (`ctrl+r 会话`) is not listed either: the header's own door
+    // beside the title spells `[ctrl+r] 会话`, so a hint here would be the same
+    // key taught twice on one screen. Its cells went to the entries above.
+    //
+    // `esc` is listed only in the one state where it has something to do
+    // *here*: a transcript the reader scrolled away from, where it walks back to
+    // the newest message. It goes first, so a narrow terminal drops the keys
+    // around it rather than the one the reader needs right now — and it is the
+    // only entry whose key changes with the frame, because a permanent one would
+    // promise a key that has nothing to act on: every other thing `esc` answers
+    // (an overlay, the queue, the mention menu, a picker) prints it in that box's
+    // own hint row (`FilesHint`, `PickerHint*`, `HelpFooter`).
     //
     // `?` is a literal rather than `Action::Help`'s chord: help has no chord on
     // purpose (a printable key that opens a box cannot also be typed into the
     // draft), so the row names the character that opens it, as the help
     // overlay's own inline table does.
-    let wide = [
+    let mut wide: Vec<(&str, Key)> = Vec::new();
+    // Whether the row is claiming `esc` this frame: the one entry that comes and
+    // goes with the state the frame paints.
+    let scrolled_back =
+        !workbench.following_latest() && workbench.overlay.is_none() && workbench.mention.is_none();
+    if scrolled_back {
+        wide.push(("esc", Key::HintLatest));
+    }
+    wide.extend([
         (workbench.keys.key(Action::Sidebar), Key::HintSidebar),
-        (workbench.keys.key(Action::Sessions), Key::HintSessions),
         (workbench.keys.key(Action::Palette), Key::HintCommands),
         (workbench.keys.key(Action::Preferences), Key::HintSettings),
         (workbench.keys.key(Action::NewSession), Key::HintNewChat),
         ("?", Key::HintHelp),
-    ];
+    ]);
     // A rebindable action whose chord the reader cleared (`preferences`, see
     // `default_key`) would otherwise be hinted as " 布局" — a hint with no key
     // is not a hint.
@@ -1657,7 +1625,11 @@ fn hint_row(
         .filter(|(key, _)| !key.is_empty())
         .collect();
     let parts: &[(&str, Key)] = if compact {
-        &wide[..4.min(wide.len())]
+        // The contextual `esc` does not cost the reader a permanent hint: at the
+        // tail this row is the four cells it always was, and only a scrolled-back
+        // transcript spends one more on the way back down.
+        let budget = if scrolled_back { 5 } else { 4 };
+        &wide[..budget.min(wide.len())]
     } else {
         &wide
     };
@@ -3455,6 +3427,21 @@ fn palette_box(
         &geometry,
     )
 }
+
+/// The most candidates a mention menu shows at once. The menu completes one
+/// line of the draft, so it is a picker, not a file browser: a box that grew
+/// with the terminal would cover the conversation it is completing, and one
+/// that showed only a handful sent the reader scrolling through a long list of
+/// conversations. Sixteen rows is the middle — enough to recognise a target
+/// without moving, small enough that the draft and the transcript stay beside
+/// it.
+const MENTION_MAX_ROWS: usize = 16;
+
+/// The rows the mention box spends on everything except its candidates: the
+/// border pair, the query line, the blank under it, and the hint under its own
+/// blank.
+const MENTION_CHROME: usize = 6;
+
 /// `#[allow(clippy::too_many_arguments)]` is not needed: the box is one shape.
 fn mention_box(
     workbench: &mut Workbench,
@@ -3486,7 +3473,18 @@ fn mention_box(
         .map(|m| m.index)
         .unwrap_or(0)
         .min(rows.len().saturating_sub(1));
-    let room = h.saturating_sub(6) as usize;
+    // How many candidates the box can show, and where its window starts.
+    //
+    // Both come from *one* number: the space between the frame's top rule and
+    // the composer's own edge. The window used to be derived from the terminal's
+    // height while the box itself was capped at twelve lines, so the window
+    // "scrolled" through rows the box had already cut — `↓` past the eighth
+    // candidate moved a highlight nobody could see and the list read as frozen.
+    // A window derived from what the box can actually paint cannot drift from it.
+    let ceiling = (input_top as usize).saturating_sub(1);
+    let room = ceiling
+        .saturating_sub(MENTION_CHROME)
+        .clamp(1, MENTION_MAX_ROWS);
     let start = selection.saturating_sub(room.saturating_sub(1));
     let shown = rows.len().saturating_sub(start).min(room);
 
@@ -3536,12 +3534,13 @@ fn mention_box(
 
     // Above the composer and never on it: the menu completes the line the
     // reader is still typing, so it must not cover the draft, the composer's own
-    // frame, the status bar or the hints. Its height is bounded (a long candidate
-    // list scrolls inside the window) so it cannot reach the header either.
+    // frame, the status bar or the hints. Its height is bounded by the same
+    // ceiling the window was measured against, so a row the box paints is always
+    // a row the reader can reach with `↓`.
     let mut geometry = box_geometry(column.w, h, box_w, content.len());
     geometry.left = column.x + (column.w.saturating_sub(box_w)) / 2;
     geometry.w = box_w;
-    geometry.h = geometry.h.min(12);
+    geometry.h = geometry.h.min(ceiling.max(3) as u16);
     geometry.top = input_top.saturating_sub(geometry.h).max(1);
 
     workbench.hit_map().push(
@@ -3906,6 +3905,101 @@ mod tests {
             seen += 1;
         }
         assert!(seen >= 3, "the box has rows to check: {seen}");
+    }
+
+    /// The window the menu paints is the window `↓` moves through.
+    ///
+    /// It used to be measured against the terminal's height while the box itself
+    /// was capped at twelve lines, so the highlight walked past the last painted
+    /// candidate: every further `↓` moved a row nobody could see and the list
+    /// read as frozen, and the hint under the rows was cut away by the same cap.
+    /// Both come from one number now — the space above the composer.
+    #[test]
+    fn the_mention_window_follows_the_highlight_and_keeps_its_hint() {
+        let session = |index: usize| crate::workbench::state::SessionRow {
+            id: format!("s{index:02}"),
+            title: format!("会话 {index:02}"),
+            workspace: "future-os".into(),
+            age: "1m".into(),
+            current: index == 0,
+            parent_id: None,
+            streaming: false,
+            created_at_ms: 0,
+        };
+        let mut data = crate::workbench::demo::chat();
+        data.sessions = (0..24).map(session).collect();
+        let mut editor = data.input.editor.clone();
+        editor.set("#", 1);
+        data.input = crate::workbench::state::InputView::from_editor(editor, String::new());
+        let mut workbench = Workbench::new();
+        let render = |workbench: &mut Workbench| workbench.render(&data, 120, 40);
+        // The candidates the box actually paints, as the rows it made
+        // clickable: the rail lists sessions too, so counting titles in the
+        // whole frame could not tell the box's rows from the sidebar's.
+        let painted = |workbench: &mut Workbench, rows: &[String]| {
+            let text = plain(&rows.join("\n"));
+            let mut ys: Vec<(u16, String)> = workbench
+                .hits()
+                .regions()
+                .iter()
+                .filter(|(_, id)| id.starts_with("mention.row."))
+                .map(|(rect, id)| (rect.y, id.clone()))
+                .collect();
+            ys.sort();
+            (text, ys)
+        };
+
+        // The box asks for more rows than the old eight-row cap allowed, and the
+        // hint under them is part of it rather than clipped off it.
+        let rows = render(&mut workbench);
+        let lang = workbench.lang;
+        let (first, candidates) = painted(&mut workbench, &rows);
+        let shown = candidates.len();
+        assert!(shown > 8, "only {shown} candidates are painted: {first}");
+        assert!(shown <= MENTION_MAX_ROWS, "{shown} candidates");
+        assert!(
+            first.contains(t(lang, Key::MentionHintSession)),
+            "the hint is painted under the rows: {first}"
+        );
+
+        // Every painted candidate is a click target, and stepping past the last
+        // of them scrolls the list instead of losing the highlight: the window
+        // keeps the selection on its own last row.
+        for _ in 0..shown {
+            workbench.handle(crate::workbench::WbEvent::Key("down".into()), &data);
+        }
+        let index = workbench.mention.as_ref().map(|m| m.index).unwrap_or(0);
+        assert_eq!(index, shown, "every `↓` moved the highlight");
+        let rows = render(&mut workbench);
+        let (scrolled, candidates) = painted(&mut workbench, &rows);
+        assert_eq!(candidates.len(), shown, "the window kept its size");
+        let last = candidates.last().expect("the bottom candidate");
+        assert_eq!(
+            last.1,
+            format!("mention.row.{index}"),
+            "the highlight stays on the bottom row of the window: {candidates:?}"
+        );
+        assert!(
+            plain(&rows[last.0 as usize]).contains(&format!("会话 {index:02}")),
+            "the highlighted candidate {index} is painted: {scrolled}"
+        );
+
+        // A one-line draft leaves the whole ceiling free, so a tall terminal
+        // shows the full cap — the demo's own draft is several lines long, which
+        // is the case above.
+        let mut short = data.clone();
+        let mut editor = short.input.editor.clone();
+        editor.set("#", 1);
+        short.input = crate::workbench::state::InputView::from_editor(editor, String::new());
+        let mut workbench = Workbench::new();
+        workbench.render(&short, 120, 40);
+        let shown = workbench
+            .hits()
+            .regions()
+            .iter()
+            .filter(|(_, id)| id.starts_with("mention.row."))
+            .count();
+        assert_eq!(shown, MENTION_MAX_ROWS, "a one-line draft shows the cap");
     }
 
     /// The composer's box is as tall as the draft it draws, never as tall as
@@ -4356,14 +4450,17 @@ mod tests {
             Some("? 帮助"),
             "{wide:?}"
         );
+        // The chat list is the header's to teach: the door beside the title
+        // spells it, so the hint row leaves it out.
+        assert!(!wide.contains("ctrl+r"), "{wide:?}");
         // Narrow keeps the head of the row whole and drops the tail, and never
         // cuts a hint in half. Measured at a width where the dropped entry is
         // gone in *both* languages: the Chinese labels are half as wide as the
-        // English ones, so a 40-column row that ends after `ctrl+r` in English
-        // still reaches `ctrl+p` in Chinese.
+        // English ones, so a 40-column row that ends after `ctrl+p` in English
+        // still reaches it in Chinese.
         let narrow = plain(&hint_row(&workbench, &FUTURE_DARK, 40, true)[0]);
         assert!(narrow.contains("ctrl+d"), "{narrow:?}");
-        assert!(narrow.contains("ctrl+r"), "{narrow:?}");
+        assert!(narrow.contains("ctrl+p"), "{narrow:?}");
         let narrow = plain(&hint_row(&workbench, &FUTURE_DARK, 24, true)[0]);
         assert!(narrow.contains("ctrl+d"), "{narrow:?}");
         assert!(

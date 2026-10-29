@@ -779,6 +779,11 @@ fn session_rows(
             // workspace column is what is left of the budget once the age and
             // the divider are paid for, and a name longer than that is
             // ellipsised rather than allowed to move the dot.
+            //
+            // The name sits against the right of its column, so the names read
+            // as one column *ending* at the divider (`future-os` and
+            // `session-supervisor` both stop where the `·` is) rather than a
+            // column that starts together and leaves the dot to move.
             let room = (columns / 2).max(5);
             let workspace_column = tail
                 .workspace
@@ -787,10 +792,15 @@ fn session_rows(
             let tail_text = if session.workspace.is_empty() || workspace_column == 0 {
                 age
             } else {
-                format!(
-                    "{}{TAIL_SEPARATOR}{age}",
+                // A name too wide for the column is cut at its tail instead,
+                // which keeps the head of a directory name and still fills the
+                // column edge to edge.
+                let name = if width(&session.workspace) <= workspace_column {
+                    align_right(&session.workspace, workspace_column)
+                } else {
                     fit(&session.workspace, workspace_column)
-                )
+                };
+                format!("{name}{TAIL_SEPARATOR}{age}")
             };
             let tail = fit(&tail_text, room).trim_end().to_string();
             let tail_width = width(&tail);
@@ -1162,6 +1172,32 @@ mod tests {
                 .unwrap_or_else(|| panic!("no row for {}", session.title));
             assert!(line.trim_end().ends_with(&session.age), "{line:?}");
             assert_eq!(width(line.trim_end()), 60, "{line:?}");
+        }
+    }
+
+    /// The workspace column reads to its *right* edge: a short name stops at
+    /// the divider exactly where a long one does, so the shortest row is not
+    /// a name followed by a gap the `·` floats away from.
+    #[test]
+    fn the_recent_rows_set_their_workspace_against_the_divider() {
+        let mut data = demo::chat();
+        // The fixture's widest workspace takes the column; these two are much
+        // narrower than it, which is what leaves room to fall short of the
+        // divider.
+        data.sessions[0].workspace = "tmp".into();
+        data.sessions[1].workspace = "session-supervisor".into();
+        let lines = plain_rows(PanelId::Recent, &data, 80, 20);
+        for session in data.sessions.iter().filter(|s| !s.workspace.is_empty()) {
+            let line = lines
+                .iter()
+                .find(|line| line.contains(&session.title))
+                .unwrap_or_else(|| panic!("no row for {}", session.title));
+            let tail = format!("{} · {}", session.workspace, session.age);
+            assert!(
+                line.trim_end().ends_with(&tail),
+                "{} sits against the divider: {line:?}",
+                session.workspace
+            );
         }
     }
 

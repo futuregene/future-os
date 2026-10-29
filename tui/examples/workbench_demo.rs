@@ -154,7 +154,6 @@ fn main() {
             }
             "files" => {
                 workbench.panel = PanelId::Files;
-                workbench.sidebar_focus = true;
             }
             // `--overlay preview` shows the picture box at the same size a
             // reader's `enter` on an image gives, with the demo gradient in it.

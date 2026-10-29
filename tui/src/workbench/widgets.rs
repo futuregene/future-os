@@ -73,12 +73,7 @@ pub fn box_row(palette: &Palette, content: &str, columns: usize) -> String {
 
 /// The tab strip across the top of the sidebar: the active tab is iris and
 /// underlined by weight, the rest muted.
-pub fn tab_strip(
-    palette: &Palette,
-    tabs: &[(String, bool)],
-    focused: bool,
-    columns: usize,
-) -> String {
+pub fn tab_strip(palette: &Palette, tabs: &[(String, bool)], columns: usize) -> String {
     let mut row = String::new();
     for (index, (label, active)) in tabs.iter().enumerate() {
         if index > 0 {
@@ -90,12 +85,6 @@ pub fn tab_strip(
         } else {
             row.push_str(&palette.dim(&text));
         }
-    }
-    if focused {
-        // The focused strip says so with a caret, so "which pane takes keys"
-        // is visible without hovering anything.
-        let caret = palette.text(palette.accent, "›");
-        row = format!("{caret}{row}");
     }
     fit(&row, columns)
 }
@@ -441,7 +430,7 @@ mod tests {
             assert_eq!(width(&box_top(&P, columns, "待办")), columns);
             assert_eq!(width(&box_bottom(&P, columns)), columns);
             assert_eq!(width(&box_row(&P, "读 src/main.rs", columns)), columns);
-            assert_eq!(width(&tab_strip(&P, &[], false, columns)), columns);
+            assert_eq!(width(&tab_strip(&P, &[], columns)), columns);
             assert_eq!(width(&progress(&P, 0.42, columns, P.accent)), columns);
         }
     }

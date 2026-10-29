@@ -49,6 +49,16 @@ impl ScrollState {
         self.following = true;
         self.unread = false;
     }
+    /// Adopt an offset that came from somewhere other than a scroll gesture —
+    /// the anchor that holds the reader's rows across a row they opened. The
+    /// tail is still the tail: an offset of `0` means following.
+    pub fn set_offset(&mut self, offset: usize) {
+        self.offset = offset;
+        self.following = offset == 0;
+        if self.following {
+            self.unread = false;
+        }
+    }
     /// Session switches start at the new tail, not the old conversation's offset.
     pub fn reset(&mut self) {
         *self = Self {

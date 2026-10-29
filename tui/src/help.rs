@@ -52,7 +52,7 @@ Keys (interactive):
   ctrl+b                Sidebar: focus / show / hide (full-screen when narrow)
   ctrl+c                Stop the running turn
   ctrl+n                New session
-  ctrl+e                Final answer only, or the whole process
+  ctrl+e                Draft caret to the end of the line (end does it too)
   ctrl+k                Refresh sessions and usage
   /                     Command palette
   ?                     Keys and commands
