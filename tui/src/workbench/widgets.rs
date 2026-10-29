@@ -177,9 +177,12 @@ pub fn context_text(used: u64, total: u64) -> String {
 }
 
 /// `6.9k`, `1.0M`, `812` — the compact form the status bar has room for.
+///
+/// The billion tier is `B`, the spelling token counts are quoted in
+/// (`1B tokens`) — `G` would read as gigabytes in a terminal.
 pub fn short_count(count: u64) -> String {
     if count >= 1_000_000_000 {
-        format!("{:.1}G", count as f64 / 1_000_000_000.0)
+        format!("{:.1}B", count as f64 / 1_000_000_000.0)
     } else if count >= 1_000_000 {
         format!("{:.1}M", count as f64 / 1_000_000.0)
     } else if count >= 1_000 {
@@ -684,8 +687,8 @@ mod tests {
         assert_eq!(short_count(1_000_000), "1.0M");
         // A long session's cumulative prompt is past a billion tokens; `2978.1M`
         // is not a number a footer can carry.
-        assert_eq!(short_count(1_000_000_000), "1.0G");
-        assert_eq!(short_count(2_978_142_108), "3.0G");
+        assert_eq!(short_count(1_000_000_000), "1.0B");
+        assert_eq!(short_count(2_978_142_108), "3.0B");
         assert_eq!(context_text(6_900, 1_000_000), "6.9k/1.0M");
         assert_eq!(cost_text(0.0), "≈¥0");
         assert_eq!(cost_text(0.004), "<¥0.01");
