@@ -144,7 +144,10 @@ spinner in its state slot; the rest follow under
 the rail's shape). The two headings are only drawn while there is a split: with
 nothing running the list is simply the list. A row names its workspace by *name*
 (`future-os`), not by path: the rail is 36 columns wide and a clipped path says
-less than the word. **工作区** files the same conversations the way the
+less than the word. The name gets at most a third of the row, with a space kept
+between it and the conversation's name: a longer one (`session-supervisor`) is
+ellipsised rather than allowed to shorten every title in the list, since the
+title is what the row is for. **工作区** files the same conversations the way the
 desktop's rail does: 置顶 (the workspaces pinned with `p`), then 工作区 (one
 heading per workspace, its conversations beneath), then 对话会话 (conversations
 that belong to no workspace — the app's own scratch directories). Usage figures
