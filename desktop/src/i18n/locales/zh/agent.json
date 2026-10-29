@@ -339,11 +339,11 @@
     "loadFailed": "教学配置加载失败：{{message}}"
   },
   "fusion": {
-    "enabled": "Fusion 工具已启用 · 按需只读会商",
+    "enabled": "Fusion 工具已启用 · 按需只读讨论",
     "enableDescription": "为本次主流程加入多模型思考工具；讨论不执行动作",
     "remove": "移除",
     "discussion": "讨论记录",
-    "discussing": "正在会商",
+    "discussing": "正在讨论",
     "issues": "分歧与结论",
     "diagnostics": "诊断",
     "original": "原始发言与工具证据",
@@ -355,21 +355,21 @@
     "missingParent": "缺少父任务信息",
     "phases": {
       "preparing": "准备资料",
-      "analyzing": "独立分析",
+      "analyzing": "独立思考",
       "issue_mapping": "整理议题",
-      "reviewing": "交叉评议",
-      "synthesizing": "综合结论"
+      "reviewing": "交叉讨论",
+      "synthesizing": "总结"
     },
     "states": {
-      "preparing": "准备中",
-      "queued": "排队中",
-      "running": "会商中",
-      "delivering": "返回结果",
-      "completed": "会商完成，主流程继续处理",
-      "failed": "会商失败",
-      "cancelled": "已停止",
-      "interrupted": "已中断",
-      "starting": "启动中"
+      "preparing": "准备讨论",
+      "queued": "等待讨论",
+      "running": "正在讨论",
+      "delivering": "返回结论",
+      "completed": "讨论完成",
+      "failed": "讨论失败",
+      "cancelled": "讨论已停止",
+      "interrupted": "讨论已中断",
+      "starting": "准备讨论"
     },
     "retry": "重试 {{count}}",
     "completeness": {
@@ -383,7 +383,22 @@
       "unresolved": "待确认事项",
       "next_steps": "建议后续动作"
     },
-    "title": "Fusion · 讨论记录",
-    "runningTitle": "Fusion · 正在会商"
+    "title": "Fusion · 讨论",
+    "runningTitle": "Fusion · 正在讨论",
+    "modelStates": {
+      "waiting": "等待思考",
+      "thinking": "思考中",
+      "completed": "思考完成",
+      "failed": "思考失败",
+      "timed_out": "思考超时",
+      "output_limited": "达到输出上限",
+      "cancelled": "已停止",
+      "interrupted": "已中断",
+      "partial": "部分完成"
+    },
+    "stageCount": "{{current}} / {{total}}",
+    "progress": "讨论阶段进度",
+    "partialNotice": "部分模型未完成讨论",
+    "statusUnavailable": "暂时无法读取讨论状态"
   }
 }

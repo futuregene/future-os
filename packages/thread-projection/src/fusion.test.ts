@@ -1,0 +1,56 @@
+import { describe, expect, it } from "vitest";
+import { fusionProgress, type FusionDiscussion, type FusionStep } from "./fusion";
+function step(phase: string, model: string, participant: string, status: string, at: number, attempt = 0, error: string | null = null): FusionStep {
+  return { id: `${phase}-${participant}-${attempt}`, phase, model, participant, status, attempt, error, input: "", output: "", session_id: "", agent_run_id: "", started_at: at, usage: null };
+}
+const deepseek = "future/deepseek-flash";
+const glm = "future/glm-5.3-flash";
+const qwen = "future/qwen3.7-plus";
+function discussion(steps: FusionStep[], phase = "synthesizing", status = "completed", completeness = "full"): FusionDiscussion {
+  return { run: { id: "f", phase, status, completeness, input: { question: "A or B?", goal: "choose", background: "facts", constraints: [] } }, steps };
+}
+describe("Fusion progress", () => {
+  it("shows stages and exactly one row per model", () => {
+    const value = fusionProgress(discussion([
+      step("analyzing", deepseek, "P1", "completed", 1), step("reviewing", deepseek, "P1", "completed", 2), step("synthesizing", deepseek, "moderator", "running", 3),
+    ], "synthesizing", "running"));
+    expect(value.completedStages).toBe(3);
+    expect(value.models).toHaveLength(3);
+    expect(value.models[0].status).toBe("thinking");
+  });
+  it("retains partial participants and distinguishes output limit from timeout", () => {
+    const value = fusionProgress(discussion([
+      step("analyzing", glm, "P2", "failed", 1, 0, "[OUTPUT_LIMIT] finish_length"),
+      step("analyzing", glm, "P2", "failed", 2, 1, "Fusion model timed out"),
+      step("reviewing", glm, "P2", "failed", 3, 0, "[OUTPUT_LIMIT] finish_length"),
+      step("synthesizing", deepseek, "moderator", "completed", 4), step("reviewing", qwen, "P3", "completed", 3),
+    ], "synthesizing", "completed", "partial"));
+    expect(value.completedStages).toBe(4);
+    expect(value.partial).toBe(true);
+    expect(value.models.find(model => model.model === glm)?.status).toBe("output_limited");
+    const timeout = fusionProgress(discussion([step("analyzing", glm, "P2", "failed", 2, 1, "Fusion model timed out")], "analyzing", "failed"));
+    expect(timeout.models.find(model => model.model === glm)?.status).toBe("timed_out");
+  });
+  it("a successful retry replaces its failed attempt without masking another failed phase", () => {
+    const recovered = [step("analyzing", glm, "P2", "failed", 1), step("analyzing", glm, "P2", "completed", 2, 1)];
+    expect(fusionProgress(discussion(recovered)).models.find(model => model.model === glm)?.status).toBe("completed");
+    expect(fusionProgress(discussion([...recovered, step("reviewing", glm, "P2", "failed", 3), step("synthesizing", deepseek, "moderator", "completed", 4)], "synthesizing", "completed", "partial")).models.find(model => model.model === glm)?.status).toBe("failed");
+  });
+  it("does not reuse completed analysis as the status of a pending review", () => {
+    const value = fusionProgress(discussion([step("analyzing", glm, "P2", "completed", 1)], "reviewing", "running"));
+    expect(value.models.find(model => model.model === glm)?.status).toBe("waiting");
+  });
+  it("keeps prior-stage failure visible after a later stage succeeds", () => {
+    const value = fusionProgress(discussion([
+      step("analyzing", glm, "P2", "failed", 1),
+      step("reviewing", glm, "P2", "completed", 2),
+      step("synthesizing", deepseek, "moderator", "completed", 3),
+    ], "synthesizing", "completed", "partial"));
+    expect(value.models.find(model => model.model === glm)?.status).toBe("partial");
+  });
+  it("fences thinking rows when cancelled or interrupted", () => {
+    const steps = [step("reviewing", qwen, "P3", "running", 1)];
+    expect(fusionProgress(discussion(steps, "reviewing", "cancelled")).models.find(model => model.model === qwen)?.status).toBe("cancelled");
+    expect(fusionProgress(discussion(steps, "reviewing", "running"), "failed").models.find(model => model.model === qwen)?.status).toBe("interrupted");
+  });
+});

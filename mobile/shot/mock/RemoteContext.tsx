@@ -1,3 +1,4 @@
+import { fusionProgressFixture } from "../../../scripts/screenshots/fixtures/fusion-progress";
 import fusionFixture from "../../../scripts/screenshots/fixtures/fusion.json";
 /**
  * Screenshot harness stand-in for `src/remote/RemoteContext`.
@@ -172,7 +173,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     const search = new URLSearchParams(window.location.search);
     const renderFixture = leanRenderTimeline(renderMode);
     if (renderFixture) return renderFixture;
-    const historyEntries = search.get("fusion")==="1" ? fusionFixture.entries : search.get("compactHistory") === "1"
+    const historyEntries = search.has("fusion") ? fusionFixture.entries : search.get("compactHistory") === "1"
       ? compactResumeEntries
       : search.get("multiTurn") === "1"
         ? olderLoaded
@@ -401,7 +402,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     // the full-feed fixture with the shipping target derivation.
     resolveToolCallTarget: async (toolCallId: string, _run?:string, fusion?:{stepId?:string;offset?:number}) => {
       if (!fusion) return leanTargetForToolCall(toolCallId);
-      if (!fusion.stepId) return JSON.stringify(fusionFixture.discussion);
+      if (!fusion.stepId) return JSON.stringify(fusionProgressFixture(new URLSearchParams(window.location.search).get("fusion")));
       const step=fusionFixture.discussion.steps.find(s=>s.id===fusion.stepId);
       const transcript=JSON.stringify([{role:"user",content:[{type:"text",text:step?.input}]},{role:"assistant",content:[{type:"text",text:step?.output}]}]);
       return JSON.stringify({...step,transcript,next_offset:transcript.length,total_bytes:transcript.length});

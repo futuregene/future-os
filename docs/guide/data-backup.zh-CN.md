@@ -34,7 +34,7 @@ SHA-256 校验每一个复制出的字节，并能把这一整套放回原来的
 | --- | --- |
 | `agent/agent.db` | Agent 存储：会话、运行、事件、技能清单（SQLite 快照）。 |
 | `app/app.db` | Desktop 存储：workspace、线程、运行、审批（SQLite 快照）。 |
-| `fusion/fusion.db`、`fusion/snapshots` | 会商元数据（SQLite 快照）和固定文件证据；完整子会话正文位于 `agent/agent.db`。 |
+| `fusion/fusion.db`、`fusion/snapshots` | 讨论元数据（SQLite 快照）和固定文件证据；完整子会话正文位于 `agent/agent.db`。 |
 | `app/images` | 每线程的图片树（`thumb/`、`origin/`）。 |
 | `app/review` | 每 workspace 的影子 git 评审仓库。 |
 | `workspaces/chat` | 每线程的聊天工作目录。 |

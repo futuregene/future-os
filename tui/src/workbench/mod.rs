@@ -28,6 +28,7 @@ pub mod demo;
 pub mod diff_review;
 pub mod editor;
 pub mod files;
+mod fusion;
 pub mod git;
 pub mod git_panel;
 pub mod i18n;

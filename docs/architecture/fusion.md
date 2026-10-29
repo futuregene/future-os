@@ -12,7 +12,7 @@ Delivery requires desktop, mobile and terminal support, with hosts on Windows, m
 
 The moderator is fixed to `future/deepseek-flash`. Panelists are `future/deepseek-flash`, `future/glm-5.3-flash` and `future/qwen3.7-plus`, the third selected from the live Future catalog with the user's confirmation. Missing models fail explicitly; no default-model substitution occurs.
 
-Start Desktop or `future host`, then submit `/fusion <task>` from Desktop, Mobile or TUI. The main Agent receives a real run-scoped tool and decides when to consult on a focused question. The inner 3→1→3→1 protocol returns one final result and the original flow continues. Later ordinary runs do not inherit the tool. Expand the reply process and Fusion activity to inspect discussion, issues/conclusion, diagnostics and original evidence. TUI offers `/fusion-log [step-id]`; CLI offers `future fusion show <parent-session-id> [--run <id> --tool <id>] [--step <id>] [--offset <bytes>] --json`. Reads never invoke models.
+Start Desktop or `future host`, then submit `/fusion <task>` from Desktop, Mobile or TUI. The main Agent receives a real run-scoped tool and decides when to consult on a focused question. The inner 3→1→3→1 protocol returns one final result and the original flow continues. Later ordinary runs do not inherit the tool. Expand the reply process and Fusion activity to see a four-stage progress bar and one thinking-status row per model. Full messages and evidence remain in storage and terminal queries. TUI offers `/fusion-log [step-id]`; CLI offers `future fusion show <parent-session-id> [--run <id> --tool <id>] [--step <id>] [--offset <bytes>] --json`. Reads never invoke models.
 
 The Host executor claims a bounded durable queue in `~/.future/fusion/fusion.db`, avoiding an Agent-to-Host crate dependency. The existing Host instance lock gives one executor, with at most two concurrent consultations. The Agent validates the leading token from the original submission and persists `ScheduledSettingsSnapshot.fusion_enabled` with the raw input/request key. Remote outboxes retain that original directive and key. No persistent session-tool setting is changed. Inner sessions carry `created_by=fusion`; each run forcibly receives only the four snapshot tools regardless of ordinary session configuration.
 
@@ -20,7 +20,7 @@ Only explicit, parent-authorized UTF-8 `read_scope` files are captured, once per
 
 The `fusion_runs/inputs/participants/steps/messages/issues/positions/events` tables store structure, inputs, state, references and diagnostics. Complete messages/tool evidence remain in Agent child transcripts. Previews are bounded; original transcripts use UTF-8 byte paging. Queries verify the parent, database source and step ownership. Restart interrupts unfinished consultations without automatic paid replay. Parent cancellation stops child work and fences late results. Deleting a parent stops/deletes linked children and removes its consultation/snapshot records. Offline `future data` backups include the Fusion database and snapshots. Archived reads remain valid after restoring the same Agent database; execution still requires the current restore identity.
 
-Later sections retain the planned product contract. Editable model/thinking settings, dedicated redacted export, richer position-change records and monetary budgets remain future work; this development version uses fixed models plus token/count/time limits. Cross-system builds and unit regressions run in CI. See the [implementation verification record](../testing/fusion-implementation.md).
+Later sections retain the planned product contract. Editable model/thinking settings, dedicated redacted export, richer position-change records and monetary budgets remain future work; this development version uses fixed models plus token/count/time limits. Cross-system builds and unit regressions run in CI. See the [implementation verification record](../testing/fusion-implementation.md). See the [device-run database audit and compact UI checks](../testing/fusion-database-audit.md).
 
 ## Product boundaries
 
@@ -81,7 +81,7 @@ Program logic validates required fields, size, references and authorization. Whe
 
 ### Final result
 
-The outer flow receives only the final result: `fusion_run_id`, status/completeness, `conclusion`, brief `rationale`, applicability `conditions`, `unresolved`, proposed `next_steps`, and discussion/evidence references. Raw messages, round reviews and tool outputs do not automatically enter parent model context. Users read them through separate detail queries; UI progress is not an additional tool result.
+The outer flow receives only the final result: `fusion_run_id`, status/completeness, `conclusion`, brief `rationale`, applicability `conditions`, `unresolved`, proposed `next_steps`, and discussion/evidence references. Raw messages, round reviews and tool outputs do not automatically enter parent model context. Developers read them through terminal queries; UI progress is not an additional tool result.
 
 The result is decision material, not a new user instruction or execution queue. The main Agent may adopt, adapt or reject it under the original authorization, current facts and constraints. Before implementation, read the live workspace and recheck key facts. Correct local issues directly; reconsider consultation only when new evidence changes a key decision. Conclusions are not verification. The final reply separates discussion recommendations from actual execution results.
 
@@ -94,7 +94,7 @@ Follow the orchestration/host split in [Tasks](tasks.md) and the GUI-free servic
 | `orchestration/fusion`, crate `future-fusion` | Types, configuration snapshots, phase protocols, deterministic transitions, storage and discussion projections |
 | `host/src/fusion` | Tool admission, inner orchestration, cancellation, recovery, queries, events and tool-result delivery |
 | Agent | Run-scoped catalogs/tool adapter, isolated inner sessions, durable bodies/results and continuation of the ordinary main loop |
-| Desktop and Mobile | `/fusion`, tool activity, discussion, disagreements, history and diagnostics |
+| Desktop and Mobile | `/fusion`, tool activity, four-stage progress and model status; terminal queries for detailed review |
 | TUI and CLI | Equivalent terminal interactions and machine-readable output |
 | RPC and Remote | Typed commands, paged reads, incremental events and capability negotiation |
 
@@ -136,7 +136,7 @@ Panelists cannot see each other's analysis in round one or receive an initial pr
 
 V1 uses one cross-review round with program-controlled transitions. Three panelists produce eight Agent phase executions, `3 + 1 + 3 + 1`; tool loops may involve further model requests, so this is not a promise of eight API calls total. Issue mapping does not decide prematurely, and the last phase still synthesizes without acting. Agreement is not accuracy. `3131` is an initial internal strategy, not a permanent external tool contract.
 
-Each phase has a versioned protocol. Validate structured issue maps and synthesis, retaining issue decisions, message references and proposed verification internally while returning the compact final tool contract. Structured results may appear after completion and public panel text may stream in details. Do not publish partial JSON or intermediate judgments to the parent model.
+Each phase has a versioned protocol. Validate structured issue maps and synthesis, retaining issue decisions, message references and proposed verification internally while returning the compact final tool contract. Structured results and public panel text remain audit records available through terminal queries. Do not publish partial JSON or intermediate judgments to the parent model.
 
 The program allocates run, participant, message and issue IDs. Models reference only valid IDs visible in their inputs; nonexistent, unauthorized or invalidated references produce explicit validation errors. V1 permits at most one retry for retryable failures within total budget, retaining prior attempts.
 
@@ -253,25 +253,19 @@ Negotiate proposed `fusion_v1`. Old hosts show an upgrade explanation in menus a
 
 | Client | Required experience |
 |---|---|
-| Desktop | `/fusion` completion/parsing, removable pending activation, normal main-flow tool activity, discussion/issues/diagnostics side panel, stop/history/reconnect |
-| Mobile, Android and iOS | Same command/submission metadata, main-flow tool card, full-screen paged discussion, issue/source navigation, stop, outbox resend and foreground/background recovery |
-| TUI and CLI | TUI `/fusion` palette/parsing, main-flow tool progress and discussion/issues/diagnostics; CLI ordinary submission recognizes the same directive and offers JSON queries, stop and history |
+| Desktop | `/fusion` completion/parsing, removable pending activation, normal main-flow tool activity, four-stage progress and model-status rows, stop/history/reconnect |
+| Mobile, Android and iOS | Same command/submission metadata, main-flow tool card, compact stage progress and model-status rows, stop, outbox resend and foreground/background recovery |
+| TUI and CLI | TUI `/fusion` palette/parsing, main-flow tool progress, compact discussion status and step transcript queries; CLI ordinary submission recognizes the same directive and offers JSON queries, stop and history |
 
 All clients read/configure moderator and panelists from one source, showing identical fixed development configuration. Keep English/Chinese strings aligned. Narrow screens/terminals use ordered collapsible content. TUI starts no second executor; non-watch CLI reads invoke no models. `/fusion` cannot be a skill-text expansion on one client and native tool activation on another.
 
 ## Discussion and review interface
 
-Show removable “Fusion tool enabled · Read-only consultation when needed,” without suggesting the outer main flow is read-only. Actual calls appear in ordinary tool activity with the focused question, configured models, real phase counts, completeness and discussion link. Do not invent overall percentages. Default to brief progress and on-demand detail instead of flooding chat with inner output.
+Use one term, “discussion”, and the `user-round-group` icon for Fusion. The expanded activity shows four real stages (independent thinking, issue mapping, cross discussion, summary) above one status row per model. Stage progress is not an elapsed-time prediction.
 
-After delivery show “Consultation complete; main flow continuing.” The outer flow may still implement, verify or fail; keep tool and parent-task states separate. The outer main Agent writes the final user reply, distinguishing recommendations from execution/verification. Do not add a separate final reply from the moderator.
+Rows distinguish waiting, thinking, complete, failed, timeout, output limit, stopped, interrupted and partial completion. A retry replaces its earlier attempt for presentation only. A partial result preserves participant failure states and a short completeness notice. Discussion completion does not mean the outer task completed.
 
-Detail views are:
-
-- **Discussion:** independent analysis, issue mapping, review and synthesis, with expandable messages and associated read/search activity. Follow streaming only where the user is viewing.
-- **Issues and conclusions:** initial positions, revisions, adoption reasons, unresolved items and original references. Proposal/verification status is not voting accuracy.
-- **Diagnostics:** actual inputs, configured/actual models, available provider request IDs, timing, tokens, known costs, retries, denials, cache reuse and Agent bindings.
-
-Replay invokes no models. Consulting again about new evidence or disagreements creates a new tool call and linked run through the main flow. UI expresses this as a sourced user request, not a direct independent task bypass. Interrupted recovery resumes the original run. Reading discussion details does not automatically inject them into parent model context.
+The ordinary activity omits full transcripts, issue matrices, diagnostic JSON, raw inputs, opaque IDs, token counts and long errors. Detailed records remain in the database and Agent sessions, available through terminal queries without new model requests.
 
 ## Windows macOS Linux compatibility
 

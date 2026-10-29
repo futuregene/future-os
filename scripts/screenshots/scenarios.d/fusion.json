@@ -1,9 +1,10 @@
 {
   "desktop": {
-    "fusion-discussion": {
+    "fusion-progress": {
+      "url": "http://localhost:5299/shot/?fusion=1",
       "steps": [
         {
-          "wait": 1800
+          "wait": 1000
         },
         {
           "tap": "查看过程"
@@ -12,24 +13,24 @@
           "wait": 300
         },
         {
-          "tapText": "Fusion · 讨论记录"
+          "tapText": "Fusion · 讨论"
         },
         {
           "wait": 800
         },
         {
-          "eval": "(() => {const text=document.body.innerText; if(text.includes(\"Fusion is unavailable\") || text.includes(\"当前宿主不支持 Fusion\")) throw new Error(\"Fusion detail request failed\"); if(!text.includes(\"Full panel\") && !text.includes(\"完整讨论\")) throw new Error(\"Missing consultation state\"); return \"Fusion details loaded\";})()"
+          "eval": "(() => {const text=document.body.innerText;const bar=document.querySelector('[role=\"progressbar\"][aria-label=\"讨论阶段进度\"], [role=\"progressbar\"][aria-label=\"Discussion stage progress\"]');if(!bar)throw new Error('missing discussion progress');if(bar.getAttribute('aria-valuemax')!=='4')throw new Error('wrong stage count');for(const model of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!text.includes(model))throw new Error('missing model '+model);if(text.includes('Diagnostics')||text.includes('原始发言与工具证据')||document.querySelector('[role=\"tablist\"][aria-label=\"Fusion\"]'))throw new Error('detailed debug controls leaked into compact activity');if(bar.getAttribute(\"aria-valuenow\")!==\"4\")throw new Error(\"wrong completed stages\");if(!text.includes(\"思考完成\")&&!text.includes(\"Thinking complete\"))throw new Error(\"missing completed status\");return 'four-stage progress and three model rows';})()"
         },
         {
-          "shot": "d-fusion-discussion.png"
+          "shot": "d-fusion-progress.png"
         }
-      ],
-      "url": "http://localhost:5299/shot/?fusion=1"
+      ]
     },
-    "fusion-issues": {
+    "fusion-progress-partial": {
+      "url": "http://localhost:5299/shot/?fusion=partial",
       "steps": [
         {
-          "wait": 1800
+          "wait": 1000
         },
         {
           "tap": "查看过程"
@@ -38,29 +39,49 @@
           "wait": 300
         },
         {
-          "tapText": "Fusion · 讨论记录"
+          "tapText": "Fusion · 讨论"
         },
         {
-          "wait": 600
+          "wait": 800
         },
         {
-          "tapText": "分歧与结论"
+          "eval": "(() => {const text=document.body.innerText;const bar=document.querySelector('[role=\"progressbar\"][aria-label=\"讨论阶段进度\"], [role=\"progressbar\"][aria-label=\"Discussion stage progress\"]');if(!bar)throw new Error('missing discussion progress');if(bar.getAttribute('aria-valuemax')!=='4')throw new Error('wrong stage count');for(const model of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!text.includes(model))throw new Error('missing model '+model);if(text.includes('Diagnostics')||text.includes('原始发言与工具证据')||document.querySelector('[role=\"tablist\"][aria-label=\"Fusion\"]'))throw new Error('detailed debug controls leaked into compact activity');if(!text.includes(\"达到输出上限\")&&!text.includes(\"Output limit reached\"))throw new Error(\"partial model failure is hidden\");if(bar.getAttribute(\"aria-valuenow\")!==\"4\")throw new Error(\"wrong completed stages\");return 'four-stage progress and three model rows';})()"
+        },
+        {
+          "shot": "d-fusion-progress-partial.png"
+        }
+      ]
+    },
+    "fusion-progress-running": {
+      "url": "http://localhost:5299/shot/?fusion=running",
+      "steps": [
+        {
+          "wait": 1000
+        },
+        {
+          "tap": "查看过程"
         },
         {
           "wait": 300
         },
         {
-          "eval": "(() => {const text=document.body.innerText; if(text.includes(\"Fusion is unavailable\") || text.includes(\"当前宿主不支持 Fusion\")) throw new Error(\"Fusion detail request failed\"); if(!text.includes(\"Full panel\") && !text.includes(\"完整讨论\")) throw new Error(\"Missing consultation state\"); return \"Fusion details loaded\";})()"
+          "tapText": "Fusion · 讨论"
         },
         {
-          "shot": "d-fusion-issues.png"
+          "wait": 800
+        },
+        {
+          "eval": "(() => {const text=document.body.innerText;const bar=document.querySelector('[role=\"progressbar\"][aria-label=\"讨论阶段进度\"], [role=\"progressbar\"][aria-label=\"Discussion stage progress\"]');if(!bar)throw new Error('missing discussion progress');if(bar.getAttribute('aria-valuemax')!=='4')throw new Error('wrong stage count');for(const model of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!text.includes(model))throw new Error('missing model '+model);if(text.includes('Diagnostics')||text.includes('原始发言与工具证据')||document.querySelector('[role=\"tablist\"][aria-label=\"Fusion\"]'))throw new Error('detailed debug controls leaked into compact activity');if(bar.getAttribute(\"aria-valuenow\")!==\"2\")throw new Error(\"wrong completed stages\");if(!text.includes(\"交叉讨论\")&&!text.includes(\"Cross discussion\"))throw new Error(\"wrong current phase\");if(!text.includes(\"思考中\")&&!text.includes(\"Thinking\"))throw new Error(\"missing thinking status\");return 'four-stage progress and three model rows';})()"
+        },
+        {
+          "shot": "d-fusion-progress-running.png"
         }
-      ],
-      "url": "http://localhost:5299/shot/?fusion=1"
+      ]
     }
   },
   "mobile": {
-    "fusion-discussion": {
+    "fusion-progress": {
+      "url": "http://localhost:8099/?fusion=1&single=1",
       "steps": [
         {
           "wait": 300
@@ -93,19 +114,19 @@
           "tapText": "Fusion · Discussion"
         },
         {
-          "wait": 600
+          "wait": 800
         },
         {
-          "eval": "(() => {const text=document.body.innerText; if(text.includes(\"Fusion is unavailable\") || text.includes(\"当前宿主不支持 Fusion\")) throw new Error(\"Fusion detail request failed\"); if(!text.includes(\"Full panel\") && !text.includes(\"完整讨论\")) throw new Error(\"Missing consultation state\"); return \"Fusion details loaded\";})()"
+          "eval": "(() => {const text=document.body.innerText;const bar=document.querySelector('[role=\"progressbar\"][aria-label=\"讨论阶段进度\"], [role=\"progressbar\"][aria-label=\"Discussion stage progress\"]');if(!bar)throw new Error('missing discussion progress');if(bar.getAttribute('aria-valuemax')!=='4')throw new Error('wrong stage count');for(const model of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!text.includes(model))throw new Error('missing model '+model);if(text.includes('Diagnostics')||text.includes('原始发言与工具证据')||document.querySelector('[role=\"tablist\"][aria-label=\"Fusion\"]'))throw new Error('detailed debug controls leaked into compact activity');if(bar.getAttribute(\"aria-valuenow\")!==\"4\")throw new Error(\"wrong completed stages\");if(!text.includes(\"思考完成\")&&!text.includes(\"Thinking complete\"))throw new Error(\"missing completed status\");return 'four-stage progress and three model rows';})()"
         },
         {
-          "shot": "m-fusion-discussion.png"
+          "shot": "m-fusion-progress.png"
         }
       ],
-      "url": "http://localhost:8099/?fusion=1&single=1",
       "ready": "document.body.innerText.includes(\"Not now\")"
     },
-    "fusion-issues": {
+    "fusion-progress-partial": {
+      "url": "http://localhost:8099/?fusion=partial&single=1",
       "steps": [
         {
           "wait": 300
@@ -138,22 +159,60 @@
           "tapText": "Fusion · Discussion"
         },
         {
-          "wait": 600
+          "wait": 800
         },
         {
-          "tapText": "Issues and conclusions"
+          "eval": "(() => {const text=document.body.innerText;const bar=document.querySelector('[role=\"progressbar\"][aria-label=\"讨论阶段进度\"], [role=\"progressbar\"][aria-label=\"Discussion stage progress\"]');if(!bar)throw new Error('missing discussion progress');if(bar.getAttribute('aria-valuemax')!=='4')throw new Error('wrong stage count');for(const model of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!text.includes(model))throw new Error('missing model '+model);if(text.includes('Diagnostics')||text.includes('原始发言与工具证据')||document.querySelector('[role=\"tablist\"][aria-label=\"Fusion\"]'))throw new Error('detailed debug controls leaked into compact activity');if(!text.includes(\"达到输出上限\")&&!text.includes(\"Output limit reached\"))throw new Error(\"partial model failure is hidden\");if(bar.getAttribute(\"aria-valuenow\")!==\"4\")throw new Error(\"wrong completed stages\");return 'four-stage progress and three model rows';})()"
+        },
+        {
+          "shot": "m-fusion-progress-partial.png"
+        }
+      ],
+      "ready": "document.body.innerText.includes(\"Not now\")"
+    },
+    "fusion-progress-running": {
+      "url": "http://localhost:8099/?fusion=running&single=1",
+      "steps": [
+        {
+          "wait": 300
+        },
+        {
+          "tap": "Not now"
+        },
+        {
+          "wait": 700
+        },
+        {
+          "tap": "Workspace"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "tapText": "整理两篇文献的结论对比表"
+        },
+        {
+          "wait": 1000
+        },
+        {
+          "tap": "Show process"
         },
         {
           "wait": 300
         },
         {
-          "eval": "(() => {const text=document.body.innerText; if(text.includes(\"Fusion is unavailable\") || text.includes(\"当前宿主不支持 Fusion\")) throw new Error(\"Fusion detail request failed\"); if(!text.includes(\"Full panel\") && !text.includes(\"完整讨论\")) throw new Error(\"Missing consultation state\"); return \"Fusion details loaded\";})()"
+          "tapText": "Fusion · Discussion"
         },
         {
-          "shot": "m-fusion-issues.png"
+          "wait": 800
+        },
+        {
+          "eval": "(() => {const text=document.body.innerText;const bar=document.querySelector('[role=\"progressbar\"][aria-label=\"讨论阶段进度\"], [role=\"progressbar\"][aria-label=\"Discussion stage progress\"]');if(!bar)throw new Error('missing discussion progress');if(bar.getAttribute('aria-valuemax')!=='4')throw new Error('wrong stage count');for(const model of ['DeepSeek Flash','GLM 5.3 Flash','Qwen 3.7 Plus'])if(!text.includes(model))throw new Error('missing model '+model);if(text.includes('Diagnostics')||text.includes('原始发言与工具证据')||document.querySelector('[role=\"tablist\"][aria-label=\"Fusion\"]'))throw new Error('detailed debug controls leaked into compact activity');if(bar.getAttribute(\"aria-valuenow\")!==\"2\")throw new Error(\"wrong completed stages\");if(!text.includes(\"交叉讨论\")&&!text.includes(\"Cross discussion\"))throw new Error(\"wrong current phase\");if(!text.includes(\"思考中\")&&!text.includes(\"Thinking\"))throw new Error(\"missing thinking status\");return 'four-stage progress and three model rows';})()"
+        },
+        {
+          "shot": "m-fusion-progress-running.png"
         }
       ],
-      "url": "http://localhost:8099/?fusion=1&single=1",
       "ready": "document.body.innerText.includes(\"Not now\")"
     }
   }

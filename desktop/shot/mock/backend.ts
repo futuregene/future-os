@@ -9,6 +9,7 @@
  * `[mock] UNHANDLED COMMAND <name>` — add a handler for it and re-capture.
  */
 import type { MockEntry } from "./data";
+import { fusionProgressFixture } from "../../../scripts/screenshots/fixtures/fusion-progress";
 import fusionFixture from "../../../scripts/screenshots/fixtures/fusion.json";
 import {
   appSettings,
@@ -152,7 +153,7 @@ export function patchSettings(patch: Record<string, unknown>) {
 }
 
 export function entriesForThread(threadId: string): MockEntry[] {
-  if (new URLSearchParams(window.location.search).get("fusion") === "1")
+  if (new URLSearchParams(window.location.search).has("fusion"))
     return fusionFixture.entries as unknown as MockEntry[];
   // `?compactHistory=1` swaps in the history of a run that compacted mid-turn,
   // so a capture can assert the reply after the divider survives the durable
@@ -333,7 +334,7 @@ const handlers: Record<string, (args: any) => unknown> = {
   },
   get_fusion: (args) => {
     if (!args?.stepId)
-      return fusionFixture.discussion;
+      return fusionProgressFixture(new URLSearchParams(window.location.search).get("fusion"));
     const step = fusionFixture.discussion.steps.find(s => s.id === args.stepId);
     const transcript = JSON.stringify([{ role: "user", content: [{ type: "text", text: step?.input }] }, { role: "assistant", content: [{ type: "text", text: step?.output }] }]);
     return { ...step, transcript, next_offset: transcript.length, total_bytes: transcript.length };
