@@ -33,6 +33,7 @@
     "notFound": "File not found: {{name}}"
   },
   "filePreview": {
+    "back": "Back",
     "loading": "Loading preview…",
     "close": "Close preview",
     "truncated": "Large file — showing only the beginning.",
