@@ -2579,6 +2579,7 @@ impl ChatArea {
 
         // The reading level folded this reply's work (and this answer's own
         // reasoning) away: one summary row stands in for it, above the answer.
+        let summary_drawn = fold.is_some();
         if let Some(fold) = fold {
             self.push_reply_summary(msg_idx, fold.summary, fold.burst, origin);
         }
@@ -2621,6 +2622,20 @@ impl ChatArea {
             && fold.is_none()
             && !msg.content.trim().is_empty()
         {
+            self.rendered_lines.push(RenderedLine {
+                text: String::new(),
+                dim: true,
+            });
+        }
+
+        // …and the same row above a folded reply's answer. The counts are chrome
+        // that heads the answer, so wedged against the prose they read as its
+        // first line (`▸ 工具调用 62 次 · 思考 39 次` and `是缓存命中率…` on
+        // consecutive rows). This never stacks with the spacer above: that one
+        // needs `fold.is_none()`, and a folded reply shows its reasoning text
+        // only when the reasoning is the whole output, which leaves no content
+        // to space out here.
+        if summary_drawn && !msg.content.trim().is_empty() {
             self.rendered_lines.push(RenderedLine {
                 text: String::new(),
                 dim: true,
@@ -4444,6 +4459,74 @@ mod tests {
             "{lines:?}"
         );
         assert_matches_fresh_render(&mut chat);
+    }
+
+    /// The counts head the answer instead of running into it: one blank row
+    /// stands between a folded reply's summary and the prose under it. Wedged
+    /// together, `▸ 工具调用 62 次 · 思考 39 次` read as the answer's first line
+    /// (reported 2026-10-29 against a reply whose table followed right below).
+    #[test]
+    fn a_folded_reply_keeps_a_blank_row_above_its_answer() {
+        let mut chat = new_chat();
+        chat.render(W);
+        set_messages(
+            &mut chat,
+            vec![
+                ChatMessage::new("u1".into(), ChatRole::User, "go"),
+                read_of("/a.rs"),
+                read_of("/b.rs"),
+                ChatMessage::new("a1".into(), ChatRole::Assistant, "the answer"),
+            ],
+        );
+        let rows: Vec<String> = render_trimmed(&mut chat)
+            .iter()
+            .map(|line| strip(line).trim().to_string())
+            .collect();
+        let summary = rows
+            .iter()
+            .position(|row| row.contains("2 tool calls"))
+            .unwrap_or_else(|| panic!("no summary row: {rows:?}"));
+        let answer = rows
+            .iter()
+            .position(|row| row == "the answer")
+            .unwrap_or_else(|| panic!("no answer row: {rows:?}"));
+        assert_eq!(
+            answer,
+            summary + 2,
+            "exactly one blank row between the counts and the answer: {rows:?}"
+        );
+        assert!(rows[summary + 1].is_empty(), "{rows:?}");
+    }
+
+    /// The blank row is an answer's spacer, not a summary's: a fold that rides
+    /// on a call (`▸ 1 tool call` over the call it stands above) keeps the call
+    /// on the very next row — the band already separates them, and a blank
+    /// there would just cost a row.
+    #[test]
+    fn a_fold_that_rides_on_a_call_keeps_it_on_the_next_row() {
+        let mut chat = new_chat();
+        chat.render(W);
+        set_messages(
+            &mut chat,
+            vec![
+                ChatMessage::new("u1".into(), ChatRole::User, "go"),
+                read_of("/a.rs"),
+                read_of("/b.rs"),
+            ],
+        );
+        let rows: Vec<String> = render_trimmed(&mut chat)
+            .iter()
+            .map(|line| strip(line).trim().to_string())
+            .collect();
+        let summary = rows
+            .iter()
+            .position(|row| row.contains("tool call"))
+            .unwrap_or_else(|| panic!("no summary row: {rows:?}"));
+        assert!(
+            rows.get(summary + 1)
+                .is_some_and(|row| row.contains("/b.rs")),
+            "the call the fold rides on follows the counts directly: {rows:?}"
+        );
     }
 
     #[test]
