@@ -1354,6 +1354,12 @@ fn sidebar_rows(
 
 // ─── activity / status / hint ──────────────────────────────────────────────
 
+/// Cells the activity row keeps for what the session is doing — the spinner,
+/// the kind, and a short detail after it — before its usage tail may claim
+/// width. Without a floor the six-figure token counts would be the only text on
+/// a narrow row, and "what is happening" is the row's first job.
+const ACTIVITY_LEFT_CELLS: usize = 22;
+
 fn activity_row(
     workbench: &mut Workbench,
     data: &WorkbenchData,
@@ -1394,9 +1400,9 @@ fn activity_row(
     }
     let right = widgets::rate(
         palette,
-        data.usage.tps,
-        data.usage.cache_pct,
+        &data.usage,
         workbench.lang,
+        columns.saturating_sub(ACTIVITY_LEFT_CELLS),
     );
     let right_width = width(&right);
     let left = fit(&left, columns.saturating_sub(right_width + 1));
@@ -4047,6 +4053,34 @@ mod tests {
             "{row:?}"
         );
         assert!(!row.contains("已"), "{row:?}");
+    }
+
+    #[test]
+    fn the_activity_row_pays_for_its_usage_tail_out_of_its_own_width() {
+        let mut workbench = Workbench::new();
+        workbench.set_language(crate::workbench::i18n::LanguagePreference::Zh);
+        let data = crate::workbench::demo::chat();
+        for columns in [120usize, 80, 60, 40, 24] {
+            let row = plain(&activity_row(&mut workbench, &data, &FUTURE_DARK, columns)[0]);
+            assert_eq!(width(&row), columns, "{columns}: {row:?}");
+            // The hit rate is the tail's floor at every width: it is the one
+            // usage number no panel repeats.
+            assert!(row.trim_end().ends_with("命中 96%"), "{columns}: {row:?}");
+        }
+        // Wide enough for all three counts, in the order they are read.
+        let wide = plain(&activity_row(&mut workbench, &data, &FUTURE_DARK, 120)[0]);
+        assert!(
+            wide.contains("输入 812.4k · 输出 24.8k · 缓存 780.0k · 命中 96%"),
+            "{wide:?}"
+        );
+        // Narrow: the counts step aside rather than squeezing out what the
+        // session is doing.
+        let narrow = plain(&activity_row(&mut workbench, &data, &FUTURE_DARK, 40)[0]);
+        assert!(!narrow.contains("输入"), "{narrow:?}");
+        assert!(
+            narrow.contains("idle") || narrow.contains('·'),
+            "{narrow:?}"
+        );
     }
 
     #[test]

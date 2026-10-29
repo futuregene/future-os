@@ -69,7 +69,12 @@ fn base() -> WorkbenchData {
             ctx_used: 6_900,
             ctx_total: 1_000_000,
             cost: 0.0123,
+            // 780.0k / 812.4k = 96%: the demo's three counts have to agree with
+            // the hit rate beside them, or the row teaches the wrong arithmetic.
             cache_pct: 96,
+            input_tokens: 812_400,
+            output_tokens: 24_800,
+            cache_read_tokens: 780_000,
             tps: 0.0,
         },
         sessions: vec![

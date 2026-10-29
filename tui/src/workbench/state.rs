@@ -38,6 +38,15 @@ pub struct UsageData {
     pub cost: f64,
     /// Cache hit rate, 0..=100.
     pub cache_pct: u8,
+    /// Prompt tokens the session has been billed for, cumulative across its
+    /// requests. This is the provider's `prompt_tokens`, so the cached reads
+    /// below are *part of* it — that is what makes the hit rate checkable by
+    /// eye (`cache_read_tokens / input_tokens`).
+    pub input_tokens: u64,
+    /// Completion tokens the session has been billed for, cumulative.
+    pub output_tokens: u64,
+    /// The cached share of `input_tokens`, cumulative.
+    pub cache_read_tokens: u64,
     /// Output tokens per second of the run in flight (0 when idle).
     pub tps: f64,
 }

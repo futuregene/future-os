@@ -280,6 +280,9 @@ pub enum Key {
     UsageContext,
     UsageCost,
     UsageCache,
+    RateInput,
+    RateOutput,
+    RateCacheTokens,
     UsageOutput,
     PanelEmptyTodo,
     PanelGoalLabel,
@@ -633,6 +636,9 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         UsageContext => ("上下文", "Context"),
         UsageCost => ("成本", "Cost"),
         UsageCache => ("缓存命中", "Cache hit"),
+        RateInput => ("输入 {}", "in {}"),
+        RateOutput => ("输出 {}", "out {}"),
+        RateCacheTokens => ("缓存 {}", "cache {}"),
         UsageOutput => ("输出", "Output"),
         PanelEmptyTodo => ("没有待办", "no todos"),
         PanelGoalLabel => ("目标", "goal"),
@@ -1139,7 +1145,7 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         JobPaused => ("暂停", "paused"),
         JobScheduled => ("已排期", "scheduled"),
         JobManual => ("手动", "manual"),
-        CacheLabel => ("缓存 {}%", "cache {}%"),
+        CacheLabel => ("命中 {}%", "hit {}%"),
     }
 }
 
@@ -1342,7 +1348,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 322] = {
+    const ALL_KEYS: [Key; 325] = {
         use Key::*;
         [
             TabTodo,
@@ -1667,6 +1673,9 @@ mod tests {
             JobScheduled,
             JobManual,
             CacheLabel,
+            RateInput,
+            RateOutput,
+            RateCacheTokens,
         ]
     };
 }
