@@ -2,6 +2,7 @@ import {
   collapsedPromptHeight,
   isLongPrompt,
   PROMPT_COLLAPSE_LINES,
+  PROMPT_PREVIEW_LINES,
   promptPreview,
 } from "../messages/promptCollapse";
 
@@ -37,11 +38,21 @@ describe("the head the bubble draws", () => {
     expect(truncated).toBe(true);
     expect(head.length).toBeLessThan(text.length);
     expect(text.startsWith(head)).toBe(true);
-    // The budget is what bounds the row, not the line count: 16 *source* lines
-    // of this prompt would be 16 lines, but one 4 000-character paragraph is one
-    // source line and would sail past it.
-    expect(head.length).toBeLessThanOrEqual(800);
-    expect(head.split("\n").length).toBeLessThanOrEqual(PROMPT_COLLAPSE_LINES);
+    // The budget is what bounds the row, not the line count: one 4 000-character
+    // paragraph is one source line and would sail past it.
+    expect(head.length).toBeLessThanOrEqual(200);
+    expect(head.split("\n").length).toBeLessThanOrEqual(PROMPT_PREVIEW_LINES);
+  });
+
+  test("a preview of CJK prose is a few rendered lines, not the 27 a 720-character head wraps to", () => {
+    // The shape the reporting phone failed on (2026-10-29): a 720-character
+    // preview wraps to ~27 lines of CJK at a 350 dp column — ~630 dp, which the
+    // device drew as an accent fill with no text. The head is now budgeted in
+    // rendered lines, so what the bubble draws is what the bubble promises.
+    const prompt = Array.from({ length: 40 }, (_, index) => `第 ${index} 段：这一步把结论与证据分开记录，避免把推测写成已经核实的事实。`).join("\n");
+    const { head } = promptPreview(prompt);
+    // ~26 CJK glyphs per 350 dp line at the default size.
+    expect(Math.ceil(head.length / 26)).toBeLessThanOrEqual(PROMPT_PREVIEW_LINES);
   });
 
   test("a single giant line is cut by characters", () => {
@@ -51,7 +62,7 @@ describe("the head the bubble draws", () => {
     expect(text.split("\n")).toHaveLength(1);
     const { head, truncated } = promptPreview(text);
     expect(truncated).toBe(true);
-    expect(head.length).toBeLessThanOrEqual(800);
+    expect(head.length).toBeLessThanOrEqual(200);
     expect(text.startsWith(head)).toBe(true);
   });
 
@@ -77,16 +88,16 @@ describe("the head the bubble draws", () => {
 });
 
 describe("how tall the preview bubble is", () => {
-  test("the budget is the shared line count, plus the bubble's own padding", () => {
-    // 16 lines + 2 × 12dp padding: the cap has to include the padding or the
+  test("the budget is the preview's own line count, plus the bubble's padding", () => {
+    // 8 lines + 2 × 12dp padding: the cap has to include the padding or the
     // capped box would show one line less than it promises.
-    expect(collapsedPromptHeight(22, 915)).toBe(22 * PROMPT_COLLAPSE_LINES + 24);
+    expect(collapsedPromptHeight(22, 915)).toBe(22 * PROMPT_PREVIEW_LINES + 24);
   });
 
   test("a short window with large type caps at half of it", () => {
-    // 16 × 30 = 480dp would be most of a short phone's 640dp window; a row that
-    // fills the viewport is the shape this module exists to prevent.
-    expect(collapsedPromptHeight(30, 640)).toBe(320);
+    // 8 × 30 = 240dp + padding would be most of a short phone's 480dp window; a
+    // row that fills the viewport is the shape this module exists to prevent.
+    expect(collapsedPromptHeight(30, 480)).toBe(240);
   });
 
   test("the cap grows with the reader's text size until the window bounds it", () => {

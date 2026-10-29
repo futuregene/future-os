@@ -6,7 +6,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 import { PausedTimeline } from "../PausedTimeline";
 import { TimelineCard } from "../TimelineCard";
 import { useStyles } from "../../features/chat/messages/messageStyles";
-import { collapsedPromptHeight, PROMPT_COLLAPSE_LINES } from "../../features/chat/messages/promptCollapse";
+import { collapsedPromptHeight, PROMPT_COLLAPSE_LINES, PROMPT_PREVIEW_LINES } from "../../features/chat/messages/promptCollapse";
 import { lightTheme } from "../../theme/theme";
 import type { HistoryAttachment, TimelineItem, TimelineSegment } from "../../remote/types";
 import i18n from "../../i18n";
@@ -201,14 +201,14 @@ describe("a prompt taller than the phone is read in a reader, never drawn whole"
       Dimensions.get("window").height,
     );
     expect(bubbleStyle()).toMatchObject({ maxHeight: expectedCap, overflow: "hidden" });
-    expect(expectedCap).toBeGreaterThan(lightTheme.chat.lineHeight * (PROMPT_COLLAPSE_LINES - 1));
+    expect(expectedCap).toBeGreaterThan(lightTheme.chat.lineHeight * (PROMPT_PREVIEW_LINES - 1));
     expect(expectedCap).toBeLessThanOrEqual(Dimensions.get("window").height / 2);
     // The bubble renders a head of the source, not the whole of it: what made
     // the row blank was its height, so the row must not carry the tail at all.
     const drawn = markdownNodes()[0]!.props.text as string;
     expect(drawn.length).toBeLessThan(giantPrompt.length);
     expect(giantPrompt.startsWith(drawn)).toBe(true);
-    expect(drawn.length).toBeLessThanOrEqual(800);
+    expect(drawn.length).toBeLessThanOrEqual(200);
   });
 
   test("the control sits after the bubble and opens the whole prompt in a reader", () => {
