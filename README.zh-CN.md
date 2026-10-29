@@ -75,6 +75,12 @@ curl -fsSL https://dl.future-os.cn/install.sh | bash
 iex (irm https://dl.future-os.cn/install.ps1)
 ```
 
+**Android** —— 手机端在下载页，配对到你已经运行的桌面即可使用：
+
+<https://future-os.cn/download>
+
+**iOS** 下载页上暂时还没有——需要自己从源码编译，App 就在本仓库的 `mobile/` 里。
+
 各平台（桌面应用、工具链、GUI 打包）的分步安装步骤见
 **[构建与安装](docs/guide/build-and-install.zh-CN.md)** 文档。
 

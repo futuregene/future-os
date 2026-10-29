@@ -75,6 +75,14 @@ curl -fsSL https://dl.future-os.cn/install.sh | bash
 iex (irm https://dl.future-os.cn/install.ps1)
 ```
 
+**Android** — the phone app is on the download page, and it pairs with a desktop
+you already run:
+
+<https://future-os.cn/download>
+
+**iOS** has no build on that page yet — build it from source, the app is in this
+repository (`mobile/`).
+
 Step-by-step installation for every platform (desktop app, toolchains, GUI
 packaging) is in the **[Build & Install](docs/guide/build-and-install.md)** guide.
 
