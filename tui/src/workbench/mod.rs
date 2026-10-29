@@ -4274,6 +4274,16 @@ impl Workbench {
         if text.is_empty() {
             return Vec::new();
         }
+        // A compaction holds the session: the agent answers a prompt with
+        // `session_busy` until its checkpoint lands, so the draft stays exactly
+        // where the reader can see it and the notice says why. Anything that is
+        // not a prompt (`/compact`'s own second press, a picker's verb) is
+        // still the reader's to run.
+        if data.compacting && known_command(&text).is_none() {
+            return vec![WbAction::Notice(
+                t(self.lang, Key::ComposerCompacting).to_string(),
+            )];
+        }
         // A typed command is a command, never a prompt: `/model` in the draft
         // used to be sent to the agent as text, which is why no picker ever
         // opened from the input box. Only the surface's own verbs are claimed —
@@ -9447,6 +9457,34 @@ mod tests {
         data.input.text = text.into();
         data.input.cursor = text.len();
         workbench.handle(WbEvent::Key("enter".into()), data)
+    }
+
+    /// While a compaction holds the session, `enter` on a prompt leaves the
+    /// draft and says why: the agent refuses a prompt with `session_busy` until
+    /// its checkpoint lands, so sending one would be a card that never runs.
+    /// A slash verb is still the reader's — `/compact` itself, a picker.
+    #[test]
+    fn enter_cannot_send_a_prompt_while_a_compaction_holds_the_session() {
+        let mut data = demo::chat();
+        data.compacting = true;
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        let actions = submit_draft(&mut workbench, &mut data, "hello");
+        assert_eq!(
+            actions,
+            vec![WbAction::Notice(
+                t(workbench.lang, Key::ComposerCompacting).to_string()
+            )],
+            "the draft stays, and nothing is submitted"
+        );
+        assert_eq!(data.input.text, "hello");
+
+        // The same box, with no compaction: the prompt goes out.
+        let mut data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        assert_eq!(
+            submit_draft(&mut workbench, &mut data, "hello"),
+            vec![WbAction::Submit("hello".into())]
+        );
     }
 
     #[test]
