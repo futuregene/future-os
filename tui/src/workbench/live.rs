@@ -493,7 +493,56 @@ impl Live {
             }
         }
         self.state = state;
+        self.reconcile_queue();
         self.refresh_local();
+    }
+
+    /// Put the transcript back in step with the agent's queue.
+    ///
+    /// A submission bound to a run is *not* in the transcript while the agent
+    /// still lists it (`RunState::Queued`, drawn above the composer instead).
+    /// This is where that state ends, and each ending has its own answer:
+    ///
+    /// * the run is the session's active run → its turn has begun, so the card
+    ///   goes back into the conversation at the point where it started;
+    /// * a terminal acknowledgement says it never ran (`cancelled`,
+    ///   `superseded`, `session_deleted`, `merged`) → drop the card: nothing was
+    ///   sent, and a recalled prompt is back in the draft;
+    /// * anything else — the run left the queue and is no longer active, which
+    ///   is a turn that started *and* finished between two polls → show the
+    ///   card rather than keep a sent prompt hidden forever.
+    ///
+    /// A run the queue still lists stays hidden: the order it will run in is
+    /// the agent's, and the band reads that order from `get_state` itself.
+    fn reconcile_queue(&mut self) {
+        let queued: HashSet<String> = self
+            .state
+            .queued_runs
+            .iter()
+            .map(|row| row.run_id.clone())
+            .collect();
+        let active = self.state.active_run.as_ref().map(|row| row.run_id.clone());
+        for run_id in self.chat.queued_run_ids() {
+            if queued.contains(&run_id) {
+                continue;
+            }
+            if active.as_deref() == Some(run_id.as_str()) {
+                self.chat.update_run_state(&run_id, RunState::Running);
+                continue;
+            }
+            let reason = self
+                .state
+                .recent_terminal_acks
+                .iter()
+                .find(|ack| ack.run_id == run_id)
+                .map(|ack| ack.reason.as_str());
+            match reason {
+                Some("cancelled" | "superseded" | "session_deleted" | "merged") => {
+                    self.chat.drop_run(&run_id)
+                }
+                _ => self.chat.update_run_state(&run_id, RunState::Terminal),
+            }
+        }
     }
 
     /// Read the panels' local facts for the workspace the session is in.
@@ -962,6 +1011,13 @@ impl Live {
                 self.run_output_tokens = 0;
                 self.run_tps = 0.0;
                 self.mark(ActivityKind::Thinking);
+                // A queued submission whose run just started stops being a queue
+                // row: its card belongs in the conversation from here on. The
+                // state refresh asks the agent for the same answer; this one
+                // lands without waiting for the round trip.
+                if let Some(run_id) = event.run_id.as_deref().filter(|id| !id.is_empty()) {
+                    self.chat.update_run_state(run_id, RunState::Running);
+                }
                 self.chat.begin_reply_run();
                 self.chat.add_message(ChatMessage::new(
                     crate::session_rows::random_id(),
@@ -1728,8 +1784,14 @@ impl Live {
         }
     }
 
-    /// Send the draft. A submission while a run is in flight queues behind it
-    /// (the agent's coalescing policy), which is what the inline TUI does too.
+    /// Send the draft. A submission while a run is in flight joins the agent's
+    /// queue and starts when that run ends — `enqueue_if_busy`, not the
+    /// coalescing policy: folding a burst of submissions into one run would
+    /// leave rows in the queue band (`screen::queue_band`) that never run as
+    /// their own turn, and a queue the reader can cancel or recall one row at a
+    /// time has to keep every row's identity. The band, and the transcript's
+    /// silence about the submission until its run starts, are what make
+    /// "queued" visible instead of looking already sent.
     async fn submit(&mut self, text: &str) {
         self.draft.editor.record_submission();
         // The draft is read first because it is what carries the folded pastes
@@ -1787,6 +1849,10 @@ impl Live {
         );
         self.revision = self.revision.wrapping_add(1);
         let mut sent = ChatMessage::new(crate::session_rows::random_id(), ChatRole::User, &typed);
+        // The id the acknowledgement binds the run to: the frame draws this
+        // card only once the agent has actually started the turn (see
+        // [`Self::reconcile_queue`]).
+        let message_id = sent.id.clone();
         // The pictures travel with the bubble the reader just sent. The agent
         // records them on the entry and the history replays them from its
         // metadata, but that is a round trip away: the thumbnail is owed now.
@@ -1802,11 +1868,7 @@ impl Live {
         self.mark(ActivityKind::Thinking);
         match self
             .client
-            .prompt(
-                &message,
-                crate::rpc::types::BUSY_ENQUEUE_COALESCING,
-                attachments,
-            )
+            .prompt(&message, crate::rpc::types::BUSY_ENQUEUE, attachments)
             .await
         {
             Ok(ack) => {
@@ -1814,9 +1876,20 @@ impl Live {
                     if self.completion_candidates.len() == 32 {
                         self.completion_candidates.pop_front();
                     }
-                    self.completion_candidates.push_back(ack.run_id);
+                    self.completion_candidates.push_back(ack.run_id.clone());
                 }
                 if ack.accepted_state == "queued" {
+                    // Bind the bubble to the run *and* to the queue: the card
+                    // leaves the transcript until the agent starts the run (it
+                    // is listed above the composer meanwhile), which is what
+                    // keeps a submission that has not been sent from reading
+                    // like one that has.
+                    self.chat.bind_user_run(
+                        &message_id,
+                        &ack.run_id,
+                        RunState::Queued,
+                        ack.queue_position.map(|position| position as u32),
+                    );
                     self.refresh_state().await;
                 }
             }
@@ -3398,7 +3471,11 @@ fn str_field(data: &Value, key: &str) -> String {
 
 /// Does this event type mean the agent's cumulative usage changed?
 fn wants_state_refresh(event_type: &str) -> bool {
-    matches!(event_type, "usage" | "agent_end")
+    // `agent_start` is here for the queue: the run that just started may be one
+    // this client submitted while the previous turn was streaming, and the
+    // agent's next state is what moves that submission from the composer's band
+    // into the transcript (`reconcile_queue`).
+    matches!(event_type, "usage" | "agent_start" | "agent_end")
 }
 
 /// Fold one `usage` event into `state`: the two token totals add up, the context
@@ -4619,6 +4696,167 @@ mod tests {
             painted.contains("hello there"),
             "the transcript keeps what was said:\n{painted}"
         );
+    }
+
+    /// A submission behind a running turn joins the agent's queue, and the
+    /// transcript does not pretend it was sent: the card is held back until the
+    /// agent starts its run (`reconcile_queue`), and the composer's band is what
+    /// shows it meanwhile.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_submit_behind_a_running_turn_waits_in_the_queue() {
+        let _guard = crate::test_env::lock();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_env::EnvVarGuard::set("FUTURE_HOME", home.path());
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            (
+                "get_state",
+                r#"{"sessionId":"s1","isStreaming":true,"activeRun":{"runId":"r-1","epoch":1,"state":"running","lastEventIdx":0}}"#,
+            ),
+            ("get_session_entries", r#"{"entries":[]}"#),
+            (
+                "prompt",
+                // The prompt ack is the one payload the wire keeps snake_case
+                // (`payloads_ext::RunAck`).
+                r#"{"run_id":"r-2","run_epoch":0,"accepted_state":"queued","queue_position":1}"#,
+            ),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock.clone()).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        assert_eq!(live.state.session_id, "s1");
+        // The state the agent answers with once it has accepted the submission:
+        // the run is queued behind r-1, in the agent's own words.
+        mock.data_by_type.lock().unwrap().insert(
+            "get_state".into(),
+            r#"{"sessionId":"s1","isStreaming":true,"activeRun":{"runId":"r-1","epoch":1,"state":"running","lastEventIdx":0},"queuedRuns":[{"runId":"r-2","runSequence":2,"clientRequestId":"c-2","state":"queued","queuePosition":1,"acceptedAt":"now","displayText":"second"}],"queuedCount":1}"#.into(),
+        );
+        live.set_draft("second".into(), 6);
+        live.apply(WbAction::Submit("second".into())).await;
+
+        let painted = live.chat.render_all(80).join("\n");
+        assert!(
+            !painted.contains("second"),
+            "a queued prompt must not read as sent: {:?}\n{painted}",
+            live.notice
+        );
+        assert_eq!(live.state.queued_runs.len(), 1, "the agent lists the run");
+        assert_eq!(
+            live.chat.queued_run_ids().len(),
+            1,
+            "the card is bound to it"
+        );
+        assert_eq!(
+            live.data(&frame()).queue.len(),
+            1,
+            "the band above the composer lists it"
+        );
+    }
+
+    /// The queue is the agent's, and the transcript follows it: a submission
+    /// leaves the band when its run starts, and leaves the transcript entirely
+    /// when the agent says it never ran (cancelled, merged, superseded).
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn reconcile_queue_moves_a_submission_out_of_the_band_and_keeps_it_honest() {
+        let _guard = crate::test_env::lock();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_env::EnvVarGuard::set("FUTURE_HOME", home.path());
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            ("get_session_entries", r#"{"entries":[]}"#),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+
+        // Still queued: the card stays out of the transcript.
+        live.chat.add_message(ChatMessage::new(
+            "u-1".into(),
+            ChatRole::User,
+            "started later",
+        ));
+        live.chat
+            .bind_user_run("u-1", "r-2", RunState::Queued, Some(1));
+        live.state.queued_runs = vec![crate::rpc::types::QueuedRunState {
+            run_id: "r-2".into(),
+            run_sequence: 2,
+            client_request_id: "c-2".into(),
+            state: "queued".into(),
+            queue_position: 1,
+            accepted_at: String::new(),
+            display_text: "started later".into(),
+        }];
+        live.reconcile_queue();
+        assert!(!live
+            .chat
+            .render_all(80)
+            .iter()
+            .any(|row| row.contains("started later")));
+
+        // Started: the agent made it the active run, so the card belongs in the
+        // conversation again.
+        live.state.queued_runs.clear();
+        live.state.active_run = Some(crate::rpc::types::ActiveRunState {
+            run_id: "r-2".into(),
+            epoch: 1,
+            run_sequence: Some(2),
+            state: "running".into(),
+            last_event_idx: 0,
+        });
+        live.reconcile_queue();
+        assert!(live
+            .chat
+            .render_all(80)
+            .iter()
+            .any(|row| row.contains("started later")));
+
+        // Cancelled before it ran: nothing was sent, so nothing stays behind.
+        live.chat
+            .add_message(ChatMessage::new("u-2".into(), ChatRole::User, "never sent"));
+        live.chat
+            .bind_user_run("u-2", "r-3", RunState::Queued, Some(1));
+        live.state.active_run = None;
+        live.state.recent_terminal_acks = vec![crate::rpc::types::RecentTerminalAck {
+            run_id: "r-3".into(),
+            run_sequence: 3,
+            client_request_id: "c-3".into(),
+            state: "cancelled".into(),
+            reason: "cancelled".into(),
+        }];
+        live.reconcile_queue();
+        assert!(
+            live.chat.queued_run_ids().is_empty(),
+            "the card left the queue"
+        );
+        assert!(
+            !live
+                .chat
+                .render_all(80)
+                .iter()
+                .any(|row| row.contains("never sent")),
+            "a cancelled submission keeps no card"
+        );
+
+        // Gone with no acknowledgement either way: it ran unseen, so it is
+        // shown rather than hidden behind a queue row that no longer exists.
+        live.chat.add_message(ChatMessage::new(
+            "u-3".into(),
+            ChatRole::User,
+            "ran quickly",
+        ));
+        live.chat
+            .bind_user_run("u-3", "r-4", RunState::Queued, Some(1));
+        live.state.recent_terminal_acks.clear();
+        live.reconcile_queue();
+        assert!(live.chat.queued_run_ids().is_empty());
+        assert!(live
+            .chat
+            .render_all(80)
+            .iter()
+            .any(|row| row.contains("ran quickly")));
     }
 
     /// The interrupt chord means the turn in flight (`ctrl+c`). With nothing
