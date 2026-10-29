@@ -1116,6 +1116,17 @@ impl ChatArea {
         self.messages.last()
     }
 
+    /// The pictures the transcript carries, in the order it carries them.
+    ///
+    /// The preview box steps through these when the reader opened one of them:
+    /// a session's pictures are its own, and a step from one should not land in
+    /// another conversation's draft.
+    pub fn pictures(&self) -> impl Iterator<Item = &ChatPicture> {
+        self.messages
+            .iter()
+            .flat_map(|message| message.pictures.iter())
+    }
+
     /// The content of the most recent assistant message (thinking excluded) —
     /// what `/copy` puts on the clipboard. `None` when the transcript has no
     /// assistant text yet.

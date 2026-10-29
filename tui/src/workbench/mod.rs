@@ -151,6 +151,25 @@ pub enum Overlay {
     Keybindings,
 }
 
+/// Where the pictures beside the one in the box come from.
+///
+/// A preview keeps the list it was opened with and `[` / `]` walk that list, so
+/// the answer is a property of the visit: a picture the conversation names (a
+/// message's caption, the draft's attachment) steps through the session's own
+/// pictures, while a file the reader opened from the 文件 panel or the
+/// repository browser steps through the folder. Both matter because they
+/// disagree: clipboard captures from every conversation land in one temp
+/// directory, so a folder step from a picture in this session walks into
+/// pictures that belong to somebody else's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PreviewScope {
+    /// The folder the file sits in — the panel's own order.
+    #[default]
+    Folder,
+    /// The conversation's own pictures, in transcript order.
+    Conversation,
+}
+
 /// What the delete confirm box names: the id the agent is asked to remove, and
 /// the two strings the reader recognises it by.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -309,9 +328,17 @@ pub enum WbAction {
     /// The 文件 panel opened or closed a directory: the app re-reads it and the
     /// next frame paints the new shape.
     ToggleFolder(String),
-    /// The 文件 panel asked for a file: the app reads it (an image decoded, a
-    /// document's text) and fills `preview`; the box then paints it.
+    /// The 文件 panel (or the repository browser) asked for a file: the app
+    /// reads it (an image decoded, a document's text) and fills `preview`; the
+    /// box then paints it, stepping through the folder it sits in.
     PreviewFile(String),
+    /// The *conversation* asked for a file — a link or a picture's caption in the
+    /// transcript, or the draft's own attachment. The app reads it the same way,
+    /// but an image among them steps through this conversation's pictures rather
+    /// than the folder: two conversations' pasted screenshots share one clipboard
+    /// directory, so a folder step walks out of the session the reader is
+    /// reading.
+    PreviewChatFile(String),
     /// Re-read the tree, keeping the open directories.
     RefreshFiles,
     /// Read the clipboard: an image becomes a draft attachment, text is pasted.
@@ -760,11 +787,15 @@ pub struct Workbench {
     pub preview_zoom: u32,
     pub preview_pan: (i32, i32),
     pub preview_scroll: usize,
-    /// The pictures beside the one in the box, in the panel's order, and where
-    /// the open one sits. Filled by the driver when a preview opens, so the box
-    /// can step through a folder without a round trip through the panel.
+    /// The pictures beside the one in the box, in the order the list they came
+    /// from holds them, and where the open one sits. Filled by the driver when
+    /// a preview opens, so the box can step through a folder — or through the
+    /// conversation's own pictures — without a round trip through the panel.
     pub preview_siblings: Vec<String>,
     pub preview_index: usize,
+    /// Where [`Self::preview_siblings`] came from, and so which list a step asks
+    /// for next (see [`PreviewScope`]).
+    pub preview_scope: PreviewScope,
     /// What `esc` returns to when the preview box closes: the surface the file
     /// was opened from (the files tree, the repository browser), or nothing for
     /// a picture that came from the draft. See [`Workbench::open_preview`].
@@ -880,6 +911,7 @@ impl Workbench {
             preview_scroll: 0,
             preview_siblings: Vec::new(),
             preview_index: 0,
+            preview_scope: PreviewScope::default(),
             preview_return: None,
             preview_drag: None,
             rail: panels::Folded::default(),
@@ -1846,7 +1878,10 @@ impl Workbench {
                 match span.target {
                     links::LinkTarget::Url(url) => vec![WbAction::OpenUrl(url)],
                     links::LinkTarget::Session(id) => vec![WbAction::SwitchSession(id)],
-                    links::LinkTarget::File(path) => vec![WbAction::PreviewFile(path)],
+                    // A file the conversation named — a link, or a picture's
+                    // caption: the box steps through this session's pictures,
+                    // not the folder the path happens to sit in.
+                    links::LinkTarget::File(path) => vec![WbAction::PreviewChatFile(path)],
                 }
             }
         }
@@ -2146,10 +2181,11 @@ impl Workbench {
 
     /// Step to the previous (`-1`) or next picture beside the open one.
     ///
-    /// The list came from the directory the picture was opened from, so this is
-    /// the panel's own order — "next" is the row below the one that was opened.
-    /// At either end nothing moves: the box keeps showing the picture it has
-    /// rather than wrapping into a list the reader did not ask for.
+    /// The list came with the preview — the folder the file was opened from, or
+    /// the conversation's own pictures (see [`PreviewScope`]) — and the step
+    /// asks for the neighbouring entry in that same list. At either end nothing
+    /// moves: the box keeps showing the picture it has rather than wrapping into
+    /// a list the reader did not ask for.
     fn preview_step(&mut self, delta: i32) -> Vec<WbAction> {
         if self.preview_siblings.len() < 2 {
             return vec![WbAction::Redraw];
@@ -2161,12 +2197,17 @@ impl Workbench {
         self.preview_index = next as usize;
         self.reset_preview();
         let path = self.preview_siblings[next as usize].clone();
-        vec![WbAction::PreviewFile(path)]
+        // The step stays in the list it came from: a folder's next picture is a
+        // file, a conversation's next picture is that conversation's.
+        vec![match self.preview_scope {
+            PreviewScope::Folder => WbAction::PreviewFile(path),
+            PreviewScope::Conversation => WbAction::PreviewChatFile(path),
+        }]
     }
 
-    /// The pictures beside the one in the box, from the folder it was opened
-    /// from. The driver calls this when a preview opens; an empty list is a box
-    /// with nothing to step through.
+    /// The pictures beside the one in the box, in the order their list holds
+    /// them, and where the open one sits. The driver calls this when a preview
+    /// opens; an empty list is a box with nothing to step through.
     pub fn set_preview_siblings(&mut self, (siblings, index): (Vec<String>, usize)) {
         self.preview_siblings = siblings;
         self.preview_index = index.min(self.preview_siblings.len().saturating_sub(1));
@@ -2213,10 +2254,15 @@ impl Workbench {
     /// box opened is what it returns to; a picture that came from the draft
     /// itself (`/preview`, `ctrl+v` → preview) returns to the chat, because
     /// there was nothing under it.
-    pub fn open_preview(&mut self) {
-        self.preview_return = self
-            .overlay
-            .filter(|overlay| *overlay != Overlay::FilePreview);
+    pub fn open_preview(&mut self, scope: PreviewScope) {
+        self.preview_scope = scope;
+        // A step inside the box is still the same visit: it keeps the level the
+        // first file was opened over, so `esc` walks back to the panel that one
+        // came from instead of skipping it.
+        self.preview_return = match self.overlay {
+            Some(Overlay::FilePreview) => self.preview_return.take(),
+            overlay => overlay,
+        };
         self.overlay = Some(Overlay::FilePreview);
     }
 
@@ -5166,7 +5212,7 @@ mod tests {
             vec![WbAction::SwitchSession("s-2".into())]
         );
         workbench.handle(WbEvent::Key("tab".into()), &data);
-        assert_eq!(enter(&mut workbench), vec![WbAction::PreviewFile(file)]);
+        assert_eq!(enter(&mut workbench), vec![WbAction::PreviewChatFile(file)]);
         // `esc` puts the cursor back in the draft, so `enter` is a submission
         // again rather than the link the reader has finished with.
         workbench.handle(WbEvent::Key("escape".into()), &data);
@@ -6966,6 +7012,56 @@ mod tests {
         );
     }
 
+    /// `[` / `]` stay inside the list the preview was opened with: a picture the
+    /// conversation named steps to the next of *this session's* pictures, while a
+    /// file opened from a panel steps to the next file in its folder.
+    #[test]
+    fn a_conversation_picture_steps_inside_the_conversation() {
+        let mut data = demo::chat();
+        data.preview = Some(demo::preview_image());
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.overlay = Some(Overlay::FilePreview);
+        workbench.open_preview(PreviewScope::Conversation);
+        workbench.set_preview_siblings((
+            vec![
+                "/tmp/future-clipboard/a.png".into(),
+                "/tmp/future-clipboard/b.png".into(),
+            ],
+            0,
+        ));
+        assert_eq!(
+            workbench.handle(WbEvent::Key("]".into()), &data),
+            vec![WbAction::PreviewChatFile(
+                "/tmp/future-clipboard/b.png".into()
+            )]
+        );
+        assert_eq!(
+            workbench.handle(WbEvent::Key("[".into()), &data),
+            vec![WbAction::PreviewChatFile(
+                "/tmp/future-clipboard/a.png".into()
+            )]
+        );
+
+        // Opened from a panel, the same key asks for the folder's next file.
+        workbench.open_preview(PreviewScope::Folder);
+        workbench.set_preview_siblings((vec!["/w/a.png".into(), "/w/b.png".into()], 0));
+        assert_eq!(
+            workbench.handle(WbEvent::Key("]".into()), &data),
+            vec![WbAction::PreviewFile("/w/b.png".into())]
+        );
+
+        // A step is still the same visit: the driver opens the box again for the
+        // picture that landed, and `esc` still walks back to the panel the first
+        // one came from.
+        workbench.overlay = Some(Overlay::Files);
+        workbench.open_preview(PreviewScope::Folder);
+        workbench.set_preview_siblings((vec!["/w/a.png".into(), "/w/b.png".into()], 0));
+        workbench.handle(WbEvent::Key("]".into()), &data);
+        workbench.open_preview(PreviewScope::Folder);
+        workbench.handle(WbEvent::Key("escape".into()), &data);
+        assert_eq!(workbench.overlay, Some(Overlay::Files), "one level up");
+    }
+
     /// Each control answers a click on the cell its label is *painted* on.
     ///
     /// The row is laid out in display columns — a Hanzi is two cells — so a
@@ -7617,7 +7713,7 @@ mod tests {
 
         // Opened from the files tree.
         workbench.overlay = Some(Overlay::Files);
-        workbench.open_preview();
+        workbench.open_preview(PreviewScope::Folder);
         assert_eq!(workbench.overlay, Some(Overlay::FilePreview));
         workbench.handle(WbEvent::Key("escape".into()), &data);
         assert_eq!(workbench.overlay, Some(Overlay::Files), "one level up");
@@ -7626,13 +7722,13 @@ mod tests {
 
         // Opened from the repository browser: the same walk.
         workbench.overlay = Some(Overlay::Git);
-        workbench.open_preview();
+        workbench.open_preview(PreviewScope::Folder);
         workbench.handle(WbEvent::Key("escape".into()), &data);
         assert_eq!(workbench.overlay, Some(Overlay::Git));
 
         // Opened from the chat itself (`/preview`): nothing under the box.
         workbench.overlay = None;
-        workbench.open_preview();
+        workbench.open_preview(PreviewScope::Conversation);
         workbench.handle(WbEvent::Key("escape".into()), &data);
         assert_eq!(workbench.overlay, None);
         // …and a second escape is not a level: the return is consumed once.
@@ -8673,10 +8769,11 @@ mod tests {
             links::LinkTarget::File(shot.to_string_lossy().into())
         );
         // A click on it opens the preview box: the picture is one click away,
-        // not on screen already.
+        // not on screen already — and it steps through this conversation's
+        // pictures (`PreviewChatFile`), not the folder they were written to.
         assert_eq!(
             click_region(&mut workbench, &data, 120, 38, &format!("chat.link.{span}")),
-            vec![WbAction::PreviewFile(shot.to_string_lossy().into())]
+            vec![WbAction::PreviewChatFile(shot.to_string_lossy().into())]
         );
         assert!(
             !workbench

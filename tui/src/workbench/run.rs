@@ -996,7 +996,8 @@ async fn quit(
                 "/preview" => {
                     if live.load_attachment() {
                         workbench.reset_preview();
-                        workbench.open_preview();
+                        workbench.set_preview_siblings((Vec::new(), 0));
+                        workbench.open_preview(super::PreviewScope::Conversation);
                     }
                     continue;
                 }
@@ -1119,23 +1120,21 @@ async fn quit(
             continue;
         }
         // The preview box is the driver's to open: the adapter reads the bytes
-        // and the surface paints them, but only this loop knows both.
+        // and the surface paints them, but only this loop knows both — and which
+        // list the box's `[` / `]` walk.
         if let WbAction::PreviewFile(path) = &action {
-            live.start_preview(path);
-            workbench.reset_preview();
-            // The pictures beside this one arrive with the decoded image, on
-            // the same background thread; the box opens now with a loading
-            // row rather than freezing the frame on a large file.
-            workbench.set_preview_siblings((Vec::new(), 0));
-            // Opened *over* the panel the row came from: `esc` from the box
-            // walks back to that panel (see `Workbench::open_preview`).
-            workbench.open_preview();
+            open_preview_box(live, workbench, path, super::PreviewScope::Folder);
+            continue;
+        }
+        if let WbAction::PreviewChatFile(path) = &action {
+            open_preview_box(live, workbench, path, super::PreviewScope::Conversation);
             continue;
         }
         if matches!(action, WbAction::PreviewAttachment) {
             if live.load_attachment() {
                 workbench.reset_preview();
-                workbench.open_preview();
+                workbench.set_preview_siblings((Vec::new(), 0));
+                workbench.open_preview(super::PreviewScope::Conversation);
             }
             continue;
         }
@@ -1655,6 +1654,27 @@ async fn copy_last(live: &mut Live) {
         }
         Err(error) => live.notice = Some(error),
     }
+}
+
+/// Open the preview box on `path`, stepping through `scope`'s pictures.
+///
+/// The pictures beside this one arrive with the decoded image, on the same
+/// background thread — the box opens now with a loading row rather than freezing
+/// the frame on a large file. Opened *over* whatever the reader was looking at:
+/// `esc` from the box walks back to it (see [`Workbench::open_preview`]).
+fn open_preview_box(
+    live: &mut Live,
+    workbench: &mut Workbench,
+    path: &str,
+    scope: super::PreviewScope,
+) {
+    match scope {
+        super::PreviewScope::Folder => live.start_preview(path),
+        super::PreviewScope::Conversation => live.start_picture(path),
+    }
+    workbench.reset_preview();
+    workbench.set_preview_siblings((Vec::new(), 0));
+    workbench.open_preview(scope);
 }
 
 fn toggle_mouse(
