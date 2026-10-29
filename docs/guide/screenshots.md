@@ -437,6 +437,61 @@ The captured PNGs land in `.screenshots/` (gitignored). Open
 a stand-in PTY server on port 7391 so the embedded terminal panel has something
 to show.
 
+### One session, two surfaces: the `parser-*` scenarios
+
+`.screenshots/tui-zh/` and `.screenshots/tui-en/` are the TUI's pictures of one
+scripted session — an off-by-one in an expression parser
+(`tui/examples/demo_agent.rs`, `journal_zh` / `journal_en`). `parser-zh` and
+`parser-en` show that same session in the app:
+
+```bash
+python3 scripts/screenshots/capture.py serve-desktop               # terminal 1
+python3 scripts/screenshots/capture.py capture-desktop parser-zh   # → .screenshots/desktop-zh.png
+python3 scripts/screenshots/capture.py capture-desktop parser-en   # → .screenshots/desktop-en.png
+```
+
+Both live in `scripts/screenshots/scenarios.d/parser-session.json` — a fragment,
+so the shared table is not edited by a session that only adds a scenario.
+
+`?thread=th_parser` opens that conversation and brings its workspace row with it;
+the default fixture, which every other scenario starts from, is left exactly as
+it was. `?lang=zh|en` pins **both halves** of the frame: the interface (read by
+`shot/prefs.ts` before the app boots) and the fixture's own session list and
+transcript (`desktop/shot/mock/data.ts` reads the same parameter). A rail whose
+heading said `Sessions` over rows that said `整理两篇文献的结论对比表` is neither
+language, so each scenario fails if a word of the other one reaches the frame.
+
+The surface draws a settled reply folded onto its answer, so the frame keeps the
+first reply folded — `查看过程 · 工具调用 2 次 · 思考 1 次`, which is the TUI's own
+`▸` line — and opens the second reply's work the way the TUI frame opens its tree:
+`查看过程`, then the step summary, then the first thought. The calls themselves
+are the desktop's idiom, rows of verbs (`已运行`, `已编辑`) whose command sits in
+the inspector; everything the two frames have to agree on — the bug, the
+reasoning, the diagnosis with its highlighted `rust` block and three-row table,
+the closing line, the two commits — is word for word the TUI's. The `eval` holds
+the scenario to that, and also to the frame being whole: the conversation column
+must not be scrolled and the reply's last line must sit above the composer. That
+is why these two scenarios declare a `height` (1720) — the whole two-turn session
+has to be in one picture, and the desktop draws it much taller than a terminal
+cell does.
+
+Two limits worth stating. Desktop captures are **not** byte-reproducible the way
+the TUI's are: they differ run to run in exactly two places — the relative age
+labels beside each message (`刚刚` / `1分钟前`, read from the wall clock) and the
+rotating indicator on a session the fixture reports as running. The content is
+stable; those pixels are not. (`capture-desktop steps-folded` moves the same two,
+so it is the surface rather than these scenarios.) And the fixture carries the
+session list and transcript in both languages; the settings, tasks and skills
+fixtures are still Chinese, which no English capture opens today.
+
+The transcript itself needed two handlers the mock did not have. A history read
+goes through the bounded transfer lane (`begin_session_history_transfer` and its
+chunked reads), and with only the inline command answered every conversation came
+out as `invalid_history_transfer` with a retry link — the transcript a screenshot
+exists to show never rendered; opening a step row also reads
+`list_approval_assessments`, which answered `null` and unmounted the app. Both are
+answered in `desktop/shot/mock/backend.ts` now.
+
 ## Mobile
 
 ```bash
