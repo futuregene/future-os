@@ -852,15 +852,25 @@ fn conversation(
     };
     // `tab` can walk the cursor to a stop far above or below the window, and a
     // highlight nobody can see is not a cursor: the transcript follows it, the
-    // way a search result brings itself into view.
-    if let Some(row) = workbench.selected_stop_row(data) {
-        let row = row.min(total.saturating_sub(1));
-        let (start, end) = shown_window(offset);
-        if row < start || row >= end {
-            // Two rows of room below it: one is the badge's, one is the row
-            // itself, so the selection is never the line that gets dropped.
-            offset = total.saturating_sub((row + 2).min(total));
-            workbench.set_chat_scroll(offset);
+    // way a search result brings itself into view. Only a cursor that *moved*,
+    // though — the frame cannot tell one that just arrived from one the reader
+    // left behind, and following the second one every frame is what made the
+    // wheel spring back up the transcript instead of down it (see
+    // [`Workbench::take_stop_reveal`]).
+    if workbench.take_stop_reveal() {
+        if let Some(row) = workbench.selected_stop_row(data) {
+            let row = row.min(total.saturating_sub(1));
+            let (start, end) = shown_window(offset);
+            if row < start || row >= end {
+                // Two rows of room below it: one is the badge's, one is the row
+                // itself, so the selection is never the line that gets dropped.
+                // Clamped to the ceiling in the same frame: an offset past it
+                // paints blank rows over the top of the transcript, and the next
+                // frame then has to walk itself back — a second jump for a
+                // reader who only pressed `tab`.
+                offset = total.saturating_sub((row + 2).min(total)).min(ceiling);
+                workbench.set_chat_scroll(offset);
+            }
         }
     }
     workbench.set_chat_scroll(offset);

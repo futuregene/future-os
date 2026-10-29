@@ -706,6 +706,14 @@ pub struct Workbench {
     /// conversation grows, and a stored stop would then point at a row that has
     /// moved. Out-of-range is clamped at the point of use.
     chat_index: Option<usize>,
+    /// Whether the cursor above *moved* since the last frame, and so wants the
+    /// transcript brought to it once.
+    ///
+    /// A frame cannot tell a cursor that just arrived from one the reader left
+    /// behind, and chasing the second undoes the wheel: the page came back to
+    /// the row it had scrolled away from (see [`screen::conversation`]). So the
+    /// move is announced where it happens and spent on the frame that shows it.
+    stop_reveal: bool,
     /// The width the transcript was last wrapped at. Part of the span cache's
     /// key, because a resize rewraps every row while no message changes.
     chat_inner: usize,
@@ -879,6 +887,7 @@ impl Workbench {
             scroll: scroll::ScrollState::default(),
             links: links::Cache::default(),
             chat_index: None,
+            stop_reveal: false,
             chat_inner: 0,
             chat_window: 0,
             queue_index: 0,
@@ -1853,6 +1862,8 @@ impl Workbench {
             Some(index) => (index as isize + delta).rem_euclid(count as isize) as usize,
         };
         self.chat_index = Some(next);
+        // The transcript follows a cursor that moved; see `stop_reveal`.
+        self.stop_reveal = true;
         vec![WbAction::Redraw]
     }
 
@@ -3249,6 +3260,13 @@ impl Workbench {
         }
         match event.kind {
             mouse::MouseKind::WheelUp | mouse::MouseKind::WheelDown => {
+                // A wheel turn is the reader aiming somewhere else, the same as
+                // `↑`/`↓` — and those drop the `tab` cursor (`handle_key` clears
+                // it for every key but its own), because a highlight left on a
+                // row the scroll took off the screen is not a cursor the reader
+                // can act on.
+                self.chat_index = None;
+                self.stop_reveal = false;
                 let delta = if event.kind == mouse::MouseKind::WheelUp {
                     -3
                 } else {
@@ -3696,6 +3714,7 @@ impl Workbench {
             .and_then(|rest| rest.parse::<usize>().ok());
         if link_click.is_none() && row_click.is_none() {
             self.chat_index = None;
+            self.stop_reveal = false;
         }
         // A link in the conversation. A click both puts the cursor on it and
         // opens it — the pointer has already named its target, so a second
@@ -3705,6 +3724,7 @@ impl Workbench {
                 .chat_stops(data)
                 .iter()
                 .position(|stop| matches!(stop, ChatStop::Link(span) if *span == index));
+            self.stop_reveal = self.chat_index.is_some();
             let actions = self.open_stop(data);
             return if actions.is_empty() {
                 vec![WbAction::Redraw]
@@ -3717,6 +3737,7 @@ impl Workbench {
         // reasoning block's text.
         if let Some(row) = row_click {
             self.chat_index = self.row_stop_index(row, data);
+            self.stop_reveal = self.chat_index.is_some();
             let actions = self.open_stop(data);
             return if actions.is_empty() {
                 vec![WbAction::Redraw]
@@ -3989,6 +4010,13 @@ impl Workbench {
     pub(crate) fn set_chat_scroll(&mut self, scroll: usize) {
         self.chat_scroll = scroll;
         self.scroll.offset = scroll;
+    }
+
+    /// Spend the cursor's move, if it made one: the frame that follows brings
+    /// the stop it stands on into view (see [`screen::conversation`]), and the
+    /// frames after it leave the reader's own scrolling alone.
+    pub(crate) fn take_stop_reveal(&mut self) -> bool {
+        std::mem::take(&mut self.stop_reveal)
     }
 
     pub(crate) fn chat_scroll_offset(&self) -> usize {
@@ -8069,6 +8097,129 @@ mod tests {
             "the new burst scrolled the rail under the pointer"
         );
     }
+    /// The wheel is the reader aiming somewhere else, the same as `↑`/`↓`: the
+    /// transcript keeps going the way the hand rolls it.
+    ///
+    /// A stop the cursor once stood on used to be chased back into view on
+    /// *every* frame — the frame cannot tell a cursor that moved from one that
+    /// stayed — so a reader who opened a `▸ 3 tool calls` row near the top and
+    /// then rolled down watched the page jump back up to that row instead of
+    /// towards the tail.
+    #[test]
+    fn the_wheel_does_not_chase_a_row_the_cursor_once_stood_on() {
+        use crate::components::chat_area::{RowAction, RowStop};
+        let mut data = scrollable_chat(80);
+        data.row_stops = vec![RowStop {
+            row: 4,
+            start: 0,
+            end: 9,
+            action: RowAction::Process { msg: 1 },
+            expanded: false,
+        }];
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        // Roll up to the row and click it: the pointer names the row, which
+        // leaves the cursor standing on it (`chat.row.4`).
+        for _ in 0..20 {
+            roll(&mut workbench, &data, mouse::MouseKind::WheelUp, 40, 15);
+        }
+        workbench.render(&data, 120, 38);
+        assert!(
+            workbench.chat_scroll > 20,
+            "the wheel walked up the transcript"
+        );
+        click_region(&mut workbench, &data, 120, 38, "chat.row.4");
+        assert_eq!(workbench.chat_index, Some(0), "the click left a cursor");
+
+        // Now roll the other way. Each turn moves the band towards the tail and
+        // the frame leaves it there: `chat_scroll` is rows up from the tail, so
+        // it only falls. A chase shows up as a rise.
+        let mut last = workbench.chat_scroll;
+        for turn in 0..20 {
+            roll(&mut workbench, &data, mouse::MouseKind::WheelDown, 40, 15);
+            workbench.render(&data, 120, 38);
+            assert!(
+                workbench.chat_scroll <= last,
+                "turn {turn} scrolled back up: {} after {last}",
+                workbench.chat_scroll
+            );
+            last = workbench.chat_scroll;
+        }
+        assert_eq!(workbench.chat_scroll, 0, "the wheel reached the tail");
+    }
+
+    /// Output that arrives at the tail does not drag the page to a row the
+    /// cursor was left standing on either.
+    ///
+    /// Following the tail is the reader's decision (`ScrollState::observe`), and
+    /// a highlight nobody moved is not a reason to revise it: a long enough
+    /// append used to push the cursor row above the window and the frame then
+    /// pulled the whole transcript back up to it.
+    #[test]
+    fn streaming_output_does_not_chase_a_cursor_left_behind() {
+        use crate::components::chat_area::{RowAction, RowStop};
+        let mut data = scrollable_chat(80);
+        data.row_stops = vec![RowStop {
+            row: 70,
+            start: 0,
+            end: 9,
+            action: RowAction::Process { msg: 1 },
+            expanded: false,
+        }];
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        click_region(&mut workbench, &data, 120, 38, "chat.row.70");
+        assert_eq!(workbench.chat_index, Some(0), "the click left a cursor");
+        // The frame the click produced, as the driver paints it.
+        workbench.render(&data, 120, 38);
+        assert_eq!(workbench.chat_scroll, 0, "and the tail stayed the tail");
+
+        // Enough new rows to push the cursor's row off the top of the band.
+        let mut grown: Vec<String> = data.messages.to_vec();
+        grown.extend((80..120).map(|n| format!("line {n}")));
+        data.messages = grown.into();
+        data.revision += 1;
+        workbench.render(&data, 120, 38);
+        assert_eq!(
+            workbench.chat_scroll, 0,
+            "the tail kept following its own output"
+        );
+    }
+
+    /// `tab` still brings a stop it walked to into view: the reveal is the
+    /// cursor's, not the frame's.
+    #[test]
+    fn tab_reveals_the_stop_it_walked_to() {
+        use crate::components::chat_area::{RowAction, RowStop};
+        let mut data = scrollable_chat(80);
+        data.row_stops = vec![RowStop {
+            row: 4,
+            start: 0,
+            end: 9,
+            action: RowAction::Process { msg: 1 },
+            expanded: false,
+        }];
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        assert_eq!(workbench.chat_scroll, 0, "the tail is where a frame starts");
+
+        // The one stop in the conversation is far above the band: the frame the
+        // key produced has to bring it into view, or the highlight lands where
+        // nobody can see it.
+        workbench.handle(WbEvent::Key("tab".into()), &data);
+        let rows = workbench.render(&data, 120, 38);
+        let painted: Vec<String> = rows
+            .iter()
+            .map(|row| crate::utils::strip_ansi_codes(row))
+            .collect();
+        assert!(
+            painted.iter().any(|row| row.contains("line 4")),
+            "the cursor's row is on screen: {painted:?}"
+        );
+        // And the frame after it belongs to the reader again: the offset it
+        // settled on stays put instead of being chased again.
+        let settled = workbench.chat_scroll;
+        workbench.render(&data, 120, 38);
+        assert_eq!(workbench.chat_scroll, settled);
+    }
+
     /// The rail names the keys it answers, whether or not the reader is
     /// "in" it: every one of them is behind `shift`, so the row is how that is
     /// learned without a manual.
