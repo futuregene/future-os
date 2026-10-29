@@ -486,6 +486,21 @@ that: every block of the first turn above the composer, the second question stil
 visible at the fold, and no word of the other language anywhere, the files panel
 included.
 
+The palette is the app's own dark appearance: `?theme=dark` pins it the way
+`?lang=` pins the words (both are read by `shot/prefs.ts` before the app boots),
+so the frames are the shipped default (`futureos`) in dark rather than a variant,
+and the scenario asserts `documentElement` carries `dark` so a capture cannot
+quietly come back light. **Only colour changes.** The geometry is the same as a
+light capture to the pixel — both scenarios still report the first turn ending
+292 px (zh) and 268 px (en) above the composer — and the contrast is measured
+rather than eyeballed: body and heading text at 14:1, the muted table cells and
+the quote at 7.6:1, the file tree at 15:1, all above WCAG AA, with 0.6 % of the
+frame's pixels brighter than 200 (the glyphs themselves). The colours a reader
+might compare across palettes — the `+18` / `-2` counts and the diff lines in the
+*Review* tab — come from the same `text-success` / `text-danger` tokens, so they
+follow the palette instead of being written per theme; this frame opens *Files*,
+so it shows the tree and not a diff.
+
 Two limits worth stating. Desktop captures are **not** byte-reproducible the way
 the TUI's are: they differ run to run in exactly two places — the relative age
 labels beside each message (`刚刚` / `1分钟前`, read from the wall clock) and the
