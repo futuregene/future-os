@@ -56,7 +56,7 @@ impl SqliteStore {
                 continue;
             }
             let (scope, child, target) = (scope.clone(), child.to_owned(), target_id.to_owned());
-            self.db.call(move |db| {
+            self.db.call_as("content_fork", move |db| {
                 let tx=database::begin_write_transaction(db)?;scope.check(&tx)?;
                 let child=crate::session::identity::BoundIdentity::session(&tx,&child)?;
                 let hidden:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM fork_operations f JOIN sessions s ON s.id=f.child_session_id WHERE f.child_session_id=?1 AND f.parent_session_id=?2 AND s.revision=-1)",params![child,scope.session_key()],|row|row.get(0))?;
@@ -100,7 +100,7 @@ impl SqliteStore {
             }
             let (id, request, fingerprint) =
                 (child.to_owned(), request.clone(), fingerprint.clone());
-            let done=self.db.call(move |db| {
+            let done=self.db.call_as("content_fork", move |db| {
                 let tx=database::begin_write_transaction(db)?;
                 let id=crate::session::identity::BoundIdentity::session(&tx,&id)?;
                 let revision:Option<i64>=tx.query_row("SELECT revision FROM sessions WHERE id=?1",[&id],|row|row.get(0)).optional()?;

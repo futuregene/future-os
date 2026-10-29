@@ -125,7 +125,7 @@ impl Manager {
             input.len() <= crate::session::content::WRITE_BYTES,
             "fork request exceeds its metadata budget"
         );
-        store.db.call(move |db| {
+        store.db.call_as("session_fork", move |db| {
             let tx=crate::session::database::begin_write_transaction(db)?;
             check.check(&tx)?;
             let parent=crate::session::identity::BoundIdentity::session(&tx,&parent)?;
@@ -177,7 +177,7 @@ impl Manager {
                     vec![entry],
                 )?;
                 let (id, check) = (child_id.clone(), scope.clone());
-                store.db.call(move |db| {
+                store.db.call_as("session_fork", move |db| {
                     let tx = crate::session::database::begin_write_transaction(db)?;
                     check.check(&tx)?;
                     let id = crate::session::identity::BoundIdentity::session(&tx, &id)?;
@@ -193,7 +193,7 @@ impl Manager {
                 })?;
             }
             let (id, check) = (child_id.clone(), scope.clone());
-            store.db.call(move |db| {
+            store.db.call_as("session_fork", move |db| {
                 let tx=crate::session::database::begin_write_transaction(db)?;check.check(&tx)?;
                 let id=crate::session::identity::BoundIdentity::session(&tx,&id)?;
                 anyhow::ensure!(tx.execute("UPDATE sessions SET revision=0,created_at_ms=?2,updated_at_ms=?2 WHERE id=?1 AND revision=-1",params![id,created])?==1,"fork publication state changed");

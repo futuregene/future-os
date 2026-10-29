@@ -3281,3 +3281,81 @@ mod pipeline_tests {
         assert_eq!(created.name, "brand-new");
     }
 }
+
+/// Presence answers from a lane that does not queue behind the agent's ordered
+/// writer (see `agent::session::database::Database::fence`). That is what keeps
+/// a long writer job from stalling every remote command — and what costs the
+/// ordering a fence used to get for free: a session whose placeholder commit is
+/// still queued reads `missing` for a moment.
+///
+/// So a `missing` answer is a question, not a verdict: ask once more before
+/// refusing. `deleted` and `import_failed` are verdicts and are never re-asked.
+#[cfg(test)]
+mod presence_fence_tests {
+    use super::test_support::{mock_agent, TestHome};
+    use super::*;
+    use serde_json::json;
+
+    fn presence(status: &str) -> serde_json::Value {
+        json!({
+            "databaseId": "database",
+            "restoreGeneration": "generation",
+            "sessions": [{"sessionId": "s1", "status": status}],
+        })
+    }
+
+    #[tokio::test]
+    async fn a_missing_session_is_asked_again_before_it_is_refused() {
+        let _home = TestHome::new("presence-recheck-missing");
+        let mock = mock_agent();
+        mock.push_data("get_session_presence", presence("missing"));
+        mock.push_data("get_session_presence", presence("present"));
+        let mut client = connect_agent().await.expect("mock agent");
+
+        let answer = require_present_with_client(&mut client, "s1")
+            .await
+            .expect("presence");
+
+        assert_eq!(answer.sessions[0].status, "present");
+        assert_eq!(
+            mock.requests_of("get_session_presence").len(),
+            2,
+            "a missing session must be confirmed before it is refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_deleted_session_is_not_asked_twice() {
+        let _home = TestHome::new("presence-recheck-deleted");
+        let mock = mock_agent();
+        mock.push_data("get_session_presence", presence("deleted"));
+        mock.push_data("get_session_presence", presence("present"));
+        let mut client = connect_agent().await.expect("mock agent");
+
+        let answer = require_present_with_client(&mut client, "s1")
+            .await
+            .expect("presence");
+
+        assert_eq!(answer.sessions[0].status, "deleted");
+        assert_eq!(
+            mock.requests_of("get_session_presence").len(),
+            1,
+            "a deletion is a decision, not a race"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_present_session_is_answered_once() {
+        let _home = TestHome::new("presence-recheck-present");
+        let mock = mock_agent();
+        mock.push_data("get_session_presence", presence("present"));
+        let mut client = connect_agent().await.expect("mock agent");
+
+        let answer = require_present_with_client(&mut client, "s1")
+            .await
+            .expect("presence");
+
+        assert_eq!(answer.sessions[0].status, "present");
+        assert_eq!(mock.requests_of("get_session_presence").len(), 1);
+    }
+}

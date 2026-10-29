@@ -384,11 +384,8 @@ async fn read_thread_history(
         // every body/fragment read. A reconnect must start a fresh operation.
         let verified = async {
             let mut client = crate::agent_bridge::connect_agent().await?;
-            let presence = crate::agent_bridge::session_presence_with_client(
-                &mut client,
-                vec![session_id.clone()],
-            )
-            .await?;
+            let presence =
+                crate::agent_bridge::require_present_with_client(&mut client, session_id).await?;
             Ok::<_, crate::Error>((client, presence))
         }
         .await;

@@ -1,0 +1,61 @@
+fix(agent,host): name what holds the writer, and take the fence reads off it
+
+A remote command that times out says only that the *caller* waited. The lane
+that made it wait had no record at all, so "agent slow" could not be closed:
+a job that ran for 38 s, a process that was descheduled, and a lock held by the
+checkpoint all looked identical from the desktop log.
+
+1. Name the job. Every writer job may now declare itself (`call_as`), and a job
+   that holds the ordered writer for >=1 s writes one row:
+
+     storage job slow: job=commit elapsed=38120ms queued=0ms
+
+   `elapsed` and `queued` are deliberately both present: a long `elapsed` names
+   a job that must be split, a long `queued` with a short `elapsed` names a
+   process that was not running (sleep, app-nap, paging) or a lane held by an
+   earlier job. The cut is the same 1 s the command-side diagnostics use
+   (`SLOW_COMMAND_MS`), so the two files can be read against each other. The
+   idle reclaim slice and the checkpoint are timed the same way, which is what
+   separates them from a writer job: the checkpoint has its own thread and
+   never joins the writer's queue.
+
+2. Shrink what holds it, without touching an atomicity contract. The compaction
+   pass read its source row and each event page on the writer; those are pure
+   reads, so they moved to the read lane and the writer now only publishes and
+   retires. The remaining long jobs were already bounded by construction
+   (reclaim slices stop at 10 ms, `content::reclaim` works in LIMIT 16/64
+   steps, compaction pages by COMPACTION_PAGE_EVENT_LIMIT, legacy import commits
+   per session). `delete_many` and `prune_events` are single transactions on
+   purpose — splitting them would change what a failed delete leaves behind —
+   so they stay as they are and the new row will say so.
+
+3. Take the fence off the writer. `session_presence` is the first RPC of every
+   remote content command, and it was read on the ordered writer because that
+   was the only connection when it was written (2026-10-18, #1186): measured on
+   2026-10-29, four commands released together after 18–21 s because one writer
+   job was running, and two had already hit their 30 s deadline. It now runs on
+   its own fence connection — not the writer, not the two-worker read pool, so
+   neither a long write nor a large history page can delay it. The connection is
+   opened on first use, so a process that never fences carries no extra fd.
+
+   The trade is ordering, not freshness: a fence sees every committed write but
+   not one still queued. That is why the desktop now asks once more (150 ms)
+   before treating `missing` as fact — `deleted` and `import_failed` are
+   verdicts and are never re-asked. Identity stays read live; it is two indexed
+   rows, and a cache would only be another thing to invalidate.
+
+4. The rest of the read-only queries that were still queued on the writer:
+   `typed_events` (+ its paged sibling), `import_records`, and the compaction
+   scans above. `queued_receipt`/`has_queued_receipt_run` deliberately stay:
+   they are the admission check that a prompt was not already queued, so they
+   must not read behind an accepted write. `load_metadata` stays for the same
+   reason in the other direction — its read may repair the history index, which
+   is a write.
+
+Tests: the row's cut and field shape; a fence read answering while a writer job
+holds the lane, plus the mirrored assertion that the writer lane still waits for
+the job in front of it; `get_session_presence` answering under the same hold
+through the RPC dispatcher; and the desktop's recheck — `missing` asked twice
+(`deleted` and `present` once). `agent/src/session` (625), `agent rpc` (786),
+`agent_bridge` (391) and `application` (109) are green, clippy `-D warnings` and
+`make check-docs` clean on 1.99.1.

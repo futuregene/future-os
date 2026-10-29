@@ -233,7 +233,7 @@ fn prepare_owned(
                 if field.ends_with("/content") && text == *summary {
                     let (session, entry, reference_field, range) =
                         (session.to_owned(), entry.clone(), field.clone(), *range);
-                    store.db.call(move |db| {
+                    store.db.call_as("content_store", move |db| {
                         let tx = crate::session::database::begin_write_transaction(db)?;
                         super::bind_encoded(
                             &tx,
@@ -276,7 +276,7 @@ fn prepare_owned(
                         field.clone(),
                         text.len() as i64,
                     );
-                    let linked=store.db.call(move|db| {
+                    let linked=store.db.call_as("content_store", move|db| {
                         let tx=crate::session::database::begin_write_transaction(db)?;
                         let range=resolve(&tx,&session,"stream",&owner,"")?;
                         if let Some(range)=range {
@@ -375,7 +375,7 @@ pub(crate) fn stage_named(
     } else {
         super::stream::Encoding::Text
     };
-    let (body, mut offset, complete) = store.db.call(move |db| {
+    let (body, mut offset, complete) = store.db.call_as("content_store", move |db| {
         let tx = crate::session::database::begin_write_transaction(db)?;
         let stored_session = crate::session::identity::session_key(&tx, &scope.0)?;
         let prior = super::resolve_encoded(&tx, &scope.0, kind, &scope.1, &scope.2)?;
@@ -499,7 +499,7 @@ pub(crate) fn stage_named(
             .call(move |db| append_piece(db, &scope, offset, &piece))?;
         offset = next;
     }
-    store.db.call(move |db| {
+    store.db.call_as("content_store", move |db| {
         let tx = crate::session::database::begin_write_transaction(db)?;
         match json_seal {
             Some(verified) => {
