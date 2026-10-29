@@ -422,8 +422,9 @@ const FOLD_MARKER: &str = "▸";
 /// [`FOLD_MARKER`], turned down, and pressing it folds the work away again.
 const OPEN_MARKER: &str = "▾";
 
-/// The gutter an opened fold's rows hang under. Two columns wide: the rail and
-/// the space that keeps the rows' own one-column inset.
+/// The gutter an opened fold's rows hang under. Two columns — a space and the
+/// rail — so the rail lands in column 2, directly under the header's `▸`, and
+/// every row's text starts in the column the header's label does.
 const TREE_RAIL: &str = "│";
 const TREE_GUTTER: usize = 2;
 
@@ -924,6 +925,10 @@ pub struct ChatArea {
     /// away again. Kept beside [`Self::reply_folds`] — the two are halves of one
     /// layout, so a row that moves or a level that flips keeps its state.
     opened_trees: HashMap<usize, OpenedTree>,
+    /// Is the render in flight drawing a row that hangs inside an opened fold?
+    /// Set around one message's own rows, and what makes a detail (a call's
+    /// body, a thought's text) hang one level deeper than its parent row.
+    nested: bool,
     /// One bitfield per message holding the only message state a fold can
     /// depend on (see [`fold_flags`]). A streaming delta changes a message's
     /// text but not these bits, which is what lets the hot path skip the
@@ -976,6 +981,7 @@ impl ChatArea {
             compact_layout: Vec::new(),
             reply_folds: HashMap::new(),
             opened_trees: HashMap::new(),
+            nested: false,
             fold_bits: Vec::new(),
             on_change: None,
             message_line_ranges: Vec::new(),
@@ -2600,10 +2606,16 @@ impl ChatArea {
         let fold = self.reply_folds.get(&msg_idx).copied();
         let tree = self.opened_trees.get(&msg_idx).copied();
         // An opened fold draws its header first — the row that folds it away
-        // again — and hangs every row it stands for under that header.
+        // again — with a row of air under it, and hangs every row it stands for
+        // beneath that: the tree is a block of its own, not the title's next
+        // line.
         if let Some(tree) = tree {
             if let Some(summary) = tree.banner {
                 self.push_fold_header(msg_idx, summary, tree, origin);
+                self.rendered_lines.push(RenderedLine {
+                    text: String::new(),
+                    dim: true,
+                });
             }
         }
         // The rows below the header are laid out one gutter narrower and hung
@@ -2614,6 +2626,9 @@ impl ChatArea {
         if tree.is_some() {
             self.width = width.saturating_sub(TREE_GUTTER).max(1);
         }
+        // Rows drawn *inside* this one (a call's body, a thought's text) hang
+        // one level deeper, with a rail of their own.
+        self.nested = tree.is_some();
         let msg = self.messages[msg_idx].clone();
         match msg.role {
             ChatRole::User => self.render_user_message(&msg),
@@ -2637,10 +2652,26 @@ impl ChatArea {
             ChatRole::Tool => self.render_tool_message(msg_idx, &msg, origin),
             ChatRole::System => self.render_system_message(&msg),
         }
+        self.nested = false;
         self.width = width;
         if tree.is_some() {
             // The header is the tree's own row; everything after it hangs.
             self.hang_under_rail(body, msg_idx, body - origin);
+        }
+    }
+
+    /// Where a row drawn *inside* another one goes, and how wide: one gutter in,
+    /// with a rail of its own, when the row it belongs to is inside an opened
+    /// fold (a call's body, a thought's text).
+    ///
+    /// A detail that sat at its parent's column read as another sibling of it;
+    /// the second level is what makes the fold a tree rather than a flat list of
+    /// rows that happen to be beside a rail.
+    fn detail_place(&self) -> (usize, String) {
+        if self.nested {
+            (self.width.saturating_sub(TREE_GUTTER).max(1), self.rail())
+        } else {
+            (self.width, String::new())
         }
     }
 
@@ -2667,12 +2698,16 @@ impl ChatArea {
         }
     }
 
-    /// The gutter an opened fold's rows hang under, in the chrome's faint ink.
+    /// The gutter an opened fold's rows hang under, in the chrome's faint ink:
+    /// a space and the rail, so the rail sits in column 2 — directly under the
+    /// header's marker — while the row's own one-column inset still starts the
+    /// text in the header label's column.
+    ///
     /// The foreground is given back with `39` rather than a full reset: a reset
     /// would drop the background a call's band is painted on.
     fn rail(&self) -> String {
         format!(
-            "\x1b[38;5;{}m{TREE_RAIL}\x1b[39m ",
+            " \x1b[38;5;{}m{TREE_RAIL}\x1b[39m",
             Chrome::from_theme(&self.theme).muted
         )
     }
@@ -3060,7 +3095,8 @@ impl ChatArea {
     /// the same way.
     fn push_thinking_text(&mut self, msg: &ChatMessage) {
         let thinking = msg.thinking.as_deref().unwrap_or("");
-        let width = self.width.saturating_sub(2).max(1);
+        let (detail_width, detail_rail) = self.detail_place();
+        let width = detail_width.saturating_sub(2).max(1);
         let thinking_lines = if msg.pending {
             Self::render_streaming_markdown(
                 &mut self.stream_caches,
@@ -3083,7 +3119,7 @@ impl ChatArea {
                 // Re-apply thinking style after EVERY ANSI reset.
                 let styled = reapply_style(&format!(" {line}"), &think_prefix);
                 self.rendered_lines.push(RenderedLine {
-                    text: format!("{think_prefix}{styled}{RESET}"),
+                    text: format!("{detail_rail}{think_prefix}{styled}{RESET}"),
                     dim: true,
                 });
             }
@@ -3253,24 +3289,27 @@ impl ChatArea {
             return;
         }
 
-        let (rows, hidden) = body.rows(self.width, &self.theme);
-        self.rendered_lines.extend(
-            rows.into_iter()
-                .map(|text| RenderedLine { text, dim: false }),
-        );
+        let (detail_width, detail_rail) = self.detail_place();
+        let (rows, hidden) = body.rows(detail_width, &self.theme);
+        self.rendered_lines.extend(rows.into_iter().map(|text| {
+            let text = if text.is_empty() {
+                text
+            } else {
+                format!("{detail_rail}{text}")
+            };
+            RenderedLine { text, dim: false }
+        }));
         if hidden > 0 {
-            self.rendered_lines.push(RenderedLine {
-                text: fg(
-                    self.theme.dim as u8,
-                    &truncate_to_width(
-                        &format!(
-                            "  … {hidden} more line{plural} · truncated",
-                            plural = if hidden == 1 { "" } else { "s" },
-                        ),
-                        self.width,
-                        &TruncateOptions::default(),
-                    ),
+            let more = truncate_to_width(
+                &format!(
+                    "  … {hidden} more line{plural} · truncated",
+                    plural = if hidden == 1 { "" } else { "s" },
                 ),
+                detail_width,
+                &TruncateOptions::default(),
+            );
+            self.rendered_lines.push(RenderedLine {
+                text: fg(self.theme.dim as u8, &format!("{detail_rail}{more}")),
                 dim: true,
             });
         }
@@ -4354,11 +4393,30 @@ mod tests {
             .position(|row| row.contains("off-by-one"))
             .unwrap();
         assert!(
-            rows[header + 1..answer - 1]
-                .iter()
-                .all(|row| row.trim_start().starts_with(TREE_RAIL)),
-            "every row between the header and the answer hangs: {rows:?}"
+            rows[header + 1].trim().is_empty(),
+            "a row of air separates the header from its tree: {rows:?}"
         );
+        assert!(
+            rows[header + 2..answer - 1]
+                .iter()
+                .filter(|row| !row.trim().is_empty())
+                .all(|row| row.trim_start().starts_with(TREE_RAIL)),
+            "every row under the header hangs: {rows:?}"
+        );
+        // …in the column the header's own marker occupies: the rows hang *from*
+        // the title, not off to the left of it.
+        let indent = |row: &str| row.chars().take_while(|c| *c == ' ').count();
+        assert_eq!(indent(&rows[header]), 1, "{rows:?}");
+        for row in rows[header + 2..answer - 1]
+            .iter()
+            .filter(|row| !row.trim().is_empty())
+        {
+            assert_eq!(
+                indent(row),
+                1,
+                "a tree row puts its rail in the marker's column: {rows:?}"
+            );
+        }
         assert!(
             rows[answer - 1].trim().is_empty(),
             "a blank row separates the tree from the answer: {rows:?}"
@@ -4551,8 +4609,10 @@ mod tests {
             .position(|row| row.contains("body"))
             .unwrap_or_else(|| panic!("the call's body is on screen: {rows:?}"));
         assert!(
-            rows[body].trim_start().starts_with(TREE_RAIL),
-            "the body is part of the tree: {rows:?}"
+            rows[body]
+                .trim_end()
+                .starts_with(&format!(" {TREE_RAIL} {TREE_RAIL}")),
+            "the body hangs one level in, under a rail of its own: {rows:?}"
         );
         assert_matches_fresh_render(&mut chat);
         // A body is laid out in the tree's column too: no row spills past the
@@ -4566,6 +4626,54 @@ mod tests {
             }
             assert_matches_fresh_render_at(&mut chat, width);
         }
+    }
+
+    /// A reasoning block inside an opened fold nests the same way its text's
+    /// sibling — a call's body — does: one level in, under a rail of its own.
+    #[test]
+    fn a_thought_inside_a_tree_nests_one_level_in() {
+        let mut chat = new_chat();
+        chat.render(W);
+        set_messages(&mut chat, settled_turn_messages());
+        let summary = chat
+            .row_stops()
+            .into_iter()
+            .find(|stop| matches!(stop.action, RowAction::Process { .. }))
+            .expect("the fold draws a stop");
+        chat.toggle_row(summary.row).expect("the fold opens");
+        let marker = chat
+            .row_stops()
+            .into_iter()
+            .find(|stop| matches!(stop.action, RowAction::Thinking { .. }))
+            .expect("the thought is a row of the tree");
+        // The marker itself is a level-1 row (one rail); its text is level 2.
+        let marker_row = render_trimmed(&mut chat)
+            .iter()
+            .map(|line| strip(line))
+            .find(|row| row.contains("thinking"))
+            .expect("the marker is on screen");
+        assert!(
+            marker_row.starts_with(&format!(" {TREE_RAIL}"))
+                && !marker_row.starts_with(&format!(" {TREE_RAIL} {TREE_RAIL}")),
+            "the marker is one rail in: {marker_row:?}"
+        );
+
+        chat.toggle_row(marker.row).expect("the marker opens");
+        let rows: Vec<String> = render_trimmed(&mut chat)
+            .iter()
+            .map(|line| strip(line))
+            .collect();
+        let text = rows
+            .iter()
+            .position(|row| row.contains("weighing the options"))
+            .unwrap_or_else(|| panic!("the reasoning text is on screen: {rows:?}"));
+        assert!(
+            rows[text]
+                .trim_end()
+                .starts_with(&format!(" {TREE_RAIL} {TREE_RAIL}")),
+            "the reasoning text hangs one level in: {rows:?}"
+        );
+        assert_matches_fresh_render(&mut chat);
     }
 
     /// The rail goes in front of a row, inside its band when it has one: a call's
