@@ -1233,10 +1233,13 @@ impl Workbench {
             }
         }
         // Leaving is never an overlay's to swallow. Every other key belongs to
-        // whoever owns the screen, but a modal that eats `ctrl+c` leaves the
-        // user with no way out except a signal — and a signalled TUI is exactly
-        // the exit that cannot restore the terminal properly (alt screen and
-        // keyboard protocol left behind).
+        // whoever owns the screen, but a modal that eats the quit chord leaves
+        // the user with no way out except a signal — and a signalled TUI is
+        // exactly the exit that cannot restore the terminal properly (alt screen
+        // and keyboard protocol left behind). The chord is read from the
+        // bindings rather than written here: `ctrl+c` is the run's interrupt
+        // (`Action::Stop`), and it is deliberately *not* the exit, so a modal
+        // that runs it gets nothing.
         if self.keys.action(key) == Some(preferences::Action::Quit) {
             return vec![WbAction::Quit];
         }
@@ -8370,24 +8373,40 @@ mod tests {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         assert_eq!(
-            workbench.handle(WbEvent::Key("ctrl+c".into()), &data),
+            workbench.handle(WbEvent::Key("ctrl+x".into()), &data),
             vec![WbAction::Quit]
         );
         // Inside the palette every other key belongs to the palette, and escape
-        // is its way out — but quitting still has to work: a modal that ate
-        // `ctrl+c` would leave a signal as the only exit, and a signalled TUI is
-        // the exit that cannot hand the terminal back cleanly.
+        // is its way out — but quitting still has to work: a modal that ate the
+        // quit chord would leave a signal as the only exit, and a signalled TUI
+        // is the exit that cannot hand the terminal back cleanly.
         workbench.handle(WbEvent::Key("/".into()), &data);
         assert!(workbench.overlay.is_some());
         assert_eq!(
-            workbench.handle(WbEvent::Key("ctrl+c".into()), &data),
+            workbench.handle(WbEvent::Key("ctrl+x".into()), &data),
             vec![WbAction::Quit]
         );
         workbench.overlay = Some(Overlay::Help);
         assert_eq!(
-            workbench.handle(WbEvent::Key("ctrl+c".into()), &data),
+            workbench.handle(WbEvent::Key("ctrl+x".into()), &data),
             vec![WbAction::Quit]
         );
+    }
+
+    /// The interrupt chord belongs to the run, not to the exit: a modal that
+    /// swallowed nothing still must not turn `ctrl+c` into a quit, or the one
+    /// key the reader presses to stop a turn would drop them out of the surface.
+    #[test]
+    fn the_interrupt_chord_is_not_the_exit() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        assert!(!workbench
+            .handle(WbEvent::Key("ctrl+c".into()), &data)
+            .contains(&WbAction::Quit));
+        workbench.overlay = Some(Overlay::Help);
+        assert!(!workbench
+            .handle(WbEvent::Key("ctrl+c".into()), &data)
+            .contains(&WbAction::Quit));
     }
 
     // ─── language ──────────────────────────────────────────────────────────

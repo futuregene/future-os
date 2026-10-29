@@ -49,6 +49,12 @@ pub struct Options {
 enum TerminalEvent {
     Data(String),
     Resize,
+    /// An exit signal (SIGINT / SIGTERM / SIGHUP / SIGQUIT, see
+    /// `Terminal::set_exit_signal_callback`). It is its own event and not an
+    /// injected `ctrl+c` byte: that byte is the run's interrupt chord, so a
+    /// signal routed through the keymap would stop a turn and leave the process
+    /// running.
+    Signal,
 }
 
 struct InputIo<'a> {
@@ -177,12 +183,12 @@ pub async fn run(options: Options) -> Result<(), String> {
         }),
     )
     .map_err(|error| format!("terminal: {error}"))?;
-    // SIGINT/SIGTERM take the same path as ctrl+c so the terminal is restored
-    // by the loop's own exit rather than by the signal handler's re-raise.
+    // SIGINT/SIGTERM take the quit path so the terminal is restored by the
+    // loop's own exit rather than by the signal handler's re-raise.
     {
         let signal_tx = input_tx.clone();
         terminal.set_exit_signal_callback(Some(Box::new(move || {
-            let _ = signal_tx.send(TerminalEvent::Data("\u{3}".into()));
+            let _ = signal_tx.send(TerminalEvent::Signal);
         })));
     }
     let mut notifications = crate::notifications::NotifyCenter::default();
@@ -299,6 +305,11 @@ async fn event_loop(
                 let mut events = match &input {
                     TerminalEvent::Resize => vec![WbEvent::Resize(terminal.columns(), terminal.rows())],
                     TerminalEvent::Data(data) => events_of(data),
+                    // A signal leaves now, whatever an overlay is showing: the
+                    // chord cannot be hard-coded (`ctrl+c` stops a run) and the
+                    // reader may have rebound quit to something a fake byte
+                    // could never reproduce.
+                    TerminalEvent::Signal => return Ok(()),
                 };
                 // Read the rest of the burst before doing anything with it. A
                 // held key arrives as one terminal event per repeat, and every
@@ -314,6 +325,7 @@ async fn event_loop(
                             terminal.rows(),
                         )),
                         Ok(TerminalEvent::Data(data)) => events.extend(events_of(&data)),
+                        Ok(TerminalEvent::Signal) => return Ok(()),
                         Err(_) => break,
                     }
                 }
@@ -828,6 +840,8 @@ async fn quit(
                     return Ok(false);
                 }
                 Some(super::preferences::Action::Stop) => {
+                    // Idle, this is a no-op (see `Live::abort`): `ctrl+c` means
+                    // the turn in flight, and there is none.
                     live.abort().await;
                     return Ok(false);
                 }

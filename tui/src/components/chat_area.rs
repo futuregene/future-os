@@ -1174,8 +1174,8 @@ impl ChatArea {
     }
 
     /// The content of the most recent assistant message (thinking excluded) —
-    /// what `/copy` and `ctrl+x` put on the clipboard. `None` when the
-    /// transcript has no assistant text yet.
+    /// what `/copy` puts on the clipboard. `None` when the transcript has no
+    /// assistant text yet.
     pub fn last_assistant_text(&self) -> Option<String> {
         self.messages
             .iter()

@@ -475,6 +475,12 @@ impl Live {
         if !state.session_id.is_empty() && self.client.get_current_session_id() != state.session_id
         {
             self.client.set_current_session_id(&state.session_id);
+            // The run this state names belongs to the session just published —
+            // publishing it cleared that name, and a terminal that attached to
+            // a session already streaming must still be able to interrupt it.
+            if let Some(active) = &state.active_run {
+                self.client.adopt_active_run(&active.run_id);
+            }
         }
         self.state = state;
         self.refresh_local();
@@ -3224,8 +3230,16 @@ impl Live {
         });
     }
 
-    /// Interrupt the run in flight (`ctrl+x`).
+    /// Interrupt the run in flight (`ctrl+c`, `/stop`).
+    ///
+    /// With nothing running this is nothing: the chord means the turn under the
+    /// reader, and a turn that has already ended asks the agent to abort an
+    /// empty run id, which used to answer the reader with an error notice for
+    /// pressing a key at the wrong moment.
     pub async fn abort(&mut self) {
+        if !self.client.has_active_run() {
+            return;
+        }
         if let Err(error) = self.client.abort().await {
             self.notice = Some(format!("Could not stop the run: {error}"));
         } else {
@@ -4455,6 +4469,59 @@ mod tests {
         assert!(
             painted.contains("hello there"),
             "the transcript keeps what was said:\n{painted}"
+        );
+    }
+
+    /// The interrupt chord means the turn in flight (`ctrl+c`). With nothing
+    /// running it is nothing at all: no `abort` reaches the agent, and the
+    /// reader is not shown an error for pressing a key at the wrong moment —
+    /// which is exactly what an unconditional abort did with an empty run id.
+    #[tokio::test]
+    async fn stopping_with_nothing_running_asks_the_agent_nothing() {
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("get_state", r#"{"sessionId":"s1"}"#),
+            ("get_session_entries", r#"{"entries":[]}"#),
+            ("abort", "{}"),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        assert_eq!(live.state.session_id, "s1", "get_state installs the state");
+        assert!(!live.client.has_active_run(), "the state named no run");
+        live.abort().await;
+        assert!(live.notice.is_none(), "{:?}", live.notice);
+        let commands = seen.lock().unwrap().clone();
+        assert!(
+            !commands.iter().any(|command| command == "abort"),
+            "an idle interrupt must not reach the agent, saw {commands:?}"
+        );
+    }
+
+    /// …and with a turn in flight the same call does reach it: `ctrl+c` while a
+    /// reply streams is the shell's interrupt, and it has to land.
+    #[tokio::test]
+    async fn stopping_a_running_turn_asks_the_agent_to_abort() {
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            (
+                "get_state",
+                r#"{"sessionId":"s1","activeRun":{"runId":"r-1","epoch":1,"state":"running","lastEventIdx":0}}"#,
+            ),
+            ("get_session_entries", r#"{"entries":[]}"#),
+            ("abort", "{}"),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        assert_eq!(live.state.session_id, "s1", "get_state installs the state");
+        assert!(live.client.has_active_run(), "the state named a live run");
+        live.abort().await;
+        assert!(live.notice.is_none(), "{:?}", live.notice);
+        let commands = seen.lock().unwrap().clone();
+        assert!(
+            commands.iter().any(|command| command == "abort"),
+            "a live interrupt must reach the agent, saw {commands:?}"
         );
     }
 

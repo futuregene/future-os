@@ -297,7 +297,7 @@ alt screen、鼠标模式与帧时钟 `[F:tui/src/workbench/run.rs:92]`；旧内
 | 16 | 分组可搜索的设置页 | 9 组 | 没有设置页；选择器覆盖模型、强度与主题，其余靠零散命令 | partial | partial | P1 |
 | 17 | 全屏草稿编辑器 | `Ctrl+Shift+E`、`⛶` | 无入口、无编辑器；外部 `$EDITOR` 也到不了 | missing | partial | P1 |
 | 18 | 按项目的历史搜索 | `Ctrl+R` | 只有提示词召回 | partial | partial | P1 |
-| 19 | 转向 vs 排队 vs 中断 | `Enter`/`Tab`/`Ctrl+Enter` | 提交即排到运行之后；`ctrl+x` 中断 | partial | partial | P1 |
+| 19 | 转向 vs 排队 vs 中断 | `Enter`/`Tab`/`Ctrl+Enter` | 提交即排到运行之后；`ctrl+c` 中断 | partial | partial | P1 |
 | 20 | 回到较早回合 | 双击 `Esc` + `/rewind` | `/fork` 也不在面板里 | missing | missing | P2 |
 | 21 | Mermaid、LaTeX | Unicode + 图形 | 无 | missing | missing | P2 |
 | 22 | 图片预览缩放/平移、Sixel | 有 | 仅 Kitty/iTerm2 直通 | partial | partial | P2 |

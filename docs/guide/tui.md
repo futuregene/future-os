@@ -185,11 +185,12 @@ shortcut is one that silently does nothing on the terminal this surface is
 developed against — and no default is a function key (`F1`–`F12` need `Fn` on a
 laptop and are absent on a compact keyboard).
 
-The fifteen chords are `ctrl+c` quit, `ctrl+n` new chat, `ctrl+r` sessions,
-`ctrl+d` the rail, `ctrl+x` stop, `ctrl+e` the process detail (answer only / whole process), `ctrl+p`
-commands, `ctrl+o` model, `ctrl+t` effort (thinking), `ctrl+s` approval mode,
-`ctrl+l` workspaces, `ctrl+f` the files panel, `ctrl+g` the git browser,
-`ctrl+v` paste, `ctrl+q` preferences. Everything else is a typed verb or a
+The fifteen chords are `ctrl+c` stop the run in flight, `ctrl+n` new chat,
+`ctrl+r` sessions, `ctrl+d` the rail, `ctrl+x` quit, `ctrl+e` the process detail
+(answer only / whole process), `ctrl+p` commands, `ctrl+o` model, `ctrl+t`
+effort (thinking), `ctrl+s` approval mode, `ctrl+l` workspaces, `ctrl+f` the
+files panel, `ctrl+g` the git browser, `ctrl+v` paste, `ctrl+q` preferences.
+Everything else is a typed verb or a
 pointer target: `/delete`, `/queue`, `/copy`, `/mouse`, `/preview`, `/refresh`,
 `/lang`, and `?` for help — the help overlay prints `—` in the key column for
 those, and its command list names the door.
@@ -200,7 +201,20 @@ prefixes of `screen` and `tmux`; `ctrl+z` is suspend everywhere else; and
 `ctrl+u`/`k`/`w`/`y` are the composer's own editing keys. The rail takes `d`
 (the dock it slides out of) — the letter deleting a conversation gave up, since
 a delete asks first and is rare enough to live on `/delete` and the rail's own
-`delete` key. Every chord is rebindable in `/preferences`, and the help overlay
+`delete` key.
+
+`ctrl+c` is the one letter whose meaning is not ours. Raw mode turns `ISIG` off,
+so the byte arrives as a key rather than as a signal, but the reader's
+expectation of it comes from the shell: **interrupt the foreground turn**, not
+close the shell. Bound to the run in flight it does exactly that, and with
+nothing running it does nothing at all — no request, no notice. Leaving is
+`ctrl+x`, a chord no other terminal program teaches, so it is never pressed by
+reflex; quitting is also the lossless direction, since it leaves the session
+and its run untouched on the agent. Neither is an overlay's to swallow: the quit
+chord is checked before the overlay handles a key, and the interrupt chord stays
+with the surface, so a modal can never take away the way out.
+
+Every chord is rebindable in `/preferences`, and the help overlay
 lists them grouped by what they do rather than in one flat list.
 
 ## Files and mentions
@@ -337,7 +351,7 @@ click on the rail's tab strip are the doors to the same places.
 | `ctrl+w`, `alt+d`, `ctrl+u`, `ctrl+k`, `ctrl+y` | Delete a word, kill to line start/end, yank |
 | `ctrl+z` / `ctrl+shift+z` (or `alt+y`) | Undo / redo draft edits |
 | `pageUp` / `pageDown` or `ctrl+↑` / `ctrl+↓` | Scroll the conversation — always, including while the rail has the keys (`ctrl+d`): paging the transcript is the one thing this key means, and a rail that answered it made the same key do two jobs. The rail moves its own cursor with `↑`/`↓`, and the wheel over the rail scrolls it; `esc` returns to the latest output |
-| `/queue` | List queued prompts — the ones sent while a run was in flight; `x` cancels, `r` / `enter` cancels and recalls into the draft (`ctrl+x` stops the active run, not the queue) |
+| `/queue` | List queued prompts — the ones sent while a run was in flight; `x` cancels, `r` / `enter` cancels and recalls into the draft (`ctrl+c` stops the active run, not the queue) |
 | `ctrl+g` or `[ctrl+g] git` in the header | The repository browser: 提交 / 引用 / 改动 / 暂存 tabs, a lane-coloured graph log across every branch, and the selected row's patch. `1`–`4` pick a tab, `tab` switches list/detail, `PgUp`/`PgDn` page the patch, `y` copies the row |
 | `ctrl+o` | Model picker (`/model`): every model the agent offers, grouped by provider, with the reasoning slider on its first row |
 | `ctrl+f` or `/files` | The **files panel**: this conversation's workspace as a tree, in a box over the frame — the same session scope as `/git`. `↑`/`↓` walk it, `⏎`/`→` open, `⌫`/`←` go up a level, `r` re-reads the directory, `esc` closes. The header's `[ctrl+f] 文件` button is the pointer's door to it, and `[ctrl+g] git` sits beside it |
@@ -360,7 +374,8 @@ click on the rail's tab strip are the doors to the same places.
 | `?` (or the full-width `？`) | Help overlay (effective keys, grouped by area, then the commands; the key requires an empty draft). Rows are listed only where an action has a chord — the verbs with none keep their typed door in the command list at the end of the same box |
 | `/lang` | Interface language: opens the picker — follow the system, Chinese or English |
 | `ctrl+e` | Process detail: two levels, the desktop's `replyDetail` — **answer only** (a settled reply keeps the answer it ended on, and the reasoning, calls and notes that produced it fold into one summary row above it; a reply that never wrote prose folds onto the slice it stopped at) and **whole process** (every slice keeps its own row, in the order it happened). The terminal opens on **answer only**, the desktop's default, and the level applies to the whole conversation at once — one press re-reads every reply, not the one under the cursor. Neither level shows a tool call's body or a reasoning block's text: a call is one row, a thought a `▸ thinking` marker (or a count in the summary row), and the details open one row at a time with `tab` + `enter` (or a click). A reply folds only once its run has ended (`agent_start` … `agent_end`); while it streams it is always in the live shape — all of the model's output on screen, its work folded into counts where it happened — at both levels, so the rows do not collapse and reopen between two steps, and `ctrl+e` never changes what a running reply looks like. The step the reader is watching keeps a row of its own until the next step takes its place — the call in flight, the `▸ thinking…` that has not written its first token yet, then the call that just finished — so a transcript pinned to its last rows only ever grows while a reply streams, and the lines above it do not jump up and down as work starts and finishes. The counts are words in the reader's language — `61 tool calls · 30 thoughts`, or `工具调用 61 次 · 思考 30 次` in Chinese, whose word order and counter (`次`) the templates carry — and so is the bare reasoning marker (`▸ 思考`); the summary row is drawn in the faintest colour the chrome has, one step under body text, so it sits behind the answer it stands above. History loaded from a session folds the same way, so a reopened conversation reads as one answer per reply. A view toggle for the run it is pressed in, not a preference: every start opens on the folded level |
-| `ctrl+c` | Quit |
+| `ctrl+c` | Stop the run in flight — the shell's own meaning of the byte. With nothing running it is a no-op rather than an error |
+| `ctrl+x` | Quit |
 
 | Mouse | Action |
 |---|---|
@@ -413,7 +428,7 @@ thinking, the final-answer fold), `session_rows::rows_to_messages` for history,
 | Existing settings | `/mode` (or `/sandbox`) opens the approval-mode chooser, `/thinking` the reasoning chooser, `/compact [instructions]`, `/tools a,b` or `/tools off`, `/providers`; `/skills` and `/model` retain their existing surfaces |
 | Sessions panel | `list_sessions`, newest first: 最近 split into a 活跃 stretch (a run still in flight, spinner in the row's state slot) and 更早, the headings drawn only while both are non-empty. The list is re-read every five seconds while the rail is on screen, because another client's run reaches this surface no other way. 工作区 filed by directory with the pinned ones leading. Pins persist in `settings.json` (`pinnedWorkspaces`) |
 | Usage / context / cost | `get_state`'s usage block, refreshed on the same events |
-| `ctrl+n` / `/new`, `ctrl+x` stop, `/refresh` | |
+| `ctrl+n` / `/new`, `ctrl+c` stop, `/refresh` | |
 | Delete a conversation (`/delete`, or `delete` in the rail) | One confirm box, then `delete_session` for the id it named. The successor in the list opens, so the transcript never stays on a conversation that is gone; deleting the last one detaches to the launchpad. A refusal (the agent keeps a session a compaction holds) leaves everything as it was and says so in the notice row |
 | Launchpad chips | Click 工作区 / 模型 / 强度 / 审批 to cycle them. On the launchpad the workspace, model, effort and approval choices are staged for the session the first message creates (the agent has no session to set them on yet); with a session attached they go over the wire. The workspace defaults: the directory `future tui` was started from (`cd project && future tui`), or 对话会话 when launched from one of the app's scratch directories or chosen explicitly — a chat mints `~/.future/workspaces/chat/<session id>` when the session is created; `/new` inherits the workspace the previous conversation ran in (a chat is not inherited). The model and effort chips name the product defaults — the agent's default model at the level it starts at — and approval 完全访问; the first message creates the session with exactly that. 工作区 cycles 对话会话 and the directories this client has conversations in, and the notice row names the full path it chose |
 | Theme | Persisted in `~/.future/tui/settings.json` (`tui/src/settings.rs`); the reading level is deliberately not — `ctrl+e` is per run |

@@ -269,23 +269,29 @@ Run `/help` in the TUI for the full list (40+ commands).
 
 | Key | Action |
 |---|---|
-| `ctrl+c` | Interrupt / exit |
-| `ctrl+l` | Clear screen / redraw |
-| `ctrl+p` | Cycle model |
-| `ctrl+t` | Cycle thinking level |
-| `shift+tab` | Cycle thinking |
-| `ctrl+o` | Expand / collapse thinking |
-| `ctrl+g` | Expand / collapse tool output |
-| `ctrl+d` | Compact view: fold runs of tool calls and thinking |
-| `ctrl+x` | Copy the last answer |
-| `ctrl+r` | Browse sessions |
+| `ctrl+c` | Stop the run in flight (nothing happens when idle) |
+| `ctrl+x` | Quit |
+| `ctrl+n` | New chat |
+| `ctrl+r` | Sessions |
+| `ctrl+d` | Rail: show / focus / hide |
+| `ctrl+p` | Command palette |
+| `ctrl+o` | Model chooser |
+| `ctrl+t` | Thinking effort |
+| `ctrl+s` | Approval mode |
+| `ctrl+l` | Workspaces |
+| `ctrl+f` | Files panel |
+| `ctrl+g` | Git browser |
+| `ctrl+e` | Process detail: answer only / whole process |
 | `ctrl+v` | Paste clipboard (image or text) |
-| `tab` | Autocomplete |
-| `↑↓` | Scroll / navigate lists |
-| `page up` / `page down` | Scroll the chat |
-| `ctrl+↑` / `ctrl+↓` | Scroll the chat line by line |
-| `enter` | Submit / accept |
-| `escape` | Close popup |
+| `ctrl+q` | Preferences (including the shortcut editor) |
+| `?` | Help: the effective keys, grouped |
+| `enter` | Send — while a run is in flight the prompt queues behind it |
+| `ctrl+j` | Newline in the draft |
+| `page up` / `page down` | Scroll the conversation |
+| `escape` | Close an overlay; return to the latest output |
+
+Every chord is rebindable in `/preferences`, and `?` always shows what is
+actually in effect.
 
 ## Troubleshooting
 

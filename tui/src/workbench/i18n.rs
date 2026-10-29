@@ -919,7 +919,7 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ),
         CmdMouse => ("切换鼠标捕获，便于选择复制", "Toggle mouse capture for native selection"),
         QueueTitle => ("排队消息", "Queued prompts"),
-        QueueHint => ("↑↓ 选择 · x 取消 · r/⏎ 取消并取回草稿 · esc 关闭 · ctrl+x 停止当前运行", "↑↓ choose · x cancels · r/enter recalls to draft · esc closes · ctrl+x stops the active run"),
+        QueueHint => ("↑↓ 选择 · x 取消 · r/⏎ 取消并取回草稿 · esc 关闭 · ctrl+c 停止当前运行", "↑↓ choose · x cancels · r/enter recalls to draft · esc closes · ctrl+c stops the active run"),
         QueueEmpty => ("没有排队消息", "No queued prompts"),
         QueueCancelled => ("已取消排队消息", "Queued prompt cancelled"),
         QueueRecalled => ("已取消排队消息并取回草稿", "Queued prompt cancelled and recalled to draft"),
