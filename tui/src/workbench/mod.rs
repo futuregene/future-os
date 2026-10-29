@@ -1380,12 +1380,17 @@ impl Workbench {
             "enter" => self.submit_draft(data),
             "up" if self.sidebar_focus => self.move_selection(-1, data),
             "down" if self.sidebar_focus => self.move_selection(1, data),
-            // The rail's two tabs, from the rail itself: a focused panel
-            // answers left/right with its neighbour the way a tab strip does
-            // with a click. The cursor lands on the conversation on screen,
-            // exactly as the click on a tab leaves it.
-            "left" if self.sidebar_focus => self.switch_panel(-1, data),
-            "right" if self.sidebar_focus => self.switch_panel(1, data),
+            // `←`/`→` never walk the tabs — not from a focused rail either. The
+            // rail can hold the keys while the prompt is on screen (a click on
+            // a tab, a conversation opened from a row, `ctrl+d`), and a reader
+            // standing in the draft reads the arrow keys as the caret's: a rail
+            // that jumped to its neighbour was a stray keystroke happening to
+            // them. The tabs' chord is `shift+←`/`shift+→`
+            // ([`Action::PanelPrev`]/[`Action::PanelNext`]), which works from
+            // anywhere. The keys stop here rather than falling through to the
+            // editor: with the rail focused that caret is not the reader's, and
+            // moving one they cannot see is the same surprise a layer down.
+            "left" | "right" if self.sidebar_focus => Vec::new(),
             // Pin the workspace the selected conversation belongs to, so the
             // 置顶 section is reachable with the keyboard. Only a *focused* rail
             // takes it: elsewhere `p` is a letter in the draft.
@@ -3785,24 +3790,6 @@ impl Workbench {
         vec![WbAction::SwitchPanel(panel)]
     }
 
-    /// The rail's neighbouring tab: `←`/`→` while the rail has the keys, which
-    /// is the keyboard spelling of a click on the tab strip.
-    fn switch_panel(&mut self, delta: i32, data: &WorkbenchData) -> Vec<WbAction> {
-        let panel = if delta < 0 {
-            self.panel.previous()
-        } else {
-            self.panel.next()
-        };
-        self.panel = panel;
-        self.sidebar_focus = true;
-        // The cursor is an index into *this* panel's rows: carry it to the
-        // conversation on screen rather than leaving it on whatever the other
-        // tab's row at that index happened to be.
-        let row = self.current_row(data);
-        self.select_row(row, data);
-        vec![WbAction::SwitchPanel(panel)]
-    }
-
     /// Carry out a `/…` verb that belongs to the *surface* rather than to the
     /// agent: naming a panel, or saying where a workspace comes from.
     ///
@@ -5487,54 +5474,59 @@ mod tests {
         assert!(workbench.rail.folded.is_empty(), "nothing was recorded");
     }
 
-    /// The rail's two tabs answer `←`/`→` while the rail has the keys: the
-    /// keyboard spelling of a click on the tab strip, and the cursor follows
-    /// the switch to the conversation on screen.
+    /// The plain arrows belong to the caret, not the tab strip — even while the
+    /// rail has the keys.
+    ///
+    /// The rail can hold the keys with the prompt on screen (a click on a tab, a
+    /// conversation opened from a row, `ctrl+d`), and a reader standing in the
+    /// draft reads `←`/`→` as movement inside it. Before this, those two keys
+    /// switched 最近 ↔ 工作区 from there and the caret never moved, which looked
+    /// like a keystroke going somewhere else. The tabs are the shift arrows'
+    /// (`Action::PanelPrev`/`PanelNext`), which work from anywhere.
     #[test]
-    fn left_and_right_move_the_rail_between_its_two_tabs() {
+    fn the_plain_arrows_never_walk_the_rail_tabs() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         workbench.handle(WbEvent::Key("ctrl+d".into()), &data);
-        assert!(workbench.sidebar_focus);
+        assert!(workbench.sidebar_focus, "the rail has the keys");
         assert_eq!(workbench.panel, PanelId::Recent);
 
-        assert_eq!(
-            workbench.handle(WbEvent::Key("right".into()), &data),
-            vec![WbAction::SwitchPanel(PanelId::Workspaces)]
-        );
-        assert_eq!(workbench.panel, PanelId::Workspaces);
-        assert!(workbench.sidebar_focus, "the rail keeps the keys");
-        // The cursor is an index into *this* panel's rows, and it landed on the
-        // conversation the transcript shows.
-        let rows = panels::rows(PanelId::Workspaces, &data);
-        let current = data
-            .sessions
-            .iter()
-            .position(|session| session.current)
-            .expect("the fixture marks one conversation current");
-        assert_eq!(rows[workbench.sidebar_index].session(), Some(current));
+        for key in ["right", "left"] {
+            let actions = workbench.handle(WbEvent::Key(key.into()), &data);
+            assert!(
+                !actions
+                    .iter()
+                    .any(|action| matches!(action, WbAction::SwitchPanel(_))),
+                "{key} switched the tab: {actions:?}"
+            );
+            assert_eq!(workbench.panel, PanelId::Recent, "{key}");
+            assert!(
+                !actions
+                    .iter()
+                    .any(|action| matches!(action, WbAction::EditEditor(_))),
+                "{key} moved a caret the reader cannot see: {actions:?}"
+            );
+            assert!(workbench.sidebar_focus, "{key} kept the rail's keys");
+        }
 
-        // …and back the other way, wrapping to 最近 from 最近's neighbour.
-        assert_eq!(
-            workbench.handle(WbEvent::Key("left".into()), &data),
-            vec![WbAction::SwitchPanel(PanelId::Recent)]
-        );
-        assert_eq!(workbench.panel, PanelId::Recent);
-
-        // The keys belong to the focused rail only: from the composer `left`
-        // is still the caret.
+        // From the composer the arrows are the editor's, exactly as before: the
+        // draft is where a reader typing a prompt expects them.
         workbench.sidebar_focus = false;
         let actions = workbench.handle(WbEvent::Key("right".into()), &data);
         assert!(
-            !actions.contains(&WbAction::SwitchPanel(PanelId::Workspaces)),
+            matches!(actions.as_slice(), [WbAction::EditEditor(_)]),
             "{actions:?}"
         );
+        assert!(!actions
+            .iter()
+            .any(|action| matches!(action, WbAction::SwitchPanel(_))));
     }
 
-    /// The shift arrows are the documented way through the rail's tabs: they
-    /// work from anywhere (a hidden rail is shown and takes the keys), they
-    /// wrap, and they land on the same tab the plain arrows reach inside the
-    /// rail. 文件 is not one of them — it is its own session-scoped panel.
+    /// The shift arrows are the *only* way through the rail's tabs: they work
+    /// from anywhere (a hidden rail is shown and takes the keys), they wrap,
+    /// and the plain arrows never reach a tab even with the rail focused — the
+    /// caret in the draft is theirs. 文件 is not one of them — it is its own
+    /// session-scoped panel.
     #[test]
     fn shift_left_and_right_walk_the_two_tabs() {
         let data = demo::chat();
@@ -5573,15 +5565,15 @@ mod tests {
             workbench.handle(WbEvent::Key(previous), &data),
             vec![WbAction::SwitchPanel(PanelId::Workspaces)]
         );
-        // The plain arrows inside the rail reach the same two tabs, so the two
-        // chords agree wherever the keys are.
-        assert_eq!(
-            workbench.handle(WbEvent::Key("right".into()), &data),
-            vec![WbAction::SwitchPanel(PanelId::Recent)]
-        );
+        // The plain arrows are the caret's even here: with the rail focused they
+        // change no tab (the shift arrows above are the whole way through).
+        assert!(workbench
+            .handle(WbEvent::Key("right".into()), &data)
+            .is_empty());
+        assert_eq!(workbench.panel, PanelId::Workspaces);
         assert_eq!(
             workbench.handle(WbEvent::Key("shift+right".into()), &data),
-            vec![WbAction::SwitchPanel(PanelId::Workspaces)]
+            vec![WbAction::SwitchPanel(PanelId::Recent)]
         );
     }
 

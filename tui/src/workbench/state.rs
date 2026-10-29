@@ -426,10 +426,13 @@ pub enum PanelId {
 impl PanelId {
     /// The panels the rail's tab strip offers, in tab order.
     ///
-    /// Every key that walks tabs (`←`/`→` on the rail, `shift+←/→` anywhere,
+    /// Every key that walks tabs (`shift+←/→` anywhere,
     /// [`Action::PanelPrev`](super::preferences::Action::PanelPrev)) walks this
     /// list, so 文件 cannot be reached by stepping past 工作区 — the panel has its
-    /// own door (`/files`, its own shortcut, the header's button).
+    /// own door (`/files`, its own shortcut, the header's button). The plain
+    /// arrows are the caret's, never the tab strip's, even while the rail has
+    /// the keys: the prompt stays on screen and a reader standing in it reads
+    /// `←`/`→` as movement inside their draft.
     pub const TABS: [PanelId; 2] = [PanelId::Recent, PanelId::Workspaces];
 
     /// Every panel id, tabs first. The scroll slots are indexed by this, so the
