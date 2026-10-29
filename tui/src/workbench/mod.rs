@@ -659,6 +659,14 @@ pub struct Workbench {
     picker_from_preferences: bool,
     pub launch_field: LaunchField,
     pub chat_scroll: usize,
+    /// The transcript's height when the reader last opened or folded a row,
+    /// waiting for the frame that shows the result.
+    ///
+    /// A toggle changes the height of everything *below* the row that was
+    /// pressed, and the window is measured from the tail, so the rows on screen
+    /// keep their place only if the offset moves by as much as the transcript
+    /// gained or lost (see [`Self::anchor_after_row_toggle`]).
+    row_toggle_anchor: Option<usize>,
     pub scroll: scroll::ScrollState,
     /// The conversation's openable spans — what `tab` steps through. Cached
     /// until the transcript, the width it was wrapped at or the working
@@ -828,6 +836,7 @@ impl Workbench {
             picker_from_preferences: false,
             launch_field: LaunchField::Prompt,
             chat_scroll: 0,
+            row_toggle_anchor: None,
             scroll: scroll::ScrollState::default(),
             links: links::Cache::default(),
             chat_index: None,
@@ -929,6 +938,34 @@ impl Workbench {
         self.lang = preference.resolve();
     }
 
+    /// Hold the reader's rows across a row they opened or folded away.
+    ///
+    /// `chat_scroll` counts rows up from the tail, and a toggle inserts (or
+    /// removes) rows at the pressed row — so leaving the offset alone slides
+    /// every painted row by the height of what appeared, and the transcript
+    /// then chases the pressed row back into view, which is the jump a reader
+    /// who presses `▸ 61 tool calls` sees instead of the work opening under
+    /// their line. Offsetting by the same number of rows keeps the pressed row
+    /// — and everything above it — exactly where it was painted, and lets only
+    /// what is below it change.
+    ///
+    /// One frame only: the anchor is taken when the action is produced and
+    /// spent on the frame that shows its result.
+    fn anchor_after_row_toggle(&mut self, total: usize) {
+        let Some(before) = self.row_toggle_anchor.take() else {
+            return;
+        };
+        let delta = total as isize - before as isize;
+        if delta == 0 {
+            return;
+        }
+        let offset = (self.chat_scroll as isize + delta).max(0) as usize;
+        self.chat_scroll = offset;
+        // The follow state is the same number seen from the other end: a
+        // reader holding a row is reading, not following the tail.
+        self.scroll.set_offset(offset);
+    }
+
     /// Render one frame: exactly `h` rows, each exactly `w` display columns.
     pub fn render(&mut self, data: &WorkbenchData, w: u16, h: u16) -> Vec<String> {
         if self.session_key != data.session.id {
@@ -939,6 +976,7 @@ impl Workbench {
             self.links.clear();
         }
         self.scroll.observe(data.revision);
+        self.anchor_after_row_toggle(data.messages.len());
         self.mouse_capture = data.mouse_capture;
         // The menu is a reading of the draft, and a frame is the moment the
         // draft is as fresh as it will get in this iteration: a paste inserts a
@@ -1778,7 +1816,13 @@ impl Workbench {
             return Vec::new();
         };
         match stop {
-            ChatStop::Row(stop) => vec![WbAction::ToggleChatRow(stop.row)],
+            ChatStop::Row(stop) => {
+                // The transcript is about to change height because of what the
+                // reader pressed. Remember what it is worth now; the next frame
+                // compares (see `anchor_after_row_toggle`).
+                self.row_toggle_anchor = Some(data.messages.len());
+                vec![WbAction::ToggleChatRow(stop.row)]
+            }
             ChatStop::Link(index) => {
                 let Some(span) = self.link_spans(data).get(index).cloned() else {
                     return Vec::new();
@@ -5028,6 +5072,169 @@ mod tests {
             vec![WbAction::ToggleChatRow(0)]
         );
         assert_eq!(workbench.chat_index, Some(0));
+    }
+
+    /// Opening a row shows what it hid *under* it: the row the reader pressed
+    /// and every row above it stay on the lines they were painted on, and only
+    /// what is below them changes.
+    ///
+    /// The window is counted from the tail, so a toggle that changed the
+    /// transcript's height used to slide every painted row by as much as it
+    /// opened — and the frame then chased the pressed row back into view. A
+    /// reader who pressed `▸ 61 tool calls · 30 thoughts` saw the page jump off
+    /// the line instead of the work opening beneath it.
+    #[test]
+    fn opening_a_row_keeps_the_rows_on_screen_where_they_were() {
+        use crate::components::chat_area::{ChatArea, ChatMessage, ChatRole, ToolStatus};
+        let width = layout::chat_inner(120);
+        let mut chat = ChatArea::new(width, None);
+        for turn in 0..6 {
+            chat.add_message(ChatMessage::new(
+                format!("u{turn}"),
+                ChatRole::User,
+                &format!("question {turn}"),
+            ));
+            chat.add_message(ChatMessage::new(
+                format!("a{turn}"),
+                ChatRole::Assistant,
+                &format!("answer {turn}\n\nmore of {turn}"),
+            ));
+        }
+        chat.add_message(ChatMessage::new(
+            "u-work".to_string(),
+            ChatRole::User,
+            "open this",
+        ));
+        chat.add_message(ChatMessage {
+            id: "a-thought".to_string(),
+            role: ChatRole::Assistant,
+            thinking: Some("a thought".to_string()),
+            content: String::new(),
+            ..ChatMessage::new(String::new(), ChatRole::Assistant, "")
+        });
+        let mut call = ChatMessage::new("t1".to_string(), ChatRole::Tool, "output line\n");
+        call.name = Some("shell".to_string());
+        call.tool = Some("call-1".to_string());
+        call.tool_args = Some(r#"{"command":"ls"}"#.to_string());
+        call.tool_status = Some(ToolStatus::Complete);
+        chat.add_message(call);
+        chat.add_message(ChatMessage::new(
+            "a-answer".to_string(),
+            ChatRole::Assistant,
+            "the answer",
+        ));
+        // The folded reply is a turn of its own, not the tail: the transcript
+        // keeps growing after it, which is what makes "the reader's rows" a
+        // place in the middle of the conversation rather than the newest line.
+        for turn in 6..10 {
+            chat.add_message(ChatMessage::new(
+                format!("u{turn}"),
+                ChatRole::User,
+                &format!("question {turn}"),
+            ));
+            chat.add_message(ChatMessage::new(
+                format!("a{turn}"),
+                ChatRole::Assistant,
+                &format!("answer {turn}"),
+            ));
+        }
+
+        let mut data = demo::chat();
+        data.session.id = "s-fold".to_string();
+        data.revision = 3;
+        data.messages = chat.render_all_shared(width);
+        data.row_stops = chat.row_stops();
+
+        // The fold sits ten rows above the bottom of a nineteen-row window:
+        // scrolled up, so the reader is reading rather than following the tail.
+        let (mut workbench, _rows) = frame(&data, 120, 20);
+        let fold = data
+            .row_stops
+            .iter()
+            .find(|stop| {
+                matches!(
+                    stop.action,
+                    crate::components::chat_area::RowAction::Process { .. }
+                )
+            })
+            .expect("the reply folds into a summary row")
+            .row;
+        workbench.set_chat_scroll(data.messages.len() - fold - 9);
+        let before: Vec<String> = workbench
+            .render(&data, 120, 20)
+            .iter()
+            .map(|row| crate::utils::strip_ansi_codes(row))
+            .collect();
+        let painted = before
+            .iter()
+            .position(|row| row.contains("tool call"))
+            .unwrap_or_else(|| panic!("the summary row is on screen: {before:?}"));
+        assert!(painted > 3, "the row has room above it: {before:?}");
+
+        assert_eq!(
+            click_region(&mut workbench, &data, 120, 20, &format!("chat.row.{fold}")),
+            vec![WbAction::ToggleChatRow(fold)]
+        );
+        // What the driver does with that action: the transcript re-renders and
+        // the next frame paints it.
+        chat.toggle_row(fold).expect("the fold opens");
+        data.revision += 1;
+        data.messages = chat.render_all_shared(width);
+        data.row_stops = chat.row_stops();
+        let opened: Vec<String> = workbench
+            .render(&data, 120, 20)
+            .iter()
+            .map(|row| crate::utils::strip_ansi_codes(row))
+            .collect();
+        assert!(
+            data.messages.len() > before.len(),
+            "the work really opened: {} rows before, {} after",
+            data.messages.len(),
+            before.len()
+        );
+
+        // The pressed row is on its own line, and nothing above it moved.
+        assert_eq!(
+            opened.iter().position(|row| row.contains("tool call")),
+            Some(painted),
+            "the row the reader pressed stayed put: {opened:?}"
+        );
+        assert_eq!(
+            opened[..painted],
+            before[..painted],
+            "every row above it is where it was"
+        );
+        // The work it hid is painted under it now, on lines the window already
+        // had, and the rail is what those rows hang from.
+        assert!(
+            opened[painted + 1..]
+                .iter()
+                .any(|row| row.contains("a thought")
+                    || row.contains("ls")
+                    || row.trim_start().starts_with('│')),
+            "the opened rows are below the pressed one: {opened:?}"
+        );
+
+        // Folding it away again holds the same place.
+        assert_eq!(
+            click_region(&mut workbench, &data, 120, 20, &format!("chat.row.{fold}")),
+            vec![WbAction::ToggleChatRow(fold)]
+        );
+        chat.toggle_row(fold).expect("the header folds it away");
+        data.revision += 1;
+        data.messages = chat.render_all_shared(width);
+        data.row_stops = chat.row_stops();
+        let folded: Vec<String> = workbench
+            .render(&data, 120, 20)
+            .iter()
+            .map(|row| crate::utils::strip_ansi_codes(row))
+            .collect();
+        assert_eq!(
+            folded.iter().position(|row| row.contains("tool call")),
+            Some(painted),
+            "closing it puts the row back on the same line: {folded:?}"
+        );
+        assert_eq!(folded[..painted], before[..painted], "{folded:?}");
     }
 
     /// The cursor is painted: the row the reader tabbed to is in reverse video,

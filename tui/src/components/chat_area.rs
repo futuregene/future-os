@@ -444,21 +444,30 @@ enum FoldKind {
     Thinking,
 }
 
-/// Put `gutter` in front of a rendered row — inside the row's background when it
-/// has one, so a call's band still starts in column 1 with the rest of the
-/// transcript and the rail is painted *on* the band instead of beside it.
+/// Put `gutter` in front of a rendered row — outside the row's background when
+/// it has one, so a call's band starts at the tree's text column and the rail
+/// keeps the terminal's own background. A band painted across the rail read as
+/// a break in the spine: the rail is the tree's edge, and a row's fill belongs
+/// inside it.
 ///
 /// The row is laid out one gutter narrower (see `render_message`), so the result
 /// is exactly as wide as any other row.
 fn with_gutter(text: &str, gutter: &str) -> String {
-    const BAND: &str = "\x1b[48;5;";
-    let Some(rest) = text.strip_prefix(BAND) else {
-        return format!("{gutter}{text}");
-    };
-    match rest.find('m') {
-        Some(end) => format!("{BAND}{}{gutter}{}", &rest[..=end], &rest[end + 1..]),
-        None => format!("{gutter}{text}"),
-    }
+    format!("{gutter}{text}")
+}
+
+/// A row that carries nothing but the tree: a blank row, or one holding only
+/// the rails that hang it (a block's trailing paragraph gap).
+///
+/// A block's padding at its end is these rows, and a spine that keeps running
+/// below the last row it holds hangs over nothing — so `hang_under_rail` drops
+/// them, while the same row *between* two of the block's rows keeps its rails
+/// (that is what stops the spine breaking at a paragraph gap).
+fn is_rail_only(text: &str) -> bool {
+    let glyph = TREE_RAIL.chars().next().unwrap_or_default();
+    strip_ansi_codes(text)
+        .chars()
+        .all(|c| c == ' ' || c == glyph)
 }
 
 /// Does this message fold into the run above it?
@@ -1626,10 +1635,12 @@ impl ChatArea {
             .get(action.message())
             .map(|msg| msg.id.clone())?;
         self.revealed.entry(id).or_default().toggle(action.kind());
-        // The transcript's height changes by however much was opened or
-        // folded, which invalidates the scroll offset the reader was holding.
+        // Opening draws what the row stood for *below* it and closing takes it
+        // away again, so every row above the pressed one is exactly where it
+        // was: the viewport (a line index from the top) still names the same
+        // rows and is left alone. This used to follow the tail, which threw the
+        // reader's place away and left the rows they just opened off screen.
         self.rerender();
-        self.set_auto_scroll(true);
         let stops = self.row_stops();
         stops
             .iter()
@@ -2482,15 +2493,27 @@ impl ChatArea {
 
     /// Look the rows just drawn hang under: the rail in column 1 of each, with
     /// the rows' own widths already laid out one gutter narrower.
+    ///
+    /// A blank row inside the block (a paragraph break in reasoning, a gap
+    /// between two notes) carries the rail and nothing else. Leaving it empty
+    /// cut the spine in two: the rail is what says these rows are one tree, and
+    /// a break in the middle of it reads as the end of the fold. Only the
+    /// block's trailing padding rows are dropped, because a rail dangling below
+    /// the last row hangs over nothing.
     fn hang_under_rail(&mut self, from: usize, msg_idx: usize, skipped: usize) {
         let rail = self.rail();
+        let spine = rail.trim_end().to_string();
+        let end = self.rendered_lines[from..]
+            .iter()
+            .rposition(|row| !is_rail_only(&row.text))
+            .map_or(from, |last| from + last + 1);
+        self.rendered_lines.truncate(end);
         for row in &mut self.rendered_lines[from..] {
-            if row.text.is_empty() {
-                // A blank row inside the row's own text (a paragraph break)
-                // stays blank: a rail there would read as an empty row.
-                continue;
-            }
-            row.text = with_gutter(&row.text, &rail);
+            row.text = if row.text.is_empty() {
+                spine.clone()
+            } else {
+                with_gutter(&row.text, &rail)
+            };
         }
         if let Some(rows) = self.row_meta.get_mut(&msg_idx) {
             for (offset, _, start, end) in rows.iter_mut() {
@@ -2987,8 +3010,11 @@ impl ChatArea {
         let think_prefix = format!("\x1b[3m\x1b[38;5;{}m", self.theme.thinking_text);
         for line in thinking_lines {
             if line.is_empty() {
+                // A paragraph break keeps the frame: the row's rail is its
+                // depth, not its text, so a blank line shows only that (the
+                // block's own rail here, `hang_under_rail` adds the fold's).
                 self.rendered_lines.push(RenderedLine {
-                    text: String::new(),
+                    text: detail_rail.clone(),
                     dim: true,
                 });
             } else {
@@ -4298,8 +4324,9 @@ mod tests {
         assert_matches_fresh_render(&mut chat);
 
         // The rail is paid for by the layout, not added on top of it: no row of
-        // the tree is wider than the terminal, and a call's band still runs edge
-        // to edge with the rail painted on it.
+        // the tree is wider than the terminal, and a call's band starts after
+        // the rail it hangs from — the spine keeps the terminal's own
+        // background — and still runs out to the right edge.
         for width in [W, 64, 40] {
             let rendered = chat.render_all(width);
             for row in &rendered {
@@ -4312,9 +4339,79 @@ mod tests {
                 .iter()
                 .find(|row| strip(row).contains("/src/parser.rs"))
                 .expect("the call is on screen");
-            assert_eq!(visible_width_of(band), width, "the band reaches both edges");
+            let band_at = band.find("\x1b[48;5;").expect("the call is banded");
+            let before = strip(&band[..band_at]);
+            assert_eq!(
+                before,
+                format!(" {TREE_RAIL}"),
+                "the band begins inside the tree's text column, not across its rail ({width}): {band:?}"
+            );
+            assert_eq!(
+                visible_width_of(band),
+                width,
+                "the band runs to the right edge ({width})"
+            );
             assert_matches_fresh_render_at(&mut chat, width);
         }
+    }
+
+    /// A gap *inside* the work a fold opened keeps the spine.
+    ///
+    /// Reasoning and a call's body both come in paragraphs, and the blank row
+    /// between two of them used to be empty: the rail stopped there, and a fold
+    /// that had been one block read as two that happened to be indented alike.
+    /// The gap therefore carries the rails of the rows it sits between — and the
+    /// block's *trailing* gap is dropped instead, because a rail below the last
+    /// row it holds hangs over nothing.
+    #[test]
+    fn a_gap_inside_an_opened_fold_keeps_the_spine() {
+        let mut chat = new_chat();
+        chat.render(W);
+        set_messages(
+            &mut chat,
+            vec![
+                ChatMessage::new("u1".into(), ChatRole::User, "fix the parser"),
+                assistant_with_thinking("a1", "first thought\n\nsecond thought\n\n", ""),
+                completed_tool("shell", r#"{"command":"ls"}"#, "alpha\n\nbeta\n\n"),
+                ChatMessage::new("a3".into(), ChatRole::Assistant, "Fixed."),
+            ],
+        );
+        open_all_rows(&mut chat);
+        let rows: Vec<String> = render_trimmed(&mut chat)
+            .iter()
+            .map(|line| strip(line))
+            .collect();
+        let at = |needle: &str| {
+            rows.iter()
+                .position(|row| row.contains(needle))
+                .unwrap_or_else(|| panic!("{needle} is on screen: {rows:?}"))
+        };
+
+        // Reasoning: one row, a gap that is the two rails it hangs from, one
+        // row — the fold still reads as a single block.
+        let first = at("first thought");
+        assert_eq!(at("second thought"), first + 2, "{rows:?}");
+        assert_eq!(
+            rows[first + 1],
+            format!(" {TREE_RAIL} {TREE_RAIL}"),
+            "a paragraph gap in reasoning is its rails and nothing else: {rows:?}"
+        );
+
+        // A call's body is the same: one rail for the fold, one for the body.
+        let alpha = at("alpha");
+        assert_eq!(at("beta"), alpha + 2, "{rows:?}");
+        assert_eq!(
+            rows[alpha + 1].trim_end(),
+            format!(" {TREE_RAIL} {TREE_RAIL}"),
+            "a paragraph gap in a body keeps both rails: {rows:?}"
+        );
+
+        // …and the tree ends on the last row with something on it: the gap the
+        // body ended with is gone, so the answer is separated by the blank
+        // separator row and no rail hangs over it.
+        assert_eq!(rows[at("beta") + 1], "", "{rows:?}");
+        assert_eq!(rows[at("beta") + 2], " Fixed.", "{rows:?}");
+        assert_matches_fresh_render(&mut chat);
     }
 
     /// The header is the way back out: pressing it folds the tree onto its
@@ -4497,16 +4594,17 @@ mod tests {
         assert_matches_fresh_render(&mut chat);
     }
 
-    /// The rail goes in front of a row, inside its band when it has one: a call's
-    /// background runs edge to edge like every other row, so the tree's rail is
-    /// painted *on* it rather than beside it.
+    /// The rail goes in front of a row and *outside* its band: a call's fill
+    /// belongs to the tree's text column, so it starts after the rail and runs
+    /// to the right edge. A band painted across the rail broke the spine the
+    /// fold is drawn with.
     #[test]
-    fn the_rail_is_painted_inside_a_call_band() {
+    fn the_rail_is_painted_beside_a_call_band() {
         assert_eq!(
-            with_gutter("\x1b[48;5;236m read a.rs \x1b[0m", "│ "),
-            "\x1b[48;5;236m│  read a.rs \x1b[0m"
+            with_gutter("\x1b[48;5;236m read a.rs \x1b[0m", " │"),
+            " │\x1b[48;5;236m read a.rs \x1b[0m"
         );
-        assert_eq!(with_gutter(" ▸ thinking", "│ "), "│  ▸ thinking");
+        assert_eq!(with_gutter(" ▸ thinking", " │"), " │ ▸ thinking");
     }
 
     /// Opening the settled summary replays the reply's process in place: the
