@@ -4996,11 +4996,14 @@ mod tests {
                 .find(|n| text.contains(&format!("line {n} ")))
                 .unwrap_or_else(|| panic!("no transcript row painted: {text}"))
         };
+        // The marker takes the oldest row of the window, so the tail's first
+        // *message* row is one further in than the window's own height.
         assert_eq!(
             first_painted(&mut wb),
-            total - band,
+            total - band + 1,
             "the tail fills the band"
         );
+        let mut previous = first_painted(&mut wb);
         for step in 1..=total - band {
             assert!(
                 wb.handle(WbEvent::Key("up".into()), &data)
@@ -5008,11 +5011,19 @@ mod tests {
                     .any(|action| matches!(action, WbAction::Scroll(-1))),
                 "press {step} scrolled"
             );
-            assert_eq!(
-                first_painted(&mut wb),
-                total - band - step,
-                "press {step} moved the transcript one row"
-            );
+            let now = first_painted(&mut wb);
+            if wb.chat_scroll_offset() < total - band {
+                assert_eq!(
+                    now + 1,
+                    previous,
+                    "press {step} moved the transcript one row"
+                );
+            } else {
+                // The ceiling: nothing is above the window any more, so the
+                // marker retires and the oldest row takes its place on top.
+                assert_eq!(now, 0, "the oldest row is on top at the ceiling");
+            }
+            previous = now;
         }
         assert_eq!(
             wb.chat_scroll_offset(),
@@ -9000,8 +9011,11 @@ mod tests {
         let (mut workbench, _rows) = frame(&data, 120, 24);
         workbench.set_chat_scroll(70);
         let before = band_rows(&plain(&workbench.render(&data, 120, 24)));
+        // `line 36`, not `line 35`: the `↑ 更早` marker takes the window's oldest
+        // row (the newest one is what must never be dropped), so a scrolled
+        // window starts one row closer to the tail than its offset alone says.
         assert!(
-            before[0].contains("line 35"),
+            before[0].contains("line 36"),
             "the band starts there: {before:?}"
         );
 
@@ -9032,11 +9046,13 @@ mod tests {
     fn a_page_of_older_rows_prepended_keeps_the_readers_rows() {
         let data = scrollable_chat(80);
         let (mut workbench, _rows) = frame(&data, 120, 24);
-        // The top of what is loaded: one press of `↑` from here asks for more
-        // (and the `↑ 更早` badge is on screen, as it is for that reader).
-        workbench.set_chat_scroll(80 - workbench.chat_window + 1);
+        // Parked above the ceiling, so the `↑ 更早` marker is up in *both*
+        // frames: the marker takes the window's oldest row, and a comparison
+        // that turned it on between the two frames would move the page by that
+        // row and say the prepend did it.
+        workbench.set_chat_scroll(80 - workbench.chat_window - 4);
         let before = band_rows(&plain(&workbench.render(&data, 120, 24)));
-        assert!(before[0].contains("line 0"), "{before:?}");
+        assert!(before[0].contains("line 5"), "{before:?}");
 
         let mut prepended: Vec<String> = (0..10).map(|n| format!("old {n}")).collect();
         prepended.extend(data.messages.iter().cloned());
@@ -11547,9 +11563,14 @@ mod tests {
             .iter()
             .position(|l| l.contains(t(Language::Zh, Key::InputHintChat)))
             .expect("the composer's title rule");
-        assert_eq!(header + 2, box_top - 1, "{text}");
+        // Title rule, the two prompts, the band's bottom rule — then the
+        // composer's own top rule: the band is a box of its own, not lines laid
+        // over the conversation, and it takes its rows from the conversation
+        // rather than covering them.
+        assert_eq!(header + 4, box_top, "{text}");
         assert!(lines[header + 1].contains("1."));
         assert!(lines[header + 2].contains("2."));
+        assert!(lines[header + 3].trim_start().starts_with('╰'));
     }
 
     /// An empty queue has no band: the conversation keeps those rows.
@@ -11562,6 +11583,61 @@ mod tests {
             .regions()
             .iter()
             .any(|(_, id)| id.starts_with("queue.")));
+    }
+
+    /// The band takes its rows from the conversation instead of covering it, so
+    /// the newest rows are still readable: paging to the bottom with a queue
+    /// waiting puts the last message on the row above the band, not under it.
+    #[test]
+    fn the_queue_band_leaves_the_tail_of_the_conversation_readable() {
+        let mut data = scrollable_chat(100);
+        let mut wb = workbench();
+        fn plain_rows(wb: &mut Workbench, data: &WorkbenchData) -> Vec<String> {
+            wb.render(data, 120, 38)
+                .iter()
+                .map(|row| crate::utils::strip_ansi_codes(row))
+                .collect()
+        }
+        // Without a queue the tail sits on the last row above the composer.
+        let before = plain_rows(&mut wb, &data);
+        let tail_row = before
+            .iter()
+            .rposition(|row| row.contains("line 99"))
+            .expect("the newest row is painted at the tail");
+        assert!(!before[tail_row].trim().is_empty());
+
+        data.queue = vec![state::QueuedPrompt {
+            run_id: "q1".into(),
+            text: "顺手把 clippy 警告清掉".into(),
+        }];
+        let after = plain_rows(&mut wb, &data);
+        let band_top = after
+            .iter()
+            .position(|row| row.trim_start().starts_with('╭') && row.contains("排队"))
+            .expect("the band's title rule");
+        // The newest row is still painted, and it is *above* the band — the box
+        // is drawn where the conversation's own rows were reserved, not over
+        // them.
+        let tail_row = after
+            .iter()
+            .rposition(|row| row.contains("line 99"))
+            .expect("the band did not bury the newest row");
+        assert!(tail_row < band_top, "{after:#?}");
+
+        // Scrolled up and paged back down: the same row comes back, because the
+        // scroll ceiling is measured on the band that is left over.
+        wb.handle(WbEvent::Key("pageUp".into()), &data);
+        assert!(!plain_rows(&mut wb, &data)
+            .iter()
+            .any(|row| row.contains("line 99")));
+        for _ in 0..20 {
+            wb.handle(WbEvent::Key("pageDown".into()), &data);
+        }
+        let back = plain_rows(&mut wb, &data);
+        assert!(
+            back.iter().any(|row| row.contains("line 99")),
+            "paging to the bottom must reach the newest row with a queue waiting"
+        );
     }
 
     /// A queue longer than the band's four rows counts the rest instead of

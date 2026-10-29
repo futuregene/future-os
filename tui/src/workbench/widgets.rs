@@ -47,6 +47,22 @@ pub fn close_cells(columns: usize, lang: Language) -> Option<(u16, u16)> {
     Some(((columns - 1 - chip_w) as u16, chip_w as u16))
 }
 
+/// [`box_top`] with any already-painted chip right-aligned on the rule:
+/// `╭─ title ───── chip╮`. The chip occupies the last cells before the right
+/// corner, and one rule cell is kept between it and the title.
+///
+/// For a control that is not the panel's close button — the queue band's
+/// `/queue 管理` door is one — so the rule is drawn by one function and every
+/// box's top edge measures the same way.
+pub fn box_top_with_chip(
+    palette: &Palette,
+    columns: usize,
+    title: &str,
+    chip: Option<&str>,
+) -> String {
+    top_rule(palette, columns, title, chip)
+}
+
 /// [`box_top`] with the close chip right-aligned on the rule:
 /// `╭─ title ─────[× 关闭]╮`.
 ///

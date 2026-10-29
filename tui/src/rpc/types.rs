@@ -25,12 +25,19 @@ where
 
 /// `busyPolicy` values: "enqueue_if_busy" (default) | "enqueue_coalescing" |
 /// "supersede_session".
-///
-/// The composer submits with `enqueue_if_busy`: the other values are the agent's
-/// (the IM bridges stream their own runs and the loop supervisor folds its
-/// outbox), and a queue the reader manages one row at a time — the band above
-/// the composer — cannot have rows that the agent folds away without running.
 pub const BUSY_ENQUEUE: &str = "enqueue_if_busy";
+
+/// The policy the composer submits with: a submission behind a running turn
+/// waits in the agent's queue, and at the turn boundary the run of prompts
+/// waiting there is folded into **one** message and answered together — the
+/// agent appends their texts in queue order (`start_next_scheduled`), so a burst
+/// of supplements reads the way the reader wrote it, as one follow-up.
+///
+/// Folding is a boundary event, not a submission event: until the running turn
+/// ends every request is its own row in `get_state.queuedRuns` — the band above
+/// the composer lists it, cancels it and recalls it on its own — and the order
+/// it folds in is the order it was queued in.
+pub const BUSY_ENQUEUE_COALESCING: &str = "enqueue_coalescing";
 
 /// `ThinkingLevel` — "off" | "minimal" | "low" | "medium" | "high" | "xhigh".
 pub type ThinkingLevel = String;

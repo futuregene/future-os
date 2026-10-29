@@ -505,9 +505,10 @@ impl Live {
     ///
     /// * the run is the session's active run → its turn has begun, so the card
     ///   goes back into the conversation at the point where it started;
-    /// * a terminal acknowledgement says it never ran (`cancelled`,
-    ///   `superseded`, `session_deleted`, `merged`) → drop the card: nothing was
-    ///   sent, and a recalled prompt is back in the draft;
+    /// * a terminal acknowledgement says it never ran on its own: `cancelled`,
+    ///   `superseded` and `session_deleted` drop the card (nothing was sent, and
+    ///   a recalled prompt is back in the draft), while `merged` folds its text
+    ///   into the card of the run that absorbed it;
     /// * anything else — the run left the queue and is no longer active, which
     ///   is a turn that started *and* finished between two polls → show the
     ///   card rather than keep a sent prompt hidden forever.
@@ -537,9 +538,12 @@ impl Live {
                 .find(|ack| ack.run_id == run_id)
                 .map(|ack| ack.reason.as_str());
             match reason {
-                Some("cancelled" | "superseded" | "session_deleted" | "merged") => {
-                    self.chat.drop_run(&run_id)
+                // `merged` is the fold: the run ahead carries this text, so the
+                // card ahead grows by it — see `ChatArea::fold_run_into_previous`.
+                Some("merged") => {
+                    self.chat.fold_run_into_previous(&run_id);
                 }
+                Some("cancelled" | "superseded" | "session_deleted") => self.chat.drop_run(&run_id),
                 _ => self.chat.update_run_state(&run_id, RunState::Terminal),
             }
         }
@@ -1785,13 +1789,15 @@ impl Live {
     }
 
     /// Send the draft. A submission while a run is in flight joins the agent's
-    /// queue and starts when that run ends — `enqueue_if_busy`, not the
-    /// coalescing policy: folding a burst of submissions into one run would
-    /// leave rows in the queue band (`screen::queue_band`) that never run as
-    /// their own turn, and a queue the reader can cancel or recall one row at a
-    /// time has to keep every row's identity. The band, and the transcript's
-    /// silence about the submission until its run starts, are what make
-    /// "queued" visible instead of looking already sent.
+    /// queue and goes out when that run ends — as **one** message with whatever
+    /// else is waiting (`enqueue_coalescing`): a burst of supplements is a
+    /// follow-up, not three turns. Until that boundary each one is its own row
+    /// in the queue band above the composer, where it can be cancelled or
+    /// recalled; at the boundary the agent folds them in queue order and the
+    /// transcript shows the run's card carrying every text (`fold_run_into_
+    /// previous`). The band, and the transcript's silence about a submission
+    /// until it goes out, are what make "queued" visible instead of looking
+    /// already sent.
     async fn submit(&mut self, text: &str) {
         self.draft.editor.record_submission();
         // The draft is read first because it is what carries the folded pastes
@@ -1868,7 +1874,11 @@ impl Live {
         self.mark(ActivityKind::Thinking);
         match self
             .client
-            .prompt(&message, crate::rpc::types::BUSY_ENQUEUE, attachments)
+            .prompt(
+                &message,
+                crate::rpc::types::BUSY_ENQUEUE_COALESCING,
+                attachments,
+            )
             .await
         {
             Ok(ack) => {
@@ -4751,6 +4761,74 @@ mod tests {
             live.data(&frame()).queue.len(),
             1,
             "the band above the composer lists it"
+        );
+    }
+
+    /// A burst queued behind a running turn goes out as **one** message: the
+    /// agent folds the prompts waiting at the boundary into the run ahead of
+    /// them and answers them together, so the card that runs carries every text
+    /// and the absorbed ones leave the band without leaving a gap in the
+    /// transcript.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_burst_of_queued_submissions_goes_out_as_one_message() {
+        let _guard = crate::test_env::lock();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_env::EnvVarGuard::set("FUTURE_HOME", home.path());
+        let busy = r#"{"sessionId":"s1","isStreaming":true,"activeRun":{"runId":"r-1","epoch":1,"state":"running","lastEventIdx":0}}"#;
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("get_state", busy),
+            ("get_session_entries", r#"{"entries":[]}"#),
+            (
+                "prompt",
+                r#"{"run_id":"r-2","run_epoch":0,"accepted_state":"queued","queue_position":1}"#,
+            ),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock.clone()).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+
+        // The first submission joins the queue …
+        mock.data_by_type.lock().unwrap().insert(
+            "get_state".into(),
+            r#"{"sessionId":"s1","isStreaming":true,"activeRun":{"runId":"r-1","epoch":1,"state":"running","lastEventIdx":0},"queuedRuns":[{"runId":"r-2","runSequence":2,"clientRequestId":"c-2","state":"queued","queuePosition":1,"acceptedAt":"now","displayText":"first"}],"queuedCount":1}"#.into(),
+        );
+        live.set_draft("first".into(), 5);
+        live.apply(WbAction::Submit("first".into())).await;
+
+        // … and the second behind it.
+        mock.data_by_type.lock().unwrap().insert(
+            "get_state".into(),
+            r#"{"sessionId":"s1","isStreaming":true,"activeRun":{"runId":"r-1","epoch":1,"state":"running","lastEventIdx":0},"queuedRuns":[{"runId":"r-2","runSequence":2,"clientRequestId":"c-2","state":"queued","queuePosition":1,"acceptedAt":"now","displayText":"first"},{"runId":"r-3","runSequence":3,"clientRequestId":"c-3","state":"queued","queuePosition":2,"acceptedAt":"now","displayText":"second"}],"queuedCount":2}"#.into(),
+        );
+        mock.data_by_type.lock().unwrap().insert(
+            "prompt".into(),
+            r#"{"run_id":"r-3","run_epoch":0,"accepted_state":"queued","queue_position":2}"#.into(),
+        );
+        live.set_draft("second".into(), 6);
+        live.apply(WbAction::Submit("second".into())).await;
+
+        // Both are queue rows above the composer; neither is in the transcript.
+        assert_eq!(live.data(&frame()).queue.len(), 2);
+        let painted = live.chat.render_all(80).join("\n");
+        assert!(!painted.contains("first"), "{painted}");
+        assert!(!painted.contains("second"), "{painted}");
+
+        // The running turn ends: r-2 starts carrying both texts and r-3 comes
+        // back as a terminal `merged` acknowledgement.
+        mock.data_by_type.lock().unwrap().insert(
+            "get_state".into(),
+            r#"{"sessionId":"s1","activeRun":{"runId":"r-2","epoch":1,"state":"running","lastEventIdx":0},"recentTerminalAcks":[{"runId":"r-3","runSequence":3,"clientRequestId":"c-3","state":"terminal","reason":"merged"}]}"#.into(),
+        );
+        live.refresh_state().await;
+
+        assert_eq!(live.data(&frame()).queue.len(), 0, "the band is empty");
+        let painted = live.chat.render_all(80).join("\n");
+        assert!(painted.contains("first"), "{painted}");
+        assert!(
+            painted.contains("second"),
+            "the folded text rides the card that ran: {painted}"
         );
     }
 

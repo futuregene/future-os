@@ -1488,8 +1488,8 @@ impl ChatArea {
     }
 
     /// Forget the submission bound to `run_id` — a queued prompt that was
-    /// cancelled, or one the agent folded into the run ahead of it (`merged`):
-    /// no run of its own happened, so it does not belong in the transcript.
+    /// cancelled: no run of its own happened, so it does not belong in the
+    /// transcript.
     pub fn drop_run(&mut self, run_id: &str) {
         let before = self.messages.len();
         self.messages
@@ -1497,6 +1497,50 @@ impl ChatArea {
         if self.messages.len() != before {
             self.rerender();
         }
+    }
+
+    /// Fold a submission's text into the card of the run that absorbed it, and
+    /// forget the folded card.
+    ///
+    /// The agent folds the prompts queued directly behind a run at the turn
+    /// boundary (`enqueue_coalescing`): their texts are appended to that run's
+    /// message in queue order, and each of them comes back as a terminal
+    /// `merged` acknowledgement, never as a run of its own. The card ahead is
+    /// therefore the one that has to grow — dropping the folded card alone would
+    /// leave the transcript showing a message shorter than the one the agent was
+    /// asked. Returns whether there was a card of this client's to grow: a fold
+    /// that happened inside another client's submission leaves nothing here to
+    /// change.
+    pub fn fold_run_into_previous(&mut self, folded_run: &str) -> bool {
+        let Some(index) = self
+            .messages
+            .iter()
+            .position(|message| message.run_id.as_deref() == Some(folded_run))
+        else {
+            return false;
+        };
+        let folded = self.messages[index].content.clone();
+        // The agent folds the images too (`payload.images.extend`), so the card
+        // ahead keeps showing them.
+        let pictures = self.messages[index].pictures.clone();
+        // The card ahead is the nearest earlier submission bound to a run, and
+        // not itself folded away: the agent's fold is a run of consecutive
+        // requests, so the one before this card is where the text went.
+        let ahead = (0..index).rev().find(|at| {
+            self.messages[*at].run_id.is_some()
+                && self.messages[*at].run_state != Some(RunState::Merged)
+        });
+        self.messages.remove(index);
+        let grew = ahead.map(|at| {
+            let target = &mut self.messages[at];
+            if !target.content.is_empty() && !folded.is_empty() {
+                target.content.push_str("\n\n");
+            }
+            target.content.push_str(&folded);
+            target.pictures.extend(pictures);
+        });
+        self.rerender();
+        grew.is_some()
     }
 
     /// Current lifecycle state tracked for `run_id` (None when the run is
@@ -7576,8 +7620,38 @@ mod tests {
         assert!(shown.len() > hidden);
     }
 
-    /// `drop_run` is the cancel/merge path: the submission never ran, so its
-    /// card leaves the transcript instead of sitting there as "cancelled".
+    /// The agent folds a burst of queued submissions into the run ahead of
+    /// them (`enqueue_coalescing`), so the card that *ran* has to carry the
+    /// folded text: dropping the absorbed card alone would leave the transcript
+    /// showing a message shorter than the one the agent was asked.
+    #[test]
+    fn a_merged_submission_folds_its_text_into_the_card_ahead() {
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.add_message(ChatMessage::new("u1".into(), ChatRole::User, "first"));
+        chat.bind_user_run("u1", "r-1", RunState::Running, None);
+        chat.add_message(ChatMessage::new("u2".into(), ChatRole::User, "second"));
+        chat.bind_user_run("u2", "r-2", RunState::Queued, Some(1));
+        assert!(chat.fold_run_into_previous("r-2"));
+        assert_eq!(chat.messages.len(), 1, "the folded card is gone");
+        // The agent joins the two with a blank line (`start_next_scheduled`), and
+        // the card shows exactly that: one message, both paragraphs.
+        assert_eq!(chat.messages[0].content, "first\n\nsecond");
+        let plain: Vec<String> = chat.render_all(W).into_iter().map(|l| strip(&l)).collect();
+        assert!(plain.iter().any(|l| l.contains("first")));
+        assert!(plain.iter().any(|l| l.contains("second")));
+        // A fold with no card of ours ahead: the folded submission is dropped
+        // and the caller is told nothing of this client's grew.
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.add_message(ChatMessage::new("u1".into(), ChatRole::User, "only"));
+        chat.bind_user_run("u1", "r-7", RunState::Queued, Some(1));
+        assert!(!chat.fold_run_into_previous("r-8"));
+        assert_eq!(chat.messages.len(), 1, "an unknown run changes nothing");
+    }
+
+    /// `drop_run` is the cancel path: the submission never ran, so its card
+    /// leaves the transcript instead of sitting there as "cancelled".
     #[test]
     fn drop_run_removes_the_dropped_submission() {
         let mut chat = new_chat();
