@@ -4,6 +4,7 @@
 //! is the driver. Everything it delegates to lives in a sibling module:
 //!
 //! - [`blocks`] — accumulates a turn's content blocks and keeps their order
+//! - [`stream_events`] — drains one model stream into an accumulated turn
 //! - [`tool_stream`] — normalizes provider tool-call streaming into calls
 //! - [`placeholders`] — keeps the transcript API-valid when calls are skipped
 //! - [`retry`] — interruptible waits and the stream-retry budget
@@ -13,32 +14,33 @@ mod billing;
 mod blocks;
 mod placeholders;
 mod retry;
+mod stream_events;
 mod tool_stream;
 
 #[cfg(test)]
 mod tests;
 
-use crate::llm::schema::{FinishReason, ModelStreamEvent};
+use crate::llm::schema::ModelStreamEvent;
 use crate::types::{AgentMessage, AgentToolCall, ContentBlock, ConvertToLLM, Message, ToolCall};
 use anyhow::{anyhow, Result};
 use std::time::Duration;
-use tokio_stream::StreamExt;
 
-use super::{Loop, RunEvent, C_GREEN, C_MAGENTA, C_RESET, DEFAULT_MAX_TURNS};
+use super::{Loop, RunEvent, DEFAULT_MAX_TURNS};
 
 pub(crate) use self::billing::{
     add_request_usage, estimate_usage_cost_with, usage_cost_split_with,
 };
 use self::blocks::{
-    assemble_assistant_parts, bind_stream_message, reasoning_block_mut, record_assistant_block,
-    text_block_mut, AccumulatedReasoningBlock, AccumulatedTextBlock, AssistantBlockOrder,
+    assemble_assistant_parts, bind_stream_message, AccumulatedReasoningBlock, AccumulatedTextBlock,
+    AssistantBlockOrder,
 };
 use self::placeholders::append_skipped_tool_placeholders;
 use self::retry::{is_retryable_size_error, MAX_STREAM_RETRIES};
+use self::stream_events::StreamState;
 use self::tool_stream::{
-    agent_tool_call_to_tool_call, clear_unfinished_provider_identity,
-    merge_repeated_tool_input_start, push_finalized_tool_call, repair_partial_tool_args,
+    agent_tool_call_to_tool_call, clear_unfinished_provider_identity, push_finalized_tool_call,
 };
+
 impl Loop {
     pub async fn run_streaming_with_messages(
         &self,
@@ -66,7 +68,7 @@ impl Loop {
         &self,
         messages: &mut Vec<AgentMessage>,
         ctx: &super::StreamContext,
-        on_text: impl Fn(String) + Send + 'static,
+        mut on_text: impl Fn(String) + Send + 'static,
         on_event: impl Fn(RunEvent) + Send + Sync + 'static,
         mut interrupt_rx: Option<tokio::sync::mpsc::Receiver<()>>,
     ) -> Result<String> {
@@ -649,389 +651,36 @@ impl Loop {
                 });
             }
             // Process stream events
-            let mut assistant_text = retry_text.clone();
-            let mut reasoning_blocks: Vec<AccumulatedReasoningBlock> = Vec::new();
-            let mut text_blocks: Vec<AccumulatedTextBlock> = Vec::new();
-            let mut assistant_block_order: Vec<AssistantBlockOrder> = Vec::new();
-            let mut agent_tool_calls: Vec<AgentToolCall> = vec![];
-            let mut total_usage: Option<crate::types::Usage> = None;
-            let mut current_tool_calls: Vec<Option<AgentToolCall>> = vec![];
-            let mut output_started = false;
-            let mut was_outputting = false;
-            let mut stream_error = None;
-            let mut interrupted_during_stream = false;
-            let mut model_stream_failed = false;
-            // Set when the LLM layer reports a failure or the stream reaches
-            // EOF without a terminal event. Silence alone is not truncation.
-            // The accumulated text is a prefix, not a finished answer.
-            let mut stream_truncated = false;
-            let mut saw_terminal_event = false;
-            // How the truncation was first detected, for the run-terminal
-            // context. Set at the same moment `stream_truncated` flips.
-            let mut truncation_detected_by: Option<&'static str> = None;
-
-            loop {
-                // No event deadline: providers can reason silently for minutes.
-                // Reuse the interrupt helper so flag-only cancellation also wakes
-                // this wait, even without an interrupt channel.
-                let model_event = match self
-                    .await_or_interrupt(rx.next(), interrupt_rx.as_mut())
-                    .await
-                {
-                    Some(Some(event)) => event,
-                    None => {
-                        interrupted_during_stream = true;
-                        stream_error = Some(anyhow!("interrupted"));
-                        break;
-                    }
-                    Some(None) => {
-                        if !saw_terminal_event {
-                            stream_truncated = true;
-                            truncation_detected_by.get_or_insert("eof_no_terminal");
-                        }
-                        break;
-                    }
-                };
-                // Provider indices must never directly control unbounded vector
-                // allocation (including usize::MAX + 1 overflow).
-                if matches!(&model_event,
-                    ModelStreamEvent::ToolInputStart { index, .. }
-                    | ModelStreamEvent::ToolInputDelta { index, .. }
-                    | ModelStreamEvent::ToolInputEnd { index, .. } if *index >= 256)
-                {
-                    let message =
-                        "provider tool index exceeds the 256-call response limit".to_string();
-                    on_event(RunEvent::Model(ModelStreamEvent::Error {
-                        message: message.clone(),
-                    }));
-                    stream_error = Some(anyhow::anyhow!(message));
-                    model_stream_failed = true;
-                    stream_truncated = true;
-                    truncation_detected_by = Some("invalid_tool_index");
-                    break;
-                }
-                // HTTP headers alone do not mean recovery. Wait for real model
-                // progress; EOF cleanup/usage events must not clear the hint.
-                if reconnecting
-                    && matches!(
-                        &model_event,
-                        ModelStreamEvent::TextStart { .. }
-                            | ModelStreamEvent::TextDelta { .. }
-                            | ModelStreamEvent::ReasoningStart { .. }
-                            | ModelStreamEvent::ReasoningDelta { .. }
-                            | ModelStreamEvent::ToolInputStart { .. }
-                            | ModelStreamEvent::ToolInputDelta { .. }
-                            | ModelStreamEvent::Finish { .. }
-                    )
-                {
-                    reconnecting = false;
-                    on_event(RunEvent::StreamResumed);
-                }
-                let mut model_event = model_event;
-                if ctx.segmented_storage {
-                    match &mut model_event {
-                        ModelStreamEvent::ToolInputStart { id, .. } if id.is_empty() => {
-                            *id = crate::utils::generate_entry_id();
-                        }
-                        ModelStreamEvent::ToolInputDelta { index, id, .. }
-                        | ModelStreamEvent::ToolInputEnd { index, id, .. }
-                            if id.is_empty() =>
-                        {
-                            *id = current_tool_calls
-                                .get(*index)
-                                .and_then(Option::as_ref)
-                                .map(|tool| tool.id.clone())
-                                .filter(|id| !id.is_empty())
-                                .unwrap_or_else(crate::utils::generate_entry_id);
-                        }
-                        _ => {}
-                    }
-                    if let ModelStreamEvent::ToolInputEnd { arguments, .. } = &mut model_event {
-                        repair_partial_tool_args(arguments);
-                    }
-                }
-                // Clients treat `error` as terminal. Do not stop their stream
-                // for a disconnect that will be recovered below.
-                let retryable_disconnect = matches!(
-                    &model_event,
-                    ModelStreamEvent::Error { message }
-                        if message.starts_with(crate::llm::UPSTREAM_DISCONNECTED)
-                );
-                if !retryable_disconnect || stream_retry_attempt >= max_stream_retries {
-                    on_event(RunEvent::Model(model_event.clone()));
-                }
-
-                // Close the text-output block before switching to a different
-                // event type — text_end may never arrive from the LLM.
-                let is_text = matches!(model_event, ModelStreamEvent::TextDelta { .. });
-                if self.verbose && was_outputting && !is_text {
-                    crate::eprintln_log!();
-                    was_outputting = false;
-                }
-                if is_text && self.verbose {
-                    was_outputting = true;
-                }
-
-                match model_event {
-                    ModelStreamEvent::ReasoningStart { id } => {
-                        reasoning_block_mut(&mut reasoning_blocks, &id);
-                        record_assistant_block(
-                            &mut assistant_block_order,
-                            AssistantBlockOrder::Reasoning(id),
-                        );
-                        if self.verbose {
-                            crate::eprint_log!("\n{}[thinking]{} ", C_MAGENTA, C_RESET);
-                        }
-                    }
-                    ModelStreamEvent::ReasoningDelta { id, text } => {
-                        reasoning_block_mut(&mut reasoning_blocks, &id)
-                            .text
-                            .push_str(&text);
-                        record_assistant_block(
-                            &mut assistant_block_order,
-                            AssistantBlockOrder::Reasoning(id),
-                        );
-                        if self.verbose {
-                            crate::eprint_log!("{}", text);
-                        }
-                    }
-                    ModelStreamEvent::ReasoningEnd {
-                        id,
-                        provider_metadata,
-                    } => {
-                        reasoning_block_mut(&mut reasoning_blocks, &id).provider_metadata =
-                            provider_metadata;
-                        record_assistant_block(
-                            &mut assistant_block_order,
-                            AssistantBlockOrder::Reasoning(id),
-                        );
-                        if self.verbose {
-                            crate::eprintln_log!(); // blank line after thinking
-                        }
-                    }
-                    ModelStreamEvent::TextDelta { id, text } => {
-                        assistant_text.push_str(&text);
-                        text_block_mut(&mut text_blocks, &id).text.push_str(&text);
-                        record_assistant_block(
-                            &mut assistant_block_order,
-                            AssistantBlockOrder::Text(id),
-                        );
-                        if self.verbose && !output_started {
-                            output_started = true;
-                            crate::eprint_log!("\n{}[output]{} ", C_GREEN, C_RESET);
-                        }
-                        if self.verbose {
-                            crate::eprint_log!("{}", text);
-                        }
-                        on_text(text);
-                    }
-                    ModelStreamEvent::TextStart { id } => {
-                        text_block_mut(&mut text_blocks, &id);
-                        record_assistant_block(
-                            &mut assistant_block_order,
-                            AssistantBlockOrder::Text(id),
-                        );
-                    }
-                    ModelStreamEvent::TextEnd { id } => {
-                        text_block_mut(&mut text_blocks, &id);
-                        record_assistant_block(
-                            &mut assistant_block_order,
-                            AssistantBlockOrder::Text(id),
-                        );
-                        if self.verbose {
-                            crate::eprintln_log!(); // blank line after output
-                        }
-                    }
-                    ModelStreamEvent::ToolInputStart {
-                        index,
-                        id,
-                        name,
-                        arguments,
-                        provider_metadata,
-                    } => {
-                        // Some providers (e.g. GLM/Z.AI without tool_stream)
-                        // send id+name in every argument chunk instead of just
-                        // the first — a repeat is merged into the pending call
-                        // rather than starting a new one.
-                        if merge_repeated_tool_input_start(
-                            &mut current_tool_calls,
-                            index,
-                            &id,
-                            &name,
-                            arguments.as_ref(),
-                            &provider_metadata,
-                        ) {
-                            continue;
-                        }
-                        if index >= current_tool_calls.len() {
-                            current_tool_calls.resize(index + 1, None);
-                        }
-
-                        // Finalize any existing tool call at this index (different id)
-                        if let Some(tc) = current_tool_calls[index].take() {
-                            push_finalized_tool_call(
-                                &mut agent_tool_calls,
-                                &mut assistant_block_order,
-                                tc,
-                            );
-                        }
-
-                        current_tool_calls[index] = Some(AgentToolCall {
-                            id,
-                            name,
-                            args: arguments.unwrap_or(serde_json::Value::Null),
-                            provider_metadata,
-                        });
-                    }
-                    ModelStreamEvent::ToolInputDelta {
-                        index,
-                        id,
-                        delta,
-                        snapshot,
-                    } => {
-                        if index >= current_tool_calls.len() {
-                            current_tool_calls.resize(index + 1, None);
-                        }
-                        if let Some(tc_ref) = &mut current_tool_calls[index] {
-                            if tc_ref.id.is_empty() && !id.is_empty() {
-                                tc_ref.id = id;
-                            }
-                            if let serde_json::Value::String(ref mut s) = tc_ref.args {
-                                // Some proxies (e.g. Anthropic → OpenAI) send the
-                                // full current state of the tool input JSON in every
-                                // delta, not incremental fragments. Detect this by
-                                // checking if the delta starts with '{' — incremental
-                                // OpenAI fragments always start with ',' or another
-                                // continuation character. When the accumulated args
-                                // are empty, just "{}", or a prefix of the delta,
-                                // replace instead of concatenating to avoid corrupt
-                                // JSON like {}{"path":...}.
-                                if snapshot {
-                                    *s = delta;
-                                } else {
-                                    s.push_str(&delta);
-                                }
-                            } else {
-                                tc_ref.args = serde_json::Value::String(delta);
-                            }
-                        } else {
-                            // Delta arrived before start — create placeholder
-                            current_tool_calls[index] = Some(AgentToolCall {
-                                id,
-                                name: String::new(),
-                                args: serde_json::Value::String(delta),
-                                provider_metadata: Default::default(),
-                            });
-                        }
-                    }
-                    ModelStreamEvent::ToolInputEnd {
-                        index,
-                        id,
-                        name,
-                        arguments,
-                        provider_metadata,
-                    } => {
-                        if index >= current_tool_calls.len() {
-                            current_tool_calls.resize(index + 1, None);
-                        }
-                        let slot = current_tool_calls[index].get_or_insert_with(|| AgentToolCall {
-                            id: id.clone(),
-                            name: name.clone(),
-                            args: arguments.clone(),
-                            provider_metadata: provider_metadata.clone(),
-                        });
-                        if !id.is_empty() {
-                            slot.id = id;
-                        }
-                        if !name.is_empty() {
-                            slot.name = name;
-                        }
-                        if !arguments.is_null() {
-                            slot.args = arguments;
-                        }
-                        if !provider_metadata.is_empty() {
-                            slot.provider_metadata = provider_metadata;
-                        }
-                        if let Some(tc) = current_tool_calls[index].take() {
-                            push_finalized_tool_call(
-                                &mut agent_tool_calls,
-                                &mut assistant_block_order,
-                                tc,
-                            );
-                        }
-                    }
-                    ModelStreamEvent::Usage(usage) => {
-                        self.process_usage_event(&usage, &mut total_usage);
-                    }
-                    ModelStreamEvent::Finish { reason, usage } => {
-                        tracing::debug!(model = %self.model, turn, finish_reason = reason.as_str(),
-                            text_bytes = assistant_text.len(), reasoning_blocks = reasoning_blocks.len(),
-                            tool_calls = agent_tool_calls.len(), "LLM generation ended");
-                        saw_terminal_event = true;
-                        if matches!(
-                            &reason,
-                            FinishReason::Incomplete
-                                | FinishReason::Length
-                                | FinishReason::ContentFilter
-                                | FinishReason::Error
-                                | FinishReason::Cancelled
-                                | FinishReason::Paused
-                                | FinishReason::Unknown(_)
-                        ) {
-                            stream_truncated = true;
-                            truncation_detected_by.get_or_insert(match &reason {
-                                FinishReason::Length => "finish_length",
-                                FinishReason::ContentFilter => "finish_content_filter",
-                                FinishReason::Error => "finish_error",
-                                FinishReason::Cancelled => "provider_cancelled",
-                                FinishReason::Paused => "model_paused",
-                                FinishReason::Unknown(_) => "finish_unknown",
-                                _ => "finish_incomplete",
-                            });
-                        }
-                        if let Some(ref usage) = usage {
-                            self.process_usage_event(usage, &mut total_usage);
-                        }
-                        for tc_opt in current_tool_calls.iter_mut() {
-                            if let Some(mut tc) = tc_opt.take() {
-                                clear_unfinished_provider_identity(&mut tc);
-                                push_finalized_tool_call(
-                                    &mut agent_tool_calls,
-                                    &mut assistant_block_order,
-                                    tc,
-                                );
-                            }
-                        }
-                    }
-                    ModelStreamEvent::Error { message } => {
-                        tracing::error!(
-                            turn,
-                            model = %self.model,
-                            output_len = assistant_text.len(),
-                            tool_calls_so_far = agent_tool_calls.len(),
-                            error = %message,
-                            "LLM model stream failed"
-                        );
-                        model_stream_failed = true;
-                        // A model-stream error always leaves the accumulated
-                        // response as a prefix. Preserve both that fact and a
-                        // stable category so clients can show actionable copy
-                        // without matching reqwest/provider wording.
-                        stream_truncated = true;
-                        truncation_detected_by.get_or_insert(
-                            if message.starts_with("[RESPONSE_TIMEOUT]") {
-                                "request_timeout"
-                            } else if message.starts_with(crate::llm::UPSTREAM_DISCONNECTED) {
-                                "upstream_disconnected"
-                            } else {
-                                "model_response_error"
-                            },
-                        );
-                        stream_error = Some(anyhow!(message));
-                        break;
-                    }
-                }
-            }
+            let mut stream = StreamState::new(&retry_text);
+            self.consume_stream(
+                &mut stream,
+                &mut rx,
+                ctx,
+                &mut on_text,
+                &on_event,
+                &mut interrupt_rx,
+                &mut reconnecting,
+                stream_retry_attempt,
+                max_stream_retries,
+                turn,
+            )
+            .await;
+            let StreamState {
+                assistant_text,
+                reasoning_blocks,
+                text_blocks,
+                block_order: mut assistant_block_order,
+                mut agent_tool_calls,
+                total_usage,
+                mut current_tool_calls,
+                output_started,
+                stream_error,
+                interrupted_during_stream,
+                model_stream_failed,
+                stream_truncated,
+                truncation_detected_by,
+                ..
+            } = stream;
 
             // Release the HTTP pump before potentially slow persistence during
             // cancellation. Its tx.closed() branch drops the upstream response.
