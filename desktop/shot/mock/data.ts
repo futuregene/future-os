@@ -1198,6 +1198,39 @@ export const workspaceFiles: Record<string, Array<{ name: string; path: string; 
 };
 
 /**
+ * The expression-parser session's checkout.
+ *
+ * The right-hand Files panel lists the *active workspace*, so a capture that
+ * opens it needs a directory that looks like the repository the conversation is
+ * about: the two files the agent read and edited (`src/parser.rs`, `src/args.rs`),
+ * the test module the diagnosis points at (`src/parser/tests.rs`), and the
+ * manifest and the agent guide beside them. Keyed by path, so nothing else in
+ * the fixture changes.
+ */
+const REPO = `${HOME}/future-os`;
+workspaceFiles[REPO] = [
+  { name: "docs", path: `${REPO}/docs`, isDir: true, size: 0, modified: now - 6 * hour },
+  { name: "src", path: `${REPO}/src`, isDir: true, size: 0, modified: now - 4 * minute },
+  { name: "AGENTS.md", path: `${REPO}/AGENTS.md`, isDir: false, size: 8_960, modified: now - 2 * day },
+  { name: "Cargo.toml", path: `${REPO}/Cargo.toml`, isDir: false, size: 1_940, modified: now - 3 * day },
+  { name: "README.md", path: `${REPO}/README.md`, isDir: false, size: 3_400, modified: now - 9 * day },
+  { name: "rust-toolchain.toml", path: `${REPO}/rust-toolchain.toml`, isDir: false, size: 132, modified: now - 11 * day },
+];
+workspaceFiles[`${REPO}/src`] = [
+  { name: "parser", path: `${REPO}/src/parser`, isDir: true, size: 0, modified: now - 2 * minute },
+  { name: "args.rs", path: `${REPO}/src/args.rs`, isDir: false, size: 4_120, modified: now - 5 * minute },
+  { name: "lexer.rs", path: `${REPO}/src/lexer.rs`, isDir: false, size: 9_870, modified: now - 3 * day },
+  { name: "main.rs", path: `${REPO}/src/main.rs`, isDir: false, size: 2_310, modified: now - 8 * day },
+  { name: "parser.rs", path: `${REPO}/src/parser.rs`, isDir: false, size: 14_260, modified: now - 6 * minute },
+];
+workspaceFiles[`${REPO}/src/parser`] = [
+  { name: "tests.rs", path: `${REPO}/src/parser/tests.rs`, isDir: false, size: 7_540, modified: now - 2 * minute },
+];
+workspaceFiles[`${REPO}/docs`] = [
+  { name: "parser.md", path: `${REPO}/docs/parser.md`, isDir: false, size: 5_180, modified: now - 4 * hour },
+];
+
+/**
  * Source the text preview shows for a demo file, keyed by file name. Files
  * without an entry fall back to the markdown sample. `plot-effect-size.py` is
  * the script the agent's reply quotes, so the file preview and the chat code
