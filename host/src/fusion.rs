@@ -384,10 +384,12 @@ async fn step_inner(store: &Store, run: &Consultation, step: &mut Step) -> Resul
         })
         .await?;
         if let Some(status) = state["requestedRun"]["status"].as_str() {
+            // Each attempt has a fresh child session: its full usage includes
+            // billed cost and cache categories as well as the run token counts.
+            step.usage = state["usage"].clone();
             match status {
                 "completed" => {
                     crate::request_scope::release_run(&step.session_id, &step.agent_run_id);
-                    step.usage = state["requestedRun"]["usage"].clone();
                     let answer = rpc(command("get_last_assistant_text", &step.session_id)).await?;
                     let text = answer["text"]
                         .as_str()

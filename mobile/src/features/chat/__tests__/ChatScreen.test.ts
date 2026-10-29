@@ -1087,6 +1087,16 @@ test("a lean tool row asks this machine for the command the page dropped", async
   expect(mockRemote.resolveToolCallTarget).toHaveBeenCalledWith("call_1", "run_1");
   expect(resolved).toBe("ls -la /tmp");
 });
+
+test("Fusion details preserve step and byte offset through the stable timeline callback", async () => {
+  const card = view().findAllByType("TimelineCard" as never)[0]!;
+  const resolve = card.props.onResolveToolTarget as NonNullable<TimelineCardProps["onResolveToolTarget"]>;
+  mockRemote.resolveToolCallTarget.mockResolvedValueOnce('{"transcript":"evidence"}');
+  const page = { stepId: "step-1", offset: 32768 };
+  await act(async () => { await resolve("fusion-call", "parent-run", page); });
+  expect(mockRemote.resolveToolCallTarget).toHaveBeenCalledWith("fusion-call", "parent-run", page);
+});
+
 });
 
 

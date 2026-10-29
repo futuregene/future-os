@@ -295,6 +295,12 @@ impl Store {
         for id in ids {
             self.change(&id,None,"interrupted",|r|{r.status="interrupted".into();r.error=Some("Host restarted; original consultation was interrupted. Do not silently repeat it.".into());})?;
         }
+        for mut step in self.unfinished_steps()? {
+            step.status = "interrupted".into();
+            step.error = Some("Host restarted; this step was interrupted".into());
+            step.finished_at = Some(now_ms());
+            self.record_step(&step)?;
+        }
         Ok(())
     }
 

@@ -18,6 +18,9 @@
           "wait": 800
         },
         {
+          "eval": "(() => {const text=document.body.innerText; if(text.includes(\"Fusion is unavailable\") || text.includes(\"当前宿主不支持 Fusion\")) throw new Error(\"Fusion detail request failed\"); if(!text.includes(\"Full panel\") && !text.includes(\"完整讨论\")) throw new Error(\"Missing consultation state\"); return \"Fusion details loaded\";})()"
+        },
+        {
           "shot": "d-fusion-discussion.png"
         }
       ],
@@ -45,6 +48,9 @@
         },
         {
           "wait": 300
+        },
+        {
+          "eval": "(() => {const text=document.body.innerText; if(text.includes(\"Fusion is unavailable\") || text.includes(\"当前宿主不支持 Fusion\")) throw new Error(\"Fusion detail request failed\"); if(!text.includes(\"Full panel\") && !text.includes(\"完整讨论\")) throw new Error(\"Missing consultation state\"); return \"Fusion details loaded\";})()"
         },
         {
           "shot": "d-fusion-issues.png"
@@ -88,6 +94,9 @@
         },
         {
           "wait": 600
+        },
+        {
+          "eval": "(() => {const text=document.body.innerText; if(text.includes(\"Fusion is unavailable\") || text.includes(\"当前宿主不支持 Fusion\")) throw new Error(\"Fusion detail request failed\"); if(!text.includes(\"Full panel\") && !text.includes(\"完整讨论\")) throw new Error(\"Missing consultation state\"); return \"Fusion details loaded\";})()"
         },
         {
           "shot": "m-fusion-discussion.png"
@@ -136,6 +145,9 @@
         },
         {
           "wait": 300
+        },
+        {
+          "eval": "(() => {const text=document.body.innerText; if(text.includes(\"Fusion is unavailable\") || text.includes(\"当前宿主不支持 Fusion\")) throw new Error(\"Fusion detail request failed\"); if(!text.includes(\"Full panel\") && !text.includes(\"完整讨论\")) throw new Error(\"Missing consultation state\"); return \"Fusion details loaded\";})()"
         },
         {
           "shot": "m-fusion-issues.png"
