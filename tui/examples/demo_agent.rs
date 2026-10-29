@@ -365,21 +365,47 @@ fn state() -> Value {
         state["activeRun"] = json!({
             "runId": "demo-run-live", "epoch": 1, "state": "running", "lastEventIdx": 0
         });
-        state["queuedRuns"] = json!([
-            {
-                "runId": "demo-run-queued-1", "runSequence": 2,
-                "clientRequestId": "demo-request-queued-1", "state": "queued",
-                "queuePosition": 1, "acceptedAt": "2026-03-04T10:00:00Z",
-                "displayText": "顺手把 tui 的 clippy 警告也清掉"
-            },
-            {
-                "runId": "demo-run-queued-2", "runSequence": 3,
-                "clientRequestId": "demo-request-queued-2", "state": "queued",
-                "queuePosition": 2, "acceptedAt": "2026-03-04T10:00:04Z",
-                "displayText": "再看一下 diff 面板的滚动，别一滚就跳到底\n顺便补个回归测试"
-            }
-        ]);
-        state["queuedCount"] = json!(2);
+        // The prompts waiting behind the reply, in the frame's own language: a
+        // queue band is a list of the reader's *words*, so a Chinese one in an
+        // English frame reads as a mock (the same reason the transcript is
+        // localized). One entry carries a newline on purpose — the band shows it
+        // as `↵`, which is how a two-line prompt survives being one row.
+        let queued: [(&str, &str); 3] = match demo_lang() {
+            DemoLang::Zh => [
+                ("顺手把 tui 的 clippy 警告也清掉", "2026-03-04T10:00:00Z"),
+                (
+                    "再看一下 diff 面板的滚动，别一滚就跳到底\n顺便补个回归测试",
+                    "2026-03-04T10:00:04Z",
+                ),
+                ("跑完把两处改动的 sha 贴一下", "2026-03-04T10:00:09Z"),
+            ],
+            DemoLang::En => [
+                ("Also clear the clippy warnings in `tui`", "2026-03-04T10:00:00Z"),
+                (
+                    "Then look at the diff panel's scrolling — it jumps to the\nbottom. Add a regression test for it.",
+                    "2026-03-04T10:00:04Z",
+                ),
+                ("Paste both commit shas when you are done", "2026-03-04T10:00:09Z"),
+            ],
+        };
+        state["queuedRuns"] = Value::Array(
+            queued
+                .iter()
+                .enumerate()
+                .map(|(index, (text, accepted))| {
+                    json!({
+                        "runId": format!("demo-run-queued-{}", index + 1),
+                        "runSequence": index + 2,
+                        "clientRequestId": format!("demo-request-queued-{}", index + 1),
+                        "state": "queued",
+                        "queuePosition": index + 1,
+                        "acceptedAt": accepted,
+                        "displayText": text,
+                    })
+                })
+                .collect(),
+        );
+        state["queuedCount"] = json!(queued.len());
     }
     state
 }
@@ -426,7 +452,7 @@ fn sessions() -> Value {
             const HOME: &str = "/Users/you/future-os";
             const UI: &str = "/Users/you/future-os/.worktrees/ui";
             const NOTES: &str = "/Users/you/notes";
-            const OTHERS: [(&str, &str, i64, u32); 57] = [
+            const OTHERS: [(&str, &str, i64, u32); 64] = [
                 ("Retry Layer Hides a Silent Stream", HOME, 8, 23),
                 ("Rail: Fold a Workspace Shut", HOME, 26, 9),
                 ("Palette Ranking for Short Queries", HOME, 51, 14),
@@ -442,48 +468,55 @@ fn sessions() -> Value {
                 ("Directory Layout Page", NOTES, 5_400, 2),
                 ("The Palette Needs a Filter Row", UI, 6_200, 8),
                 ("To-do Panel: Dedupe the Goals", HOME, 6_000, 5),
-                ("Stream Events Arrive Twice", HOME, 6_479, 16),
-                ("Tool Results as Transcript Rows", HOME, 6_997, 9),
-                ("Mobile: Follow-up Opens a New Chat", HOME, 7_555, 21),
-                ("Session Recency Is Never Updated", HOME, 8_159, 13),
-                ("Delete a Batch of Sessions", HOME, 8_810, 4),
-                ("The 45s Deadline Has No Closing Line", HOME, 9_514, 17),
-                ("Cache Hit Rate Is 96 Percent", HOME, 10_273, 6),
-                ("Cost per Run, in Credit Units", NOTES, 11_094, 3),
-                ("One Commit per Parser, or Three", HOME, 11_980, 2),
-                ("Guide: Where Each File Lives", NOTES, 12_937, 5),
-                ("Screenshots: Pin the Rail Width", UI, 13_970, 7),
-                ("A grpcurl Probe in a Scratch Home", HOME, 15_085, 8),
-                ("The Goal Plane Forgets a Todo", HOME, 16_290, 11),
-                ("What the Flaky Test Was Waiting For", HOME, 17_591, 9),
-                ("Windows: The Lock File Is Not Atomic", HOME, 18_996, 6),
-                ("One Prompt, Two Sessions", HOME, 20_512, 4),
-                ("The Transcript Loses Its Last Row", HOME, 22_151, 12),
-                ("Colour Contrast in the Light Theme", UI, 23_919, 9),
-                ("Scroll: The Ceiling Counts the Window", HOME, 25_830, 7),
-                ("Help Overlay Lists Verbs It Lacks", HOME, 27_892, 3),
-                ("Typed RPC: Retire the JSON Fallback", HOME, 30_120, 15),
-                ("Branch Protection Wants Main Merged", HOME, 32_525, 2),
-                ("Coverage: The src-tauri Pair", HOME, 35_122, 8),
-                ("Why the Wheel Jumps Two Lines", UI, 37_927, 5),
-                ("Tool Call Arguments Are Truncated", HOME, 40_956, 10),
-                ("Reading a 40MB Log Without Freezing", HOME, 44_227, 6),
-                ("The Model Picker Remembers Nothing", HOME, 47_759, 4),
-                ("Diff Review: Fold Long Hunks", UI, 51_573, 11),
-                ("i18n: The Usage Panel in English", HOME, 55_691, 7),
-                ("Sandbox Tier Names Are Misleading", NOTES, 60_138, 3),
-                ("Keep the Worktree Until It Lands", HOME, 64_941, 2),
-                ("Windows: The Pipe Name Is Per User", HOME, 70_127, 5),
-                ("Two Agents on One Socket", HOME, 75_727, 3),
-                ("The Composer Grows With the Draft", UI, 81_775, 9),
-                ("Screenshots: A Wider Rail", UI, 88_305, 4),
-                ("Markdown Tables Break on Wide Cells", HOME, 95_357, 6),
-                ("The Diff Panel Reads the Index", HOME, 102_972, 7),
-                ("Stale Locks in the Finish Lock", HOME, 111_195, 2),
-                ("Coverage: Merge the Two Runs", HOME, 120_075, 8),
-                ("A Session List That Fits", NOTES, 129_664, 5),
-                ("Reading the Goal Plane's Ledger", HOME, 140_018, 11),
-                ("One Prompt, Two Answers", HOME, 151_200, 3),
+                ("Stream Events Arrive Twice", HOME, 6_432, 16),
+                ("Tool Results as Transcript Rows", HOME, 6_896, 9),
+                ("Mobile: Follow-up Opens a New Chat", HOME, 7_393, 21),
+                ("Session Recency Is Never Updated", HOME, 7_925, 13),
+                ("Delete a Batch of Sessions", HOME, 8_496, 4),
+                ("The 45s Deadline Has No Closing Line", HOME, 9_109, 17),
+                ("Cache Hit Rate Is 96 Percent", HOME, 9_765, 6),
+                ("Cost per Run, in Credit Units", NOTES, 10_468, 3),
+                ("One Commit per Parser, or Three", HOME, 11_223, 2),
+                ("Guide: Where Each File Lives", NOTES, 12_031, 5),
+                ("Screenshots: Pin the Rail Width", UI, 12_898, 7),
+                ("A grpcurl Probe in a Scratch Home", HOME, 13_827, 8),
+                ("The Goal Plane Forgets a Todo", HOME, 14_824, 11),
+                ("What the Flaky Test Was Waiting For", HOME, 15_892, 9),
+                ("Windows: The Lock File Is Not Atomic", HOME, 17_037, 6),
+                ("One Prompt, Two Sessions", HOME, 18_264, 4),
+                ("The Transcript Loses Its Last Row", HOME, 19_580, 12),
+                ("Colour Contrast in the Light Theme", UI, 20_991, 9),
+                ("Scroll: The Ceiling Counts the Window", HOME, 22_504, 7),
+                ("Help Overlay Lists Verbs It Lacks", HOME, 24_125, 3),
+                ("Typed RPC: Retire the JSON Fallback", HOME, 25_863, 15),
+                ("Branch Protection Wants Main Merged", HOME, 27_727, 2),
+                ("Coverage: The src-tauri Pair", HOME, 29_725, 8),
+                ("Why the Wheel Jumps Two Lines", UI, 31_866, 5),
+                ("Tool Call Arguments Are Truncated", HOME, 34_163, 10),
+                ("Reading a 40MB Log Without Freezing", HOME, 36_624, 6),
+                ("The Model Picker Remembers Nothing", HOME, 39_263, 4),
+                ("Diff Review: Fold Long Hunks", UI, 42_092, 11),
+                ("i18n: The Usage Panel in English", HOME, 45_125, 7),
+                ("Sandbox Tier Names Are Misleading", NOTES, 48_376, 3),
+                ("Keep the Worktree Until It Lands", HOME, 51_862, 2),
+                ("Windows: The Pipe Name Is Per User", HOME, 55_598, 5),
+                ("Two Agents on One Socket", HOME, 59_604, 3),
+                ("The Composer Grows With the Draft", UI, 63_899, 9),
+                ("Screenshots: A Wider Rail", UI, 68_503, 4),
+                ("Markdown Tables Break on Wide Cells", HOME, 73_439, 6),
+                ("The Diff Panel Reads the Index", HOME, 78_730, 7),
+                ("Stale Locks in the Finish Lock", HOME, 84_403, 2),
+                ("Coverage: Merge the Two Runs", HOME, 90_484, 8),
+                ("A Session List That Fits", NOTES, 97_004, 5),
+                ("Reading the Goal Plane's Ledger", HOME, 103_993, 11),
+                ("One Prompt, Two Answers", HOME, 111_486, 3),
+                ("Where the Context Window Grows", HOME, 119_519, 5),
+                ("Screenshots: The Queue Band", UI, 128_131, 4),
+                ("A Prompt That Is Two Lines", HOME, 137_363, 3),
+                ("Sent Together, Not One by One", HOME, 147_260, 6),
+                ("The Queue Survives a Reopen", HOME, 157_871, 2),
+                ("The /queue List Has Its Own Rows", UI, 169_245, 5),
+                ("Closing the Editor Keeps the Draft", HOME, 181_440, 3),
             ];
             // The session the frame opens is the newest row, so it cannot be in
             // the const table: its title comes from `session_name()`.

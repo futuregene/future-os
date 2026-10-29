@@ -1520,6 +1520,10 @@ TUI_SCENARIO_KEYS: dict[str, str] = {
 TUI_SCENARIO_AGENT_ENV: dict[str, dict[str, str]] = {
     "scrolled": {"FUTURE_DEMO_LONG": "1"},
     "queue": {"FUTURE_DEMO_QUEUE": "1"},
+    # `composing` is the frame of a reader mid-write *behind a reply in flight*:
+    # the composer's draft, the queue band above it, and the last turn's opened
+    # process above that. The band needs the demo agent to report queued runs.
+    "composing": {"FUTURE_DEMO_QUEUE": "1"},
 }
 
 # Scenarios that end by opening the folded process of a turn — the row that reads
@@ -1537,11 +1541,10 @@ TUI_FOLD_WORDS: tuple[str, ...] = ("tool call", "工具调用")
 # a fold of its own, so the thought is one more press away.
 TUI_THOUGHT_WORDS: tuple[str, ...] = ("thinking", "思考")
 
-TUI_SCENARIO_FOLD: dict[str, tuple[tuple[str, object], ...]] = {
-    # Open the last turn's process (its tool calls and thought markers), then walk
-    # into the first thought with `tab` and open it with `enter`: a thought row is
-    # a fold of its own, so its words are one more press away.
-    "composing": (("row", TUI_FOLD_WORDS), ("keys", b"\t\r")),
+TUI_SCENARIO_FOLD: dict[str, tuple[tuple[tuple[str, ...], bool], ...]] = {
+    # Open the last turn's process (its tool calls and thought markers), then the
+    # thought inside it — the row that just appeared under the one we pressed.
+    "composing": ((TUI_FOLD_WORDS, True), (TUI_THOUGHT_WORDS, False)),
 }
 
 # Seconds between the steps *after* the first one. The default capture budget is
@@ -1640,33 +1643,44 @@ def _tui_click_tab(words: tuple[str, ...], cols: int, rows: int, settle: float):
     return (settle, action)
 
 
-def _tui_click_fold_row(words: tuple[str, ...], cols: int, rows: int, settle: float):
-    """A step that clicks the lowest transcript row whose text names a fold.
+def _tui_click_row(
+    words: tuple[str, ...], cols: int, rows: int, settle: float, *, last: bool = True
+):
+    """A step that clicks a transcript row whose own marker introduces `words`.
 
-    A finished turn keeps its process shut: one row reading `▸ 2 tool calls ·
-    1 thought`, which a click (or `enter` on the cursor) opens into the calls,
-    their arguments and the reasoning between them. A picture of a transcript
-    therefore shows the *fold*, never the work — unless the capture presses it.
+    Two rows are opened this way, and the difference is only *which* one:
 
-    The row is resolved from the frame on screen, like the tabs and the divider:
-    where the fold sits moves with the transcript, the window and the terminal
-    size. The *lowest* one is pressed on purpose — it is the fold nearest the
-    tail, so what it opens lands above the composer instead of off the top.
+    * a finished turn's process — `▸ 2 tool calls · 1 thought` — which a click
+      opens into the calls, their arguments and the reasoning between them. A
+      transcript only ever shows the fold, never the work, unless the capture
+      presses it. The **lowest** such row is the one to press: it sits nearest
+      the tail, so what it opens lands above the composer instead of off the top.
+    * a thought *inside* an opened process — `▸ thinking` — which is a fold of its
+      own. That one is the **first** on screen: it is the process that was just
+      opened.
+
+    The row is resolved from the frame on screen, like the tabs and the divider,
+    because where it sits moves with the transcript, the window and the terminal
+    size. Clicking it is also what keeps this deterministic: `tab` walks the
+    stops in reading order from wherever the cursor happens to be, which opened a
+    *different* fold when the view was scrolled — measured, and the frame looked
+    plausible anyway.
     """
 
     def action(text: str) -> bytes | None:
         import tui_terminal
 
         cells, _ = tui_terminal.screen_from_stream(text, cols, rows)
+        order = range(len(cells) - 1, -1, -1) if last else range(len(cells))
         target: tuple[int, int] | None = None
-        for row_index in range(len(cells) - 1, -1, -1):
+        for row_index in order:
             painted = _painted_cells(cells[row_index])
             # The row's own marker, wherever the rail ends it: with the sidebar on
             # the left, a transcript row is not the start of the *line*.
             for at, (column, ch) in enumerate(painted):
                 if ch not in ("▸", "▾"):
                     continue
-                # …and the summary it opens must follow it on the same row.
+                # …and the label it opens must follow it on the same row.
                 following = "".join(c for _, c in painted[at : at + 40])
                 if any(word in following for word in words):
                     target = (row_index, column)
@@ -1675,7 +1689,7 @@ def _tui_click_fold_row(words: tuple[str, ...], cols: int, rows: int, settle: fl
                 break
         if target is None:
             raise SystemExit(
-                f"error: the frame has no folded {words!r} row to open at {cols}x{rows}. "
+                f"error: the frame has no {words!r} row to open at {cols}x{rows}. "
                 "The scenario needs a transcript whose visible turns made tool calls "
                 "(and `--lang` has to match the demo agent's data language)."
             )
@@ -1737,11 +1751,8 @@ def _tui_steps(scenario: str, cols: int, rows: int, settle: float = 2.5, lang: s
         if lang.startswith("en"):
             keys = TUI_SCENARIO_KEYS_EN.get(scenario, keys)
         steps = [(settle, keys.encode())] if keys else []
-        for kind, payload in TUI_SCENARIO_FOLD.get(scenario, ()):
-            if kind == "row":
-                steps.append(_tui_click_fold_row(payload, cols, rows, TUI_STEP_GAP))
-            else:
-                steps.append((TUI_STEP_GAP, payload))
+        for words, last in TUI_SCENARIO_FOLD.get(scenario, ()):
+            steps.append(_tui_click_row(words, cols, rows, TUI_STEP_GAP, last=last))
         return steps
     if scenario in TUI_SCENARIO_TABS:
         return [_tui_click_tab(TUI_SCENARIO_TABS[scenario], cols, rows, settle)]
