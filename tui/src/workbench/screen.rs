@@ -45,7 +45,7 @@ pub(crate) fn compose(
     let frame: Layout = layout::layout_with_position(w, h, sidebar_w, workbench.sidebar_position);
 
     let lang = workbench.lang;
-    let (header_lines, doors) = header(&palette, data, &frame, columns, &workbench.keys, lang);
+    let (header_lines, doors) = header(&palette, data, &frame, columns, lang);
     paint(&mut rows, frame.header, header_lines);
     for (id, (x, w)) in doors {
         workbench
@@ -383,7 +383,6 @@ fn header(
     data: &WorkbenchData,
     frame: &Layout,
     columns: usize,
-    keys: &preferences::Keybindings,
     lang: Language,
 ) -> (Vec<String>, Vec<DoorSpan>) {
     let compact = frame.compact;
@@ -401,30 +400,25 @@ fn header(
     // tail, so the chat list is the last one standing: it is the only door with
     // no other pointer route (the rail is a keyboard surface, and a narrow frame
     // does not even put it beside the conversation).
+    //
+    // A door is its *name*, never `[ctrl+r] 会话`: the header names where the
+    // reader can go, and the keys are the footer's and the help box's to teach.
+    // A chord printed here was one more thing to read on the row that names the
+    // conversation, and it repeated a key the hint row already spells.
     let doors: Vec<Door> = vec![
         Door {
             id: "header.sessions",
-            text: header_button(
-                palette,
-                keys,
-                preferences::Action::Sessions,
-                t(lang, Key::TabSessions),
-            ),
+            text: header_button(palette, t(lang, Key::TabSessions)),
         },
         Door {
             id: "header.files",
-            text: header_button(
-                palette,
-                keys,
-                preferences::Action::Files,
-                t(lang, Key::FilesTitle),
-            ),
+            text: header_button(palette, t(lang, Key::FilesTitle)),
         },
         Door {
             id: "header.git",
             // `git` is a proper noun: it reads the same in both languages, and
             // the panel's own title says `git · <repo>`.
-            text: header_button(palette, keys, preferences::Action::Git, "git"),
+            text: header_button(palette, "git"),
         },
     ];
     let doors: Vec<Door> = doors
@@ -578,27 +572,15 @@ fn door_spans(doors: &[Door], left: usize, pad: usize) -> Vec<DoorSpan> {
     spans
 }
 
-/// The header's button: `[ctrl+f] 文件`, the same `[key] label` shape the
-/// approval box uses for its answers — or the bare name when the action has no
-/// chord, because `[] 文件` reads as a broken label.
+/// The header's button: the door's own name, in the accent tone.
 ///
-/// A pointer target on a header row has to look like one, and the chord beside
-/// the name is how a reader who never opened the help discovers the key.
-fn header_button(
-    palette: &Palette,
-    keys: &preferences::Keybindings,
-    action: preferences::Action,
-    label: &str,
-) -> String {
-    let key = keys.key(action);
-    let label = palette.strong(palette.iris, label);
-    if key.is_empty() {
-        return label;
-    }
-    format!(
-        "{} {label}",
-        palette.text(palette.iris, &format!("[{key}]"))
-    )
+/// A pointer target on a header row has to look like one, and a name in the
+/// accent colour is how this surface marks the things a click opens. The chord
+/// it answers to is not painted beside it: the footer's hint row and the help
+/// box are where keys are taught, and a header that repeated them spent the row
+/// that names the conversation.
+fn header_button(palette: &Palette, label: &str) -> String {
+    palette.strong(palette.iris, label)
 }
 
 /// The header's one row, resolved: how much of the corner is drawn, which doors
@@ -673,14 +655,6 @@ fn header_right(palette: &Palette, data: &WorkbenchData, avail: usize) -> String
 }
 
 // ─── conversation ──────────────────────────────────────────────────────────
-
-/// The widest a transcript picture's thumbnail may be drawn, in cells.
-///
-/// A picture in the conversation is a *preview*: the reader can see what it is
-/// and open it in the box, which is where the whole thing lives. Capped rather
-/// than fitted to the content width so a wide screenshot does not take the same
-/// room as the reply it came with.
-const PICTURE_SLOT_COLUMNS: usize = 28;
 
 /// A picture the preview box wants on screen, in frame cells.
 ///
@@ -906,30 +880,6 @@ fn conversation(
         .collect();
     let badge = usize::from(start > 0);
     let shown = end.saturating_sub(start);
-    // The pictures in this window, by the row their slot starts on. An overlay
-    // covers the transcript, so a picture under it is not asked for — and one
-    // already placed is removed, because the driver places what the frame asks
-    // for and nothing else.
-    let mut window_pictures: Vec<(usize, (usize, usize))> = Vec::new();
-    let can_place = !matches!(
-        crate::terminal_image::get_capabilities().images,
-        crate::terminal_image::ImageProtocol::None
-    );
-    if workbench.overlay.is_none() && can_place {
-        for (index, picture) in data.pictures.iter().enumerate() {
-            if picture.row < start || picture.row >= end {
-                continue;
-            }
-            // A block cut by the bottom of the window shows the part of the
-            // picture that fits: a bitmap placed over rows the frame never
-            // painted would land on the composer.
-            let visible_rows = picture.rows.min(end - picture.row);
-            if visible_rows == 0 {
-                continue;
-            }
-            window_pictures.push((picture.row, (index, visible_rows)));
-        }
-    }
     let mut lines: Vec<String> = Vec::new();
     if start > 0 {
         lines.push(fit(
@@ -992,49 +942,6 @@ fn conversation(
                     format!("chat.row.{}", stop.row),
                 );
             }
-        }
-        // A picture's block: a bitmap the terminal places over the empty cells
-        // the renderer reserved, and a click target over all of them — a
-        // pointer aimed at a three-column portrait is a pointer aiming at
-        // nothing.
-        if let Some((picture_index, visible_rows)) = window_pictures
-            .iter()
-            .find(|(row, _)| *row == index)
-            .map(|(_, block)| *block)
-        {
-            let picture = &data.pictures[picture_index];
-            let slot_w = inner.clamp(1, PICTURE_SLOT_COLUMNS);
-            let x = area.x.saturating_add(padding as u16);
-            match picture.pixels.as_ref().filter(|pixels| !pixels.is_empty()) {
-                Some(pixels) => {
-                    // The visible part of the slot, cropped off the top of the
-                    // picture: the same scale as the whole block, so a block
-                    // half-scrolled out is cut, not shrunk.
-                    let crop_h = (pixels.height * visible_rows / picture.rows.max(1)).max(1);
-                    let crop = (0, 0, pixels.width, crop_h.min(pixels.height));
-                    let (cells_w, cells_h) =
-                        image_view::fitted_cells(pixels.width, crop.3, slot_w, visible_rows, 1);
-                    workbench.image_requests.push(PlacedPicture {
-                        request: ImageRequest {
-                            source: image_source_key(&picture.path, pixels, crop),
-                            x,
-                            y,
-                            columns: cells_w.max(1) as u16,
-                            rows: cells_h.max(1) as u16,
-                            crop,
-                        },
-                        pixels: pixels.clone(),
-                    });
-                }
-                // The block is up and the picture is one decode away. Asking is
-                // a set insert in the driver, which is what keeps a frame that
-                // paints forty times a second from queueing forty reads.
-                None => workbench.want_picture(&picture.path),
-            }
-            workbench.hit_map().push(
-                Rect::new(x, y, slot_w as u16, visible_rows as u16),
-                format!("chat.picture.{picture_index}"),
-            );
         }
     }
     // Bottom-anchored like a chat view: a short conversation sits on the input
@@ -1461,12 +1368,12 @@ fn sidebar_rows(
         );
         x = x.saturating_add(tab_width + 1);
     }
-    // A focused rail says which keys work from here: `shift+←→` the tabs,
-    // `shift+↑↓` the conversations, with the chat following the cursor. `↑↓`
-    // alone only moves the list cursor and `⏎` only opens what it stands on, so
-    // a reader who guessed wrong learns the chords here. It costs the list one
-    // row and saves the guesswork, so it is only shown while the rail actually
-    // owns the keys.
+    // A focused rail says which keys work from here: `ctrl+↑↓` switch the
+    // conversation (the chat follows the cursor, from here or from the draft),
+    // `shift+←→` the tabs. `↑↓` alone move this list's cursor and `⏎` only opens
+    // what it stands on. A reader who guessed wrong learns the chords here; it
+    // costs the list one row and saves the guesswork, so it is only shown while
+    // the rail actually owns the keys.
     let footer = usize::from(workbench.sidebar_focus && area.h >= 4);
     let content = Rect::new(area.x, area.y + 1, area.w, area.h - 1 - footer as u16);
     let index = workbench.panel.index();
@@ -4218,9 +4125,11 @@ mod tests {
             "{row:?}"
         );
         assert!(!row.contains("已"), "{row:?}");
-        // Ten cells narrower, the corner is what pays: the doors and the brand
-        // stay, the build number goes, and nothing is cut in half on the way.
-        let rows = workbench.render(&data, 90, 24);
+        // Narrower still, the corner is what pays: the doors stay, the build
+        // number goes, and nothing is cut in half on the way. (The doors are
+        // their names now, so the rung where this happens is a lot further left
+        // than it was when each one carried its chord.)
+        let rows = workbench.render(&data, 60, 24);
         let row = plain(&rows[0]);
         assert!(!row.contains("v0.0.2"), "{row:?}");
         assert!(row.trim_end().ends_with('●'), "{row:?}");

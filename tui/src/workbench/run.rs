@@ -497,9 +497,6 @@ async fn event_loop(
                         workbench.set_preview_siblings(siblings);
                     }
                 }
-                // A decoded thumbnail is a repaint: its slot is already on
-                // screen, waiting for the picture (see `draw`).
-                let pictures_arrived = live.poll_thumbnails();
                 paint = clock.tick(
                     animating,
                     workbench.spinner_frame(),
@@ -508,8 +505,7 @@ async fn event_loop(
                 ) || changed
                     || arrived
                     || connected
-                    || preview_arrived
-                    || pictures_arrived;
+                    || preview_arrived;
             }
             notice = update_notice(update_rx) => {
                 if let Some(notice) = notice {
@@ -617,10 +613,10 @@ impl PendingOpen {
 
 /// The net step a *session* key asks for, if this event is one.
 ///
-/// The driver reads this before the key reaches `quit`, so a held `shift+↑` /
-/// `shift+↓` becomes one switch instead of one per repeat. The guards are the
-/// same ones that decide whether any global shortcut fires: an overlay owns the
-/// keys it paints.
+/// The driver reads this before the key reaches `quit`, so a held `ctrl+↑` /
+/// `ctrl+↓` (or `shift+↑` / `shift+↓`) becomes one switch instead of one per
+/// repeat. The guards are the same ones that decide whether any global shortcut
+/// fires: an overlay owns the keys it paints.
 fn session_step_of(workbench: &Workbench, event: &WbEvent) -> Option<i32> {
     let WbEvent::Key(key) = event else {
         return None;
@@ -1736,13 +1732,6 @@ fn draw(
         terminal.write(&bytes);
     }
     paint_images(terminal, workbench, &painted.written);
-    // The pictures this frame could not draw yet: the adapter reads them off
-    // the loop, and the next paint puts them in the slots that are already on
-    // screen.
-    let wanted = std::mem::take(&mut workbench.picture_wants);
-    if !wanted.is_empty() {
-        live.want_pictures(wanted);
-    }
     Ok(())
 }
 
