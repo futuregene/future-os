@@ -78,11 +78,10 @@ struct Paging {
 /// ([`super::Workbench::surface_command`]) and this list have to account for
 /// every entry exactly once. That is the check whose absence let five entries
 /// advertise themselves and then answer `Unknown command`.
-pub const APP_COMMANDS: [&str; 22] = [
+pub const APP_COMMANDS: [&str; 21] = [
     "/new",
     "/stop",
     "/reply-detail",
-    "/tool-output",
     "/export",
     "/quit",
     "/copy",
@@ -324,7 +323,7 @@ impl Live {
         let client = Arc::new(client.with_no_context_files(no_context_files));
 
         // The reading level is not persisted: every terminal starts folded, and
-        // `ctrl+e` expands for the run it is pressed in. See `ReplyDetail`.
+        // `/reply-detail` expands for the run it is used in. See `ReplyDetail`.
         let detail = ReplyDetail::default();
         // The stored preference decides the adapter's language before anything
         // is painted, so the first frame is already in the reader's language.
@@ -1193,15 +1192,6 @@ impl Live {
         self.detail
     }
 
-    /// Expand or collapse every tool call's body (`/tool-output`).
-    ///
-    /// A view toggle like `ctrl+e`, not a preference, and — unlike a turn — not
-    /// new output either: the revision is left alone, so a reader scrolled up
-    /// does not get the `↓ new output` marker for rows they opened themselves.
-    pub fn toggle_tool_output(&mut self) -> bool {
-        self.chat.toggle_tool_output_expanded()
-    }
-
     // ─── painting ─────────────────────────────────────────────────────
 
     /// What the activity row is showing, without building a frame.
@@ -1932,16 +1922,11 @@ impl Live {
             "launchpad.approval" => self.cycle_mode().await,
             "launchpad.workspace" => self.cycle_pending_workspace(),
             "reply-detail" => {
-                // `ctrl+e`'s cycle: every slice, then the work folded, then the
-                // process folded too — one press folds one more thing away.
+                // The reading level's cycle: every slice, then the work folded,
+                // then the process folded too — one use folds one more thing
+                // away.
                 let next = self.detail.next();
                 self.set_detail(next);
-            }
-            // The bodies under the tool rows: one row per call is the point of
-            // the transcript, and this is the door that opens a body (`ctrl+g`
-            // answered it before the chord became the git browser).
-            "tool-output" => {
-                self.toggle_tool_output();
             }
             "refresh" => {
                 self.refresh_state().await;
@@ -4605,43 +4590,6 @@ mod tests {
             .join("\n")
     }
 
-    /// `/tool-output` is the one door to a tool call's body: the chord that used
-    /// to open it (`ctrl+g`) is the git browser now, and the transcript's own
-    /// hint names this verb instead. It is a view toggle — the reader is asking
-    /// to see what this client already has, so nothing goes to the agent — and
-    /// pressing it again puts the transcript back to one row per call.
-    #[tokio::test]
-    async fn tool_output_toggles_the_bodies_without_asking_the_agent() {
-        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[(
-            "get_state",
-            r#"{"sessionId":"s1"}"#,
-        )]);
-        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
-        let (mut live, _events) = Live::attach(&addr, Some("s1"), false, None)
-            .await
-            .expect("attach to the test agent");
-        let before = seen.lock().unwrap().len();
-        // One paint, so the toggle has a transcript to rebuild (an unpainted
-        // chat only records that it owes a frame).
-        live.chat.render_all(100);
-        let renders = live.chat.full_renders();
-
-        live.apply(WbAction::Command("/tool-output".into())).await;
-        assert!(live.chat.tool_output_expanded(), "the bodies are open");
-        assert_eq!(
-            seen.lock().unwrap().len(),
-            before,
-            "a view toggle reaches the agent with nothing"
-        );
-        assert!(
-            live.chat.full_renders() > renders,
-            "the transcript is rebuilt for the rows it just gained"
-        );
-
-        live.apply(WbAction::Command("/tool-output".into())).await;
-        assert!(!live.chat.tool_output_expanded(), "and closed again");
-    }
-
     /// Deleting the conversation on screen opens the one that takes its place.
     ///
     /// The transcript must never stay on a conversation the agent no longer
@@ -4695,7 +4643,7 @@ mod tests {
     }
 
     /// A restart opens folded, even from a `settings.json` that still carries
-    /// the level the old `ctrl+e` used to write.
+    /// the level the old `ctrl+e` chord used to write.
     ///
     /// `replyDetail` is retired with the persistence: peeking at the process is
     /// a view toggle for the run it happens in, and once it wrote itself back

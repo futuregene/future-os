@@ -501,7 +501,6 @@ pub enum Key {
     CmdModel,
     CmdLanguage,
     CmdReplyDetail,
-    CmdToolOutput,
     CmdWorkspace,
     CmdTheme,
     CmdUsage,
@@ -958,7 +957,6 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "过程展示：只留回答 / 全部过程",
             "Process detail: answer only / the whole process",
         ),
-        CmdToolOutput => ("工具调用正文：展开 / 收起", "Tool call bodies: expand / collapse"),
         CmdWorkspace => ("workspace 目录", "Workspace directory"),
         CmdTheme => ("切换主题", "Switch theme"),
         CmdUsage => ("用量与成本", "Usage and cost"),
@@ -1357,7 +1355,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 328] = {
+    const ALL_KEYS: [Key; 327] = {
         use Key::*;
         [
             TabTodo,
@@ -1579,7 +1577,6 @@ mod tests {
             CmdModel,
             CmdLanguage,
             CmdReplyDetail,
-            CmdToolOutput,
             CmdWorkspace,
             CmdTheme,
             CmdUsage,
