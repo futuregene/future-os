@@ -4110,11 +4110,6 @@ impl Workbench {
             // `PickerKind::from_command` opens it the way `/model` and `/theme`
             // are opened, so the rows, the filter and the hit regions are one
             // implementation.
-            // `future tui` has no transcript dump of its own: the two real
-            // doors to the whole record are named instead.
-            "transcript" => VerbOutcome::Done {
-                notice: Some(t(self.lang, Key::NoticeTranscript).into()),
-            },
             // `/lang` never lands here: the driver opens the picker for it
             // (`PickerKind::from_command`), the same way `/model` and `/theme`
             // work, so the rows, the filter and the hit regions are one
@@ -4505,7 +4500,7 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
 /// The command palette's entries: `(command, description)`. Kept here rather
 /// than in the app so the palette, the help overlay and the tests share one
 /// list.
-pub const COMMANDS: [(&str, Key); 34] = [
+pub const COMMANDS: [(&str, Key); 33] = [
     ("/new", Key::CmdNew),
     ("/stop", Key::CmdStop),
     ("/delete", Key::CmdDelete),
@@ -4537,7 +4532,6 @@ pub const COMMANDS: [(&str, Key); 34] = [
     ("/theme", Key::CmdTheme),
     ("/preferences", Key::CmdPreferences),
     ("/export", Key::CmdExport),
-    ("/transcript", Key::CmdTranscript),
     ("/help", Key::CmdHelp),
     ("/quit", Key::CmdQuit),
 ];
@@ -5261,8 +5255,11 @@ mod tests {
     /// A table test is the only way this does not rot: five entries
     /// (`/usage`, `/skills`, `/workspace`, `/export`, `/transcript`) used to be
     /// listed, selectable, and then answered `Unknown command` by the agent,
-    /// which has no such commands. Adding a sixth entry without a handler now
-    /// fails here instead of in front of the reader.
+    /// which has no such commands. Adding another entry without a handler now
+    /// fails here instead of in front of the reader. (`/transcript` was one of
+    /// the five; it is gone — a verb whose whole answer was "use `/export`"
+    /// spent a palette row on nothing, and both doors it named are advertised
+    /// on their own rows.)
     #[test]
     fn every_palette_entry_has_a_handler() {
         let data = demo::chat();
@@ -5404,7 +5401,7 @@ mod tests {
     /// The verbs that cannot be carried out here answer with what *is* true
     /// instead of leaving the reader at a dead end.
     #[test]
-    fn workspace_and_transcript_explain_themselves() {
+    fn workspace_is_a_picker_and_export_stays_the_agents() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         // `/workspace` is the workspace chooser now: the directory the session
@@ -5430,18 +5427,6 @@ mod tests {
             .collect();
         assert_eq!(current.len(), 1, "{:?}", view.rows);
         workbench.overlay = None;
-        match workbench.surface_command("/transcript", &data) {
-            VerbOutcome::Done {
-                notice: Some(notice),
-            } => {
-                assert!(notice.contains("/export"), "points at the export: {notice}");
-                assert!(
-                    notice.contains("/reply-detail"),
-                    "and at the detail toggle: {notice}"
-                );
-            }
-            other => panic!("/transcript must explain itself: {other:?}"),
-        }
         // The ones that need the agent stay the agent's.
         assert_eq!(
             workbench.surface_command("/export", &data),
