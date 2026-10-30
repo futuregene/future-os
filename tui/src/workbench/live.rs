@@ -325,14 +325,43 @@ pub struct Live {
     /// driver's own clock (see [`Self::start_step_switch`]). One at a time,
     /// newest wins: an answer for anything else is dropped on arrival.
     switch_load: Option<String>,
-    /// Where a switch read hands its answer to the driver's loop. `None` in a
-    /// surface nobody drives (tests, the demos), where every switch waits for
-    /// its own answer instead.
-    switch_tx: Option<tokio::sync::mpsc::UnboundedSender<SwitchLoaded>>,
     /// A switch this client began and did not wait for (see
     /// [`Self::open_conversation`]): the driver's cue that the rail's cursor
     /// belongs to the answer rather than to the frame it is about to paint.
     switch_started: bool,
+    /// The page above the transcript that is out with the agent, with the
+    /// window it was asked for (`session_id`, `next_offset`).
+    older_load: Option<(String, i64)>,
+    /// A state re-read is out (see [`Self::begin_state_refresh`]): a second one
+    /// waits for it, so two answers cannot land out of order and leave the
+    /// footer describing the older one.
+    state_refresh: bool,
+    /// Bumped for every `/git` read, so a view read for a tab the reader has
+    /// already left cannot install itself over the one they asked for next.
+    git_rev: u64,
+    /// Where a read hands its answer to the driver's loop. `None` in a surface
+    /// nobody drives (tests, the demos): those doors wait for their own answers
+    /// instead.
+    load_tx: Option<tokio::sync::mpsc::UnboundedSender<Loaded>>,
+}
+
+/// One read the surface started and does not wait for, on its way back to the
+/// driver's loop.
+///
+/// Every door that would otherwise park the loop behind the agent or a `git`
+/// process sends its answer here: a switch (`Live::start_step_switch`), the page
+/// above the transcript (`Live::begin_load_older`), the `/git` panel
+/// (`Live::begin_git_read`) and the footer's state at a turn boundary
+/// (`Live::begin_state_refresh`). The loop installs each one on its own thread,
+/// which is where the selection it has to be checked against lives.
+pub enum Loaded {
+    Switch(SwitchLoaded),
+    Older(OlderPage),
+    Git {
+        rev: u64,
+        view: super::state::GitView,
+    },
+    State(Result<RpcSessionState, String>),
 }
 
 /// The agent's answer to the two reads a switch makes, handed from the task
@@ -342,6 +371,17 @@ pub struct SwitchLoaded {
     /// against before installing anything.
     pub id: String,
     pub state: Result<RpcSessionState, String>,
+    pub page: Result<SessionEntriesPage, String>,
+}
+
+/// The page above what the transcript has loaded, and the window it answers.
+pub struct OlderPage {
+    pub session_id: String,
+    /// The `next_offset` the transcript carried when this page was asked for. A
+    /// page for an older window — a superseded scroll, or a conversation the
+    /// reader has left — is dropped rather than prepended above rows it does not
+    /// sit on.
+    pub before: i64,
     pub page: Result<SessionEntriesPage, String>,
 }
 
@@ -448,8 +488,11 @@ impl Live {
             tree_revision: 0,
             preview_siblings: None,
             switch_load: None,
-            switch_tx: None,
             switch_started: false,
+            older_load: None,
+            state_refresh: false,
+            git_rev: 0,
+            load_tx: None,
         };
 
         if let Some(id) = session.filter(|id| !id.is_empty()) {
@@ -1878,7 +1921,15 @@ impl Live {
             WbAction::Submit(text) => self.submit(&text).await,
             WbAction::Command(command) => return self.command(&command).await,
             WbAction::Scroll(_) => {}
-            WbAction::LoadOlder => self.load_older().await,
+            WbAction::LoadOlder => {
+                if self.load_tx.is_none() {
+                    // No driver to hand the page to (the frame tests): read it
+                    // here, which is the waiting form.
+                    self.load_older().await;
+                } else {
+                    self.begin_load_older();
+                }
+            }
             WbAction::SwitchSession(id) => self.open_conversation(&id).await,
             // A delete also loads the successor. Keep that nested async state
             // off the caller's stack, which is small on Windows.
@@ -2333,7 +2384,7 @@ impl Live {
     /// on screen" then would park the rail's cursor back where the reader came
     /// from. The answer's own arm does that follow when the rows arrive.
     async fn open_conversation(&mut self, session_id: &str) {
-        if self.switch_tx.is_none() {
+        if self.load_tx.is_none() {
             self.switch(session_id).await;
             return;
         }
@@ -2416,8 +2467,8 @@ impl Live {
     ///
     /// Called once by the driver before its loop starts: the loop is what owns
     /// the wake-up, so the surface only ever holds the sending end.
-    pub fn set_switch_sender(&mut self, tx: tokio::sync::mpsc::UnboundedSender<SwitchLoaded>) {
-        self.switch_tx = Some(tx);
+    pub fn set_load_sender(&mut self, tx: tokio::sync::mpsc::UnboundedSender<Loaded>) {
+        self.load_tx = Some(tx);
     }
 
     /// The non-blocking half of a switch: swap what the cache can show onto the
@@ -2454,7 +2505,7 @@ impl Live {
         if self.switch_load.as_deref() == Some(session_id) {
             return;
         }
-        let Some(tx) = self.switch_tx.clone() else {
+        let Some(tx) = self.load_tx.clone() else {
             return;
         };
         let client = self.client.clone();
@@ -2465,7 +2516,7 @@ impl Live {
                 tokio::join!(client.fetch_state_of(&id), client.session_tail_page(&id));
             // The receiver is gone when the driver has quit: the answer is
             // simply dropped with it.
-            let _ = tx.send(SwitchLoaded { id, state, page });
+            let _ = tx.send(Loaded::Switch(SwitchLoaded { id, state, page }));
         });
     }
 
@@ -2480,6 +2531,178 @@ impl Live {
         }
         self.switch_load = None;
         self.install_switch(&loaded.id, loaded.state, loaded.page)
+    }
+
+    /// Ask the agent for a conversation's tail page and throw the answer away.
+    ///
+    /// The agent keeps the page it materialized (keyed by the conversation's
+    /// revision), so reading one early is worth it only when the reader is
+    /// *about* to open it — and the rail makes that predictable: after a step
+    /// settles, the two conversations either side of the cursor are exactly where
+    /// the next step can land. Measured on a 147-conversation store at a 300 ms
+    /// reading cadence, a step onto a warmed conversation costs **18.1 ms median
+    /// instead of 120.0 ms** (and 61.9 ms instead of 153.0 ms for the worst one).
+    ///
+    /// Nothing is installed and nothing is owed: a prefetch that loses the race,
+    /// or whose conversation the reader never opens, costs the agent one page
+    /// read — off this loop — and nothing else. A page whose conversation moved
+    /// on since is keyed by a newer revision and is simply read again when opened.
+    pub fn prefetch_page(&self, session_id: &str) {
+        if session_id.is_empty() || self.already_showing(session_id) {
+            return;
+        }
+        let client = Arc::clone(&self.client);
+        let id = session_id.to_string();
+        tokio::spawn(async move {
+            let _ = client.session_tail_page(&id).await;
+        });
+    }
+
+    // ─── the page above the transcript ───────────────────────────────
+
+    /// Ask for the page above what the transcript has loaded, without waiting.
+    ///
+    /// Scrolling up past the first loaded row is the one door a reader opens
+    /// over and over, and a page is a real read on the agent's side (measured:
+    /// 38–285 ms first time, 6–53 ms once the page is cached). Waiting for it in
+    /// the loop froze the rail, the stream and the keyboard while the reader was
+    /// already scrolling.
+    ///
+    /// Returns whether a read was started: a transcript with no page above it, a
+    /// surface with no driver, and a window already being read all answer `false`
+    /// and change nothing.
+    pub fn begin_load_older(&mut self) -> bool {
+        if !self.paging.has_more {
+            return false;
+        }
+        let Some(tx) = self.load_tx.clone() else {
+            return false;
+        };
+        let session_id = self.paging.session_id.clone();
+        let before = self.paging.next_offset;
+        if self.older_load.as_ref() == Some(&(session_id.clone(), before)) {
+            return false;
+        }
+        self.older_load = Some((session_id.clone(), before));
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            let page = client.session_older_page(&session_id, before).await;
+            let _ = tx.send(Loaded::Older(OlderPage {
+                session_id,
+                before,
+                page,
+            }));
+        });
+        true
+    }
+
+    /// Take one finished older page from the driver's loop.
+    ///
+    /// The transcript has to be the conversation and the window this page was
+    /// asked for; anything else (a scroll that moved on, a conversation the
+    /// reader left) is dropped rather than prepended above rows it does not sit
+    /// on. Returns whether a frame is owed.
+    pub fn install_older(&mut self, older: OlderPage) -> bool {
+        if self.older_load.as_ref() != Some(&(older.session_id.clone(), older.before)) {
+            return false;
+        }
+        self.older_load = None;
+        if older.session_id != self.paging.session_id || older.before != self.paging.next_offset {
+            return false;
+        }
+        match older.page {
+            Ok(page) => {
+                self.apply_page(page, true);
+                true
+            }
+            Err(error) => {
+                self.notice = Some(format!("Could not load older rows: {error}"));
+                true
+            }
+        }
+    }
+
+    // ─── the footer's state, at a turn boundary ──────────────────────
+
+    /// Re-read the session's state without waiting for it.
+    ///
+    /// A `usage`/`agent_end` event means the agent knows more about the turn than
+    /// the deltas did, so the footer asks (`run`'s `take_state_refresh`). That
+    /// read is cheap but not free (25 ms measured, and the loop used to sit
+    /// through it at every turn's end); one is out at a time, so two answers
+    /// cannot land out of order and leave the footer describing the older one.
+    pub fn begin_state_refresh(&mut self) -> bool {
+        if self.state_refresh {
+            return false;
+        }
+        let Some(tx) = self.load_tx.clone() else {
+            return false;
+        };
+        self.state_refresh = true;
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            // The failure is sent too: a read that never answers must not leave
+            // the slot filled for the rest of the session.
+            let _ = tx.send(Loaded::State(client.get_state().await));
+        });
+        true
+    }
+
+    /// Take one finished state read from the driver's loop.
+    ///
+    /// A read that failed changes nothing (the footer keeps the last figures it
+    /// was given) but still frees the slot. Returns whether a frame is owed.
+    pub fn install_state_refresh(&mut self, state: Result<RpcSessionState, String>) -> bool {
+        self.state_refresh = false;
+        match state {
+            Ok(state) => {
+                self.install_state(state);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    // ─── the `/git` panel ────────────────────────────────────────────
+
+    /// Read the repository for the `/git` panel off the loop.
+    ///
+    /// The read is local (a `git` process per section) but not cheap: measured
+    /// on this repository, opening the panel costs 132 ms for the commit log and
+    /// 155 ms for the refs, and the loop used to sit through it every time the
+    /// panel opened, changed tab or narrowed its filter. Returns whether a read
+    /// was started; a surface with no driver reads it itself (`run`).
+    pub fn begin_git_read(
+        &mut self,
+        cwd: std::path::PathBuf,
+        section: super::state::GitSection,
+        filter: Option<String>,
+        want: usize,
+    ) -> bool {
+        let Some(tx) = self.load_tx.clone() else {
+            return false;
+        };
+        self.git_rev = self.git_rev.wrapping_add(1);
+        let rev = self.git_rev;
+        let lang = self.lang;
+        tokio::task::spawn_blocking(move || {
+            let view = super::git_panel::read(&cwd, section, filter, want, lang);
+            let _ = tx.send(Loaded::Git { rev, view });
+        });
+        true
+    }
+
+    /// Take one finished `/git` read from the driver's loop.
+    ///
+    /// A view read for a tab the reader has already left is dropped: installing
+    /// it would flip the whole panel back to the previous section. Returns
+    /// whether a frame is owed.
+    pub fn install_git(&mut self, rev: u64, view: super::state::GitView) -> bool {
+        if rev != self.git_rev {
+            return false;
+        }
+        self.git = Some(view);
+        true
     }
 
     /// Put the agent's answer for a switch on screen.
@@ -5002,6 +5225,7 @@ fn find_model<'a>(models: &'a [ModelInfo], reference: &str) -> Option<&'a ModelI
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     /// Run `future` on a thread with a big stack.
     ///
@@ -7575,6 +7799,15 @@ mod tests {
         live.data(&frame()).messages.to_vec()
     }
 
+    /// The switch answer a test's channel carried (the channel also carries the
+    /// page above the transcript, the `git` view and the footer's state).
+    fn switch_of(loaded: super::Loaded) -> super::SwitchLoaded {
+        match loaded {
+            super::Loaded::Switch(switch) => switch,
+            _ => panic!("expected a switch answer"),
+        }
+    }
+
     /// A click on the row the transcript already shows reads nothing at all.
     ///
     /// The rows on screen are that conversation's, and the reader may have
@@ -7762,7 +7995,7 @@ mod tests {
             .await
             .expect("attach to the slow test agent");
         let (tx, mut answers) = tokio::sync::mpsc::unbounded_channel();
-        live.set_switch_sender(tx);
+        live.set_load_sender(tx);
 
         table
             .lock()
@@ -7796,7 +8029,7 @@ mod tests {
             "and its rows are still on screen while the read is out"
         );
 
-        let loaded = answers.recv().await.expect("the click's read answers");
+        let loaded = switch_of(answers.recv().await.expect("the click's read answers"));
         assert!(live.install_switch_load(loaded), "the answer owes a frame");
         assert_eq!(live.data(&frame()).session.id, "s-b");
         assert!(rows_on_screen(&mut live).join("\n").contains("q-b"));
@@ -7834,6 +8067,276 @@ mod tests {
         live.client.disconnect();
     }
 
+    // ─── the page above, the footer's state, the git panel ───────────
+
+    /// A prefetch reads one conversation's page and installs nothing: the answer
+    /// is thrown away on purpose, because the agent keeps it for the step that
+    /// is about to ask for it.
+    #[tokio::test]
+    async fn a_prefetch_reads_a_page_and_leaves_the_screen_alone() {
+        let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("switch_session", r#"{"success":true}"#),
+            ("get_state", r#"{"sessionId":"s-a"}"#),
+            ("get_session_entries", &page_of(&["q1"])),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s-a"), false, None)
+            .await
+            .expect("attach to the test agent");
+        let pages = |seen: &std::sync::Arc<std::sync::Mutex<Vec<String>>>| {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|kind| kind.as_str() == "get_session_entries")
+                .count()
+        };
+        let before = pages(&seen);
+
+        live.prefetch_page("s-b");
+        // The read is a task: give it the loop to run on.
+        for _ in 0..50 {
+            if pages(&seen) > before {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(pages(&seen), before + 1, "one page read, for s-b");
+        assert_eq!(
+            live.data(&frame()).session.id,
+            "s-a",
+            "and nothing is installed: the screen is still s-a"
+        );
+
+        // The conversation on screen needs no warming, and neither does nothing.
+        live.prefetch_page("s-a");
+        live.prefetch_page("");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            pages(&seen),
+            before + 1,
+            "neither the shown conversation nor an empty id is read"
+        );
+        live.client.disconnect();
+    }
+
+    /// Scrolling past the first loaded row asks for the page above it without
+    /// waiting: a page is a real read (38–285 ms first time), and the reader is
+    /// already scrolling.
+    #[tokio::test]
+    async fn the_page_above_is_read_off_the_loop_and_installed_when_it_lands() {
+        let first = json!({
+            "entries": [
+                {"id": "u0", "role": "user", "blocks": [{"kind": "text", "text": "tail question"}]},
+                {"id": "a0", "role": "assistant", "blocks": [{"kind": "text", "text": "tail answer"}]}
+            ],
+            "hasMore": true,
+            "nextOffset": 0
+        })
+        .to_string();
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_slow(
+            &[
+                ("switch_session", r#"{"success":true}"#),
+                ("get_state", r#"{"sessionId":"s-a"}"#),
+                ("get_session_entries", &first),
+            ],
+            250,
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s-a"), false, None)
+            .await
+            .expect("attach to the slow test agent");
+        let (tx, mut answers) = tokio::sync::mpsc::unbounded_channel();
+        live.set_load_sender(tx);
+
+        let before = rows_on_screen(&mut live).len();
+        let started = std::time::Instant::now();
+        assert!(
+            live.begin_load_older(),
+            "the transcript has a page above it"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(200),
+            "asking for it does not wait ({:?})",
+            started.elapsed()
+        );
+        assert!(
+            !live.begin_load_older(),
+            "and the same window is not asked for twice"
+        );
+        assert_eq!(
+            rows_on_screen(&mut live).len(),
+            before,
+            "nothing was prepended before the answer"
+        );
+
+        let loaded = answers.recv().await.expect("the page answers");
+        let super::Loaded::Older(page) = loaded else {
+            panic!("expected the page above");
+        };
+        assert_eq!(page.before, 0, "the window that was asked for");
+        assert!(live.install_older(page), "the page owes a frame");
+        assert_eq!(
+            rows_on_screen(&mut live).len(),
+            before * 2,
+            "the page was prepended above the tail"
+        );
+        live.client.disconnect();
+    }
+
+    /// A page read for a window the transcript has left (another conversation,
+    /// or a page that already arrived) is dropped rather than prepended above
+    /// rows it does not sit on.
+    #[tokio::test]
+    async fn an_older_page_for_a_window_the_transcript_left_is_dropped() {
+        let first = json!({
+            "entries": [
+                {"id": "u0", "role": "user", "blocks": [{"kind": "text", "text": "q1"}]}
+            ],
+            "hasMore": true,
+            "nextOffset": 0
+        })
+        .to_string();
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("switch_session", r#"{"success":true}"#),
+            ("get_state", r#"{"sessionId":"s-a"}"#),
+            ("get_session_entries", &first),
+        ]);
+        let table = mock.data_by_type.clone();
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s-a"), false, None)
+            .await
+            .expect("attach to the test agent");
+        let (tx, mut answers) = tokio::sync::mpsc::unbounded_channel();
+        live.set_load_sender(tx);
+
+        assert!(live.begin_load_older());
+        let loaded = answers.recv().await.expect("the page answers");
+
+        // The reader opened another conversation while the page was in flight
+        // (and that switch has landed: the transcript is s-b's now).
+        table
+            .lock()
+            .unwrap()
+            .insert("get_state".into(), r#"{"sessionId":"s-b"}"#.into());
+        live.apply(WbAction::SwitchSession("s-b".into())).await;
+        let switched = switch_of(answers.recv().await.expect("the switch answers"));
+        assert!(live.install_switch_load(switched));
+        assert_eq!(live.data(&frame()).session.id, "s-b");
+
+        let super::Loaded::Older(page) = loaded else {
+            panic!("expected the page above");
+        };
+        assert!(
+            !live.install_older(page),
+            "its rows belong to the conversation the reader left"
+        );
+        live.client.disconnect();
+    }
+
+    /// The turn boundary's two reads are started, not waited for: one listing
+    /// per boundary (a second is refused while the first is out) and one state.
+    #[tokio::test]
+    async fn a_turn_boundary_reads_the_state_beside_the_surface() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_slow(
+            &[
+                ("switch_session", r#"{"success":true}"#),
+                ("get_state", r#"{"sessionId":"s-a","contextTokens":123}"#),
+                ("get_session_entries", &page_of(&["q1"])),
+            ],
+            250,
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s-a"), false, None)
+            .await
+            .expect("attach to the slow test agent");
+        let (tx, mut answers) = tokio::sync::mpsc::unbounded_channel();
+        live.set_load_sender(tx);
+
+        let started = std::time::Instant::now();
+        assert!(live.begin_state_refresh(), "the footer asks");
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(200),
+            "asking does not wait ({:?})",
+            started.elapsed()
+        );
+        assert!(!live.begin_state_refresh(), "one read is already out");
+
+        let loaded = answers.recv().await.expect("the state answers");
+        let super::Loaded::State(state) = loaded else {
+            panic!("expected a state answer");
+        };
+        assert!(live.install_state_refresh(state));
+        assert_eq!(
+            live.data(&frame()).usage.ctx_used,
+            123,
+            "the footer shows the state that landed"
+        );
+        assert!(
+            live.begin_state_refresh(),
+            "the slot frees once its answer is installed"
+        );
+        live.client.disconnect();
+    }
+
+    /// The `/git` panel's read runs on a blocking thread and lands through the
+    /// driver's arm; a view read for a tab the reader has already left is
+    /// dropped rather than flipping the panel back.
+    #[tokio::test]
+    async fn a_git_view_lands_without_the_loop_waiting() {
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_slow(
+            &[
+                ("switch_session", r#"{"success":true}"#),
+                ("get_state", r#"{"sessionId":"s-a"}"#),
+                ("get_session_entries", &page_of(&["q1"])),
+            ],
+            5,
+        );
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s-a"), false, None)
+            .await
+            .expect("attach to the test agent");
+        let (tx, mut answers) = tokio::sync::mpsc::unbounded_channel();
+        live.set_load_sender(tx);
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the repository root")
+            .to_path_buf();
+
+        let started = std::time::Instant::now();
+        assert!(live.begin_git_read(
+            repo.clone(),
+            crate::workbench::state::GitSection::Commits,
+            None,
+            0
+        ));
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(100),
+            "opening the panel does not wait for git ({:?})",
+            started.elapsed()
+        );
+        // A second read supersedes the first, which must not install.
+        assert!(live.begin_git_read(repo, crate::workbench::state::GitSection::Refs, None, 0));
+
+        let mut seen = 0;
+        while seen < 2 {
+            let loaded = answers.recv().await.expect("a git read answers");
+            let super::Loaded::Git { rev, view } = loaded else {
+                panic!("expected a git view");
+            };
+            let installed = live.install_git(rev, view);
+            seen += 1;
+            if installed {
+                assert_eq!(
+                    live.git().map(|git| git.section),
+                    Some(crate::workbench::state::GitSection::Refs),
+                    "the tab that is installed is the one asked for last"
+                );
+            }
+        }
+        assert!(live.git().is_some(), "a view is on screen");
+        live.client.disconnect();
+    }
+
     /// `shift+↑/↓` hands the agent's two reads to a task: the step returns
     /// without waiting, and the conversation's rows arrive on their own
     /// wake-up.
@@ -7858,7 +8361,7 @@ mod tests {
             .await
             .expect("attach to the slow test agent");
         let (tx, mut answers) = tokio::sync::mpsc::unbounded_channel();
-        live.set_switch_sender(tx);
+        live.set_load_sender(tx);
 
         // What s-b will answer, moved in before it is asked for.
         table
@@ -7889,7 +8392,7 @@ mod tests {
             "the conversation that was on screen is still there"
         );
 
-        let loaded = answers.recv().await.expect("the step's read answers");
+        let loaded = switch_of(answers.recv().await.expect("the step's read answers"));
         assert_eq!(loaded.id, "s-b");
         assert!(live.install_switch_load(loaded), "the answer owes a frame");
         let screen = rows_on_screen(&mut live).join("\n");
@@ -7922,7 +8425,7 @@ mod tests {
             .await
             .expect("attach to the test agent");
         let (tx, mut answers) = tokio::sync::mpsc::unbounded_channel();
-        live.set_switch_sender(tx);
+        live.set_load_sender(tx);
 
         table
             .lock()
@@ -7933,7 +8436,7 @@ mod tests {
             .unwrap()
             .insert("get_session_entries".into(), page_of(&["q-b"]));
         live.start_step_switch("s-b");
-        let passed = answers.recv().await.expect("s-b answers");
+        let passed = switch_of(answers.recv().await.expect("s-b answers"));
 
         table
             .lock()
@@ -7954,7 +8457,7 @@ mod tests {
             "so the screen still names the one they are on"
         );
 
-        let landed = answers.recv().await.expect("s-c answers");
+        let landed = switch_of(answers.recv().await.expect("s-c answers"));
         assert!(
             live.install_switch_load(landed),
             "the one they are on lands"
@@ -7985,7 +8488,7 @@ mod tests {
             .await
             .expect("attach to the slow test agent");
         let (tx, mut answers) = tokio::sync::mpsc::unbounded_channel();
-        live.set_switch_sender(tx);
+        live.set_load_sender(tx);
 
         live.set_draft("half a prompt".into(), 13);
         table
@@ -8005,7 +8508,7 @@ mod tests {
 
         // Typed while the answer is still out.
         live.set_draft("typed after".into(), 12);
-        let loaded = answers.recv().await.expect("the step's read answers");
+        let loaded = switch_of(answers.recv().await.expect("the step's read answers"));
         assert!(live.install_switch_load(loaded));
         assert_eq!(
             live.data(&frame()).input.text,
@@ -8023,7 +8526,7 @@ mod tests {
             .unwrap()
             .insert("get_session_entries".into(), page_of(&["q1"]));
         live.start_step_switch("s-a");
-        let back = answers.recv().await.expect("s-a answers");
+        let back = switch_of(answers.recv().await.expect("s-a answers"));
         assert!(live.install_switch_load(back));
         assert_eq!(live.data(&frame()).input.text, "half a prompt");
         live.client.disconnect();
@@ -8049,7 +8552,7 @@ mod tests {
             .await
             .expect("attach to the test agent");
         let (tx, mut answers) = tokio::sync::mpsc::unbounded_channel();
-        live.set_switch_sender(tx);
+        live.set_load_sender(tx);
 
         table
             .lock()
@@ -8066,7 +8569,7 @@ mod tests {
             "the conversation on screen is already there"
         );
 
-        let stale = answers.recv().await.expect("s-b was read");
+        let stale = switch_of(answers.recv().await.expect("s-b was read"));
         assert!(!live.install_switch_load(stale), "s-b is not wanted");
         assert_eq!(live.data(&frame()).session.id, "s-a");
         assert!(rows_on_screen(&mut live).join("\n").contains("q1"));
@@ -8093,7 +8596,7 @@ mod tests {
             .await
             .expect("attach to the test agent");
         let (tx, mut pending) = tokio::sync::mpsc::unbounded_channel();
-        live.set_switch_sender(tx);
+        live.set_load_sender(tx);
 
         table
             .lock()
@@ -8120,7 +8623,7 @@ mod tests {
         // dropped, the click's installs.
         let mut seen: Vec<(String, bool)> = Vec::new();
         while seen.len() < 2 {
-            let loaded = pending.recv().await.expect("a read answered");
+            let loaded = switch_of(pending.recv().await.expect("a read answered"));
             let id = loaded.id.clone();
             let installed = live.install_switch_load(loaded);
             seen.push((id, installed));
@@ -8142,7 +8645,7 @@ mod tests {
         // The same for `/new`: a step's rows must not land on the launchpad.
         live.start_step_switch("s-a");
         live.to_launchpad();
-        let landing = pending.recv().await.expect("s-a was read");
+        let landing = switch_of(pending.recv().await.expect("s-a was read"));
         assert!(!live.install_switch_load(landing), "the launchpad stays");
         assert!(
             live.data(&frame()).session.id.is_empty(),
@@ -8168,7 +8671,7 @@ mod tests {
             .await
             .expect("attach to the test agent");
         let (tx, mut answers) = tokio::sync::mpsc::unbounded_channel();
-        live.set_switch_sender(tx);
+        live.set_load_sender(tx);
         live.set_draft("half a prompt".into(), 13);
 
         // A state the client cannot read: the switch fails on the way in.
@@ -8178,7 +8681,7 @@ mod tests {
             .insert("get_state".into(), r#"{"sessionId":42}"#.into());
         live.start_step_switch("s-b");
         live.set_draft("typed after".into(), 12);
-        let failed = answers.recv().await.expect("the read answers either way");
+        let failed = switch_of(answers.recv().await.expect("the read answers either way"));
         assert!(live.install_switch_load(failed), "the notice owes a frame");
         assert!(
             live.notice
@@ -8212,7 +8715,7 @@ mod tests {
             .unwrap()
             .insert("get_session_entries".into(), page_of(&["q-b"]));
         live.start_step_switch("s-b");
-        let landed = answers.recv().await.expect("s-b answers this time");
+        let landed = switch_of(answers.recv().await.expect("s-b answers this time"));
         assert!(live.install_switch_load(landed));
         assert_eq!(live.data(&frame()).session.id, "s-b");
         assert_eq!(live.data(&frame()).input.text, "typed after");
