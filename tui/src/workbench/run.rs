@@ -1044,9 +1044,11 @@ async fn quit(
                     continue;
                 }
                 "/paste" => {
-                    // The typed door to the clipboard, for terminals that take
-                    // `ctrl+v` for themselves (Windows Terminal pastes with it,
-                    // so the key never arrives here).
+                    // The typed door to the clipboard: `ctrl+v` is the front
+                    // end's own paste on Windows (which carries text and cannot
+                    // carry an image), so the chord there is `alt+v`; a reader
+                    // who rebound it away, or is on a terminal that takes the
+                    // key, still has this line.
                     live.paste_clipboard().await;
                     continue;
                 }

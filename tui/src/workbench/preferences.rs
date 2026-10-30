@@ -366,7 +366,22 @@ impl Action {
             // The session workspace's own tree — the panel a reader opens to
             // find the file the agent just mentioned.
             Self::Files => "ctrl+f",
-            Self::PasteImage => "ctrl+v",
+            // The clipboard reader. Windows takes `alt+v`, not `ctrl+v`:
+            // Windows Terminal — the console Windows 11 opens a shell in, and
+            // the one most Windows readers are standing in — binds `ctrl+v` to
+            // its own paste, which carries text and can never carry an image,
+            // so the byte never arrives here at all. An image can only travel
+            // when *this* process reads the clipboard, so the chord has to be
+            // one the front end does not own; `alt+v` reaches the app as `ESC v`
+            // from either Windows front end (see `keys`), and the typed door
+            // `/paste` stays beside it.
+            Self::PasteImage => {
+                if cfg!(windows) {
+                    "alt+v"
+                } else {
+                    "ctrl+v"
+                }
+            }
             // Settings sit on the one chord left over: `s` is the approval
             // chooser's and `o` (options) the model's, and this is the action
             // whose absence a reader notices first — `/preferences` is three
@@ -737,16 +752,20 @@ mod tests {
         assert_eq!(PREFERENCE_ROWS[9], PreferenceRow::Reset);
     }
 
-    /// No function key is a default. `F1`–`F12` sit behind an `Fn` modifier on a
+    /// No function key is a default. `F1`…`F12` sit behind an `Fn` modifier on a
     /// laptop, behind a screen-reader chord on some terminals, and are absent on
     /// a compact keyboard — a shortcut that needs three fingers, or that does not
     /// exist, is not a shortcut. A reader may still *rebind* to one.
     ///
-    /// Nor is `alt`: on macOS Option composes a character unless the reader turns
-    /// on "Use Option as Meta", so an `alt` default is one that does nothing on
-    /// the terminal this surface is developed against.
+    /// Nor is `alt` — off Windows: on macOS Option composes a character unless
+    /// the reader turns on "Use Option as Meta", so an `alt` default is one that
+    /// does nothing on the terminal this surface is developed against. Windows
+    /// has no composing Option, and its one `alt` default exists because the
+    /// console front end owns the chord it would otherwise take (`PasteImage`:
+    /// Windows Terminal pastes text with `ctrl+v` itself, so an image could
+    /// never arrive on that key).
     #[test]
-    fn no_default_binding_is_a_function_or_alt_key() {
+    fn no_default_binding_is_a_function_key_or_a_composing_alt_key() {
         for action in ACTIONS {
             let key = action.default_key();
             if key.is_empty() {
@@ -757,13 +776,37 @@ mod tests {
                 "{action:?} defaults to {key}"
             );
             assert!(
-                !key.starts_with("alt+"),
+                !key.starts_with("alt+") || cfg!(windows),
                 "{action:?} defaults to {key}; the scheme is ctrl-only"
             );
             assert!(
                 validate_key(key).is_ok(),
                 "{action:?} defaults to a chord the editor would reject: {key}"
             );
+        }
+    }
+
+    /// The clipboard chord is never the one the console front end owns.
+    ///
+    /// On Windows that is the whole point of `alt+v`: `ctrl+v` is Windows
+    /// Terminal's own paste, it carries text only, and the key never reaches the
+    /// app — so the map must not advertise a chord that cannot fire. Elsewhere
+    /// `ctrl+v` is the app's, because the terminal only forwards it.
+    #[test]
+    fn the_clipboard_chord_is_not_the_one_the_console_owns() {
+        let keys = Keybindings::default();
+        assert_eq!(
+            keys.key(Action::PasteImage),
+            Action::PasteImage.default_key()
+        );
+        if cfg!(windows) {
+            assert_eq!(keys.key(Action::PasteImage), "alt+v");
+            assert_eq!(keys.action("alt+v"), Some(Action::PasteImage));
+            assert_eq!(keys.action("ctrl+v"), None);
+        } else {
+            assert_eq!(keys.key(Action::PasteImage), "ctrl+v");
+            assert_eq!(keys.action("ctrl+v"), Some(Action::PasteImage));
+            assert_eq!(keys.action("alt+v"), None);
         }
     }
 
