@@ -1,10 +1,10 @@
 import type { RefObject } from "react";
-import type { MessageIndex, NavRung, TranscriptMessage } from "./questionNav";
+import type { MessageIndex, TranscriptMessage } from "./questionNav";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isEditableTarget } from "../../lib/editableTarget";
 import { hasKeyboardOwner } from "../../lib/keyboardOwners";
 import { useCommittedRef } from "../../lib/useCommittedRef";
-import { buildNavRungs, nextRung, previousQuestion, sameRung } from "./questionNav";
+import { nextQuestion, previousQuestion, questionIndices } from "./questionNav";
 import { navDirectionForKey } from "./questionNavKeys";
 
 /**
@@ -33,39 +33,30 @@ const MAX_SKIPPED_RUNGS = 200;
  */
 const PAGE_LANDING_FRAMES = 10;
 
-/**
- * The marker the reply row puts on the block a `replyTail` rung lands on (see
- * `replyTailBlock` and `MessageBlock`). The rung only names the *row*; the
- * anchor is what the reader actually came to read.
- */
-const REPLY_TAIL_ATTR = "data-reply-tail";
-
 export interface QuestionNavApi {
-  /** The rung ↑ would land on (the reader's previous prompt), or null. */
-  previous: NavRung | null;
-  /** The rung ↓ would land on (the next stop below), or null. */
-  next: NavRung | null;
+  /** The prompt ↑ would land on (the reader's previous question), or null. */
+  previous: MessageIndex | null;
+  /** The prompt ↓ would land on (the next question below), or null. */
+  next: MessageIndex | null;
   /** Whether there is a previous question to jump to. */
   hasPrevious: boolean;
-  /** Whether there is anything newer below to jump to. */
+  /** Whether there is a later question below to jump to. */
   hasNext: boolean;
   /** Jump to the previous user question. */
   goToPrevious: () => void;
-  /** Jump to the next stop below — a prompt or the end of a reply. */
+  /** Jump to the next user question. */
   goToNext: () => void;
 }
 
 /**
- * "↑ previous question / ↓ next stop" for a transcript drawn as a scroll
+ * "↑ previous question / ↓ next question" for a transcript drawn as a scroll
  * container of `data-message-id` rows.
  *
- * The two directions are one ladder read two ways: ↑ steps to the reader's
- * previous **prompt**, skipping whatever answer lies between, while ↓ takes the
- * very next rung below — so pressing it walks the conversation as it was
- * written, prompt, reply, prompt, reply… A reply is reached at its last output
- * slice rather than at its first line, because a reply opens with the work it
- * ran (see `replyTailBlock`): the row is lifted past its own top to the anchor
- * block the row marked, which is the thing the press was for.
+ * One walk read two ways, over the same list: the reader's own **prompts**.
+ * ↑ steps to the closest prompt above, ↓ to the closest prompt below, and the
+ * replies in between are never a stop — a press asks "what else was asked", not
+ * "move one item down the page", so a long answer costs one press to pass, not
+ * one per screenful.
  *
  * Where the walk starts is the row the reader is reading — the topmost one whose
  * middle is on screen, so a sliver of the previous turn under the top edge does
@@ -125,8 +116,8 @@ export function useQuestionNav<T extends TranscriptMessage>({
   /** Ask for the next page up. Resolves once the page has been fetched. */
   loadOlder?: () => void | Promise<unknown>;
 }): QuestionNavApi {
-  const rungs = useMemo(() => buildNavRungs(messages), [messages]);
-  const rungsRef = useCommittedRef(rungs);
+  const questions = useMemo(() => questionIndices(messages), [messages]);
+  const questionsRef = useCommittedRef(questions);
   const onTakeOverRef = useCommittedRef(onTakeOver);
   const hasOlderRef = useCommittedRef(hasOlderHistory);
   const loadingOlderRef = useCommittedRef(loadingOlder);
@@ -135,7 +126,7 @@ export function useQuestionNav<T extends TranscriptMessage>({
   const pagePendingRef = useRef(false);
   /** The frame loop looking for that page's rows, or null when none is armed. */
   const pageFrameRef = useRef<number | null>(null);
-  const [offer, setOffer] = useState<{ previous: NavRung | null; next: NavRung | null }>({
+  const [offer, setOffer] = useState<{ previous: MessageIndex | null; next: MessageIndex | null }>({
     next: null,
     previous: null,
   });
@@ -143,7 +134,7 @@ export function useQuestionNav<T extends TranscriptMessage>({
   /**
    * The rows of the transcript, in render order. Both views draw one
    * `data-message-id` element per message, so the row index *is* the message
-   * index the ladder speaks in.
+   * index the walk speaks in.
    */
   const rows = useCallback((): HTMLElement[] => {
     const container = scrollRef.current;
@@ -189,64 +180,56 @@ export function useQuestionNav<T extends TranscriptMessage>({
   }, [scrollRef]);
 
   /**
-   * Where landing a rung would put the viewport: the target's own top edge
+   * Where landing a rung would put the viewport: the prompt's own top edge
    * `JUMP_TOP_INSET_PX` below the viewport's, as far as the content allows.
-   *
-   * A `replyTail` rung aims past the row's start at the block inside it that
-   * still has output — the press asked for the reply's answer, not for the
-   * reasoning rows it opened with. A row that has not marked one (plain content,
-   * or a reply the renderer found no output block in) keeps the row's start,
-   * which is all there is to aim at.
    */
-  const landingOffset = useCallback((rung: NavRung, measured: readonly HTMLElement[]): number | null => {
+  const landingOffset = useCallback((index: MessageIndex, measured: readonly HTMLElement[]): number | null => {
     const container = scrollRef.current;
     if (!container)
       return null;
-    const row = measured[rung.index];
+    const row = measured[index];
     if (!row)
       return null;
-    const anchor = rung.kind === "replyTail" ? row.querySelector<HTMLElement>(`[${REPLY_TAIL_ATTR}]`) : null;
-    const target = anchor ?? row;
     const containerTop = container.getBoundingClientRect().top;
-    const targetTop = target.getBoundingClientRect().top - containerTop + container.scrollTop;
+    const targetTop = row.getBoundingClientRect().top - containerTop + container.scrollTop;
     const max = Math.max(0, container.scrollHeight - container.clientHeight);
     return Math.min(Math.max(0, targetTop - JUMP_TOP_INSET_PX), max);
   }, [scrollRef]);
 
   /**
    * One step of the walk from the row the reader is reading: ↑ the closest
-   * prompt above it, ↓ the very next rung below — stepping on while a candidate
+   * prompt above it, ↓ the closest prompt below — stepping on while a candidate
    * could not move the viewport (see the hook's note), and returning null when
    * the direction has nowhere left to go.
    *
-   * Rungs are in transcript order (oldest first), so ↑ walks back through the
-   * array and ↓ forward.
+   * `questions` is in transcript order (oldest first), so ↑ walks back through
+   * the array and ↓ forward.
    */
-  const step = useCallback((direction: "previous" | "next"): NavRung | null => {
+  const step = useCallback((direction: "previous" | "next"): MessageIndex | null => {
     const container = scrollRef.current;
     if (!container)
       return null;
-    const ladder = rungsRef.current;
+    const walk = questionsRef.current;
     const measured = rows();
     const here = container.scrollTop;
     const from = (index: MessageIndex) =>
-      direction === "previous" ? previousQuestion(ladder, index) : nextRung(ladder, index);
+      direction === "previous" ? previousQuestion(walk, index) : nextQuestion(walk, index);
     let candidate = from(readerRowIndex(measured));
     for (let skipped = 0; candidate !== null && skipped < MAX_SKIPPED_RUNGS; skipped += 1) {
       const offset = landingOffset(candidate, measured);
       if (offset !== null && Math.abs(offset - here) > LANDING_MOVES_PX)
         return candidate;
-      candidate = from(candidate.index);
+      candidate = from(candidate);
     }
     return null;
-  }, [landingOffset, readerRowIndex, rows, rungsRef, scrollRef]);
+  }, [landingOffset, readerRowIndex, rows, questionsRef, scrollRef]);
 
   /** What the two buttons offer right now. */
   const publish = useCallback(() => {
     const previous = step("previous");
     const next = step("next");
     setOffer(current =>
-      sameRung(current.previous, previous) && sameRung(current.next, next)
+      current.previous === previous && current.next === next
         ? current
         : { next, previous },
     );
@@ -262,7 +245,7 @@ export function useQuestionNav<T extends TranscriptMessage>({
       return;
     container.addEventListener("scroll", publish, { passive: true });
     return () => container.removeEventListener("scroll", publish);
-  }, [publish, rungs, scrollRef]);
+  }, [publish, questions, scrollRef]);
 
   /**
    * Resolve the target at the press rather than from the published offer: the
