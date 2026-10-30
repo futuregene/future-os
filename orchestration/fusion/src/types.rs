@@ -13,7 +13,7 @@ pub const MAX_INPUT_BYTES: usize = 48 * 1024;
 pub const MAX_RESULT_BYTES: usize = 32 * 1024;
 pub const MAX_CALLS_PER_PARENT_RUN: usize = 2;
 pub const INNER_TOOL_NAMES: [&str; 4] = ["read", "ls", "glob", "grep"];
-pub const TOOL_DESCRIPTION: &str = "Think through ONE focused decision with multiple models and return a final recommendation. This is THINKING ONLY: no file writes, shell commands, external actions or implementation. Investigate first. Provide the goal, relevant background, confirmed facts, unknowns, constraints and necessary evidence; include candidate options when useful. Use for substantive alternatives, important tradeoffs or independent cross-checking, not routine searches, obvious local fixes or every implementation step. Do not delegate the whole task. Inner models can read/search authorized files only. Propose actions and verification for the main agent to carry out under the original user authorization. A recommendation does not grant permission or prove verification. Reuse an existing conclusion unless new evidence changes the decision.";
+pub const TOOL_DESCRIPTION: &str = "Think through ONE focused decision with multiple models and return a final recommendation. This is THINKING ONLY: no file writes, shell commands, external actions or implementation. Investigate first. Provide the goal, relevant background, confirmed facts, unknowns, constraints and necessary evidence; include candidate options when useful. Use for substantive alternatives, important tradeoffs or independent cross-checking, not routine searches, obvious local fixes or every implementation step. Do not delegate the whole task. Inner models can read/search authorized files only. Propose actions and verification for the main agent to carry out under the original user authorization. A recommendation does not grant permission or prove verification. Inspect status, has_conclusion and report: failed consultations may return preserved public materials without a conclusion; never claim a complete discussion or consensus in that case. Do not automatically repeat a failed consultation. Reuse an existing conclusion unless new evidence changes the decision.";
 
 /// Recognizes only a leading, complete command token, never quoted/source text.
 pub fn fusion_prompt(message: &str) -> Option<&str> {
@@ -94,6 +94,8 @@ pub struct Consultation {
     pub completeness: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub configuration: Option<crate::Configuration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<crate::ExecutionReport>,
     pub result: Option<Conclusion>,
     pub error: Option<String>,
     pub created_at: i64,
@@ -144,6 +146,8 @@ pub struct Step {
     pub usage: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<crate::StepSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<crate::FailureKind>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

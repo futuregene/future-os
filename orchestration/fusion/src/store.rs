@@ -213,8 +213,9 @@ impl Store {
                 .into(),
             status: "preparing".into(),
             phase: "preparing".into(),
-            completeness: "full".into(),
+            completeness: "none".into(),
             configuration: Some(settings.configuration),
+            report: Some(crate::ExecutionReport::default()),
             result: None,
             error: None,
             created_at: now_ms(),
@@ -273,10 +274,23 @@ impl Store {
             &tx,
             id,
             kind,
-            json!({"status":run.status,"phase":run.phase,"error":run.error}),
+            json!({"status":run.status,"phase":run.phase,"error":run.error,"report": if matches!(kind, "report" | "failed") { serde_json::to_value(&run.report)? } else { Value::Null }}),
         )?;
         tx.commit()?;
         Ok(true)
+    }
+
+    pub fn save_report(
+        &self,
+        id: &str,
+        owner: Option<&str>,
+        report: &crate::ExecutionReport,
+    ) -> Result<()> {
+        ensure!(
+            self.change(id, owner, "report", |run| run.report = Some(report.clone()))?,
+            "Fusion stopped or ownership changed"
+        );
+        Ok(())
     }
 
     pub fn ready(&self, id: &str) -> Result<()> {
@@ -288,7 +302,20 @@ impl Store {
     }
     pub fn fail(&self, id: &str, owner: Option<&str>, error: &str) -> Result<()> {
         self.change(id, owner, "failed", |r| {
+            // A concurrently committed conclusion wins over a timeout observer.
+            if r.result.is_some() {
+                return;
+            }
+            if let Some(report) = &mut r.report {
+                report.note(
+                    "execution_failed",
+                    &r.phase,
+                    None,
+                    Some(crate::FailureKind::classify(error)),
+                );
+            }
             r.status = "failed".into();
+            r.completeness = "none".into();
             r.error = Some(error.into());
         })?;
         Ok(())
@@ -369,7 +396,7 @@ impl Store {
             &tx,
             &step.fusion_run_id,
             "step",
-            json!({"step_id":step.id,"phase":step.phase,"participant":step.participant,"status":step.status,"settings":step.settings}),
+            json!({"step_id":step.id,"phase":step.phase,"participant":step.participant,"status":step.status,"failure_kind":step.failure_kind,"settings":step.settings}),
         )?;
         tx.commit()?;
         Ok(())
@@ -669,6 +696,7 @@ mod tests {
         // reattaching must not invent a policy that was never used.
         let mut legacy = serde_json::to_value(store.get(&run.id).unwrap()).unwrap();
         legacy.as_object_mut().unwrap().remove("configuration");
+        legacy.as_object_mut().unwrap().remove("report");
         store
             .connect()
             .unwrap()
@@ -678,5 +706,137 @@ mod tests {
             )
             .unwrap();
         assert!(store.get(&run.id).unwrap().configuration.is_none());
+        assert!(store.get(&run.id).unwrap().report.is_none());
+    }
+    #[test]
+    fn failure_envelope_preserves_public_evidence_and_cancellation_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let parent = Parent {
+            database_id: "db".into(),
+            session_id: "s".into(),
+            run_id: "r".into(),
+            tool_call_id: "t".into(),
+        };
+        let input = ConsultationInput {
+            question: "choose".into(),
+            goal: "decide".into(),
+            background: "facts".into(),
+            constraints: vec![],
+            options: vec![],
+            evidence: vec![],
+            read_scope: vec![],
+        };
+        let (run, _) = store
+            .prepare(parent.clone(), input.clone(), dir.path())
+            .unwrap();
+        store.ready(&run.id).unwrap();
+        store.claim("owner").unwrap();
+        let mut report = crate::ExecutionReport::default();
+        report.note(
+            "moderator_failed",
+            "synthesizing",
+            Some("moderator"),
+            Some(crate::FailureKind::Authentication),
+        );
+        report.available_results.push(crate::AvailableResult {
+            step_id: "s1".into(),
+            phase: "analyzing".into(),
+            participant: "P1".into(),
+            model: "custom/a".into(),
+            text: "Public analysis".into(),
+            truncated: false,
+        });
+        store.save_report(&run.id, Some("owner"), &report).unwrap();
+        store.fail(&run.id, Some("owner"), "HTTP 401").unwrap();
+        let failed = store.get(&run.id).unwrap();
+        let output: Value = serde_json::from_str(&failed.tool_output().unwrap()).unwrap();
+        assert_eq!(output["status"], "failed");
+        assert_eq!(output["has_conclusion"], false);
+        assert!(output["conclusion"].is_null());
+        assert_eq!(
+            output["report"]["available_results"][0]["text"],
+            "Public analysis"
+        );
+        let mut oversized = failed.clone();
+        let mut large = report.clone();
+        large.available_results = (0..10)
+            .map(|i| crate::AvailableResult {
+                step_id: format!("step{i}"),
+                phase: "analyzing".into(),
+                participant: "P1".into(),
+                model: "custom/a".into(),
+                text: "\u{0001}".repeat(1400),
+                truncated: false,
+            })
+            .collect();
+        oversized.report = Some(large);
+        let bounded = oversized.tool_output().unwrap();
+        assert!(bounded.len() <= crate::MAX_RESULT_BYTES);
+        let bounded: Value = serde_json::from_str(&bounded).unwrap();
+        assert_eq!(
+            bounded["report"]["available_results"]
+                .as_array()
+                .unwrap()
+                .len(),
+            10
+        );
+        assert_eq!(
+            bounded["report"]["available_results"][0]["step_id"],
+            "step0"
+        );
+        assert_eq!(bounded["report"]["available_results"][0]["truncated"], true);
+        assert_eq!(
+            failed.report.unwrap().degradations[0].kind,
+            Some(crate::FailureKind::Authentication)
+        );
+        assert!(store.save_report(&run.id, Some("owner"), &report).is_err());
+        let mut next = parent;
+        next.tool_call_id = "t2".into();
+        let (cancelled, _) = store.prepare(next, input, dir.path()).unwrap();
+        store.cancel(&cancelled.id).unwrap();
+        assert!(store.save_report(&cancelled.id, None, &report).is_err());
+        store.fail(&cancelled.id, None, "late failure").unwrap();
+        assert_eq!(store.get(&cancelled.id).unwrap().status, "cancelled");
+    }
+    #[test]
+    fn timeout_observer_cannot_replace_an_already_committed_conclusion() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let parent = Parent {
+            database_id: "db".into(),
+            session_id: "s".into(),
+            run_id: "r".into(),
+            tool_call_id: "t".into(),
+        };
+        let input = ConsultationInput {
+            question: "choose".into(),
+            goal: "decide".into(),
+            background: "facts".into(),
+            constraints: vec![],
+            options: vec![],
+            evidence: vec![],
+            read_scope: vec![],
+        };
+        let (run, _) = store.prepare(parent, input, dir.path()).unwrap();
+        store.ready(&run.id).unwrap();
+        store.claim("owner").unwrap();
+        let result = Conclusion {
+            fusion_run_id: String::new(),
+            conclusion: "A".into(),
+            rationale: vec!["facts".into()],
+            conditions: vec![],
+            unresolved: vec![],
+            next_steps: vec![],
+            completeness: String::new(),
+        };
+        store.finish(&run.id, "owner", result, "full").unwrap();
+        store
+            .fail(&run.id, None, "stale timeout observation")
+            .unwrap();
+        let run = store.get(&run.id).unwrap();
+        assert_eq!(run.status, "delivering");
+        assert_eq!(run.completeness, "full");
+        assert_eq!(run.result.unwrap().conclusion, "A");
     }
 }

@@ -657,6 +657,18 @@ fn normalize_http_error(status: u16, text: &str, model: &str, body_bytes: usize)
             message
         );
     }
+    if status == 402
+        || matches!(
+            code,
+            "insufficient_quota" | "quota_exceeded" | "billing_hard_limit_reached"
+        )
+        || matches!(
+            error.get("type").and_then(Value::as_str),
+            Some("insufficient_quota")
+        )
+    {
+        return anyhow!("[PROVIDER_QUOTA] Provider quota unavailable (HTTP {status}): {message}");
+    }
     match status {
         401 | 403 => anyhow!("Authentication failed (HTTP {status}): {message}"),
         429 => anyhow!("Rate limited (HTTP 429): {message}"),
@@ -921,6 +933,21 @@ mod tests {
         assert!(normalize_http_error(429, "slow down", "m", 0)
             .to_string()
             .contains("Rate limited"));
+        for (status, body) in [
+            (
+                429,
+                r#"{"error":{"code":"insufficient_quota","message":"budget exhausted"}}"#,
+            ),
+            (
+                429,
+                r#"{"error":{"type":"insufficient_quota","message":"budget exhausted"}}"#,
+            ),
+            (402, "payment required"),
+        ] {
+            assert!(normalize_http_error(status, body, "m", 0)
+                .to_string()
+                .starts_with("[PROVIDER_QUOTA]"));
+        }
     }
 
     // ─── transport error classification and the image projection ─────────────

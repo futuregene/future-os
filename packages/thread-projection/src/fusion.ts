@@ -9,6 +9,12 @@ export interface FusionConclusion {
   next_steps: string[];
   completeness: string;
 }
+export interface FusionDegradation { code: string; phase: string; participant?: string; kind?: string; provider?: string }
+export interface FusionExecutionReport {
+  version: number; strategy: string; completed_phases: string[]; skipped_phases: string[];
+  analysis_participants: string[]; review_participants: string[]; degradations: FusionDegradation[];
+  available_results: { step_id: string; phase: string; participant: string; model: string; text: string; truncated: boolean }[];
+}
 export interface FusionStep {
   id: string;
   phase: string;
@@ -19,6 +25,7 @@ export interface FusionStep {
   status: string;
   output: string;
   error?: string | null;
+  failure_kind?: string | null;
   session_id: string;
   agent_run_id: string;
   started_at: number;
@@ -37,6 +44,7 @@ export interface FusionDiscussion {
     completeness: string;
     configuration?: FusionConfiguration | null;
     input: { question: string; goal: string; background: string; constraints: string[] };
+    report?: FusionExecutionReport | null;
     result?: FusionConclusion | null;
     error?: string | null;
   };
@@ -64,7 +72,7 @@ export function fusionIssues(discussion: FusionDiscussion | null): FusionIssue[]
 
 /** Stage progress, not a prediction of elapsed time or a completion percentage. */
 export const FUSION_PHASES = ["analyzing", "issue_mapping", "reviewing", "synthesizing"] as const;
-export type FusionModelStatus = "waiting" | "thinking" | "completed" | "failed" | "timed_out" | "output_limited" | "cancelled" | "interrupted" | "partial";
+export type FusionModelStatus = "skipped" | "waiting" | "thinking" | "completed" | "failed" | "timed_out" | "output_limited" | "cancelled" | "interrupted" | "partial";
 const DEFAULT_FUSION_MODELS = ["future/deepseek-flash", "future/glm-5.3-flash", "future/qwen3.7-plus"];
 export function fusionModelLabel(model: string): string {
   const labels: Record<string, string> = { "future/deepseek-flash": "DeepSeek Flash", "future/glm-5.3-flash": "GLM 5.3 Flash", "future/qwen3.7-plus": "Qwen 3.7 Plus" };
@@ -72,7 +80,10 @@ export function fusionModelLabel(model: string): string {
 }
 function modelStatus(step: FusionStep): FusionModelStatus {
   if (step.status === "starting" || step.status === "running") return "thinking";
+  if (step.status === "skipped" || step.failure_kind === "budget_reserved") return "skipped";
   if (step.status === "failed") {
+    if (step.failure_kind === "timeout") return "timed_out";
+    if (step.failure_kind === "output_limit") return "output_limited";
     if (/timed?\s*out|timeout/iu.test(step.error ?? "")) return "timed_out";
     if (/OUTPUT_LIMIT|finish_length/iu.test(step.error ?? "")) return "output_limited";
     return "failed";
@@ -86,7 +97,10 @@ export function fusionProgress(discussion: FusionDiscussion | null, toolStatus?:
   const terminal = ["completed", "failed", "cancelled", "interrupted"].includes(status);
   const phase = run?.phase ?? "preparing";
   const stageIndex = FUSION_PHASES.findIndex(value => value === phase);
-  const completedStages = status === "completed" ? FUSION_PHASES.length : Math.max(0, stageIndex);
+  const report = run?.report;
+  const stages = FUSION_PHASES.map((value, index) => report?.skipped_phases.includes(value) ? "skipped" : report?.completed_phases.includes(value) || (!report && (status === "completed" || index < stageIndex)) ? "completed" : index === stageIndex ? terminal ? "failed" : "thinking" : "waiting");
+  const completedStages = stages.filter(value => value === "completed").length;
+  const notices = fusionNotices(report, status);
   // A retry replaces the previous attempt for presentation only. Original
   // attempts stay in storage and continue to be available for debugging.
   const latest = new Map<string, FusionStep>();
@@ -116,5 +130,22 @@ export function fusionProgress(discussion: FusionDiscussion | null, toolStatus?:
     if (terminal && state === "completed" && steps.some(step => ["failed", "timed_out", "output_limited", "cancelled", "interrupted"].includes(modelStatus(step)))) state = "partial";
     return { ...slot, label: fusionModelLabel(model), status: state };
   });
-  return { phase, status, terminal, stageIndex, completedStages, partial: !!run && run.completeness !== "full", models };
+  return { phase, status, terminal, stageIndex, completedStages, stages, notices, partial: !!run && run.completeness !== "full", models };
+}
+
+/** Compact semantic reasons; localized by each client, never display raw provider errors. */
+export function fusionNotices(report: FusionExecutionReport | null | undefined, status: string): string[] {
+  if (!report) return [];
+  const codes = new Set(report.degradations.map(reason => reason.code));
+  const notices: string[] = [];
+  if (status === "failed") notices.push("noConclusion");
+  if (codes.has("moderator_unavailable") || codes.has("moderator_failed")) notices.push("moderatorFailed");
+  else if (codes.has("no_participants")) notices.push("noParticipants");
+  else if (codes.has("provider_unavailable")) notices.push("providerUnavailable");
+  else if (codes.has("single_participant")) notices.push("singleParticipant");
+  else if (["participant_failed", "participant_unavailable", "participants_reduced", "reviews_reduced", "no_reviews"].some(code => codes.has(code))) notices.push("reducedParticipation");
+  if (codes.has("summary_budget_reserved")) notices.push("budgetReserved");
+  else if (codes.has("mapping_invalid")) notices.push("directReview");
+  if (status === "failed" && report.available_results.length) notices.push("materialsRetained");
+  return notices;
 }

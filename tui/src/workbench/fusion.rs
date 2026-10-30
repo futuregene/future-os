@@ -4,16 +4,26 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 fn state(step: &Value) -> Key {
+    if step["failure_kind"] == "budget_reserved" {
+        return Key::FusionSkipped;
+    }
     match step["status"].as_str().unwrap_or_default() {
         "starting" | "running" => Key::FusionThinking,
         "completed" => Key::FusionThought,
+        "skipped" => Key::FusionSkipped,
         "cancelled" => Key::FusionStopped,
         "interrupted" => Key::FusionThinkInterrupted,
         "failed" => {
             let error = step["error"].as_str().unwrap_or_default().to_lowercase();
-            if error.contains("timed out") || error.contains("timeout") {
+            if step["failure_kind"] == "timeout"
+                || error.contains("timed out")
+                || error.contains("timeout")
+            {
                 Key::FusionTimeout
-            } else if error.contains("output_limit") || error.contains("finish_length") {
+            } else if step["failure_kind"] == "output_limit"
+                || error.contains("output_limit")
+                || error.contains("finish_length")
+            {
                 Key::FusionOutputLimit
             } else {
                 Key::FusionThinkFailed
@@ -25,7 +35,7 @@ fn state(step: &Value) -> Key {
 pub(super) fn progress(data: &Value, lang: Language) -> String {
     let phases = ["analyzing", "issue_mapping", "reviewing", "synthesizing"];
     let phase = data["run"]["phase"].as_str().unwrap_or("preparing");
-    let index = phases.iter().position(|p| *p == phase).unwrap_or(0);
+    let index = phases.iter().position(|p| *p == phase);
     let status = data["run"]["status"].as_str().unwrap_or_default();
     let terminal = matches!(status, "completed" | "failed" | "cancelled" | "interrupted");
     let label = match status {
@@ -34,6 +44,7 @@ pub(super) fn progress(data: &Value, lang: Language) -> String {
         "cancelled" => Key::FusionCancelled,
         "interrupted" => Key::FusionInterrupted,
         _ => match phase {
+            "preflight" => Key::FusionChecking,
             "analyzing" => Key::FusionAnalyzing,
             "issue_mapping" => Key::FusionMapping,
             "reviewing" => Key::FusionReviewing,
@@ -41,11 +52,22 @@ pub(super) fn progress(data: &Value, lang: Language) -> String {
             _ => Key::FusionPreparing,
         },
     };
+    let report = &data["run"]["report"];
+    let contains_phase = |field: &str, phase: &str| {
+        report[field]
+            .as_array()
+            .is_some_and(|values| values.iter().any(|value| value == phase))
+    };
     let bar = (0..4)
         .map(|n| {
-            if status == "completed" || n < index {
+            if contains_phase("skipped_phases", phases[n]) {
+                "...."
+            } else if contains_phase("completed_phases", phases[n])
+                || (report.is_null()
+                    && (status == "completed" || index.is_some_and(|index| n < index)))
+            {
                 "===="
-            } else if n == index {
+            } else if Some(n) == index {
                 ">>>>"
             } else {
                 "----"
@@ -146,13 +168,59 @@ pub(super) fn progress(data: &Value, lang: Language) -> String {
         let role = role.map(|role| format!("{role} · ")).unwrap_or_default();
         text.push_str(&format!("\n{role}{name} · {}", t(lang, key)));
     }
+    let reasons = report["degradations"].as_array();
+    let has =
+        |code: &str| reasons.is_some_and(|items| items.iter().any(|item| item["code"] == code));
+    let mut notices = vec![];
+    if !report.is_null() {
+        if status == "failed" {
+            notices.push(Key::FusionNoConclusion);
+        }
+        if has("moderator_unavailable") || has("moderator_failed") {
+            notices.push(Key::FusionModeratorFailed);
+        } else if has("no_participants") {
+            notices.push(Key::FusionNoParticipants);
+        } else if has("provider_unavailable") {
+            notices.push(Key::FusionProviderUnavailable);
+        } else if has("single_participant") {
+            notices.push(Key::FusionSingleParticipant);
+        } else if [
+            "participant_failed",
+            "participant_unavailable",
+            "participants_reduced",
+            "reviews_reduced",
+            "no_reviews",
+        ]
+        .iter()
+        .any(|code| has(code))
+        {
+            notices.push(Key::FusionReducedParticipation);
+        }
+        if has("summary_budget_reserved") {
+            notices.push(Key::FusionBudgetReserved);
+        } else if has("mapping_invalid") {
+            notices.push(Key::FusionDirectReview);
+        }
+        if status == "failed"
+            && report["available_results"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty())
+        {
+            notices.push(Key::FusionMaterialsRetained);
+        }
+    }
     if terminal
+        && notices.is_empty()
         && data["run"]["completeness"]
             .as_str()
             .is_some_and(|v| v != "full")
     {
-        text.push_str(&format!("\n{}", t(lang, Key::FusionPartial)));
+        notices.push(Key::FusionPartial);
     }
+    for key in notices {
+        text.push_str(&format!("\n{}", t(lang, key)));
+    }
+
     text
 }
 
@@ -166,5 +234,15 @@ mod tests {
         assert!(summary.contains("GLM 5.3 Flash · 思考超时"));
         assert!(summary.contains("部分模型未完成讨论"));
         assert!(!summary.contains("started_at"));
+    }
+    #[test]
+    fn skipped_phases_and_missing_conclusion_have_distinct_projection() {
+        let data = serde_json::json!({"run":{"status":"failed","phase":"synthesizing","completeness":"none","report":{"completed_phases":["analyzing"],"skipped_phases":["issue_mapping","reviewing"],"degradations":[{"code":"moderator_failed"}],"available_results":[{"text":"analysis"}]}},"steps":[{"model":"future/glm-5.3-flash","phase":"analyzing","participant":"P2","status":"skipped","attempt":0,"started_at":1}]});
+        let text = progress(&data, Language::Zh);
+        assert!(text.contains("[==== .... .... >>>>]"));
+        assert!(text.contains("GLM 5.3 Flash · 已跳过"));
+        assert!(text.contains("本次未产出综合结论。"));
+        assert!(text.contains("主模型不可用，未自动更换模型。"));
+        assert!(text.contains("已有分析与降级原因已保留"));
     }
 }

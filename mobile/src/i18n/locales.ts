@@ -416,8 +416,20 @@ export const resources = {
         "fusionStageCount": "{{current}} / {{total}}",
         "fusionProgress": "Discussion stage progress",
         "fusionPartialNotice": "Some models did not complete the discussion",
+        "fusionNotices": {
+          "noConclusion": "No synthesized conclusion was produced.",
+          "moderatorFailed": "The main model is unavailable; no substitute was selected.",
+          "noParticipants": "No valid participant results; discussion stopped.",
+          "providerUnavailable": "The provider is temporarily unavailable; affected requests were stopped.",
+          "singleParticipant": "Only a single-model opinion remains; cross discussion was skipped.",
+          "reducedParticipation": "Some models did not finish; continuing with valid results.",
+          "budgetReserved": "Further discussion was skipped to reserve time for synthesis.",
+          "directReview": "Issue mapping did not finish; original analyses were compared directly.",
+          "materialsRetained": "Existing analyses and degradation reasons were preserved for review."
+        },
         "fusionStatusUnavailable": "Discussion status is temporarily unavailable",
         "fusionModelStates": {
+          "skipped": "Skipped",
           "waiting": "Waiting",
           "thinking": "Thinking",
           "completed": "Thinking complete",
@@ -438,6 +450,7 @@ export const resources = {
         "fusionOriginal": "Original messages and tool evidence",
         "fusionMore": "Read more",
         "fusionPhases": {
+          "preflight": "Checking main model",
           "preparing": "Preparing evidence",
           "analyzing": "Independent thinking",
           "issue_mapping": "Mapping issues",
@@ -1505,8 +1518,20 @@ export const resources = {
         "fusionStageCount": "{{current}} / {{total}}",
         "fusionProgress": "讨论阶段进度",
         "fusionPartialNotice": "部分模型未完成讨论",
+        "fusionNotices": {
+          "noConclusion": "本次未产出综合结论。",
+          "moderatorFailed": "主模型不可用，未自动更换模型。",
+          "noParticipants": "没有有效的参与模型结果，已停止讨论。",
+          "providerUnavailable": "提供商暂不可用，已停止受影响的请求。",
+          "singleParticipant": "仅保留单模型意见，已跳过交叉讨论。",
+          "reducedParticipation": "部分模型未完成，已基于有效结果继续。",
+          "budgetReserved": "已跳过后续讨论，为总结保留时间。",
+          "directReview": "议题整理未完成，已直接比较原始分析。",
+          "materialsRetained": "已有分析与降级原因已保留，可用于复盘。"
+        },
         "fusionStatusUnavailable": "暂时无法读取讨论状态",
         "fusionModelStates": {
+          "skipped": "已跳过",
           "waiting": "等待思考",
           "thinking": "思考中",
           "completed": "思考完成",
@@ -1527,6 +1552,7 @@ export const resources = {
         "fusionOriginal": "原始发言与工具证据",
         "fusionMore": "继续读取",
         "fusionPhases": {
+          "preflight": "检查主模型",
           "preparing": "准备资料",
           "analyzing": "独立思考",
           "issue_mapping": "整理议题",

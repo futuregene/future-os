@@ -191,13 +191,17 @@ fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
                 anyhow::bail!("Fusion cancelled");
             }
             let current = store.get(&run.id)?;
-            if let Some(result) = current.result {
+            if current.result.is_some() {
                 ensure!(
                     matches!(current.status.as_str(), "delivering" | "completed"),
                     "Fusion result belongs to an interrupted invocation"
                 );
                 guard.armed = false;
-                return Ok(serde_json::to_string(&result)?);
+                return current.tool_output();
+            }
+            if current.status == "failed" && current.report.is_some() {
+                guard.armed = false;
+                return current.tool_output();
             }
             ensure!(
                 !current.terminal(),
@@ -211,9 +215,7 @@ fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
                     None,
                     "Fusion host disappeared or consultation timed out",
                 )?;
-                anyhow::bail!(
-                    "Fusion host disappeared or consultation timed out; no conclusion was produced"
-                );
+                continue;
             }
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         }
@@ -333,7 +335,7 @@ pub(crate) fn inner_execution(
     Ok(Some(InnerExecution {
         snapshot: Snapshot::load(Path::new(&run.snapshot_root))?,
         settings,
-        file_tools: !run.input.read_scope.is_empty(),
+        file_tools: step.phase != "preflight" && !run.input.read_scope.is_empty(),
     }))
 }
 
@@ -388,6 +390,9 @@ pub(crate) fn query_status(state: &crate::rpc::AppState) -> Result<Value> {
         "panel_models": settings.configuration.panel.iter().map(|role| &role.model).collect::<Vec<_>>(),
         "moderator_model": settings.configuration.moderator.model,
         "generation_policy_version": future_fusion::GENERATION_POLICY_VERSION,
+        "resilience_policy_version": future_fusion::RESILIENCE_POLICY_VERSION,
+        "agent_instance_id": state.agent_instance_id,
+        "config_revision": state.control_plane.current_config_revision(),
     }))
 }
 

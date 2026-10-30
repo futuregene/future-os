@@ -359,7 +359,8 @@
       "analyzing": "Independent thinking",
       "issue_mapping": "Mapping issues",
       "reviewing": "Cross discussion",
-      "synthesizing": "Summary"
+      "synthesizing": "Summary",
+      "preflight": "Checking main model"
     },
     "states": {
       "preparing": "Preparing discussion",
@@ -395,7 +396,8 @@
       "output_limited": "Output limit reached",
       "cancelled": "Stopped",
       "interrupted": "Interrupted",
-      "partial": "Partially complete"
+      "partial": "Partially complete",
+      "skipped": "Skipped"
     },
     "stageCount": "{{current}} / {{total}}",
     "progress": "Discussion stage progress",
@@ -403,6 +405,17 @@
     "statusUnavailable": "Discussion status is temporarily unavailable",
     "disabled": "Fusion is turned off in settings",
     "moderatorRole": "Main model",
-    "participantRole": "Participant {{number}}"
+    "participantRole": "Participant {{number}}",
+    "notices": {
+      "noConclusion": "No synthesized conclusion was produced.",
+      "moderatorFailed": "The main model is unavailable; no substitute was selected.",
+      "noParticipants": "No valid participant results; discussion stopped.",
+      "providerUnavailable": "The provider is temporarily unavailable; affected requests were stopped.",
+      "singleParticipant": "Only a single-model opinion remains; cross discussion was skipped.",
+      "reducedParticipation": "Some models did not finish; continuing with valid results.",
+      "budgetReserved": "Further discussion was skipped to reserve time for synthesis.",
+      "directReview": "Issue mapping did not finish; original analyses were compared directly.",
+      "materialsRetained": "Existing analyses and degradation reasons were preserved for review."
+    }
   }
 }

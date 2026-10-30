@@ -2,7 +2,7 @@
 
 [中文](fusion.zh-CN.md)
 
-Status: tool orchestration and shared settings implemented. Updated: 2026-10-30.
+Status: tool orchestration, shared settings and first-batch resilience implemented. Updated: 2026-10-30.
 
 Fusion is a multi-model thinking tool available to the main Agent. Its orchestration kernel lives in `orchestration/fusion`, alongside Goal and Tasks. Users add the `fusion` tool to the current main run with `/fusion`. The main Agent investigates and may submit a focused decision question. Internal read-only discussion returns a final conclusion, then the original main flow continues the user's task. Users can inspect the complete discussion separately.
 
@@ -10,9 +10,9 @@ Delivery requires desktop, mobile and terminal support, with hosts on Windows, m
 
 ## Current implementation and usage
 
-The default moderator is `future/deepseek-flash`. Default panelists are `future/deepseek-flash`, `future/glm-5.3-flash` and `future/qwen3.7-plus`, the third selected from the live Future catalog with the user's confirmation. Missing models fail explicitly; no default-model substitution occurs.
+The default moderator is `future/deepseek-flash`. Default panelists are `future/deepseek-flash`, `future/glm-5.3-flash` and `future/qwen3.7-plus`, the third selected from the live Future catalog with the user's confirmation. Missing moderators fail explicitly; missing panelists are excluded with a recorded reason. No default-model substitution occurs.
 
-Start Desktop or `future host`, then submit `/fusion <task>` from Desktop, Mobile or TUI. The main Agent receives a real run-scoped tool and decides when to consult on a focused question. The inner N→1→N→1 (N = 2–5) protocol returns one final result and the original flow continues. Later ordinary runs do not inherit the tool. Expand the reply process and Fusion activity to see a four-stage progress bar and one thinking-status row per model. Full messages and evidence remain in storage and terminal queries. TUI offers `/fusion-log [step-id]`; CLI offers `future fusion show <parent-session-id> [--run <id> --tool <id>] [--step <id>] [--offset <bytes>] --json`. Reads never invoke models.
+Start Desktop or `future host`, then submit `/fusion <task>` from Desktop, Mobile or TUI. The main Agent receives a real run-scoped tool and decides when to consult on a focused question. The healthy inner N→1→N→1 (N = 2–5) protocol returns one final result; explicit failure branches may skip stages or return a no-conclusion outcome and the original flow continues. Later ordinary runs do not inherit the tool. Expand the reply process and Fusion activity to see a four-stage progress bar and one thinking-status row per model. Full messages and evidence remain in storage and terminal queries. TUI offers `/fusion-log [step-id]`; CLI offers `future fusion show <parent-session-id> [--run <id> --tool <id>] [--step <id>] [--offset <bytes>] --json`. Reads never invoke models.
 
 The Host executor claims a bounded durable queue in `~/.future/fusion/fusion.db`, avoiding an Agent-to-Host crate dependency. The existing Host instance lock gives one executor, with at most two concurrent consultations. The Agent validates the leading token from the original submission and persists `ScheduledSettingsSnapshot.fusion_enabled` with the raw input/request key. Remote outboxes retain that original directive and key. No persistent session-tool setting is changed. Inner sessions carry `created_by=fusion`; each run forcibly receives only the four snapshot tools regardless of ordinary session configuration.
 
@@ -36,7 +36,7 @@ Goal, Tasks and Fusion retain separate responsibilities. V1 enables the tool onl
 
 ## Slash command and invocation choice
 
-Submitting `/fusion <task>` adds `fusion` to that outer Agent run while the remaining text is an ordinary task. Availability does not force immediate invocation. Submitting `/fusion` alone sets a removable flag for the next task in that composer, without creating an empty run, invoking models or spending credits. Show “Fusion tool enabled.” Submission consumes the flag; subsequent ordinary messages do not inherit it. The current run's tool loop and interrupted recovery retain the same activation.
+Submitting `/fusion <task>` adds `fusion` to that outer Agent run while the remaining text is an ordinary task. Availability does not force immediate invocation. Submitting `/fusion` alone sets a removable flag for the next task in that composer, without creating an empty run, invoking models or spending credits. Keep the visible `/fusion ` draft prefix without an activation banner. Submission consumes the flag; subsequent ordinary messages do not inherit it. The current run's tool loop and interrupted recovery retain the same activation.
 
 Non-interactive CLI calls without a composer must include the task in the same request. Bare `/fusion` returns missing-task usage, without an invisible pending flag affecting a later command.
 
@@ -83,7 +83,7 @@ Program logic validates required fields, size, references and authorization. Whe
 
 ### Final result
 
-The outer flow receives only the final result: `fusion_run_id`, status/completeness, `conclusion`, brief `rationale`, applicability `conditions`, `unresolved`, proposed `next_steps`, and discussion/evidence references. Raw messages, round reviews and tool outputs do not automatically enter parent model context. Developers read them through terminal queries; UI progress is not an additional tool result.
+The outer flow receives one final tool envelope: `fusion_run_id`, `status`, `has_conclusion`, completeness, `conclusion`, brief `rationale`, applicability `conditions`, `unresolved`, proposed `next_steps`, and a versioned `report`. On failure `has_conclusion=false`, `conclusion=null` and completeness is `none`; the envelope retains degradation reasons and bounded public materials with step references. These materials are unverified evidence, not consensus. Normal results also describe actual coverage. Full round messages and tool transcripts do not enter parent context. Developers read them through terminal queries; UI progress is not an additional tool result.
 
 The result is decision material, not a new user instruction or execution queue. The main Agent may adopt, adapt or reject it under the original authorization, current facts and constraints. Before implementation, read the live workspace and recheck key facts. Correct local issues directly; reconsider consultation only when new evidence changes a key decision. Conclusions are not verification. The final reply separates discussion recommendations from actual execution results.
 
@@ -128,13 +128,16 @@ The Agent tool adapter depends on a neutral invocation interface or RPC implemen
 
 ## Discussion protocol
 
+The diagram shows the healthy path. Before it, moderator preflight runs unless a fresh matching success is cached. The first uncached three-panel consultation has nine attempts without retries: one readiness check plus eight discussion steps. Failure branches are defined below.
+
 ```mermaid
 flowchart TD
     U[User adds the tool with /fusion] --> O[Main Agent investigates and decides]
     O -->|Directly solvable| E[Main flow handles the task normally]
     O -->|Focused decision| T[Call fusion with goal background and constraints]
     T --> S[Freeze consultation input file versions and budget]
-    S --> A[Parallel independent panel analysis]
+    S --> H[Check moderator availability]
+    H -->|available| A[Parallel independent panel analysis]
     A --> I[Moderator maps consensus and issues]
     I --> R[Parallel panel cross-review]
     R --> F[Moderator synthesizes conclusions]
@@ -156,7 +159,7 @@ flowchart TD
 
 Panelists cannot see each other's analysis in round one or receive an initial preferred answer from the moderator. The moderator chairs and synthesizes without a separately configured Judge. Round two receives first-round material in a fixed order; early round-two results cannot change another participant's input. Save a common trimmed input when material exceeds budget while retaining originals.
 
-V1 uses one cross-review round with program-controlled transitions. N participants produce `N + 1 + N + 1` Agent phase executions (eight with the default three participants); tool loops may involve further model requests, so this is not a promise of eight API calls total. Issue mapping does not decide prematurely, and the last phase still synthesizes without acting. Agreement is not accuracy. `3131` is an initial internal strategy, not a permanent external tool contract.
+The healthy path uses one cross-review round with program-controlled transitions. N participants produce `N + 1 + N + 1` Agent phase executions (eight with the default three participants); tool loops may involve further model requests, so this is not a promise of eight API calls total. Issue mapping does not decide prematurely, and the last phase still synthesizes without acting. Agreement is not accuracy. `3131` is an initial internal strategy, not a permanent external tool contract.
 
 Each phase has a versioned protocol. Validate structured issue maps and synthesis, retaining issue decisions, message references and proposed verification internally while returning the compact final tool contract. Structured results and public panel text remain audit records available through terminal queries. Do not publish partial JSON or intermediate judgments to the parent model.
 
@@ -238,14 +241,16 @@ Retention keeps referenced Agent bodies, attachments and snapshots. Deleting a p
 
 ## Lifecycle and failures
 
-Consultation status is `queued / running / delivering / completed / failed / cancelling / cancelled / interrupted`; phase is `preparing / analyzing / issue_mapping / reviewing / synthesizing`. Completeness is separately `full / partial / single`. Outer execution is independent: discussion completion is not task completion, and degraded results are not complete discussion. Timestamps support display, not causal ordering or idempotency.
+Consultation status is `preparing / queued / running / delivering / completed / failed / cancelled / interrupted`; phase is `preparing / preflight / analyzing / issue_mapping / reviewing / synthesizing`. Completeness is separately `full / partial / single`; `none` means no valid conclusion yet. Outer execution is independent: discussion completion is not task completion, and degraded results are not complete discussion. Timestamps support display, not causal ordering or idempotency.
 
 | Scenario | Behavior |
 |---|---|
-| Some panelists fail/time out | At most one retry within budget, retain attempts, continue with valid results and visible absence |
-| One valid panelist | May synthesize as `single`, without multi-model consensus claims |
-| All panelists fail | Return a tool error and retain records; outer flow may proceed if appropriate but cannot claim completed consultation |
-| Moderator fails/structure is invalid | Bounded retry, then a tool error with retained discussion, not an indefinitely waiting parent |
+| Some panelists fail/time out | Retry only classified repairable failures, at most once; 2+ valid analyses continue with those roles only |
+| One valid panelist | Skip mapping/review and synthesize as `single`; never claim multi-model consensus |
+| All panelists fail | Stop, return a structured failed outcome with no conclusion, retain records; do not automatically repeat the discussion |
+| Moderator unavailable or request fails | Preflight before analysis; later failures stop without model substitution, preserving valid public results and reasons |
+| Invalid mapping after format retry | Skip mapping and directly compare the fixed analyses in review |
+| Invalid final structure after format retry | Failed outcome with no conclusion and retained materials |
 | Unauthorized tool request | Reject/record before execution, then use read-only investigation or propose verification |
 | Insufficient budget | Stop unaffordable dispatch, retain reason/results and do not claim complete delivery |
 | User stops | Commit cancellation intent and stop inner runs; distinguish parent cancellation from cancellation of this tool only |
@@ -255,6 +260,20 @@ Consultation status is `queued / running / delivering / completed / failed / can
 Bound phase/model time, output and tools. Total budget includes all attempts and reserves synthesis capacity. Use estimates/output limits before dispatch and reconcile actual provider usage later. Missing cost is unknown, not zero; do not promise exact hard currency caps across providers.
 
 Use durable owner generations and conditional updates so stale executors cannot advance/deliver. Late output stays with its attempt without overwriting cancellation. Check accepted requests before retrying. Recovery retains both inner read-only policy and the outer run's activation metadata.
+
+## First-batch resilience policy (version 1)
+
+This is implemented once in the shared Rust policy and Host executor. Desktop, Android/iOS, TUI and CLI read the same saved outcome; none starts fallback model requests. Host and Agent must negotiate both generation policy 2 and resilience policy 1. Changes are additive JSON fields, without changing SQL schema version 1; historical rows missing `report` or step `failure_kind` remain readable.
+
+1. Validate the frozen model/thinking bindings against the callable catalog. Exclude missing participant roles, keeping their original P1…P5 IDs; stop for a missing moderator or zero eligible participants before any paid dispatch. A missing Future entry may refresh the existing catalog once.
+2. Before dispatching panelists, run a real moderator completion with the exact configured model, thinking and output budget. It exposes no tools and must finish with nonempty public text. The preflight attempt cap is min(step budget, 120 seconds). A bounded 60-second success cache keys database identity, Agent instance, provider configuration revision and moderator profile; failures invalidate it. A successful check is a recent observation, not a guarantee of later synthesis availability.
+3. Use only valid first-round roles in review. Two or more continue; one skips mapping/review; zero stops. Fewer or no valid reviews preserve analyses and produce partial coverage. Mapping-format failure can use direct review; authentication, transport exhaustion or other moderator execution failure never promotes a participant to moderator.
+4. At most two in-flight roles per provider per discussion, with bounded retries owned by Host (no multiplied inner Agent retry). Output-limit/invalid-format attempts get correction; 429 rate limits and explicit transient failures get one jittered retry within remaining budget. Whole-step timeout, unknown error, cancellation, 401, quota and 403 do not repeat. Confirm the exact previous child is durably terminal before a retry; uncertain abort stops retry.
+5. Normalize quota signals including HTTP 402 and `insufficient_quota` under HTTP 429. Authentication/known quota opens a 15-second provider cooldown. Two distinct models under the same provider returning transient failures also open it. 403 alone is model-scoped. Cache/circuit scope includes database, Agent generation and provider configuration revision; it contains no credential copy. Stop new affected dispatch once failure is observed and fence running requests; already completed answers remain valid evidence. Requests dispatched before observation may already incur cost. Provider IDs are the current account/credential boundary; finer multiple-account routing is future work.
+6. Reserve `min(2 × step_timeout, run_timeout / 3)` for synthesis (600 seconds with defaults). Admission/queue time counts. Nonfinal steps and retries cannot use this reserve; skip mapping/review when exhausted, then summarize with actual coverage. The synthesis itself still obeys remaining whole-run and step deadlines. No guarantee of completion or exact currency budget is made.
+7. Save `report` (policy version, strategy, completed/skipped phases, valid analysis/review roles, typed degradation reasons and public-material references) as it progresses. Steps retain typed `failure_kind`, attempts and original child references. Failure preserves up to ten 1400-byte UTF-8 public previews, not hidden reasoning; original public messages remain in child transcripts. The 32 KiB envelope may shorten previews further while retaining IDs. A final response is limited to 16 KiB before envelope metadata. Failure commits the reason with the latest report atomically; cancellation/owner fences and an already committed conclusion win over late timeout observers.
+
+The parent inspects `status`, `has_conclusion` and coverage before using the result. It may continue under the original user authorization, but cannot call retained materials a synthesized conclusion, automatically replay the entire discussion, or infer that skipped checks passed. Client detail views show four stage segments, model statuses and short reasons; terminal `fusion show --json` and paged step reads retain debug detail. Validation is recorded in [resilience verification](../testing/fusion-resilience.md).
 
 ## Service and client protocol
 
@@ -285,7 +304,7 @@ All clients read/configure moderator and panelists from one source, showing the 
 
 Use one term, “discussion”, and the `user-round-group` icon for Fusion. Use the same icon in slash-command completion. Choosing the command inserts `/fusion ` into the draft without an enabled banner or toast; removing that prefix cancels activation. A bare directive stays in the draft until a task is supplied. The expanded activity shows four real stages (independent thinking, issue mapping, cross discussion, summary) above one status row per model. Stage progress is not an elapsed-time prediction.
 
-Rows distinguish waiting, thinking, complete, failed, timeout, output limit, stopped, interrupted and partial completion. A retry replaces its earlier attempt for presentation only. A partial result preserves participant failure states and a short completeness notice. Discussion completion does not mean the outer task completed.
+Rows distinguish waiting, thinking, complete, skipped, failed, timeout, output limit, stopped, interrupted and partial completion. Skipped stages remain neutral rather than appearing complete; compact translated reasons use the same policy in Desktop, Mobile and TUI. No-conclusion outcomes are explicit. A retry replaces its earlier attempt for presentation only. A partial result preserves participant failure states and a short completeness notice. Discussion completion does not mean the outer task completed.
 
 The ordinary activity omits full transcripts, issue matrices, diagnostic JSON, raw inputs, opaque IDs, token counts and long errors. Detailed records remain in the database and Agent sessions, available through terminal queries without new model requests.
 
