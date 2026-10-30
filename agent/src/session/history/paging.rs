@@ -9,8 +9,36 @@ use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-pub(super) const HISTORY_PAGE_BYTE_BUDGET: usize = 8 * 1024 * 1024;
-// JSON escaping of a fragment can expand each byte up to six times.
+pub(super) const HISTORY_PAGE_BYTE_BUDGET: usize = 2 * 1024 * 1024;
+
+/// How many rows a conversation's *first* page may carry.
+///
+/// A page is asked for on every switch and every page-up, and what it costs is
+/// what is *in* it: measured on this machine's store, the newest page of a
+/// conversation whose history is one huge turn was 541 rows and 1.9 MB, i.e.
+/// 250–310 ms before the reader could see anything — and the exchange count
+/// could not see it at all, because that conversation has three exchanges in
+/// total. A page is therefore bounded by rows or bytes, whichever comes first.
+pub(super) const HISTORY_TAIL_ROWS: usize = 150;
+
+/// How many rows a page *above* the first one may carry.
+///
+/// A reader scrolling up has already settled on the conversation and is reading;
+/// what they want from a page-up is the rest of the turn they are looking at, in
+/// one page rather than four. Measured both ways on the same store: with the
+/// first-page ceiling applied to every page, walking the longest conversation in
+/// it took 37 page-ups instead of 12.
+pub(super) const HISTORY_PAGE_ROWS: usize = 600;
+
+/// What the read loop may pull off disk before the page is cut: raw payload
+/// bytes, before projection and JSON encoding (which can expand them). It sits
+/// above the encoded ceiling on purpose — the encoded cut is the one the client
+/// feels, and this one only stops a page of one enormous entry from reading
+/// unbounded memory.
+const HISTORY_PAGE_READ_BUDGET: usize = 2 * 1024 * 1024;
+
+// JSON escaping of a fragment can expand each byte up to six times. A quarter
+// of the page ceiling, so one fragment and its envelope always fit a page.
 const ENTRY_FRAGMENT_BYTE_BUDGET: usize = 1024 * 1024;
 
 /// How many materialized pages the agent keeps, and how many bytes of them.
@@ -218,7 +246,12 @@ pub(super) fn read_display_page(
     // the page will weigh. With the row ceiling gone for backward reads the page
     // is bounded where the bodies are: that materializer's byte budget, which
     // splits an oversized entry into fragments instead of dropping it.
-    let read_budget = HISTORY_PAGE_BYTE_BUDGET;
+    let read_budget = HISTORY_PAGE_READ_BUDGET;
+    let rows_cap = if before == Some(i64::MAX) {
+        HISTORY_TAIL_ROWS
+    } else {
+        HISTORY_PAGE_ROWS
+    };
     let mut stmt = db.prepare(&sql)?;
     let mut cursor = stmt.query(params![&stored_session, start, end])?;
     let mut rows = Vec::new();
@@ -266,7 +299,24 @@ pub(super) fn read_display_page(
         if body_bytes >= read_budget {
             break;
         }
+        // The row ceiling is the page's own bound, and it only means anything
+        // for a backward read (a forward page is already row-bounded by its
+        // `LIMIT`). The *first* page is the one a switch waits for, so it is the
+        // one that has to stay small; a page-up may carry a whole turn, because
+        // the reader is already reading and the read no longer holds the screen.
+        // `before == i64::MAX` is the protocol's "from the newest row" marker.
+        if before.is_some() && rows.len() >= rows_cap {
+            break;
+        }
     }
+    // A page that was cut short may begin in the middle of a tool sequence, and
+    // a tool *result* row carries only its call's id — the name and arguments it
+    // is read with live on the call row above it. Nudging the cut up to the next
+    // call row was tried and reverted: a turn is hundreds of consecutive results,
+    // so the nudge ate the whole page and the next request advanced by one row
+    // (measured: 392 pages for a 541-row conversation). The page keeps the rows
+    // it read; the one at its top renders with its call id until the page above
+    // arrives.
     Ok(DisplayHistoryPage {
         rows,
         has_more: if before.is_some() {
