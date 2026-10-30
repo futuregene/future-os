@@ -28,7 +28,7 @@ function button(text: string) {
 }
 
 /** The per-model thinking-level chips, in their fixed order. */
-const CHIPS = ["Off", "Minimal", "Low", "Medium", "High", "XHigh", "Max"];
+const CHIPS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 function chips(): HTMLButtonElement[] {
   const pressed = [...document.querySelectorAll<HTMLButtonElement>("button[aria-pressed]")];
@@ -69,7 +69,7 @@ describe("custom model thinking levels", () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(modelId, "unlisted-deployment");
       modelId.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    expect(pressedLabels()).toEqual(["Off", "Low", "Medium", "High"]);
+    expect(pressedLabels()).toEqual(["off", "low", "medium", "high"]);
 
     await act(async () => button("Save").click());
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
@@ -89,10 +89,10 @@ describe("custom model thinking levels", () => {
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(modelId, "qwen");
       modelId.dispatchEvent(new Event("input", { bubbles: true }));
-      chips()[6]!.click(); // Max on
-      chips()[2]!.click(); // Low off
+      chips()[6]!.click(); // max on
+      chips()[2]!.click(); // low off
     });
-    expect(pressedLabels()).toEqual(["Off", "Medium", "High", "Max"]);
+    expect(pressedLabels()).toEqual(["off", "medium", "high", "max"]);
 
     await act(async () => button("Save").click());
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
@@ -120,7 +120,7 @@ describe("custom model thinking levels", () => {
     const onSubmit = mount(provider);
 
     // The known ones show as selected; the unknown one has no chip of its own...
-    expect(pressedLabels()).toEqual(["Off", "Max"]);
+    expect(pressedLabels()).toEqual(["off", "max"]);
     // ...but it is not lost: it rides along in the submitted list.
     await act(async () => button("Save").click());
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
@@ -151,8 +151,8 @@ describe("custom model thinking levels", () => {
     };
     const onSubmit = mount(provider);
     act(() => {
-      chips()[0]!.click(); // Off off
-      chips()[2]!.click(); // Low off
+      chips()[0]!.click(); // off off
+      chips()[2]!.click(); // low off
     });
     await act(async () => button("Save").click());
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
