@@ -3491,10 +3491,9 @@ fn preview_box(
             // (`ImageRequest`, painted by the driver after this frame), and a
             // terminal that cannot gets the picture's facts and an honest
             // sentence instead of a mosaic.
-            let images = matches!(
+            let images = !matches!(
                 crate::terminal_image::get_capabilities().images,
-                crate::terminal_image::ImageProtocol::Kitty
-                    | crate::terminal_image::ImageProtocol::Iterm2
+                crate::terminal_image::ImageProtocol::None
             );
             // One row of the box is its controls: zoom, fit, and the folder's
             // previous/next picture. They are text, so the picture starts below
